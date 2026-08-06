@@ -103,7 +103,11 @@ else
 		"$boot" --fetch-install "$src" || die "artifact verification failed; nothing installed"
 	# The verified qemu bundle arrives as a tarball; expand it to the qemu/ tree the install step
 	# expects. Its bytes are already trusted (hash-checked against the signed manifest above).
-	tar -xf "$src/qemu-bundle.tar" -C "$src" && rm -f "$src/qemu-bundle.tar"
+	# The tar is rooted at the bundle itself (bin/ lib/ share/ PROVENANCE), NOT at a qemu/ dir, so
+	# it must be extracted INTO one -- unpacking it beside the other artifacts scatters bin/ and
+	# lib/ across the staging dir and leaves the copy below with no qemu/ to find.
+	mkdir -p "$src/qemu"
+	tar -xf "$src/qemu-bundle.tar" -C "$src/qemu" && rm -f "$src/qemu-bundle.tar"
 	rm -f "$boot"
 fi
 [ -x "$src/briard-agent" ] || die "staging dir $src has no briard-agent"
