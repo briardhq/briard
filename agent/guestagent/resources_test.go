@@ -151,3 +151,37 @@ func TestResourcesVerbSkipsStoppedPayload(t *testing.T) {
 		t.Errorf("Load1 = %v, want 0.10 (other metrics still gathered)", r.Load1)
 	}
 }
+
+// journalctl talks in its own voice, and none of it is a log line. "-- No entries --" is what a
+// HEALTHY node's poll returns, and counting it made kerr sit at a permanent 1 -- which hides the
+// step up to a real kernel error, the one thing this signal exists to catch.
+func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
+	t.Run("no entries yields no lines", func(t *testing.T) {
+		lines, cursor := splitJournalCursor([]byte("-- No entries --\n"))
+		if len(lines) != 0 {
+			t.Errorf("healthy poll produced %d kernel error line(s): %q", len(lines), lines)
+		}
+		if cursor != "" {
+			t.Errorf("no entries means no new cursor, got %q", cursor)
+		}
+	})
+	t.Run("real entries survive alongside markers", func(t *testing.T) {
+		out := []byte("-- Journal begins at Thu 2026-08-06 21:53:49 EEST. --\n" +
+			"Aug 06 21:53:53 guest kernel: drbd: loading out-of-tree module taints kernel.\n" +
+			"-- Reboot --\n" +
+			"Aug 06 21:53:53 guest kernel: EXT4-fs error (device vda1): something real\n" +
+			"-- cursor: s=abc;i=1;b=2\n")
+		lines, cursor := splitJournalCursor(out)
+		if len(lines) != 2 {
+			t.Fatalf("want the 2 kernel lines, got %d: %q", len(lines), lines)
+		}
+		for _, l := range lines {
+			if !strings.Contains(l, "kernel:") {
+				t.Errorf("kept a non-kernel line: %q", l)
+			}
+		}
+		if cursor != "s=abc;i=1;b=2" {
+			t.Errorf("cursor = %q", cursor)
+		}
+	})
+}

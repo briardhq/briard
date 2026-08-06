@@ -9,6 +9,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -474,4 +476,67 @@ func TestPrewarmFailsWhenTheImageCannotBeWarmed(t *testing.T) {
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "warm image") {
 		t.Fatalf("outcome = %+v, want failed naming the warm", o)
 	}
+}
+
+// A service installed at RUNTIME must land in the live config immediately, not at the next agent
+// restart. The gap was invisible in the log and total in effect: cfg.resources() is gated on
+// cfg.Service.Name, so between installing a service and restarting, the node reported no appliance
+// telemetry at all -- payload footprint, volume usage, snapshots, load, journal and store sizes.
+func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "service.json")
+	raw := []byte(`{"name":"home-assistant","version":"2026.7.1","containers":[` +
+		`{"name":"app","image":"ghcr.io/home-assistant/home-assistant@sha256:` +
+		`f73512ba4fe06bb4d57636fe3578d0820cdec46f81e8f837ab59e451662ff3cb",` +
+		`"mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}`)
+	if err := os.WriteFile(cache, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logf := func(string, ...any) {}
+	done := api.DirectiveOutcome{State: api.OutcomeDone}
+	install := api.Directive{Kind: api.DirectiveServiceInstall}
+
+	t.Run("adopts on a completed install", func(t *testing.T) {
+		cfg := Config{ServiceCache: cache}
+		cfg.adoptInstalledService(install, done, logf)
+		if cfg.Service.Name != "home-assistant" {
+			t.Fatalf("Service.Name = %q, want the installed service", cfg.Service.Name)
+		}
+		if got := cfg.Service.ServingUnit(); got != "briard-home-assistant-app.service" {
+			t.Errorf("ServingUnit() = %q, want the rendered container unit", got)
+		}
+		if len(cfg.Promoter) == 0 || len(cfg.ServiceRendered.Units) == 0 {
+			t.Errorf("promoter chain / rendered units not adopted: %v %v", cfg.Promoter, cfg.ServiceRendered.Units)
+		}
+	})
+	// The failable half: adopting on anything other than a completed install would let a failed
+	// or rolled-back install rewrite the live config from a cache that install did not write.
+	t.Run("ignores other kinds and non-Done outcomes", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			d    api.Directive
+			o    api.DirectiveOutcome
+		}{
+			{"rolled back", install, api.DirectiveOutcome{State: api.OutcomeRolledBack}},
+			{"failed", install, api.DirectiveOutcome{State: api.OutcomeFailed}},
+			{"another kind", api.Directive{Kind: api.DirectiveUpgrade}, done},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := Config{ServiceCache: cache}
+				cfg.adoptInstalledService(tc.d, tc.o, logf)
+				if cfg.Service.Name != "" {
+					t.Errorf("live config changed on %s: %+v", tc.name, cfg.Service)
+				}
+			})
+		}
+	})
+	// A cache that cannot be read is not evidence of an uninstall: keep what we had.
+	t.Run("unreadable cache leaves the previous view", func(t *testing.T) {
+		cfg := Config{ServiceCache: filepath.Join(dir, "absent.json"),
+			Service: model.ServiceSpec{Name: "already-installed"}}
+		cfg.adoptInstalledService(install, done, logf)
+		if cfg.Service.Name != "already-installed" {
+			t.Errorf("Service was cleared by an unreadable cache: %+v", cfg.Service)
+		}
+	})
 }

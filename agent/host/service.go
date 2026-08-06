@@ -271,6 +271,32 @@ func (cfg Config) cacheService(raw []byte) error {
 	return os.WriteFile(cfg.ServiceCache, raw, 0o600)
 }
 
+// adoptInstalledService refreshes the LIVE config from the node-local manifest cache after a
+// directive that changed what is installed. Run() does this once at startup; without it here, the
+// very process that performed the install kept its old (usually empty) view of cfg.Service until
+// something restarted it.
+//
+// That is not cosmetic: cfg.resources() is gated on cfg.Service.Name, so a node that had just
+// installed a service stopped reporting the guest's telemetry ENTIRELY -- not merely the payload
+// footprint but volume usage, snapshot count, load average, journal size and podman-store size,
+// every one of them a soak trend input or a growth surface. The node ran perfectly and described
+// itself as empty.
+//
+// Pointer receiver on purpose: it mutates the observe loop's own cfg, the copy every later cycle
+// reads. A failed re-read leaves the previous view in place -- the cache is the authority on what
+// is installed, and a transient read error is not evidence of an uninstall.
+func (cfg *Config) adoptInstalledService(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
+	if d.Kind != api.DirectiveServiceInstall || o.State != api.OutcomeDone {
+		return
+	}
+	spec, chain, rendered, ok := cfg.installedService(logf)
+	if !ok {
+		return
+	}
+	cfg.Service, cfg.Promoter, cfg.ServiceRendered = spec, chain, rendered
+	logf("installed service %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
+}
+
 // InstalledService reads the node-local manifest cache and returns the service spec + promoter
 // chain it implies, and the RENDERED UNITS themselves. Called at bring-up so a restarted agent
 // rebuilds the chain it had, rather than reverting to whatever the environment describes.

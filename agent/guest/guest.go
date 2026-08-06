@@ -191,18 +191,11 @@ func NewManager(ctl control, cfg Config) *Manager {
 	return &Manager{ctl: ctl, cfg: cfg}
 }
 
-// unitOf is the systemd unit that answers "is this service up?".
-//
-// A runtime-installed service names it explicitly, because its units come from the
-// quadlet renderer and there are several — the SERVING container is the one whose state is the
-// service's state. An empty Unit means the baked slot, whose unit has always been derived from
-// the name, so nothing on the older path changes.
-func unitOf(spec model.ServiceSpec) string {
-	if spec.Unit != "" {
-		return spec.Unit
-	}
-	return "podman-" + spec.Name + ".service"
-}
+// unitOf is the systemd unit that answers "is this service up?" — now one definition, on the
+// spec itself (model.ServiceSpec.ServingUnit), because the host's resource telemetry had rebuilt
+// the same derivation inline and got the runtime-installed case wrong. Kept as a name because it
+// reads better at the eight call sites below than the method does.
+func unitOf(spec model.ServiceSpec) string { return spec.ServingUnit() }
 
 // hasService reports whether this node runs a workload at all. ZERO SERVICES IS THE SHIPPED
 // STATE -- a fresh node serves the front door's own landing page and nothing else --

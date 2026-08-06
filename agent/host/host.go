@@ -645,6 +645,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				*pending = nil // acked -- collect this cycle's fresh outcomes below
 				for _, d := range directives {
 					o := cfg.dispatch(ctx, d, r, up, img, n, cr, su, logf)
+					cfg.adoptInstalledService(d, o, logf)
 					if o.ID != "" {
 						*pending = append(*pending, o)
 					}
@@ -675,7 +676,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// pendingOutcomes. Outcomes close the loop on an intent the cloud announced;
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
-			rq.resp <- cfg.dispatch(ctx, rq.d, r, up, img, n, cr, su, logf)
+			o := cfg.dispatch(ctx, rq.d, r, up, img, n, cr, su, logf)
+			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
+			cfg.adoptInstalledService(rq.d, o, logf)
 		case <-t.C:
 		}
 	}
@@ -755,7 +758,12 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 	var res telemetry.NodeResources
 	if cfg.Service.Name != "" {
 		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if app, err := r.Resources(rctx, "podman-"+cfg.Service.Name+".service", cfg.Service.DataDir); err == nil {
+		// ServingUnit, not a name rebuilt here: a runtime-installed service's units come from the
+		// quadlet renderer (briard-<service>-<container>.service), so "podman-<name>.service" named
+		// nothing, systemd answered with no MainPID, and PayloadRSS/PayloadFDs/PayloadRestarts sat
+		// at zero for every catalog-installed service. Restarts is the crash-loop signal, so a
+		// service that crash-looped read exactly like one that never restarted.
+		if app, err := r.Resources(rctx, cfg.Service.ServingUnit(), cfg.Service.DataDir); err == nil {
 			res = app // appliance fields; agent fields (zero here) filled below
 		}
 		cancel()

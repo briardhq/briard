@@ -75,3 +75,46 @@ func (w witnessReader) Resources(context.Context, string, string) (telemetry.Nod
 	w.onResources()
 	return telemetry.NodeResources{}, nil
 }
+
+// recordingReader captures what unit the telemetry probe asked systemd about -- the whole point of
+// the fix, so the assertion has to be on the argument, not on the returned numbers.
+type recordingReader struct {
+	fakeStatus
+	gotUnit    string
+	gotDataDir string
+}
+
+func (r *recordingReader) Resources(_ context.Context, unit, dataDir string) (telemetry.NodeResources, error) {
+	r.gotUnit, r.gotDataDir = unit, dataDir
+	return r.res, r.resErr
+}
+
+// The probe must ask about the unit that actually serves. A runtime-installed service's units come
+// from the quadlet renderer, so rebuilding "podman-<name>.service" here named nothing and every
+// payload metric -- including the crash-loop counter -- read zero for exactly the services users
+// install. The baked slot keeps its derived name.
+func TestResourcesProbesTheServingUnit(t *testing.T) {
+	t.Run("runtime-installed service", func(t *testing.T) {
+		cfg := Config{Service: model.ServiceSpec{
+			Name:    "home-assistant",
+			DataDir: "/var/lib/briard/services/home-assistant",
+			Unit:    "briard-home-assistant-app.service",
+		}}
+		r := &recordingReader{}
+		cfg.resources(context.Background(), r)
+		if r.gotUnit != "briard-home-assistant-app.service" {
+			t.Errorf("probed unit = %q, want the quadlet-rendered serving unit", r.gotUnit)
+		}
+		if r.gotDataDir != "/var/lib/briard/services/home-assistant" {
+			t.Errorf("probed data dir = %q", r.gotDataDir)
+		}
+	})
+	t.Run("baked slot keeps its derived name", func(t *testing.T) {
+		cfg := Config{Service: model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}}
+		r := &recordingReader{}
+		cfg.resources(context.Background(), r)
+		if r.gotUnit != "podman-briard-payload.service" {
+			t.Errorf("probed unit = %q, want the baked slot's derived name", r.gotUnit)
+		}
+	})
+}

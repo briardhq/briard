@@ -1281,6 +1281,13 @@ func recentKernelErrors(ctx context.Context, x Executor) []string {
 
 // splitJournalCursor separates journalctl --show-cursor output into the log lines and the
 // trailing "-- cursor: <c>" marker (absent when no entries were shown, e.g. nothing new).
+//
+// journalctl speaks in its OWN voice too -- "-- No entries --", "-- Reboot --", "-- Journal begins
+// at ... --" -- and none of those are log lines. Dropping only the cursor left "-- No entries --"
+// counted as one kernel error on every healthy poll, so kerr sat at a permanent 1: worse than
+// noise, because this is the signal the soak oracle scans and a constant 1 hides the step up to a
+// real error. A journal line is dated ("Aug 06 ... guest kernel: ..."); nothing real is bracketed
+// in "-- ... --".
 func splitJournalCursor(out []byte) (lines []string, cursor string) {
 	for _, raw := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(raw)
@@ -1290,6 +1297,9 @@ func splitJournalCursor(out []byte) (lines []string, cursor string) {
 		if rest, ok := strings.CutPrefix(trimmed, "-- cursor:"); ok {
 			cursor = strings.TrimSpace(rest)
 			continue
+		}
+		if strings.HasPrefix(trimmed, "-- ") && strings.HasSuffix(trimmed, " --") {
+			continue // journalctl's own marker, not an entry
 		}
 		lines = append(lines, raw)
 	}

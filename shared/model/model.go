@@ -103,3 +103,26 @@ type ServiceSpec struct {
 	// back to the baked slot's derived name.
 	Unit string
 }
+
+// ServingUnit is the systemd unit that answers "is this service up?", and therefore the one to
+// measure a service's footprint from.
+//
+// A runtime-installed service names it explicitly: its units come from the quadlet renderer
+// (briard-<service>-<container>.service, plus a pod unit) and the SERVING container is the one
+// whose state is the service's state. An empty Unit means the baked slot, whose unit has always
+// been derived from the name.
+//
+// It lives on the spec because the derivation was written twice: the guest manager resolved it
+// correctly while the host's resource telemetry rebuilt "podman-<name>.service" inline, which
+// names nothing on a runtime-installed service — so the payload footprint, and with it the
+// crash-loop counter, read zero for exactly the services users install. One definition, on the
+// type that carries the fact.
+func (s ServiceSpec) ServingUnit() string {
+	if s.Unit != "" {
+		return s.Unit
+	}
+	if s.Name == "" {
+		return "" // no service at all: naming podman-.service is what asked systemd about nothing
+	}
+	return "podman-" + s.Name + ".service"
+}
