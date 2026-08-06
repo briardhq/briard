@@ -18,6 +18,16 @@
 # which is what makes a released artifact re-derivable from its tag. The default below is the dev
 # sentinel. A dirty tree cannot produce a release id at all (flake.nix emits `v3.dirty`, which the
 # publish script refuses), because a build nobody can reproduce must not be publishable.
+#
+# CGO_ENABLED=0 -- the binary MUST be static. A default (cgo) nixpkgs Go build links against
+# glibc with a /nix/store PT_INTERP, so it cannot exec on a host that has no /nix: the kernel
+# fails to find the interpreter and reports the file itself as "not found". The agent is the
+# FIRST thing a stranger runs (install.sh downloads it as the bootstrap that fetches and
+# verifies everything else), so a store-linked agent breaks the free-local install on every
+# non-Nix machine -- invisible to the nixosTests, which run on hosts that do have that path.
+# This is the same relocatability requirement qemu-bundle.nix solves by patchelf; the agent is
+# pure Go, so it can simply not need a loader. Nothing here uses cgo (net's pure-Go resolver
+# and os/user's pure-Go path are both fine -- the agent shells out to iproute2/systemd).
 { buildGoModule, tags ? [ ], version ? "0.0.0-dev" }:
 buildGoModule {
   pname = "briard-agent" + (if tags == [ ] then "" else "-" + builtins.concatStringsSep "-" tags);
@@ -26,6 +36,7 @@ buildGoModule {
   vendorHash = "sha256-5qbgoM8+XGR9gxMHkq+WqNO9EqTTk+1s9bZ6poMBYQc=";
   subPackages = [ "agent/cmd/briard-agent" ];
   inherit tags;
+  env.CGO_ENABLED = 0;
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
   # self-update. Overridable by a real release version at build time.
   ldflags = [ "-X" "briard.io/agent/host.buildVersion=${version}" ];
