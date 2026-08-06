@@ -24,7 +24,7 @@ person means tracking that person. Once it is installed, it never calls home.
 ## Install
 
 ```sh
-curl -fsSL https://get.briard.io/install.sh | sh
+curl -fsSL https://get.briard.io/install.sh | sudo sh
 ```
 
 Artifacts are signed, and the installer verifies signature, hash, and size before using
@@ -47,9 +47,24 @@ What you get is the **node**: ready, replicating, and able to fail over, answeri
 `http://192.168.1.100/`. It installs **no service** — a machine is set up first, and then you
 choose what runs on it.
 
-> **Alpha gap:** putting a service on a node is not a one-command step yet. The mechanism —
-> pinned image, its data on the replicated volume, a health-gated start that rolls itself back
-> — is built and tested; the CLI that drives it is the next thing landing.
+## Install a service
+
+```sh
+sudo briard service install home-assistant
+```
+
+The name is an entry in the **catalog** — signed static files at
+`https://get.briard.io/catalog`, verified against the same release key as the install itself.
+A catalog entry pins the image by digest, so what you get does not depend on trusting the
+registry, and that manifest is written to the replicated volume: the node keeps running,
+failing over and rolling back with the catalog unreachable. The install pulls the image, puts
+its data on the replicated volume, and starts it behind a health gate that reverts the node if
+it does not come up.
+
+> **Alpha gap:** the front door at `http://<vip>/` does not route to a service you install this
+> way yet — it keeps serving Briard's own page, and the service answers on its own port
+> (Home Assistant: `http://<vip>:8123/`). Per-domain routing to installed services is the next
+> thing landing. The catalog is also one entry long today.
 
 ## How it works
 
@@ -72,9 +87,10 @@ nix flake check                   # flake integrity; boots no VMs
 
 ## Install from source
 
-Until the hosted channel is live, this is the manual equivalent of the one-liner above: you
-build the artifacts the installer would otherwise download, then point the installer at them.
-It needs Nix (as above) and a Linux host with KVM.
+The one-liner above is the ordinary path. This is the same install without the download: you
+build the artifacts the installer would otherwise fetch, then point the installer at them — for
+auditing what you run, or installing from a checkout you have modified. It needs Nix (as above)
+and a Linux host with KVM.
 
 ```sh
 # build the artifacts from this checkout
