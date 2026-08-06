@@ -28,7 +28,7 @@
 # This is the same relocatability requirement qemu-bundle.nix solves by patchelf; the agent is
 # pure Go, so it can simply not need a loader. Nothing here uses cgo (net's pure-Go resolver
 # and os/user's pure-Go path are both fine -- the agent shells out to iproute2/systemd).
-{ buildGoModule, tags ? [ ], version ? "0.0.0-dev" }:
+{ buildGoModule, patchelf, tags ? [ ], version ? "0.0.0-dev" }:
 buildGoModule {
   pname = "briard-agent" + (if tags == [ ] then "" else "-" + builtins.concatStringsSep "-" tags);
   inherit version;
@@ -40,5 +40,20 @@ buildGoModule {
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
   # self-update. Overridable by a real release version at build time.
   ldflags = [ "-X" "briard.io/agent/host.buildVersion=${version}" ];
+
+  # ...and PROVE it, at build time. Setting CGO_ENABLED is an intention; an ELF interpreter is a
+  # fact, and it is the fact a stranger's kernel reads. A future dependency that quietly re-enables
+  # cgo would otherwise ship an agent that cannot start on any machine without this exact store
+  # path -- the failure we already shipped once, and one no NixOS test can see. This fails the
+  # build instead: it is checked on the built binary, so it cannot go vacuous.
+  nativeBuildInputs = [ patchelf ];
+  postFixup = ''
+    if interp=$(patchelf --print-interpreter "$out/bin/briard-agent" 2>/dev/null) && [ -n "$interp" ]; then
+      echo "briard-agent has an ELF interpreter ($interp) -- it must be STATIC, or it cannot exec" >&2
+      echo "on a host without /nix. Something re-enabled cgo; see the CGO_ENABLED note above." >&2
+      exit 1
+    fi
+  '';
+
   meta.description = "Briard host/guest agent";
 }
