@@ -235,7 +235,20 @@ let
     config = sys.config;
     format = "qcow2";
     partitionTableType = "legacy";
-    diskSize = "auto";
+    # NOT "auto". Auto sizes the disk to the closure plus a small margin, which left ~1.9 GB
+    # free -- less than ONE Home Assistant. A service's image is pulled at RUNTIME into
+    # /var/lib/containers on this root (images are cattle, warmed on every node; only service
+    # DATA lives on the replicated volume), so `briard service install home-assistant` filled
+    # the disk and died with ENOSPC 2 GB into the pull. The tests never saw it because they BAKE
+    # the payload image into the image at build time, where "auto" grows to fit it -- so the
+    # tested disk has room for exactly the image the test bakes and the shipped one has room for
+    # nothing.
+    #
+    # 24 GiB is the headroom, not the footprint: qcow2 is sparse, so the published artifact and
+    # the download are unchanged (~2.6 GB), and the host allocates only what the guest writes.
+    # It buys room for a couple of real service images plus the second copy an image upgrade
+    # holds, and the second system generation an OS upgrade stages.
+    diskSize = 24576;
     label = "nixos";
   };
 in
