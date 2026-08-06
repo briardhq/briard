@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Gather reads the real host into HostFacts (Linux /proc + /sys + /dev). Thin + best-effort: a
@@ -23,7 +24,37 @@ func Gather() HostFacts {
 		WiredEthernet: hasWiredEthernet(),
 		AnyEthernet:   hasAnyEthernet(),
 		PrimaryNICBus: primaryNICBus(),
+		DiskFreeMB:    diskFreeMB(installRoot()),
 	}
+}
+
+// installRoot is the filesystem the install will land on. /opt and /var/lib can be separate
+// mounts, so measure the deepest existing ancestor of the prefix rather than assuming "/": on a
+// reinstall /opt/briard already exists and is the honest thing to measure, and on a fresh host the
+// walk ends at / anyway. BRIARD_PREFIX is honoured so the card measures where install.sh writes.
+func installRoot() string {
+	p := os.Getenv("BRIARD_PREFIX")
+	if p == "" {
+		p = "/opt/briard"
+	}
+	for p != "/" && p != "." {
+		if exists(p) {
+			return p
+		}
+		p = filepath.Dir(p)
+	}
+	return "/"
+}
+
+// diskFreeMB returns free space on the filesystem holding path, in MB (0 if unreadable --
+// best-effort, like every other reader here). Bfree, not Bavail: the installer runs as root, so
+// the root-reserved blocks really are available to it and Bavail would under-report by ~5%.
+func diskFreeMB(path string) int {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0
+	}
+	return int(uint64(st.Bfree) * uint64(st.Bsize) >> 20)
 }
 
 // primaryNICBus returns the bus of the default-route NIC ("usb", "pci", or "" if it can't be

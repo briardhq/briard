@@ -244,11 +244,21 @@ let
     # tested disk has room for exactly the image the test bakes and the shipped one has room for
     # nothing.
     #
-    # 24 GiB is the headroom, not the footprint: qcow2 is sparse, so the published artifact and
-    # the download are unchanged (~2.6 GB), and the host allocates only what the guest writes.
-    # It buys room for a couple of real service images plus the second copy an image upgrade
-    # holds, and the second system generation an OS upgrade stages.
-    diskSize = 24576;
+    # THE SIZE POLICY (measured 2026-08-06 on a real install, not guessed). A node running Home
+    # Assistant uses 5.1 GB of this disk: 2.4 GB OS closure + 2.7 GB for the service image in
+    # podman storage + ~25 MB logs. The number that matters is not that, though — it is what an
+    # UPGRADE needs on top, because self-undoing updates are the product:
+    #   +2.7 GB   a service image upgrade holds the new image beside the old one
+    #   +0.5-1.5  an OS upgrade stages a second system generation (incremental; the store shares)
+    # So 8 GiB (5.1 used, 2.9 free) installs fine and then cannot upgrade the thing it installed —
+    # the failure would land exactly where a rollback is supposed to save you. 16 GiB leaves ~11 GB
+    # free: both upgrades at once, with room for a second service.
+    #
+    # It is HEADROOM, NOT FOOTPRINT: qcow2 is sparse, so the published artifact and the download
+    # are unchanged (2.56 GB actual) and the host allocates only what the guest writes. The host
+    # side of this policy is the report card's free-space gate (a thin disk still has to be backed
+    # by something) and the thick-allocated data volume in install.sh.
+    diskSize = 16384;
     label = "nixos";
   };
 in

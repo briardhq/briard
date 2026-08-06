@@ -10,6 +10,7 @@ func capable() HostFacts {
 	return HostFacts{
 		DevKVM: true, VirtFlags: true, DevNetTun: true, TunModule: true,
 		HasIP: true, MemTotalMB: 16 * 1024, WiredEthernet: true, AnyEthernet: true,
+		DiskFreeMB: 64 * 1024,
 	}
 }
 
@@ -53,6 +54,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		{"no iproute2", func(f *HostFacts) { f.HasIP = false }, "iproute2", "iproute2"},
 		{"below RAM floor", func(f *HostFacts) { f.MemTotalMB = 2048 }, "memory", "4 GB"},
 		{"no network at all", func(f *HostFacts) { f.WiredEthernet = false; f.AnyEthernet = false }, "network", "network"},
+		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +86,33 @@ func TestAssessWarnsStillAdmit(t *testing.T) {
 		}
 		if !r.Admit() {
 			t.Error("a wifi-only host warns but is still admitted (yellow tier)")
+		}
+	})
+	t.Run("below recommended disk", func(t *testing.T) {
+		f := capable()
+		f.DiskFreeMB = 12 * 1024 // >= floor, < recommended
+		r := Assess(f)
+		if c := find(t, r, "disk"); c.Status != Warn || c.Fix == "" {
+			t.Fatalf("12 GB free = %+v, want warn+fix", c)
+		}
+		if !r.Admit() {
+			t.Error("12 GB free (>= floor) warns but is still admitted")
+		}
+	})
+	// An unreadable statfs must not invent a verdict in either direction: no disk check at all,
+	// and the host still admitted on its other merits. Refusing over a fact we could not read
+	// would be the worst of both.
+	t.Run("disk unreadable emits no check", func(t *testing.T) {
+		f := capable()
+		f.DiskFreeMB = 0
+		r := Assess(f)
+		for _, c := range r.Checks {
+			if c.Name == "disk" {
+				t.Fatalf("unknown free space produced a %s verdict: %+v", c.Status, c)
+			}
+		}
+		if !r.Admit() {
+			t.Error("a host with unreadable free space is still admitted")
 		}
 	})
 	t.Run("below recommended RAM", func(t *testing.T) {

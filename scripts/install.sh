@@ -40,7 +40,11 @@ DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's DRBD NIC (eth1); idle 
 # either way.
 NET_MODE="${BRIARD_NET_MODE:-macvtap}"
 VIP="${BRIARD_VIP:-192.168.1.100}"
-DATA_SIZE="${BRIARD_DATA_SIZE:-1G}"
+# The pet data volume: THICK-allocated (see step 5) and sized for a real service's data, not for a
+# test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
+# recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
+# one-liner. Written in whole GiB -- the dd fallback parses it that way.
+DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
 NET_GUARD_SECS="${BRIARD_NET_GUARD_SECS:-45}"
 UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
 NET_PEER="${BRIARD_NET_PEER:-}"       # a LAN host to ping to confirm we kept our footing
@@ -307,7 +311,20 @@ fi
 DATA="$STATE/data.img"
 if [ ! -f "$DATA" ]; then
 	say "creating the pet data volume ($DATA_SIZE) at $DATA"
-	truncate -s "$DATA_SIZE" "$DATA"
+	# THICK, not sparse. This is the one volume whose failure mode is unacceptable: DRBD replicates
+	# it and the guest writes service data into it, so a `truncate` sparse file that the host cannot
+	# actually back turns into ENOSPC *underneath a replicated filesystem*, mid-write, on the node
+	# holding the primary role. Allocating it up front makes "is there room for this node's data?"
+	# a question answered once, at install time, by a command that either succeeds or refuses --
+	# rather than months later, by a write that fails. fallocate is the fast path (extent
+	# reservation, no I/O); dd is the portable fallback for filesystems without it.
+	if ! fallocate -l "$DATA_SIZE" "$DATA" 2>/dev/null; then
+		say "fallocate unavailable; preallocating with dd (slower)"
+		if ! dd if=/dev/zero of="$DATA" bs=1M count="$(($(echo "$DATA_SIZE" | tr -d 'Gg') * 1024))" status=none; then
+			rm -f "$DATA"
+			die "could not allocate the ${DATA_SIZE} data volume at $DATA (out of disk?)"
+		fi
+	fi
 fi
 OVERLAY="$PREFIX/guest.qcow2"   # cattle: recreated each install, dropped by `rm -rf /opt/briard`
 say "creating the guest overlay at $OVERLAY"

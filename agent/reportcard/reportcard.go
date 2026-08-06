@@ -46,12 +46,27 @@ type HostFacts struct {
 	// only by the macvtap advisories: a USB NIC (e.g. RTL8153) usually can't program
 	// the guest MACs into a hardware unicast filter, so macvtap runs it promiscuous.
 	PrimaryNICBus string
+	// DiskFreeMB is free space on the filesystem the install lands on. 0 means "could not read",
+	// which the disk check treats as unknown (and stays quiet) rather than as an empty disk.
+	DiskFreeMB int
 }
 
 // 4 GB is the dedicated-node floor; 8 GB recommended.
 const (
 	memFloorMB       = 4 * 1024
 	memRecommendedMB = 8 * 1024
+)
+
+// Disk. The floor is what an install physically needs on day one: the guest image (2.6 GB) + the
+// qemu bundle + the THICK-allocated 4 GB data volume + the guest's own first writes -- call it
+// 8 GB, below which the install cannot complete and should refuse rather than half-land. The
+// recommendation is what the node needs to keep working: the guest root is a 16 GiB THIN disk that
+// fills up as services and their upgrades land (a service image is ~2.7 GB, and an upgrade holds
+// two), so a host with less than 25 GB free will eventually meet ENOSPC underneath a running
+// guest. Warn, never refuse: plenty of nodes will never install a second service.
+const (
+	diskFloorMB       = 8 * 1024
+	diskRecommendedMB = 25 * 1024
 )
 
 // Report is the full verdict. Admit is false if any check Refused.
@@ -113,6 +128,23 @@ func Assess(f HostFacts) Report {
 	default:
 		cs = append(cs, Check{"memory", Refuse, fmt.Sprintf("%d MB RAM (below the %d MB floor)", f.MemTotalMB, memFloorMB),
 			"add RAM to at least 4 GB (often a cheap SO-DIMM); below this a node can't run the guest reliably"})
+	}
+
+	// Disk -- the install writes a 2.6 GB guest image and thick-allocates the data volume, so an
+	// out-of-space host must be refused BEFORE any of that lands, not discovered halfway through.
+	// A 0 reading means the statfs failed; say nothing rather than refuse a host over a fact we
+	// could not read.
+	switch {
+	case f.DiskFreeMB == 0:
+		// unknown -- no check
+	case f.DiskFreeMB >= diskRecommendedMB:
+		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%d GB free", f.DiskFreeMB/1024), ""})
+	case f.DiskFreeMB >= diskFloorMB:
+		cs = append(cs, Check{"disk", Warn, fmt.Sprintf("%d GB free (below the %d GB recommended)", f.DiskFreeMB/1024, diskRecommendedMB/1024),
+			"enough to install; the guest disk grows as services and their updates land, so free some space before adding much"})
+	default:
+		cs = append(cs, Check{"disk", Refuse, fmt.Sprintf("%d GB free (below the %d GB floor)", f.DiskFreeMB/1024, diskFloorMB/1024),
+			fmt.Sprintf("free at least %d GB: the install writes a 2.6 GB guest image and reserves a 4 GB data volume up front", diskFloorMB/1024)})
 	}
 
 	// Ethernet -- green requires WIRED (the bridge + service IP live on L2). WiFi-only is the
