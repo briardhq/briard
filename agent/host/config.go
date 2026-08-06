@@ -144,8 +144,13 @@ func ConfigFromEnv() Config {
 		// identical slot), so guest.unitOf(Name) must resolve to that unit or an upgrade drives
 		// a non-existent podman-<Name>.service. Image is the currently-serving ref
 		// (UpgradePayload's rollback target); DataDir is the service subvolume on the volume.
-		Service:           disklessOrSpec(role, serviceSpec()),
-		CatalogURL:        env("CATALOG_URL", "https://briard.io/catalog"),
+		Service: disklessOrSpec(role, serviceSpec()),
+		// The catalog is published signed static content (OSS §10.1: an apt-mirror, not an API),
+		// which is exactly what the release channel already is -- so it lives in the same bucket,
+		// under the same trust root (the release keyring verifies manifests and artifacts alike),
+		// with one publish credential and one thing for a third party to mirror. briard.io itself
+		// is the marketing site; a service catalog is not a web page.
+		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
 		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/service.json"),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		SnapshotRetention: atoi(os.Getenv("SNAPSHOT_RETENTION"), 0),
