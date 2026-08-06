@@ -84,9 +84,18 @@ else
 		esac
 	fi
 	say "bootstrapping the installer agent from $CHANNEL ..."
-	boot="$RUNDIR/bootstrap-agent"
+	# The bootstrap lands under $PREFIX, NOT $RUNDIR: Debian (and Ubuntu) mount /run `noexec`, so a
+	# bootstrap staged there cannot be executed at all -- the install died on `Permission denied`
+	# before it fetched a single artifact. $PREFIX is where the agent lives anyway, so if it is
+	# noexec the install has no home on this host regardless; /run has no claim to being executable.
+	boot="$PREFIX/bootstrap-agent"
 	fetch_url "$CHANNEL/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL"
 	chmod +x "$boot"
+	# Fail with the REASON. A bootstrap that cannot exec (noexec mount, wrong arch, a dynamically
+	# linked binary whose interpreter this host lacks) is not a verification failure, and reporting
+	# it as one sends the reader hunting for a bad signature.
+	"$boot" help >/dev/null 2>&1 ||
+		die "the bootstrap agent at $boot will not run on this host (see the error above); nothing installed"
 	src="$PREFIX/staging"
 	rm -rf "$src"
 	say "fetching + verifying the signed artifact set ..."
