@@ -151,7 +151,13 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	switch o.State {
 	case api.OutcomeDone:
-		fmt.Fprintf(stdout, "%s installed and serving\n", name)
+		// Say what actually happened, not what the product will eventually do. The gate probes the
+		// SERVICE's own endpoint in-guest (awaitHealthy); the front door does not route to a
+		// runtime-installed service yet -- its backend is baked at guest-build time and per-domain
+		// routing is deferred with the routing work. "serving" reads as "reachable at the VIP",
+		// which walks the user to http://<vip>/ and shows them the "no service installed" page.
+		fmt.Fprintf(stdout, "%s installed and healthy\n", name)
+		fmt.Fprintf(stdout, "it answers on its own port; the front door at / does not route to it yet\n")
 		return 0
 	case api.OutcomeRolledBack:
 		// The distinction an operator most needs: the node is back as it was, so this is a failed
