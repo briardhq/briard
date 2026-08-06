@@ -342,6 +342,15 @@ if [ "$NET_MODE" = macvtap ]; then
 	NET_ENV="Environment=NET_MODE=macvtap
 Environment=NET_WRAP_BIN=$NET_WRAP"
 fi
+# The release keyring is the agent's trust root for BOTH signed host-agent self-updates and the
+# signed service catalog (`briard service install` verifies a manifest against it). Both fail
+# CLOSED without it -- self-update simply switches itself off, silently -- so a node installed
+# without this env is one that can never update itself and can never install a service, with the
+# key sitting right there on disk unread. Only wired when a keyring actually exists: the
+# BRIARD_ARTIFACTS path (hermetic tests, install-from-source) has no channel and no key, and
+# pointing the agent at a missing file would be worse than leaving it unset.
+KEY_ENV=""
+[ -f "$KEYRING" ] && KEY_ENV="Environment=UPDATE_KEYRING=$KEYRING"
 cat > "$UNIT_DIR/briard-agent.service" <<EOF
 [Unit]
 Description=briard host agent (single node)
@@ -366,6 +375,7 @@ Environment=SYSTEM_TAP=$DRBD_TAP
 Environment=SERVICE_TAP=$TAP
 Environment=VIP_DEV=eth2
 $NET_ENV
+$KEY_ENV
 Environment=HEALTH_URL=http://$VIP/healthz
 Environment=STATUS_EVERY=5s
 Environment=ASSIGNMENT_CACHE=$STATE/assignment.json
