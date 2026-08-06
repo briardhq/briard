@@ -6,13 +6,24 @@ import (
 	"testing"
 )
 
-func TestParseVmRSSKB(t *testing.T) {
-	status := "Name:\tqemu\nVmPeak:\t 900000 kB\nVmRSS:\t  123456 kB\nThreads:\t4\n"
-	if got := parseVmRSSKB([]byte(status)); got != 123456 {
-		t.Errorf("parseVmRSSKB = %d, want 123456", got)
+// The payload's memory comes from the unit's CGROUP, and specifically from anon -- not
+// memory.current, which counts page cache that a database-writing service grows indefinitely, and
+// not the main process, which for a container is podman's supervisor.
+func TestParseCgroupAnonKB(t *testing.T) {
+	v2 := "anon 268435456\nfile 1073741824\nkernel 12345\nslab 678\n"
+	if got := parseCgroupAnonKB([]byte(v2)); got != 262144 {
+		t.Errorf("parseCgroupAnonKB = %d, want 262144 (256 MB of anon)", got)
 	}
-	if got := parseVmRSSKB([]byte("no rss here")); got != 0 {
-		t.Errorf("parseVmRSSKB(absent) = %d, want 0", got)
+	// A cgroup v1 memory.stat has no "anon" field (it says "rss"), and a v1 guest must read 0
+	// rather than quietly reporting a different quantity under the same series name.
+	v1 := "cache 1073741824\nrss 268435456\nrss_huge 0\nmapped_file 4096\n"
+	if got := parseCgroupAnonKB([]byte(v1)); got != 0 {
+		t.Errorf("v1 memory.stat = %d, want 0 (no anon field)", got)
+	}
+	for _, junk := range []string{"", "anon\n", "anon notanumber\n", "anon -5\n"} {
+		if got := parseCgroupAnonKB([]byte(junk)); got != 0 {
+			t.Errorf("parseCgroupAnonKB(%q) = %d, want 0", junk, got)
+		}
 	}
 }
 
@@ -60,8 +71,11 @@ func TestResourcesVerbGathers(t *testing.T) {
 		switch {
 		case strings.HasPrefix(cmd, "systemctl show -p MainPID"):
 			return []byte("4242\n"), nil
-		case cmd == "cat /proc/4242/status":
-			return []byte("VmRSS:\t  88000 kB\n"), nil
+		case strings.HasPrefix(cmd, "systemctl show -p ControlGroup"):
+			return []byte("/system.slice/briard-ha-app.service\n"), nil
+		case cmd == "cat /sys/fs/cgroup/system.slice/briard-ha-app.service/memory.stat":
+			// anon is what the payload actually holds; file is page cache and must NOT count.
+			return []byte("anon 90112000\nfile 4294967296\n"), nil
 		case cmd == "ls /proc/4242/fd":
 			return []byte("0\n1\n2\n3\n4\n"), nil
 		case cmd == "cat /proc/loadavg":
@@ -89,8 +103,8 @@ func TestResourcesVerbGathers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
-	if r.PayloadRSSKB != 88000 {
-		t.Errorf("PayloadRSSKB = %d, want 88000", r.PayloadRSSKB)
+	if r.PayloadRSSKB != 88000 { // 90112000 bytes of anon; the 4 GB of page cache is excluded
+		t.Errorf("PayloadRSSKB = %d, want 88000 (cgroup anon, not memory.current)", r.PayloadRSSKB)
 	}
 	if r.PayloadFDs != 5 {
 		t.Errorf("PayloadFDs = %d, want 5", r.PayloadFDs)

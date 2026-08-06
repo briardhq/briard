@@ -1210,12 +1210,19 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 func gatherResources(ctx context.Context, x Executor, req resourcesRequest) telemetry.NodeResources {
 	var r telemetry.NodeResources
 	if req.Unit != "" {
+		// The payload's memory is the UNIT'S CGROUP, not its main process. A service runs as a
+		// container, so the unit's MainPID is podman's supervisor and the workload lives in a child
+		// cgroup: /proc/<MainPID>/status reported ~2.5 MB for a Home Assistant, a number that is
+		// stable, believable-looking and about a hundredfold wrong. cgroup v2 accounts
+		// hierarchically, so reading the unit's cgroup catches the container's processes too.
+		r.PayloadRSSKB = cgroupAnonKB(ctx, x, req.Unit)
 		// MainPID=0 means the unit isn't running; skip rather than read /proc/0.
 		if out, err := x.Run(ctx, "systemctl", "show", "-p", "MainPID", "--value", req.Unit); err == nil {
 			if pid := strings.TrimSpace(string(out)); pid != "" && pid != "0" {
-				if st, err := x.Run(ctx, "cat", "/proc/"+pid+"/status"); err == nil {
-					r.PayloadRSSKB = parseVmRSSKB(st)
-				}
+				// NOTE: this is the SUPERVISING process's fd count, not the workload's -- there is
+				// no cgroup fd counter to read, and walking every pid in the cgroup each cycle is
+				// a lot of exec for a signal that mostly catches conmon/podman leaks. An fd leak
+				// INSIDE the container is not visible here.
 				if fds, err := x.Run(ctx, "ls", "/proc/"+pid+"/fd"); err == nil {
 					r.PayloadFDs = countLines(fds)
 				}
@@ -1350,15 +1357,48 @@ func probeHTTPOK(ctx context.Context, rawURL string) bool {
 	return strings.HasPrefix(line, "HTTP/") && strings.Contains(line, " 200 ")
 }
 
-// parseVmRSSKB pulls the "VmRSS:\t   N kB" line out of /proc/<pid>/status. 0 if absent.
-func parseVmRSSKB(status []byte) int64 {
-	for _, line := range strings.Split(string(status), "\n") {
-		if rest, ok := strings.CutPrefix(line, "VmRSS:"); ok {
-			if f := strings.Fields(rest); len(f) > 0 {
-				n, _ := strconv.ParseInt(f[0], 10, 64)
-				return n
-			}
+// cgroupAnonKB is the payload's resident memory: the ANON bytes of the unit's cgroup, in KB.
+//
+// Two deliberate choices. The CGROUP rather than the main process, because a containerised
+// service's workload is not the unit's MainPID (that is podman's supervisor) -- cgroup v2 accounts
+// hierarchically, so the unit's own file sums its container children. And ANON rather than
+// memory.current, because memory.current includes the PAGE CACHE: a service writing a database
+// would show steadily climbing "memory" that is really just cache the kernel will drop under
+// pressure, and payload_rss_kb carries a SLOPE check in the trend oracle -- cache growth would
+// read as a leak and fail a soak run for a healthy node.
+//
+// 0 on anything unreadable (no cgroup, cgroup v1, accounting off), which the host already treats
+// as "unread this cycle" -- never a fallback to a different quantity, because a series that
+// silently changes meaning is worse than a gap in it.
+func cgroupAnonKB(ctx context.Context, x Executor, unit string) int64 {
+	out, err := x.Run(ctx, "systemctl", "show", "-p", "ControlGroup", "--value", unit)
+	if err != nil {
+		return 0
+	}
+	cg := strings.TrimSpace(string(out))
+	if cg == "" || cg == "/" { // not running, or no cgroup of its own
+		return 0
+	}
+	st, err := x.Run(ctx, "cat", "/sys/fs/cgroup"+cg+"/memory.stat")
+	if err != nil {
+		return 0
+	}
+	return parseCgroupAnonKB(st)
+}
+
+// parseCgroupAnonKB pulls "anon <bytes>" out of a cgroup v2 memory.stat and returns KB. 0 if the
+// field is absent or unparseable -- including a v1 memory.stat, whose fields differ.
+func parseCgroupAnonKB(stat []byte) int64 {
+	for _, line := range strings.Split(string(stat), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 || f[0] != "anon" {
+			continue
 		}
+		n, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil || n < 0 {
+			return 0
+		}
+		return n / 1024
 	}
 	return 0
 }
