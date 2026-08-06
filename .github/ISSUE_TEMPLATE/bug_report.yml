@@ -1,0 +1,92 @@
+name: Bug report
+description: Something behaves differently from what the documentation says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are for **bugs** — a difference between what the docs say and what
+        happened. For setup help, hardware questions, or "is this supposed to work
+        like X?", please use
+        [Discussions](https://github.com/briardhq/briard/discussions) instead.
+
+        **Please don't report security bugs here** — email security@briard.io
+        instead, so it can be fixed before it is public.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >-
+        Steps, starting from a state someone else could get to. If you cannot
+        reproduce it reliably, say so and describe what you were doing — an
+        intermittent report is still useful, it is just triaged differently.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        `journalctl -u briard-agent | grep "briard-agent starting"` names the
+        running build. If you built from source it will say "development build" —
+        the commit you built from is what we need in that case.
+    validations:
+      required: true
+
+  - type: textarea
+    id: report-card
+    attributes:
+      label: Machine report card
+      description: >-
+        If the install got far enough to produce one, paste it. This answers most
+        of the environment questions in one go.
+      render: text
+
+  - type: dropdown
+    id: install-path
+    attributes:
+      label: How did you install
+      options:
+        - The one-line installer (curl | sh)
+        - Downloaded and verified the release artifact, then installed offline
+        - Built from source
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: host-os
+    attributes:
+      label: Host OS and version
+      placeholder: e.g. Debian 13, Ubuntu 24.04, NixOS 26.05
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        `journalctl -u briard-agent` is usually the right place to start. Please
+        check for anything you would rather not publish before pasting — your
+        install sends us nothing, so we only ever see what you choose to put here.
+      render: shell
+
+  - type: checkboxes
+    id: nodes
+    attributes:
+      label: Shape of the install
+      options:
+        - label: More than one node
+        - label: Home Assistant is the payload
+        - label: The problem involves a failover, an upgrade, or a rollback

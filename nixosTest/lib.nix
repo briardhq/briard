@@ -1,0 +1,95 @@
+# Shared scaffolding for the DRBD failover nixosTests. Each test supplies
+# its topology (a node list) and its own testScript; this builds the resource
+# config and the per-node NixOS module they all share.
+#
+# A node is { name; id; diskless ? false; }. Addresses follow the id: node-id N
+# lives at 10.0.0.<N+1>, which matches the framework's 10.0.0.<nodeNumber> on eth1
+# (the private DRBD subnet; the VIP stays on 192.168.1.100).
+{ pkgs, guestModule }:
+
+let
+  inherit (pkgs.lib) concatMapStringsSep mkForce mkIf optionalAttrs;
+  inherit (pkgs) lib;
+
+  # The promoter's ordered unit, identical everywhere it's used. The payload is a member only
+  # where one is installed: with an empty slot the unit does not exist, and naming a
+  # non-existent unit fails the whole chain — taking the VIP down with it. The front door is
+  # not listed here at all; it rides briard-vip (wantedBy + partOf), so it tracks the primary
+  # either way. This mirrors what the host agent writes in production (host.promoterUnits).
+  promoterSnippet =
+    payload:
+    let
+      units = [ "briard-data.service" ]
+        ++ lib.optional payload "podman-briard-payload.service"
+        ++ [ "briard-vip.service" ];
+    in
+    ''
+      [[promoter]]
+      [promoter.resources.r0]
+      start = [ ${concatMapStringsSep ", " (u: ''"${u}"'') units} ]
+    '';
+
+  # R0 over the node list. Per-node volume form so a witness can be `disk none`;
+  # the production safety config. new-current-uuid then needs the
+  # volume id (r0/0) — the one testScript quirk of this form.
+  mkResource =
+    nodes:
+    let
+      onBlock = n: ''
+        on ${n.name} {
+          node-id ${toString n.id};
+          address 10.0.0.${toString (n.id + 1)}:7789;
+          volume 0 {
+            device /dev/drbd0;
+            ${if n.diskless or false then "disk none;" else "disk /dev/vdb; meta-disk internal;"}
+          }
+        }'';
+    in
+    ''
+      resource r0 {
+        net { protocol C; }
+        options {
+          auto-promote                  no;
+          quorum                        majority;
+          on-no-quorum                  io-error;
+          on-suspended-primary-outdated force-secondary;
+        }
+        ${concatMapStringsSep "\n  " onBlock nodes}
+        connection-mesh { hosts ${concatMapStringsSep " " (n: n.name) nodes}; }
+      }
+    '';
+
+  # A test node: the unit image + a backing disk (unless diskless) + its private
+  # DRBD address + the resource. `promoter` adds the promoter snippet; drbd-reactor
+  # never auto-starts (the tests provision DRBD, then start it by hand).
+  mkNode =
+    {
+      resource,
+      diskless ? false,
+      promoter ? true,
+      payload ? true,
+    }:
+    { config, ... }:
+    {
+      imports = [ guestModule ];
+      virtualisation.emptyDiskImages = mkIf (!diskless) [ 256 ];
+      networking.interfaces.eth1.ipv4.addresses = [
+        {
+          address = "10.0.0.${toString config.virtualisation.test.nodeNumber}";
+          prefixLength = 24;
+        }
+      ];
+      environment.systemPackages = [ pkgs.curl ]; # test-only, probing the VIP
+      systemd.services.drbd-reactor.wantedBy = mkForce [ ];
+      environment.etc = {
+        "drbd.conf".text = ''include "/etc/drbd.d/*.res";'';
+        "drbd.d/r0.res".text = resource;
+      }
+      // optionalAttrs promoter {
+        "drbd-reactor.d/briard.toml".text = promoterSnippet payload;
+      };
+    };
+in
+{
+  inherit mkResource mkNode;
+}

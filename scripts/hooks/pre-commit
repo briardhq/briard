@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# gofmt the staged Go files before they land. CI's fast job runs
+#   test -z "$(gofmt -l .)" && go vet ./... && go test ./...
+# and short-circuits at the gofmt gate, so an unformatted file never
+# reaches vet/test -- it just fails the whole job. Catch it here.
+#
+# Scope: only staged .go files, so the hook is instant and never trips
+# on unrelated in-flight formatting elsewhere in the tree.
+#
+# Installed into .git/hooks/pre-commit by the flake devShell (nix develop).
+set -euo pipefail
+
+# Added/Copied/Modified staged Go files, excluding deletions.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -z \
+  | tr '\0' '\n' | grep '\.go$' || true)
+
+[ ${#staged[@]} -eq 0 ] && exit 0
+
+unformatted=$(gofmt -l "${staged[@]}")
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: these staged files are not gofmt-clean:" >&2
+  echo "$unformatted" | sed 's/^/  /' >&2
+  echo "fix with:  gofmt -w${unformatted:+ }$(echo "$unformatted" | tr '\n' ' ')" >&2
+  echo "  (then re-stage)" >&2
+  exit 1
+fi

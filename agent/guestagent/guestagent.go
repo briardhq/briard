@@ -1,0 +1,1929 @@
+package guestagent
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"briard.io/agent/drbd"
+	"briard.io/agent/guestagent/deadman"
+	"briard.io/shared/api"
+	"briard.io/shared/backup"
+	"briard.io/shared/model"
+	"briard.io/shared/telemetry"
+)
+
+// ControlPort is the virtio-serial port name for the host<->guest channel;
+// the guest device is ControlPortDev. The host launches QEMU with a virtserialport
+// of this name; the guest agent opens ControlPortDev.
+const (
+	ControlPort    = "briard.control"
+	ControlPortDev = "/dev/virtio-ports/" + ControlPort
+)
+
+// DefaultPollInterval is how often BringUpGuest polls for convergence.
+const DefaultPollInterval = 500 * time.Millisecond
+
+// Control verbs on the channel. The host owns bring-up: it renders
+// the DRBD config and drives create-md / target / reactor through these; the
+// guest just executes. None of them promote/demote -- drbd-reactor does that.
+const (
+	verbProvision = "drbd.provision"     // write configs + create-md
+	verbUp        = "drbd.up"            // start drbd@<res>.target (attach+connect)
+	verbInitUUID  = "drbd.init-uptodate" // new-current-uuid: declare a fresh resource UpToDate
+	verbReactor   = "drbd.reactor.start" // start drbd-reactor (it then promotes)
+	verbStatus    = "drbd.status"        // drbdsetup status --json -> model.Cluster (QuorumState + peers)
+	verbAdjust    = "drbd.adjust"        // rewrite the .res + `drbdadm adjust` (runtime mesh growth)
+)
+
+// Net.configure sets a static address on a guest NIC -- the system/DRBD NIC on the
+// private subnet, so DRBD can bind/connect there. Host-driven: the agent knows
+// the per-node address (it renders the same into the .res). Idempotent (addr replace),
+// since bring-up may retry.
+const verbNetConfigure = "net.configure"
+
+// Sys.hostname sets the guest's hostname to this node's name. DRBD matches the
+// running hostname against the `on <name>` stanzas in the .res, so every fleet
+// guest (one baked image, hostname "guest") must be renamed to its node name
+// before create-md, or DRBD reports "not defined for this host". The agent sets it
+// uniformly at bring-up (a no-op rename to "guest" on the single-node/legacy path).
+const verbSetHostname = "sys.hostname"
+
+// Upgrade/rollback verbs, driven by the host's guest.Manager. Data
+// snapshot/restore cut at the payload's btrfs subvolume (per-service scope, not the
+// whole volume). os.system reads the code identity (the closure store path, node-
+// independent -- NOT a generation number); os.switch is the whole-VM code half.
+const (
+	verbPayloadStart  = "payload.start"  // systemctl start <unit>
+	verbPayloadStop   = "payload.stop"   // systemctl stop <unit> (quiesce before snapshot)
+	verbPayloadActive = "payload.active" // systemctl is-active <unit> -> bool
+	verbPayloadHealth = "payload.health" // in-guest GET of the payload health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
+	verbPayloadSince  = "payload.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
+	verbDataSnapshot  = "data.snapshot"  // btrfs subvolume snapshot -r <DataDir> <dest>
+	verbDataRestore   = "data.restore"   // replace the live subvolume with a snapshot
+	verbDataGC        = "data.gc"        // prune old pre-upgrade snapshots (retention)
+	verbOSSystem      = "os.system"      // readlink -f /run/current-system -> closure store path
+	verbOSStage       = "os.stage"       // nix-store --realise: pull a closure INTO the store
+	verbOSComponents  = "os.components"  // read a closure's boot-critical parts, for the reboot decision
+	verbOSSwitch      = "os.switch"      // point the system profile at a closure + activate it
+	verbOSStageBoot   = "os.stageboot"   // make a closure BOOTABLE without making it the default
+	verbOSPowerOff    = "os.poweroff"    // ask the guest OS to shut itself down cleanly
+	verbOSGC          = "os.gc"          // drop old profile generations, then collect the store
+	verbPayloadPin    = "payload.pin"    // pin the payload OCI image the data was written by
+	verbPayloadImage  = "payload.image"  // read the served image ref (the replicated pin, or "")
+)
+
+// There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
+// whole-OS closure was never a property of the data. The data's identity is per-service — the
+// payload image and the service manifest, both here on the replicated volume — while a system
+// closure is a property of the NODE. Storing one per service volume did not survive the
+// multi-service shape (N volumes, one running OS => N assertions about one system), and the
+// compatibility case for keeping it does not hold either: a newer kernel makes btrfs features
+// available rather than enabled, and DRBD metadata version is fixed at create-md. Format
+// migrations, if one ever lands, are a manual procedure with their own gating.
+
+// Runtime service install. Two verbs, not one, because the halves live in DIFFERENT
+// DURABILITY DOMAINS and folding them together would hide that:
+//
+//   - service.render writes quadlet source to /run (node-local, tmpfs) and reloads systemd so the
+//     generated units exist. EVERY node runs this, secondaries included — a survivor can only
+//     start the pod because it was rendered there too.
+//   - service.provision creates the service subvolume + its per-container subdirectories and
+//     records the manifest, all on the REPLICATED VOLUME, which only the Primary has mounted. A
+//     secondary cannot run this at all.
+//
+// Both are dumb hands ([[logic-on-host-by-default]]): the host renders the unit text
+// (agent/quadlet), decides which node gets which verb, and owns the ordering. The guest writes
+// bytes and makes directories.
+const (
+	verbServiceRender    = "service.render"    // write quadlet units to /run + daemon-reload (every node)
+	verbServiceProvision = "service.provision" // create the service subvolume + record the manifest (Primary only)
+	verbServiceManifest  = "service.manifest"  // read the manifest recorded on the volume, or ""
+)
+
+// manifestPinPath is the installed service's identity on the replicated volume — the manifest's
+// own bytes, whose content hash IS that identity. It supersedes payloadPinPath's single
+// OCI digest for runtime-installed services: one manifest transitively pins the whole container
+// set. The VOLUME holds the manifest, never the rendered units — a survivor re-renders rather
+// than replaying units that a different podman version may have produced.
+const manifestPinPath = "/var/lib/briard/.service-manifest"
+
+// quadletDir is where podman's generator reads unit source from. Mirrors agent/quadlet.Dir; the
+// guest is told the filenames but not the directory, so this path is the guest's own.
+const quadletDir = "/run/containers/systemd"
+
+// Payload-image identity, the primary code↔data pin: the
+// payload writes the service data, so its image is the data-format identity. payload.pin
+// records the image on the replicated volume (so a failover converges to it) AND points
+// the serve tag at it (so this node runs it). Content-addressed => node-independent; the
+// image must be pre-staged (select, never pull on the hot path). These two consts PAIR with
+// the guest image's `serveImage`/`imagePinFile` (guest-image/configuration.nix) —
+// different languages, so no shared import; TestPayloadConstantsMatchGuestImage fails the build
+// if either side drifts.
+const (
+	payloadServeTag = "briard-payload:serve"
+	payloadPinPath  = "/var/lib/briard/.payload-image"
+	// TLS cert/key on the DRBD volume: replicated, so a failover serves the same
+	// cert; the terminator hot-reloads them. Pairs with the guest image's tlsDir.
+	tlsDir      = "/var/lib/briard/tls"
+	tlsCertPath = tlsDir + "/fullchain.pem"
+	tlsKeyPath  = tlsDir + "/key.pem"
+)
+
+// Maintenance-mode verbs: a planned upgrade must hold drbd-reactor's promoter
+// so it doesn't treat a deliberate payload stop as a failure (demote/re-promote). Pause
+// stops the drbd-reactor daemon (stop-services-on-exit defaults false -> DRBD Primary +
+// services stay up); Resume restarts it (re-adopts, no restart/demote). The payload is
+// then cycled surgically (payload.stop is ignore-dependencies, so the VIP/data/target
+// stay up), so no target re-raise is needed.
+const (
+	verbReactorPause  = "reactor.pause"  // systemctl stop drbd-reactor.service
+	verbReactorResume = "reactor.resume" // systemctl start drbd-reactor.service
+	verbReactorActive = "reactor.active" // systemctl is-active drbd-reactor.service -> bool (interim guard)
+	verbReactorEvict  = "reactor.evict"  // drbd-reactorctl evict: hand the work to a peer
+	verbHello         = "hello"          // protocol handshake: version + capabilities
+	verbCertWrite     = "cert.write"     // write a renewed cert/key to the DRBD volume
+	verbResources     = "sys.resources"  // read appliance resource telemetry
+	verbBackupSave    = "backup.save"    // tar+age-encrypt .storage/config to an off-site path
+	verbBackupRestore = "backup.restore" // age-decrypt+extract a backup into the data dir
+)
+
+// guestCapabilities is the verb set the guest advertises in its handshake -- the honest
+// capability list a host negotiates against (Client.Supports). Keep in sync with the
+// dispatch switch; a verb absent here is invisible to a capability-checking host even if
+// the switch handles it. (A drift guard test asserts a representative subset is present.)
+var guestCapabilities = []string{
+	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure,
+	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
+	verbDataSnapshot, verbDataRestore, verbDataGC,
+	verbServiceRender, verbServiceProvision, verbServiceManifest, verbReactorActive,
+	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
+	verbOSGC,
+	verbReactorPause, verbReactorResume, verbReactorEvict,
+	verbCertWrite,
+	verbResources,
+	verbBackupSave, verbBackupRestore,
+}
+
+const (
+	// CurrentSystem resolves to the running system's closure store path (the code identity).
+	currentSystem = "/run/current-system"
+	// BootedSystem is the generation this kernel actually booted -- NOT currentSystem, which a
+	// switch-only update moves out from under it. It is the honest reference for "would this
+	// take a reboot?": the kernel in the machine is the booted one.
+	bootedSystem = "/run/booted-system"
+	// SystemProfile is the profile os.switch repoints to roll the whole-VM generation.
+	systemProfile = "/nix/var/nix/profiles/system"
+	// StagingProfile is where a REBOOT-path upgrade parks its target. It is a
+	// second system profile, NOT the system one: install-grub.pl globs
+	// /nix/var/nix/profiles/system-profiles/* at run time and gives each a submenu of its
+	// own, so registering here makes the closure bootable WITHOUT touching the default
+	// entry. The name is load-bearing -- it becomes the grub submenu title the SMBIOS
+	// selector names (guest-image/disk-image.nix) -- and must stay \w+ or install-grub.pl
+	// skips the profile entirely (it also globs the `staging-N-link` generations, which is
+	// what that filter exists to reject).
+	stagingProfileDir = "/nix/var/nix/profiles/system-profiles"
+	stagingProfile    = stagingProfileDir + "/staging"
+	// JournalDir + containerStore are the appliance growth surfaces the resource telemetry
+	// measures: the systemd journal and the podman code/layer store. Both are the
+	// unmanaged-growth suspects the soak's disk trend names.
+	journalDir     = "/var/log/journal"
+	containerStore = "/var/lib/containers"
+	// KmsgCursorPath tracks how far the kernel-error report has read, so each poll returns only
+	// NEW warning+ lines. In /run so a guest reboot re-baselines cleanly.
+	kmsgCursorPath = "/run/briard/.kmsg-cursor"
+)
+
+// ProvisionRequest carries the host-rendered configs (drbd.Resource.Config and
+// drbd.ReactorConfig) to drop in the guest, then create-md the resource.
+// ReactorConfig is empty on a witness (no promoter there).
+type ProvisionRequest struct {
+	Resource      string `json:"resource"`
+	ResConfig     string `json:"res_config"`
+	ReactorConfig string `json:"reactor_config,omitempty"`
+	Diskless      bool   `json:"diskless,omitempty"` // witness: no metadata, so no create-md
+}
+
+// ProvisionResult reports whether Provision created fresh DRBD metadata. It is false
+// when the data disk already held a valid replica (a node returning from a reboot) -- so the
+// caller knows NOT to declare the node UpToDate (skip-initial-sync), which is only ever correct
+// on a true first init. False for a diskless witness too (it has no metadata).
+type ProvisionResult struct {
+	CreatedMetadata bool `json:"created_metadata"`
+}
+
+// resourceRequest names the resource for up/reactor/status.
+type resourceRequest struct {
+	Resource string `json:"resource"`
+}
+
+// unitRequest names a systemd unit (payload start/stop/is-active).
+type unitRequest struct {
+	Unit string `json:"unit"`
+}
+
+// healthRequest carries the payload health URL the guest GETs from inside itself
+// (payload.health). The host owns the URL (its HealthURL config); the guest just probes it.
+type healthRequest struct {
+	URL string `json:"url"`
+}
+
+// snapshotRequest is a btrfs subvolume op: DataDir is the live rw subvolume, Path is
+// the RO snapshot subvolume (the dest on snapshot, the source on restore).
+type snapshotRequest struct {
+	DataDir string `json:"data_dir"`
+	Path    string `json:"path"`
+}
+
+// systemRequest names a closure store path to switch the system to (os.switch).
+type systemRequest struct {
+	Path string `json:"path"`
+}
+
+// stageRequest names a closure to realise INTO the guest store (os.stage), and
+// optionally the one binary cache to realise it from.
+//
+// From/FromKey are empty in production: the guest substitutes from the caches baked
+// into its image (cache.nixos.org + cache.briard.io, guest-image/configuration.nix),
+// which is the whole point of the cache. When set, they OVERRIDE that list for this one
+// call — fetch only from From, and accept only narinfos signed by FromKey.
+//
+// Letting the host name the source grants it no authority it lacks: it already dictates
+// WHICH closure the guest activates (os.switch, Principle 8 — the host owns every
+// generation switch), so naming WHERE the bytes come from and WHOSE signature to accept
+// cannot widen that. What it must never do is *weaken* the check, so `require-sigs` is
+// never relaxed — an override swaps the trusted key, it does not remove the gate. The
+// nixosTest harness uses this to point a guest at a cache served inside the test; a future flock peer-cache (one node downloads, then serves the rest over the LAN) is the same shape.
+type stageRequest struct {
+	Path    string `json:"path"`
+	From    string `json:"from,omitempty"`
+	FromKey string `json:"from_key,omitempty"`
+}
+
+// SystemComponents are the parts of a system closure that a running kernel cannot be
+// talked out of: swapping them takes a boot, not a `switch-to-configuration switch`
+// . Every field is a resolved store path except KernelParams, which is the
+// literal command line — a params change is invisible in the store paths and still needs a
+// boot to take effect.
+//
+// This is FACTS, not a verdict: the guest reads, the host decides
+// ([[logic-on-host-by-default]]). That split is what makes the decision exhaustively
+// unit-testable on the host without a live guest, and it keeps the policy — which
+// differences are worth a reboot — in one place instead of baked into a guest binary that
+// updates on its own schedule.
+type SystemComponents struct {
+	Kernel        string `json:"kernel"`
+	Initrd        string `json:"initrd"`
+	KernelModules string `json:"kernel_modules"`
+	Systemd       string `json:"systemd"`
+	KernelParams  string `json:"kernel_params"`
+}
+
+// StageSource overrides where one Stage call fetches from: a binary cache URL and the
+// public key its narinfos must carry. The zero value means "use the guest's baked
+// caches", which is production. See stageRequest for why the host may name this.
+type StageSource struct {
+	URL string
+	Key string
+}
+
+// payloadPinRequest names the payload OCI image ref to pin (payload.pin).
+type payloadPinRequest struct {
+	Ref string `json:"ref"`
+}
+
+// serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
+// written under quadletDir. Stale is the set of filenames to remove first, so swapping which
+// service occupies the slot leaves nothing of the previous one behind.
+type serviceRenderRequest struct {
+	Files map[string]string `json:"files"`
+	Stale []string          `json:"stale,omitempty"`
+}
+
+// serviceProvisionRequest creates the service's single data subvolume with per-container plain
+// SUBDIRECTORIES inside it (never nested subvolumes — `btrfs subvolume delete` refuses on a
+// subvolume containing them, which would break data.restore outright), and records Manifest as
+// the service identity on the replicated volume.
+type serviceProvisionRequest struct {
+	DataDir  string   `json:"data_dir"`
+	Subdirs  []string `json:"subdirs,omitempty"`
+	Manifest string   `json:"manifest"`
+}
+
+// certWriteRequest carries a renewed cert + key to land on the DRBD volume (cert.write).
+type certWriteRequest struct {
+	Cert string `json:"cert"`
+	Key  string `json:"key"`
+}
+
+// backupSaveRequest seals the home's sacred config to an off-site path (backup.save). Base is the payload's data-dir mount (== /config in the container); Includes are
+// paths under it (".storage", "configuration.yaml", …); Recipient is the household's age
+// public key (seal only — the private key never reaches the guest); Dest is where the
+// encrypted blob lands (a mounted off-site target).
+type backupSaveRequest struct {
+	Base      string   `json:"base"`
+	Includes  []string `json:"includes"`
+	Recipient string   `json:"recipient"`
+	Dest      string   `json:"dest"`
+}
+
+// backupRestoreRequest decrypts a backup blob and extracts it into the data dir
+// (backup.restore). Identity is the household's age private key (restore only, a
+// rare recovery op; the blob at rest stays encrypted).
+type backupRestoreRequest struct {
+	Base     string `json:"base"`
+	Src      string `json:"src"`
+	Identity string `json:"identity"`
+}
+
+// gcRequest prunes old snapshots: keep the newest Keep matching Dir/Prefix* (data.gc).
+type gcRequest struct {
+	Dir    string `json:"dir"`
+	Prefix string `json:"prefix"`
+	Keep   int    `json:"keep"`
+}
+
+// reactorRequest names a drbd-reactor promoter snippet to pause/resume.
+type reactorRequest struct {
+	Snippet string `json:"snippet"`
+}
+
+// evictRequest asks this node to give the work to a peer (reactor.evict).
+// KeepMasked leaves the node ineligible afterwards -- the reboot path, so it cannot reclaim the
+// resource before its new generation has been verified. Unmask is the release, and runs no
+// eviction of its own. Both false = a plain evict, which unmasks on its way out and is what
+// makes a later hand-back possible.
+type evictRequest struct {
+	KeepMasked bool `json:"keep_masked,omitempty"`
+	Unmask     bool `json:"unmask,omitempty"`
+}
+
+// netConfigureRequest sets a static CIDR on a guest interface (net.configure) and,
+// optionally, records which NIC the promoter should claim the VIP on. VIPDev is set
+// only on a data node whose VIP is not on the baked-default NIC (the two-subnet
+// layout puts DRBD on eth1, so the VIP moves to eth2 --); "" leaves the baked
+// default (single-node/legacy: the lone NIC is eth1).
+type netConfigureRequest struct {
+	Dev    string `json:"dev"`
+	CIDR   string `json:"cidr"`
+	VIPDev string `json:"vip_dev,omitempty"`
+}
+
+// hostnameRequest carries this node's name (sys.hostname).
+type hostnameRequest struct {
+	Name string `json:"name"`
+}
+
+// resourcesRequest is what the host must tell the guest to measure the appliance:
+// the payload's systemd unit (for its pid -> RSS/fds) and the data volume (for used space +
+// snapshot count). Both empty on a witness -> only the volume-independent metrics come back.
+type resourcesRequest struct {
+	Unit    string `json:"unit,omitempty"`     // payload unit, e.g. podman-home-assistant.service
+	DataDir string `json:"data_dir,omitempty"` // the DRBD data volume mount
+}
+
+// Executor runs commands and writes files inside the guest. The real impl shells
+// out (NewOSExecutor); tests supply a fake.
+type Executor interface {
+	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+	WriteFile(path string, data []byte) error
+	Sethostname(name string) error
+}
+
+// dispatch is the guest-side verb switch: verb -> Executor calls (+ ParseStatus).
+func dispatch(x Executor) dispatchFunc {
+	return func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+		// Run executes a guest command whose output is only wanted on failure, and
+		// wraps a non-zero exit with the command + its output -- otherwise the host
+		// sees a bare "exit status 1" and bring-up failures are undiagnosable.
+		run := func(name string, args ...string) error {
+			out, err := x.Run(ctx, name, args...)
+			if err == nil {
+				return nil
+			}
+			if o := bytes.TrimSpace(out); len(o) > 0 {
+				return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, o)
+			}
+			return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+		}
+		switch verb {
+		case verbHello:
+			// Report our protocol version + capabilities so the host can negotiate/refuse
+			//. No side effects; safe to call before anything else.
+			return api.GuestHello{Version: api.GuestProtocol, Capabilities: guestCapabilities}, nil
+		case verbSetHostname:
+			var req hostnameRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, x.Sethostname(req.Name)
+		case verbProvision:
+			var req ProvisionRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if err := x.WriteFile(resPath(req.Resource), []byte(req.ResConfig)); err != nil {
+				return nil, err
+			}
+			if req.ReactorConfig != "" {
+				if err := x.WriteFile(reactorPath, []byte(req.ReactorConfig)); err != nil {
+					return nil, err
+				}
+			}
+			if req.Diskless {
+				return ProvisionResult{}, nil // a diskless witness has no metadata to create
+			}
+			// Idempotent bring-up: `create-md` WITHOUT --force is itself the metadata
+			// probe. A node returning from a reboot already holds its replica on the persisted
+			// data disk -- a blind create-md --force would WIPE it and re-seed, split-braining
+			// against the peer that kept serving. On a fresh/blank disk create-md writes new
+			// metadata (exit 0 -> CreatedMetadata); on a disk that already holds metadata DRBD
+			// refuses to overwrite -- the confirm prompt hits EOF (the Executor gives commands
+			// /dev/null stdin) and aborts non-zero, which we read as "metadata already present,
+			// attach it, never wipe". This is more reliable than a dump-md pre-check, which at
+			// provision time (resource written but not yet defined in the kernel) reported no
+			// metadata on a disk that still had it. A non-metadata failure (bad config/disk)
+			// also lands here as "attach"; Up then fails loudly, so bring-up still stops rather
+			// than silently wiping. Use x.Run (not run): a non-zero here is expected, not fatal.
+			if _, err := x.Run(ctx, "drbdadm", "create-md", req.Resource); err != nil {
+				return ProvisionResult{CreatedMetadata: false}, nil // existing replica / refusal: attach, don't wipe
+			}
+			return ProvisionResult{CreatedMetadata: true}, nil
+		case verbAdjust:
+			var req ProvisionRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// Runtime mesh growth: rewrite the resource config with the new peer set and
+			// apply the delta to the ALREADY-RUNNING resource -- `drbdadm adjust` brings up the
+			// connection(s) to the joining node(s) with no restart and no create-md, so the serving
+			// primary's local disk stays attached and UpToDate. The joining anchor/witness themselves
+			// come up fresh via Provision+Up (FreshInit=false) and resync as SyncTarget; this side is
+			// the primary learning it now has peers. Idempotent: adjust to an unchanged config is a
+			// no-op, so a retried pair directive is safe.
+			if err := x.WriteFile(resPath(req.Resource), []byte(req.ResConfig)); err != nil {
+				return nil, err
+			}
+			if req.ReactorConfig != "" {
+				if err := x.WriteFile(reactorPath, []byte(req.ReactorConfig)); err != nil {
+					return nil, err
+				}
+			}
+			return nil, run("drbdadm", "adjust", req.Resource)
+		case verbUp:
+			req, err := resourceReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			return nil, run("systemctl", "start", "drbd@"+req.Resource+".target")
+		case verbInitUUID:
+			req, err := resourceReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// Declare a brand-new resource's local data current, skipping the initial
+			// sync (there is no peer to sync from on first init). One-time; NOT a
+			// force-promotion. The agent does this only when it first creates a resource.
+			return nil, run("drbdadm", "new-current-uuid", "--clear-bitmap", req.Resource+"/0")
+		case verbReactor:
+			if _, err := resourceReq(payload); err != nil {
+				return nil, err
+			}
+			return nil, run("systemctl", "start", "drbd-reactor.service")
+		case verbStatus:
+			req, err := resourceReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			out, err := x.Run(ctx, "drbdsetup", "status", "--json")
+			if err != nil {
+				return nil, err
+			}
+			// The fuller view. QuorumState is embedded, so a host that only knows
+			// the three summary fields reads this response unchanged.
+			return drbd.ParseCluster(out, req.Resource)
+		case verbPayloadPin:
+			var req payloadPinRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Ref == "" {
+				return nil, fmt.Errorf("payload.pin: empty image ref")
+			}
+			// The image must already be staged (warm-standby / pre-pull); pinning is a
+			// selector, never a pull on the failover path.
+			if err := run("podman", "image", "exists", req.Ref); err != nil {
+				return nil, fmt.Errorf("payload.pin: image %s not staged: %w", req.Ref, err)
+			}
+			if err := run("podman", "tag", req.Ref, payloadServeTag); err != nil {
+				return nil, err
+			}
+			// Record it on the replicated volume so a failover converges to the same image.
+			if err := x.WriteFile(payloadPinPath, []byte(req.Ref+"\n")); err != nil {
+				return nil, err
+			}
+			// Flush to the DRBD backing so the pin actually replicates to peers *before* a
+			// failover relies on it (protocol C acks a device write only once the peer has
+			// it). Without this, a crash within the btrfs writeback window loses the pin and
+			// a survivor converges to the stale/default image -- the durability the
+			// hermetic tests only got by an explicit `sync`. sync -f targets just this fs.
+			_, err := x.Run(ctx, "sync", "-f", payloadPinPath)
+			return nil, err
+		case verbPayloadImage:
+			// The served identity is the replicated pin, read from the guest so it's
+			// ground truth across a failover: a survivor that converged-at-promotion reports
+			// the pinned image though it never applied the upgrade itself. Absent pin => "";
+			// the host falls back to the baked default. `cat` errors (no file) => "".
+			out, err := x.Run(ctx, "cat", payloadPinPath)
+			if err != nil {
+				return "", nil
+			}
+			return strings.TrimSpace(string(out)), nil
+		case verbCertWrite:
+			var req certWriteRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// Land the renewed cert/key on the DRBD volume (replicated). A torn write (cert
+			// updated, key not yet) is safe: the terminator's LoadX509KeyPair fails on a
+			// mismatched pair and keeps the last good cert until both land, then hot-reloads.
+			if err := run("mkdir", "-p", tlsDir); err != nil {
+				return nil, err
+			}
+			if err := x.WriteFile(tlsKeyPath, []byte(req.Key)); err != nil {
+				return nil, err
+			}
+			if err := x.WriteFile(tlsCertPath, []byte(req.Cert)); err != nil {
+				return nil, err
+			}
+			// Flush so the cert replicates before a failover relies on it (as payload.pin).
+			_, err := x.Run(ctx, "sync", "-f", tlsCertPath)
+			return nil, err
+		case verbBackupSave:
+			var req backupSaveRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// Direct file I/O (not via Executor): the archive/encrypt is Go-level work over
+			// the mounted volume, like the shared/backup unit tests. Bulk never crosses the
+			// control channel — the guest seals + writes the blob locally (data.snapshot idiom).
+			recip, err := backup.ParseRecipient(req.Recipient)
+			if err != nil {
+				return nil, err
+			}
+			if err := os.MkdirAll(filepath.Dir(req.Dest), 0o755); err != nil {
+				return nil, err
+			}
+			f, err := os.Create(req.Dest)
+			if err != nil {
+				return nil, err
+			}
+			if err := backup.Save(req.Base, req.Includes, recip, f); err != nil {
+				f.Close()
+				return nil, err
+			}
+			if err := f.Close(); err != nil {
+				return nil, err
+			}
+			_, err = x.Run(ctx, "sync", "-f", req.Dest) // durability: the blob is the off-site copy
+			return nil, err
+		case verbBackupRestore:
+			var req backupRestoreRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			id, err := backup.ParseIdentity(req.Identity)
+			if err != nil {
+				return nil, err
+			}
+			f, err := os.Open(req.Src)
+			if err != nil {
+				return nil, err
+			}
+			defer f.Close()
+			return nil, backup.Load(f, id, req.Base)
+		case verbPayloadStart:
+			req, err := unitReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			return nil, run("systemctl", "start", req.Unit)
+		case verbPayloadStop:
+			req, err := unitReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// Surgical stop: --job-mode=ignore-dependencies stops ONLY this unit, so a
+			// planned payload quiesce can't cascade to the promoter target / data mount /
+			// VIP (the promoter is separately paused). Correct by construction --
+			// no dependence on drbd-reactor's exact systemd dependency directives.
+			return nil, run("systemctl", "--job-mode=ignore-dependencies", "stop", req.Unit)
+		case verbPayloadActive:
+			req, err := unitReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// Is-active exits non-zero when the unit is not active, printing the state
+			// word regardless -- so trust the word, not the exit code.
+			out, _ := x.Run(ctx, "systemctl", "is-active", req.Unit)
+			return strings.TrimSpace(string(out)) == "active", nil
+		case verbPayloadHealth:
+			var req healthRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// The readiness probe, done from INSIDE the guest (not host->VIP over the LAN):
+			// the guest owns the VIP on its own NIC, so this works regardless of the host
+			// networking substrate (macvtap blocks host->guest, but not guest->itself). A raw
+			// net.Dial HTTP/1.0 GET keeps the guest binary free of net/http + the TLS stack the
+			// -tags guest build deliberately trims. 200 == healthy; any error == not.
+			return probeHTTPOK(ctx, req.URL), nil
+		case verbPayloadSince:
+			req, err := unitReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// ActiveEnterTimestampMonotonic (usec since boot) changes ONLY when the unit
+			// re-enters the active state -- i.e. on a (re)start. It is stable across a
+			// promoter pause/resume that merely re-adopts the already-running payload, so an
+			// unchanged value is ground truth for "adopt, don't bounce" (the maintenance
+			// contract; reused by the per-snippet disable). `--value` prints the raw usec;
+			// 0 when the unit is inactive (never entered active), which parseUint yields for "".
+			out, err := x.Run(ctx, "systemctl", "show", "-p", "ActiveEnterTimestampMonotonic", "--value", req.Unit)
+			if err != nil {
+				return nil, err
+			}
+			return parseUint(out), nil
+		case verbDataSnapshot:
+			req, err := snapshotReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			return nil, run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path)
+		case verbDataRestore:
+			req, err := snapshotReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// Precondition: the host has stopped the payload (bind released). Swap the
+			// live rw subvolume for a fresh rw snapshot of the RO restore point.
+			if err := run("btrfs", "subvolume", "delete", req.DataDir); err != nil {
+				return nil, err
+			}
+			return nil, run("btrfs", "subvolume", "snapshot", req.Path, req.DataDir)
+		case verbDataGC:
+			var req gcRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, gcSnapshots(ctx, x, req)
+		case verbServiceRender:
+			var req serviceRenderRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, renderService(ctx, x, run, req)
+		case verbServiceProvision:
+			var req serviceProvisionRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, provisionService(ctx, x, run, req)
+		case verbServiceManifest:
+			// "" when nothing is installed -- the zero-service node is a legitimate
+			// state, not an error, so an absent file must not read as a failure.
+			out, err := x.Run(ctx, "cat", manifestPinPath)
+			if err != nil {
+				return "", nil
+			}
+			return string(out), nil
+		case verbOSSystem:
+			out, err := x.Run(ctx, "readlink", "-f", currentSystem)
+			if err != nil {
+				return nil, err
+			}
+			return strings.TrimSpace(string(out)), nil
+		case verbOSStage:
+			var req stageRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Path == "" {
+				return nil, fmt.Errorf("os.stage: empty system closure")
+			}
+			// The delivery half of, and the only verb that pulls bytes: realise the
+			// closure into the local store, substituting whatever is missing. Everything
+			// downstream (os.switch and os.stageboot's staged checks, a promoting peer's converge)
+			// assumes the closure is ALREADY local -- the failover path must never fetch
+			// -- so this is what makes that assumption true ahead of time.
+			//
+			// Idempotent: a closure already present realises to a no-op, so re-staging the
+			// running system costs nothing and a retry after a partial fetch resumes.
+			args := []string{"--realise", req.Path}
+			if req.From != "" {
+				// Override, not extend: fetch ONLY from the named cache. Extending would
+				// leave the baked caches in the list, and in a hermetic test they are
+				// unreachable -- so nix would stall on them before trying the one cache
+				// that actually has the closure.
+				args = append(args, "--option", "substituters", req.From)
+				if req.FromKey != "" {
+					args = append(args, "--option", "trusted-public-keys", req.FromKey)
+				}
+			}
+			return nil, run("nix-store", args...)
+		case verbOSComponents:
+			req, err := systemReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// Empty path = the BOOTED generation, the reference the host diffs against.
+			root := req.Path
+			if root == "" {
+				root = bootedSystem
+			}
+			var c SystemComponents
+			for _, f := range []struct {
+				name string
+				out  *string
+			}{
+				{"kernel", &c.Kernel},
+				{"initrd", &c.Initrd},
+				{"kernel-modules", &c.KernelModules},
+				{"systemd", &c.Systemd},
+			} {
+				out, err := x.Run(ctx, "readlink", "-f", root+"/"+f.name)
+				if err != nil {
+					return nil, fmt.Errorf("os.components: %s/%s: %w", root, f.name, err)
+				}
+				*f.out = strings.TrimSpace(string(out))
+			}
+			// Kernel-params is a FILE, not a link: the command line is not a store path, so a
+			// params-only change leaves every other field identical while still needing a boot.
+			out, err := x.Run(ctx, "cat", root+"/kernel-params")
+			if err != nil {
+				return nil, fmt.Errorf("os.components: %s/kernel-params: %w", root, err)
+			}
+			c.KernelParams = strings.TrimSpace(string(out))
+			return c, nil
+		case verbOSSwitch:
+			req, err := systemReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// The closure must ALREADY be staged, and this guard is load-bearing rather
+			// than defensive: with substituters configured `nix-env --set` will
+			// happily substitute a missing closure, so without it a switch could silently
+			// fetch -- breaking's "converge is select, never build" in the one place
+			// that cannot afford to wait on a network. os.stage is what puts it there, and
+			// os.stageboot carries the same guard for the same reason. (It lived on os.pin
+			// once the code pin was removed, and belonged here all along: the rule is
+			// about switching, not about recording.)
+			if err := run("test", "-e", req.Path); err != nil {
+				return nil, fmt.Errorf("os.switch: system %s not staged: %w", req.Path, err)
+			}
+			// Point the profile at the closure (a new generation -- a roll-forward even
+			// when reverting) then activate it.
+			if err := run("nix-env", "-p", systemProfile, "--set", req.Path); err != nil {
+				return nil, err
+			}
+			return nil, run(req.Path+"/bin/switch-to-configuration", "switch")
+		case verbOSStageBoot:
+			req, err := systemReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			if req.Path == "" {
+				return nil, fmt.Errorf("os.stageboot: empty system closure")
+			}
+			// Same warm-standby rule as os.switch: the closure must ALREADY be local. This verb
+			// arms a boot; it never fetches. os.stage is what puts it there.
+			if err := run("test", "-e", req.Path); err != nil {
+				return nil, fmt.Errorf("os.stageboot: system %s not staged: %w", req.Path, err)
+			}
+			// Register the closure as a generation of the `staging` profile. This both
+			// materialises it as a gcroot and gets it a grub submenu of its own, and it is
+			// the ONLY write -- the bootloader default still points at the running system.
+			if err := run("mkdir", "-p", stagingProfileDir); err != nil {
+				return nil, err
+			}
+			if err := run("nix-env", "-p", stagingProfile, "--set", req.Path); err != nil {
+				return nil, err
+			}
+			// Regenerate grub.cfg from the RUNNING system, not the staged one. This is the
+			// whole trick: install-grub.pl takes its default entry from the toplevel whose
+			// switch-to-configuration invoked it ($defaultConfig = $ARGV[1]), so running the
+			// current system's copy lists staging while leaving the default on current.
+			// (`nixos-rebuild boot --profile-name staging` runs the STAGED system's copy and
+			// would hand the default over -- the exact thing this must not do.) Nothing on
+			// disk selects staging; only the host's SMBIOS flag at launch does.
+			if err := run(currentSystem+"/bin/switch-to-configuration", "boot"); err != nil {
+				return nil, err
+			}
+			// Flush it. The next thing that happens to this guest is a shutdown, and the
+			// staging entry is worthless if it is still in page cache when the VM stops.
+			return nil, run("sync")
+		case verbOSGC:
+			// Delete old generations of every profile, then collect. Both halves matter and
+			// the first is the one that does the work: each /nix/var/nix/profiles/system-N-link
+			// is itself a gcroot pinning a whole closure, so a bare `nix-collect-garbage`
+			// frees nothing however many have piled up. -d does the generation sweep first,
+			// recursing into system-profiles/ so the reboot path's `staging` profile is
+			// included (nix-collect-garbage.cc's removeOldGenerations walks subdirectories).
+			//
+			// It never deletes what the node might need: nix keeps each profile's CURRENT
+			// generation (profiles.cc deleteOldGenerations skips curGen), and NixOS roots
+			// current-system + booted-system. os.hold covers the one case those miss.
+			return nil, run("nix-collect-garbage", "-d")
+		case verbOSPowerOff:
+			// The FIRST-CHOICE clean shutdown: ask the guest OS directly, over the channel
+			// the host already has, instead of rattling its virtual power button and hoping
+			// something inside is listening. QMP's ACPI path (platform.Guest.Shutdown) stays
+			// as the fallback for a guest whose agent is gone -- the two fail independently,
+			// which is the whole reason to have both.
+			//
+			// --no-block because the reply must be written BEFORE systemd starts tearing the
+			// machine down: without it the shutdown races the response and the host sees a
+			// dead channel, which is indistinguishable from a guest that crashed. The host
+			// confirms the outcome by watching the VM disappear, not by this return value
+			// (platform.Guest.WaitStopped).
+			return nil, run("systemctl", "poweroff", "--no-block")
+		case verbResources:
+			var req resourcesRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// Best-effort: telemetry is a signal, never a gate, so a failed sub-read leaves
+			// its field zero rather than failing the verb (which would break the host's
+			// observe loop). The struct always comes back; nil error.
+			return gatherResources(ctx, x, req), nil
+		case verbReactorActive:
+			// Interim guard: lets a bracket user refuse to start when the promoter is ALREADY
+			// paused — i.e. when someone else is mid-operation. It cannot prevent the race (a
+			// pause can still land between this check and ours) and is not claimed to; it turns
+			// the likely overlap from silent corruption of the bracket into a loud refusal.
+			out, err := x.Run(ctx, "systemctl", "is-active", "drbd-reactor.service")
+			if err != nil {
+				// Is-active exits non-zero for every not-active state, which is an ANSWER
+				// ("paused"), not a failure. Reporting an error here would make a correctly
+				// paused node look broken.
+				return false, nil
+			}
+			return strings.TrimSpace(string(out)) == "active", nil
+		case verbReactorEvict:
+			// A PLANNED HANDOVER: give the work to a peer while perfectly
+			// healthy, so this node can reboot into a new generation without taking the house
+			// down with it. drbd-reactor's own `evict` runtime-masks the promoter target, stops
+			// it so a peer promotes, and unmasks -- writing our own stop-and-hope against the
+			// promoter would reimplement that with less knowledge of its state machine.
+			//
+			// PROVEN, not assumed (nixosTest/reactor-evict.nix): the work moves in ~6s, the data
+			// comes with it, and the same CLI's `disable` was deferred in this file as flaky --
+			// which is why `evict` got a mechanism test before anything sequenced it.
+			//
+			// ⚠️ IT SAYS "NOT ME", NOT "YOU". The destination is drbd-reactor's election, not
+			// ours; on a flock with three diskful anchors the work may land on the third node.
+			// Our shipped topology (2 anchors + a diskless witness, which cannot hold the
+			// resource) makes it deterministic -- but that is a property of the topology, so a
+			// caller that needs the work to land somewhere specific must ASSERT where it went.
+			//
+			// KeepMasked is for the reboot path: without it the node is immediately eligible
+			// again, so an ex-primary rebooting for its own upgrade could take the work back
+			// before anyone has verified its new generation. The mask is `--runtime` and so does
+			// NOT survive the reboot -- carrying it across is the sequencer's problem, not this
+			// verb's. Unmask releases it (the deliberate hand-back) and runs no eviction.
+			var req evictRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			args := []string{"evict"}
+			switch {
+			case req.Unmask:
+				args = append(args, "-u")
+			case req.KeepMasked:
+				args = append(args, "--keep-masked")
+			}
+			return nil, run("drbd-reactorctl", args...)
+		case verbReactorPause:
+			// Pause the promoter by stopping the drbd-reactor daemon: stop-services-on-exit
+			// defaults false, so the promoted services + DRBD Primary stay up while it is
+			// down -- deterministic maintenance mode. (v0 is single-resource; per-snippet
+			// `drbd-reactorctl disable` is deferred -- its systemctl reload proved flaky.
+			// The snippet arg is reserved for that future per-resource path.)
+			//
+			// FIRST defuse the promote-vs-stop deadlock. On stop, drbd-reactor tears down
+			// its `drbdsetup events2` feed, restarts it, and fires one last `systemctl start
+			// drbd-services@r0.target`. drbd-reactor also drops a `Before=drbd-reactor.service`
+			// override on that target (reactor-50-before.conf), so systemd sequences that start
+			// BEHIND this very stop -> neither completes -> 90s TimeoutStopSec SIGKILL, and the
+			// SIGKILL+revive is what later unmounts the data volume mid-upgrade. Removing the
+			// override (+ daemon-reload) before the stop makes the dying reactor's promote an
+			// instant no-op (target already active, no ordering) -> clean exit. Race-free: the
+			// override is (re)written only in drbd-reactor's Promoter::new (i.e. on resume), never
+			// on the per-promote path, so nothing re-arms it during the pause window. `rm -f` is
+			// idempotent (no-op if the promoter never wrote it). See the reactor-* contract tests.
+			if err := run("rm", "-f", reactorBeforeOverride); err != nil {
+				return nil, err
+			}
+			if err := run("systemctl", "daemon-reload"); err != nil {
+				return nil, err
+			}
+			return nil, run("systemctl", "stop", "drbd-reactor.service")
+		case verbReactorResume:
+			// Restart the daemon; it re-reads config and adopts the already-Primary services,
+			// with no restart/demote. (No maintenance marker to clear -- briard-converge is a switch-free gate, so
+			// nothing autonomous races a managed op.)
+			return nil, run("systemctl", "start", "drbd-reactor.service")
+		case verbNetConfigure:
+			var req netConfigureRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// Address the DRBD NIC when one is given (multi-node / a paired anchor): `addr
+			// replace` is idempotent (no-op if already set), then ensure the link is up. Both
+			// take an explicit `dev` (portable across iproute2 versions). A SINGLE node
+			// replicates over loopback and has no DRBD address yet -- it only needs its VIP
+			// device recorded -- so an empty Dev/CIDR skips addressing (the unified NIC layout:
+			// eth1 is the idle DRBD NIC until pairing addresses it).
+			if req.Dev != "" && req.CIDR != "" {
+				if err := run("ip", "addr", "replace", req.CIDR, "dev", req.Dev); err != nil {
+					return nil, err
+				}
+				if err := run("ip", "link", "set", "dev", req.Dev, "up"); err != nil {
+					return nil, err
+				}
+			}
+			// The VIP device is agent-determined: record it where briard-vip.service
+			// reads it (an optional EnvironmentFile). Idempotent (whole-file write).
+			if req.VIPDev != "" {
+				return nil, x.WriteFile(vipEnvPath, []byte("VIP_DEV="+req.VIPDev+"\n"))
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("guestagent: unknown verb %q", verb)
+		}
+	}
+}
+
+// Serve runs the guest dispatch loop over conn until it closes or ctx is done.
+func Serve(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
+	return serve(ctx, conn, dispatch(x))
+}
+
+// ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every
+// served request, and the SEPARATE briard-deadman process (RunDeadman) reads that mtime to tell
+// how long the host has been silent. It lives on tmpfs (/run) so it re-baselines cleanly each
+// boot — the deadman disarms until the host talks once (StampMtime → zero → not armed). It is a
+// stamp file, NOT in-process state, precisely because the per-connection guest agent crash-loops
+// while the host is down (the reopened virtio-serial port EOFs), which would reset any in-process
+// timer before it could fire.
+const ContactStampPath = "/run/briard/.host-contact"
+
+// ServeStamped serves the dispatch loop and bumps the contact stamp on every request (the
+// production runGuest entry). The deadman itself runs in its own process (RunDeadman) — decoupled
+// from this connection lifecycle, so a crash-looping agent can't reset it. Plain Serve stays for
+// tests (no stamp side effect).
+func ServeStamped(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
+	d := dispatch(x)
+	hooked := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+		touchStamp(ContactStampPath) // the host agent just talked to us — freshen the deadman's stamp
+		return d(ctx, verb, payload)
+	}
+	return serve(ctx, conn, hooked)
+}
+
+// touchStamp bumps path's mtime to now (creating it, and its dir, if absent). Best-effort: a
+// failure just means the deadman sees a slightly staler stamp, never a crash.
+func touchStamp(path string) {
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil {
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		if f, e := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644); e == nil {
+			f.Close()
+		}
+		_ = os.Chtimes(path, now, now)
+	}
+}
+
+// StampMtime returns the contact stamp's mtime, or the zero time when it doesn't exist yet (no
+// host contact this boot → the deadman treats that as "not armed").
+func StampMtime(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
+}
+
+// deadmanStatePath holds the deadman's backoff episode — a NODE-LOCAL path (a sibling of the DRBD
+// mount at /var/lib/briard, NOT on the replicated volume), so it survives a reboot without being
+// shared/overwritten across nodes.
+const deadmanStatePath = "/var/lib/briard-deadman/episode.json"
+
+// RunDeadman runs the host-agent deadman as its OWN long-running process — the briard-deadman
+// guest service. It watches the contact stamp ServeStamped bumps and, once
+// the host agent has been silent past T_deadman, reboots the guest — gracefully (so the promoter
+// teardown demotes cleanly and the reboot IS the failover trigger), and ONLY when the cluster
+// keeps quorum without this node (a lone node holds, never self-outages). It is a separate
+// process from the guest agent precisely so a crash-looping agent (while the host is down) can't
+// reset the timer. BRIARD_DEADMAN[/_JITTER/_TICK] tune the threshold.
+func RunDeadman(ctx context.Context) error {
+	node, _ := os.Hostname()
+	x := NewOSExecutor()
+	mon := &deadman.Monitor{
+		Node:        node,
+		Base:        durationEnv("BRIARD_DEADMAN", deadman.DefaultDeadman),
+		Window:      durationEnv("BRIARD_DEADMAN_JITTER", deadman.DefaultJitter),
+		Tick:        durationEnv("BRIARD_DEADMAN_TICK", 0),
+		LastContact: func() time.Time { return StampMtime(ContactStampPath) },
+		Quorum: func(ctx context.Context) (int, int, error) {
+			out, err := x.Run(ctx, "drbdsetup", "status", "--json")
+			if err != nil {
+				return 0, 0, err
+			}
+			return drbd.PeerCounts(out)
+		},
+		Reboot: func(ctx context.Context) error {
+			out, err := x.Run(ctx, "systemctl", "reboot") // GRACEFUL — never `reboot -f`
+			if err != nil {
+				return fmt.Errorf("systemctl reboot: %w: %s", err, bytes.TrimSpace(out))
+			}
+			return nil
+		},
+		Alert: func(msg string) { fmt.Fprintln(os.Stderr, "briard-deadman:", msg) }, // real owner delivery
+		Logf:  func(f string, a ...any) { fmt.Fprintf(os.Stderr, "briard-deadman: "+f+"\n", a...) },
+		State: deadman.FileState{Path: deadmanStatePath},
+	}
+	return mon.Run(ctx)
+}
+
+const reactorPath = "/etc/drbd-reactor.d/briard.toml"
+
+// reactorBeforeOverride is the drop-in drbd-reactor writes to order drbd-services@r0.target
+// Before= the reactor daemon. Removing it around reactor.pause defuses the promote-vs-stop
+// deadlock. Path is fixed for v0's single resource (r0); drbd-reactor recreates it in
+// Promoter::new on the next reactor start (resume), so the pause defuse is self-restoring.
+const reactorBeforeOverride = "/run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf"
+
+// vipEnvPath is the optional EnvironmentFile briard-vip.service reads its VIP_DEV
+// from; the agent writes it via net.configure when the VIP is not on the baked NIC.
+const vipEnvPath = "/run/briard/vip.env"
+
+func resPath(resource string) string { return filepath.Join("/etc/drbd.d", resource+".res") }
+
+// durationEnv reads a time.Duration from env key k, or returns def when unset/unparseable.
+func durationEnv(k string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(k)); err == nil && d > 0 {
+		return d
+	}
+	return def
+}
+
+// gcSnapshots deletes all but the newest Keep snapshots matching Dir/Prefix* -- the
+// retention bound for accumulating pre-upgrade data snapshots. Names are
+// <prefix><unixnano> (fixed width in this era), so a lexicographic sort is chronological.
+func gcSnapshots(ctx context.Context, x Executor, req gcRequest) error {
+	out, err := x.Run(ctx, "ls", "-1", req.Dir) // coreutils; entries as names
+	if err != nil {
+		return fmt.Errorf("data.gc list %s: %w: %s", req.Dir, err, bytes.TrimSpace(out))
+	}
+	var paths []string
+	for _, name := range strings.Fields(string(out)) {
+		if strings.HasPrefix(name, req.Prefix) {
+			paths = append(paths, req.Dir+"/"+name)
+		}
+	}
+	sort.Strings(paths)
+	if req.Keep < 0 || len(paths) <= req.Keep {
+		return nil
+	}
+	for _, victim := range paths[:len(paths)-req.Keep] { // oldest first
+		if o, e := x.Run(ctx, "btrfs", "subvolume", "delete", victim); e != nil {
+			return fmt.Errorf("data.gc delete %s: %w: %s", victim, e, bytes.TrimSpace(o))
+		}
+	}
+	return nil
+}
+
+// safeUnitName rejects any filename that could escape quadletDir. The host renders these from a
+// validated manifest, so this is defence in depth rather than the primary boundary — but the
+// guest writes them as root into a directory systemd reads, and a second cheap check beats
+// trusting that no host-side regression ever produces a "../" .
+func safeUnitName(n string) error {
+	if n == "" || strings.ContainsAny(n, `/\`) || strings.Contains(n, "..") {
+		return fmt.Errorf("service: unsafe unit filename %q", n)
+	}
+	return nil
+}
+
+// renderService materialises the host's quadlet source under quadletDir and reloads systemd —
+// the moment podman's generator turns those files into real units, which is what moves unit
+// generation from build time to run time.
+//
+// Node-local by design: quadletDir is on /run, so this must run on EVERY node, not just the
+// Primary. A survivor can start the pod only because the units were rendered there too.
+func renderService(ctx context.Context, x Executor, run func(string, ...string) error, req serviceRenderRequest) error {
+	if len(req.Files) == 0 {
+		return fmt.Errorf("service.render: no files to write")
+	}
+	for _, n := range req.Stale {
+		if err := safeUnitName(n); err != nil {
+			return err
+		}
+	}
+	names := make([]string, 0, len(req.Files))
+	for n := range req.Files {
+		if err := safeUnitName(n); err != nil {
+			return err
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names) // deterministic write order, so a failure part-way is reproducible
+	if err := run("mkdir", "-p", quadletDir); err != nil {
+		return err
+	}
+	// Remove the outgoing service's units first: swapping which service occupies the slot must
+	// not leave a stale .container behind for the promoter to trip over. Absent is fine.
+	for _, n := range req.Stale {
+		_, _ = x.Run(ctx, "rm", "-f", quadletDir+"/"+n)
+	}
+	for _, n := range names {
+		if err := x.WriteFile(quadletDir+"/"+n, []byte(req.Files[n])); err != nil {
+			return err
+		}
+	}
+	return run("systemctl", "daemon-reload")
+}
+
+// provisionService creates the service's single btrfs subvolume with plain per-container
+// subdirectories, and records the manifest as the service's identity.
+//
+// Primary-only: everything it touches is on the replicated volume, which is mounted nowhere else.
+// Idempotent — a re-install onto an existing service must keep its data, so an existing subvolume
+// is reused rather than re-created (re-creating it would silently delete the user's state).
+func provisionService(ctx context.Context, x Executor, run func(string, ...string) error, req serviceProvisionRequest) error {
+	if req.DataDir == "" || req.Manifest == "" {
+		return fmt.Errorf("service.provision: need a data dir and a manifest")
+	}
+	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", req.DataDir); err != nil || len(out) == 0 {
+		if err := run("btrfs", "subvolume", "create", req.DataDir); err != nil {
+			return err
+		}
+	}
+	for _, d := range req.Subdirs {
+		if err := safeUnitName(d); err != nil { // same escape check; a subdir is a bare name
+			return err
+		}
+		if err := run("mkdir", "-p", req.DataDir+"/"+d); err != nil {
+			return err
+		}
+	}
+	if err := x.WriteFile(manifestPinPath, []byte(req.Manifest)); err != nil {
+		return err
+	}
+	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
+	// it — protocol C acks a device write only once the peer holds it. Without this, a crash
+	// inside the btrfs writeback window loses the manifest and a survivor promotes with no idea
+	// what it is meant to be running. Same reasoning as payload.pin's sync.
+	_, err := x.Run(ctx, "sync", "-f", manifestPinPath)
+	return err
+}
+
+// gatherResources measures the appliance's resource footprint for the soak trend oracle
+// . Every sub-metric is best-effort: a failed read leaves its field zero (the host
+// reads 0 as "unread this cycle"), so a hiccup in one probe never sinks the whole report or
+// the observe loop. It fills only the appliance (guest) fields; the host adds its own
+// Agent* footprint on top. Zero DataDir/Unit (a witness) simply skips the volume/payload
+// metrics.
+func gatherResources(ctx context.Context, x Executor, req resourcesRequest) telemetry.NodeResources {
+	var r telemetry.NodeResources
+	if req.Unit != "" {
+		// MainPID=0 means the unit isn't running; skip rather than read /proc/0.
+		if out, err := x.Run(ctx, "systemctl", "show", "-p", "MainPID", "--value", req.Unit); err == nil {
+			if pid := strings.TrimSpace(string(out)); pid != "" && pid != "0" {
+				if st, err := x.Run(ctx, "cat", "/proc/"+pid+"/status"); err == nil {
+					r.PayloadRSSKB = parseVmRSSKB(st)
+				}
+				if fds, err := x.Run(ctx, "ls", "/proc/"+pid+"/fd"); err == nil {
+					r.PayloadFDs = countLines(fds)
+				}
+			}
+		}
+		// NRestarts is the crash-loop signal (no-silent-restarts): it climbs each time the
+		// unit died and was restarted, even though a between-restarts is-active reads green.
+		if out, err := x.Run(ctx, "systemctl", "show", "-p", "NRestarts", "--value", req.Unit); err == nil {
+			r.PayloadRestarts = parseUint(out)
+		}
+	}
+	if out, err := x.Run(ctx, "cat", "/proc/loadavg"); err == nil {
+		r.Load1 = parseLoad1(out)
+	}
+	if req.DataDir != "" {
+		if out, err := x.Run(ctx, "df", "-kP", req.DataDir); err == nil {
+			r.VolumeUsedKB = parseDfUsedKB(out)
+		}
+		// -s: snapshots only (the pre-upgrade RO subvolumes an upgrade accumulates), so this
+		// tracks snapshot growth, not the live subvolume set.
+		if out, err := x.Run(ctx, "btrfs", "subvolume", "list", "-s", req.DataDir); err == nil {
+			r.SnapshotCount = countLines(out)
+		}
+	}
+	// -x: stay on one filesystem, so the number is the surface itself, not whatever is
+	// mounted beneath it.
+	if out, err := x.Run(ctx, "du", "-skx", journalDir); err == nil {
+		r.LogSizeKB = parseDuKB(out)
+	}
+	if out, err := x.Run(ctx, "du", "-skx", containerStore); err == nil {
+		r.PodmanStoreKB = parseDuKB(out)
+	}
+	// The guest kernel log (no-bad-kernel-log): where the guest-internal DRBD/btrfs/OOM signals
+	// land, unreachable from the L1 container (which shares the host kernel). Report only lines
+	// NEW since the last poll (a journal cursor), so a transient error from a past cycle ages
+	// out instead of re-failing every sample, and a fresh error is attributable to the current
+	// cycle. Mechanism only: the guest returns the lines, the oracle scans + scopes them.
+	r.KernelErrors = recentKernelErrors(ctx, x)
+	return r
+}
+
+// recentKernelErrors returns the guest kernel warning+ lines added since the last call,
+// advancing a stored journal cursor. The first call (no cursor) returns a bounded recent tail.
+// Best-effort: any failure yields no lines (never fatal to the observe loop).
+func recentKernelErrors(ctx context.Context, x Executor) []string {
+	base := []string{"-k", "-p", "warning", "--no-pager", "--show-cursor"}
+	args := append(base, "-n", "100") // first poll: a bounded recent tail
+	if cur, err := x.Run(ctx, "cat", kmsgCursorPath); err == nil {
+		if c := strings.TrimSpace(string(cur)); c != "" {
+			args = append(base, "--after-cursor", c)
+		}
+	}
+	out, err := x.Run(ctx, "journalctl", args...)
+	if err != nil {
+		return nil
+	}
+	lines, cursor := splitJournalCursor(out)
+	if cursor != "" {
+		_ = x.WriteFile(kmsgCursorPath, []byte(cursor+"\n"))
+	}
+	return lines
+}
+
+// splitJournalCursor separates journalctl --show-cursor output into the log lines and the
+// trailing "-- cursor: <c>" marker (absent when no entries were shown, e.g. nothing new).
+func splitJournalCursor(out []byte) (lines []string, cursor string) {
+	for _, raw := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(trimmed, "-- cursor:"); ok {
+			cursor = strings.TrimSpace(rest)
+			continue
+		}
+		lines = append(lines, raw)
+	}
+	return
+}
+
+// parseUint reads a non-negative integer (e.g. systemd's NRestarts value). 0 on empty/junk.
+func parseUint(b []byte) uint64 {
+	n, _ := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	return n
+}
+
+// probeHTTPOK does a minimal plaintext HTTP/1.0 GET of rawURL and reports whether the response
+// status is 200. It is deliberately net/http-free (raw net.Dial + a hand-written request) so the
+// `-tags guest` binary stays clear of net/http and the TLS stack that trim removed. Plaintext
+// is all the local /healthz needs. Any parse/dial/read error, non-http scheme, or non-200 status is
+// "not healthy" — the same fail-closed semantics as the old host-side probe.
+func probeHTTPOK(ctx context.Context, rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return false
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	addr := u.Host
+	if u.Port() == "" {
+		addr = net.JoinHostPort(u.Hostname(), "80")
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", u.RequestURI(), u.Host); err != nil {
+		return false
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	// Status line: "HTTP/1.0 200 OK" — match the 200 code token, not a substring elsewhere.
+	return strings.HasPrefix(line, "HTTP/") && strings.Contains(line, " 200 ")
+}
+
+// parseVmRSSKB pulls the "VmRSS:\t   N kB" line out of /proc/<pid>/status. 0 if absent.
+func parseVmRSSKB(status []byte) int64 {
+	for _, line := range strings.Split(string(status), "\n") {
+		if rest, ok := strings.CutPrefix(line, "VmRSS:"); ok {
+			if f := strings.Fields(rest); len(f) > 0 {
+				n, _ := strconv.ParseInt(f[0], 10, 64)
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// parseLoad1 reads the 1-minute load average (the first field of /proc/loadavg). 0 on junk.
+func parseLoad1(loadavg []byte) float64 {
+	if f := strings.Fields(string(loadavg)); len(f) > 0 {
+		n, _ := strconv.ParseFloat(f[0], 64)
+		return n
+	}
+	return 0
+}
+
+// parseDfUsedKB takes the Used column (index 2) from `df -kP` output: a header line then a
+// single POSIX-guaranteed-unwrapped data line. 0 if the shape is unexpected.
+func parseDfUsedKB(df []byte) int64 {
+	lines := nonEmptyLines(df)
+	if len(lines) < 2 {
+		return 0
+	}
+	if f := strings.Fields(lines[len(lines)-1]); len(f) >= 3 {
+		n, _ := strconv.ParseInt(f[2], 10, 64)
+		return n
+	}
+	return 0
+}
+
+// parseDuKB takes the size (first field, KB under `du -sk`) from du's summary line. 0 on junk.
+func parseDuKB(du []byte) int64 {
+	if f := strings.Fields(string(du)); len(f) > 0 {
+		n, _ := strconv.ParseInt(f[0], 10, 64)
+		return n
+	}
+	return 0
+}
+
+func nonEmptyLines(b []byte) []string {
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func countLines(b []byte) int { return len(nonEmptyLines(b)) }
+
+func resourceReq(payload json.RawMessage) (resourceRequest, error) {
+	var req resourceRequest
+	err := json.Unmarshal(payload, &req)
+	return req, err
+}
+
+func unitReq(payload json.RawMessage) (unitRequest, error) {
+	var req unitRequest
+	err := json.Unmarshal(payload, &req)
+	return req, err
+}
+
+func snapshotReq(payload json.RawMessage) (snapshotRequest, error) {
+	var req snapshotRequest
+	err := json.Unmarshal(payload, &req)
+	return req, err
+}
+
+func systemReq(payload json.RawMessage) (systemRequest, error) {
+	var req systemRequest
+	err := json.Unmarshal(payload, &req)
+	return req, err
+}
+
+// Client is the host end: typed calls to the guest agent over the channel.
+type Client struct {
+	c       *conn
+	version int             // negotiated guest protocol version (0 until Handshake)
+	caps    map[string]bool // verbs the guest advertised (nil until Handshake)
+}
+
+// NewClient wraps a connection to the guest (virtio-serial in prod, net.Pipe in tests).
+func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: &conn{rw: rw}} }
+
+// Handshake negotiates the host<->guest protocol: it reads the guest's version +
+// capabilities and refuses a guest the host can't drive (version outside
+// [MinGuestProtocol, GuestProtocol]) -- a safe deferral, since bring-up/upgrade then
+// fails rather than the host sending verbs a skewed guest might misinterpret. On success
+// the version + capabilities are recorded (see ProtocolVersion / Supports). The host
+// should call this once, right after connecting (and after any reconnect).
+func (g *Client) Handshake(ctx context.Context) (api.GuestHello, error) {
+	var h api.GuestHello
+	// Resync=true: on a reconnect, a stale in-flight reply from the dropped session can sit
+	// ahead of ours in the still-open virtio-serial stream -- skip it, don't fail.
+	if err := g.c.callResync(ctx, verbHello, nil, &h, true); err != nil {
+		return h, fmt.Errorf("guestagent: handshake: %w", err)
+	}
+	if !compatibleGuest(h.Version) {
+		return h, fmt.Errorf("guestagent: incompatible guest protocol v%d (host drives v%d..v%d)",
+			h.Version, api.MinGuestProtocol, api.GuestProtocol)
+	}
+	g.version = h.Version
+	g.caps = make(map[string]bool, len(h.Capabilities))
+	for _, c := range h.Capabilities {
+		g.caps[c] = true
+	}
+	return h, nil
+}
+
+// compatibleGuest reports whether the host can drive a guest speaking protocol v. Newer
+// than the host knows, or older than it still supports, is refused.
+func compatibleGuest(v int) bool {
+	return v >= api.MinGuestProtocol && v <= api.GuestProtocol
+}
+
+// Supports reports whether the guest advertised verb in its handshake. Before a handshake
+// (caps nil) it returns true -- optimistic, preserving the older "just try the verb"
+// behaviour for callers that don't negotiate.
+func (g *Client) Supports(verb string) bool {
+	if g.caps == nil {
+		return true
+	}
+	return g.caps[verb]
+}
+
+// ProtocolVersion is the negotiated guest protocol version (0 before a handshake).
+func (g *Client) ProtocolVersion() int { return g.version }
+
+// SetHostname renames the guest to this node's name so DRBD's `on <name>` matching
+// works (see verbSetHostname). Idempotent.
+func (g *Client) SetHostname(ctx context.Context, name string) error {
+	return g.c.call(ctx, verbSetHostname, hostnameRequest{Name: name}, nil)
+}
+
+// ConfigureNet sets a static CIDR on a guest NIC (the system/DRBD NIC) and brings
+// it up, so DRBD can use the private subnet. vipDev, when non-empty, records the NIC
+// the promoter should claim the VIP on (the two-subnet layout moves it to eth2);
+// "" leaves the guest's baked default. Idempotent.
+func (g *Client) ConfigureNet(ctx context.Context, dev, cidr, vipDev string) error {
+	return g.c.call(ctx, verbNetConfigure, netConfigureRequest{Dev: dev, CIDR: cidr, VIPDev: vipDev}, nil)
+}
+
+// Provision drops the rendered DRBD + reactor configs and create-md's the resource -- but only
+// if it has no valid metadata yet: it returns whether it created fresh metadata, so the
+// caller declares UpToDate only on a true first init (never on a reboot, which would wipe the
+// persisted replica). ReactorConfig is dropped regardless (idempotent).
+func (g *Client) Provision(ctx context.Context, req ProvisionRequest) (ProvisionResult, error) {
+	var res ProvisionResult
+	err := g.c.call(ctx, verbProvision, req, &res)
+	return res, err
+}
+
+// Up starts drbd@<res>.target (attach + connect; leaves the node Secondary).
+func (g *Client) Up(ctx context.Context, resource string) error {
+	return g.c.call(ctx, verbUp, resourceRequest{Resource: resource}, nil)
+}
+
+// Adjust rewrites the resource config and runs `drbdadm adjust` -- apply a peer-set change to the
+// already-running resource without a restart (runtime mesh growth). Called on the serving
+// primary to add a joining anchor/witness; the joining nodes come up via Provision+Up
+// (FreshInit=false) and resync. No create-md here, so the primary's disk is never touched.
+func (g *Client) Adjust(ctx context.Context, req ProvisionRequest) error {
+	return g.c.call(ctx, verbAdjust, req, nil)
+}
+
+// InitUpToDate declares a brand-new resource's data current (skips the initial
+// sync). One-time, first-init only -- never on an existing resource.
+func (g *Client) InitUpToDate(ctx context.Context, resource string) error {
+	return g.c.call(ctx, verbInitUUID, resourceRequest{Resource: resource}, nil)
+}
+
+// ReactorStart starts drbd-reactor, which then drives promotion (not us).
+func (g *Client) ReactorStart(ctx context.Context, resource string) error {
+	return g.c.call(ctx, verbReactor, resourceRequest{Resource: resource}, nil)
+}
+
+// Status reads the guest's DRBD/quorum ground truth into a QuorumState — the
+// summary the node reports up (shared/api's closed allowlist).
+func (g *Client) Status(ctx context.Context, resource string) (model.QuorumState, error) {
+	c, err := g.Cluster(ctx, resource)
+	return c.QuorumState, err
+}
+
+// Cluster reads the same sample whole: this node's QuorumState plus its peers'
+// roles and disk states, the input to "could someone else take over?".
+// Stays home — the peer half never rides the cloud wire.
+func (g *Client) Cluster(ctx context.Context, resource string) (model.Cluster, error) {
+	var c model.Cluster
+	err := g.c.call(ctx, verbStatus, resourceRequest{Resource: resource}, &c)
+	return c, err
+}
+
+// PayloadStart starts the payload's systemd unit inside the guest.
+func (g *Client) PayloadStart(ctx context.Context, unit string) error {
+	return g.c.call(ctx, verbPayloadStart, unitRequest{Unit: unit}, nil)
+}
+
+// PayloadPin pins the payload OCI image ref: records it on the replicated volume
+// and points the serve tag at it, so a subsequent (re)start of the payload runs it and
+// a failover converges to it. The image must be pre-staged.
+func (g *Client) PayloadPin(ctx context.Context, ref string) error {
+	return g.c.call(ctx, verbPayloadPin, payloadPinRequest{Ref: ref}, nil)
+}
+
+// ServiceRender writes the host-rendered quadlet source into the guest's /run and reloads
+// systemd, so the generated units exist. Node-local: run this on EVERY node, or a
+// survivor has nothing to start. Stale names the outgoing service's files, removed first.
+func (g *Client) ServiceRender(ctx context.Context, files map[string]string, stale []string) error {
+	return g.c.call(ctx, verbServiceRender, serviceRenderRequest{Files: files, Stale: stale}, nil)
+}
+
+// ServiceProvision creates the service's data subvolume + per-container subdirectories and
+// records the manifest as its identity. PRIMARY ONLY — it all lives on the replicated volume.
+// Idempotent: an existing subvolume is reused, never re-created, so a re-install keeps the data.
+func (g *Client) ServiceProvision(ctx context.Context, dataDir string, subdirs []string, manifest string) error {
+	req := serviceProvisionRequest{DataDir: dataDir, Subdirs: subdirs, Manifest: manifest}
+	return g.c.call(ctx, verbServiceProvision, req, nil)
+}
+
+// ServiceManifest reads the manifest recorded on the replicated volume, or "" when no service is
+// installed. "" is a legitimate answer (the shipped zero-service node), never an error.
+func (g *Client) ServiceManifest(ctx context.Context) (string, error) {
+	var s string
+	err := g.c.call(ctx, verbServiceManifest, struct{}{}, &s)
+	return s, err
+}
+
+// PayloadImage reports the payload image this node currently serves -- the replicated pin
+// , or "" when none is set (the node serves the baked default). Read from the guest
+// so it's ground truth across a failover: a survivor that converged to the pin reports it
+// even though it never applied the upgrade directive itself.
+func (g *Client) PayloadImage(ctx context.Context) (string, error) {
+	var image string
+	err := g.c.call(ctx, verbPayloadImage, nil, &image)
+	return image, err
+}
+
+// Resources reads the appliance's resource telemetry -- payload RSS/fds, load, and
+// the disk sub-series -- for the soak's trend oracle. unit is the payload's systemd unit
+// (for its pid) and dataDir the DRBD volume; both empty on a witness. Best-effort on the
+// guest, so a partial read comes back as a struct with the unread fields zero, not an error.
+func (g *Client) Resources(ctx context.Context, unit, dataDir string) (telemetry.NodeResources, error) {
+	var r telemetry.NodeResources
+	err := g.c.call(ctx, verbResources, resourcesRequest{Unit: unit, DataDir: dataDir}, &r)
+	return r, err
+}
+
+// WriteCert lands a renewed cert/key on the DRBD volume, where the TLS terminator
+// hot-reloads it -- so a cloud-scheduled renewal is applied with no restart. Replicated +
+// synced, so a failover serves the same cert.
+func (g *Client) WriteCert(ctx context.Context, cert, key string) error {
+	return g.c.call(ctx, verbCertWrite, certWriteRequest{Cert: cert, Key: key}, nil)
+}
+
+// BackupSave has the guest seal the home's sacred config (base/includes) to an
+// encrypted blob at dest, using the household's age public recipient. The guest
+// does the tar+encrypt locally and writes the blob itself — no bulk over the channel.
+func (g *Client) BackupSave(ctx context.Context, base string, includes []string, recipient, dest string) error {
+	return g.c.call(ctx, verbBackupSave, backupSaveRequest{Base: base, Includes: includes, Recipient: recipient, Dest: dest}, nil)
+}
+
+// BackupRestore has the guest decrypt the blob at src with the household identity and
+// extract it into base. A recovery op; the caller supplies the private key.
+func (g *Client) BackupRestore(ctx context.Context, base, src, identity string) error {
+	return g.c.call(ctx, verbBackupRestore, backupRestoreRequest{Base: base, Src: src, Identity: identity}, nil)
+}
+
+// GCSnapshots prunes old pre-upgrade snapshots under dir matching prefix*, keeping the
+// newest keep (retention).
+func (g *Client) GCSnapshots(ctx context.Context, dir, prefix string, keep int) error {
+	return g.c.call(ctx, verbDataGC, gcRequest{Dir: dir, Prefix: prefix, Keep: keep}, nil)
+}
+
+// PayloadStop stops the payload's unit -- the quiesce step before a snapshot.
+func (g *Client) PayloadStop(ctx context.Context, unit string) error {
+	return g.c.call(ctx, verbPayloadStop, unitRequest{Unit: unit}, nil)
+}
+
+// PayloadActive reports whether the payload's unit is active (the Running half of the
+// health-gate; readiness is probed host-side against the payload's health endpoint).
+func (g *Client) PayloadActive(ctx context.Context, unit string) (bool, error) {
+	var active bool
+	err := g.c.call(ctx, verbPayloadActive, unitRequest{Unit: unit}, &active)
+	return active, err
+}
+
+// PayloadHealth asks the guest to GET the payload health URL from inside itself and report 200
+// (the Ready half of the health-gate). Probing in-guest — not host->VIP over the LAN — keeps the
+// readiness check working under a networking substrate where the host can't reach the guest's VIP
+// (macvtap). Callers that need the legacy host-side behaviour on an OLD guest fall back when this
+// returns an error (an unknown-verb error from a guest built before this verb existed).
+func (g *Client) PayloadHealth(ctx context.Context, url string) (bool, error) {
+	var ok bool
+	err := g.c.call(ctx, verbPayloadHealth, healthRequest{URL: url}, &ok)
+	return ok, err
+}
+
+// PayloadActiveSince reports the unit's ActiveEnterTimestampMonotonic (usec since boot),
+// which advances only when the unit (re)enters active -- 0 while inactive. Unchanged across
+// a maintenance pause/resume proves the promoter re-adopted the running payload rather than
+// bouncing it (the contract's no-restart check).
+func (g *Client) PayloadActiveSince(ctx context.Context, unit string) (uint64, error) {
+	var usec uint64
+	err := g.c.call(ctx, verbPayloadSince, unitRequest{Unit: unit}, &usec)
+	return usec, err
+}
+
+// Snapshot takes a read-only btrfs snapshot of dataDir at dest (a subvolume on the
+// same DRBD volume, so it replicates with it).
+func (g *Client) Snapshot(ctx context.Context, dataDir, dest string) error {
+	return g.c.call(ctx, verbDataSnapshot, snapshotRequest{DataDir: dataDir, Path: dest}, nil)
+}
+
+// Restore replaces the live dataDir subvolume with a fresh rw snapshot of src. The
+// caller must have stopped the payload first (bind released).
+func (g *Client) Restore(ctx context.Context, dataDir, src string) error {
+	return g.c.call(ctx, verbDataRestore, snapshotRequest{DataDir: dataDir, Path: src}, nil)
+}
+
+// SystemPath reads the guest's current system closure store path -- the code identity
+// recorded on a snapshot (node-independent, unlike a generation number) so code and
+// data roll back together.
+func (g *Client) SystemPath(ctx context.Context) (string, error) {
+	var path string
+	err := g.c.call(ctx, verbOSSystem, nil, &path)
+	return path, err
+}
+
+// Stage realises closure into the guest's nix store, substituting whatever is missing --
+// the delivery half of, and the ONLY call that pulls bytes. Everything after
+// it (Switch's and StageBoot's staged checks, a promoting peer's converge) requires the closure
+// to be local already, because the failover path must never fetch.
+//
+// src is the zero StageSource in production, where the guest uses the caches baked into
+// its image; a caller sets it to override that for one call (see StageSource).
+func (g *Client) Stage(ctx context.Context, closure string, src StageSource) error {
+	return g.c.call(ctx, verbOSStage, stageRequest{Path: closure, From: src.URL, FromKey: src.Key}, nil)
+}
+
+// Components reads a closure's boot-critical parts. An empty closure reads the
+// BOOTED generation -- the reference to diff a staged target against, since that is the
+// kernel actually running. The host compares the two and picks the activation method;
+// this call has no opinion.
+func (g *Client) Components(ctx context.Context, closure string) (SystemComponents, error) {
+	var c SystemComponents
+	err := g.c.call(ctx, verbOSComponents, systemRequest{Path: closure}, &c)
+	return c, err
+}
+
+// Switch points the system profile at closure (a store path) and activates it -- the
+// whole-VM code half of an upgrade/rollback. Reverting is the same call with an
+// earlier closure (a roll-forward). The closure must already be in the store -- Stage
+// is what puts it there.
+func (g *Client) Switch(ctx context.Context, closure string) error {
+	return g.c.call(ctx, verbOSSwitch, systemRequest{Path: closure}, nil)
+}
+
+// StageBoot makes closure bootable without making it the default: it registers the closure
+// as a generation of the `staging` system profile and reinstalls the bootloader from the
+// RUNNING system, so grub gains a staging submenu while its default entry does not move
+// . Nothing on the guest's disk then decides which of the two boots -- the host
+// does, per launch, with the SMBIOS selector (platform.QEMUSpec.BootStaging).
+//
+// That split is deliberate: the arming lives OUTSIDE the disk, so an OS-disk snapshot taken
+// after this call contains nothing armed, and restoring it cannot re-run the generation the
+// restore was undoing. (The rejected alternative, `grub-reboot`, writes the arming into the
+// guest's own grubenv -- inside the snapshot.) It also fails safe: an unset or unrecognised
+// selector leaves grub on its default, so a bug boots the OLD system.
+//
+// The closure must already be staged; this call never fetches.
+func (g *Client) StageBoot(ctx context.Context, closure string) error {
+	return g.c.call(ctx, verbOSStageBoot, systemRequest{Path: closure}, nil)
+}
+
+// PowerOff asks the guest OS to shut itself down cleanly. It returns as soon as the request
+// is accepted -- the shutdown then proceeds without us, and the control channel dies with
+// it, which is expected rather than an error. Confirm completion by watching the VM stop
+// (platform.Guest.WaitStopped), never by this call.
+//
+// Preferred over the ACPI power button (platform.Guest.Shutdown) whenever the agent is
+// reachable: it asks the OS in the OS's own terms instead of relying on something inside
+// being subscribed to a virtual button. Keep both -- this one needs a live agent, and the
+// ACPI one is what remains when the agent is the thing that died.
+func (g *Client) PowerOff(ctx context.Context) error {
+	return g.c.call(ctx, verbOSPowerOff, nil, nil)
+}
+
+// CollectGarbage drops old generations of the guest's profiles and collects the store
+// -- the counterweight to incremental updates, which add a closure per release and
+// never removed one. Host-scheduled and never inside a maintenance bracket; see the observe
+// loop, where being on the same goroutine as the upgrade dispatch makes that structural.
+func (g *Client) CollectGarbage(ctx context.Context) error {
+	return g.c.call(ctx, verbOSGC, nil, nil)
+}
+
+// ReactorPause suspends drbd-reactor's promoter for a snippet (maintenance mode):
+// the resource stays Primary and its services keep running, but the promoter stops
+// reacting -- so a planned payload stop isn't mistaken for a failure.
+func (g *Client) ReactorPause(ctx context.Context, snippet string) error {
+	return g.c.call(ctx, verbReactorPause, reactorRequest{Snippet: snippet}, nil)
+}
+
+// ReactorEvict hands this node's work to a peer -- a PLANNED handover, the thing an upgrade
+// needs so a healthy node can reboot while its peer serves. keepMasked leaves
+// the node ineligible to take it back (the reboot path); unmask releases that and evicts
+// nothing. It reports only that the eviction RAN: which peer took over is drbd-reactor's
+// election, so a caller that cares must read the roles afterwards.
+func (g *Client) ReactorEvict(ctx context.Context, keepMasked, unmask bool) error {
+	return g.c.call(ctx, verbReactorEvict, evictRequest{KeepMasked: keepMasked, Unmask: unmask}, nil)
+}
+
+// ReactorActive reports whether the promoter daemon is running — false meaning someone has it
+// paused, i.e. a maintenance bracket is already open. The interim guard: a second bracket user
+// refuses to start rather than corrupting the first one's bracket from the middle. Advisory by
+// construction, since a pause can still land between this answer and the caller's own.
+func (g *Client) ReactorActive(ctx context.Context) (bool, error) {
+	var active bool
+	err := g.c.call(ctx, verbReactorActive, struct{}{}, &active)
+	return active, err
+}
+
+// ReactorResume re-adopts the promoter (drbd-reactor enable); it re-runs the initial
+// target start, which is a no-op on an already-Primary node with services up.
+func (g *Client) ReactorResume(ctx context.Context, snippet string) error {
+	return g.c.call(ctx, verbReactorResume, reactorRequest{Snippet: snippet}, nil)
+}
+
+// BringUpSpec is one DRBD resource to bring up on this node.
+type BringUpSpec struct {
+	Resource  drbd.Resource
+	Diskless  bool     // this node is a diskless witness (no create-md, no promoter)
+	FreshInit bool     // first-ever bring-up of this resource: declare it UpToDate (skip initial sync)
+	Promoter  []string // drbd-reactor promoter units in start order; nil on a witness
+	// ServiceUnits re-materialises a runtime-installed service's quadlet files before the
+	// promoter is started. They live on tmpfs inside the guest, so a reboot erases them
+	// while the host's manifest cache survives — and Promoter above then names units that do not
+	// exist. Empty on a node with no runtime-installed service, which is the shipped state.
+	//
+	// It has to happen HERE rather than after BringUp returns, and that is the whole reason this
+	// field exists: ReactorStart is the last thing below, so by the time the caller has its
+	// channel back the promoter is already trying to start the chain. Units must exist before
+	// anything can be asked to start them.
+	ServiceUnits map[string]string
+	// ServiceImages are the .image warm units to start after rendering. Their
+	// WantedBy=multi-user.target already fired during boot, so units written now would never run
+	// otherwise, and the containers' Pull=never would fail the chain at promotion instead of
+	// fetching. On a reboot the images are still in local storage, so this is a no-op, not a pull.
+	ServiceImages []string
+}
+
+// BringUp performs the agent-owned bring-up: render + drop the DRBD
+// config and (on a data node) create-md, start drbd@<res>.target, then -- on a data
+// node -- start drbd-reactor. Promotion is drbd-reactor's, done asynchronously once
+// quorum forms; the caller observes convergence via Status. A witness (Diskless,
+// no Promoter) provisions the config and comes up, but creates no metadata and
+// runs no promoter.
+func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
+	res := spec.Resource
+	var reactorCfg string
+	if len(spec.Promoter) > 0 {
+		reactorCfg = drbd.ReactorConfig(res.Name, spec.Promoter)
+	}
+	req := ProvisionRequest{
+		Resource:      res.Name,
+		ResConfig:     res.Config(),
+		ReactorConfig: reactorCfg,
+		Diskless:      spec.Diskless,
+	}
+	prov, err := g.Provision(ctx, req)
+	if err != nil {
+		return err
+	}
+	if err := g.Up(ctx, res.Name); err != nil {
+		return err
+	}
+	// Declare UpToDate (skip-initial-sync) only on a TRUE first init: the designated seed AND a
+	// disk we actually just created metadata on. On a reboot the metadata already existed, so
+	// Provision skipped create-md and we attach + resync from peers instead of re-declaring
+	// UpToDate -- which would split-brain against the replica that kept serving.
+	if spec.FreshInit && prov.CreatedMetadata {
+		if err := g.InitUpToDate(ctx, res.Name); err != nil {
+			return err
+		}
+	}
+	// Put the service's units back before the promoter can look for them. A failure here
+	// fails bring-up, like every other step: the alternative is a node that comes up with a
+	// promoter chain naming units that do not exist, which fails later and less legibly. (The
+	// soft-failure rule lives one level up, in reading the cache at all — an unusable cache means
+	// "nothing installed", and this code never runs.)
+	if len(spec.ServiceUnits) > 0 {
+		if err := g.ServiceRender(ctx, spec.ServiceUnits, nil); err != nil {
+			return fmt.Errorf("re-render installed service units: %w", err)
+		}
+		for _, u := range spec.ServiceImages {
+			if err := g.PayloadStart(ctx, u); err != nil {
+				return fmt.Errorf("warm image unit %s: %w", u, err)
+			}
+		}
+	}
+	if len(spec.Promoter) > 0 {
+		return g.ReactorStart(ctx, res.Name)
+	}
+	return nil
+}
+
+// WaitPrimary polls Status until this node is the quorate primary -- i.e. bring-up
+// has converged: drbd-reactor promoted once quorum formed. interval is the poll
+// cadence; the caller bounds the total wait via ctx. Transient Status errors
+// (guest still coming up) are ignored until ctx expires.
+func (g *Client) WaitPrimary(ctx context.Context, resource string, interval time.Duration) error {
+	return g.waitStatus(ctx, resource, interval, func(qs model.QuorumState) bool {
+		return qs.Primary && qs.Quorate
+	})
+}
+
+// WaitQuorate polls Status until this node is quorate -- the convergence gate for a
+// promoter-capable data node in a *multi-node* cluster, where drbd-reactor promotes
+// exactly one node and the others settle Secondary. Gating those on WaitPrimary would
+// hang the secondaries; quorate means "participating in a healthy cluster" regardless
+// of which node won the primary role (the VIP/payload run on whoever did).
+func (g *Client) WaitQuorate(ctx context.Context, resource string, interval time.Duration) error {
+	return g.waitStatus(ctx, resource, interval, func(qs model.QuorumState) bool {
+		return qs.Quorate
+	})
+}
+
+// WaitStatus polls Status until ready(qs) or ctx expires; transient Status errors
+// (guest still coming up) are ignored until then.
+func (g *Client) waitStatus(ctx context.Context, resource string, interval time.Duration, ready func(model.QuorumState) bool) error {
+	for {
+		if qs, err := g.Status(ctx, resource); err == nil && ready(qs) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// Close closes the underlying channel.
+func (g *Client) Close() error { return g.c.close() }
+
+// BringUpGuest is the host-side entry point once the guest VM is running: dial its
+// control socket (the virtio-serial chardev's host end), bring the resource up, and
+// wait for the node to converge to quorate primary.
+func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return fmt.Errorf("guestagent: dial %s: %w", sock, err)
+	}
+	g := NewClient(conn)
+	defer g.Close()
+	if err := g.BringUp(ctx, spec); err != nil {
+		return err
+	}
+	return g.WaitPrimary(ctx, spec.Resource.Name, DefaultPollInterval)
+}
+
+// osExecutor is the real guest Executor: shell out + write files.
+type osExecutor struct{}
+
+// NewOSExecutor returns the production Executor used by `agent --guest`.
+func NewOSExecutor() Executor { return osExecutor{} }
+
+func (osExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func (osExecutor) WriteFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func (osExecutor) Sethostname(name string) error {
+	return syscall.Sethostname([]byte(name))
+}

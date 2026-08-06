@@ -1,0 +1,16 @@
+# Issues are for bugs; everything else routes elsewhere. blank_issues_enabled is
+# false on purpose: an empty box invites support questions into the bug tracker,
+# which is the failure mode this split exists to prevent.
+blank_issues_enabled: false
+contact_links:
+  - name: Questions, help, and "should this work like X?"
+    url: https://github.com/briardhq/briard/discussions
+    about: >-
+      Use Discussions for anything that is not a reproducible bug. Setup help,
+      hardware questions, "is this supposed to happen?", and feature ideas all
+      belong there.
+  - name: Security bug
+    url: mailto:security@briard.io
+    about: >-
+      Please email security@briard.io rather than opening a public issue, so it
+      can be fixed before it is public.

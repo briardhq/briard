@@ -1,0 +1,62 @@
+# Per-commit gate: fast, hosted-runner-safe. Go build/vet/test + the architecture
+# guards (the enforced invariants — see CONTRIBUTING.md) + a parse-only *.nix syntax
+# check + the no-AI-trailers gate.
+#
+# It deliberately does NOT run the VM tests, or even `nix flake check`: the latter
+# evaluates the whole NixOS module system for every nixosTest cluster in one process
+# (multi-GB — it OOMs a hosted runner). The failover / upgrade / HA VM tests need real
+# KVM and run on the maintainers' own hardware, not here. To run them yourself:
+#
+#     nix build .#tests.drbd-failover -L    # one test
+#     nix build .#drbd                      # a whole tag
+#     nix flake check                       # flake integrity (boots no VMs)
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the trailer gate below needs the pushed range, not a shallow tip
+
+      # No AI attribution trailers in commit messages. `Claude-Session:` in particular
+      # would leak a private session URL; `Co-Authored-By: Claude` goes with it. This is
+      # mechanism over discipline — it catches a contributor's trailers, which no local
+      # config could. Scoped to the newly pushed commits on purpose (a full-history scan
+      # would need every author to have never used such a trailer).
+      - name: No AI attribution trailers (pushed commits only)
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.sha }}"
+          # all-zeros = branch creation / no usable base; fall back to the tip commit
+          case "$base" in
+            ''|0000000000000000000000000000000000000000) range="-1 $head" ;;
+            *) git cat-file -e "$base^{commit}" 2>/dev/null && range="$base..$head" || range="-1 $head" ;;
+          esac
+          if git log $range --format='%B' | grep -nE 'Co-Authored-By: Claude|Claude-Session:'; then
+            echo "::error::commit message carries an AI attribution trailer; rewrite before pushing"
+            exit 1
+          fi
+          echo "no AI attribution trailers in $range"
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Decision logic tested exhaustively + the enforced invariants (host seam
+      # discipline, failover-is-observe-only, no force-promotion — CONTRIBUTING.md).
+      # Runs inside `nix develop`, so a broken flake.nix / devShell already fails here.
+      - name: Go checks (fmt, vet, unit + architecture guards)
+        run: nix develop --command bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test ./...'
+
+      # A genuine syntax check: parse every *.nix to its AST, no evaluation. NOT
+      # `nix flake check` (see the header — it OOMs a hosted runner).
+      - name: Nix syntax check (parse only)
+        run: git ls-files '*.nix' | xargs -P4 -n1 nix-instantiate --parse >/dev/null

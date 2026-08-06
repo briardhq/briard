@@ -1,0 +1,29 @@
+[
+{
+  "name": "r0",
+  "node-id": 0,
+  "role": "Primary",
+  "suspended-quorum": true,
+  "force-io-failures": true,
+  "devices": [
+    {
+      "volume": 0,
+      "minor": 0,
+      "disk-state": "UpToDate",
+      "quorum": false
+    } ],
+  "connections": [
+    {
+      "peer-node-id": 1,
+      "name": "node2",
+      "connection-state": "Connecting",
+      "peer-role": "Unknown"
+    },
+    {
+      "peer-node-id": 2,
+      "name": "witness",
+      "connection-state": "Connecting",
+      "peer-role": "Unknown"
+    } ]
+}
+]

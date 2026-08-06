@@ -1,0 +1,71 @@
+// Command quadlet-render is a TEST HELPER (nixosTest/service-install.nix), not a product binary.
+//
+// It exists so the integration test drives the REAL renderer rather than a hand-written copy of
+// its output — the mistake the quadlet spike deliberately accepted ("here they stand in for that
+// output, so the spike tests the mechanism and not our renderer") and which this test exists to
+// close. Everything downstream of it — podman, quadlet, systemd, drbd-reactor — is real.
+//
+// It stands in for the host agent's orchestration, which cannot run here: the install path drives
+// the guest over the virtio-serial channel, and in the hermetic harness the node IS the guest with
+// no host on the other end. That orchestration is unit-tested (agent/host/service_test.go); what
+// this test adds is that the renderer's output is valid quadlet a real promoter can drive.
+//
+//	quadlet-render <manifest.json> <outdir>
+//
+// writes the rendered unit files into outdir, plus two sidecars the test reads:
+// `chain` (the promoter start-list, one unit per line) and `images` (the .image warm units).
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"briard.io/agent/quadlet"
+	"briard.io/shared/manifest"
+)
+
+func main() {
+	if len(os.Args) != 3 {
+		fatal("usage: quadlet-render <manifest.json> <outdir>")
+	}
+	raw, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		fatal("read manifest: %v", err)
+	}
+	// Parse, not just unmarshal: the test must exercise the validating path, so a manifest that
+	// would be refused in production is refused here too.
+	m, id, err := manifest.Parse(raw)
+	if err != nil {
+		fatal("parse manifest: %v", err)
+	}
+	r, err := quadlet.Render(m)
+	if err != nil {
+		fatal("render: %v", err)
+	}
+	out := os.Args[2]
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		fatal("mkdir: %v", err)
+	}
+	for name, body := range r.Files {
+		if err := os.WriteFile(filepath.Join(out, name), []byte(body), 0o644); err != nil {
+			fatal("write %s: %v", name, err)
+		}
+	}
+	write := func(name string, lines []string) {
+		if err := os.WriteFile(filepath.Join(out, name), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			fatal("write %s: %v", name, err)
+		}
+	}
+	write("chain", quadlet.Chain(r))
+	write("images", r.ImageUnits)
+	write("identity", []string{string(id)})
+	write("dataroot", []string{quadlet.DataRoot(m.Name)})
+	fmt.Printf("rendered %s (%s): %d files\n", m.Name, id, len(r.Files))
+}
+
+func fatal(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "quadlet-render: "+format+"\n", a...)
+	os.Exit(1)
+}

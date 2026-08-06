@@ -1,0 +1,9 @@
+{
+  "domain": "briard_canary",
+  "name": "Briard Canary",
+  "config_flow": true,
+  "version": "1.0.0",
+  "documentation": "https://briard.casa",
+  "codeowners": [],
+  "iot_class": "local_polling"
+}

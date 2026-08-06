@@ -1,0 +1,43 @@
+Subject: [PATCH] drbdstatus: tolerate a peer-less resource in `drbdsetup show --json`
+
+The promoter's split-brain-avoidance detector (`get_split_brain_avoidance_policy`
+-> `drbdstatus::get`) parses `drbdsetup show --show-defaults --json <res>` into
+`drbdstatus::Resource`, whose `connections` field is required.
+
+For a single-node / peer-less resource (zero connection stanzas, e.g. a
+`connection-mesh { hosts self; }`), `drbdsetup show --json` omits the
+`connections` key entirely -- unlike `drbdsetup status --json`, which emits an
+empty `"connections": []`. serde therefore fails with
+
+    missing field `connections` at line N column M
+
+and the promoter logs `IGNORING resource '<res>'` for *every* events2 change/exists
+event, so `process_drbd_event` never runs for that resource: its reactive
+state (may_promote, start/stop reactions) goes stale. The resource is still
+adopted once by the initial adjust pass, so it limps in steady state, but any
+subsequent event-driven transition is silently dropped.
+
+Mark `connections` `#[serde(default)]` so an absent key deserializes to an empty
+vector -- which is exactly correct for a resource with no peers. No behavioural
+change for multi-node resources (the key is present there).
+
+Reproduced with drbd-utils 9.33.0 + drbd-reactor 1.11.0; the same struct is
+present on master.
+---
+ src/drbdstatus.rs | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/drbdstatus.rs b/src/drbdstatus.rs
+--- a/src/drbdstatus.rs
++++ b/src/drbdstatus.rs
+@@ -8,6 +8,10 @@
+ pub struct Resource {
+     pub resource: String,
+     pub options: Options,
++    // A peer-less (single-node) resource has no connection stanzas, so
++    // `drbdsetup show --json` omits `connections` entirely rather than
++    // emitting an empty array; tolerate that instead of failing to parse.
++    #[serde(default)]
+     pub connections: Vec<Connection>,
+ }
+

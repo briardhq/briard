@@ -1,0 +1,34 @@
+# Go
+/bin/
+*.test
+*.out
+# stray repo-root Go build artifacts from an ad-hoc `go build ./<pkg>` (real builds go to
+# package.nix / a temp dir), named after their cmd dir.
+/driver
+/briard-agent
+/witness-forwarder
+/reverse-proxy-bin
+
+# Nix
+/result
+/result-*
+/.direnv/
+
+# editor / OS
+*.swp
+.DS_Store
+
+# secrets — never commit (loaded via direnv dotenv; see .envrc)
+.env
+.env.*
+!.env.example
+/.secrets/
+/token
+# Binary-cache signing keys. `publish-cache.sh keygen` defaults its PRIVATE key to
+# ./cache-priv-key.pem — i.e. THIS directory, which is the repo V3.7a publishes publicly, so
+# an unguarded `git add -A` right after keygen would commit the trust root for every guest's
+# OS updates. The real key belongs outside the tree entirely (point CACHE_SIGN_KEY at it);
+# this is a backstop for the default path, not the plan. [B.74]
+*.pem
+cache-priv-key
+cache-pub-key

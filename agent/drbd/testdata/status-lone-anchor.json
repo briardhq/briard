@@ -1,0 +1,38 @@
+[
+{
+  "name": "r0",
+  "node-id": 0,
+  "role": "Primary",
+  "suspended": false,
+  "suspended-quorum": false,
+  "force-io-failures": false,
+  "write-ordering": "flush",
+  "devices": [
+    {
+      "volume": 0,
+      "minor": 0,
+      "disk-state": "UpToDate",
+      "client": false,
+      "open": true,
+      "quorum": true,
+      "size": 262100
+    } ],
+  "connections": [
+    {
+      "peer-node-id": 2,
+      "name": "witness",
+      "connection-state": "Connected",
+      "congested": false,
+      "peer-role": "Secondary",
+      "peer_devices": [
+        {
+          "volume": 0,
+          "replication-state": "Established",
+          "peer-disk-state": "Diskless",
+          "peer-client": true,
+          "resync-suspended": "no",
+          "percent-in-sync": 100.00
+        } ]
+    } ]
+}
+]

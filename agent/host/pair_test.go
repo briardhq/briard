@@ -1,0 +1,273 @@
+package host
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"briard.io/agent/guestagent"
+	"briard.io/agent/platform"
+	"briard.io/shared/api"
+)
+
+// fakeMesher records which guest verb the pairing reconcile drove. netCalls captures every
+// ConfigureNet (the DRBD NIC + the witness NIC in a forwarded-witness pairing) in order.
+type fakeMesher struct {
+	netCalled               bool
+	netDev, netCIDR, vipDev string
+	netCalls                []netCall
+	adjusted                *guestagent.ProvisionRequest
+	broughtUp               *guestagent.BringUpSpec
+}
+
+type netCall struct{ dev, cidr, vipDev string }
+
+func (f *fakeMesher) ConfigureNet(_ context.Context, dev, cidr, vipDev string) error {
+	f.netCalled, f.netDev, f.netCIDR, f.vipDev = true, dev, cidr, vipDev
+	f.netCalls = append(f.netCalls, netCall{dev, cidr, vipDev})
+	return nil
+}
+func (f *fakeMesher) Adjust(_ context.Context, req guestagent.ProvisionRequest) error {
+	f.adjusted = &req
+	return nil
+}
+func (f *fakeMesher) BringUp(_ context.Context, spec guestagent.BringUpSpec) error {
+	f.broughtUp = &spec
+	return nil
+}
+
+// fakeWitness records the witness-forwarder the reconcile started (nil = never started).
+type fakeWitness struct{ started *platform.ForwarderSpec }
+
+func (w *fakeWitness) StartForwarder(_ context.Context, s platform.ForwarderSpec) error {
+	w.started = &s
+	return nil
+}
+
+// threePeerMesh is anchorA (seed/primary) + anchorB (blank joiner) + a diskless witness.
+func threePeerMesh() []api.MeshPeer {
+	return []api.MeshPeer{
+		{Name: "anchorA", NodeID: 0, Address: "10.0.0.1:7789", Disk: "/dev/vdb"},
+		{Name: "anchorB", NodeID: 1, Address: "10.0.0.2:7789", Disk: "/dev/vdb"},
+		{Name: "witness", NodeID: 2, Address: "10.0.0.3:7789"}, // diskless
+	}
+}
+
+// The serving primary adjusts the RUNNING resource in place (keeps its data): ConfigureNet to its
+// replication address, then Adjust with the full 3-peer config -- never BringUp (which would
+// create-md and could re-seed).
+func TestReconcileMeshPrimaryAdjustsInPlace(t *testing.T) {
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"}
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
+		Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
+	f := &fakeMesher{}
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if f.broughtUp != nil {
+		t.Error("the primary must NOT bring-up (no create-md on the serving replica)")
+	}
+	if f.adjusted == nil {
+		t.Fatal("the primary must adjust in place")
+	}
+	if !f.netCalled || f.netCIDR != "10.0.0.1/24" || f.vipDev != "eth2" {
+		t.Errorf("configure-net = %+v, want its replication CIDR + the VIP dev", f)
+	}
+	// The adjusted .res carries the whole widened mesh, and the promoter snippet is (re)written.
+	for _, want := range []string{"on anchorA", "on anchorB", "on witness", "connection-mesh"} {
+		if !strings.Contains(f.adjusted.ResConfig, want) {
+			t.Errorf("adjusted .res missing %q:\n%s", want, f.adjusted.ResConfig)
+		}
+	}
+	if !strings.Contains(f.adjusted.ReactorConfig, "briard-vip.service") {
+		t.Errorf("adjusted reactor config = %q, want the promoter unit", f.adjusted.ReactorConfig)
+	}
+}
+
+// A blank second anchor joins: fresh bring-up as a NON-seed (FreshInit=false), so it attaches and
+// resyncs as SyncTarget rather than declaring itself UpToDate (which would split-brain).
+func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
+	cfg := Config{Node: "anchorB", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"}
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
+		Join: true, SystemDev: "eth1", SystemCIDR: "10.0.0.2/24"}
+	f := &fakeMesher{}
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if f.adjusted != nil {
+		t.Error("a blank joiner must NOT adjust (it has no running resource to adjust)")
+	}
+	if f.broughtUp == nil {
+		t.Fatal("a blank joiner must bring up")
+	}
+	if f.broughtUp.FreshInit {
+		t.Error("a joiner must NOT FreshInit (never declare UpToDate -- it resyncs from the primary)")
+	}
+	if f.broughtUp.Diskless {
+		t.Error("a disk-bearing anchor must not be diskless")
+	}
+	if len(f.broughtUp.Promoter) == 0 {
+		t.Error("a disk-bearing anchor runs the promoter (it can be promoted on failover)")
+	}
+	if len(f.broughtUp.Resource.Peers) != 3 {
+		t.Errorf("joiner bring-up mesh has %d peers, want 3", len(f.broughtUp.Resource.Peers))
+	}
+	if f.netCIDR != "10.0.0.2/24" {
+		t.Errorf("joiner configure-net CIDR = %q, want 10.0.0.2/24", f.netCIDR)
+	}
+}
+
+// The diskless witness joins for the quorum vote only: bring up diskless, no promoter.
+func TestReconcileMeshWitnessJoinsDisklessNoPromoter(t *testing.T) {
+	cfg := Config{Node: "witness", Promoter: []string{"briard-vip.service"}}
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
+		Join: true, SystemDev: "eth1", SystemCIDR: "10.0.0.3/24"}
+	f := &fakeMesher{}
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if f.broughtUp == nil {
+		t.Fatal("the witness must bring up")
+	}
+	if !f.broughtUp.Diskless {
+		t.Error("the witness must bring up diskless (no metadata, quorum vote only)")
+	}
+	if len(f.broughtUp.Promoter) != 0 {
+		t.Error("the witness runs no promoter (it never serves)")
+	}
+}
+
+// forwardedWitnessSpec is a managed pairing whose diskless voter is the cloud witness reached
+// through each anchor's host forwarder: the witness peer's mesh Address is the host-forwarder listen
+// addr, and the MeshWitness block carries the private guest↔host link + the cloud proxy target.
+func forwardedWitnessSpec(self string, join bool, cidr string) api.MeshSpec {
+	peers := []api.MeshPeer{
+		{Name: "anchorA", NodeID: 0, Address: "10.7.0.1:7789", Disk: "/dev/vdb"},
+		{Name: "anchorB", NodeID: 1, Address: "10.7.0.2:7789", Disk: "/dev/vdb"},
+		{Name: "cloud-witness", NodeID: 2, Address: "10.9.9.1:7789"}, // the host forwarder, not the LAN
+	}
+	_ = self
+	return api.MeshSpec{
+		Resource: "r0", Device: "/dev/drbd0", Peers: peers,
+		Join: join, SystemDev: "eth1", SystemCIDR: cidr,
+		Witness: &api.MeshWitness{
+			Dev: "eth3", CIDR: "10.9.9.2/24", LocalAddr: "10.9.9.2:7789",
+			Target: "witness.briard.example:7788", ServerName: "witness.briard.example",
+		},
+	}
+}
+
+// witnessCfg is a node configured with the host-held forwarder identity (bin + anchor cert/key/ca).
+func witnessCfg(node string) Config {
+	return Config{
+		Node: node, Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
+		ForwarderBin: "/opt/briard/bin/witness-forwarder",
+		WitnessCert:  "/var/lib/briard/pki/node.crt",
+		WitnessKey:   "/var/lib/briard/pki/node.key",
+		WitnessCA:    "/var/lib/briard/pki/ca.crt",
+	}
+}
+
+// A forwarded-witness pairing addresses the private witness NIC (eth3), starts the host forwarder on
+// the witness peer's mesh address, and renders the explicit-connection .res (WitnessLocal per anchor).
+func TestReconcileMeshForwardedWitnessStartsForwarder(t *testing.T) {
+	cfg := witnessCfg("anchorA")
+	spec := forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
+	f, w := &fakeMesher{}, &fakeWitness{}
+	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	// Both NICs were addressed: eth1 (DRBD) and eth3 (witness link, no VIP dev).
+	var eth1, eth3 *netCall
+	for i := range f.netCalls {
+		switch f.netCalls[i].dev {
+		case "eth1":
+			eth1 = &f.netCalls[i]
+		case "eth3":
+			eth3 = &f.netCalls[i]
+		}
+	}
+	if eth1 == nil || eth1.cidr != "10.7.0.1/24" {
+		t.Errorf("eth1 configure-net = %+v, want the DRBD CIDR", eth1)
+	}
+	if eth3 == nil || eth3.cidr != "10.9.9.2/24" || eth3.vipDev != "" {
+		t.Errorf("eth3 configure-net = %+v, want the private witness CIDR + no VIP dev", eth3)
+	}
+	// The forwarder was started at the witness peer's mesh address, tunnelling to the cloud proxy
+	// with the host-held anchor cert.
+	if w.started == nil {
+		t.Fatal("the host witness-forwarder was not started")
+	}
+	if w.started.Listen != "10.9.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
+		t.Errorf("forwarder = %+v, want listen 10.9.9.1:7789 -> the cloud proxy", w.started)
+	}
+	if w.started.Cert != cfg.WitnessCert || w.started.ServerName != "witness.briard.example" {
+		t.Errorf("forwarder identity = %+v, want the host-held anchor cert + proxy SAN", w.started)
+	}
+	// The .res is the explicit-connection form: each anchor carries its witness-side local address.
+	if !strings.Contains(f.adjusted.ResConfig, "10.9.9.2:7789") ||
+		strings.Contains(f.adjusted.ResConfig, "connection-mesh") {
+		t.Errorf("forwarded-witness .res should be explicit-connection with the witness local:\n%s", f.adjusted.ResConfig)
+	}
+}
+
+// A forwarded-witness pairing on a node missing the forwarder identity fails BEFORE any DRBD change
+// -- a mis-provisioned anchor never half-applies a pairing it can't complete.
+func TestReconcileMeshForwardedWitnessFailsWithoutIdentity(t *testing.T) {
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"} // no forwarder bin/cert
+	spec := forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
+	f, w := &fakeMesher{}, &fakeWitness{}
+	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err == nil {
+		t.Fatal("a forwarded-witness pairing without forwarder identity must fail")
+	}
+	if f.adjusted != nil || f.broughtUp != nil {
+		t.Error("DRBD must not be touched when the witness path can't be brought up")
+	}
+	if w.started != nil {
+		t.Error("the forwarder must not start without its identity")
+	}
+}
+
+// The diskless cloud witness itself is provisioned out of band, so it never starts a
+// forwarder even when the mesh carries a MeshWitness block.
+func TestReconcileMeshForwardedWitnessNodeStartsNoForwarder(t *testing.T) {
+	cfg := Config{Node: "cloud-witness"}
+	spec := forwardedWitnessSpec("cloud-witness", true, "10.9.9.9/24")
+	f, w := &fakeMesher{}, &fakeWitness{}
+	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if w.started != nil {
+		t.Error("the diskless witness node must not start a forwarder (it IS the witness)")
+	}
+}
+
+// A mesh that doesn't list this node is a mistake, not a silent no-op.
+func TestReconcileMeshRefusesWhenSelfAbsent(t *testing.T) {
+	cfg := Config{Node: "stranger"}
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(), Join: true}
+	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, spec, func(string, ...any) {}); err == nil {
+		t.Fatal("a mesh without this node must error, not proceed")
+	}
+}
+
+// ApplyPair parses the directive payload and reports the terminal outcome.
+func TestApplyPairOutcome(t *testing.T) {
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}}
+	payload, _ := json.Marshal(api.MeshSpec{Resource: "r0", Device: "/dev/drbd0",
+		Peers: threePeerMesh(), Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"})
+	f := &fakeMesher{}
+	o := cfg.applyPair(context.Background(), f, &fakeWitness{}, api.Directive{ID: "p1", Kind: api.DirectivePair, Payload: string(payload)}, func(string, ...any) {})
+	if o.State != api.OutcomeDone || o.ID != "p1" {
+		t.Errorf("good pair outcome = %+v, want done/p1", o)
+	}
+	if f.adjusted == nil {
+		t.Error("applyPair did not drive the reconcile")
+	}
+
+	bad := cfg.applyPair(context.Background(), f, &fakeWitness{}, api.Directive{ID: "p2", Kind: api.DirectivePair, Payload: "{not json"}, func(string, ...any) {})
+	if bad.State != api.OutcomeFailed {
+		t.Errorf("malformed payload outcome = %+v, want failed", bad)
+	}
+}

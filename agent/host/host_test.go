@@ -1,0 +1,538 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path"
+	"reflect"
+	"slices"
+	"testing"
+	"time"
+
+	"briard.io/agent/drbd"
+	"briard.io/agent/guestagent"
+	"briard.io/agent/overlay"
+	"briard.io/shared/api"
+	"briard.io/shared/model"
+	"briard.io/shared/telemetry"
+)
+
+// fakeOverlay is an overlay.OverlayProvider stand-in for the observe-loop wiring.
+type fakeOverlay struct {
+	health   overlay.Health
+	healthEr error
+}
+
+func (f fakeOverlay) EnrollNode(context.Context, api.EnrollRequest) (api.NodeIdentity, error) {
+	return api.NodeIdentity{}, nil
+}
+func (fakeOverlay) NodeName(context.Context) (string, error) { return "", nil }
+func (fakeOverlay) Up(context.Context) error                 { return nil }
+func (f fakeOverlay) Health(context.Context) (overlay.Health, error) {
+	return f.health, f.healthEr
+}
+func (fakeOverlay) Teardown(context.Context) error { return nil }
+
+func TestOverlayStatus_nilWhenUnconfigured(t *testing.T) {
+	if got := (Config{}).overlayStatus(context.Background()); got != nil {
+		t.Errorf("no overlay configured -> want nil, got %+v", got)
+	}
+}
+
+func TestOverlayStatus_mirrorsHealth(t *testing.T) {
+	cfg := Config{Overlay: fakeOverlay{health: overlay.Health{Up: true, Relayed: true, PeersUp: 2}}}
+	got := cfg.overlayStatus(context.Background())
+	if got == nil || !got.Up || !got.Relayed || got.PeersUp != 2 {
+		t.Errorf("overlayStatus = %+v, want Up+Relayed+PeersUp=2", got)
+	}
+}
+
+func TestOverlayStatus_downOnError(t *testing.T) {
+	cfg := Config{Overlay: fakeOverlay{healthEr: errors.New("daemon down")}}
+	got := cfg.overlayStatus(context.Background())
+	if got == nil || got.Up {
+		t.Errorf("read error -> want non-nil Up=false signal, got %+v", got)
+	}
+}
+
+// fakeStatus is a guestReader stand-in so snapshot()/currentImage() are testable without
+// a live control channel.
+type fakeStatus struct {
+	qs      model.QuorumState
+	err     error
+	image   string // PayloadImage return (the guest's pin)
+	imgErr  error
+	system  string // SystemPath return (running system closure)
+	sysErr  error
+	res     telemetry.NodeResources // Resources return (appliance telemetry)
+	resErr  error
+	health  bool  // PayloadHealth return (the in-guest probe result)
+	hlthErr error // when set, PayloadHealth errors -> snapshot falls back to the host-side probe
+}
+
+func (f fakeStatus) Status(context.Context, string) (model.QuorumState, error) {
+	return f.qs, f.err
+}
+
+func (f fakeStatus) PayloadHealth(context.Context, string) (bool, error) {
+	return f.health, f.hlthErr
+}
+
+func (f fakeStatus) PayloadImage(context.Context) (string, error) {
+	return f.image, f.imgErr
+}
+
+func (f fakeStatus) SystemPath(context.Context) (string, error) {
+	return f.system, f.sysErr
+}
+
+func (f fakeStatus) Resources(context.Context, string, string) (telemetry.NodeResources, error) {
+	return f.res, f.resErr
+}
+
+func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
+	// Clear the knobs so we exercise defaults deterministically.
+	for _, k := range []string{"QEMU", "ACCEL", "MEMORY_MB", "NODE", "ROLE", "RESOURCE", "HEALTH_URL"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("NODE", "n1")
+	t.Setenv("ROLE", string(model.RoleAnchor))
+
+	cfg := ConfigFromEnv()
+	if cfg.Node != "n1" {
+		t.Errorf("Node = %q, want n1", cfg.Node)
+	}
+	if cfg.Role != model.RoleAnchor {
+		t.Errorf("Role = %q, want anchor", cfg.Role)
+	}
+	if cfg.Diskless {
+		t.Error("anchor must not be diskless")
+	}
+	if len(cfg.Promoter) == 0 {
+		t.Error("anchor must have a promoter chain")
+	}
+	if cfg.Resource.Name != "r0" || cfg.Resource.Device != "/dev/drbd0" {
+		t.Errorf("resource defaults wrong: %+v", cfg.Resource)
+	}
+	if len(cfg.Resource.Peers) != 1 || cfg.Resource.Peers[0].Name != "n1" {
+		t.Errorf("single self-peer expected, got %+v", cfg.Resource.Peers)
+	}
+	if cfg.MemoryMB != 2048 || cfg.QEMUBinary != "qemu-system-x86_64" {
+		t.Errorf("VM defaults wrong: mem=%d bin=%q", cfg.MemoryMB, cfg.QEMUBinary)
+	}
+}
+
+// The shipped agent must launch its guest WITH a monitor. V3.17c2-ii built the clean
+// shutdown (ACPI over QMP, and a forced reset for a guest past talking to) but nothing
+// outside the test driver ever set QMPSock, so in the field every path that needed to stop
+// a guest still fell through to killing qemu -- a power cut. The mechanism existed and was
+// unreachable, which is the failure mode a default is for.
+//
+// It also gets its OWN directory, asserted here because platform.Launch chmods that
+// directory 0700: QMP is unrestricted control of the VM, so sharing a directory with a
+// socket meant to be reachable (AdminSock) would either widen QMP or break the admin door.
+func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
+	t.Setenv("QMP_SOCK", "")
+	cfg := ConfigFromEnv()
+	if cfg.QMPSock == "" {
+		t.Fatal("QMPSock empty by default -- the guest would launch with no monitor and could only be power-cut")
+	}
+	if dir := path.Dir(cfg.QMPSock); dir == path.Dir(cfg.AdminSock) {
+		t.Errorf("QMP socket shares directory %q with the admin socket; Launch makes it 0700", dir)
+	}
+}
+
+// An installed service must resolve to the guest's fixed unit
+// (podman-briard-payload.service). guest.unitOf derives the unit from Service.Name,
+// and configuration.nix bakes that one unit regardless of which service occupies the slot,
+// so a wrong default (e.g. "dummy") makes an upgrade directive drive a non-existent
+// podman-dummy.service.
+func TestConfigFromEnv_ServiceTargetsPayloadUnit(t *testing.T) {
+	for _, k := range []string{"SERVICE_NAME", "SERVICE_DATADIR"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
+	t.Setenv("ROLE", string(model.RoleAnchor))
+	got := ConfigFromEnv().Service
+	if got.Name != "briard-payload" {
+		t.Errorf("Service.Name = %q, want briard-payload (the guest's fixed payload unit slug)", got.Name)
+	}
+	if unit := "podman-" + got.Name + ".service"; unit != "podman-briard-payload.service" {
+		t.Errorf("derived unit = %q, want podman-briard-payload.service", unit)
+	}
+}
+
+// Zero services is the SHIPPED state: an unset SERVICE_IMAGE means nothing is
+// installed, and the promoter chain must then NOT name the payload unit. The guest does not
+// define that unit with an empty slot, and drbd-reactor fails the whole ordered chain on a
+// unit it cannot find — so getting this wrong takes the VIP down on every fresh install,
+// which is precisely the state `curl | sh` lands in.
+func TestConfigFromEnv_NoServiceLeavesPayloadOutOfTheChain(t *testing.T) {
+	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("ROLE", string(model.RoleAnchor))
+	cfg := ConfigFromEnv()
+	// Reflect, not ==: ServiceSpec gained a []string (Units) , so it is no longer a
+	// comparable struct. This was the only call site relying on equality.
+	if !reflect.DeepEqual(cfg.Service, model.ServiceSpec{}) {
+		t.Errorf("Service = %+v with nothing installed, want the zero spec", cfg.Service)
+	}
+	want := []string{"briard-data.service", "briard-vip.service"}
+	if !slices.Equal(cfg.Promoter, want) {
+		t.Errorf("promoter chain = %v, want %v (no payload unit)", cfg.Promoter, want)
+	}
+	// ...and the payload rejoins the chain the moment something is installed.
+	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
+	withService := []string{"briard-data.service", "podman-briard-payload.service", "briard-vip.service"}
+	if got := ConfigFromEnv().Promoter; !slices.Equal(got, withService) {
+		t.Errorf("promoter chain with a service = %v, want %v", got, withService)
+	}
+}
+
+// The health probe must point at the front door, not at a service's own port: that is what
+// makes it answer on a node with nothing installed. Probing :8080 (the fixture's port) left a
+// fresh install permanently unhealthy — the zombie state, and it was the shipped default.
+func TestConfigFromEnv_HealthProbesTheFrontDoor(t *testing.T) {
+	t.Setenv("HEALTH_URL", "")
+	t.Setenv("ROLE", string(model.RoleAnchor))
+	if got := ConfigFromEnv().HealthURL; got != "http://192.168.1.100/healthz" {
+		t.Errorf("HealthURL = %q, want the front door at the VIP", got)
+	}
+}
+
+func TestConfigFromEnv_WitnessHasNoPromoter(t *testing.T) {
+	t.Setenv("ROLE", string(model.RoleDiskless))
+	cfg := ConfigFromEnv()
+	if !cfg.Diskless {
+		t.Error("witness must be diskless")
+	}
+	if cfg.Promoter != nil {
+		t.Errorf("witness must have no promoter, got %v", cfg.Promoter)
+	}
+	if cfg.HealthURL != "" {
+		t.Errorf("witness health follows quorum, HealthURL must be empty, got %q", cfg.HealthURL)
+	}
+}
+
+func TestConfigFromEnv_SystemNIC(t *testing.T) {
+	// Unset -> single-node: no system NIC to configure, no VIP-device override.
+	t.Setenv("SYSTEM_TAP", "")
+	t.Setenv("SYSTEM_DEV", "")
+	t.Setenv("SYSTEM_CIDR", "")
+	t.Setenv("VIP_DEV", "")
+	if c := ConfigFromEnv(); c.SystemTap != "" || c.SystemDev != "" || c.SystemCIDR != "" || c.VIPDev != "" {
+		t.Errorf("expected empty system NIC fields, got %+v", c)
+	}
+	// Set -> carried through for the launcher (tap) + the configure step (DRBD NIC on
+	// eth1, VIP moved to eth2).
+	t.Setenv("SYSTEM_TAP", "sys0")
+	t.Setenv("SYSTEM_DEV", "eth1")
+	t.Setenv("SYSTEM_CIDR", "10.0.0.3/24")
+	t.Setenv("VIP_DEV", "eth2")
+	c := ConfigFromEnv()
+	if c.SystemTap != "sys0" || c.SystemDev != "eth1" || c.SystemCIDR != "10.0.0.3/24" || c.VIPDev != "eth2" {
+		t.Errorf("system NIC fields not mapped: %+v", c)
+	}
+}
+
+func TestParsePeers(t *testing.T) {
+	got := parsePeers("n1@10.0.0.2/vdb, n2@10.0.0.3:7000/sdb , w@10.0.0.4/none")
+	want := []drbd.Peer{
+		{Name: "n1", NodeID: 0, Address: "10.0.0.2:7789", Disk: "/dev/vdb"}, // bare host -> default port; bare disk -> /dev/
+		{Name: "n2", NodeID: 1, Address: "10.0.0.3:7000", Disk: "/dev/sdb"}, // explicit port kept; disk under /dev
+		{Name: "w", NodeID: 2, Address: "10.0.0.4:7789"},                    // witness: "none" disk -> diskless
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsePeers len = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("peer[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if parsePeers("") != nil {
+		t.Error("empty PEERS must yield nil (single-node self-peer path)")
+	}
+	if p := parsePeers("garbage,,n1@10.0.0.2/vdb"); len(p) != 1 || p[0].NodeID != 0 {
+		t.Errorf("malformed entries must be skipped without NodeID gaps, got %+v", p)
+	}
+}
+
+func TestConfigFromEnv_MultiPeerMesh(t *testing.T) {
+	t.Setenv("PEERS", "n1@10.0.0.2/vdb,n2@10.0.0.3/vdb,w@10.0.0.4/none")
+
+	// The first peer seeds the fresh cluster; every other node syncs from it.
+	t.Setenv("NODE", "n1")
+	if cfg := ConfigFromEnv(); !cfg.FreshInit {
+		t.Error("first peer (n1) must FreshInit")
+	}
+	t.Setenv("NODE", "n2")
+	if cfg := ConfigFromEnv(); cfg.FreshInit {
+		t.Error("non-first peer (n2) must not FreshInit")
+	}
+
+	// The rendered mesh carries every peer, identical regardless of self.
+	cfg := ConfigFromEnv()
+	if len(cfg.Resource.Peers) != 3 {
+		t.Fatalf("expected 3 peers in the mesh, got %+v", cfg.Resource.Peers)
+	}
+}
+
+func TestConfigFromEnv_SingleNodeFreshInit(t *testing.T) {
+	// No PEERS -> single self-peer, always FreshInit (the single-node contract).
+	t.Setenv("PEERS", "")
+	t.Setenv("NODE", "guest")
+	cfg := ConfigFromEnv()
+	if !cfg.FreshInit {
+		t.Error("single-node must FreshInit")
+	}
+	if len(cfg.Resource.Peers) != 1 || cfg.Resource.Peers[0].Name != "guest" {
+		t.Errorf("single self-peer expected, got %+v", cfg.Resource.Peers)
+	}
+}
+
+func TestDeriveMAC(t *testing.T) {
+	// Stable, QEMU-OUI, and distinct per node and per NIC role -- the property that
+	// keeps a fleet's NICs from colliding on a shared bridge.
+	if got := deriveMAC("n1", "sys"); got != deriveMAC("n1", "sys") {
+		t.Errorf("not stable: %q", got)
+	}
+	seen := map[string]string{}
+	for _, node := range []string{"n1", "n2", "w"} {
+		for _, role := range []string{"sys", "svc"} {
+			mac := deriveMAC(node, role)
+			if len(mac) != 17 || mac[:9] != "52:54:00:" {
+				t.Errorf("deriveMAC(%s,%s) = %q, want 52:54:00:xx:xx:xx", node, role, mac)
+			}
+			if prev, ok := seen[mac]; ok {
+				t.Errorf("MAC collision: %s/%s and %s both -> %s", node, role, prev, mac)
+			}
+			seen[mac] = node + "/" + role
+		}
+	}
+}
+
+func TestSnapshot_HealthFollowsQuorumWhenNoURL(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ""}
+	cfg.Resource.Name = "r0"
+
+	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
+	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "briard-dummy:v1", "/nix/store/sys")
+	if st.NodeName != "n1" || st.Role != model.RoleAnchor {
+		t.Errorf("identity not preserved: %+v", st)
+	}
+	if st.Quorum != qs {
+		t.Errorf("Quorum = %+v, want %+v", st.Quorum, qs)
+	}
+	if !st.Healthy {
+		t.Error("quorate node with no health URL should read healthy")
+	}
+	if st.Image != "briard-dummy:v1" {
+		t.Errorf("Image = %q, want the served image reported through the seam", st.Image)
+	}
+	if st.System != "/nix/store/sys" {
+		t.Errorf("System = %q, want the running system reported through the seam", st.System)
+	}
+}
+
+// CurrentSystem reports the guest's running closure, and "" for a witness or a read
+// error -- ground truth for the whole-OS rollout across a failover.
+func TestCurrentSystem(t *testing.T) {
+	cfg := Config{Service: model.ServiceSpec{Name: "dummy"}}
+	if got := cfg.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "/nix/store/v1" {
+		t.Errorf("currentSystem = %q, want the running /nix/store/v1", got)
+	}
+	if got := cfg.currentSystem(context.Background(), fakeStatus{sysErr: errors.New("down")}); got != "" {
+		t.Errorf("read error: currentSystem = %q, want empty", got)
+	}
+	witness := Config{Service: model.ServiceSpec{}}
+	if got := witness.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "" {
+		t.Errorf("witness currentSystem = %q, want empty", got)
+	}
+}
+
+// CurrentImage reports the guest's pin when set, the configured baked default when the
+// pin is empty or the read errors, and "" for a witness (no payload) -- so the reported
+// image is ground truth across a failover (a converged survivor reports the pin).
+func TestCurrentImage(t *testing.T) {
+	cfg := Config{Service: model.ServiceSpec{Name: "dummy", Image: "briard-dummy:v0"}}
+	if got := cfg.currentImage(context.Background(), fakeStatus{image: "briard-dummy:v1"}); got != "briard-dummy:v1" {
+		t.Errorf("with a pin set, currentImage = %q, want the pinned briard-dummy:v1", got)
+	}
+	if got := cfg.currentImage(context.Background(), fakeStatus{image: ""}); got != "briard-dummy:v0" {
+		t.Errorf("no pin: currentImage = %q, want the baked default briard-dummy:v0", got)
+	}
+	if got := cfg.currentImage(context.Background(), fakeStatus{imgErr: errors.New("channel down")}); got != "briard-dummy:v0" {
+		t.Errorf("read error: currentImage = %q, want the default fallback briard-dummy:v0", got)
+	}
+	witness := Config{Service: model.ServiceSpec{}} // no payload
+	if got := witness.currentImage(context.Background(), fakeStatus{image: "x"}); got != "" {
+		t.Errorf("witness currentImage = %q, want empty", got)
+	}
+}
+
+// Observe returns ErrChannelDown so Run re-dials — the fix for the older gap
+// where a single dropped channel blinded the host forever.
+func TestObserveReturnsOnChannelDown(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // safety net
+	defer cancel()
+	err := cfg.observe(ctx, fakeStatus{err: guestagent.ErrChannelDown}, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {})
+	if !errors.Is(err, guestagent.ErrChannelDown) {
+		t.Errorf("observe = %v, want ErrChannelDown (to trigger reconnect)", err)
+	}
+}
+
+// A verb-level read error (channel alive, guest degraded) must NOT trigger a reconnect —
+// observe keeps observing (reporting degraded) until ctx, so a cold DRBD can't spin the
+// reconnect loop.
+func TestObserveRidesOutVerbError(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	r := fakeStatus{err: errors.New("drbdsetup: no such resource r0")} // verb error, channel fine
+	if err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+		t.Errorf("observe on a verb error = %v, want nil (keep observing until ctx)", err)
+	}
+}
+
+// captureClient records the last reported status and stops observe after one report.
+type captureClient struct {
+	last   *api.NodeStatus
+	cancel context.CancelFunc
+}
+
+func (c *captureClient) Register(context.Context, api.NodeInfo) (api.Assignment, error) {
+	return api.Assignment{}, nil
+}
+func (c *captureClient) Report(_ context.Context, req api.ReportRequest) ([]api.Directive, error) {
+	c.last = &req.Status
+	c.cancel() // one report is enough; end the observe loop
+	return nil, nil
+}
+func (c *captureClient) ReportMetrics(context.Context, string, []api.MetricAggregate) error {
+	return nil
+}
+
+// Observe tags each report with the resolved tenant, so the cloud sees which
+// tenant a node claims.
+func TestObserveTagsReportWithTenant(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cc := &captureClient{cancel: cancel}
+
+	if err := cfg.observe(ctx, fakeStatus{}, nil, nil, nil, cc, nil, "default", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if cc.last == nil || cc.last.Tenant != "default" {
+		t.Errorf("reported status = %+v, want tenant=default", cc.last)
+	}
+}
+
+// Operation-class partition: a planned op (upgrade) is cloud-gated -- it runs only via a
+// delivered directive (applyDirective), so a node with no cloud reachable never starts one
+// autonomously. Reactive ops (failover, converge) stay autonomous, but those aren't directives.
+func TestObserveNoCloudNoPlannedOp(t *testing.T) {
+	up := &fakeUpgrader{}
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	// Rep=nil (no cloud) + Service.Name unset (converge no-ops): several cycles, then ctx ends.
+	if err := cfg.observe(ctx, fakeStatus{}, up, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if up.called || up.sysCalled {
+		t.Errorf("no cloud reachable -> no planned op, but the upgrader ran: %+v", up)
+	}
+}
+
+func TestSnapshot_StatusErrorIsUnhealthy(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor}
+	sentinel := errors.New("channel down")
+	st, err := cfg.snapshot(context.Background(), fakeStatus{err: sentinel}, "", "")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("snapshot must return the read error (for the reconnect gate), got %v", err)
+	}
+	if st.NodeName != "n1" {
+		t.Errorf("identity must survive a status error, got %+v", st)
+	}
+	if st.Healthy || st.Quorum.Quorate {
+		t.Errorf("a failed status read must be non-quorate + unhealthy, got %+v", st)
+	}
+}
+
+func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
+	// Health comes from the probe, not the quorum bit, AND it prefers the in-guest verb
+	// (fakeStatus.health) over the host-side LAN probe.
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://unused.invalid/healthz"}
+
+	// Quorate but the in-guest probe says sick -> unhealthy (health != quorum).
+	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "", "")
+	if !st.Quorum.Quorate {
+		t.Fatal("precondition: node is quorate")
+	}
+	if st.Healthy {
+		t.Error("in-guest probe false must read unhealthy despite quorum")
+	}
+	// Non-quorate but the in-guest probe says healthy -> healthy (health != quorum).
+	st, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "", "")
+	if !st.Healthy {
+		t.Error("in-guest probe true must read healthy")
+	}
+}
+
+// When the guest predates payload.health (the verb errors), snapshot falls back to the legacy
+// host-side probe of the VIP -- so an old, tap-based guest keeps a correct health signal.
+func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ok.Close()
+	sick := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer sick.Close()
+
+	verbErr := errors.New("guestagent: unknown verb \"payload.health\"")
+
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ok.URL}
+	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
+	if !st.Healthy {
+		t.Error("verb error must fall back to the host probe (200 -> healthy)")
+	}
+	cfg.HealthURL = sick.URL
+	st, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
+	if st.Healthy {
+		t.Error("verb error + host probe 500 -> unhealthy")
+	}
+}
+
+// The OS-upgrade budget is now configurable (so the lab need not spend the production interval to
+// watch a rollback), and that is exactly why its DEFAULT has to be asserted. It is not a timeout
+// detail: AwaitOSReady polls until this context ends, so this number IS how long a broken update
+// leaves a node degraded before it reverts itself, and it is also the bound on staging — the one
+// step that goes to the network. A silent drift downward would false-roll-back slow-but-healthy
+// upgrades on a slow link; upward, it would leave a node degraded longer than anyone agreed to.
+func TestConfigFromEnv_UpgradeBudgetDefault(t *testing.T) {
+	t.Setenv("NODE_NAME", "n1")
+	t.Setenv("RESOURCE_NAME", "r0")
+
+	cfg := ConfigFromEnv()
+	if cfg.UpgradeBudget != 15*time.Minute {
+		t.Errorf("UpgradeBudget default = %v, want 15m — see Config.UpgradeBudget before changing this", cfg.UpgradeBudget)
+	}
+
+	// And it is overridable, which is the point of the change.
+	t.Setenv("UPGRADE_BUDGET", "90s")
+	if got := ConfigFromEnv().UpgradeBudget; got != 90*time.Second {
+		t.Errorf("UPGRADE_BUDGET=90s gave %v", got)
+	}
+}
