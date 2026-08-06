@@ -71,7 +71,7 @@ let
   # the only thing that can distinguish them is which menu entry was chosen — which is the whole
   # proof. Rides `debug`, so this image is not a nightly cost.
   bootSelectGuestDisk = import ../guest-image/disk-image.nix {
-    inherit nixpkgs pkgs overlay;
+    inherit nixpkgs pkgs overlay agentVersion;
     stageSystemModule = { environment.etc."briard-generation".text = "v1"; };
   };
   driverPkg = pkgs.callPackage ./driver/package.nix { };
@@ -89,7 +89,7 @@ let
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
   # a SHORT T_deadman so the reflex fires in seconds (baked into the guest-agent unit's env).
   deadmanGuestDisk = import ../guest-image/disk-image.nix {
-    inherit nixpkgs pkgs overlay;
+    inherit nixpkgs pkgs overlay agentVersion;
     guestAgentEnv = {
       BRIARD_DEADMAN = "8s";
       BRIARD_DEADMAN_JITTER = "1s";
@@ -123,7 +123,7 @@ let
   # variant's `image` attr is simply not forced, so this costs no second disk build.
   stagedSystem =
     (import ../guest-image/disk-image.nix {
-      inherit nixpkgs pkgs overlay;
+      inherit nixpkgs pkgs overlay agentVersion;
       stageSystemModule = {
         environment.etc."briard-staged".text = "staged";
       };
