@@ -11,6 +11,10 @@ func capable() HostFacts {
 		DevKVM: true, VirtFlags: true, DevNetTun: true, TunModule: true,
 		HasIP: true, MemTotalMB: 16 * 1024, WiredEthernet: true, AnyEthernet: true,
 		DiskFreeMB: 64 * 1024,
+		// A capable host on an ordinary home network holds a DHCP lease, and since V3.19c step 3
+		// that is what makes the default install -- no BRIARD_VIP, address from the router --
+		// pass rather than warn. The fixture describes the machine we expect to admit.
+		HostLeased: true,
 	}
 }
 
@@ -218,9 +222,8 @@ func TestVIPEqualToHostIsRefused(t *testing.T) {
 	}
 }
 
-// A VIP inside the LAN passes, and an unset one is not a check at all -- the card must not invent a
-// verdict about an address nobody configured.
-func TestVIPOnLANPassesAndUnsetIsSilent(t *testing.T) {
+// A VIP inside the LAN, that nothing already answers for, passes.
+func TestVIPOnLANPasses(t *testing.T) {
 	f := capable()
 	f.HostCIDR = "192.168.9.100/24"
 	f.VIPAddr = "192.168.9.50/24"
@@ -231,11 +234,61 @@ func TestVIPOnLANPassesAndUnsetIsSilent(t *testing.T) {
 	if c := find(t, r, "vip"); c.Status != Pass {
 		t.Errorf("vip = %s, want pass", c.Status)
 	}
+}
+
+// The THIRD refusal for this gate, after off-LAN and host's-own: an address that is already
+// somebody's. It is the only one of the three that needs the network rather than arithmetic, and
+// the only one that could not have existed before step 3 -- until the address became the user's
+// choice, there was no candidate to probe that we had not invented ourselves.
+func TestVIPAlreadyInUseIsRefused(t *testing.T) {
+	f := capable()
+	f.HostCIDR = "192.168.9.100/24"
+	f.VIPAddr = "192.168.9.50/24"
+	f.VIPAnswered = true
+	r := Assess(f)
+	if r.Admit() {
+		t.Fatal("an address something already answers for must be refused")
+	}
+	c := find(t, r, "vip")
+	if c.Status != Refuse {
+		t.Errorf("vip = %s, want refuse", c.Status)
+	}
+	if !strings.Contains(c.Fix, "BRIARD_VIP") {
+		t.Errorf("the fix must name the way out, got %q", c.Fix)
+	}
+}
+
+// UNSET IS NO LONGER SILENCE. Since step 3 it means DHCP, which is a claim about the network that
+// the card can actually speak to: a machine holding its own lease is evidence this LAN hands
+// addresses out. Silence is what the original defect sounded like.
+func TestUnsetVIPReportsWhetherTheLANCanGiveUsOne(t *testing.T) {
+	f := capable()
+	f.HostCIDR = "192.168.9.100/24"
 	f.VIPAddr = ""
-	for _, c := range Assess(f).Checks {
-		if c.Name == "vip" {
-			t.Errorf("an unconfigured VIP must emit no check, got %+v", c)
-		}
+
+	f.HostLeased = true
+	r := Assess(f)
+	if !r.Admit() {
+		t.Fatalf("a DHCP install on a leasing LAN must be admitted; report=%+v", r)
+	}
+	if c := find(t, r, "vip"); c.Status != Pass {
+		t.Errorf("vip = %s, want pass when this machine holds a lease", c.Status)
+	}
+
+	// Absent evidence WARNS and must never refuse: a deliberately-static host on a DHCP-serving
+	// network reads false here, and refusing it would be refusing a machine over a fact we merely
+	// failed to gather -- the stance the disk and host-address checks already take.
+	f.HostLeased = false
+	r = Assess(f)
+	if !r.Admit() {
+		t.Error("absent DHCP evidence must warn, never refuse -- it is not proof of anything")
+	}
+	c := find(t, r, "vip")
+	if c.Status != Warn {
+		t.Errorf("vip = %s, want warn", c.Status)
+	}
+	if !strings.Contains(c.Fix, "BRIARD_VIP") {
+		t.Errorf("the fix must name the way out, got %q", c.Fix)
 	}
 }
 

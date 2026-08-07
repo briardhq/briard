@@ -55,10 +55,21 @@ type HostFacts struct {
 	// i.e. the LAN this node is actually on. "" means it could not be read, which the VIP check
 	// treats as unknown rather than as a fault.
 	HostCIDR string
-	// VIPAddr is the service address this install intends to claim, in CIDR form. "" = none
-	// configured, so there is nothing to check. It exists here because the address is the LAN's,
-	// not ours, and the card is the last place to say so before a VM boots holding it.
+	// VIPAddr is the service address this install intends to claim, in CIDR form. "" no longer
+	// means "nothing to check": since V3.19c step 3 it means DHCP, which is a different question
+	// with its own answer below. It exists here because the address is the LAN's, not ours, and
+	// the card is the last place to say so before a VM boots holding it.
 	VIPAddr string
+	// VIPAnswered is true when something on the LAN already replies for VIPAddr -- the address a
+	// user named is taken. Gathered rather than probed inside the check, so the checks stay pure
+	// and testable. False also covers "we could not probe", which reads as no evidence and never
+	// as proof the address is free.
+	VIPAnswered bool
+	// HostLeased is true when this machine's own address looks DHCP-assigned (a lease file for
+	// the default-route NIC, under any of the usual managers). EVIDENCE, not proof: a
+	// deliberately static host on a DHCP-serving LAN reads false. So it may warn and must never
+	// refuse.
+	HostLeased bool
 }
 
 // RAM. The thresholds are deliberately BELOW the round numbers they describe, because the number
@@ -193,12 +204,21 @@ func Assess(f HostFacts) Report {
 // nobody in the house can reach, and admitting it produces exactly the green-but-useless install
 // the card exists to prevent.
 //
-// What it deliberately does NOT check: whether the address is already CLAIMED by some other device.
-// That needs an ARP probe against a candidate we do not choose yet -- it belongs with the
-// acquisition path (V3.19c), and asserting it here would be guessing.
+// SINCE V3.19c STEP 3 THERE IS NO DEFAULT ADDRESS, so this check has two halves rather than one:
+//
+//   - an address the user NAMED is judged against this LAN (below), and now also probed -- if
+//     something already answers for it, we would be putting a second claimant on a live address.
+//     That was left out when this check was written because there was no candidate to probe; there
+//     is one now, and it is the user's, which is exactly the kind we can check without guessing.
+//   - NO address means DHCP, and the question becomes whether this LAN hands them out. That
+//     cannot be proven without leasing, so it WARNS on absent evidence and never refuses: a
+//     deliberately-static host on a DHCP-serving network is a false negative we must not turn
+//     into a refusal.
+//
+// The empty case used to return nil -- silence. Silence is what the original defect sounded like.
 func vipCheck(f HostFacts) []Check {
 	if f.VIPAddr == "" {
-		return nil // nothing configured to check
+		return dhcpCheck(f)
 	}
 	vip, _, err := net.ParseCIDR(f.VIPAddr)
 	if err != nil || vip.To4() == nil {
@@ -224,8 +244,35 @@ func vipCheck(f HostFacts) []Check {
 		return []Check{{"vip", Refuse,
 			fmt.Sprintf("the service address %s is this machine's own address", vip),
 			"the guest claims the VIP as a second machine on your LAN, so it cannot be the host's address; set BRIARD_VIP to a free one"}}
+	case f.VIPAnswered:
+		// The third refusal for this gate, alongside off-LAN and host's-own. It is the only one
+		// that needs the network rather than arithmetic, which is why it is checked last:
+		// something out there already owns this address, and claiming it would put two machines
+		// on one address.
+		return []Check{{"vip", Refuse,
+			fmt.Sprintf("the service address %s is already in use on this LAN (something answered for it)", vip),
+			fmt.Sprintf("pick a free address inside %s, or leave BRIARD_VIP unset and let your router assign one", lan)}}
 	}
-	return []Check{{"vip", Pass, fmt.Sprintf("service address %s is on this machine's LAN (%s)", vip, lan), ""}}
+	return []Check{{"vip", Pass, fmt.Sprintf("service address %s is on this machine's LAN (%s), and nothing answered for it", vip, lan), ""}}
+}
+
+// dhcpCheck answers the question an unset BRIARD_VIP asks: can this LAN give us an address?
+//
+// It cannot be answered with certainty short of actually leasing one, and the install is not the
+// place to take a lease we may not keep. So it reports EVIDENCE: this machine's own address being
+// DHCP-assigned means a server answered on this segment recently, which is the best available
+// proxy for "one will answer the guest too".
+//
+// Absent evidence WARNS. A host deliberately configured with a static address on a network that
+// does serve DHCP reads false here, and refusing that install would be refusing a machine over a
+// fact we merely failed to gather -- the same stance the disk and VIP checks already take.
+func dhcpCheck(f HostFacts) []Check {
+	if f.HostLeased {
+		return []Check{{"vip", Pass, "no service address set, and this network hands out addresses (this machine holds a DHCP lease)", ""}}
+	}
+	return []Check{{"vip", Warn,
+		"no service address set, and this machine's own address does not look DHCP-assigned",
+		"briard will ask your router for an address when it starts. If your network has no DHCP server, set one explicitly instead: `BRIARD_VIP=<free-address>/<prefix> curl -fsSL https://get.briard.io/install.sh | sudo sh`"}}
 }
 
 // prefixOf returns the "/24" part of a CIDR string, for quoting back in a fix line.

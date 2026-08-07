@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Gather reads the real host into HostFacts (Linux /proc + /sys + /dev). Thin + best-effort: a
@@ -32,7 +33,97 @@ func Gather() HostFacts {
 		// cannot judge an address it is not told about, and this is the last gate before a VM
 		// boots holding it.
 		VIPAddr: os.Getenv("VIP_ADDR"),
+		// Is that address already somebody's? Probed here rather than inside the check so the
+		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
+		// router picks from its own pool and this question is not ours to ask.
+		VIPAnswered: os.Getenv("VIP_ADDR") != "" && addressAnswers(os.Getenv("VIP_ADDR")),
+		HostLeased:  hostHasLease(defaultRouteNIC()),
 	}
+}
+
+// arpProbeWait bounds the ARP probe. A device on the same segment answers in single-digit
+// milliseconds; anything slower than this is a device we would rather not block an install on.
+const arpProbeWait = 750 * time.Millisecond
+
+// addressAnswers reports whether some machine on this segment already owns cidr's address.
+//
+// It provokes the kernel into resolving ARP by sending one datagram at the address (discard port,
+// nothing listens, and nothing needs to -- ARP sits below UDP, so any IPv4 host on the segment
+// must reply to the resolution regardless of what it does with the payload). Then it reads the
+// answer out of the kernel's own neighbour table. No raw sockets, no CAP_NET_RAW, no shelling out.
+//
+// A false is "nothing answered", which includes "we could not ask". That asymmetry is deliberate:
+// this gate turns evidence-of-use into a refusal, and must never turn absence-of-evidence into
+// permission -- a sleeping device will not answer, and the install proceeds, as it did before this
+// check existed.
+func addressAnswers(cidr string) bool {
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil || ip.To4() == nil {
+		return false // malformed: the check itself refuses on that, with a better message
+	}
+	if c, err := net.DialTimeout("udp4", net.JoinHostPort(ip.String(), "9"), arpProbeWait); err == nil {
+		_, _ = c.Write([]byte{0})
+		_ = c.Close()
+	}
+	deadline := time.Now().Add(arpProbeWait)
+	for {
+		if neighbourComplete(ip) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// neighbourComplete reports whether /proc/net/arp holds a RESOLVED entry for ip. The flags column
+// carries ATF_COM (0x2) once an address actually replied; an unanswered probe leaves the entry
+// present but incomplete, with flags 0x0 -- so the flag, not the row, is the evidence.
+func neighbourComplete(ip net.IP) bool {
+	f, err := os.Open("/proc/net/arp")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) < 4 || fields[0] != ip.String() {
+			continue
+		}
+		flags, err := strconv.ParseInt(strings.TrimPrefix(fields[2], "0x"), 16, 64)
+		if err == nil && flags&0x2 != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hostHasLease reports whether THIS machine's address on nic looks DHCP-assigned, by looking for a
+// lease under any of the managers a stranger's box might be running. It is evidence that a DHCP
+// server answered on this segment recently, which is the closest we can get to "one will answer
+// the guest too" without taking a lease we might not keep.
+//
+// Deliberately a broad net over several managers rather than a detection of which one is in use:
+// we do not care who asked, only that somebody answered.
+func hostHasLease(nic string) bool {
+	if nic == "" {
+		return false
+	}
+	globs := []string{
+		"/var/lib/dhcpcd/" + nic + "*.lease",          // dhcpcd (and our own guest)
+		"/var/lib/dhcp/dhclient*" + nic + "*.lease*",  // ISC dhclient
+		"/var/lib/dhclient/*" + nic + "*.lease*",      // ISC dhclient, Fedora layout
+		"/var/lib/NetworkManager/*" + nic + "*.lease", // NetworkManager's internal client
+		"/run/systemd/netif/leases/*",                 // systemd-networkd (keyed by ifindex)
+	}
+	for _, g := range globs {
+		if m, err := filepath.Glob(g); err == nil && len(m) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // hostCIDR returns nic's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
