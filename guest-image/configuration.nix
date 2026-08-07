@@ -47,10 +47,31 @@ let
   vipFallback = "192.168.1.100/24";
   vipDev = "eth1";
   vipEnvPath = "/run/briard/vip.env";
+  # The FLOCK's service address, replicated with the data. Same shape, same place and same
+  # write-authority as imagePinFile: a small flock-scoped fact at the btrfs root, written only by
+  # the node that holds the volume (only a Primary can mount it), read by whoever promotes next.
+  #
+  # It exists so a failover never has to ASK for the address. The MAC is *derived* -- every node
+  # computes it from the flock id -- but an address is *acquired*, known only to whoever asked the
+  # router, so it is the one piece that has to travel. Without it, a node that has never served
+  # would have to run a full DHCP exchange at the exact moment a household's network is least
+  # likely to be answering.
+  vipAddrFile = "${btrfsRoot}/.vip-address";
+  # The address this node ACTUALLY claimed, written by briard-vip once it has resolved one and
+  # read by everything downstream (the gratuitous ARP, the mDNS name). Under DHCP the configured
+  # value and the claimed value are not the same thing, and a name or an announcement must never
+  # describe an address the node did not take -- the same ground-truth rule net.vip follows.
+  vipLivePath = "/run/briard/vip.live";
   # `ip` wants the prefix, `arping` wants the bare address. Strip it here rather than carry
   # the address twice: two variables are two things that can disagree, and the one that
   # would silently win is the gratuitous ARP nobody is watching.
+  # Announced from the LIVE file rather than the unit's environment. It runs as ExecStartPost of
+  # the same unit that resolved the address, and whether systemd re-reads an EnvironmentFile
+  # between an ExecStart and an ExecStartPost is exactly the kind of thing that must not be the
+  # reason a gratuitous ARP names the wrong address. Sourcing it is one line and no assumption.
   vipArping = pkgs.writeShellScript "briard-vip-arping" ''
+    set -eu
+    . ${vipLivePath}
     exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
   '';
   # Publish the VIP under `briard-<node>.local`. The node's name comes from the RUNNING hostname
@@ -62,6 +83,160 @@ let
     set -eu
     exec ${pkgs.avahi}/bin/avahi-publish -a -R \
       "briard-$(${pkgs.nettools}/bin/hostname).local" "''${VIP_ADDR%%/*}"
+  '';
+
+  # An EMPTY config for the VIP's dhcpcd instance, and the emptiness is the point — every setting
+  # this instance has is on its command line below, where it can be read.
+  #
+  # It is not merely tidiness. The system's generated /etc/dhcpcd.conf now says
+  # `denyinterfaces ... eth2`, which is right for the boot-time client and would refuse the very
+  # interface this instance exists to lease. And it is the file a nixpkgs bump would add `duid`
+  # to — the setting that would quietly give the two nodes of one flock different identities. An
+  # instance that inherits neither cannot be surprised by either.
+  dhcpcdConf = pkgs.writeText "briard-vip-dhcpcd.conf" "";
+
+  # dhcpcd, scoped to the service NIC and to ONE job: hold the binding. It does not supply the
+  # address (the store or the operator did) and it must not supply anything else. Every flag here
+  # is load-bearing:
+  #
+  #   <dev> as the sole interface argument makes this a SEPARATE dhcpcd instance from the system
+  #     one, with its own pidfile and control socket ("runs as a separate instance to other
+  #     dhcpcd processes"). That is what lets the service NIC be denied at boot and leased at
+  #     promotion, which is the whole point: a boot-time client would lease this NIC on the
+  #     SECONDARY too, and after the flock MAC both nodes would ask one router for one lease.
+  #   -G (nogateway) + -C resolv.conf: left at its defaults dhcpcd installs a default route and
+  #     rewrites resolv.conf from this lease -- so PROMOTION would silently re-plumb the guest's
+  #     WAN path (eth0, the SLIRP route out) and demotion would revert it. A service address is
+  #     all we want from this lease.
+  #   -I "" pins the client-id to the hardware address. NixOS's dhcpcd.conf drops both `duid` and
+  #     `clientid`, so today that is the compiled DEFAULT doing the work -- while dhcpcd's own
+  #     shipped config sets `duid` instead, whose DUID is per-host and, in the man page's words,
+  #     "should not be copied to other hosts". Under it the two nodes of one flock would present
+  #     different identities, draw different leases, and the address would move on failover.
+  #     Unstated defaults are not decisions; this one is now stated.
+  #   -h briard-<xxxxxx> is the FLOCK's name (option 12), taken from the low three bytes of the
+  #     service NIC's own MAC -- which IS the flock id's derivative, read as ground truth off the
+  #     interface rather than plumbed through as a second copy. It gives a household's router a
+  #     recognisable client-list entry, and it makes a user-created static reservation survive
+  #     failover, because name, MAC and client-id are all flock-scoped.
+  #   --lastleaseextend keeps the address when no server answers, giving it up only to a host
+  #     that ARP-claims it. It violates RFC 2131 3.7 knowingly and it is the right violation
+  #     here: the case it covers is an unplanned failover with the router down, and the thing it
+  #     still refuses to do is squat an address somebody actively wants.
+  #   -r asks for the address we already claimed, so the replicated store wins over this node's
+  #     own lease file instead of the two quietly drifting apart.
+  dhcpcdRun = pkgs.writeShellScript "briard-vip-dhcpcd" ''
+    set -eu
+    dev="$1"; want="$2"; shift 2
+    mac="$(cat /sys/class/net/"$dev"/address)"
+    hex="''${mac//:/}"
+    set -- -f ${dhcpcdConf} \
+      -G -C resolv.conf -I "" -h "briard-''${hex: -6}" --lastleaseextend "$@"
+    if [ -n "$want" ]; then
+      set -- "$@" -r "''${want%%/*}"
+    fi
+    exec ${pkgs.dhcpcd}/sbin/dhcpcd "$@" "$dev"
+  '';
+
+  # Resolve the service address, claim it, and record what was actually claimed.
+  #
+  # THREE SOURCES, and the order is the design:
+  #   1. VIP_ADDR -- an address the operator named. We set it, so we never ask about it.
+  #   2. the replicated store -- the FLOCK's address, known even to a node that has never served.
+  #      This is what keeps a failover off the household router entirely.
+  #   3. DHCP, synchronously -- ONLY when both above are empty, which is the first promotion this
+  #      flock has ever performed. That exception lands exactly where the existing doctrine
+  #      already puts it: installing may need the network, running and failing over must not.
+  #
+  # The claim in cases 1 and 2 is OPTIMISTIC -- no ARP probe gate. A conflict at promotion time
+  # was not caused by the promotion; it can only have arisen while the flock had no primary. So
+  # detecting it is dhcpcd's job, afterwards, rather than a cost every failover pays to find
+  # someone else's pre-existing condition. When it does find one it yields, the address changes,
+  # and that is handled by the one address-changed path -- which does not care what caused it.
+  vipUp = pkgs.writeShellScript "briard-vip-up" ''
+    set -eu
+    ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" up
+    mkdir -p "$(dirname ${vipLivePath})"
+
+    configured="''${VIP_ADDR:-}"
+    addr="$configured"
+    if [ -z "$addr" ] && [ -r ${vipAddrFile} ]; then
+      addr="$(cat ${vipAddrFile})"
+    fi
+
+    if [ -n "$configured" ]; then
+      # An address the operator named. Claim it and hold NO lease: there is nothing to renew,
+      # and asking a router about an address we were told to use would be asking permission for
+      # something already decided. It is also what keeps dhcpcd away from the agent-less
+      # harnesses, where this unit's NIC is eth1 -- the DRBD link, which must never lease.
+      ${pkgs.iproute2}/bin/ip addr replace "$addr" dev "$VIP_DEV"
+    elif [ -n "$addr" ]; then
+      ${pkgs.iproute2}/bin/ip addr replace "$addr" dev "$VIP_DEV"
+      # A lease-holder here, never a gate: -b returns immediately, so nothing downstream of this
+      # unit waits on a DHCP server. Failing to start it is not failing to serve -- the address
+      # is already up, which is the entire point of applying before asking.
+      ${dhcpcdRun} "$VIP_DEV" "$addr" -b || true
+    else
+      # Nothing to apply: this flock has never held an address. Ask, and wait for the answer.
+      ${dhcpcdRun} "$VIP_DEV" "" --waitip 4
+      # The field after `inet`, which is the same rule net.vip reads ground truth by -- never a
+      # prefix match, which would accept an inet6 link-local and hand us an address to claim
+      # that no one in the house can reach.
+      addr="$(${pkgs.iproute2}/bin/ip -o -4 addr show dev "$VIP_DEV" scope global |
+              ${pkgs.gnused}/bin/sed -n 's/^.* inet \([^ ]*\).*$/\1/p' | head -n1)"
+      if [ -z "$addr" ]; then
+        echo "briard-vip: no address configured, none stored, and DHCP yielded none on $VIP_DEV" >&2
+        exit 1
+      fi
+    fi
+
+    printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
+    # Remember it FOR THE FLOCK, so the peer that promotes next does not have to ask. Only what
+    # DHCP gave us: a configured address is already known to every node from its own config, so
+    # storing it would blur what this file means -- "the address this flock ACQUIRED".
+    #
+    # Never fatal, and stderr is redirected FIRST so a failed redirect is silent rather than
+    # noisy: the address is claimed either way, and the agent-less harnesses run this unit with
+    # no DRBD volume mounted at all.
+    if [ -z "$configured" ]; then
+      printf '%s\n' "$addr" 2>/dev/null >${vipAddrFile} || true
+    fi
+  '';
+
+  # Give the address back -- to the FLOCK, not to the pool.
+  #
+  # -x exits the lease holder WITHOUT releasing (-k is the one that releases). A release hands
+  # the address back for the router to give away before the peer can claim it, which is the one
+  # thing a floating service address must never do.
+  vipDown = pkgs.writeShellScript "briard-vip-down" ''
+    set -u
+    # Captured BEFORE sourcing the live file, which sets VIP_ADDR to what we actually claimed.
+    # The two are different questions: what we were configured with decides whether this NIC is
+    # ours alone; what we claimed decides which address to withdraw.
+    configured="''${VIP_ADDR:-}"
+    live=""
+    if [ -r ${vipLivePath} ]; then
+      . ${vipLivePath}
+      live="''${VIP_ADDR:-}"
+    fi
+    [ -n "$live" ] || live="$configured"
+    ${pkgs.dhcpcd}/sbin/dhcpcd -x "$VIP_DEV" >/dev/null 2>&1 || true
+    if [ -n "$live" ]; then
+      ${pkgs.iproute2}/bin/ip addr del "$live" dev "$VIP_DEV" || true
+    fi
+    rm -f ${vipLivePath}
+    # Take the NIC DOWN, but only where the address came from DHCP -- which is exactly where the
+    # MAC is flock-scoped and therefore shared with the peer. A Secondary holding that MAC up
+    # teaches the switch the wrong port for the VIP the moment it emits any frame at all (an
+    # IPv6 RS, an mDNS query), and traffic for the service goes to the node that is not serving.
+    #
+    # The condition is not timidity, it is the hazard: with a configured address this unit also
+    # runs in the agent-less harnesses, where VIP_DEV is eth1 -- the DRBD NIC -- and a link-down
+    # there would take replication with it. Static address => the NIC is shared => leave it up.
+    if [ -z "$configured" ]; then
+      ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" down || true
+    fi
+    exit 0
   '';
 
   cfg = config.briard.payload;
@@ -450,12 +625,12 @@ in
         RemainAfterExit = true;
         Environment = [ "VIP_DEV=${vipDev}" "VIP_ADDR=${vipFallback}" ];
         EnvironmentFile = "-${vipEnvPath}";
-        # Bring the service NIC up first (the framework brings the NIC up for the
-        # nixosTests; a disk-image guest's NIC may still be down). Idempotent.
-        ExecStartPre = "${pkgs.iproute2}/bin/ip link set dev $VIP_DEV up";
-        ExecStart = "${pkgs.iproute2}/bin/ip addr add $VIP_ADDR dev $VIP_DEV";
+        # Resolve-claim-record: static address, else the flock's replicated one, else DHCP.
+        # It brings the NIC up itself (the framework does that for the nixosTests; a disk-image
+        # guest's NIC may still be down) -- idempotent, and it has to happen before DHCP can ask.
+        ExecStart = "${vipUp}";
         ExecStartPost = "-${vipArping}";
-        ExecStop = "${pkgs.iproute2}/bin/ip addr del $VIP_ADDR dev $VIP_DEV";
+        ExecStop = "${vipDown}";
       };
     };
 
@@ -482,10 +657,11 @@ in
       after = [ "briard-vip.service" "avahi-daemon.service" ];
       requires = [ "avahi-daemon.service" ];
       serviceConfig = {
-        # The SAME address source briard-vip claims from, so the name cannot drift from the
-        # address: baked fallback, overridden by the agent-written file.
+        # The address briard-vip ACTUALLY claimed, so the name cannot drift from it. Three
+        # sources, last wins: baked fallback, the agent-written config, and the live file that
+        # records what was really taken -- which under DHCP is the only one that knows.
         Environment = "VIP_ADDR=${vipFallback}";
-        EnvironmentFile = "-${vipEnvPath}";
+        EnvironmentFile = [ "-${vipEnvPath}" "-${vipLivePath}" ];
         # avahi-publish holds the record for as long as it runs and withdraws it on exit, so the
         # unit's lifetime IS the record's lifetime -- no cleanup path to get wrong on demotion.
         ExecStart = "${vipPublish}";
@@ -538,11 +714,20 @@ in
     # link -- a private point-to-point path between anchors that has no business holding a LAN
     # address, and whose address the agent sets explicitly (net.configure) when a pairing happens.
     #
-    # Kept: eth0 (qemu's SLIRP user-net, the guest's WAN path for OCI pulls) and eth2 (the service
-    # NIC, whose lease becomes the VIP under V3.19c).
+    # Kept: eth0 only (qemu's SLIRP user-net, the guest's WAN path for OCI pulls).
     # Denied: eth1 (DRBD) and eth3 (the private guest<->host witness link) -- both statically
-    # addressed by the agent, both invisible to the LAN by design.
-    networking.dhcpcd.denyInterfaces = [ "eth1" "eth3" ];
+    # addressed by the agent, both invisible to the LAN by design -- and eth2, the service NIC.
+    #
+    # eth2's denial REVERSES what this list said when it was written ("the service NIC, whose
+    # lease becomes the VIP"). It does become the VIP, but it cannot be leased at BOOT:
+    #   - a boot-time client leases it on the SECONDARY too, so the "VIP" would be a per-node
+    #     address sitting on a node that is not serving; and
+    #   - the service NIC's MAC is flock-scoped (V3.19b), so both nodes would be asking one
+    #     router for one lease from two machines at once.
+    # The lease is drawn at PROMOTION instead, by briard-vip, which is the one moment exactly one
+    # node holds this identity. A single-interface dhcpcd there runs as its own instance, which
+    # is what makes denying it here and leasing it there coexist rather than fight.
+    networking.dhcpcd.denyInterfaces = [ "eth1" "eth2" "eth3" ];
 
     # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
     # answers for the one name it publishes and browses for nothing.
