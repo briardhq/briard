@@ -532,6 +532,18 @@ in
     };
     networking.firewall.enable = false;
 
+    # dhcpcd runs on every interface by default, and this guest has interfaces that must never
+    # ask a stranger's router for anything. Measured on the machine that produced V3.19: a node
+    # put TWO extra DHCP clients on the household's router, one of them on the DRBD replication
+    # link -- a private point-to-point path between anchors that has no business holding a LAN
+    # address, and whose address the agent sets explicitly (net.configure) when a pairing happens.
+    #
+    # Kept: eth0 (qemu's SLIRP user-net, the guest's WAN path for OCI pulls) and eth2 (the service
+    # NIC, whose lease becomes the VIP under V3.19c).
+    # Denied: eth1 (DRBD) and eth3 (the private guest<->host witness link) -- both statically
+    # addressed by the agent, both invisible to the LAN by design.
+    networking.dhcpcd.denyInterfaces = [ "eth1" "eth3" ];
+
     # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
     # answers for the one name it publishes and browses for nothing.
     #
