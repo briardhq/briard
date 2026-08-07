@@ -1168,3 +1168,64 @@ func TestCollectGarbageDeletesOldGenerations(t *testing.T) {
 		t.Errorf("runs = %v, want %v -- without -d this collects nothing", f.runs, want)
 	}
 }
+
+// Under DHCP the host stops choosing the VIP, so it has to be able to ask what the address turned
+// out to be. Ground truth is the interface, and the answer for an unaddressed device is "" -- NOT
+// an error, because the host asks every cycle and a Secondary holding no VIP is the normal case.
+// An error there would read as a dead channel and trigger a reconnect every poll (V3.19c).
+func TestVIPReadsTheLiveAddress(t *testing.T) {
+	f := &fakeExec{output: []byte(
+		"3: eth2    inet 192.168.9.50/24 brd 192.168.9.255 scope global eth2\\       valid_lft forever\n")}
+	g := dial(t, f)
+	got, err := g.VIP(context.Background(), "eth2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "192.168.9.50/24" {
+		t.Errorf("VIP = %q, want 192.168.9.50/24", got)
+	}
+}
+
+// A device with no global address (Secondary) answers "" and no error.
+func TestVIPUnaddressedIsEmptyNotAnError(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f) // fakeExec returns nothing for the ip call
+	got, err := g.VIP(context.Background(), "eth2")
+	if err != nil {
+		t.Fatalf("an unaddressed device must not be an error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("VIP = %q, want empty", got)
+	}
+}
+
+// A witness has no VIP device at all; asking must be answerable, not an error.
+func TestVIPNoDeviceIsEmptyNotAnError(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	got, err := g.VIP(context.Background(), "")
+	if err != nil {
+		t.Fatalf("a node with no VIP device must not be an error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("VIP = %q, want empty", got)
+	}
+	if len(f.runs) != 0 {
+		t.Errorf("no device means no ip call; ran %v", f.runs)
+	}
+}
+
+// firstCIDR must take the field after "inet" and nothing else -- never a brd address, never a
+// partially-parsed string. A wrong answer here is an address the host would probe and report.
+func TestFirstCIDRParsesOnlyInet(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"3: eth2    inet 192.168.9.50/24 brd 192.168.9.255 scope global eth2", "192.168.9.50/24"},
+		{"", ""},
+		{"3: eth2    inet6 fe80::1/64 scope link", ""},
+		{"garbage with no address at all", ""},
+	} {
+		if got := firstCIDR(tc.in); got != tc.want {
+			t.Errorf("firstCIDR(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

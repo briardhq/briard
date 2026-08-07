@@ -55,6 +55,15 @@ const (
 // since bring-up may retry.
 const verbNetConfigure = "net.configure"
 
+// verbNetVIP reads the address the VIP device ACTUALLY holds, in CIDR form; "" when it holds none
+// (a Secondary, or a promotion still in flight). It exists because under DHCP the host stops
+// deciding the address: it is acquired inside the guest at promotion, so the host has to be told
+// what it turned out to be -- to probe health at it, to report it, and to print it at a human.
+//
+// Ground truth is the INTERFACE, not whatever was last written to vip.env: an address that was
+// recorded but failed to apply must not be reportable as live.
+const verbNetVIP = "net.vip"
+
 // Sys.hostname sets the guest's hostname to this node's name. DRBD matches the
 // running hostname against the `on <name>` stanzas in the .res, so every fleet
 // guest (one baked image, hostname "guest") must be renamed to its node name
@@ -166,7 +175,7 @@ const (
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure,
+	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
 	verbServiceRender, verbServiceProvision, verbServiceManifest, verbReactorActive,
@@ -385,6 +394,30 @@ type netConfigureRequest struct {
 	CIDR    string `json:"cidr"`
 	VIPDev  string `json:"vip_dev,omitempty"`
 	VIPAddr string `json:"vip_addr,omitempty"`
+}
+
+// netVIPRequest names the device to read the live VIP from (net.vip). Empty Dev = this node has
+// no VIP device, which answers "" rather than erroring.
+type netVIPRequest struct {
+	Dev string `json:"dev"`
+}
+
+// firstCIDR pulls the address out of one `ip -o -4 addr show` line:
+//
+//	2: eth2    inet 192.168.9.50/24 brd 192.168.9.255 scope global eth2\       valid_lft ...
+//
+// i.e. the field after "inet". Returns "" when there is no such field, which is the honest
+// answer for an unaddressed device -- never a guess, and never a partially-parsed string.
+func firstCIDR(out string) string {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		for i, tok := range f {
+			if tok == "inet" && i+1 < len(f) {
+				return f[i+1]
+			}
+		}
+	}
+	return ""
 }
 
 // hostnameRequest carries this node's name (sys.hostname).
@@ -986,6 +1019,23 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, x.WriteFile(vipEnvPath, env)
 			}
 			return nil, nil
+		case verbNetVIP:
+			var req netVIPRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Dev == "" {
+				return "", nil // no VIP device on this node (a witness) -- not an error
+			}
+			// `scope global` excludes link-local, so a device that is up but unaddressed reads as
+			// "" rather than as an fe80:: the caller would have to know to discard. A non-zero exit
+			// means the device is absent; that is "no address", not a failure to report one --
+			// the host asks this every cycle and a transient absence must not read as a dead channel.
+			out, err := x.Run(ctx, "ip", "-o", "-4", "addr", "show", "dev", req.Dev, "scope", "global")
+			if err != nil {
+				return "", nil
+			}
+			return firstCIDR(string(out)), nil
 		default:
 			return nil, fmt.Errorf("guestagent: unknown verb %q", verb)
 		}
@@ -1554,6 +1604,18 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 func (g *Client) ConfigureNet(ctx context.Context, dev, cidr, vipDev, vipAddr string) error {
 	return g.c.call(ctx, verbNetConfigure,
 		netConfigureRequest{Dev: dev, CIDR: cidr, VIPDev: vipDev, VIPAddr: vipAddr}, nil)
+}
+
+// VIP reports the address dev actually holds, in CIDR form, or "" when it holds none -- this node
+// is Secondary, or its promotion has not claimed the address yet. Under DHCP this is how the host
+// learns an address it no longer chooses. An unaddressed device is "" rather than an error,
+// because the host asks every cycle and a Secondary answering "" is the normal case, not a fault.
+func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
+	var cidr string
+	if err := g.c.call(ctx, verbNetVIP, netVIPRequest{Dev: dev}, &cidr); err != nil {
+		return "", err
+	}
+	return cidr, nil
 }
 
 // Provision drops the rendered DRBD + reactor configs and create-md's the resource -- but only
