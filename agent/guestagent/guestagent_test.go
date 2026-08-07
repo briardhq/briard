@@ -145,7 +145,7 @@ func TestAdjustRewritesConfigAndAdjustsNeverCreatesMD(t *testing.T) {
 func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "", "", "eth2"); err != nil {
+	if err := g.ConfigureNet(context.Background(), "", "", "eth2", ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.runs) != 0 {
@@ -162,7 +162,7 @@ func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 func TestConfigureNet(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -425,11 +425,43 @@ func TestSetHostname(t *testing.T) {
 func TestConfigureNetWritesVIPDev(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "eth2"); err != nil {
+	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "eth2", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\n" {
 		t.Errorf("%s = %q, want VIP_DEV=eth2", vipEnvPath, got)
+	}
+}
+
+// The VIP ADDRESS is the LAN's, not ours: baking it made the product work only on the subnet our
+// lab happens to use and fail GREEN everywhere else (V3.19). ConfigureNet must record it beside
+// the device -- and RECORD rather than APPLY it, since the promoter chain claims the address on
+// promotion and a guest that configured it here would hold the VIP while Secondary.
+func TestConfigureNetWritesVIPAddr(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), "", "", "eth2", "192.168.9.50/24"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\nVIP_ADDR=192.168.9.50/24\n" {
+		t.Errorf("%s = %q, want VIP_DEV then VIP_ADDR", vipEnvPath, got)
+	}
+	if len(f.runs) != 0 {
+		t.Errorf("the VIP address must be recorded, not claimed here; ran %v", f.runs)
+	}
+}
+
+// An unset address must omit the line rather than write an empty one: the guest's baked fallback
+// is what the agent-less harnesses run on, and a bare `VIP_ADDR=` would blank it and take
+// `ip addr add` down with it.
+func TestConfigureNetOmitsUnsetVIPAddr(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), "", "", "eth2", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[vipEnvPath]; strings.Contains(got, "VIP_ADDR") {
+		t.Errorf("%s = %q, must not mention VIP_ADDR when unset", vipEnvPath, got)
 	}
 }
 

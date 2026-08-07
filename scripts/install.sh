@@ -39,7 +39,12 @@ DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's DRBD NIC (eth1); idle 
 # user AT the host reach the guest VIP (macvtap isolates host↔guest). TAP/DRBD_TAP name the devices
 # either way.
 NET_MODE="${BRIARD_NET_MODE:-macvtap}"
-VIP="${BRIARD_VIP:-192.168.1.100}"
+# The service address, in CIDR form -- it must carry a prefix because it is an address ON THE
+# USER'S LAN, and the LAN's prefix is not ours to assume. Until V3.19 this was a bare address that
+# fed only HEALTH_URL (the address the HOST probes) while the guest claimed a *baked* one, so
+# setting it moved the probe off the real VIP instead of moving the VIP. It now reaches the guest.
+VIP="${BRIARD_VIP:-192.168.1.100/24}"
+VIP_IP="${VIP%%/*}"   # the bare address, for the health probe and everything we print at a human
 # The pet data volume: THICK-allocated (see step 5) and sized for a real service's data, not for a
 # test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
@@ -391,9 +396,10 @@ Environment=NODE=guest
 Environment=SYSTEM_TAP=$DRBD_TAP
 Environment=SERVICE_TAP=$TAP
 Environment=VIP_DEV=eth2
+Environment=VIP_ADDR=$VIP
 $NET_ENV
 $KEY_ENV
-Environment=HEALTH_URL=http://$VIP/healthz
+Environment=HEALTH_URL=http://$VIP_IP/healthz
 Environment=STATUS_EVERY=5s
 Environment=ASSIGNMENT_CACHE=$STATE/assignment.json
 ExecStart=$AGENT
@@ -415,7 +421,7 @@ if command -v systemctl >/dev/null 2>&1; then
 		say "starting briard-net + briard-agent"
 		systemctl start briard-net.service briard-agent.service
 	fi
-	say "installed. the guest is booting; briard will answer at http://$VIP/ -- no service is installed on it yet"
+	say "installed. the guest is booting; briard will answer at http://$VIP_IP/ -- no service is installed on it yet"
 else
 	die "no systemd (this install path targets systemd hosts)"
 fi

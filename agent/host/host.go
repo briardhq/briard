@@ -120,6 +120,12 @@ type Config struct {
 	SystemDev  string // guest NIC to address, e.g. "eth1" (the DRBD NIC)
 	SystemCIDR string // its address/prefix, e.g. "10.0.0.2/24"
 	VIPDev     string // guest NIC the promoter claims the VIP on; "" = the guest's baked default
+	// VIPAddr is the service address the promoter claims, in CIDR form ("192.168.9.50/24").
+	// It is the LAN's address, not ours: baking it made the product work only on the one
+	// subnet our lab happened to use, and fail GREEN everywhere else (the readiness probe
+	// runs in-guest against an address the guest itself owns). "" = the guest's baked
+	// fallback, which the agent-less harnesses (nixosTest/lib.nix) still rely on.
+	VIPAddr string
 
 	// Observability + north-bound control.
 	HealthURL       string        // payload /healthz at the VIP; "" -> health follows quorum
@@ -484,9 +490,9 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// Configure the guest's NICs when either a DRBD NIC is given (multi-node / a paired anchor --
 	// address it so DRBD binds/connects there) OR a VIP device is (the unified layout puts the VIP
 	// on eth2 even single-node, since eth1 is the idle DRBD NIC held ready for pairing -- then
-	// ConfigureNet just records VIP_DEV and skips addressing).
-	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "") {
-		err = client.ConfigureNet(bringup, cfg.SystemDev, cfg.SystemCIDR, cfg.VIPDev)
+	// ConfigureNet just records VIP_DEV/VIP_ADDR and skips addressing).
+	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
+		err = client.ConfigureNet(bringup, cfg.SystemDev, cfg.SystemCIDR, cfg.VIPDev, cfg.VIPAddr)
 	}
 	if err == nil {
 		err = client.BringUp(bringup, spec)

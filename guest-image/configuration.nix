@@ -33,13 +33,26 @@ let
   # default; converge re-points it at the data's pinned image (or refuses). So "which
   # image serves" is a promotion-time decision, not baked into the unit.
   serveImage = "briard-payload:serve";
-  vip = "192.168.1.100"; # v0 fixed service VIP (baked, not a knob — CONTRIBUTING.md: no new flags)
-  # The VIP's *device* is agent-determined in prod (net.configure writes VIP_DEV
-  # to vipEnvPath). This baked default is the fallback: the nixosTest
-  # framework (VIP co-located with DRBD on eth1) and single-node/legacy guests
-  # (their lone NIC is eth1) both use it; a data node's agent overrides to eth2.
+  # The VIP's address AND device are both agent-determined in prod: net.configure writes
+  # VIP_ADDR + VIP_DEV to vipEnvPath, and the EnvironmentFile overrides these baked values.
+  #
+  # The address used to be baked outright ("v0 fixed service VIP, not a knob"). That made the
+  # product work on the one subnet our lab happens to use and **fail green** on every other:
+  # the readiness probe runs in-guest, against an address the guest itself owns, so a node no
+  # one in the house could reach still reported ready (V3.19). The LAN owns this value now.
+  #
+  # What is left here is the fallback for agent-less harnesses -- the nixosTest framework
+  # (VIP co-located with DRBD on eth1) and single-node/legacy guests whose lone NIC is eth1.
+  # Those run on exactly this subnet, which is why the pair still reads as it did.
+  vipFallback = "192.168.1.100/24";
   vipDev = "eth1";
   vipEnvPath = "/run/briard/vip.env";
+  # `ip` wants the prefix, `arping` wants the bare address. Strip it here rather than carry
+  # the address twice: two variables are two things that can disagree, and the one that
+  # would silently win is the gratuitous ARP nobody is watching.
+  vipArping = pkgs.writeShellScript "briard-vip-arping" ''
+    exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
+  '';
 
   cfg = config.briard.payload;
 
@@ -411,8 +424,8 @@ in
     };
 
     # 3. vip — claim the service address and gratuitous-ARP it so the L2 segment
-    #    learns its (new) home. v0 uses a fixed VIP address; the *device* is
-    #    agent-determined (net.configure writes VIP_DEV to ${vipEnvPath}). Under the
+    #    learns its (new) home. BOTH the address and the device are agent-determined
+    #    (net.configure writes VIP_ADDR + VIP_DEV to ${vipEnvPath}). Under the
     #    unified NIC layout eth1 is always the DRBD NIC and the VIP lives on
     #    eth2 — the installer sets VIP_DEV=eth2 even single-node (eth1 sits idle until
     #    a pairing addresses it), so a second anchor can join without a guest reboot.
@@ -425,14 +438,14 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        Environment = "VIP_DEV=${vipDev}";
+        Environment = [ "VIP_DEV=${vipDev}" "VIP_ADDR=${vipFallback}" ];
         EnvironmentFile = "-${vipEnvPath}";
         # Bring the service NIC up first (the framework brings the NIC up for the
         # nixosTests; a disk-image guest's NIC may still be down). Idempotent.
         ExecStartPre = "${pkgs.iproute2}/bin/ip link set dev $VIP_DEV up";
-        ExecStart = "${pkgs.iproute2}/bin/ip addr add ${vip}/24 dev $VIP_DEV";
-        ExecStartPost = "-${pkgs.iputils}/bin/arping -A -c 1 -I $VIP_DEV ${vip}";
-        ExecStop = "${pkgs.iproute2}/bin/ip addr del ${vip}/24 dev $VIP_DEV";
+        ExecStart = "${pkgs.iproute2}/bin/ip addr add $VIP_ADDR dev $VIP_DEV";
+        ExecStartPost = "-${vipArping}";
+        ExecStop = "${pkgs.iproute2}/bin/ip addr del $VIP_ADDR dev $VIP_DEV";
       };
     };
 

@@ -376,10 +376,15 @@ type evictRequest struct {
 // only on a data node whose VIP is not on the baked-default NIC (the two-subnet
 // layout puts DRBD on eth1, so the VIP moves to eth2 --); "" leaves the baked
 // default (single-node/legacy: the lone NIC is eth1).
+//
+// VIPAddr is the service address itself, in CIDR form ("192.168.9.50/24"). Like VIPDev it is
+// RECORDED here, not applied -- the promoter chain claims it when this node wins the primary
+// role. "" leaves the guest's baked fallback, which the agent-less harnesses still run on.
 type netConfigureRequest struct {
-	Dev    string `json:"dev"`
-	CIDR   string `json:"cidr"`
-	VIPDev string `json:"vip_dev,omitempty"`
+	Dev     string `json:"dev"`
+	CIDR    string `json:"cidr"`
+	VIPDev  string `json:"vip_dev,omitempty"`
+	VIPAddr string `json:"vip_addr,omitempty"`
 }
 
 // hostnameRequest carries this node's name (sys.hostname).
@@ -965,10 +970,20 @@ func dispatch(x Executor) dispatchFunc {
 					return nil, err
 				}
 			}
-			// The VIP device is agent-determined: record it where briard-vip.service
-			// reads it (an optional EnvironmentFile). Idempotent (whole-file write).
+			// The VIP's device AND address are agent-determined: record them where
+			// briard-vip.service reads them (an optional EnvironmentFile). Idempotent
+			// (whole-file write), and each line is independently optional -- an unset one
+			// leaves the guest's baked fallback in force rather than blanking it, which is
+			// what keeps the agent-less harnesses working.
+			var env []byte
 			if req.VIPDev != "" {
-				return nil, x.WriteFile(vipEnvPath, []byte("VIP_DEV="+req.VIPDev+"\n"))
+				env = append(env, "VIP_DEV="+req.VIPDev+"\n"...)
+			}
+			if req.VIPAddr != "" {
+				env = append(env, "VIP_ADDR="+req.VIPAddr+"\n"...)
+			}
+			if len(env) > 0 {
+				return nil, x.WriteFile(vipEnvPath, env)
 			}
 			return nil, nil
 		default:
@@ -1534,9 +1549,11 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 // ConfigureNet sets a static CIDR on a guest NIC (the system/DRBD NIC) and brings
 // it up, so DRBD can use the private subnet. vipDev, when non-empty, records the NIC
 // the promoter should claim the VIP on (the two-subnet layout moves it to eth2);
-// "" leaves the guest's baked default. Idempotent.
-func (g *Client) ConfigureNet(ctx context.Context, dev, cidr, vipDev string) error {
-	return g.c.call(ctx, verbNetConfigure, netConfigureRequest{Dev: dev, CIDR: cidr, VIPDev: vipDev}, nil)
+// "" leaves the guest's baked default. vipAddr does the same for the address itself, in
+// CIDR form -- the LAN decides it, so it cannot be baked. Idempotent.
+func (g *Client) ConfigureNet(ctx context.Context, dev, cidr, vipDev, vipAddr string) error {
+	return g.c.call(ctx, verbNetConfigure,
+		netConfigureRequest{Dev: dev, CIDR: cidr, VIPDev: vipDev, VIPAddr: vipAddr}, nil)
 }
 
 // Provision drops the rendered DRBD + reactor configs and create-md's the resource -- but only
