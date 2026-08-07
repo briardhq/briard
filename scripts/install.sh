@@ -50,6 +50,11 @@ VIP_IP="${VIP%%/*}"   # the bare address, for the health probe and everything we
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
 # one-liner. Written in whole GiB -- the dd fallback parses it that way.
 DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
+# This node's name. NOT a knob (deliberately -- a new env var needs a human's call, AGENTS §2); it
+# is factored out of the unit below only so the closing message and the unit cannot disagree about
+# the name the guest publishes as `briard-<name>.local`. Making it user-settable is the open call
+# recorded in V3.19 -- every install currently answers to `briard-guest.local`.
+NODE_NAME=guest
 NET_GUARD_SECS="${BRIARD_NET_GUARD_SECS:-45}"
 UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
 NET_PEER="${BRIARD_NET_PEER:-}"       # a LAN host to ping to confirm we kept our footing
@@ -441,7 +446,7 @@ Environment=ACCEL=kvm:tcg
 Environment=GUEST_DISK=$OVERLAY
 Environment=DATA_DISK=$DATA
 Environment=CONTROL_SOCK=$RUNDIR/ctl.sock
-Environment=NODE=guest
+Environment=NODE=$NODE_NAME
 # Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (the DRBD NIC, idle single-node --
 # DRBD replicates over loopback until a pairing addresses eth1); SERVICE_TAP -> eth2, where the VIP
 # lives (VIP_DEV), held ready so a second anchor can join without a guest reboot. SYSTEM_DEV is left
@@ -475,7 +480,11 @@ if command -v systemctl >/dev/null 2>&1; then
 		say "starting briard-net + briard-agent"
 		systemctl start briard-net.service briard-agent.service
 	fi
-	say "installed. the guest is booting; briard will answer at http://$VIP_IP/ -- no service is installed on it yet"
+	# Lead with the NAME and keep the address as the fallback. The name is the one that stays true
+	# if the address ever moves, and the address is the one that still works if a client's mDNS
+	# does not (Android is the usual offender). Naming both costs a line and removes a support
+	# round-trip; naming only the address is what made the docs wrong in every house but ours.
+	say "installed. the guest is booting; briard will answer at http://briard-$NODE_NAME.local/ (or http://$VIP_IP/) -- no service is installed on it yet"
 else
 	die "no systemd (this install path targets systemd hosts)"
 fi
