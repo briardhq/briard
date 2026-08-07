@@ -41,7 +41,12 @@ pkgs.testers.runNixOSTest {
       {
         virtualisation.memorySize = 6144; # clears the report card's 4 GB floor + room for the 2 GB nested guest
         virtualisation.cores = 4;
-        virtualisation.diskSize = 10240;
+        # 14 GB, not 10: this test runs install.sh TWICE, and the first (must-fail) invocation stages
+        # ~2 GB before dying at the NIC check -- so the real run's report card measures a disk the
+        # previous run already ate into. Against the product's own 8 GB floor that left under a GB of
+        # margin, and V3.19's artifact growth tipped it: the card refused with "7 GB free" and the
+        # install never ran. Headroom, so the test stops measuring the admission floor by accident.
+        virtualisation.diskSize = 14336;
         virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM in L1
         virtualisation.vlans = [ 1 ]; # eth1 on the shared 192.168.1.0/24 L2 (the LAN)
         # Static, scripted (not DHCP/networkd) so install.sh owns eth1: it snapshots eth1's addr,
