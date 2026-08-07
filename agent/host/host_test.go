@@ -536,3 +536,36 @@ func TestConfigFromEnv_UpgradeBudgetDefault(t *testing.T) {
 		t.Errorf("UPGRADE_BUDGET=90s gave %v", got)
 	}
 }
+
+// The VIP's MAC is the VIP's identity, so it must be FLOCK-scoped: two nodes of one flock present
+// the same service MAC, draw the same DHCP lease, and therefore keep the same address when the VIP
+// moves between them. The DRBD and witness MACs must stay NODE-scoped -- those have to differ per
+// node or the NICs collide and ARP never resolves (V3.19b).
+func TestServiceMACIsFlockScopedAndOthersAreNot(t *testing.T) {
+	a := Config{Node: "anchorA", FlockID: "flock-1"}
+	b := Config{Node: "anchorB", FlockID: "flock-1"}
+
+	if got, want := deriveMAC(orNode(a.FlockID, a.Node), "svc"), deriveMAC(orNode(b.FlockID, b.Node), "svc"); got != want {
+		t.Errorf("service MAC must be equal across a flock's nodes: %s != %s", got, want)
+	}
+	if deriveMAC(a.Node, "sys") == deriveMAC(b.Node, "sys") {
+		t.Error("DRBD MACs must differ per node, or the NICs collide")
+	}
+	if deriveMAC(a.Node, "wit") == deriveMAC(b.Node, "wit") {
+		t.Error("witness MACs must differ per node, or the NICs collide")
+	}
+	// Two different flocks in one house must not collide on the service MAC either.
+	other := Config{Node: "anchorA", FlockID: "flock-2"}
+	if deriveMAC(orNode(a.FlockID, a.Node), "svc") == deriveMAC(orNode(other.FlockID, other.Node), "svc") {
+		t.Error("distinct flocks must present distinct service MACs")
+	}
+}
+
+// No flock id -> the node name, unchanged. This is what keeps every already-installed node and
+// every agent-less harness on exactly the MAC it has always had instead of silently drawing a new
+// DHCP lease the first time it restarts on a newer agent.
+func TestServiceMACFallsBackToNodeWithoutFlockID(t *testing.T) {
+	if got, want := deriveMAC(orNode("", "guest"), "svc"), deriveMAC("guest", "svc"); got != want {
+		t.Errorf("without a flock id the service MAC must be the node-derived one: %s != %s", got, want)
+	}
+}

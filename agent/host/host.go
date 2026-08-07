@@ -44,11 +44,21 @@ import (
 // there is one agent per process and READY is a service-manager-global fact.
 var readyOnce sync.Once
 
-// deriveMAC returns a stable, unique MAC for a guest NIC from the node name + NIC
-// role. QEMU's default MAC is identical across guests, so a fleet on a shared bridge
-// needs distinct MACs or the NICs collide (ARP never resolves). Keeps QEMU's 52:54:00
-// OUI and fills the low 3 bytes from a hash -- deterministic, so a node's MAC is
-// stable across restarts.
+// orNode returns id when set, else the node name. It is what makes the flock-scoped VIP MAC a
+// pure addition: a node installed before FlockID existed, and every agent-less harness, has no id
+// and keeps the exact MAC it has always had rather than silently drawing a new DHCP lease.
+func orNode(id, node string) string {
+	if id != "" {
+		return id
+	}
+	return node
+}
+
+// deriveMAC returns a stable, unique MAC for a guest NIC from a seed (the node name, or the flock
+// id for the VIP's NIC) + NIC role. QEMU's default MAC is identical across guests, so a fleet on a
+// shared bridge needs distinct MACs or the NICs collide (ARP never resolves). Keeps QEMU's 52:54:00
+// OUI and fills the low 3 bytes from a hash -- deterministic, so a NIC's MAC is stable across
+// restarts.
 func deriveMAC(node, role string) string {
 	h := fnv.New32a()
 	fmt.Fprintf(h, "%s/%s", node, role)
@@ -102,7 +112,14 @@ type Config struct {
 	WitnessCA    string
 
 	// Node identity + DRBD bring-up.
-	Node     string        // this node's name
+	Node string // this node's name
+	// FlockID is the identity of the FLOCK rather than the node -- generated once at install into
+	// pet state, and (later) handed to a joiner by the pairing directive. Only the VIP's MAC
+	// derives from it, because the VIP is the one thing that must survive moving between nodes:
+	// a MAC derived from the node name means node B draws a different DHCP lease, and the address
+	// changes on failover, which is the one thing a VIP exists not to do. "" falls back to the node
+	// name, which keeps every agent-less harness and every already-installed node exactly as it was.
+	FlockID  string
 	Role     model.Role    // anchor / diskless ("" reserved for plain machines)
 	Resource drbd.Resource // the DRBD resource this node serves
 	Promoter []string      // drbd-reactor units in start order; nil on a witness
@@ -381,14 +398,17 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 		ControlSock: cfg.ControlSock,
 		QMPSock:     cfg.QMPSock,
 		ServiceTap:  cfg.ServiceTap,
-		ServiceMAC:  deriveMAC(cfg.Node, "svc"),
-		SystemTap:   cfg.SystemTap,
-		SystemMAC:   deriveMAC(cfg.Node, "sys"),
-		WitnessTap:  cfg.WitnessTap,
-		WitnessMAC:  deriveMAC(cfg.Node, "wit"),
-		NetMode:     cfg.NetMode,
-		NetWrapBin:  cfg.NetWrapBin,
-		SerialLog:   cfg.SerialLog,
+		// The service NIC carries the VIP and nothing else, so its MAC is the VIP's identity --
+		// flock-scoped, not node-scoped (see Config.FlockID). The DRBD and witness NICs stay
+		// node-derived: those MUST differ per node or the NICs collide and ARP never resolves.
+		ServiceMAC: deriveMAC(orNode(cfg.FlockID, cfg.Node), "svc"),
+		SystemTap:  cfg.SystemTap,
+		SystemMAC:  deriveMAC(cfg.Node, "sys"),
+		WitnessTap: cfg.WitnessTap,
+		WitnessMAC: deriveMAC(cfg.Node, "wit"),
+		NetMode:    cfg.NetMode,
+		NetWrapBin: cfg.NetWrapBin,
+		SerialLog:  cfg.SerialLog,
 	}
 }
 

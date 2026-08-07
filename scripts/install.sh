@@ -366,6 +366,24 @@ if [ ! -f "$DATA" ]; then
 		fi
 	fi
 fi
+# The flock's identity -- PET, so it survives the `rm -rf /opt/briard` cattle reset along with the
+# data it belongs to. The VIP's MAC derives from it, so keeping it is what keeps this node's address
+# stable across a reinstall, and (once pairing carries it) across a failover to a second node.
+#
+# It also ends something quietly true of every install so far: the service MAC derived from NODE,
+# which install.sh hardcodes to "guest" -- so EVERY briard node on earth presented the SAME service
+# MAC. Harmless across houses, an L2 collision inside one. A per-install random id fixes that.
+FLOCK_ID_FILE="$STATE/flock-id"
+if [ ! -s "$FLOCK_ID_FILE" ]; then
+	# /proc/sys/kernel/random/uuid is on every Linux we target and needs no coreutils.
+	(cat /proc/sys/kernel/random/uuid 2>/dev/null || od -An -N16 -tx1 /dev/urandom | tr -d ' \n') \
+		>"$FLOCK_ID_FILE" || die "could not write the flock id to $FLOCK_ID_FILE"
+	chmod 0600 "$FLOCK_ID_FILE"
+	say "generated this flock's identity at $FLOCK_ID_FILE (pet -- keep it to keep your address)"
+fi
+FLOCK_ID="$(cat "$FLOCK_ID_FILE")"
+[ -n "$FLOCK_ID" ] || die "the flock id at $FLOCK_ID_FILE is empty; remove it to regenerate"
+
 OVERLAY="$PREFIX/guest.qcow2"   # cattle: recreated each install, dropped by `rm -rf /opt/briard`
 say "creating the guest overlay at $OVERLAY"
 rm -f "$OVERLAY"
@@ -432,6 +450,7 @@ Environment=SYSTEM_TAP=$DRBD_TAP
 Environment=SERVICE_TAP=$TAP
 Environment=VIP_DEV=eth2
 Environment=VIP_ADDR=$VIP
+Environment=FLOCK_ID=$FLOCK_ID
 $NET_ENV
 $KEY_ENV
 Environment=HEALTH_URL=http://$VIP_IP/healthz
