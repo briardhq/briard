@@ -85,6 +85,10 @@ pkgs.testers.runNixOSTest {
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
         "--setenv=SERVICE_TAP=svc0 --setenv=SERVICE_MAC=52:54:00:aa:bb:cc --setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
+        # Declared even though this test never curls the VIP: the promoter chain still ends at
+        # briard-vip, and with nothing baked (V3.19c step 3) an unset address means DHCP -- which
+        # would sit waiting for a server that does not exist on this L2.
+        "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
         # NO_PAYLOAD: the zero-service promoter chain (the shipped shape). This test boots
         # the SHIPPED disk, whose payload slot is empty -- naming a unit that does not exist
         # fails the whole chain and takes the VIP down with it.

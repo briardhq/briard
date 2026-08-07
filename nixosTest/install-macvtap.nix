@@ -106,6 +106,7 @@ pkgs.testers.runNixOSTest {
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     host.succeed(
         "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
+        "BRIARD_VIP=192.168.1.100/24 "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
 
@@ -203,6 +204,7 @@ pkgs.testers.runNixOSTest {
     # macvtaps that are already up rather than re-creating them.
     host.succeed(
         "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
+        "BRIARD_VIP=192.168.1.100/24 "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched

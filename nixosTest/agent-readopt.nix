@@ -49,6 +49,11 @@ pkgs.testers.runNixOSTest {
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
           SERVICE_TAP = "svc0";
+          # The test declares its service address: the image bakes none (V3.19c step 3) and unset
+          # means DHCP, which nothing answers here. HEALTH_URL stays unset so the agent resolves the
+          # probe target from the address the guest actually holds.
+          VIP_DEV = "eth1";
+          VIP_ADDR = "192.168.1.100/24";
           NET_MODE = "macvtap";
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
           STATUS_EVERY = "2s";

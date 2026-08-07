@@ -52,6 +52,12 @@ pkgs.testers.runNixOSTest {
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
         "--setenv=SERVICE_TAP=svc0 --setenv=STATUS_EVERY=2s "
+        # The test DECLARES the service address it is about to curl. The guest image bakes none
+        # (V3.19c step 3) and unset means DHCP, which nothing answers on a nixosTest's L2.
+        # HEALTH_URL is deliberately left unset alongside it, so the agent resolves its probe
+        # target from the address the guest actually holds -- the shipped path, exercised here
+        # rather than bypassed by a baked URL that happens to agree.
+        "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
         # Macvtap substrate: the agent launches qemu behind the fd-passing wrapper, which pins
         # svc0's MAC to the agent's derived svc MAC (matching qemu's mac=) and opens /dev/tap<ifindex>.
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "

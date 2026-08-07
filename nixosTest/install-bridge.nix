@@ -104,6 +104,10 @@ pkgs.testers.runNixOSTest {
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     host.succeed(
         "BRIARD_ARTIFACTS=${staging} BRIARD_NET_MODE=bridge BRIARD_NIC=eth1 BRIARD_UNIT_DIR=/run/systemd/system "
+        # The test DECLARES the address it is about to curl. install.sh has no default any more
+        # (V3.19c step 3): unset means DHCP, and this L2 has no server. Stating it here is the
+        # point of the change -- a default every test agreed with is what hid the baked VIP.
+        "BRIARD_VIP=192.168.1.100/24 "
         "sh ${installScript}"
     )
 

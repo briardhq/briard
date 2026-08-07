@@ -80,6 +80,20 @@ let
         }
       ];
       environment.systemPackages = [ pkgs.curl ]; # test-only, probing the VIP
+      # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes
+      # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
+      # L2. So the harness states the address it is going to curl, rather than inheriting one
+      # from the product image -- which is the point of the change and not merely its cost. A
+      # baked default that every test happens to agree with is how the original defect stayed
+      # invisible: nothing disagreed with it, so nothing revealed it.
+      #
+      # eth1 here, not eth2: these guests are agent-less and have one service NIC, which is also
+      # where their private DRBD address lives. That co-location is the reason briard-vip only
+      # takes the NIC down when the address came from DHCP.
+      systemd.services.briard-vip.serviceConfig.Environment = mkForce [
+        "VIP_DEV=eth1"
+        "VIP_ADDR=192.168.1.100/24"
+      ];
       systemd.services.drbd-reactor.wantedBy = mkForce [ ];
       environment.etc = {
         "drbd.conf".text = ''include "/etc/drbd.d/*.res";'';

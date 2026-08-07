@@ -203,14 +203,40 @@ func TestConfigFromEnv_NoServiceLeavesPayloadOutOfTheChain(t *testing.T) {
 	}
 }
 
-// The health probe must point at the front door, not at a service's own port: that is what
-// makes it answer on a node with nothing installed. Probing :8080 (the fixture's port) left a
-// fresh install permanently unhealthy — the zombie state, and it was the shipped default.
-func TestConfigFromEnv_HealthProbesTheFrontDoor(t *testing.T) {
+// There is NO baked probe target any more (V3.19c step 3). The old default was the lab's own
+// http://192.168.1.100/healthz, and the reason it survived so long is that every test agreed with
+// it — a guess about someone else's network that nothing in our own could contradict. Unset now
+// means "resolve it from the address the guest actually holds", which is the only source that can
+// be right on a LAN we have never seen.
+//
+// The probe target is still the front door rather than a service's own port; that part was never
+// the defect, and healthURLAt is what keeps it true once the address is dynamic.
+func TestConfigFromEnv_NoBakedHealthTarget(t *testing.T) {
 	t.Setenv("HEALTH_URL", "")
 	t.Setenv("ROLE", string(model.RoleAnchor))
-	if got := ConfigFromEnv().HealthURL; got != "http://192.168.1.100/healthz" {
-		t.Errorf("HealthURL = %q, want the front door at the VIP", got)
+	t.Setenv("VIP_DEV", "eth2")
+	cfg := ConfigFromEnv()
+	if cfg.HealthURL != "" {
+		t.Errorf("HealthURL = %q, want empty: no address may be baked into the product path", cfg.HealthURL)
+	}
+	// Empty must NOT read as "nothing to probe" on a data node — that meaning belongs to the
+	// witness alone. What makes it resolvable instead is the device the agent was told about.
+	if cfg.Diskless {
+		t.Fatal("precondition: an anchor is not diskless")
+	}
+	if cfg.VIPDev == "" {
+		t.Error("with no baked target, VIP_DEV is what makes the probe resolvable at all")
+	}
+}
+
+// An explicitly set HEALTH_URL still pins the probe, which is what makes the resolution an
+// override rather than a replacement — and is how a node with an unusual front door stays
+// configurable without reintroducing a default for everyone.
+func TestConfigFromEnv_ExplicitHealthURLIsKept(t *testing.T) {
+	t.Setenv("ROLE", string(model.RoleAnchor))
+	t.Setenv("HEALTH_URL", "http://10.1.2.3/healthz")
+	if got := ConfigFromEnv().HealthURL; got != "http://10.1.2.3/healthz" {
+		t.Errorf("HealthURL = %q, want the explicitly configured target", got)
 	}
 }
 

@@ -43,8 +43,15 @@ NET_MODE="${BRIARD_NET_MODE:-macvtap}"
 # USER'S LAN, and the LAN's prefix is not ours to assume. Until V3.19 this was a bare address that
 # fed only HEALTH_URL (the address the HOST probes) while the guest claimed a *baked* one, so
 # setting it moved the probe off the real VIP instead of moving the VIP. It now reaches the guest.
-VIP="${BRIARD_VIP:-192.168.1.100/24}"
-VIP_IP="${VIP%%/*}"   # the bare address, for the health probe and everything we print at a human
+#
+# UNSET MEANS DHCP, and there is deliberately no default (V3.19c step 3). Any address we could
+# pick here is a guess about someone else's network, whereas a lease is the router TELLING us the
+# answer -- from inside its own pool, so it will not hand the same address to anyone else while we
+# hold it. A static default squats an address the router still believes it owns. It also removes
+# the last place our lab's subnet reached the product path, which is exactly why the original
+# defect was invisible: the default matched the lab, so every test agreed with it.
+VIP="${BRIARD_VIP:-}"
+VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows it yet
 # The pet data volume: THICK-allocated (see step 6) and sized for a real service's data, not for a
 # test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
@@ -458,7 +465,11 @@ Environment=VIP_ADDR=$VIP
 Environment=FLOCK_ID=$FLOCK_ID
 $NET_ENV
 $KEY_ENV
-Environment=HEALTH_URL=http://$VIP_IP/healthz
+# NO HEALTH_URL. It used to bake the address a second time, and under DHCP there is nothing to
+# bake -- the address is acquired inside the guest at promotion, so only the guest knows it. The
+# agent asks (VIP_DEV above is how it knows where to look) and rebuilds the probe target each
+# cycle. Writing an address twice is writing two things that can disagree, and the one that
+# would silently win here gates readiness, the OS health gate and a rollback.
 Environment=STATUS_EVERY=5s
 Environment=ASSIGNMENT_CACHE=$STATE/assignment.json
 ExecStart=$AGENT
@@ -484,7 +495,16 @@ if command -v systemctl >/dev/null 2>&1; then
 	# if the address ever moves, and the address is the one that still works if a client's mDNS
 	# does not (Android is the usual offender). Naming both costs a line and removes a support
 	# round-trip; naming only the address is what made the docs wrong in every house but ours.
-	say "installed. the guest is booting; briard will answer at http://briard-$NODE_NAME.local/ (or http://$VIP_IP/) -- no service is installed on it yet"
+	#
+	# Under DHCP we cannot name the address at all: it is acquired inside the guest at promotion,
+	# which has not happened yet. So the name carries the whole message, and we say where the
+	# address will show up rather than inventing one to print -- printing a plausible-but-wrong
+	# address is the exact failure this item exists to end.
+	if [ -n "$VIP_IP" ]; then
+		say "installed. the guest is booting; briard will answer at http://briard-$NODE_NAME.local/ (or http://$VIP_IP/) -- no service is installed on it yet"
+	else
+		say "installed. the guest is booting; briard will answer at http://briard-$NODE_NAME.local/ -- it takes its address from your router, and will appear there as \"briard-...\" -- no service is installed on it yet"
+	fi
 else
 	die "no systemd (this install path targets systemd hosts)"
 fi

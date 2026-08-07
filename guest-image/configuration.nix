@@ -41,10 +41,15 @@ let
   # the readiness probe runs in-guest, against an address the guest itself owns, so a node no
   # one in the house could reach still reported ready (V3.19). The LAN owns this value now.
   #
-  # What is left here is the fallback for agent-less harnesses -- the nixosTest framework
-  # (VIP co-located with DRBD on eth1) and single-node/legacy guests whose lone NIC is eth1.
-  # Those run on exactly this subnet, which is why the pair still reads as it did.
-  vipFallback = "192.168.1.100/24";
+  # AND NOTHING IS BAKED HERE EITHER, as of step 3. This was kept for one more step as the
+  # agent-less harnesses' fallback; that made it the last place our lab's subnet sat in the
+  # product image, and a fallback that every test agrees with is indistinguishable from a
+  # default nobody chose -- which is the shape of the original defect. Empty means DHCP: the
+  # router tells us the answer, inside its own pool, instead of us guessing at someone's house.
+  #
+  # The harnesses now DECLARE their address (nixosTest/lib.nix, and the driver-based tests via
+  # VIP_ADDR), which turns an inherited assumption into a stated one.
+  vipFallback = "";
   vipDev = "eth1";
   vipEnvPath = "/run/briard/vip.env";
   # The FLOCK's service address, replicated with the data. Same shape, same place and same

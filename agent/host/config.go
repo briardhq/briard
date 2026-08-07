@@ -127,7 +127,14 @@ func ConfigFromEnv() Config {
 		// installed and forwards the question to the service when something is. Probing a
 		// service port directly is what left a freshly installed node reporting unhealthy
 		// forever with no reflex able to tell that apart from a broken service.
-		HealthURL:       disklessOr(role, "", env("HEALTH_URL", "http://192.168.1.100/healthz")),
+		//
+		// NO DEFAULT, deliberately (V3.19c step 3). It used to be the lab's own
+		// `http://192.168.1.100/healthz` -- a guess about someone else's network that agreed
+		// with every test we ran, which is precisely how the baked VIP stayed invisible. Unset
+		// now means "ask the guest what address it actually holds" (guest.ResolveHealthURL, via
+		// VIP_DEV): the only source that can be right on a LAN we have never seen. Setting it
+		// explicitly still pins a probe target.
+		HealthURL:       disklessOr(role, "", os.Getenv("HEALTH_URL")),
 		StatusEvery:     durEnv("STATUS_EVERY", 10*time.Second),
 		BringUpBudget:   durEnv("BRINGUP_BUDGET", 5*time.Minute),
 		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),                   // the OS-upgrade bound, incl. the degraded wait before a revert
