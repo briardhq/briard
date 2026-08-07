@@ -85,6 +85,59 @@ let
       "briard-$(${pkgs.nettools}/bin/hostname).local" "''${VIP_ADDR%%/*}"
   '';
 
+  # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
+  # that ARP-claimed it, a router that repooled while the flock had no primary -- because "the
+  # address changed" does not care why it changed.
+  #
+  # WHAT IT DELIBERATELY DOES NOT DO: restart briard-vip. That was the first shape, and it is
+  # wrong twice over. (1) This hook runs as a descendant of briard-vip's own cgroup (dhcpcd was
+  # started from its ExecStart), so restarting that unit KILLS THE PROCESS ASKING FOR THE
+  # RESTART, mid-flight. (2) It would put an ordinary address change through the drbd-reactor
+  # promoter chain -- a member whose failure trips OnFailure=drbd-demote-or-escalate -- which is
+  # a failover-shaped risk taken for a job that needs no chain at all. The front door binds :80
+  # on every interface, so it does not care what the address is; the only things that do are the
+  # live file, the flock's store, the ARP announcement, and the name. All four are done HERE.
+  #
+  # A lease that EXPIRES needs nothing from this hook either: the interface then holds no
+  # address, net.vip reports "" as ground truth, and the node reads not-ready by the same rule
+  # that covers every other addressless data node. The honest signal already flows.
+  vipHook = pkgs.writeShellScript "briard-vip-dhcp-hook" ''
+    set -u
+    case "''${reason:-}" in
+      # The reasons that mean "we hold an address". TIMEOUT is --lastleaseextend doing its job:
+      # no server answered and we kept the lease, which is a non-event worth not reacting to.
+      BOUND|RENEW|REBIND|REBOOT|TIMEOUT|STATIC) ;;
+      *) exit 0 ;;
+    esac
+    [ -n "''${new_ip_address:-}" ] || exit 0
+    addr="''${new_ip_address}/''${new_subnet_cidr:-24}"
+
+    # A RENEW confirming what we already hold is the common case and must be silent -- otherwise
+    # every lease period would re-announce and bounce the name for no reason.
+    cur=""
+    if [ -r ${vipLivePath} ]; then
+      . ${vipLivePath}
+      cur="''${VIP_ADDR:-}"
+    fi
+    [ "$addr" = "$cur" ] && exit 0
+
+    # Withdraw the address WE put on optimistically. dhcpcd removes the addresses it manages,
+    # but the one applied at promotion from the flock's store is foreign to it -- so without
+    # this the NIC quietly ends up holding two, and "the first address on the device" (which is
+    # how net.vip reads ground truth) becomes a coin toss between the live one and a stale one.
+    if [ -n "$cur" ]; then
+      ${pkgs.iproute2}/bin/ip addr del "$cur" dev "''${interface}" || true
+    fi
+    ${pkgs.iproute2}/bin/ip addr replace "$addr" dev "''${interface}"
+    printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
+    printf '%s\n' "$addr" 2>/dev/null >${vipAddrFile} || true
+    VIP_DEV="''${interface}" ${vipArping} || true
+    # try-restart, not restart: republish the name only where a name is already published. On a
+    # node that is not currently serving there is nothing to correct.
+    ${pkgs.systemd}/bin/systemctl try-restart briard-mdns.service || true
+    exit 0
+  '';
+
   # An EMPTY config for the VIP's dhcpcd instance, and the emptiness is the point — every setting
   # this instance has is on its command line below, where it can be read.
   #
@@ -104,10 +157,14 @@ let
   #     dhcpcd processes"). That is what lets the service NIC be denied at boot and leased at
   #     promotion, which is the whole point: a boot-time client would lease this NIC on the
   #     SECONDARY too, and after the flock MAC both nodes would ask one router for one lease.
-  #   -G (nogateway) + -C resolv.conf: left at its defaults dhcpcd installs a default route and
-  #     rewrites resolv.conf from this lease -- so PROMOTION would silently re-plumb the guest's
-  #     WAN path (eth0, the SLIRP route out) and demotion would revert it. A service address is
-  #     all we want from this lease.
+  #   -G (nogateway): left at its default dhcpcd installs a default route from this lease, so
+  #     PROMOTION would silently re-plumb the guest's WAN path (eth0, the SLIRP route out) and
+  #     demotion would revert it. Routes are dhcpcd's own doing, not a hook's, so this flag is
+  #     the only thing that stops it.
+  #   -c <hook> replaces dhcpcd-run-hooks entirely for this instance, so the stock hooks never
+  #     run and resolv.conf is never rewritten -- ours is the only script. -C resolv.conf is
+  #     kept alongside as the belt to that braces: it is what still protects us if -c is ever
+  #     dropped and the standard runner comes back.
   #   -I "" pins the client-id to the hardware address. NixOS's dhcpcd.conf drops both `duid` and
   #     `clientid`, so today that is the compiled DEFAULT doing the work -- while dhcpcd's own
   #     shipped config sets `duid` instead, whose DUID is per-host and, in the man page's words,
@@ -130,7 +187,7 @@ let
     dev="$1"; want="$2"; shift 2
     mac="$(cat /sys/class/net/"$dev"/address)"
     hex="''${mac//:/}"
-    set -- -f ${dhcpcdConf} \
+    set -- -f ${dhcpcdConf} -c ${vipHook} \
       -G -C resolv.conf -I "" -h "briard-''${hex: -6}" --lastleaseextend "$@"
     if [ -n "$want" ]; then
       set -- "$@" -r "''${want%%/*}"
