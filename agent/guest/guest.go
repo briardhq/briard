@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"strings"
 	"time"
 
 	"briard.io/agent/guestagent"
@@ -97,6 +98,7 @@ type control interface {
 	PayloadStop(ctx context.Context, unit string) error
 	PayloadActive(ctx context.Context, unit string) (bool, error)
 	PayloadHealth(ctx context.Context, url string) (bool, error)
+	VIP(ctx context.Context, dev string) (string, error)
 	Snapshot(ctx context.Context, dataDir, dest string) error
 	Restore(ctx context.Context, dataDir, src string) error
 	GCSnapshots(ctx context.Context, dir, prefix string, keep int) error
@@ -117,8 +119,22 @@ var _ control = (*guestagent.Client)(nil)
 
 // Config carries Manager policy not derivable from a ServiceSpec.
 type Config struct {
-	// HealthURL is probed for readiness (the payload's /healthz, reached at its VIP).
+	// HealthURL is the CONFIGURED probe target (the payload's /healthz at its VIP). It is no
+	// longer the last word: when the VIP is acquired by DHCP inside the guest, only the guest
+	// knows the address, so ResolveHealthURL asks it every cycle and this demotes to the
+	// fallback for a node whose address we did set. "" is NOT "no probe" — see Diskless.
 	HealthURL string
+	// VIPDev is the guest NIC the VIP lives on, when the agent named it (VIP_DEV). Only a
+	// device WE named is safe to read an address back from: with it unset the guest falls back
+	// to its baked eth1, which in the agent-less harnesses also carries the DRBD address, and
+	// "the first address on eth1" is then the replication link rather than the VIP.
+	VIPDev string
+	// Diskless marks a witness: no payload, no VIP, nothing to probe — its health follows
+	// quorum. This is the ONLY thing that means "never probe". Emptiness cannot carry that
+	// meaning any more, because a data node acquiring its address by DHCP has no configured
+	// URL either, and the two must not answer alike: a witness with no probe is healthy when
+	// quorate, a data node with no address is not ready.
+	Diskless bool
 	// Resource is the DRBD resource this node serves — what OSReady reads its own role and
 	// disk state from. Empty means the OS gate has no cluster to consult, which it
 	// treats as "nothing node-local to certify" rather than as a failure.
@@ -229,13 +245,13 @@ func (m *Manager) Stop(ctx context.Context, spec model.ServiceSpec) error {
 // is ready, not sick". Running is vacuously true there: there is no payload that could be down.
 func (m *Manager) Health(ctx context.Context, spec model.ServiceSpec) (Health, error) {
 	if !hasService(spec) {
-		return Health{Running: true, Ready: m.cfg.HealthURL != "" && m.probeReady(ctx)}, nil
+		return Health{Running: true, Ready: m.probeReady(ctx)}, nil
 	}
 	running, err := m.ctl.PayloadActive(ctx, unitOf(spec))
 	if err != nil {
 		return Health{}, err
 	}
-	ready := running && m.cfg.HealthURL != "" && m.probeReady(ctx)
+	ready := running && m.probeReady(ctx)
 	return Health{Running: running, Ready: ready}, nil
 }
 
@@ -364,23 +380,83 @@ func (m *Manager) ActivationMethod(ctx context.Context, target string) (Activati
 	return method, reasons, nil
 }
 
+// VIPReader is the one call health resolution needs from the guest: the address a device
+// ACTUALLY holds. Satisfied by *guestagent.Client, and by the host's own guest reader — which
+// is why it is exported: the readiness gate and the observe loop must resolve by the same
+// rule, and one rule in two packages is two rules waiting to disagree.
+type VIPReader interface {
+	VIP(ctx context.Context, dev string) (string, error)
+}
+
+// ResolveHealthURL answers what to probe for node health, RIGHT NOW, in three cases:
+//
+//   - a witness (diskless) probes nothing; its health follows quorum. "" here means that and
+//     only that, which is why the caller must pass the ROLE and never infer it from an
+//     empty address.
+//   - an address we configured is the address we probe. We set it on the guest, so reading it
+//     back would tell us nothing new — but it would tell us something WRONG whenever the
+//     device also holds a lease (dhcpcd still serves the service NIC), and the failure that
+//     hides behind is the one V3.19 exists for: probing a node-local address that answers
+//     after the VIP has moved away, i.e. healthy-while-not-serving.
+//   - no configured address means the VIP came from DHCP inside the guest, so the guest is the
+//     only one who knows it. Ask, every cycle — the lease can change and the VIP moves on
+//     failover. "" (a Secondary, or a promotion in flight) is "nothing to probe yet", which
+//     reads as not-ready rather than as healthy.
+//
+// A verb error falls back to the configured URL, the same compatibility posture probeReady
+// takes: an old guest predating net.vip is one that still has a baked address to fall back to.
+func ResolveHealthURL(ctx context.Context, v VIPReader, diskless bool, vipDev, configured string) string {
+	if diskless {
+		return ""
+	}
+	if configured != "" || vipDev == "" {
+		return configured
+	}
+	cidr, err := v.VIP(ctx, vipDev)
+	if err != nil || cidr == "" {
+		return configured
+	}
+	return healthURLAt(cidr)
+}
+
+// healthURLAt builds the probe target from an address in CIDR form. The port and path are
+// fixed on purpose: the target is the FRONT DOOR (:80 /healthz), which is what makes the probe
+// stable across zero and one service — see the HealthURL default in agent/host/config.go.
+func healthURLAt(cidr string) string {
+	addr, _, _ := strings.Cut(cidr, "/")
+	return "http://" + addr + "/healthz"
+}
+
+// healthURL resolves this node's probe target for one call. See ResolveHealthURL.
+func (m *Manager) healthURL(ctx context.Context) string {
+	return ResolveHealthURL(ctx, m.ctl, m.cfg.Diskless, m.cfg.VIPDev, m.cfg.HealthURL)
+}
+
 // ProbeReady reports whether the payload's health endpoint answers 200. It prefers the in-guest
 // probe (payload.health over the control channel) so the readiness gate survives a networking
 // substrate where the host can't reach the VIP (macvtap); it falls back to a direct host-side GET
 // only when that verb errors — an old guest built before it existed, which is always tap-based, so
 // the LAN GET still works there. Any error/non-200 is "not ready" — the health-gate treats a
 // non-answering payload as a rollback trigger.
+//
+// Nothing to probe is not ready either: a witness has no payload (its callers gate on role
+// before asking), and a data node with no address yet is exactly the node nobody in the house
+// can reach.
 func (m *Manager) probeReady(ctx context.Context) bool {
-	if ready, err := m.ctl.PayloadHealth(ctx, m.cfg.HealthURL); err == nil {
+	url := m.healthURL(ctx)
+	if url == "" {
+		return false
+	}
+	if ready, err := m.ctl.PayloadHealth(ctx, url); err == nil {
 		return ready
 	}
-	return m.hostProbeReady(ctx)
+	return m.hostProbeReady(ctx, url)
 }
 
 // HostProbeReady is the legacy host-side GET of the VIP, kept as the fallback for a guest that
 // predates the payload.health verb.
-func (m *Manager) hostProbeReady(ctx context.Context) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.cfg.HealthURL, nil)
+func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}
@@ -636,7 +712,7 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 	if m.cfg.Resource == "" {
 		// No cluster to consult: nothing node-local to certify, so the front door alone
 		// answers. This is the standalone/test shape, not a field one.
-		return m.cfg.HealthURL != "" && m.probeReady(ctx), nil
+		return m.probeReady(ctx), nil
 	}
 	// DRBD answers at all. A failure here is the module not loaded, `drbdsetup` gone, or the
 	// resource absent from its output — the shapes a generation that broke replication takes.
@@ -649,7 +725,7 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 	if cl.Diskful && cl.Quorate && !cl.UpToDate {
 		return false, nil
 	}
-	if cl.Primary && !(m.cfg.HealthURL != "" && m.probeReady(ctx)) {
+	if cl.Primary && !m.probeReady(ctx) {
 		return false, nil
 	}
 	return true, nil

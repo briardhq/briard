@@ -215,6 +215,11 @@ type statusReader interface {
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
 	PayloadHealth(ctx context.Context, url string) (bool, error)
+	// VIP reads the address the service NIC actually holds, so the loop can probe an address
+	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
+	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
+	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
+	guest.VIPReader
 }
 
 // guestReader is what the observe loop reads each cycle: quorum state, the payload image
@@ -272,7 +277,13 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// nil-safe: a witness / payload-less node just won't act on those directives. guestCfg is
 	// hoisted so the reconnect loop can rebuild the Manager on a fresh connection.
 	guestCfg := guest.Config{
-		HealthURL:         cfg.HealthURL,
+		HealthURL: cfg.HealthURL,
+		// The gate resolves its own probe target per call, for the same reason the observe
+		// loop does: under DHCP the address is acquired inside the guest, and this gate is a
+		// ROLLBACK TRIGGER — probing a stale address does not fail loudly, it reverts a
+		// healthy node.
+		VIPDev:            cfg.VIPDev,
+		Diskless:          cfg.Diskless,
 		Resource:          cfg.Resource.Name, // what OSReady asks about this node
 		ReactorSnippet:    cfg.ReactorSnippet,
 		SnapshotRetention: cfg.SnapshotRetention,
@@ -863,16 +874,22 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 		return st, err // zero QuorumState, Healthy=false
 	}
 	st.Quorum = qs
-	if cfg.HealthURL == "" {
-		st.Healthy = qs.Quorate // witness / no payload probe: healthy == participating
+	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
+	// not an empty URL. Under DHCP a data node has no configured address either, and the two
+	// answers must stay apart: a witness with nothing to probe is healthy when quorate, a data
+	// node with no address is a node nobody in the house can reach.
+	if cfg.Diskless {
+		st.Healthy = qs.Quorate
+	} else if url := guest.ResolveHealthURL(rctx, r, cfg.Diskless, cfg.VIPDev, cfg.HealthURL); url == "" {
+		st.Healthy = false // a service address we neither set nor were told: nothing serves yet
 	} else {
 		// Prefer the in-guest probe (payload.health) so the health signal survives a substrate
 		// where the host can't reach the VIP (macvtap). Fall back to the legacy host->VIP GET only
 		// when the verb errors — an old guest built before it existed, which is always tap-based, so
 		// the LAN probe still works there.
-		healthy, herr := r.PayloadHealth(rctx, cfg.HealthURL)
+		healthy, herr := r.PayloadHealth(rctx, url)
 		if herr != nil {
-			healthy = probeHealth(rctx, cfg.HealthURL)
+			healthy = probeHealth(rctx, url)
 		}
 		st.Healthy = healthy
 	}

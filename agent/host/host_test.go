@@ -70,15 +70,26 @@ type fakeStatus struct {
 	resErr  error
 	health  bool  // PayloadHealth return (the in-guest probe result)
 	hlthErr error // when set, PayloadHealth errors -> snapshot falls back to the host-side probe
+	// vip is what net.vip answers: the address the service NIC ACTUALLY holds, in CIDR form,
+	// "" for a device that holds none. probed records the URL snapshot resolved from it, so a
+	// test can assert WHAT was probed and not merely that something was.
+	vip    string
+	vipErr error
+	probed *string
 }
 
 func (f fakeStatus) Status(context.Context, string) (model.QuorumState, error) {
 	return f.qs, f.err
 }
 
-func (f fakeStatus) PayloadHealth(context.Context, string) (bool, error) {
+func (f fakeStatus) PayloadHealth(_ context.Context, url string) (bool, error) {
+	if f.probed != nil {
+		*f.probed = url
+	}
 	return f.health, f.hlthErr
 }
+
+func (f fakeStatus) VIP(context.Context, string) (string, error) { return f.vip, f.vipErr }
 
 func (f fakeStatus) PayloadImage(context.Context) (string, error) {
 	return f.image, f.imgErr
@@ -315,20 +326,24 @@ func TestDeriveMAC(t *testing.T) {
 	}
 }
 
-func TestSnapshot_HealthFollowsQuorumWhenNoURL(t *testing.T) {
-	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ""}
+// A WITNESS's health follows quorum, and the thing that says so is its ROLE. This used to be
+// keyed on an empty HealthURL, which read the same but meant something else: V3.19 gives a data
+// node an address it acquires by DHCP, so "no configured URL" stops being witness-shaped. The
+// two now answer differently on purpose -- see the data-node case below.
+func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleDiskless, Diskless: true, HealthURL: ""}
 	cfg.Resource.Name = "r0"
 
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
 	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "briard-dummy:v1", "/nix/store/sys")
-	if st.NodeName != "n1" || st.Role != model.RoleAnchor {
+	if st.NodeName != "n1" || st.Role != model.RoleDiskless {
 		t.Errorf("identity not preserved: %+v", st)
 	}
 	if st.Quorum != qs {
 		t.Errorf("Quorum = %+v, want %+v", st.Quorum, qs)
 	}
 	if !st.Healthy {
-		t.Error("quorate node with no health URL should read healthy")
+		t.Error("a quorate witness should read healthy: it has nothing to probe")
 	}
 	if st.Image != "briard-dummy:v1" {
 		t.Errorf("Image = %q, want the served image reported through the seam", st.Image)
@@ -486,6 +501,54 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 	st, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "", "")
 	if !st.Healthy {
 		t.Error("in-guest probe true must read healthy")
+	}
+}
+
+// With no address of our own choosing, the loop probes the one the GUEST reports -- the DHCP
+// lease it acquired at promotion. This is the whole point of V3.19c: the host stops deciding the
+// service address, so it has to be told what the address turned out to be, every cycle.
+func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
+	var probed string
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
+	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
+
+	st, _ := cfg.snapshot(context.Background(), r, "", "")
+	if want := "http://192.168.9.50/healthz"; probed != want {
+		t.Errorf("probed %q, want the front door at the REPORTED lease %q", probed, want)
+	}
+	if !st.Healthy {
+		t.Error("a node answering at its acquired address is healthy")
+	}
+}
+
+// An address WE set is the address we probe, even though the guest could be asked. The device
+// can hold more than one address (dhcpcd still serves the service NIC), and preferring what it
+// reports would reintroduce V3.19's own failure shape at the worst moment: a node-local lease
+// that keeps answering after the VIP has moved to the peer -- healthy while not serving.
+func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
+	var probed string
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://192.168.9.7/healthz", VIPDev: "eth2"}
+	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
+
+	if _, _ = cfg.snapshot(context.Background(), r, "", ""); probed != "http://192.168.9.7/healthz" {
+		t.Errorf("probed %q, want the CONFIGURED address", probed)
+	}
+}
+
+// A data node with no address -- neither configured nor reported -- is not healthy. It is the
+// node nobody in the house can reach, which is the defect V3.19 exists for; answering it like a
+// witness ("healthy == quorate") is how that defect stayed invisible.
+func TestSnapshot_DataNodeWithNoAddressIsUnhealthy(t *testing.T) {
+	var probed string
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
+	r := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}, health: true, vip: "", probed: &probed}
+
+	st, _ := cfg.snapshot(context.Background(), r, "", "")
+	if st.Healthy {
+		t.Error("a quorate data node holding no service address must NOT read healthy")
+	}
+	if probed != "" {
+		t.Errorf("nothing to probe, yet it probed %q", probed)
 	}
 }
 

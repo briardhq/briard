@@ -49,6 +49,9 @@ type fakeControl struct {
 	activeHook              func(ctx context.Context) // inspect the ctx PayloadActive receives
 	health                  bool                      // PayloadHealth in-guest result (used when healthVerb is set)
 	healthVerb              bool                      // when false, PayloadHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
+	vip                     string                    // net.vip: the address the named device actually holds (CIDR); "" = it holds none
+	vipErr                  error
+	probed                  []string // URLs PayloadHealth was asked to probe, in order
 }
 
 func (f *fakeControl) PayloadStart(_ context.Context, unit string) error {
@@ -67,13 +70,15 @@ func (f *fakeControl) PayloadActive(ctx context.Context, _ string) (bool, error)
 	}
 	return f.active, f.activeErr
 }
-func (f *fakeControl) PayloadHealth(context.Context, string) (bool, error) {
+func (f *fakeControl) PayloadHealth(_ context.Context, url string) (bool, error) {
+	f.probed = append(f.probed, url)
 	if !f.healthVerb {
 		return false, errors.New(`guestagent: unknown verb "payload.health"`) // old guest -> probeReady falls back
 	}
 	return f.health, nil
 }
-func (f *fakeControl) SystemPath(context.Context) (string, error) { return f.system, nil }
+func (f *fakeControl) VIP(_ context.Context, _ string) (string, error) { return f.vip, f.vipErr }
+func (f *fakeControl) SystemPath(context.Context) (string, error)      { return f.system, nil }
 func (f *fakeControl) Components(_ context.Context, closure string) (guestagent.SystemComponents, error) {
 	f.componentsFor = append(f.componentsFor, closure)
 	return f.components[closure], f.componentsErr
@@ -699,6 +704,78 @@ func TestHealthWithAServiceStillRequiresTheUnitActive(t *testing.T) {
 // the host test asserts instead is the harder version of the same thing, on a node whose units
 // all report INACTIVE: it commits, and it never asks about a unit at all ( deletion 5).
 // The Health-level halves above stay here, where the conjunct they guard lives.
+
+// ── ResolveHealthURL: what we probe, decided per call ──────────────────────────────
+//
+// V3.19c takes the service address away from build time and gives it to the LAN, so "what do we
+// probe?" stops being config and becomes a question. It is asked on the ROLLBACK PATH (the OS
+// health gate), which is why the whole predicate is enumerated here rather than sampled: a wrong
+// answer does not fail loudly, it reverts a healthy node.
+func TestResolveHealthURL(t *testing.T) {
+	const configured = "http://192.168.1.100/healthz"
+	for _, tc := range []struct {
+		name       string
+		diskless   bool
+		vipDev     string
+		configured string
+		vip        string // what net.vip answers
+		vipErr     error
+		want       string
+	}{
+		// A witness probes nothing, whatever else is true. This is the ONLY "" that means
+		// "health follows quorum", and role is what says so.
+		{"witness probes nothing", true, "eth2", configured, "192.168.9.50/24", nil, ""},
+
+		// An address we set is the address we probe: reading it back could only differ, and
+		// the way it differs is the dhcpcd lease sharing the device with the VIP.
+		{"configured address wins", false, "eth2", configured, "192.168.9.50/24", nil, configured},
+
+		// No configured address: the VIP came from DHCP inside the guest, so ask the guest.
+		{"reported lease is the target", false, "eth2", "", "192.168.9.50/24", nil, "http://192.168.9.50/healthz"},
+		{"a bare address needs no prefix", false, "eth2", "", "192.168.9.50", nil, "http://192.168.9.50/healthz"},
+
+		// Holding no address is "nothing to probe yet" -- a Secondary, or a promotion in
+		// flight. It reads as not-ready, never as healthy.
+		{"no address held", false, "eth2", "", "", nil, ""},
+
+		// A device we did not NAME is a device we know nothing about: with VIP_DEV unset the
+		// guest falls back to its baked eth1, which in the agent-less harnesses also carries
+		// the DRBD address -- "the first address on eth1" would be the replication link.
+		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},
+
+		// An old guest predating net.vip is one that still has a baked address to fall back
+		// to -- the same compatibility posture probeReady takes for payload.health.
+		{"verb error falls back", false, "eth2", configured, "", errors.New("unknown verb"), configured},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeControl{vip: tc.vip, vipErr: tc.vipErr}
+			got := ResolveHealthURL(context.Background(), f, tc.diskless, tc.vipDev, tc.configured)
+			if got != tc.want {
+				t.Errorf("ResolveHealthURL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A data node that holds no service address is NOT ready -- it is the node nobody in the house
+// can reach, which is the whole of V3.19. The assertion is that it does not probe at all: an
+// empty URL handed to a probe is a request that fails for an incidental reason, and this must
+// fail for the reason it actually has.
+func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
+	f := &fakeControl{healthVerb: true, health: true, active: true}
+	m := NewManager(f, Config{VIPDev: "eth2"}) // no configured URL, guest reports none
+
+	h, err := m.Health(context.Background(), model.ServiceSpec{Name: "dummy", Unit: "podman-briard-payload.service"})
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if h.Ready {
+		t.Error("a node holding no service address must not read ready")
+	}
+	if len(f.probed) != 0 {
+		t.Errorf("nothing to probe, yet it probed %v", f.probed)
+	}
+}
 
 // ── OSReady: the OS-upgrade gate ───────────────────────────────────────────────────
 //
