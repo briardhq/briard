@@ -53,6 +53,16 @@ let
   vipArping = pkgs.writeShellScript "briard-vip-arping" ''
     exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
   '';
+  # Publish the VIP under `briard-<node>.local`. The node's name comes from the RUNNING hostname
+  # (the agent sets it to this node's name at bring-up), so the published name follows the node
+  # rather than anything baked. The address comes from VIP_ADDR with its prefix stripped -- the
+  # same single source the VIP itself is claimed from, so the name can never point somewhere the
+  # address is not.
+  vipPublish = pkgs.writeShellScript "briard-vip-publish" ''
+    set -eu
+    exec ${pkgs.avahi}/bin/avahi-publish -a -R \
+      "briard-$(${pkgs.nettools}/bin/hostname).local" "''${VIP_ADDR%%/*}"
+  '';
 
   cfg = config.briard.payload;
 
@@ -449,6 +459,41 @@ in
       };
     };
 
+    # 3b. the NAME — publish `briard-<node>.local` for the VIP over mDNS, so the address a user
+    #     is given is true on every LAN instead of only on ours. The README could previously only
+    #     quote an IP, which is exactly the kind of claim that is wrong in someone else's house.
+    #
+    #     SINGLE-label, deliberately, and this was MEASURED rather than assumed (V3.19d): on a
+    #     stock Ubuntu 24.04 client, `<name>.briard.local` publishes fine and then **does not
+    #     resolve** — `mdns4_minimal`, the resolver in Debian/Ubuntu's nsswitch, handles exactly
+    #     one label before `.local`. A hierarchy would have shipped a name nothing on the LAN could
+    #     look up. `briard-` prefixed keeps N nodes distinguishable on one LAN (the reason a
+    #     hierarchy was wanted) and matches the DHCP hostname, so the router's client list agrees.
+    #
+    #     Bound to briard-vip exactly like the front door (wantedBy + partOf), which buys three
+    #     things: the name appears only when this node actually holds the VIP, it points at the
+    #     VIP rather than at whatever else the guest is addressed on, and on a pair only the
+    #     PRIMARY publishes — so the two nodes never collide on the name and mDNS never
+    #     conflict-renames one of them to `briard-...-2.local`.
+    systemd.services.briard-mdns = {
+      description = "Briard mDNS name for the VIP";
+      wantedBy = [ "briard-vip.service" ];
+      partOf = [ "briard-vip.service" ];
+      after = [ "briard-vip.service" "avahi-daemon.service" ];
+      requires = [ "avahi-daemon.service" ];
+      serviceConfig = {
+        # The SAME address source briard-vip claims from, so the name cannot drift from the
+        # address: baked fallback, overridden by the agent-written file.
+        Environment = "VIP_ADDR=${vipFallback}";
+        EnvironmentFile = "-${vipEnvPath}";
+        # avahi-publish holds the record for as long as it runs and withdraws it on exit, so the
+        # unit's lifetime IS the record's lifetime -- no cleanup path to get wrong on demotion.
+        ExecStart = "${vipPublish}";
+        Restart = "on-failure";
+        RestartSec = 2;
+      };
+    };
+
     # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443, forwarding to
     #    the payload. Woven into the
     #    promoter chain via briard-vip (wantedBy + partOf), NOT the drbd-reactor start-list —
@@ -486,5 +531,23 @@ in
       fsType = "ext4";
     };
     networking.firewall.enable = false;
+
+    # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
+    # answers for the one name it publishes and browses for nothing.
+    #
+    # publish.addresses = FALSE is the load-bearing setting, and it is not a preference. Avahi's
+    # default is to publish an A record for EVERY address on EVERY interface under its own
+    # hostname; measured on the real machine that produced this item, `giouli-desktop.local`
+    # resolved to `172.18.0.1` -- a **Docker bridge**, not the LAN address. This guest has more
+    # ways to get that wrong than a desktop does: eth0 is qemu's SLIRP net (10.0.2.15), eth1 is
+    # the DRBD link, eth3 the private witness link. Any of them would be a name that resolves and
+    # then goes nowhere. So nothing is auto-published, and briard-mdns publishes exactly one
+    # record: the VIP, while this node holds it.
+    services.avahi = {
+      enable = true;
+      publish.enable = true;
+      publish.addresses = false;
+      nssmdns4 = false; # nothing in the guest resolves .local names; it only answers for one
+    };
   };
 }
