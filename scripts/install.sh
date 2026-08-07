@@ -149,7 +149,10 @@ QEMU_DATADIR="$PREFIX/qemu/share/qemu"
 say "checking host readiness ..."
 # NET_MODE is passed so the card appends the macvtap advisories (USB-NIC promiscuous
 # fallback, MAC port-security) when this is a macvtap install; they never change the verdict.
-NET_MODE="$NET_MODE" "$AGENT" --report-card || die "host is not ready (see the fix above); nothing was changed"
+# VIP_ADDR is passed for the same reason NET_MODE is: the card cannot judge an address it is not
+# told about. It is the one check that compares OUR intent against THIS LAN, and without it the
+# gate admitted a machine whose home network the service address was not even on (V3.19).
+NET_MODE="$NET_MODE" VIP_ADDR="$VIP" "$AGENT" --report-card || die "host is not ready (see the fix above); nothing was changed"
 
 # ---- 3. host footprint: the tun module ---------------------------------------------
 modprobe tun 2>/dev/null || true

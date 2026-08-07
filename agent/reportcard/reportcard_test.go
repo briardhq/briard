@@ -179,3 +179,98 @@ func TestMacvtapAdvisories(t *testing.T) {
 		}
 	})
 }
+
+// THE V3.19 REGRESSION. A node's VIP is an address on the USER'S LAN, and nothing compared the two
+// until this check existed: the card admitted a 192.168.9.0/24 home for an install that would claim
+// a baked 192.168.1.100, and the node then reported READY while unreachable (the readiness probe
+// runs in-guest, against an address the guest itself owns). These are the exact facts of the machine
+// that found it -- an 8 GB Ubuntu desktop at 192.168.9.100 -- and the card must now REFUSE it.
+func TestVIPOffLANIsRefused(t *testing.T) {
+	f := capable()
+	f.MemTotalMB = 7873 // as reported by an 8 GB box after firmware reservation
+	f.HostCIDR = "192.168.9.100/24"
+	f.VIPAddr = "192.168.1.100/24" // the old baked default
+	r := Assess(f)
+	if r.Admit() {
+		t.Fatal("a VIP outside the host's LAN must be refused; the card admitted it")
+	}
+	c := find(t, r, "vip")
+	if c.Status != Refuse {
+		t.Errorf("vip = %s, want refuse", c.Status)
+	}
+	if !strings.Contains(c.Fix, "BRIARD_VIP") || !strings.Contains(c.Fix, "192.168.9.0/24") {
+		t.Errorf("the fix must name the knob AND the LAN to pick from; got %q", c.Fix)
+	}
+}
+
+// The host's own address is the other way this bites: on a 192.168.1.0/24 home whose desktop is
+// already .100, the baked VIP collided with the very machine being installed on.
+func TestVIPEqualToHostIsRefused(t *testing.T) {
+	f := capable()
+	f.HostCIDR = "192.168.1.100/24"
+	f.VIPAddr = "192.168.1.100/24"
+	r := Assess(f)
+	if r.Admit() {
+		t.Fatal("a VIP equal to the host's own address must be refused")
+	}
+	if c := find(t, r, "vip"); c.Status != Refuse {
+		t.Errorf("vip = %s, want refuse", c.Status)
+	}
+}
+
+// A VIP inside the LAN passes, and an unset one is not a check at all -- the card must not invent a
+// verdict about an address nobody configured.
+func TestVIPOnLANPassesAndUnsetIsSilent(t *testing.T) {
+	f := capable()
+	f.HostCIDR = "192.168.9.100/24"
+	f.VIPAddr = "192.168.9.50/24"
+	r := Assess(f)
+	if !r.Admit() {
+		t.Fatalf("an on-LAN VIP must be admitted; report=%+v", r)
+	}
+	if c := find(t, r, "vip"); c.Status != Pass {
+		t.Errorf("vip = %s, want pass", c.Status)
+	}
+	f.VIPAddr = ""
+	for _, c := range Assess(f).Checks {
+		if c.Name == "vip" {
+			t.Errorf("an unconfigured VIP must emit no check, got %+v", c)
+		}
+	}
+}
+
+// An unreadable host address must not become a refusal: the card refuses hosts for facts it HAS,
+// never for facts it failed to gather (the same stance the disk check takes on a failed statfs).
+func TestVIPUnknownHostCIDRIsSilent(t *testing.T) {
+	f := capable()
+	f.HostCIDR = ""
+	f.VIPAddr = "192.168.1.100/24"
+	r := Assess(f)
+	if !r.Admit() {
+		t.Fatal("an unreadable host address must not refuse the machine")
+	}
+	for _, c := range r.Checks {
+		if c.Name == "vip" {
+			t.Errorf("unknown LAN must emit no vip verdict, got %+v", c)
+		}
+	}
+}
+
+// The RAM thresholds describe DIMMs, but the kernel reports what firmware left it. A stock 8 GB
+// desktop (7873 MB) must not be told to buy RAM it already has, and a stock 4 GB box must not be
+// refused for meeting the stated floor. Both were wrong until V3.19.
+func TestMemoryThresholdsAllowForFirmwareReservation(t *testing.T) {
+	f := capable()
+	f.MemTotalMB = 7873 // a real 8 GB machine
+	if c := find(t, Assess(f), "memory"); c.Status != Pass {
+		t.Errorf("8 GB host (%d MB) = %s, want pass: %s", f.MemTotalMB, c.Status, c.Detail)
+	}
+	f.MemTotalMB = 3800 // a real 4 GB machine
+	c := find(t, Assess(f), "memory")
+	if c.Status != Warn {
+		t.Errorf("4 GB host (%d MB) = %s, want warn (it meets the floor)", f.MemTotalMB, c.Status)
+	}
+	if strings.Contains(c.Detail, "7680") || strings.Contains(c.Detail, "3584") {
+		t.Errorf("the detail must quote the DIMM's number, not the kernel's threshold; got %q", c.Detail)
+	}
+}

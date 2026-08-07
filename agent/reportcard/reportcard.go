@@ -12,6 +12,8 @@ package reportcard
 import (
 	"fmt"
 	"io"
+	"net"
+	"strings"
 )
 
 // Status is a single check's outcome. Refuse blocks admission; Warn admits but steers honestly.
@@ -49,12 +51,25 @@ type HostFacts struct {
 	// DiskFreeMB is free space on the filesystem the install lands on. 0 means "could not read",
 	// which the disk check treats as unknown (and stays quiet) rather than as an empty disk.
 	DiskFreeMB int
+	// HostCIDR is the default-route NIC's own IPv4 address in CIDR form ("192.168.9.100/24") --
+	// i.e. the LAN this node is actually on. "" means it could not be read, which the VIP check
+	// treats as unknown rather than as a fault.
+	HostCIDR string
+	// VIPAddr is the service address this install intends to claim, in CIDR form. "" = none
+	// configured, so there is nothing to check. It exists here because the address is the LAN's,
+	// not ours, and the card is the last place to say so before a VM boots holding it.
+	VIPAddr string
 }
 
-// 4 GB is the dedicated-node floor; 8 GB recommended.
+// RAM. The thresholds are deliberately BELOW the round numbers they describe, because the number
+// a machine reports is not the number on the DIMM: firmware reserves a slice before Linux counts,
+// so an 8 GB desktop reports ~7873 MB and a 4 GB one ~3800. Comparing against a literal 8*1024
+// told every 8 GB machine it was under-provisioned and advised buying RAM it already had -- and,
+// worse, the floor at 4*1024 REFUSED conforming 4 GB hosts outright. Measured on the V3.19
+// stranger machine (8 GB installed -> 7873 MB reported).
 const (
-	memFloorMB       = 4 * 1024
-	memRecommendedMB = 8 * 1024
+	memFloorMB       = 3584 // 3.5 GiB: a 4 GB host, after firmware reservation
+	memRecommendedMB = 7680 // 7.5 GiB: an 8 GB host, after firmware reservation
 )
 
 // Disk. The floor is what an install physically needs on day one: the guest image (2.6 GB) + the
@@ -123,10 +138,12 @@ func Assess(f HostFacts) Report {
 	case f.MemTotalMB >= memRecommendedMB:
 		cs = append(cs, Check{"memory", Pass, fmt.Sprintf("%d MB RAM", f.MemTotalMB), ""})
 	case f.MemTotalMB >= memFloorMB:
-		cs = append(cs, Check{"memory", Warn, fmt.Sprintf("%d MB RAM (below the %d MB recommended)", f.MemTotalMB, memRecommendedMB),
+		// The human-facing number is the DIMM's, not the kernel's: a user reading "below the 7680
+		// MB recommended" on a box they know holds 8 GB reads it as our arithmetic being wrong.
+		cs = append(cs, Check{"memory", Warn, fmt.Sprintf("%d MB RAM (below the 8 GB recommended)", f.MemTotalMB),
 			"8 GB is recommended; a cheap SO-DIMM upgrade pays off if this box hosts more than the basics"})
 	default:
-		cs = append(cs, Check{"memory", Refuse, fmt.Sprintf("%d MB RAM (below the %d MB floor)", f.MemTotalMB, memFloorMB),
+		cs = append(cs, Check{"memory", Refuse, fmt.Sprintf("%d MB RAM (below the 4 GB floor)", f.MemTotalMB),
 			"add RAM to at least 4 GB (often a cheap SO-DIMM); below this a node can't run the guest reliably"})
 	}
 
@@ -160,7 +177,63 @@ func Assess(f HostFacts) Report {
 			"connect the machine to your network (wired ethernet recommended)"})
 	}
 
+	cs = append(cs, vipCheck(f)...)
+
 	return Report{Checks: cs}
+}
+
+// vipCheck is the gate that was missing when the card admitted a machine it should have refused
+// (V3.19). The VIP is an address ON THE USER'S LAN, and until this check existed nothing compared
+// the two: a node installed on a 192.168.9.0/24 home claimed a baked 192.168.1.100, booted, and
+// reported READY -- because the readiness probe runs in-guest, against an address the guest itself
+// owns. The card is the last moment that failure can be turned into a refusal with a reason, which
+// is the whole promise of the card.
+//
+// It refuses rather than warns, because there is no partial success here: an off-LAN VIP is a node
+// nobody in the house can reach, and admitting it produces exactly the green-but-useless install
+// the card exists to prevent.
+//
+// What it deliberately does NOT check: whether the address is already CLAIMED by some other device.
+// That needs an ARP probe against a candidate we do not choose yet -- it belongs with the
+// acquisition path (V3.19c), and asserting it here would be guessing.
+func vipCheck(f HostFacts) []Check {
+	if f.VIPAddr == "" {
+		return nil // nothing configured to check
+	}
+	vip, _, err := net.ParseCIDR(f.VIPAddr)
+	if err != nil || vip.To4() == nil {
+		return []Check{{"vip", Refuse, fmt.Sprintf("the service address %q is not a valid IPv4 address/prefix", f.VIPAddr),
+			"set BRIARD_VIP to an address on this machine's LAN, in CIDR form (e.g. BRIARD_VIP=192.168.1.50/24)"}}
+	}
+	if f.HostCIDR == "" {
+		// We could not read the host's own address. Say nothing rather than refuse a host over a
+		// fact we failed to gather -- the same stance the disk check takes on an unreadable statfs.
+		return nil
+	}
+	hostIP, lan, err := net.ParseCIDR(f.HostCIDR)
+	if err != nil {
+		return nil
+	}
+	switch {
+	case !lan.Contains(vip):
+		return []Check{{"vip", Refuse,
+			fmt.Sprintf("the service address %s is not on this machine's LAN (%s)", vip, lan),
+			fmt.Sprintf("this node would claim an address nobody on your network can reach. Pick a free address inside %s and re-run: `BRIARD_VIP=<address>/%s curl -fsSL https://get.briard.io/install.sh | sudo sh`",
+				lan, prefixOf(f.HostCIDR))}}
+	case vip.Equal(hostIP):
+		return []Check{{"vip", Refuse,
+			fmt.Sprintf("the service address %s is this machine's own address", vip),
+			"the guest claims the VIP as a second machine on your LAN, so it cannot be the host's address; set BRIARD_VIP to a free one"}}
+	}
+	return []Check{{"vip", Pass, fmt.Sprintf("service address %s is on this machine's LAN (%s)", vip, lan), ""}}
+}
+
+// prefixOf returns the "/24" part of a CIDR string, for quoting back in a fix line.
+func prefixOf(cidr string) string {
+	if i := strings.LastIndex(cidr, "/"); i >= 0 {
+		return cidr[i+1:]
+	}
+	return "24"
 }
 
 // MacvtapAdvisories returns the macvtap-substrate caveat checks, layered onto the

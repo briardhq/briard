@@ -2,6 +2,7 @@ package reportcard
 
 import (
 	"bufio"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,36 @@ func Gather() HostFacts {
 		AnyEthernet:   hasAnyEthernet(),
 		PrimaryNICBus: primaryNICBus(),
 		DiskFreeMB:    diskFreeMB(installRoot()),
+		HostCIDR:      hostCIDR(defaultRouteNIC()),
+		// The address the install is about to hand the guest. install.sh already computes it
+		// (BRIARD_VIP, CIDR form) and passes it here the same way it passes NET_MODE -- the card
+		// cannot judge an address it is not told about, and this is the last gate before a VM
+		// boots holding it.
+		VIPAddr: os.Getenv("VIP_ADDR"),
 	}
+}
+
+// hostCIDR returns nic's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
+// is on, which is what the VIP has to be inside. "" when unreadable or the NIC has no IPv4, which
+// the VIP check reads as "unknown" and stays quiet about rather than refusing over.
+func hostCIDR(nic string) string {
+	if nic == "" {
+		return ""
+	}
+	iface, err := net.InterfaceByName(nic)
+	if err != nil {
+		return ""
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
+			return n.String()
+		}
+	}
+	return ""
 }
 
 // installRoot is the filesystem the install will land on. /opt and /var/lib can be separate
