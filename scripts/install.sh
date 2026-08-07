@@ -45,7 +45,7 @@ NET_MODE="${BRIARD_NET_MODE:-macvtap}"
 # setting it moved the probe off the real VIP instead of moving the VIP. It now reaches the guest.
 VIP="${BRIARD_VIP:-192.168.1.100/24}"
 VIP_IP="${VIP%%/*}"   # the bare address, for the health probe and everything we print at a human
-# The pet data volume: THICK-allocated (see step 5) and sized for a real service's data, not for a
+# The pet data volume: THICK-allocated (see step 6) and sized for a real service's data, not for a
 # test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
 # one-liner. Written in whole GiB -- the dd fallback parses it that way.
@@ -73,13 +73,24 @@ fetch_url() { # url dest -- TLS download for the bootstrap agent (curl or wget, 
 # ---- 0. root -----------------------------------------------------------------------
 [ "$(id -u)" = 0 ] || die "run as root (curl ... | sudo sh)"
 
-# ---- 1. stage the artifacts (cattle) -----------------------------------------------
-# Lay down /opt/briard from the staging dir. The agent binary + qemu bundle + guest
-# image are the self-updating cattle; the base guest image is read-only backing.
-mkdir -p "$PREFIX/agent" "$PREFIX/qemu" "$PREFIX/guest-image" "$STATE" "$RUNDIR"
+# ---- 1. the gate's agent -- the ONLY artifact staged before the host is admitted ----
+# The report card needs an executable agent to run, so exactly that much is staged here and not a
+# byte more. Everything heavy (the qemu bundle, the 2.5 GB guest image) waits until step 3, AFTER
+# admission.
+#
+# It used to be the other way round: step 1 staged the whole set -- and on the network path
+# DOWNLOADED it first, so a refusal could be preceded by ~6 GB of writes -- and only then ran the
+# card, whose refusal line still claimed "nothing was changed". Two things were wrong with that.
+# The claim was false; and the DISK CHECK was measuring a disk the installer had already eaten
+# into, so a host that genuinely met the 8 GB floor could be refused for failing to meet it after
+# we spent 3 GB of it. Both are fixed by asking before taking.
+mkdir -p "$PREFIX/agent" "$STATE" "$RUNDIR"
 if [ -n "${BRIARD_ARTIFACTS:-}" ]; then
 	# Offline / hermetic-test path: install from an already-verified local staging dir.
 	src="$BRIARD_ARTIFACTS"
+	[ -x "$src/briard-agent" ] || die "staging dir $src has no briard-agent"
+	install -m0755 "$src/briard-agent" "$PREFIX/agent/briard-agent"
+	CARD_AGENT="$PREFIX/agent/briard-agent"
 else
 	# Signed network fetch (assertion e). Bootstrap a briard-agent over TLS -- the release channel's
 	# integrity anchors this FIRST binary -- then let it fetch+verify the whole set (qemu bundle,
@@ -105,6 +116,37 @@ else
 	# it as one sends the reader hunting for a bad signature.
 	"$boot" help >/dev/null 2>&1 ||
 		die "the bootstrap agent at $boot will not run on this host (see the error above); nothing installed"
+	# The bootstrap IS the card's agent: it is a full briard-agent, and running the gate with it
+	# means an unfit host is turned away before a single artifact is downloaded.
+	CARD_AGENT="$boot"
+fi
+
+# ---- 2. the machine report card (the admission gate) -------------------------------
+# Refuse-with-the-fix-named on an unbringable host, before we fetch gigabytes, touch networking or
+# boot a VM -- never a half-install (assertion c, already built).
+say "checking host readiness ..."
+# NET_MODE is passed so the card appends the macvtap advisories (USB-NIC promiscuous
+# fallback, MAC port-security) when this is a macvtap install; they never change the verdict.
+# VIP_ADDR is passed for the same reason NET_MODE is: the card cannot judge an address it is not
+# told about. It is the one check that compares OUR intent against THIS LAN, and without it the
+# gate admitted a machine whose home network the service address was not even on (V3.19).
+if ! NET_MODE="$NET_MODE" VIP_ADDR="$VIP" "$CARD_AGENT" --report-card; then
+	# Leave the box as we found it: on the network path the bootstrap agent is the one thing we
+	# put down, so take it back rather than claim "nothing was changed" while it sits there.
+	[ -n "${BRIARD_ARTIFACTS:-}" ] || rm -f "$CARD_AGENT"
+	die "host is not ready (see the fix above); nothing was installed"
+fi
+
+# ---- 3. the rest of the artifacts (cattle) -----------------------------------------
+# Lay down /opt/briard from the staging dir. The agent binary + qemu bundle + guest
+# image are the self-updating cattle; the base guest image is read-only backing.
+mkdir -p "$PREFIX/qemu" "$PREFIX/guest-image"
+if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
+	# Now that the host is admitted, let the bootstrap fetch+verify the whole set (qemu bundle,
+	# guest image, and a fresh briard-agent) against the bundled release keyring, refusing any
+	# tampered/unsigned artifact. The bootstrap agent only RUNS the verified fetch; the binaries
+	# that land under /opt are the Ed25519-verified set, so a compromised bootstrap can't seed bad
+	# cattle.
 	src="$PREFIX/staging"
 	rm -rf "$src"
 	say "fetching + verifying the signed artifact set ..."
@@ -118,9 +160,10 @@ else
 	mkdir -p "$src/qemu"
 	tar -xf "$src/qemu-bundle.tar" -C "$src/qemu" && rm -f "$src/qemu-bundle.tar"
 	rm -f "$boot"
+	# The verified agent replaces the bootstrap one staged for the card.
+	[ -x "$src/briard-agent" ] || die "staging dir $src has no briard-agent"
+	install -m0755 "$src/briard-agent" "$PREFIX/agent/briard-agent"
 fi
-[ -x "$src/briard-agent" ] || die "staging dir $src has no briard-agent"
-install -m0755 "$src/briard-agent" "$PREFIX/agent/briard-agent"
 # The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
 # ExecStart under NET_MODE=macvtap. Bundled alongside the agent; a dumb, versioned shell artifact.
 NET_WRAP=""
@@ -143,23 +186,12 @@ AGENT="$PREFIX/agent/briard-agent"
 QEMU="$PREFIX/qemu/bin/qemu-system-x86_64"
 QEMU_DATADIR="$PREFIX/qemu/share/qemu"
 
-# ---- 2. the machine report card (the admission gate) -------------------------------
-# Refuse-with-the-fix-named on an unbringable host, before we touch networking or boot
-# a VM -- never a half-install (assertion c, already built).
-say "checking host readiness ..."
-# NET_MODE is passed so the card appends the macvtap advisories (USB-NIC promiscuous
-# fallback, MAC port-security) when this is a macvtap install; they never change the verdict.
-# VIP_ADDR is passed for the same reason NET_MODE is: the card cannot judge an address it is not
-# told about. It is the one check that compares OUR intent against THIS LAN, and without it the
-# gate admitted a machine whose home network the service address was not even on (V3.19).
-NET_MODE="$NET_MODE" VIP_ADDR="$VIP" "$AGENT" --report-card || die "host is not ready (see the fix above); nothing was changed"
-
-# ---- 3. host footprint: the tun module ---------------------------------------------
+# ---- 4. host footprint: the tun module ---------------------------------------------
 modprobe tun 2>/dev/null || true
 [ -e /dev/net/tun ] || die "/dev/net/tun absent (kernel built without CONFIG_TUN)"
 mkdir -p /etc/modules-load.d && printf 'tun\n' > /etc/modules-load.d/briard.conf
 
-# ---- 4. networking: the guest's L2 substrate (bridge enslave, or macvtap) -----------
+# ---- 5. networking: the guest's L2 substrate (bridge enslave, or macvtap) -----------
 if [ "$NET_MODE" = macvtap ]; then
 	# macvtap substrate: the guest's NICs are macvtap children of the host NIC --
 	# full L2 citizens (unsolicited inbound, DHCP, multicast) with NO bridge and NO host-IP move.
@@ -312,7 +344,7 @@ else
 fi
 fi
 
-# ---- 5. disks: the pet data volume + the (cattle) guest overlay ---------------------
+# ---- 6. disks: the pet data volume + the (cattle) guest overlay ---------------------
 # data.img is the single-node DRBD backing -- pet, created once, preserved across a
 # reinstall. The guest overlay is cattle: a writable qcow2 backed by the
 # read-only base image, recreated every install (the base may have moved).
@@ -343,7 +375,7 @@ if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
 fi
 say "guest overlay created"
 
-# ---- 6. the units: net (reboot re-create) + the agent ------------------------------
+# ---- 7. the units: net (reboot re-create) + the agent ------------------------------
 say "writing systemd units to $UNIT_DIR"
 mkdir -p "$UNIT_DIR"
 cat > "$UNIT_DIR/briard-net.service" <<EOF
