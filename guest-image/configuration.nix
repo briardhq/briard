@@ -241,6 +241,7 @@ let
       addr="$(cat ${vipAddrFile})"
     fi
 
+    echo "briard-vip: dev=$VIP_DEV configured=''${configured:-<none>} stored=$([ -r ${vipAddrFile} ] && cat ${vipAddrFile} || echo '<none>')"
     if [ -n "$configured" ]; then
       # An address the operator named. Claim it and hold NO lease: there is nothing to renew,
       # and asking a router about an address we were told to use would be asking permission for
@@ -272,11 +273,16 @@ let
     # DHCP gave us: a configured address is already known to every node from its own config, so
     # storing it would blur what this file means -- "the address this flock ACQUIRED".
     #
-    # Never fatal, and stderr is redirected FIRST so a failed redirect is silent rather than
-    # noisy: the address is claimed either way, and the agent-less harnesses run this unit with
-    # no DRBD volume mounted at all.
+    # Never fatal -- the address is claimed either way, and the agent-less harnesses run this unit
+    # with no DRBD volume mounted at all -- but NOT silent. It was silenced, and that is precisely
+    # why "the peer came back with no address" could not be told apart from "the store was never
+    # written". Non-fatal is a decision about whether to stop; it is not a decision to say nothing.
     if [ -z "$configured" ]; then
-      printf '%s\n' "$addr" 2>/dev/null >${vipAddrFile} || true
+      if printf '%s\n' "$addr" >${vipAddrFile} 2>/dev/null; then
+        echo "briard-vip: remembered $addr for the flock at ${vipAddrFile}"
+      else
+        echo "briard-vip: WARNING could not write ${vipAddrFile} -- a peer promoting next will have to ask DHCP" >&2
+      fi
     fi
   '';
 
@@ -779,6 +785,13 @@ in
     # Lean, headless test image. The nixosTest / VM runner supplies the real boot
     # device + networking, so there is no bootloader/root device here.
     boot.loader.grub.enable = false;
+    # Put the console on ttyS0 so the host can actually CAPTURE it. The agent has plumbed a
+    # serial log since it was written (platform.QEMUSpec.SerialLog -> `-serial file:`), and this
+    # guest never spoke to that port -- so the one debug channel from a VM the host cannot
+    # otherwise see into carried nothing, silently. Found while trying to diagnose why a
+    # promotion failed inside the guest: every other instrument reports what the host INFERS,
+    # and this is the only one that reports what the guest SAYS.
+    boot.kernelParams = [ "console=ttyS0" ];
     fileSystems."/" = {
       device = "/dev/vda";
       fsType = "ext4";
