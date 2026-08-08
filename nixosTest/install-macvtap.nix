@@ -332,16 +332,17 @@ pkgs.testers.runNixOSTest {
         "> /run/systemd/system/briard-agent.service.d/serial.conf && systemctl daemon-reload"
     )
 
+    def guest_console(pattern):
+        """Read the guest's serial console, which is a TTY stream: \\r-terminated lines render as
+        blank in a captured log, and dumping it raw once made a 94 KB file look empty. Strip the
+        carriage returns and select, rather than trusting the shape of a wall of text."""
+        return host.succeed(
+            f"tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | grep -aE '{pattern}' | tail -40 || true"
+        )
+
     def diagnose(where):
-        # Check the INSTRUMENT before trusting its silence: an empty serial log reads the same
-        # whether the guest said nothing or nothing was listening. The qemu command line settles
-        # which -- if -serial is not on it, the environment never reached the agent.
-        print(f"=== {where}: is the serial channel actually wired? ===")
-        print(host.succeed("systemctl show briard-agent.service -p Environment || true"))
-        print(host.succeed("ls -l /tmp/guest-serial.log 2>&1 || true"))
-        print(host.succeed("tr '\\0' ' ' < /proc/$(pgrep -f qemu-system-x86_64 | head -1)/cmdline 2>/dev/null | tr ' ' '\\n' | grep -A1 -i serial || echo '(no -serial in the qemu cmdline)'"))
-        print(f"=== {where}: guest console ===")
-        print(host.succeed("tail -c 20000 /tmp/guest-serial.log 2>/dev/null || echo '(no serial log)'"))
+        print(f"=== {where}: what the guest said about its address ===")
+        print(guest_console("briard-vip|dhcpcd|briard-data|Failed|error"))
         print(f"=== {where}: client arp ===")
         print(client.succeed("ip -4 neigh || true"))
         print(f"=== {where}: agent journal ===")
