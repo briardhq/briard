@@ -155,6 +155,14 @@ pkgs.testers.runNixOSTest {
         )
 
     def diagnose(where):
+        # EVERY briard-vip line from EVERY boot, untailed. The console appends across guest
+        # incarnations now, so the story spans boots -- and tailing it would keep only the last
+        # one, which is the boot that already told us it found nothing. What is wanted is the
+        # EARLIER boot, where the address was acquired and should have been remembered.
+        print(f"=== {where}: briard-vip, all boots ===")
+        print(host.succeed(
+            "tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | grep -a 'briard-vip:' || echo '(no briard-vip lines at all)'"
+        ))
         print(f"=== {where}: what the guest said about its address ===")
         print(guest_console("briard-vip|dhcpcd|briard-data|eth0|eth2|Failed|error"))
         print(f"=== {where}: guest reached multi-user? ===")
