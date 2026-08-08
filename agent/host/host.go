@@ -627,7 +627,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// converged-at-promotion. The image is also the payload-upgrade baseline.
 		img := cfg.currentImage(ctx, r)
 		sys := cfg.currentSystem(ctx, r)
-		st, err := cfg.snapshot(ctx, r, img, sys)
+		st, probe, err := cfg.snapshot(ctx, r, img, sys)
 		if errors.Is(err, guestagent.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
@@ -652,9 +652,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			}
 			cancel()
 		}
-		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t image=%s%s",
-			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy, st.Image,
-			resourceLog(res))
+		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s image=%s%s",
+			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
+			orDash(probe), st.Image, resourceLog(res))
 		// Signal systemd readiness the first time this node is healthy — the self-update
 		// commit gate. Until READY, a trialed agent hasn't proven itself, so its
 		// ExecStartPost/commit never runs and a bad update reverts. No-op when not under Type=notify.
@@ -865,24 +865,30 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // must ride out transient control-channel hiccups. The read error is returned
 // alongside so the loop can tell a dead channel (ErrChannelDown -> reconnect,
 // B.22a) from a mere degraded read (verb error -> keep observing, report degraded).
-func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, error) {
+// It also returns the probe target it resolved, so the caller can SAY it. The agent knew this
+// address all along and never printed it, which made "the node reports healthy and nobody can
+// reach it" -- the exact shape of V3.19 -- undiagnosable from a journal. Under DHCP the address is
+// not in any config file either, so the log is the only place a human can find it.
+func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, Image: served, System: system, AgentVersion: cfg.Version}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	qs, err := r.Status(rctx, cfg.Resource.Name)
 	if err != nil {
-		return st, err // zero QuorumState, Healthy=false
+		return st, "", err // zero QuorumState, Healthy=false
 	}
 	st.Quorum = qs
 	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two
 	// answers must stay apart: a witness with nothing to probe is healthy when quorate, a data
 	// node with no address is a node nobody in the house can reach.
+	var probe string
 	if cfg.Diskless {
 		st.Healthy = qs.Quorate
 	} else if url := guest.ResolveHealthURL(rctx, r, cfg.Diskless, cfg.VIPDev, cfg.HealthURL); url == "" {
 		st.Healthy = false // a service address we neither set nor were told: nothing serves yet
 	} else {
+		probe = url
 		// Prefer the in-guest probe (payload.health) so the health signal survives a substrate
 		// where the host can't reach the VIP (macvtap). Fall back to the legacy host->VIP GET only
 		// when the verb errors — an old guest built before it existed, which is always tap-based, so
@@ -893,7 +899,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 		}
 		st.Healthy = healthy
 	}
-	return st, nil
+	return st, probe, nil
 }
 
 // CurrentImage reports the payload image this node actually serves: the replicated pin
@@ -943,4 +949,14 @@ func probeHealth(ctx context.Context, url string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// orDash renders an empty probe target as "-" rather than nothing, so a witness (health follows
+// quorum) and a data node that resolved no address are both visible in the log line instead of
+// leaving a blank the reader has to interpret.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }

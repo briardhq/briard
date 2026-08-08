@@ -361,7 +361,7 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	cfg.Resource.Name = "r0"
 
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
-	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "briard-dummy:v1", "/nix/store/sys")
+	st, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "briard-dummy:v1", "/nix/store/sys")
 	if st.NodeName != "n1" || st.Role != model.RoleDiskless {
 		t.Errorf("identity not preserved: %+v", st)
 	}
@@ -498,7 +498,7 @@ func TestObserveNoCloudNoPlannedOp(t *testing.T) {
 func TestSnapshot_StatusErrorIsUnhealthy(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor}
 	sentinel := errors.New("channel down")
-	st, err := cfg.snapshot(context.Background(), fakeStatus{err: sentinel}, "", "")
+	st, _, err := cfg.snapshot(context.Background(), fakeStatus{err: sentinel}, "", "")
 	if !errors.Is(err, sentinel) {
 		t.Errorf("snapshot must return the read error (for the reconnect gate), got %v", err)
 	}
@@ -516,7 +516,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://unused.invalid/healthz"}
 
 	// Quorate but the in-guest probe says sick -> unhealthy (health != quorum).
-	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "", "")
+	st, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "", "")
 	if !st.Quorum.Quorate {
 		t.Fatal("precondition: node is quorate")
 	}
@@ -524,7 +524,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 		t.Error("in-guest probe false must read unhealthy despite quorum")
 	}
 	// Non-quorate but the in-guest probe says healthy -> healthy (health != quorum).
-	st, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "", "")
+	st, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "", "")
 	if !st.Healthy {
 		t.Error("in-guest probe true must read healthy")
 	}
@@ -538,7 +538,7 @@ func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
 
-	st, _ := cfg.snapshot(context.Background(), r, "", "")
+	st, _, _ := cfg.snapshot(context.Background(), r, "", "")
 	if want := "http://192.168.9.50/healthz"; probed != want {
 		t.Errorf("probed %q, want the front door at the REPORTED lease %q", probed, want)
 	}
@@ -556,7 +556,7 @@ func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://192.168.9.7/healthz", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
 
-	if _, _ = cfg.snapshot(context.Background(), r, "", ""); probed != "http://192.168.9.7/healthz" {
+	if _, _, _ = cfg.snapshot(context.Background(), r, "", ""); probed != "http://192.168.9.7/healthz" {
 		t.Errorf("probed %q, want the CONFIGURED address", probed)
 	}
 }
@@ -569,7 +569,7 @@ func TestSnapshot_DataNodeWithNoAddressIsUnhealthy(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}, health: true, vip: "", probed: &probed}
 
-	st, _ := cfg.snapshot(context.Background(), r, "", "")
+	st, _, _ := cfg.snapshot(context.Background(), r, "", "")
 	if st.Healthy {
 		t.Error("a quorate data node holding no service address must NOT read healthy")
 	}
@@ -593,12 +593,12 @@ func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	verbErr := errors.New("guestagent: unknown verb \"payload.health\"")
 
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ok.URL}
-	st, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
+	st, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
 	if !st.Healthy {
 		t.Error("verb error must fall back to the host probe (200 -> healthy)")
 	}
 	cfg.HealthURL = sick.URL
-	st, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
+	st, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
 	if st.Healthy {
 		t.Error("verb error + host probe 500 -> unhealthy")
 	}
