@@ -1223,6 +1223,15 @@ func TestFirstCIDRParsesOnlyInet(t *testing.T) {
 		{"", ""},
 		{"3: eth2    inet6 fe80::1/64 scope link", ""},
 		{"garbage with no address at all", ""},
+
+		// IPv4LL is NOT an address this node holds on anyone's behalf -- it is the one the
+		// machine gave itself when nobody answered. Reporting it made the node probe its own
+		// link-local address, pass, and publish HEALTHY while the LAN could not reach it
+		// (measured: 169.254.57.250, with the DHCP server stopped). "No address" is the honest
+		// answer, and it is the one that makes a data node read not-ready.
+		{"3: eth2    inet 169.254.57.250/16 brd 169.254.255.255 scope global eth2", ""},
+		// ...and it must not shadow a real address that follows it.
+		{"3: eth2    inet 169.254.57.250/16 scope global eth2\n3: eth2    inet 192.168.9.50/24 scope global eth2", "192.168.9.50/24"},
 	} {
 		if got := firstCIDR(tc.in); got != tc.want {
 			t.Errorf("firstCIDR(%q) = %q, want %q", tc.in, got, tc.want)

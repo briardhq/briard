@@ -170,6 +170,13 @@ let
   #     run and resolv.conf is never rewritten -- ours is the only script. -C resolv.conf is
   #     kept alongside as the belt to that braces: it is what still protects us if -c is ever
   #     dropped and the standard runner comes back.
+  #   -L (noipv4ll) because a SERVICE address may not be invented by the machine that serves it.
+  #     Left on, dhcpcd's answer to "no server answered" is to self-assign 169.254.x.x -- and
+  #     measured, that is exactly what it did: the node then probed its own link-local address,
+  #     passed (it owns it), and reported HEALTHY while nobody on the LAN could reach it. That is
+  #     V3.19's own failure restored by its replacement, and a house whose router is briefly down
+  #     at boot would have hit it. A VIP is the flock's address or it is nothing; a self-assigned
+  #     one is worse than none because it looks like success.
   #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + this NIC's
   #     address, which dhcpcd encodes as hex because the value is colon-separated. One flock then
   #     presents ONE identity, which is what makes a lease survive a failover -- and what stops
@@ -200,7 +207,7 @@ let
     dev="$1"; want="$2"; shift 2
     mac="$(cat /sys/class/net/"$dev"/address)"
     hex="''${mac//:/}"
-    set -- -f ${dhcpcdConf} -c ${vipHook} \
+    set -- -f ${dhcpcdConf} -c ${vipHook} -L \
       -G -C resolv.conf -I "01:$mac" -h "briard-''${hex: -6}" --lastleaseextend "$@"
     if [ -n "$want" ]; then
       set -- "$@" -r "''${want%%/*}"

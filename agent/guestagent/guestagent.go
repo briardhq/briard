@@ -408,12 +408,25 @@ type netVIPRequest struct {
 //
 // i.e. the field after "inet". Returns "" when there is no such field, which is the honest
 // answer for an unaddressed device -- never a guess, and never a partially-parsed string.
+//
+// IPv4LL (169.254.0.0/16) is SKIPPED, and that is not tidiness. A link-local address is one the
+// machine gave ITSELF when nobody answered, so it can never be the flock's service address -- yet
+// it reads as an address to everything downstream. Measured: with no DHCP server on the segment,
+// dhcpcd self-assigned 169.254.57.250, this reported it as the VIP, the health probe hit it from
+// INSIDE the guest and passed, and the node published HEALTHY while nothing on the LAN could reach
+// it. That is precisely the defect V3.19 exists to end, arriving through V3.19's own replacement.
+//
+// The guest is separately told not to invent one (dhcpcd -L), so this is the second line of
+// defence rather than the first -- deliberately, because the cost of being wrong here is a node
+// that looks fine. Ground truth that reports an unreachable address is not ground truth.
 func firstCIDR(out string) string {
 	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		f := strings.Fields(line)
 		for i, tok := range f {
 			if tok == "inet" && i+1 < len(f) {
-				return f[i+1]
+				if addr := f[i+1]; !strings.HasPrefix(addr, "169.254.") {
+					return addr
+				}
 			}
 		}
 	}
