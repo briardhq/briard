@@ -99,6 +99,10 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.3"; prefixLength = 24; }
         ];
+        # On PATH so the test can run a SECOND server by hand with a different pool -- the module's
+        # config is a store path, and the point of that step is to change the pool underneath a
+        # running node.
+        environment.systemPackages = [ pkgs.dnsmasq ];
         services.dnsmasq = {
           enable = true;
           settings = {
@@ -302,5 +306,68 @@ pkgs.testers.runNixOSTest {
     print(f"post-reinstall data volume fsid={post} (pre-wipe={pre})")
     assert post == pre, f"PET LOST: data volume reformatted across reinstall ({pre} -> {post})"
     print("pet volume survived the cattle wipe: the guest reattached it")
+
+    def restart_node():
+        """Stop briard and bring it back: a fresh guest boot, so promotion runs again and
+        briard-vip re-resolves the service address from scratch. The guest is a SIBLING transient
+        unit, so stopping the agent alone would leave qemu holding the overlay."""
+        host.succeed("systemctl stop briard-agent.service briard-guest.service")
+        client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
+        host.succeed("systemctl start briard-agent.service")
+
+    # --- COMING BACK MUST NOT DEPEND ON THE HOUSEHOLD ROUTER --------------------------------
+    # The design's central claim, and until now only an argument. The address is replicated flock
+    # state (.vip-address on the DRBD volume), so promotion APPLIES it rather than ASKING for it.
+    # Kill the only DHCP server on the segment, restart the node, and it must come back serving on
+    # the same address with nobody to ask.
+    #
+    # This is the case that matters: an unplanned failover happens exactly when a household's
+    # network is least likely to be answering, and a promotion that waited for a DHCP ACK would
+    # make the router a dependency of recovery.
+    router.succeed("systemctl stop dnsmasq.service")
+    router.fail("systemctl is-active dnsmasq.service")   # the segment really has no server now
+    restart_node()
+    client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=600)
+    print(f"came back on {vip} with no DHCP server on the segment -- the flock's stored address carried it")
+
+    # --- AND WHEN THE ANSWER CHANGES, THE NODE FOLLOWS ---------------------------------------
+    # The other half: the stored address is a starting point, not a lease we own forever. Bring the
+    # router back with a pool that EXCLUDES the address we hold, so it stops being willing to give
+    # us that one -- whether it refuses the request outright or simply offers a different address,
+    # dhcpcd ends up holding something other than what we applied. That is the trigger the
+    # address-changed hook exists for, and the hook has to withdraw ours, take theirs, re-announce
+    # it and update the flock's store. One path for every cause; until now only exercised against
+    # stubs.
+    #
+    # Run by hand rather than through the module: the pool has to change, and the module's config
+    # is a store path. dhcp-authoritative keeps the server decisive about an address outside it.
+    router.succeed(
+        "dnsmasq --interface=eth1 --bind-interfaces --port=0 --dhcp-authoritative "
+        "--dhcp-range=192.168.1.120,192.168.1.130,12h "
+        "--dhcp-leasefile=/tmp/moved.leases --pid-file=/tmp/dnsmasq-moved.pid"
+    )
+    restart_node()
+
+    def wait_for_moved_lease(timeout=300):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for line in router.succeed("cat /tmp/moved.leases || true").strip().splitlines():
+                f = line.split()
+                if len(f) >= 5:
+                    return f[2], f[3], f[4]
+            time.sleep(2)
+        raise Exception("the node never took an address from the new pool")
+
+    moved, moved_name, moved_id = wait_for_moved_lease()
+    assert moved != vip, f"the node kept {vip}, but that address is no longer leasable"
+    assert moved.startswith("192.168.1.12") or moved.startswith("192.168.1.13"), \
+        f"{moved} is not from the new pool"
+    # Identity is flock-scoped, so it must be UNCHANGED by the address moving underneath it.
+    assert moved_name == name and moved_id.lower() == clientid.lower(), (
+        f"identity drifted with the address: {moved_name}/{moved_id} was {name}/{clientid}"
+    )
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
+    print(f"followed the router from {vip} to {moved}, same identity, and stopped answering at the old one")
   '';
 }
