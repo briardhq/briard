@@ -785,13 +785,11 @@ in
     # Lean, headless test image. The nixosTest / VM runner supplies the real boot
     # device + networking, so there is no bootloader/root device here.
     boot.loader.grub.enable = false;
-    # Put the console on ttyS0 so the host can actually CAPTURE it. The agent has plumbed a
-    # serial log since it was written (platform.QEMUSpec.SerialLog -> `-serial file:`), and this
-    # guest never spoke to that port -- so the one debug channel from a VM the host cannot
-    # otherwise see into carried nothing, silently. Found while trying to diagnose why a
-    # promotion failed inside the guest: every other instrument reports what the host INFERS,
-    # and this is the only one that reports what the guest SAYS.
-    boot.kernelParams = [ "console=ttyS0" ];
+    # NO console here, deliberately: the guests built from this module alone are nixosTest NODES,
+    # whose console the framework already captures. The BOOTABLE image adds its own
+    # (disk-image.nix: console=ttyS0 + grub on serial + journald ForwardToConsole), because there
+    # the host's `-serial file:` is the only way to see inside. Setting it in both places would
+    # duplicate the kernel param and imply this module owns a decision it does not.
     fileSystems."/" = {
       device = "/dev/vda";
       fsType = "ext4";
