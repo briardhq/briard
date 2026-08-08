@@ -170,12 +170,20 @@ let
   #     run and resolv.conf is never rewritten -- ours is the only script. -C resolv.conf is
   #     kept alongside as the belt to that braces: it is what still protects us if -c is ever
   #     dropped and the standard runner comes back.
-  #   -I "" pins the client-id to the hardware address. NixOS's dhcpcd.conf drops both `duid` and
-  #     `clientid`, so today that is the compiled DEFAULT doing the work -- while dhcpcd's own
-  #     shipped config sets `duid` instead, whose DUID is per-host and, in the man page's words,
-  #     "should not be copied to other hosts". Under it the two nodes of one flock would present
-  #     different identities, draw different leases, and the address would move on failover.
-  #     Unstated defaults are not decisions; this one is now stated.
+  #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + this NIC's
+  #     address, which dhcpcd encodes as hex because the value is colon-separated. One flock then
+  #     presents ONE identity, which is what makes a lease survive a failover -- and what stops
+  #     dhcpcd's own shipped `duid` (a per-host DUID that, in the man page's words, "should not be
+  #     copied to other hosts") from giving two nodes of one flock different leases if a nixpkgs
+  #     bump ever restores it.
+  #
+  #     ⚠️ It was `-I ""` -- the documented way to ask for the hardware-address default -- and that
+  #     was WRONG ON THE WIRE, which no amount of reading the command line could show. dhcpcd took
+  #     the literal string "-h" as the client-id (dnsmasq recorded `00:2d:68`: type 0, then ASCII
+  #     "-h"), which also consumed the -h option, so every node sent its SYSTEM hostname ("guest")
+  #     and an identical client-id. Two different flocks on one LAN would then have fought over a
+  #     single lease. Found by [B.78]'s router the first time anything looked at what we actually
+  #     transmit. Never ask for a default when you can state the value.
   #   -h briard-<xxxxxx> is the FLOCK's name (option 12), taken from the low three bytes of the
   #     service NIC's own MAC -- which IS the flock id's derivative, read as ground truth off the
   #     interface rather than plumbed through as a second copy. It gives a household's router a
@@ -193,7 +201,7 @@ let
     mac="$(cat /sys/class/net/"$dev"/address)"
     hex="''${mac//:/}"
     set -- -f ${dhcpcdConf} -c ${vipHook} \
-      -G -C resolv.conf -I "" -h "briard-''${hex: -6}" --lastleaseextend "$@"
+      -G -C resolv.conf -I "01:$mac" -h "briard-''${hex: -6}" --lastleaseextend "$@"
     if [ -n "$want" ]; then
       set -- "$@" -r "''${want%%/*}"
     fi
