@@ -131,8 +131,15 @@ func qemuArgs(s QEMUSpec) []string {
 		args = append(args, "-L", s.DataDir)
 	}
 	if s.SerialLog != "" {
-		// Capture the guest's ttyS0 console (kernel + systemd) for debugging.
-		args = append(args, "-serial", "file:"+s.SerialLog)
+		// Capture the guest's ttyS0 console (kernel + systemd) for debugging -- APPENDING, because
+		// `-serial file:` truncates on open and this guest is relaunched routinely: every OS
+		// upgrade reboots it, every agent restart re-launches it, and a rollback launches the
+		// PREVIOUS generation. Truncating means the console you need is the one just overwritten
+		// by the boot that replaced it, so the log reliably holds every incarnation except the
+		// interesting one. Measured while debugging a promotion that failed on an earlier boot
+		// than the log could still show.
+		args = append(args, "-chardev", "file,id=serial0,path="+s.SerialLog+",append=on",
+			"-serial", "chardev:serial0")
 	}
 	if s.BootStaging {
 		// The boot selector. QEMU emits this as an SMBIOS type-11 (OEM Strings)
