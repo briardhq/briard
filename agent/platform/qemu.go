@@ -84,6 +84,17 @@ const (
 	NetMacvtap = "macvtap" // qemu attaches to /dev/tap<ifindex> via an inherited fd
 )
 
+// The guest's WAN net (eth0, qemu SLIRP). These ARE qemu's defaults; they are written out
+// because the guest configures eth0 statically from the same numbers and runs no DHCP client
+// for it -- so the two sides agree by construction rather than by a convention either could
+// change without the other noticing. PAIRED with guest-image/disk-image.nix
+// (networking.interfaces.eth0 / defaultGateway / nameservers): change one, change both.
+const (
+	slirpNet     = "10.0.2.0/24"
+	slirpGateway = "10.0.2.2"
+	slirpDNS     = "10.0.2.3"
+)
+
 // Fixed fds the macvtap launch wrapper opens and qemu inherits (fds 0-2 are the
 // journal's stdio; a non-socket-activated systemd unit passes nothing above 2).
 // The mapping is deterministic so qemuArgs (pure) and the wrapper agree without
@@ -154,7 +165,12 @@ func qemuArgs(s QEMUSpec) []string {
 	// (positional), which the baked default vipDev matches; a data node's VIP moves
 	// to eth2, which the agent tells the guest (net.configure).
 	if s.ServiceTap != "" || s.SystemTap != "" || s.WitnessTap != "" {
-		args = append(args, "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0")
+		// SLIRP's addressing is PINNED rather than defaulted, because the guest configures eth0
+		// statically from these exact numbers and runs no DHCP client for it. They happen to be
+		// qemu's defaults today; written out, the two sides agree by construction instead of by
+		// a convention either could change without the other noticing.
+		args = append(args, "-netdev", "user,id=net0,net="+slirpNet+",host="+slirpGateway+",dns="+slirpDNS,
+			"-device", "virtio-net-pci,netdev=net0")
 	}
 	if s.SystemTap != "" {
 		args = append(args,

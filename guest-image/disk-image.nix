@@ -124,6 +124,35 @@ let
       # drbd-reactor activity during an upgrade.
       services.journald.extraConfig = "ForwardToConsole=yes\nMaxLevelConsole=info";
 
+      # EXACTLY ONE NIC IN THIS GUEST DOES DHCP, AND IT IS NOT THIS ONE.
+      #
+      # The four are fixed and only one faces a network we do not own: eth0 is qemu's SLIRP
+      # user-net (the WAN path for OCI pulls), eth1 is the DRBD link (private, statically
+      # addressed by the agent, unaddressed at all on a single node), eth3 is the private
+      # guest<->host witness link (static), and eth2 carries the VIP -- the one address that
+      # belongs to the household's LAN, and the only one worth asking anybody for.
+      #
+      # eth0's "DHCP server" is qemu's own, on a synthetic network whose addressing we hand to
+      # qemu ourselves (platform/qemu.go pins net/host/dns rather than leaning on its defaults),
+      # so leasing it buys a constant we already know. A general-purpose network manager makes
+      # sense for a vanilla OS that must cope with whatever it is plugged into; this guest is
+      # neither vanilla nor surprised by its own NICs.
+      #
+      # It also removes a defect rather than working around one ([B.78]): with a system dhcpcd
+      # running, briard-vip's per-interface invocation for eth2 never became an instance -- it
+      # forwarded its argv to that master as a control command, and the master had eth2 in
+      # denyInterfaces (which we had put there), so DHCP silently never ran and the node refused
+      # to be primary. With no master, there is nothing to be hijacked by.
+      networking.useDHCP = false;
+      networking.interfaces.eth0.ipv4.addresses = [
+        { address = "10.0.2.15"; prefixLength = 24; }
+      ];
+      networking.defaultGateway = {
+        address = "10.0.2.2";
+        interface = "eth0";
+      };
+      networking.nameservers = [ "10.0.2.3" ]; # SLIRP's resolver, forwarded to the host's
+
       # drbd.conf includes the .res files the agent drops at runtime into a
       # writable /etc/drbd.d (the framework drbd-* tests bake these via lib.nix).
       environment.etc."drbd.conf".text = ''include "/etc/drbd.d/*.res";'';
