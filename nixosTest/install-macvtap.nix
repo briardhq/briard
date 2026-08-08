@@ -333,6 +333,13 @@ pkgs.testers.runNixOSTest {
     )
 
     def diagnose(where):
+        # Check the INSTRUMENT before trusting its silence: an empty serial log reads the same
+        # whether the guest said nothing or nothing was listening. The qemu command line settles
+        # which -- if -serial is not on it, the environment never reached the agent.
+        print(f"=== {where}: is the serial channel actually wired? ===")
+        print(host.succeed("systemctl show briard-agent.service -p Environment || true"))
+        print(host.succeed("ls -l /tmp/guest-serial.log 2>&1 || true"))
+        print(host.succeed("tr '\\0' ' ' < /proc/$(pgrep -f qemu-system-x86_64 | head -1)/cmdline 2>/dev/null | tr ' ' '\\n' | grep -A1 -i serial || echo '(no -serial in the qemu cmdline)'"))
         print(f"=== {where}: guest console ===")
         print(host.succeed("tail -c 20000 /tmp/guest-serial.log 2>/dev/null || echo '(no serial log)'"))
         print(f"=== {where}: client arp ===")
