@@ -139,8 +139,30 @@ pkgs.testers.runNixOSTest {
                 if len(f) >= 5:
                     return f[2], f[1], f[3], f[4]
             time.sleep(2)
-        router.succeed("journalctl -u dnsmasq --no-pager | tail -50 >&2 || true")
+        # Diagnose HERE, not only at the later steps: "no lease" is the least informative failure
+        # in this test -- it is consistent with the guest never booting, never promoting, never
+        # asking, and asking into silence -- and the guest console is the only witness that can
+        # tell those apart.
+        diagnose("no lease")
         raise Exception("no DHCP lease was ever handed out -- the guest never asked, or never got one")
+
+    def guest_console(pattern):
+        """Read the guest's serial console, which is a TTY stream: \\r-terminated lines render as
+        blank in a captured log, and dumping it raw once made a 94 KB file look empty. Strip the
+        carriage returns and select, rather than trusting the shape of a wall of text."""
+        return host.succeed(
+            f"tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | grep -aE '{pattern}' | tail -40 || true"
+        )
+
+    def diagnose(where):
+        print(f"=== {where}: what the guest said about its address ===")
+        print(guest_console("briard-vip|dhcpcd|briard-data|eth0|eth2|Failed|error"))
+        print(f"=== {where}: guest reached multi-user? ===")
+        print(guest_console("Reached target|Startup finished|briard-guest"))
+        print(f"=== {where}: dnsmasq ===")
+        print(router.succeed("journalctl -u dnsmasq --no-pager | tail -30 || true"))
+        print(f"=== {where}: agent journal ===")
+        print(host.succeed("journalctl -u briard-agent --no-pager | tail -40 || true"))
 
     start_all()
     host.wait_for_unit("multi-user.target")
@@ -148,6 +170,16 @@ pkgs.testers.runNixOSTest {
     router.wait_for_unit("dnsmasq.service")
     host.succeed("ls -l /dev/kvm")
     client.wait_until_succeeds("ping -c1 -W2 192.168.1.1", timeout=30)
+
+    # Capture the guest's console from the FIRST boot onwards. The host cannot reach the guest over
+    # macvtap, so this is the only witness to anything that happens inside it -- and a drop-in laid
+    # down before install.sh writes the unit is picked up when it daemon-reloads, so the very first
+    # guest is captured rather than only the ones after a restart.
+    host.succeed(
+        "mkdir -p /run/systemd/system/briard-agent.service.d && "
+        "printf '[Service]\\nEnvironment=GUEST_SERIAL=/tmp/guest-serial.log\\n' "
+        "> /run/systemd/system/briard-agent.service.d/serial.conf"
+    )
 
     # --- refuse-with-fix / never-a-half-install: a bogus NIC dies before touching networking ---
     # (The report-card refusals themselves are proven in report-card.nix; here we prove the
@@ -324,30 +356,6 @@ pkgs.testers.runNixOSTest {
     # This is the case that matters: an unplanned failover happens exactly when a household's
     # network is least likely to be answering, and a promotion that waited for a DHCP ACK would
     # make the router a dependency of recovery.
-    # Capture the guest's console before the restart: what the node does with no server to ask is
-    # decided INSIDE the guest, and the host cannot reach it over macvtap to look.
-    host.succeed(
-        "mkdir -p /run/systemd/system/briard-agent.service.d && "
-        "printf '[Service]\\nEnvironment=GUEST_SERIAL=/tmp/guest-serial.log\\n' "
-        "> /run/systemd/system/briard-agent.service.d/serial.conf && systemctl daemon-reload"
-    )
-
-    def guest_console(pattern):
-        """Read the guest's serial console, which is a TTY stream: \\r-terminated lines render as
-        blank in a captured log, and dumping it raw once made a 94 KB file look empty. Strip the
-        carriage returns and select, rather than trusting the shape of a wall of text."""
-        return host.succeed(
-            f"tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | grep -aE '{pattern}' | tail -40 || true"
-        )
-
-    def diagnose(where):
-        print(f"=== {where}: what the guest said about its address ===")
-        print(guest_console("briard-vip|dhcpcd|briard-data|Failed|error"))
-        print(f"=== {where}: client arp ===")
-        print(client.succeed("ip -4 neigh || true"))
-        print(f"=== {where}: agent journal ===")
-        print(host.succeed("journalctl -u briard-agent --no-pager | tail -40 || true"))
-
     router.succeed("systemctl stop dnsmasq.service")
     router.fail("systemctl is-active dnsmasq.service")   # the segment really has no server now
     restart_node()
