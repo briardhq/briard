@@ -324,10 +324,30 @@ pkgs.testers.runNixOSTest {
     # This is the case that matters: an unplanned failover happens exactly when a household's
     # network is least likely to be answering, and a promotion that waited for a DHCP ACK would
     # make the router a dependency of recovery.
+    # Capture the guest's console before the restart: what the node does with no server to ask is
+    # decided INSIDE the guest, and the host cannot reach it over macvtap to look.
+    host.succeed(
+        "mkdir -p /run/systemd/system/briard-agent.service.d && "
+        "printf '[Service]\\nEnvironment=GUEST_SERIAL=/tmp/guest-serial.log\\n' "
+        "> /run/systemd/system/briard-agent.service.d/serial.conf && systemctl daemon-reload"
+    )
+
+    def diagnose(where):
+        print(f"=== {where}: guest console ===")
+        print(host.succeed("tail -c 20000 /tmp/guest-serial.log 2>/dev/null || echo '(no serial log)'"))
+        print(f"=== {where}: client arp ===")
+        print(client.succeed("ip -4 neigh || true"))
+        print(f"=== {where}: agent journal ===")
+        print(host.succeed("journalctl -u briard-agent --no-pager | tail -40 || true"))
+
     router.succeed("systemctl stop dnsmasq.service")
     router.fail("systemctl is-active dnsmasq.service")   # the segment really has no server now
     restart_node()
-    client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=600)
+    try:
+        client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=300)
+    except Exception:
+        diagnose("router-down restart")
+        raise
     print(f"came back on {vip} with no DHCP server on the segment -- the flock's stored address carried it")
 
     # --- AND WHEN THE ANSWER CHANGES, THE NODE FOLLOWS ---------------------------------------
