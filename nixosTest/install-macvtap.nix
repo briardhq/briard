@@ -111,7 +111,13 @@ pkgs.testers.runNixOSTest {
             # DHCP only. port=0 disables the DNS half: the guest resolves over its own WAN path
             # (eth0, SLIRP), and a resolver here would be one more thing to explain if it broke.
             port = 0;
-            dhcp-range = "192.168.1.100,192.168.1.150,12h";
+            # A TWO MINUTE lease, not the household 12h. A client holding a valid lease does not
+            # talk to a server until T1 (half the term), so with a realistic term the node would
+            # never notice a pool change inside a test's lifetime -- which is not a product
+            # limitation, it is DHCP working. Shortening the term is what makes the renewal path
+            # reachable at all; it also means the address genuinely EXPIRES while the router is
+            # stopped, so --lastleaseextend stops being an argument and becomes an assertion.
+            dhcp-range = "192.168.1.100,192.168.1.150,2m";
             dhcp-authoritative = true;
           };
         };
@@ -387,7 +393,7 @@ pkgs.testers.runNixOSTest {
     # is a store path. dhcp-authoritative keeps the server decisive about an address outside it.
     router.succeed(
         "dnsmasq --interface=eth1 --bind-interfaces --port=0 --dhcp-authoritative "
-        "--dhcp-range=192.168.1.120,192.168.1.130,12h "
+        "--dhcp-range=192.168.1.120,192.168.1.130,2m "
         "--dhcp-leasefile=/tmp/moved.leases --pid-file=/tmp/dnsmasq-moved.pid"
     )
     restart_node()
