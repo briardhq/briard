@@ -79,12 +79,69 @@ pkgs.testers.runNixOSTest {
         ];
         environment.systemPackages = [ pkgs.curl pkgs.iputils ];
       };
+
+    # THE ROUTER -- the piece this L2 never had, and the reason V3.19c's DHCP path could only be
+    # argued for ([B.78]). Every other test DECLARES the service address, so they all exercise the
+    # operator-named source and none of them exercises the one the product now defaults to.
+    #
+    # A POOL, deliberately, with no reservation for our MAC: the test must not know the address in
+    # advance, because "we never depended on knowing it" is the property under test. It is
+    # discovered the way a household would discover it -- by reading the router's own lease table.
+    #
+    # The range starts at .100 so it cannot collide with the driver-assigned statics (host .1,
+    # client .2, router .3), and nothing else on this segment leases.
+    router =
+      { ... }:
+      {
+        virtualisation.vlans = [ 1 ];
+        networking.useDHCP = false;
+        networking.firewall.enable = false;
+        networking.interfaces.eth1.ipv4.addresses = [
+          { address = "192.168.1.3"; prefixLength = 24; }
+        ];
+        services.dnsmasq = {
+          enable = true;
+          settings = {
+            interface = "eth1";
+            bind-interfaces = true;
+            # DHCP only. port=0 disables the DNS half: the guest resolves over its own WAN path
+            # (eth0, SLIRP), and a resolver here would be one more thing to explain if it broke.
+            port = 0;
+            dhcp-range = "192.168.1.100,192.168.1.150,12h";
+            dhcp-authoritative = true;
+          };
+        };
+      };
   };
 
   testScript = ''
+    import time
+
+    # The guest's address is the ROUTER's to know, so this is how the test learns it -- the same
+    # place a household would look. Returns (ip, mac, hostname, client-id) from dnsmasq's lease
+    # table, whose columns are: <expiry> <mac> <ip> <hostname> <client-id>.
+    #
+    # It waits because the lease is drawn at PROMOTION, not at install: install.sh returns as soon
+    # as the agent is up, and the guest has to boot and promote before it asks for anything.
+    def wait_for_lease(timeout=180):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            leases = router.succeed("cat /var/lib/dnsmasq/dnsmasq.leases || true")
+            for line in leases.strip().splitlines():
+                f = line.split()
+                # Any lease at all is enough to return -- the hostname is asserted by the CALLER,
+                # so a missing one fails as "the router recorded no name" rather than hiding here
+                # as a timeout that says the guest never asked.
+                if len(f) >= 5:
+                    return f[2], f[1], f[3], f[4]
+            time.sleep(2)
+        router.succeed("journalctl -u dnsmasq --no-pager | tail -50 >&2 || true")
+        raise Exception("no DHCP lease was ever handed out -- the guest never asked, or never got one")
+
     start_all()
     host.wait_for_unit("multi-user.target")
     client.wait_for_unit("multi-user.target")
+    router.wait_for_unit("dnsmasq.service")
     host.succeed("ls -l /dev/kvm")
     client.wait_until_succeeds("ping -c1 -W2 192.168.1.1", timeout=30)
 
@@ -106,7 +163,6 @@ pkgs.testers.runNixOSTest {
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     host.succeed(
         "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
-        "BRIARD_VIP=192.168.1.100/24 "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
 
@@ -132,17 +188,37 @@ pkgs.testers.runNixOSTest {
     print("qemu fds:\n" + fds)
     assert "/dev/tap" in fds, "qemu is not holding any /dev/tap<ifindex> chardev (fd-passing failed)"
 
-    # DELTA 4 (THE PROOF): the OFF-BOX client reaches Briard at the VIP through the macvtap.
-    client.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
-    print("off-box client reached the VIP over the macvtap substrate")
+    # DELTA 4 (THE PROOF): the OFF-BOX client reaches Briard at the VIP through the macvtap --
+    # AT AN ADDRESS NOBODY IN THIS TEST CHOSE.
+    #
+    # BRIARD_VIP is unset above, so the guest asked the router and the router decided. We find out
+    # the way a household would: by reading the lease table. Discovering it here rather than
+    # asserting a constant is the whole point -- a test that knows the address in advance cannot
+    # tell "we acquired one" from "we claimed the one we always claimed", which is exactly the
+    # confusion V3.19 was.
+    vip, mac, name, clientid = wait_for_lease()
+    print(f"the router leased the guest {vip} (mac={mac} name={name} client-id={clientid})")
+
+    # The flags reached the wire, which is the only place they can be confirmed. -h gives the
+    # household a recognisable entry in its router's client list (and something to pin a static
+    # reservation against); -I "" makes the client-id the hardware address, which is what keeps
+    # ONE flock presenting ONE identity so the lease survives a failover.
+    assert name.startswith("briard-"), f"the router recorded the client as {name!r}, not briard-*"
+    assert clientid.lower() == "01:" + mac.lower(), (
+        f"client-id is {clientid!r}, not the hardware address -- a per-host DUID here is what "
+        f"would give the two nodes of one flock different leases"
+    )
+
+    client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=120)
+    print("off-box client reached the leased VIP over the macvtap substrate")
 
     # What a stranger actually gets. The install ships NO service, so the front door is
     # what answers -- and it says so, rather than the node looking broken or serving a workload
     # nobody chose. This is the assertion that would catch a payload sneaking back into the
     # shipped disk.
-    page = client.succeed("curl -fsS http://192.168.1.100/")
+    page = client.succeed(f"curl -fsS http://{vip}/")
     assert "No service is installed" in page, f"the VIP served: {page!r}"
-    health = client.succeed("curl -fsS http://192.168.1.100/healthz")
+    health = client.succeed(f"curl -fsS http://{vip}/healthz")
     assert "no service installed" in health, f"/healthz said: {health!r}"
 
     host.wait_until_succeeds(
@@ -197,22 +273,27 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip -d link show briard0 | grep -q macvtap")
     host.succeed("ip -o -4 addr show dev eth1 | grep -qw 192.168.1.1")
     # Non-vacuity for the re-green proof below: with the guest gone the VIP no longer answers.
-    client.wait_until_fails("curl -fsS --max-time 3 http://192.168.1.100/healthz", timeout=60)
+    client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
 
     # Reinstall: the SAME one command. It re-lays /opt from staging, recreates a FRESH guest overlay
     # (cattle), and does NOT recreate the pet data.img. net-up.sh is idempotent, so it adopts the
     # macvtaps that are already up rather than re-creating them.
     host.succeed(
         "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
-        "BRIARD_VIP=192.168.1.100/24 "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched
 
-    # Green again on the re-fetched bundle: the OFF-BOX client reaches the VIP.
-    client.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=600)
+    # Green again on the re-fetched bundle: the OFF-BOX client reaches the VIP -- AT THE SAME
+    # ADDRESS. The flock id is PET state (/var/lib/briard/flock-id), so it survived the cattle
+    # wipe; the service MAC derives from it, the client-id is that MAC, and the router therefore
+    # recognises the same client and returns the same lease. That is the chain install.sh promises
+    # when it says "keep it to keep your address", and until this test it was only a claim.
+    client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=600)
     host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64")
-    print("reinstall reached green again on the re-fetched cattle")
+    again, _, _, _ = wait_for_lease()
+    assert again == vip, f"the address moved across a cattle reinstall ({vip} -> {again}) -- the pet flock id did not carry it"
+    print(f"reinstall reached green again on the re-fetched cattle, at the same leased {vip}")
 
     # THE PROOF (assertion d): the guest re-attached the existing data volume rather than
     # reformatting it -- same filesystem, not a fresh one wearing the same path. A reformat
