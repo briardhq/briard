@@ -76,11 +76,17 @@ type fakeStatus struct {
 	vip    string
 	vipErr error
 	probed *string
+	// mdns is what net.mdnspublished answers: the name avahi ACTUALLY established, which a
+	// silent conflict-rename can make differ from the one we asked for. "" = nothing published.
+	mdns    string
+	mdnsErr error
 }
 
 func (f fakeStatus) Status(context.Context, string) (model.QuorumState, error) {
 	return f.qs, f.err
 }
+
+func (f fakeStatus) MDNSPublished(context.Context) (string, error) { return f.mdns, f.mdnsErr }
 
 func (f fakeStatus) PayloadHealth(_ context.Context, url string) (bool, error) {
 	if f.probed != nil {
@@ -348,6 +354,57 @@ func TestDeriveMAC(t *testing.T) {
 				t.Errorf("MAC collision: %s/%s and %s both -> %s", node, role, prev, mac)
 			}
 			seen[mac] = node + "/" + role
+		}
+	}
+}
+
+// The status carries the name the node is REALLY publishing, never the one it was configured
+// with. avahi conflict-renames on a collision and tells nobody, so two flocks in one house can
+// even swap names across a reboot -- and if the report echoed cfg.FlockName, nothing anywhere
+// (household, journal, cloud) would ever notice. Same doctrine as reading the VIP off the
+// interface instead of trusting vip.env, and for the same reason: what we asked for is not
+// evidence of what is in force.
+func TestSnapshot_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
+	cfg := Config{Node: "briard-node-3f9a2c", Role: model.RoleAnchor, FlockName: "brave-elf"}
+	cfg.Resource.Name = "r0"
+
+	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
+	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf-2"}
+	st, _, err := cfg.snapshot(context.Background(), r, "briard-dummy:v1", "/nix/store/sys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.PublishedName != "brave-elf-2" {
+		t.Errorf("PublishedName = %q, want the established brave-elf-2 (configured: %q)",
+			st.PublishedName, cfg.FlockName)
+	}
+	if st.PublishedName == cfg.FlockName {
+		t.Error("the report echoed the configured name -- a silent avahi rename would be invisible")
+	}
+}
+
+// A node publishing nothing reports nothing, and specifically does NOT fall back to the name it
+// was configured with. Empty means "we do not currently know of a published name", which is the
+// honest answer for a Secondary (the name is bound to the VIP) and for a failed read alike.
+func TestSnapshot_UnknownPublishedNameIsEmptyNotTheConfiguredOne(t *testing.T) {
+	cfg := Config{Node: "briard-node-3f9a2c", Role: model.RoleAnchor, FlockName: "brave-elf"}
+	cfg.Resource.Name = "r0"
+
+	qs := model.QuorumState{Quorate: true, Connected: 2}
+	for _, c := range []struct {
+		what string
+		r    fakeStatus
+	}{
+		{"a Secondary publishes no name", fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true}},
+		{"the read failed", fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdnsErr: errors.New("channel hiccup")}},
+	} {
+		st, _, err := cfg.snapshot(context.Background(), c.r, "briard-dummy:v1", "/nix/store/sys")
+		if err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		if st.PublishedName != "" {
+			t.Errorf("%s: PublishedName = %q, want empty -- never the configured %q",
+				c.what, st.PublishedName, cfg.FlockName)
 		}
 	}
 }

@@ -105,6 +105,10 @@ func (f *fakeInstaller) PayloadHealth(_ context.Context, url string) (bool, erro
 	return true, nil
 }
 
+// The service-install path has no opinion about names. "" -- this node publishes none -- is the
+// honest answer here; a fixture name could be mistaken for an assertion that one was published.
+func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return "", nil }
+
 // parseChain pulls the unit list back out of a rendered promoter snippet.
 func parseChain(snippet string) []string {
 	_, rest, ok := strings.Cut(snippet, "start = [ ")

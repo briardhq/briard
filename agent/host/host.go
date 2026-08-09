@@ -119,10 +119,19 @@ type Config struct {
 	// a MAC derived from the node name means node B draws a different DHCP lease, and the address
 	// changes on failover, which is the one thing a VIP exists not to do. "" falls back to the node
 	// name, which keeps every agent-less harness and every already-installed node exactly as it was.
-	FlockID  string
-	Role     model.Role    // anchor / diskless ("" reserved for plain machines)
-	Resource drbd.Resource // the DRBD resource this node serves
-	Promoter []string      // drbd-reactor units in start order; nil on a witness
+	FlockID string
+	// FlockName is the flock's HUMAN-VISIBLE name (`brave-elf`), minted once at install into pet
+	// state and published as `briard-<name>.local`. It is flock-scoped for the same reason the VIP
+	// is: the name resolves TO the VIP, so a node-scoped name would change identity on failover
+	// while the thing it points at did not.
+	//
+	// It carries NO mechanism -- not the MAC, not the DHCP client-id, not DRBD's `on <name>` --
+	// and that is the entire point: a rename is a label change, so it can never move the address.
+	// "" means publish nothing rather than publish a guess.
+	FlockName string
+	Role      model.Role    // anchor / diskless ("" reserved for plain machines)
+	Resource  drbd.Resource // the DRBD resource this node serves
+	Promoter  []string      // drbd-reactor units in start order; nil on a witness
 	// ServiceRendered is the runtime-installed service's units, re-derived from the node-local
 	// manifest cache at start-up and handed to bring-up so they exist before the promoter looks
 	// for them. Set alongside Promoter by installedService, for the same reason and from
@@ -220,6 +229,11 @@ type statusReader interface {
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
 	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
 	guest.VIPReader
+	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
+	// address off the interface: the value we asked for is not evidence of the value in force.
+	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
+	// names across a reboot with nothing telling anyone. "" when this node publishes none.
+	MDNSPublished(ctx context.Context) (string, error)
 }
 
 // guestReader is what the observe loop reads each cycle: quorum state, the payload image
@@ -524,6 +538,13 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// ConfigureNet just records VIP_DEV/VIP_ADDR and skips addressing).
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
 		err = client.ConfigureNet(bringup, cfg.SystemDev, cfg.SystemCIDR, cfg.VIPDev, cfg.VIPAddr)
+	}
+	// Hand the guest the flock's VISIBLE name, separately from addressing and separately from the
+	// hostname above -- three identifiers, three calls, because that is what makes any one of them
+	// changeable without the others. "" is a node with no minted name (every agent-less harness,
+	// and any node installed before V3.20): the verb publishes nothing rather than a guess.
+	if err == nil && cfg.FlockName != "" {
+		err = client.SetMDNSName(bringup, cfg.FlockName)
 	}
 	if err == nil {
 		err = client.BringUp(bringup, spec)
@@ -878,6 +899,13 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 		return st, "", err // zero QuorumState, Healthy=false
 	}
 	st.Quorum = qs
+	// The name this node is REALLY publishing, not the one it was configured with. A read error
+	// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
+	// make a silent conflict-rename permanently invisible, which is the whole failure being
+	// closed here. Empty is honest -- "we do not currently know of a published name".
+	if name, merr := r.MDNSPublished(rctx); merr == nil {
+		st.PublishedName = name
+	}
 	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two
 	// answers must stay apart: a witness with nothing to probe is healthy when quorate, a data

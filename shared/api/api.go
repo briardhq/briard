@@ -89,6 +89,18 @@ type NodeStatus struct {
 	// healthy) before it offers the fleet -- a reverted trial keeps the old version, so a bad
 	// build never advances past the canary. Empty when the binary is built without a version.
 	AgentVersion string `json:"agent_version,omitempty"`
+	// PublishedName is the flock name this node is ACTUALLY publishing over mDNS, bare
+	// ("brave-elf"), read back from avahi rather than echoed from config. Empty on a node
+	// publishing none: a Secondary (the name is bound to the VIP, so only the serving node
+	// publishes it), a witness, or a node installed before the name existed.
+	//
+	// Widening the closed allowlist by one field is a deliberate act, so here is the argument.
+	// The value is the household's own public LAN name -- a curated random word pair carrying no
+	// login name, which is exactly why it is not $SUDO_USER -- and the cloud needs it for two
+	// things it cannot do otherwise: reconcile a name CLAIM against what is really being served,
+	// and notice a silent avahi conflict-rename, which is otherwise invisible to everyone
+	// including the household whose name changed.
+	PublishedName string `json:"published_name,omitempty"`
 	// Overlay is this node's remote-reach state. Nil when the node runs no
 	// overlay (standalone / LAN-only, the default) -- the overlay is off the failover
 	// critical path, so it reports as a signal, never a gate.

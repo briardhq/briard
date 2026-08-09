@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 	"briard.io/agent/cli"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/reportcard"
+	"briard.io/shared/flockname"
 )
 
 func main() {
@@ -37,7 +39,25 @@ func main() {
 	deadman := flag.Bool("deadman", false, "run as the in-guest watchdog for the host agent")
 	reportCard := flag.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
 	fetchInstall := flag.String("fetch-install", "", "download and verify the signed release into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING)")
+	mintFlockName := flag.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	flag.Parse()
+
+	// Mint the household-visible name. An installer-internal helper rather than a `briard`
+	// subcommand: it is not an operator verb, it is the same category as --report-card and
+	// --fetch-install (install.sh invokes it, it prints one thing, it exits).
+	//
+	// It lives in the BINARY rather than in install.sh because the word list is 846 words and a
+	// CONTRACT: the cloud admits a claimed name by validating it against that very list
+	// (shared/flockname), so a shell copy would be a second list to keep in step -- the
+	// cross-boundary drift the pairing tests exist to catch, invented on purpose for no reason.
+	if *mintFlockName {
+		name, err := flockname.Generate()
+		if err != nil {
+			log.Fatalf("mint-flock-name: %v", err)
+		}
+		fmt.Fprintln(os.Stdout, name)
+		return
+	}
 
 	// The machine report card -- the free-local installer's first gate.
 	// Pure host inspection (no host subsystems), so it runs on any build; refuses the unfit with

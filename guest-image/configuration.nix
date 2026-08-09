@@ -79,15 +79,54 @@ let
     . ${vipLivePath}
     exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
   '';
-  # Publish the VIP under `briard-<node>.local`. The node's name comes from the RUNNING hostname
-  # (the agent sets it to this node's name at bring-up), so the published name follows the node
-  # rather than anything baked. The address comes from VIP_ADDR with its prefix stripped -- the
-  # same single source the VIP itself is claimed from, so the name can never point somewhere the
-  # address is not.
+  # The FLOCK's visible name, handed down by the agent (net.mdnsname) and NOT baked: it is pet
+  # identity arriving at a cattle image, which is the distinction V3.19 was found for.
+  mdnsEnvPath = "/run/briard/mdns.env";
+  # The name avahi ACTUALLY established, which the host reads back over net.mdnspublished.
+  mdnsPublishedPath = "/run/briard/mdns.published";
+
+  # Publish the VIP under `briard-<flock name>.local`.
+  #
+  # The name is FLOCK-scoped, and that is a correction rather than a detail (V3.20). It used to be
+  # `briard-$(hostname).local` -- node-scoped -- while the address it resolves to is the VIP, which
+  # is flock-scoped and moves. So on failover the name changed identity while the thing it pointed
+  # at did not: not merely unfriendly, incoherent. FLOCK_NAME has no such problem, because the
+  # whole flock has one.
+  #
+  # The address still comes from VIP_ADDR with its prefix stripped -- the same single source the
+  # VIP itself is claimed from, so the name can never point somewhere the address is not.
+  #
+  # ⚠️ WHY THIS IS NOT `exec`, AND WHY stdbuf. avahi-publish prints `Established under name 'X'`,
+  # and on a collision `Name collision, picking new name 'X'` -- it renames itself and tells no
+  # one. That output is the ONLY place the truth about the published name appears, so this reads
+  # it and records it. Two traps, both silent if got wrong:
+  #   - `exec` would replace this shell and leave nothing to read the output.
+  #   - stdout to a PIPE is full-buffered by libc, so without `stdbuf -oL` the line would sit in a
+  #     4 KiB buffer for the entire lifetime of a long-running publisher and arrive only at exit.
+  #     The read-back would then be empty forever, while everything looked fine -- a vacuous green
+  #     of exactly the kind V3.19 was.
+  # The process still holds the record for as long as it runs (avahi withdraws on exit), and it is
+  # still the unit's main process for cgroup purposes, so lifetime semantics are unchanged.
+  #   - and `pipefail` is LOAD-BEARING, not hygiene. Without `exec`, the unit's exit status is the
+  #     pipeline's, which is the `while` loop's -- 0 even when avahi-publish has died. The unit
+  #     would look like a clean exit, `Restart=on-failure` would never fire, and the name would
+  #     simply disappear with nothing retrying it. Measured, not assumed: rc=0 without, rc=7 with.
   vipPublish = pkgs.writeShellScript "briard-vip-publish" ''
-    set -eu
-    exec ${pkgs.avahi}/bin/avahi-publish -a -R \
-      "briard-$(${pkgs.nettools}/bin/hostname).local" "''${VIP_ADDR%%/*}"
+    set -euo pipefail
+    : >${mdnsPublishedPath}
+    ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R \
+      "briard-''${FLOCK_NAME}.local" "''${VIP_ADDR%%/*}" 2>&1 |
+    while IFS= read -r line; do
+      printf '%s\n' "$line"
+      case "$line" in
+        "Established under name '"*|"Name collision, picking new name '"*)
+          # `...name 'briard-brave-elf.local'.` -> `brave-elf`. Recorded BARE, so the host is
+          # handed the name and not a label it would have to unwrap the same way twice.
+          n="''${line#*\'}"; n="''${n%%\'*}"; n="''${n%.local}"; n="''${n#briard-}"
+          printf '%s\n' "$n" >${mdnsPublishedPath}
+          ;;
+      esac
+    done
   '';
 
   # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
@@ -717,22 +756,35 @@ in
       };
     };
 
-    # 3b. the NAME — publish `briard-<node>.local` for the VIP over mDNS, so the address a user
-    #     is given is true on every LAN instead of only on ours. The README could previously only
-    #     quote an IP, which is exactly the kind of claim that is wrong in someone else's house.
+    # 3b. the NAME — publish `briard-<flock name>.local` for the VIP over mDNS, so the address a
+    #     user is given is true on every LAN instead of only on ours. The README could previously
+    #     only quote an IP, which is exactly the kind of claim that is wrong in someone else's
+    #     house.
+    #
+    #     FLOCK-scoped, and this was a CORRECTION (V3.20): it published `briard-$(hostname).local`,
+    #     a node-scoped name, pointing at the VIP, which is flock-scoped and moves. On failover the
+    #     name changed identity while the thing it resolved to did not. The flock has exactly one
+    #     name, so the mismatch is gone by construction.
     #
     #     SINGLE-label, deliberately, and this was MEASURED rather than assumed (V3.19d): on a
     #     stock Ubuntu 24.04 client, `<name>.briard.local` publishes fine and then **does not
     #     resolve** — `mdns4_minimal`, the resolver in Debian/Ubuntu's nsswitch, handles exactly
     #     one label before `.local`. A hierarchy would have shipped a name nothing on the LAN could
-    #     look up. `briard-` prefixed keeps N nodes distinguishable on one LAN (the reason a
-    #     hierarchy was wanted) and matches the DHCP hostname, so the router's client list agrees.
+    #     look up. The `briard-` prefix keeps N flocks distinguishable on one LAN.
+    #
+    #     ⚠️ IT DOES NOT MATCH THE DHCP HOSTNAME, and that is deliberate (V3.20). Option 12 stays
+    #     `briard-<mac tail>`, derived in-guest from the NIC's own address: changing a hostname
+    #     mid-lease is a change whose effect on an arbitrary household's DHCP server nobody can
+    #     predict — a second client-list entry, or a buggy server moving the address — and a
+    #     RENAME MUST NEVER RISK THE ADDRESS. The router's list and the mDNS name therefore differ,
+    #     which costs one line of installer wording and buys an identity that is safe to change.
     #
     #     Bound to briard-vip exactly like the front door (wantedBy + partOf), which buys three
     #     things: the name appears only when this node actually holds the VIP, it points at the
     #     VIP rather than at whatever else the guest is addressed on, and on a pair only the
-    #     PRIMARY publishes — so the two nodes never collide on the name and mDNS never
-    #     conflict-renames one of them to `briard-...-2.local`.
+    #     PRIMARY publishes — so the two nodes of ONE flock never collide with each other. Two
+    #     DIFFERENT flocks in one house still can, and avahi resolves that by renaming one of them
+    #     silently, which is why the published name is read back rather than assumed.
     systemd.services.briard-mdns = {
       description = "Briard mDNS name for the VIP";
       wantedBy = [ "briard-vip.service" ];
@@ -743,14 +795,21 @@ in
         # The address briard-vip ACTUALLY claimed, so the name cannot drift from it. Three
         # sources, last wins: baked fallback, the agent-written config, and the live file that
         # records what was really taken -- which under DHCP is the only one that knows.
+        #
+        # FLOCK_NAME comes from the agent (net.mdnsname) and has NO baked fallback on purpose: a
+        # node with no minted name must publish nothing rather than publish a guess, and
+        # `briard-.local` is worse than silence. ConditionPathExists enforces that -- the unit
+        # stays inactive rather than failing in a restart loop, because "this node has no name" is
+        # a legitimate state (every agent-less harness) and not an error.
         Environment = "VIP_ADDR=${vipFallback}";
-        EnvironmentFile = [ "-${vipEnvPath}" "-${vipLivePath}" ];
+        EnvironmentFile = [ "-${vipEnvPath}" "-${vipLivePath}" "-${mdnsEnvPath}" ];
         # avahi-publish holds the record for as long as it runs and withdraws it on exit, so the
         # unit's lifetime IS the record's lifetime -- no cleanup path to get wrong on demotion.
         ExecStart = "${vipPublish}";
         Restart = "on-failure";
         RestartSec = 2;
       };
+      unitConfig.ConditionPathExists = mdnsEnvPath;
     };
 
     # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443, forwarding to

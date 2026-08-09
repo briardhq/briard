@@ -47,6 +47,17 @@ func (f *fakeExec) WriteFile(path string, data []byte) error {
 	return nil
 }
 
+// A file this fake was never given reads back as os.ErrNotExist rather than as "": the
+// difference between "no name is published" and "the published name is empty" is the whole
+// reason the published name is read instead of assumed.
+func (f *fakeExec) ReadFile(path string) ([]byte, error) {
+	v, ok := f.files[path]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return []byte(v), nil
+}
+
 func (f *fakeExec) Sethostname(name string) error {
 	f.hostname = name
 	return nil
@@ -462,6 +473,81 @@ func TestConfigureNetOmitsUnsetVIPAddr(t *testing.T) {
 	}
 	if got := f.files[vipEnvPath]; strings.Contains(got, "VIP_ADDR") {
 		t.Errorf("%s = %q, must not mention VIP_ADDR when unset", vipEnvPath, got)
+	}
+}
+
+// The flock's visible name goes to its own file and republishes the unit -- and touches NOTHING
+// about addressing. That separation is the whole point of the three-way identifier split: a name
+// is a label, an address is an identity, so a rename must never be an addressing call.
+func TestSetMDNSNameWritesNameAndRepublishes(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.SetMDNSName(context.Background(), "brave-elf"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[mdnsEnvPath]; got != "FLOCK_NAME=brave-elf\n" {
+		t.Errorf("%s = %q, want FLOCK_NAME=brave-elf", mdnsEnvPath, got)
+	}
+	// try-restart, not restart: a Secondary publishes no name, and starting the unit there would
+	// announce a name for an address this node does not hold.
+	want := []string{"systemctl", "try-restart", mdnsUnit}
+	if len(f.runs) != 1 || !reflect.DeepEqual(f.runs[0], want) {
+		t.Errorf("runs = %v, want exactly one %v", f.runs, want)
+	}
+	// The VIP's own file must be untouched -- a rename that rewrote it would put every rename
+	// through the addressing path this design exists to keep it out of.
+	if _, touched := f.files[vipEnvPath]; touched {
+		t.Errorf("a rename wrote %s; renaming must not touch addressing", vipEnvPath)
+	}
+}
+
+// An empty name publishes NOTHING rather than `briard-.local`. Every agent-less harness and every
+// node installed before the name existed sends "", and a guess is worse than silence.
+func TestSetMDNSNameIgnoresEmpty(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.SetMDNSName(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.files[mdnsEnvPath]; ok {
+		t.Errorf("an empty name wrote %s = %q", mdnsEnvPath, f.files[mdnsEnvPath])
+	}
+	if len(f.runs) != 0 {
+		t.Errorf("an empty name restarted something: %v", f.runs)
+	}
+}
+
+// THE ASSERTION THIS FEATURE EXISTS FOR. avahi conflict-renames on a collision and tells nobody,
+// so the name we asked for is not evidence of the name in force. MDNSPublished must report what
+// was ESTABLISHED -- here `brave-elf-2`, after avahi bumped it -- and never echo the request.
+// Reporting the request would rebuild V3.19 exactly: a name present, plausible, and not what
+// anyone thinks it is.
+func TestMDNSPublishedReportsTheRenamedName(t *testing.T) {
+	f := &fakeExec{files: map[string]string{mdnsPublishedPath: "brave-elf-2\n"}}
+	g := dial(t, f)
+	if err := g.SetMDNSName(context.Background(), "brave-elf"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.MDNSPublished(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "brave-elf-2" {
+		t.Errorf("MDNSPublished = %q, want the ESTABLISHED name brave-elf-2 (we asked for brave-elf)", got)
+	}
+}
+
+// A node publishing nothing -- a Secondary, a witness -- answers "" rather than erroring. The
+// host asks every cycle, and the common case must not read as a fault.
+func TestMDNSPublishedIsEmptyWhenNothingIsPublished(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	got, err := g.MDNSPublished(context.Background())
+	if err != nil {
+		t.Fatalf("a missing published-name file must be %q, not an error: %v", "", err)
+	}
+	if got != "" {
+		t.Errorf("MDNSPublished = %q, want empty", got)
 	}
 }
 

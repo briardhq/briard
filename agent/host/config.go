@@ -111,6 +111,7 @@ func ConfigFromEnv() Config {
 		VIPDev:       os.Getenv("VIP_DEV"),     // e.g. eth2 on a data node; "" -> guest's baked default (eth1)
 		VIPAddr:      os.Getenv("VIP_ADDR"),    // e.g. 192.168.9.50/24; "" -> the guest's baked default
 		FlockID:      os.Getenv("FLOCK_ID"),    // flock-scoped VIP MAC seed; "" -> fall back to the node name
+		FlockName:    os.Getenv("FLOCK_NAME"),  // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
 		Resource: drbd.Resource{
 			Name:   env("RESOURCE", "r0"),
 			Device: env("DEVICE", "/dev/drbd0"),

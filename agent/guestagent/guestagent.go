@@ -64,11 +64,35 @@ const verbNetConfigure = "net.configure"
 // recorded but failed to apply must not be reportable as live.
 const verbNetVIP = "net.vip"
 
+// verbNetMDNSName records the flock's human-visible name and republishes it: briard-mdns publishes
+// `briard-<name>.local` pointing at the VIP.
+//
+// It is its OWN verb rather than another field on net.configure, and the reason is the design it
+// belongs to (V3.20): the name is a LABEL and the address is an IDENTITY, so a rename must be
+// possible without re-running network configuration. Folding it in would have made every rename an
+// addressing call -- re-asserting VIP_DEV/VIP_ADDR to change a string -- which is exactly the
+// coupling the three-way identifier split exists to remove.
+//
+// The name is FLOCK-scoped, not node-scoped, because it resolves to the VIP: a node-scoped name
+// would change identity on failover while the address it points at did not.
+const verbNetMDNSName = "net.mdnsname"
+
+// verbNetMDNSPublished reads back the name avahi ACTUALLY published, which is not always the name
+// it was asked for: on a collision avahi conflict-renames to `<name>-2` and tells nobody. Same
+// doctrine as verbNetVIP, and for the same reason -- V3.19 was a name that was present, plausible,
+// and not what anyone thought it was. Reporting back the REQUESTED name would reproduce that
+// failure precisely, in the item that exists to end it.
+const verbNetMDNSPublished = "net.mdnspublished"
+
 // Sys.hostname sets the guest's hostname to this node's name. DRBD matches the
 // running hostname against the `on <name>` stanzas in the .res, so every fleet
 // guest (one baked image, hostname "guest") must be renamed to its node name
 // before create-md, or DRBD reports "not defined for this host". The agent sets it
 // uniformly at bring-up (a no-op rename to "guest" on the single-node/legacy path).
+//
+// NOTE this is the NODE id (`briard-node-3f9a2c`), which is hidden, and NOT the flock name a
+// household sees -- see verbNetMDNSName. They were the same string until V3.20, which is why
+// nothing visible could be renamed without breaking DRBD's self-match.
 const verbSetHostname = "sys.hostname"
 
 // Upgrade/rollback verbs, driven by the host's guest.Manager. Data
@@ -176,6 +200,7 @@ const (
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
 	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
+	verbNetMDNSName, verbNetMDNSPublished,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
 	verbServiceRender, verbServiceProvision, verbServiceManifest, verbReactorActive,
@@ -389,6 +414,13 @@ type evictRequest struct {
 // VIPAddr is the service address itself, in CIDR form ("192.168.9.50/24"). Like VIPDev it is
 // RECORDED here, not applied -- the promoter chain claims it when this node wins the primary
 // role. "" leaves the guest's baked fallback, which the agent-less harnesses still run on.
+// mdnsNameRequest carries the flock's visible name (net.mdnsname). Name is the BARE flock name
+// ("brave-elf"); the `briard-` prefix and the `.local` suffix are the guest's to add, so the one
+// place that knows the published label's shape is the unit that publishes it.
+type mdnsNameRequest struct {
+	Name string `json:"name"`
+}
+
 type netConfigureRequest struct {
 	Dev     string `json:"dev"`
 	CIDR    string `json:"cidr"`
@@ -451,6 +483,10 @@ type resourcesRequest struct {
 type Executor interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 	WriteFile(path string, data []byte) error
+	// ReadFile returns a file's contents. A MISSING file must come back as an error the caller
+	// can recognise with os.IsNotExist rather than as empty content: "no name is published" and
+	// "the name is the empty string" are different answers, and only one of them is normal.
+	ReadFile(path string) ([]byte, error)
 	Sethostname(name string) error
 }
 
@@ -1049,6 +1085,40 @@ func dispatch(x Executor) dispatchFunc {
 				return "", nil
 			}
 			return firstCIDR(string(out)), nil
+		case verbNetMDNSName:
+			var req mdnsNameRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Name == "" {
+				// Publish nothing rather than publish a guess. An empty name is what a node with
+				// no minted flock name sends, and `briard-.local` is worse than silence.
+				return nil, nil
+			}
+			if err := x.WriteFile(mdnsEnvPath, []byte("FLOCK_NAME="+req.Name+"\n")); err != nil {
+				return nil, err
+			}
+			// try-restart, NOT restart: republish only where a name is already published. A
+			// Secondary holds no VIP, so briard-mdns is stopped there (it is partOf briard-vip)
+			// and starting it would publish a name for an address this node does not hold.
+			//
+			// The rename applies WITHOUT touching addressing -- no VIP re-assert, no MAC, no DHCP
+			// client-id, no DRBD state. That is the property the three-way identifier split was
+			// for, and this line is where it is cashed in.
+			return nil, run("systemctl", "try-restart", mdnsUnit)
+		case verbNetMDNSPublished:
+			// The name avahi ESTABLISHED, which is not always the name we asked for: on a
+			// collision it conflict-renames to `<name>-2` and tells nobody. Reporting the
+			// requested name here would rebuild V3.19 -- a name present, plausible, and not what
+			// anyone thinks it is -- inside the item that exists to end that.
+			out, err := x.ReadFile(mdnsPublishedPath)
+			if err != nil {
+				// Absent is the normal answer on a Secondary (nothing published), so it is "" and
+				// not an error. Any OTHER read failure is also "": the host asks every cycle, and
+				// a transient unreadable file must not read as a dead channel.
+				return "", nil
+			}
+			return strings.TrimSpace(string(out)), nil
 		default:
 			return nil, fmt.Errorf("guestagent: unknown verb %q", verb)
 		}
@@ -1158,6 +1228,20 @@ const reactorBeforeOverride = "/run/systemd/system/drbd-services@r0.target.d/rea
 // vipEnvPath is the optional EnvironmentFile briard-vip.service reads its VIP_DEV
 // from; the agent writes it via net.configure when the VIP is not on the baked NIC.
 const vipEnvPath = "/run/briard/vip.env"
+
+const (
+	// mdnsEnvPath is the EnvironmentFile briard-mdns.service reads the flock's visible name from.
+	// Written by net.mdnsname, never baked: it is PET identity reaching a CATTLE image, and baking
+	// identity into a shared image is the mistake V3.19 was.
+	mdnsEnvPath = "/run/briard/mdns.env"
+	// mdnsPublishedPath is where briard-mdns records the name avahi actually ESTABLISHED, parsed
+	// from avahi-publish's own output. Absent means nothing is published -- the normal state of a
+	// Secondary, which holds no VIP and therefore publishes no name.
+	mdnsPublishedPath = "/run/briard/mdns.published"
+	// mdnsUnit is restarted to republish after a rename. try-restart, so a node that is not
+	// serving stays quiet: there is no name to correct where no name is published.
+	mdnsUnit = "briard-mdns.service"
+)
 
 func resPath(resource string) string { return filepath.Join("/etc/drbd.d", resource+".res") }
 
@@ -1619,6 +1703,28 @@ func (g *Client) ConfigureNet(ctx context.Context, dev, cidr, vipDev, vipAddr st
 		netConfigureRequest{Dev: dev, CIDR: cidr, VIPDev: vipDev, VIPAddr: vipAddr}, nil)
 }
 
+// SetMDNSName records the flock's visible name and republishes it if this node is serving.
+// name is BARE ("brave-elf"); the guest builds `briard-<name>.local` from it. "" publishes
+// nothing. Idempotent, and deliberately independent of ConfigureNet -- a rename must never be an
+// addressing call.
+func (g *Client) SetMDNSName(ctx context.Context, name string) error {
+	return g.c.call(ctx, verbNetMDNSName, mdnsNameRequest{Name: name}, nil)
+}
+
+// MDNSPublished reports the name avahi actually established, bare and without the `.local`
+// suffix, or "" when this node publishes none (a Secondary, or a publish still in flight).
+//
+// Read it rather than assume it: avahi conflict-renames on a collision without telling anyone, so
+// the requested name and the published name can differ, and which flock gets the plain name
+// depends on who probed first. See verbNetMDNSPublished.
+func (g *Client) MDNSPublished(ctx context.Context) (string, error) {
+	var name string
+	if err := g.c.call(ctx, verbNetMDNSPublished, struct{}{}, &name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // VIP reports the address dev actually holds, in CIDR form, or "" when it holds none -- this node
 // is Secondary, or its promotion has not claimed the address yet. Under DHCP this is how the host
 // learns an address it no longer chooses. An unaddressed device is "" rather than an error,
@@ -2065,6 +2171,8 @@ func (osExecutor) WriteFile(path string, data []byte) error {
 	}
 	return os.WriteFile(path, data, 0o644)
 }
+
+func (osExecutor) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
 
 func (osExecutor) Sethostname(name string) error {
 	return syscall.Sethostname([]byte(name))
