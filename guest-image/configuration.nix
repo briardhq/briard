@@ -127,6 +127,18 @@ let
           ;;
       esac
     done
+    # REACHING HERE IS ALWAYS A FAILURE, and saying so is the point. avahi-publish holds the record
+    # only while it runs, so if it has returned, the name is gone -- yet it exits 0 even when the
+    # daemon refused it, which systemd logged for two days as `briard-mdns.service: Deactivated
+    # successfully` while nothing at all was published. A publisher that no-ops quietly is the same
+    # disease as a name that resolves nowhere. Exiting non-zero turns it into a restart and a
+    # journal line somebody can find.
+    if [ -s ${mdnsPublishedPath} ]; then
+      echo "briard-mdns: the publisher exited; the name is no longer published" >&2
+    else
+      echo "briard-mdns: avahi never established a name (refused, or it exited first)" >&2
+    fi
+    exit 1
   '';
 
   # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
@@ -910,15 +922,24 @@ in
     # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
     # answers for the one name it publishes and browses for nothing.
     #
-    # ⚠️ publish.addresses WAS false, and that silently made the name IMPOSSIBLE TO PUBLISH from
-    # 2026-08-07 until this fix. avahi-daemon.conf(5) on `publish-addresses`: *"If you plan to
-    # register local services you need to enable this option."* It does not merely stop the daemon
-    # publishing its own records -- it makes the server refuse a CLIENT's address registration
-    # outright, which is precisely what `avahi-publish -a` asks for. briard-mdns died every time
-    # with `Failed to create entry group: Not permitted`, and nothing noticed, because until
-    # V3.20's test nothing had ever RESOLVED the name: the assertion stopped at "the unit is
-    # configured". A name that publishes nowhere, believed present -- V3.19's own failure shape,
-    # inside V3.19's own fix.
+    # ⚠️ THE NAME NEVER PUBLISHED, from 2026-08-07 until this fix, and it took two wrong guesses
+    # and a real console to find out why. briard-mdns died every single time with
+    #
+    #     Failed to create entry group: Not permitted
+    #
+    # and the error names the failing call precisely: ENTRY GROUP, i.e. the `EntryGroupNew` D-Bus
+    # method, which avahi refuses outright when `disable-user-service-publishing=yes` -- the NixOS
+    # default, since `publish.userServices` defaults to false. Nothing about the address is even
+    # reached. avahi-daemon.conf(5) describes that setting as blocking "user applications
+    # publishing SERVICES", which is what sent the first fix at `publish.addresses` instead: with
+    # addresses enabled the daemon was demonstrably registering records of its own
+    # (`Registering new address record for 192.168.1.119 on eth2.IPv4`) while briard-mdns kept
+    # failing at the step before. Both are needed -- and in this module they collapse anyway,
+    # since `publish-addresses = userServices || addresses`.
+    #
+    # Nothing noticed for two days because nothing had ever RESOLVED the name: the V3.19 assertion
+    # stopped at "the unit is configured", which was true and worthless. A name believed present
+    # and published nowhere -- V3.19's own failure shape, inside V3.19's own fix.
     #
     # The fear behind it was real and is handled by INTERFACE instead. Avahi's default is to
     # publish an A record for every address on every interface under its own hostname; measured on
@@ -937,6 +958,7 @@ in
       enable = true;
       denyInterfaces = [ "eth0" "eth3" ];
       publish.enable = true;
+      publish.userServices = true; # THE gate: without it EntryGroupNew is refused and nothing publishes
       publish.addresses = true;
       publish.workstation = false; # no _workstation._tcp browsing bait
       publish.hinfo = false; # no CPU/OS disclosure on a household LAN
