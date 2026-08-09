@@ -533,6 +533,37 @@ in
       "R! /root/.cache/nix - - - - -"
     ];
 
+    # THIS NODE'S NAME, restored before anything can act on it.
+    #
+    # The guest's baked hostname is "guest" (disk-image.nix) and the agent renames it at every
+    # bring-up with syscall.Sethostname -- which does NOT survive a reboot. The DRBD `.res` naming
+    # that same node DOES: it is written to /etc/drbd.d and stays there. So after a guest reboot
+    # the persistent config says `on briard-node-<id>` while the running system is called "guest",
+    # drbd-reactor starts from boot, promotes into the mismatch, drbd@<res> fails, and the failed
+    # promote job is never retried -- the node parks quorate but never Primary, with no VIP, no
+    # dhcpcd and no address. Found on the L0 runner (V3.20); invisible before it, because the
+    # baked hostname and the node name were THE SAME LITERAL and the boot-time promote matched by
+    # luck.
+    #
+    # The fix is to give the two facts the same LIFETIME, not merely the same moment: sys.hostname
+    # persists the name beside the .res, and this restores it Before drbd-reactor. Ordering only
+    # against drbd-reactor is sufficient -- drbd@ and drbd-promote@ are started BY it, so they
+    # inherit the ordering.
+    #
+    # Conditioned on the file: a guest that has never been told who it is (first boot, and every
+    # agent-less harness) keeps the baked name rather than failing a unit over it.
+    systemd.services.briard-identity = {
+      description = "Briard node identity (restore this node's hostname)";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "drbd-reactor.service" ];
+      unitConfig.ConditionPathExists = "/etc/briard/node-id";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.nettools}/bin/hostname -F /etc/briard/node-id";
+      };
+    };
+
     systemd.services.drbd-reactor = {
       description = "drbd-reactor — DRBD failover orchestrator";
       wantedBy = [ "multi-user.target" ];

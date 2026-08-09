@@ -429,6 +429,15 @@ func TestSetHostname(t *testing.T) {
 	if f.hostname != "n1" {
 		t.Errorf("hostname = %q, want n1", f.hostname)
 	}
+	// AND it must be persisted, which is the half that was missing. syscall.Sethostname does not
+	// survive a guest reboot; the `.res` naming this node in /etc/drbd.d does. That asymmetry left
+	// a rebooted guest called "guest" while its own config said `on n1`, so drbd-reactor promoted
+	// into a mismatch at boot and the node parked quorate-but-never-Primary -- no VIP, no address.
+	// Two facts that must agree need the same LIFETIME, not just the same moment.
+	if got := f.files[nodeIDPath]; got != "n1\n" {
+		t.Errorf("%s = %q, want %q -- an unpersisted hostname is lost on reboot while the .res "+
+			"that names it is not", nodeIDPath, got, "n1\n")
+	}
 }
 
 // A data node's ConfigureNet also records the agent-determined VIP device, where

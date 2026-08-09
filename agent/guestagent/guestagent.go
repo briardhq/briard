@@ -516,7 +516,23 @@ func dispatch(x Executor) dispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			return nil, x.Sethostname(req.Name)
+			if err := x.Sethostname(req.Name); err != nil {
+				return nil, err
+			}
+			// PERSIST it, in the same breath, and this is load-bearing rather than tidy.
+			//
+			// The `.res` this hostname must match is written to /etc and SURVIVES a guest reboot;
+			// syscall.Sethostname does not, so the guest comes back up as the baked "guest" while
+			// the persistent .res still says `on briard-node-<id>`. drbd-reactor runs from boot
+			// and promotes the moment it sees a snippet -- into that mismatch -- and the failed
+			// promote job is never retried, so the node parks quorate-but-never-primary: no VIP,
+			// no dhcpcd, no address (found on the L0 runner, V3.20).
+			//
+			// It was invisible until V3.20 because the baked hostname and the node name were the
+			// SAME LITERAL, so the boot-time promote matched by luck. Two facts that must agree
+			// need the same LIFETIME, not merely the same moment -- briard-identity.service reads
+			// this back before drbd-reactor can act.
+			return nil, x.WriteFile(nodeIDPath, []byte(req.Name+"\n"))
 		case verbProvision:
 			var req ProvisionRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -1228,6 +1244,12 @@ const reactorBeforeOverride = "/run/systemd/system/drbd-services@r0.target.d/rea
 // vipEnvPath is the optional EnvironmentFile briard-vip.service reads its VIP_DEV
 // from; the agent writes it via net.configure when the VIP is not on the baked NIC.
 const vipEnvPath = "/run/briard/vip.env"
+
+// nodeIDPath is where sys.hostname persists this node's name so the guest can restore it at boot,
+// BEFORE drbd-reactor gets a chance to promote against a `.res` that names it. /etc, deliberately:
+// it must have the same lifetime as the .res in /etc/drbd.d, and having the same lifetime is the
+// entire point (see verbSetHostname).
+const nodeIDPath = "/etc/briard/node-id"
 
 const (
 	// mdnsEnvPath is the EnvironmentFile briard-mdns.service reads the flock's visible name from.
