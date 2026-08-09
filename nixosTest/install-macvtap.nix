@@ -292,9 +292,32 @@ pkgs.testers.runNixOSTest {
     # THE ASSERTION THE ITEM EXISTS FOR: the name resolves OFF-BOX, from a client using the same
     # mdns4_minimal resolver a household has. Publishing is not resolving -- V3.19d measured a name
     # that published fine and was unlookupable -- so this asks the client, not the guest.
-    resolved = client.wait_until_succeeds(
-        f"avahi-resolve-host-name -4 briard-{flock_name}.local", timeout=120
-    )
+    #
+    # Instrumented BEFORE it is asserted, deliberately. The first two attempts at this assertion
+    # failed with nothing to read: the diagnose() helper hangs off wait_for_lease, so an mDNS
+    # failure printed one line and left the guest's side of it invisible. A publisher that refuses
+    # (avahi returning "Not permitted") and a publisher that never runs look identical from the
+    # client, and guessing between them costs a full runner round-trip each time.
+    def mdns_state(where):
+        print(f"=== {where}: the guest's publisher and daemon ===")
+        print(host.succeed(
+            "tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | "
+            "grep -aiE 'avahi|mdns|entry group|Established|Not permitted|briard-identity' | tail -40 "
+            "|| echo '(nothing about mdns on the guest console)'"
+        ))
+
+    mdns_state("before resolving")
+    resolved = ""
+    for _ in range(24):
+        rc, out = client.execute(f"avahi-resolve-host-name -4 briard-{flock_name}.local")
+        if rc == 0 and vip in out:
+            resolved = out
+            break
+        client.sleep(5)
+    if not resolved:
+        mdns_state("after the resolve window")
+        print("=== what the LAN is actually advertising ===")
+        print(client.execute("avahi-browse -art --no-db-lookup 2>&1 | head -40")[1])
     assert vip in resolved, (
         f"briard-{flock_name}.local resolved to {resolved!r}, not to the leased VIP {vip} -- "
         f"a name pointing somewhere the address is not is the V3.19 failure with a new face"
