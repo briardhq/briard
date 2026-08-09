@@ -910,19 +910,37 @@ in
     # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
     # answers for the one name it publishes and browses for nothing.
     #
-    # publish.addresses = FALSE is the load-bearing setting, and it is not a preference. Avahi's
-    # default is to publish an A record for EVERY address on EVERY interface under its own
-    # hostname; measured on the real machine that produced this item, `giouli-desktop.local`
-    # resolved to `172.18.0.1` -- a **Docker bridge**, not the LAN address. This guest has more
-    # ways to get that wrong than a desktop does: eth0 is qemu's SLIRP net (10.0.2.15), eth1 is
-    # the DRBD link, eth3 the private witness link. Any of them would be a name that resolves and
-    # then goes nowhere. So nothing is auto-published, and briard-mdns publishes exactly one
-    # record: the VIP, while this node holds it.
+    # ⚠️ publish.addresses WAS false, and that silently made the name IMPOSSIBLE TO PUBLISH from
+    # 2026-08-07 until this fix. avahi-daemon.conf(5) on `publish-addresses`: *"If you plan to
+    # register local services you need to enable this option."* It does not merely stop the daemon
+    # publishing its own records -- it makes the server refuse a CLIENT's address registration
+    # outright, which is precisely what `avahi-publish -a` asks for. briard-mdns died every time
+    # with `Failed to create entry group: Not permitted`, and nothing noticed, because until
+    # V3.20's test nothing had ever RESOLVED the name: the assertion stopped at "the unit is
+    # configured". A name that publishes nowhere, believed present -- V3.19's own failure shape,
+    # inside V3.19's own fix.
+    #
+    # The fear behind it was real and is handled by INTERFACE instead. Avahi's default is to
+    # publish an A record for every address on every interface under its own hostname; measured on
+    # the real machine that produced V3.19, `giouli-desktop.local` resolved to `172.18.0.1` -- a
+    # **Docker bridge**, not the LAN address. This guest has more ways to get that wrong than a
+    # desktop: eth0 is qemu's SLIRP net (10.0.2.15) and eth3 the private guest<->host witness
+    # link, and an address from either is a name that resolves and then goes nowhere. Both are
+    # DENIED, so avahi never sees them. eth1/eth2 stay allowed because which one carries the VIP
+    # is not fixed -- production puts it on eth2, the agent-less harnesses use the baked eth1
+    # default -- and pinning one here would break the other.
+    #
+    # What the daemon may now auto-publish is `briard-node-<id>.local`, the node id, which is a
+    # name no household is ever given; the name they ARE given is published explicitly by
+    # briard-mdns, is flock-scoped, and carries the VIP and nothing else.
     services.avahi = {
       enable = true;
+      denyInterfaces = [ "eth0" "eth3" ];
       publish.enable = true;
-      publish.addresses = false;
-      nssmdns4 = false; # nothing in the guest resolves .local names; it only answers for one
+      publish.addresses = true;
+      publish.workstation = false; # no _workstation._tcp browsing bait
+      publish.hinfo = false; # no CPU/OS disclosure on a household LAN
+      nssmdns4 = false; # nothing in the guest resolves .local names; it only answers
     };
   };
 }
