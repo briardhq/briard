@@ -274,7 +274,7 @@ let
     if [ -n "$cur" ]; then
       ${pkgs.iproute2}/bin/ip addr del "$cur" dev "''${interface}" || true
     fi
-    ${pkgs.iproute2}/bin/ip addr replace "$addr" dev "''${interface}"
+    ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "''${interface}"
     printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
     printf '%s\n' "$addr" 2>/dev/null >${vipAddrFile} || true
     VIP_DEV="''${interface}" ${vipArping} || true
@@ -388,9 +388,24 @@ let
       # and asking a router about an address we were told to use would be asking permission for
       # something already decided. It is also what keeps dhcpcd away from the agent-less
       # harnesses, where this unit's NIC is eth1 -- the DRBD link, which must never lease.
-      ${pkgs.iproute2}/bin/ip addr replace "$addr" dev "$VIP_DEV"
+      ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
     elif [ -n "$addr" ]; then
-      ${pkgs.iproute2}/bin/ip addr replace "$addr" dev "$VIP_DEV"
+      # ⚠️ `brd +` IS LOAD-BEARING, and it is what stops V3.22 at the source rather than dodging
+      # it. dhcpcd is about to be handed the SAME address by the lease. If what we put on differs
+      # from what it wants, it does not update -- it DELETES and re-adds, and that withdrawal
+      # inside avahi's probe window is what wedged the mDNS name permanently. `ip addr add X/24`
+      # leaves the broadcast unset; dhcpcd wants X.X.X.255. Measured, one variable at a time,
+      # against a real dnsmasq (lab/avahi-repro5-deladd.nix), counting RTM_DELADDR:
+      #
+      #   ip addr replace X/24                 -> 1 delete   (today's behaviour)
+      #   ip addr replace X/24 brd +           -> 0 deletes
+      #   ...also with noprefixroute, or the full dhcpcd shape -> 0
+      #
+      # So the broadcast alone is the whole difference, and with it dhcpcd updates in place:
+      # avahi never sees the address leave, and the wedge has nothing to trigger on. The settle
+      # wait in vipPublish stays as well -- a lease that comes back DIFFERENT is a real del+add
+      # that no flag can remove.
+      ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
       # A lease-holder here, never a gate: -b returns immediately, so nothing downstream of this
       # unit waits on a DHCP server. Failing to start it is not failing to serve -- the address
       # is already up, which is the entire point of applying before asking.
