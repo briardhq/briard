@@ -307,7 +307,17 @@ let
       ${dhcpcdRun} "$VIP_DEV" "$addr" -b || true
     else
       # Nothing to apply: this flock has never held an address. Ask, and wait for the answer.
-      ${dhcpcdRun} "$VIP_DEV" "" --waitip 4
+      #
+      # --waitip=4 MUST keep the `=`. The family is an OPTIONAL argument, so getopt_long only
+      # takes it when it is attached; written `--waitip 4` the option gets no family at all and
+      # the `4` becomes the next POSITIONAL, which for dhcpcd is an interface name (it says so:
+      # `4: interface not found`). The option then means "wait for ANY family" -- and on a
+      # dual-stack household router SLAAC completes in ~0.3s while IPv4 is still ARP-probing, so
+      # dhcpcd daemonises satisfied by an IPv6 address, the IPv4-only read below finds nothing,
+      # and this unit fails on a network where nothing is wrong. It cannot be caught by a test
+      # topology that sends no RAs, because there "any family" and "IPv4" are the same behaviour
+      # (V3.21, found on the first install onto a real home LAN).
+      ${dhcpcdRun} "$VIP_DEV" "" --waitip=4
       # The field after `inet`, which is the same rule net.vip reads ground truth by -- never a
       # prefix match, which would accept an inet6 link-local and hand us an address to claim
       # that no one in the house can reach.
