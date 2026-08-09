@@ -82,9 +82,15 @@ let
   # The FLOCK's visible name, handed down by the agent (net.mdnsname) and NOT baked: it is pet
   # identity arriving at a cattle image, which is the distinction V3.19 was found for.
   # How long the publisher waits for avahi to confirm the name before it gives up and lets systemd
-  # restart it. Bounds the outage after any event that churns the interface under a live publisher
-  # (V3.22); it is NOT a timeout on the record's lifetime -- see vipPublish.
+  # restart it. This is the BACKSTOP for a case we have not seen, not the working path: the settle
+  # wait below is what keeps us out of the one failure we measured. See vipPublish.
   mdnsEstablishSecs = 15;
+
+  # How long the published address must sit still before we publish it, and how long we are willing
+  # to wait for that. avahi wedges permanently if the address moves inside its probe window, which
+  # is under a second (V3.22, measured 0/6 vs 6/6).
+  mdnsSettleSecs = 2;
+  mdnsSettleMaxSecs = 20;
 
   # The publisher's stdout, as a fifo rather than a pipe, so the reader stays in the main shell and
   # the publisher's pid remains killable. See vipPublish.
@@ -132,6 +138,43 @@ let
   vipPublish = pkgs.writeShellScript "briard-vip-publish" ''
     set -euo pipefail
     : >${mdnsPublishedPath}
+    # ---- WAIT FOR THE ADDRESS TO STOP MOVING BEFORE PUBLISHING -----------------------------
+    # THE ROOT CAUSE, measured rather than guessed (V3.22). avahi wedges its entry group -- for
+    # good, silently, neither established nor refused -- if the address it is publishing is
+    # withdrawn and re-added while the group is still probing. Reproduced in isolation:
+    #
+    #   del+add 0.5s after avahi-publish starts   -> established 0/6
+    #   same, but wait for the address to settle  -> established 6/6
+    #   del+add at 0.1s -> wedged; at 1.0s+       -> fine
+    #
+    # So the vulnerable window is under a second, and it is exactly the window we were aiming at:
+    # briard-vip applies the address optimistically, finishes, this unit starts immediately, and
+    # dhcpcd -- started with -b, so it returns before it has a lease -- re-applies the SAME address
+    # ~0.5s later as del+add. Dead centre. That is why it hit on the first install onto a real
+    # household LAN rather than being the rare event a retry is meant for.
+    #
+    # It watches the PUBLISHED ADDRESS specifically, not the whole interface: IPv6 churn (SLAAC on
+    # a dual-stack router adds records for ~9s) never wedged it in the reproduction, so waiting for
+    # that too would delay every promotion for nothing.
+    dev="''${VIP_DEV:-${vipDev}}"
+    want="''${VIP_ADDR%%/*}"
+    stable=0; waited=0
+    while [ "$stable" -lt ${toString mdnsSettleSecs} ] && [ "$waited" -lt ${toString mdnsSettleMaxSecs} ]; do
+      if ${pkgs.iproute2}/bin/ip -o -4 addr show dev "$dev" 2>/dev/null |
+         ${pkgs.gnugrep}/bin/grep -qF " $want/"; then
+        stable=$((stable+1))
+      else
+        stable=0
+      fi
+      ${pkgs.coreutils}/bin/sleep 1
+      waited=$((waited+1))
+    done
+    # Not fatal when it never settles: publishing anyway is strictly better than not publishing,
+    # and the establishment deadline below is exactly the backstop for that case.
+    if [ "$stable" -lt ${toString mdnsSettleSecs} ]; then
+      echo "briard-mdns: $want never held still on $dev for ${toString mdnsSettleSecs}s (waited ''${waited}s); publishing anyway" >&2
+    fi
+
     rm -f ${mdnsFifoPath}
     ${pkgs.coreutils}/bin/mkfifo -m 0600 ${mdnsFifoPath}
     ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R \
