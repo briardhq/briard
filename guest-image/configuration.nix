@@ -86,6 +86,10 @@ let
   # (V3.22); it is NOT a timeout on the record's lifetime -- see vipPublish.
   mdnsEstablishSecs = 15;
 
+  # The publisher's stdout, as a fifo rather than a pipe, so the reader stays in the main shell and
+  # the publisher's pid remains killable. See vipPublish.
+  mdnsFifoPath = "/run/briard/mdns.fifo";
+
   mdnsEnvPath = "/run/briard/mdns.env";
   # The name avahi ACTUALLY established, which the host reads back over net.mdnspublished.
   mdnsPublishedPath = "/run/briard/mdns.published";
@@ -110,17 +114,33 @@ let
   #     4 KiB buffer for the entire lifetime of a long-running publisher and arrive only at exit.
   #     The read-back would then be empty forever, while everything looked fine -- a vacuous green
   #     of exactly the kind V3.19 was.
-  # The process still holds the record for as long as it runs (avahi withdraws on exit), and it is
-  # still the unit's main process for cgroup purposes, so lifetime semantics are unchanged.
-  #   - and `pipefail` is LOAD-BEARING, not hygiene. Without `exec`, the unit's exit status is the
-  #     pipeline's, which is the `while` loop's -- 0 even when avahi-publish has died. The unit
-  #     would look like a clean exit, `Restart=on-failure` would never fire, and the name would
-  #     simply disappear with nothing retrying it. Measured, not assumed: rc=0 without, rc=7 with.
+  # The process still holds the record for as long as it runs (avahi withdraws on exit), so the
+  # unit's lifetime is the record's lifetime.
+  #
+  # ⚠️ WHY A FIFO AND A PID RATHER THAN A PIPELINE, which is what this was until V3.22. As
+  # `avahi-publish | while read`, the loop is the RIGHT side of a pipe and therefore a subshell,
+  # and the publisher's pid is not knowable from inside it. That is fatal to the deadline below:
+  # breaking out of the loop does not end the pipeline, because the shell waits for EVERY member
+  # to exit and a hung avahi-publish never does -- so the script blocked forever, one line short
+  # of `exit 1`, having already printed that it was giving up. **Measured, not reasoned**: the
+  # first version of this fix logged `did not establish a name within 15s` at exactly the deadline
+  # and then never restarted, which is a more embarrassing version of the very bug it fixes -- a
+  # failure detected, announced, and not acted on. Reading from a fifo keeps the loop in the MAIN
+  # shell, so `$pub` exists, the trap can kill it, and `exit 1` is reachable.
+  #   - `pipefail` mattered in the pipeline form and is kept for the same reason it was added: a
+  #     publisher that dies must not be read as a clean exit.
   vipPublish = pkgs.writeShellScript "briard-vip-publish" ''
     set -euo pipefail
     : >${mdnsPublishedPath}
+    rm -f ${mdnsFifoPath}
+    ${pkgs.coreutils}/bin/mkfifo -m 0600 ${mdnsFifoPath}
     ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R \
-      "briard-''${FLOCK_NAME}.local" "''${VIP_ADDR%%/*}" 2>&1 |
+      "briard-''${FLOCK_NAME}.local" "''${VIP_ADDR%%/*}" >${mdnsFifoPath} 2>&1 &
+    pub=$!
+    # Killing the publisher is what makes the deadline REAL rather than merely announced: a hung
+    # avahi-publish outlives this script otherwise, and systemd would be waiting on a process that
+    # is doing nothing. `|| true` because it is normal for it to be gone already.
+    trap 'kill "$pub" 2>/dev/null || true; rm -f ${mdnsFifoPath}' EXIT
     while :; do
       # A DEADLINE, BUT ONLY UNTIL THE NAME IS ESTABLISHED. avahi-publish can hang forever with
       # its entry group never confirmed and never refused -- measured in the field (V3.22): the
@@ -153,7 +173,7 @@ let
           printf '%s\n' "$n" >${mdnsPublishedPath}
           ;;
       esac
-    done
+    done <${mdnsFifoPath}
     # REACHING HERE IS ALWAYS A FAILURE, and saying so is the point. avahi-publish holds the record
     # only while it runs, so if it has returned, the name is gone -- yet it exits 0 even when the
     # daemon refused it, which systemd logged for two days as `briard-mdns.service: Deactivated
