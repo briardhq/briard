@@ -81,6 +81,11 @@ let
   '';
   # The FLOCK's visible name, handed down by the agent (net.mdnsname) and NOT baked: it is pet
   # identity arriving at a cattle image, which is the distinction V3.19 was found for.
+  # How long the publisher waits for avahi to confirm the name before it gives up and lets systemd
+  # restart it. Bounds the outage after any event that churns the interface under a live publisher
+  # (V3.22); it is NOT a timeout on the record's lifetime -- see vipPublish.
+  mdnsEstablishSecs = 15;
+
   mdnsEnvPath = "/run/briard/mdns.env";
   # The name avahi ACTUALLY established, which the host reads back over net.mdnspublished.
   mdnsPublishedPath = "/run/briard/mdns.published";
@@ -116,7 +121,29 @@ let
     : >${mdnsPublishedPath}
     ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R \
       "briard-''${FLOCK_NAME}.local" "''${VIP_ADDR%%/*}" 2>&1 |
-    while IFS= read -r line; do
+    while :; do
+      # A DEADLINE, BUT ONLY UNTIL THE NAME IS ESTABLISHED. avahi-publish can hang forever with
+      # its entry group never confirmed and never refused -- measured in the field (V3.22): the
+      # publisher started 400ms before dhcpcd re-applied the address, avahi logged the interface
+      # "no longer relevant" and back, and the group was never established again. The process
+      # stayed up, printed nothing, exited never; the unit was `active` and the name resolved
+      # nowhere for five minutes, ending only when an unrelated agent restart cycled the unit.
+      # Restart=on-failure cannot help a process that does not fail. So: if nothing arrives
+      # before the deadline, treat the silence as the failure it is and fall through to the
+      # exit-1 tail below, which is the same path a refusal already takes.
+      #
+      # The timeout applies ONLY while unestablished -- after that avahi-publish is legitimately
+      # silent for the whole life of the record, and a deadline on every read would kill a
+      # perfectly healthy publisher on a quiet LAN. Establishment itself is sub-second in
+      # practice (0.9s on both field boots), so ${toString mdnsEstablishSecs}s is slack, not a race.
+      if [ -s ${mdnsPublishedPath} ]; then
+        IFS= read -r line || break
+      else
+        IFS= read -r -t ${toString mdnsEstablishSecs} line || {
+          echo "briard-mdns: avahi did not establish a name within ${toString mdnsEstablishSecs}s -- giving up so systemd retries" >&2
+          break
+        }
+      fi
       printf '%s\n' "$line"
       case "$line" in
         "Established under name '"*|"Name collision, picking new name '"*)
@@ -136,7 +163,7 @@ let
     if [ -s ${mdnsPublishedPath} ]; then
       echo "briard-mdns: the publisher exited; the name is no longer published" >&2
     else
-      echo "briard-mdns: avahi never established a name (refused, or it exited first)" >&2
+      echo "briard-mdns: avahi never established a name (refused, exited first, or never answered)" >&2
     fi
     exit 1
   '';
