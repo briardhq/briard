@@ -175,8 +175,12 @@ func TestResourceConfigDisklessWitness(t *testing.T) {
 }
 
 func TestReactorConfigStartOrder(t *testing.T) {
+	// adjust-resource-on-start pins the layer line: the promoter must NOT attach the backing
+	// device, because the agent brings the resource up via drbd@<res>.target and reads the result.
+	// Asserted literally -- the default is true, so its ABSENCE is the bug (V3.22).
 	const want = `[[promoter]]
 [promoter.resources.r0]
+adjust-resource-on-start = false
 start = [ "briard-data.service", "podman-briard-payload.service", "briard-vip.service" ]
 `
 	got := ReactorConfig("r0", []string{

@@ -141,13 +141,30 @@ func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 // runs on the primary only, in start order (reverse on demote). drbd-reactor —
 // not this code — drives that lifecycle. start lists the systemd
 // units in the order they must come up (workload → VIP).
+//
+// ⚠️ `adjust-resource-on-start = false` DRAWS THE LAYER LINE, and omitting it cost a real defect
+// (V3.22). drbd-reactor's promoter defaults it to TRUE, which makes the reactor run its own
+// `drbdadm adjust` -- i.e. ATTACH the backing device -- the moment it reads this snippet. But
+// attaching is not the promoter's job here: the agent fires the stock `drbd@<res>.target`
+// (drbd-utils' own "(Re)configure DRBD resource" unit) and reads its result, because a supervisor
+// that cannot tell whether bring-up succeeded is not supervising. With both enabled the two race,
+// and the loser says
+//
+//	0: Failure: (124) Device is attached to a disk (use detach first)
+//	'drbdsetup attach 0 /dev/vdb /dev/vdb internal' terminated with exit code 10
+//
+// which fails drbd@<res>.service, fails the target, and takes the host agent with it -- it exits
+// non-zero on bring-up failure and systemd restarts it. Measured margin between the two: ~250ms,
+// so it lands about half the time, and never in a harness, where the config is baked and no agent
+// races it. Upstream provides this key for exactly this split: the promoter promotes, the drbd@
+// chain configures.
 func ReactorConfig(resource string, start []string) string {
 	quoted := make([]string, len(start))
 	for i, u := range start {
 		quoted[i] = fmt.Sprintf("%q", u)
 	}
 	return fmt.Sprintf(
-		"[[promoter]]\n[promoter.resources.%s]\nstart = [ %s ]\n",
+		"[[promoter]]\n[promoter.resources.%s]\nadjust-resource-on-start = false\nstart = [ %s ]\n",
 		resource, strings.Join(quoted, ", "),
 	)
 }

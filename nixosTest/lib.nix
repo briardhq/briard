@@ -26,6 +26,7 @@ let
     ''
       [[promoter]]
       [promoter.resources.r0]
+      adjust-resource-on-start = false
       start = [ ${concatMapStringsSep ", " (u: ''"${u}"'') units} ]
     '';
 

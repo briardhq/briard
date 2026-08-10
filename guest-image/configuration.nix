@@ -158,7 +158,10 @@ let
     # that too would delay every promotion for nothing.
     dev="''${VIP_DEV:-${vipDev}}"
     want="''${VIP_ADDR%%/*}"
+    # Nothing to wait for if we have no address: the publish below will fail on its own terms,
+    # and stalling the full 20s first would turn a broken state into a slow broken state.
     stable=0; waited=0
+    [ -n "$want" ] || waited=${toString mdnsSettleMaxSecs}
     while [ "$stable" -lt ${toString mdnsSettleSecs} ] && [ "$waited" -lt ${toString mdnsSettleMaxSecs} ]; do
       if ${pkgs.iproute2}/bin/ip -o -4 addr show dev "$dev" 2>/dev/null |
          ${pkgs.gnugrep}/bin/grep -qF " $want/"; then
@@ -638,6 +641,12 @@ in
     '';
     systemd.tmpfiles.rules = [
       "d /etc/drbd-reactor.d 0755 root root -"
+      # DRBD's own state dir. Without it every attach logs
+      #   lk_bdev_save(/var/lib/drbd/drbd-minor-0.lkbd) failed: No such file or directory
+      # which is harmless (it caches the backing device's last known size) but sat directly on top
+      # of the real error while V3.22 was being read, and cost time twice. Upstream ships this dir
+      # in its package; nixpkgs' drbd does not create it.
+      "d /var/lib/drbd 0700 root root -"
       # NIX'S CACHE DIR NEVER SURVIVES A BOOT. A crash-consistent guest disk can hand
       # nix a torn `binary-cache-v7.sqlite` -- its narinfo lookup cache, opened `synchronous = off`
       # precisely because it is disposable, which is exactly what removes SQLite's write-ordering
