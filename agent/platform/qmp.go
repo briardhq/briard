@@ -154,6 +154,38 @@ func (g *Guest) Shutdown(ctx context.Context, grace time.Duration) error {
 	return g.WaitStopped(ctx, grace)
 }
 
+// Accelerated reports whether the running VM is actually being accelerated by KVM, and
+// whether the host has KVM at all -- QEMU's own answer (`query-kvm`), not an inference from
+// the argv or from /dev/kvm.
+//
+// It has to be asked rather than assumed, because QEMUSpec.Accel is a fallback LIST
+// ("kvm:tcg"): the command line says what the host REQUESTED and only the VM knows what it
+// got. The fallback is deliberate and supported (the no-virt host), but it is also SILENT and
+// costs roughly an order of magnitude of guest speed, so the one place it must not stay silent
+// is the log a future performance question starts from (host.bringUp logs it).
+//
+// `present` distinguishes the two ways to land in emulation, which have different fixes:
+// present=false is a host with no virtualisation extensions available at all (usually
+// firmware, or a VM without nested virt), while present=true with enabled=false means KVM is
+// there and something stopped us using it (permissions on /dev/kvm, a module not loaded).
+func (g *Guest) Accelerated(ctx context.Context) (enabled, present bool, err error) {
+	if g == nil {
+		return false, false, fmt.Errorf("platform: no guest to ask about acceleration")
+	}
+	raw, err := qmpExecute(ctx, g.QMPSock, "query-kvm", nil)
+	if err != nil {
+		return false, false, err
+	}
+	var out struct {
+		Enabled bool `json:"enabled"`
+		Present bool `json:"present"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return false, false, fmt.Errorf("platform: query-kvm: %w", err)
+	}
+	return out.Enabled, out.Present, nil
+}
+
 // WaitStopped blocks until the VM is actually gone, which is the only honest confirmation
 // that a shutdown happened: every way of ASKING for one (the guest agent's os.poweroff, the
 // ACPI button) returns as soon as the request is accepted, and the caller's next act is

@@ -439,6 +439,52 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 	}
 }
 
+// logAcceleration records, once per bring-up, whether this guest is being accelerated by KVM
+// or emulated by TCG -- asking QEMU (`query-kvm`) rather than trusting the argv, because
+// Accel is a fallback list and the fall back to emulation is silent.
+//
+// It exists for a question that gets asked LATER: "why is this node slow?". Emulation is a
+// supported configuration, not a fault (a host with no virtualisation extensions still gets a
+// working briard, which is the point of the tcg fallback), so nothing fails and nothing alerts
+// -- and that is exactly what makes it invisible. Without this line the first honest answer
+// costs someone a bisect; with it, the answer is in the journal from the first boot.
+//
+// The healthy case is logged too, deliberately. A check that only speaks up when something is
+// wrong leaves a reader unable to tell "accelerated" from "the check never ran", and this one
+// is a one-liner per bring-up.
+//
+// Never fatal: a guest that boots and serves is not made worse by an unanswered question about
+// its accelerator. The install-time counterpart is the report card's virt-flags advisory --
+// that one is a prediction about a host, this is an observation about a running VM.
+func logAcceleration(ctx context.Context, g *platform.Guest, spec platform.QEMUSpec, logf func(string, ...any)) {
+	if spec.QMPSock == "" {
+		return // no monitor to ask (the tests that launch without one); not a finding
+	}
+	cpu := spec.CPUModel
+	if cpu == "" {
+		cpu = "qemu default"
+	}
+	enabled, present, err := g.Accelerated(ctx)
+	switch {
+	case err != nil:
+		logf("could not ask qemu whether KVM is in use (%v); accel was requested as %q", err, spec.Accel)
+	case enabled:
+		logf("guest accelerated by KVM (accel=%q cpu=%q)", spec.Accel, cpu)
+	default:
+		// Spelled out at length because the reader of this line is, by construction, someone
+		// who did not know it applied to them -- and the two causes have different fixes.
+		why := "this host has no virtualisation extensions available (check the firmware, or nested virt if this host is itself a VM)"
+		if present {
+			why = "the host HAS KVM but qemu could not use it (check /dev/kvm permissions and that the kvm module is loaded)"
+		}
+		logf("WARNING: this guest is EMULATED, not accelerated — qemu fell back to TCG: %s. "+
+			"It runs correctly but roughly an order of magnitude slower, and disk/crypto-heavy work "+
+			"(sha256, TLS, checksums) suffers most. Requested accel=%q cpu=%q. "+
+			"This is a supported configuration, so nothing else will report it: start any performance "+
+			"question here.", why, spec.Accel, cpu)
+	}
+}
+
 // errNoChannel reports that the guest never spoke: qemu never bound the control socket, or
 // an adopted guest's agent never re-served, before the bring-up budget ran out. It is kept
 // distinct from a bring-up *failure* because the two deserve opposite treatment — never
@@ -527,6 +573,8 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 			logf("guest protocol v%d, %d capabilities", hello.Version, len(hello.Capabilities))
 		}
 	}
+	// Say what the VM actually got, now that qemu is provably up. See logAcceleration.
+	logAcceleration(bringup, g, qspec, logf)
 	if err == nil {
 		// Rename the guest to this node first: DRBD matches the running hostname against
 		// the `on <name>` stanzas, so create-md fails until the (baked "guest") image is

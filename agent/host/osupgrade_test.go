@@ -223,11 +223,17 @@ func (e *recExec) ran(substr string) bool { return e.count(substr) > 0 }
 type fakeQMP struct {
 	mu   sync.Mutex
 	cmds []string
+	// replies overrides the default `{"return":{}}` for named commands -- query-kvm answers
+	// with a payload, and its two fields are the whole point of asking. Fixed at construction
+	// so the serving goroutine only ever reads it; a test that set it later would race its fake.
+	replies map[string]string
 }
 
-func startQMP(t *testing.T) (*fakeQMP, string) {
+func startQMP(t *testing.T) (*fakeQMP, string) { return startQMPWith(t, nil) }
+
+func startQMPWith(t *testing.T, replies map[string]string) (*fakeQMP, string) {
 	t.Helper()
-	q := &fakeQMP{}
+	q := &fakeQMP{replies: replies}
 	path := filepath.Join(testsock.Dir(t), "qmp.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -264,7 +270,11 @@ func (q *fakeQMP) serve(c net.Conn) {
 			q.cmds = append(q.cmds, req.Execute)
 			q.mu.Unlock()
 		}
-		if _, err := c.Write([]byte("{\"return\":{}}\n")); err != nil {
+		reply, ok := q.replies[req.Execute]
+		if !ok {
+			reply = `{"return":{}}`
+		}
+		if _, err := c.Write([]byte(reply + "\n")); err != nil {
 			return
 		}
 	}

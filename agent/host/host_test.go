@@ -3,17 +3,20 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/overlay"
+	"briard.io/agent/platform"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
@@ -713,5 +716,66 @@ func TestServiceMACIsFlockScopedAndOthersAreNot(t *testing.T) {
 func TestServiceMACFallsBackToNodeWithoutFlockID(t *testing.T) {
 	if got, want := deriveMAC(orNode("", "guest"), "svc"), deriveMAC("guest", "svc"); got != want {
 		t.Errorf("without a flock id the service MAC must be the node-derived one: %s != %s", got, want)
+	}
+}
+
+// The TCG fallback is the silent one. `-machine accel=kvm:tcg` is a request, not a
+// declaration: a host with no virtualisation extensions gets a guest that boots, converges and
+// serves — correctly, and roughly an order of magnitude slower. Nothing fails, so nothing
+// reports it, and the cost lands on whoever asks "why is this node slow?" months later. This
+// asserts the line that answers them, and that it comes from ASKING qemu (query-kvm) rather
+// than from re-reading the argv we chose.
+func TestLogAccelerationSaysWhatTheVMActuallyGot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kvm     string   // the query-kvm payload qemu returns
+		want    []string // substrings the operator must be able to find
+		notWant string
+	}{
+		{
+			name: "emulated on a host with no virt at all",
+			kvm:  `{"return":{"enabled":false,"present":false}}`,
+			want: []string{"WARNING", "EMULATED", "firmware", "order of magnitude"},
+		},
+		{
+			// The same symptom with the opposite fix, so the hint has to discriminate between
+			// them or it is decoration: present=true means KVM is there and we failed to use it.
+			name: "emulated even though the host HAS KVM",
+			kvm:  `{"return":{"enabled":false,"present":true}}`,
+			want: []string{"WARNING", "EMULATED", "/dev/kvm"},
+		},
+		{
+			name:    "accelerated: said out loud, so silence never has to be interpreted",
+			kvm:     `{"return":{"enabled":true,"present":true}}`,
+			want:    []string{"accelerated by KVM", "cpu=\"max\""},
+			notWant: "WARNING",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, sock := startQMPWith(t, map[string]string{"query-kvm": tc.kvm})
+			spec := platform.QEMUSpec{QMPSock: sock, Accel: "kvm:tcg", CPUModel: "max"}
+			var log string
+			logAcceleration(context.Background(), platform.Adopt(spec), spec,
+				func(f string, a ...any) { log += fmt.Sprintf(f, a...) + "\n" })
+			for _, want := range tc.want {
+				if !strings.Contains(log, want) {
+					t.Errorf("the log must mention %q, so it is greppable later:\n%s", want, log)
+				}
+			}
+			if tc.notWant != "" && strings.Contains(log, tc.notWant) {
+				t.Errorf("a healthy guest must not log %q:\n%s", tc.notWant, log)
+			}
+		})
+	}
+}
+
+// No monitor, nothing to ask: the tests and harnesses that launch without QMP must not be told
+// their guest might be emulated. An unanswerable question is not a finding.
+func TestLogAccelerationSilentWithoutQMP(t *testing.T) {
+	spec := platform.QEMUSpec{Accel: "kvm:tcg"}
+	logged := false
+	logAcceleration(context.Background(), platform.Adopt(spec), spec, func(string, ...any) { logged = true })
+	if logged {
+		t.Error("without a QMP socket there is nothing to report; the line must be omitted, not guessed")
 	}
 }
