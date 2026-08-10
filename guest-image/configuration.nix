@@ -279,7 +279,11 @@ let
     fi
     ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "''${interface}"
     printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
-    printf '%s\n' "$addr" 2>/dev/null >${vipAddrFile} || true
+    # Synced for the same reason as the promotion-time write ([V3.23]): this is the path where the
+    # router hands us a DIFFERENT address, so it is the one where the previously stored value is
+    # actively WRONG. Losing this write to the page cache leaves the flock remembering an address
+    # it has already yielded. (vipLivePath above is /run -- tmpfs, nothing to sync.)
+    { printf '%s\n' "$addr" >${vipAddrFile} && ${pkgs.coreutils}/bin/sync -f ${vipAddrFile}; } 2>/dev/null || true
     VIP_DEV="''${interface}" ${vipArping} || true
     # try-restart, not restart: republish the name only where a name is already published. On a
     # node that is not currently serving there is nothing to correct.
@@ -457,7 +461,21 @@ let
     # why "the peer came back with no address" could not be told apart from "the store was never
     # written". Non-fatal is a decision about whether to stop; it is not a decision to say nothing.
     if [ -z "$configured" ]; then
-      if printf '%s\n' "$addr" >${vipAddrFile} 2>/dev/null; then
+      # ⚠️ THE SYNC IS THE POINT, not hygiene ([V3.23]). This file exists so that an UNPLANNED
+      # failover -- the case where the household router is least likely to be answering -- can
+      # re-claim the flock's address without asking anyone. An unplanned failover is, by
+      # definition, usually a power cut. Writing it into the page cache and hoping means the one
+      # event it exists for is the event that loses it: btrfs commits on its own schedule (30s by
+      # default), and a guest killed inside that window comes back with the volume mounted, intact,
+      # and the file simply absent -- which is exactly what `install-macvtap`'s router-down
+      # assertion has been failing on, and why it "worked" by hand (a guest left running for a
+      # minute has committed; a test that restarts immediately has not).
+      #
+      # `sync -f` (syncfs) rather than fsync-the-file: the file is NEW, so its directory entry has
+      # to be durable too, and syncing the whole volume is free at this size and frequency -- one
+      # small write per address acquisition, not per request.
+      if printf '%s\n' "$addr" >${vipAddrFile} 2>/dev/null &&
+         ${pkgs.coreutils}/bin/sync -f ${vipAddrFile} 2>/dev/null; then
         # The mount is named on the WRITE as well as the read ([V3.23]): "written here, read back
         # empty there" is only diagnosable if both lines say which `there` they meant.
         echo "briard-vip: remembered $addr for the flock at ${vipAddrFile} (mount=$(${pkgs.util-linux}/bin/findmnt -no SOURCE,FSTYPE ${btrfsRoot} 2>/dev/null || echo '<NOT MOUNTED>'))"
