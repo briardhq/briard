@@ -386,6 +386,16 @@ let
     fi
 
     echo "briard-vip: dev=$VIP_DEV configured=''${configured:-<none>} stored=$([ -r ${vipAddrFile} ] && cat ${vipAddrFile} || echo '<none>')"
+    # WHY there is no stored address, not merely that there isn't one. `stored=<none>` has three
+    # very different causes -- the volume is not mounted, the volume is mounted and the file is
+    # absent, or this flock genuinely never held an address -- and the line above cannot tell them
+    # apart. That ambiguity is [V3.23]: the address is written on one boot
+    # ("remembered ... for the flock") and read back as <none> on the next, and no log anywhere
+    # says which of the three it was. One `findmnt` and one `ls` at the moment of the read settle
+    # it, in the field as well as in a harness.
+    if [ -z "$configured" ] && [ ! -r ${vipAddrFile} ]; then
+      echo "briard-vip: no stored address at ${vipAddrFile} -- mount=$(${pkgs.util-linux}/bin/findmnt -no SOURCE,FSTYPE ${btrfsRoot} 2>/dev/null || echo '<NOT MOUNTED>') contents=[$(${pkgs.coreutils}/bin/ls -A ${btrfsRoot} 2>/dev/null | ${pkgs.coreutils}/bin/tr '\n' ' ')]"
+    fi
     if [ -n "$configured" ]; then
       # An address the operator named. Claim it and hold NO lease: there is nothing to renew,
       # and asking a router about an address we were told to use would be asking permission for
@@ -448,7 +458,9 @@ let
     # written". Non-fatal is a decision about whether to stop; it is not a decision to say nothing.
     if [ -z "$configured" ]; then
       if printf '%s\n' "$addr" >${vipAddrFile} 2>/dev/null; then
-        echo "briard-vip: remembered $addr for the flock at ${vipAddrFile}"
+        # The mount is named on the WRITE as well as the read ([V3.23]): "written here, read back
+        # empty there" is only diagnosable if both lines say which `there` they meant.
+        echo "briard-vip: remembered $addr for the flock at ${vipAddrFile} (mount=$(${pkgs.util-linux}/bin/findmnt -no SOURCE,FSTYPE ${btrfsRoot} 2>/dev/null || echo '<NOT MOUNTED>'))"
       else
         echo "briard-vip: WARNING could not write ${vipAddrFile} -- a peer promoting next will have to ask DHCP" >&2
       fi
