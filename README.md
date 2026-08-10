@@ -46,6 +46,11 @@ suitable, rather than half-installing and leaving you to work out why.
 What you get is the **node**: ready, replicating, and able to fail over. It installs **no
 service** — a machine is set up first, and then you choose what runs on it.
 
+**If something goes wrong, there are two logs and you want both.** `journalctl -u briard-agent`
+is the host's side; `/var/log/briard-guest-console.log` is the guest's own serial console, which
+is the only view into the VM — the guest is a full citizen of your LAN but is deliberately
+isolated from the host, so nothing else can see inside it. Both belong in any bug report.
+
 ## Install a service
 
 ```sh
