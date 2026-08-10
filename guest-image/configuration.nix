@@ -545,7 +545,10 @@ in
     image = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "OCI image ref the payload container runs (name:tag); null = no service installed.";
+      # "no payload baked", not "no service installed": this is a BUILD-time slot, and a service
+      # installed at RUNTIME never sets it. Conflating the two is what let the front door announce
+      # an empty node while one was serving beside it.
+      description = "OCI image ref the payload container runs (name:tag); null = no payload baked into this image.";
     };
     imageFile = lib.mkOption {
       type = lib.types.nullOr lib.types.package;

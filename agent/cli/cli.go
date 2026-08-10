@@ -155,7 +155,7 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		// SERVICE's own endpoint in-guest (awaitHealthy); the front door does not route to a
 		// runtime-installed service yet -- its backend is baked at guest-build time and per-domain
 		// routing is deferred with the routing work. "serving" reads as "reachable at the VIP",
-		// which walks the user to http://<vip>/ and shows them the "no service installed" page.
+		// which walks the user to http://<vip>/ and shows them the "nothing is routed here" page.
 		fmt.Fprintf(stdout, "%s installed and healthy\n", name)
 		fmt.Fprintf(stdout, "it answers on its own port; the front door at / does not route to it yet\n")
 		return 0

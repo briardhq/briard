@@ -240,7 +240,7 @@ func (m *Manager) Stop(ctx context.Context, spec model.ServiceSpec) error {
 
 // Health is the upgrade gate's floor. With a service it means what it always did: the payload
 // unit is active AND the probe passes. With NO service the probe alone decides, because the
-// front door answers /healthz itself in that state -- 200, "no service installed" -- which is
+// front door answers /healthz itself in that state -- 200, "no backend configured" -- which is
 // exactly what reverse-proxy was widened to do so that "a node with nothing installed
 // is ready, not sick". Running is vacuously true there: there is no payload that could be down.
 func (m *Manager) Health(ctx context.Context, spec model.ServiceSpec) (Health, error) {

@@ -42,11 +42,22 @@ func TestZeroServiceFrontDoor(t *testing.T) {
 	srv := httptest.NewServer(newFrontDoor(nil, "/healthz"))
 	defer srv.Close()
 
-	if code, body := get(t, srv.URL, "/healthz"); code != http.StatusOK || !strings.Contains(body, "no service installed") {
-		t.Errorf("/healthz with nothing installed = %d %q, want 200 saying no service is installed", code, body)
+	if code, body := get(t, srv.URL, "/healthz"); code != http.StatusOK || !strings.Contains(body, "no backend configured") {
+		t.Errorf("/healthz with no backend = %d %q, want 200 saying no backend is configured", code, body)
 	}
-	if code, body := get(t, srv.URL, "/"); code != http.StatusOK || !strings.Contains(body, "No service is installed") {
-		t.Errorf("/ with nothing installed = %d %q, want 200 and Briard's page", code, body)
+	if code, body := get(t, srv.URL, "/"); code != http.StatusOK || !strings.Contains(body, "Nothing is routed to this address") {
+		t.Errorf("/ with no backend = %d %q, want 200 and Briard's page", code, body)
+	}
+	// Neither surface may claim anything about the node's SERVICE INVENTORY, which this process
+	// cannot see: its backend is fixed at start, and a service installed at RUNTIME never rewires
+	// it. Asserting the absence is what keeps this true — the old wording was correct on a fresh
+	// node and became a lie the moment someone ran `briard service install` beside it, which is
+	// how it was found (a real node serving Home Assistant while /healthz denied it).
+	for _, path := range []string{"/healthz", "/"} {
+		if _, body := get(t, srv.URL, path); strings.Contains(strings.ToLower(body), "service is installed") ||
+			strings.Contains(strings.ToLower(body), "service installed") {
+			t.Errorf("%s claims something about installed services it cannot know: %q", path, body)
+		}
 	}
 	// The page belongs at the root, not under every URL a stranger mistypes.
 	if code, _ := get(t, srv.URL, "/nope"); code != http.StatusNotFound {

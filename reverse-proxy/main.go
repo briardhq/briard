@@ -10,11 +10,13 @@
 // so renewal is crash-safe without needing atomic writes.
 //
 // It answers
-// when there is NO service at all — the shipped state of a fresh node. With -backend empty
-// it serves Briard's own page, and /healthz is always its own: a node with nothing installed
+// when there is NO backend at all — the shipped state of a fresh node. With -backend empty
+// it serves Briard's own page, and /healthz is always its own: a node with nothing routed to it
 // is *ready*, not sick, which is what keeps the host agent's health probe honest. With a
 // backend it proxies everything through, and /healthz reports the backend's own answer — so
-// "the node is healthy" keeps meaning "the service is serving" wherever one is installed.
+// "the node is healthy" keeps meaning "the service is serving" wherever one is routed.
+//
+// It speaks only of its own BACKEND, never of the node's service inventory, which it cannot see.
 package main
 
 import (
@@ -32,7 +34,7 @@ import (
 func main() {
 	httpAddr := flag.String("http", ":80", "plain-HTTP listen address (on the VIP)")
 	listen := flag.String("listen", ":443", "TLS listen address (on the VIP)")
-	backend := flag.String("backend", "", "the local service to proxy to; empty = no service installed")
+	backend := flag.String("backend", "", "the local service to proxy to; empty = no backend, serve our own page")
 	backendHealth := flag.String("backend-health", "/healthz", "path probed on -backend to answer /healthz")
 	certPath := flag.String("cert", "/var/lib/briard/tls/fullchain.pem", "certificate chain PEM (on the DRBD volume)")
 	keyPath := flag.String("key", "/var/lib/briard/tls/key.pem", "private key PEM (on the DRBD volume)")
@@ -64,7 +66,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if backendURL == nil {
-		log.Printf("reverse-proxy: serving %s (plain) + %s (TLS, cert %s); no service installed", *httpAddr, *listen, *certPath)
+		log.Printf("reverse-proxy: serving %s (plain) + %s (TLS, cert %s); no backend configured", *httpAddr, *listen, *certPath)
 	} else {
 		log.Printf("reverse-proxy: serving %s (plain) + %s (TLS, cert %s) -> %s", *httpAddr, *listen, *certPath, backendURL)
 	}
@@ -86,7 +88,7 @@ func main() {
 // service. The probe target is now stable across zero and one service, and the answer still
 // tracks the service when there is one, because that case forwards the question to it.
 type frontDoor struct {
-	backend    *url.URL // nil = no service installed
+	backend    *url.URL // nil = no backend configured (NOT "no service installed" — see health)
 	healthPath string
 	proxy      http.Handler
 	client     *http.Client
@@ -139,12 +141,24 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Write([]byte(landingPage))
 }
 
-// Health answers the node's readiness. With no service installed the node is ready by
-// definition — it is running, replicating and able to fail over, which is the whole of what
-// a fresh install promises. With one installed, the service's own health IS the answer.
+// Health answers the node's readiness. With no backend the node is ready by definition — it is
+// running, replicating and able to fail over, which is the whole of what a fresh install
+// promises. With one, the service's own health IS the answer.
+//
+// It says "no backend configured" rather than "no service installed", and the difference is not
+// pedantry: THIS PROCESS CANNOT KNOW THE NODE'S SERVICE INVENTORY. Its backend is fixed by the
+// flag it was started with (baked at guest-build time from cfg.image), and a service installed at
+// RUNTIME never rewires it — so on the shipped zero-service image this branch answers forever, and
+// the old wording made it a false statement the moment anyone ran `briard service install`.
+// Measured 2026-08-10 on a real node running Home Assistant: `/healthz` was still announcing that
+// nothing was installed while HA served on :8123.
+//
+// The forwarding below is deliberately NOT removed with it. Where a backend exists, "the node is
+// healthy" must keep meaning "the service is serving" — that is what the OS health gate and the
+// rollback reflex read, and the HA upgrade tests gate on exactly this branch.
 func (f *frontDoor) health(w http.ResponseWriter) {
 	if f.backend == nil {
-		w.Write([]byte("ok: no service installed\n"))
+		w.Write([]byte("ok: front door up, no backend configured\n"))
 		return
 	}
 	u := *f.backend
@@ -162,15 +176,23 @@ func (f *frontDoor) health(w http.ResponseWriter) {
 	w.Write([]byte("ok: service healthy\n"))
 }
 
-// The zero-service page. Deliberately plain and self-contained (no assets to fetch, nothing
+// The no-backend page. Deliberately plain and self-contained (no assets to fetch, nothing
 // to break on a node with no internet): a stranger who installs Briard and opens the VIP
 // should see that it worked, not a connection refused.
+//
+// Same correction as health() above, and it matters more here because this is the page a human
+// actually reads: it used to assert that no service was installed, which is a claim this process
+// has no way to make. The second line exists because of who meets this page — someone who just ran
+// `briard service install` and came to the address the docs gave them. Telling them only that
+// nothing is routed here reads as a failure; naming the port is the difference between "broken"
+// and "expected". It goes when per-domain routing lands and this page stops being what they get.
 const landingPage = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Briard</title></head>
 <body>
 <h1>Briard</h1>
-<p>This node is running. No service is installed on it yet.</p>
+<p>This node is running. Nothing is routed to this address yet.</p>
+<p>Anything you install here answers on its own port until per-domain routing lands.</p>
 </body>
 </html>
 `

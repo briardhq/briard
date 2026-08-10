@@ -234,7 +234,7 @@ pkgs.testers.runNixOSTest {
 
     # The service answers on its OWN endpoint (host-networked :8080) — the same thing the health
     # gate probes (agent/host/service.go awaitHealthy), and a REAL 200 from the service, not the
-    # front door's "no service installed" 200. The front door reports NODE readiness and
+    # front door's "no backend configured" 200. The front door reports NODE readiness and
     # does not route to a runtime-installed service (per-domain routing is deferred), so gating
     # on the VIP /healthz would pass vacuously — which is exactly what the broken-install test caught.
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)

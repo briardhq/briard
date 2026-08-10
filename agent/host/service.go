@@ -544,7 +544,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 // probed in-guest at 127.0.0.1) until it comes up, or the gate expires.
 //
 // It does NOT gate on the front door. The reverse-proxy's /healthz reports NODE readiness — on a
-// shipped zero-service node it answers "no service installed" (200) and never learns about a
+// shipped zero-service node it answers "no backend configured" (200) and never learns about a
 // runtime-installed service (its backend is baked at guest-build time from cfg.image) — so gating
 // on it passes a broken install. Probing the service directly is also the
 // shape multi-service needs: each service gated on its own endpoint, not one VIP /healthz that

@@ -75,11 +75,11 @@ pkgs.testers.runNixOSTest {
     # The node reports itself READY, not sick. A fresh install used to sit unhealthy forever
     # because the health probe pointed at a payload port nobody was listening on.
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
-    assert "no service installed" in health, f"/healthz on an empty node said: {health!r}"
+    assert "no backend configured" in health, f"/healthz on an empty node said: {health!r}"
 
     # And a human who opens the VIP sees Briard, not a connection refused.
     page = primary.succeed("curl -fsS http://192.168.1.100/")
-    assert "Briard" in page and "No service is installed" in page, f"the VIP served: {page!r}"
+    assert "Briard" in page and "Nothing is routed to this address" in page, f"the VIP served: {page!r}"
 
     # The data volume is mounted and genuinely empty of service data — the substrate is up,
     # waiting for something to run. (.snapshots is the ladder's own directory, not a payload.)
