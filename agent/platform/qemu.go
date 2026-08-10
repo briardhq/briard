@@ -291,6 +291,63 @@ func (s QEMUSpec) unit() string {
 	return GuestUnit
 }
 
+// guestStopTimeout is the guest unit's TimeoutStopSec. Above GuestShutdownGrace on purpose: the
+// ExecStop gives up first and says so, and only then does systemd start killing. The other order
+// would put a SIGKILL through the middle of a shutdown that was still making progress, which is
+// the power cut this whole arrangement exists to avoid.
+const guestStopTimeout = 75 * time.Second
+
+// launchArgs renders the systemd-run command line for the guest unit. Split out of Launch so the
+// unit's stop contract -- the part with no observable effect until the machine is going down --
+// is assertable without a systemd.
+//
+// ExecStop is what makes a HOST SHUTDOWN survivable, and its absence was the defect. Stopping
+// this unit SIGTERMs QEMU, which is a power cut to the guest (see Guest.Shutdown); systemd stops
+// every unit when the host reboots; so before this, a user rebooting their own machine for their
+// own distro's updates power-cut the appliance every time, losing whatever the payload had not
+// itself flushed. The OS-upgrade path had already been fixed for exactly this and only for
+// itself.
+//
+// It belongs on the UNIT rather than in the agent's own SIGTERM handler, and that is the crux
+// rather than a preference: host.Run carries an explicit "no defer g.Stop()" because an agent
+// restart must be transparent to the guest, and the agent cannot tell "I am being restarted"
+// from "the machine is going down". systemd can, and does: it stops this unit for the second and
+// not for the first.
+//
+// No ExecStop without a monitor socket -- there is then no way to ask, and a unit that promises a
+// clean stop it cannot deliver is worse than one that promises nothing.
+func launchArgs(s QEMUSpec) []string {
+	args := []string{
+		"--unit=" + s.unit(),
+		"--collect", // GC a prior dead instance so re-launch doesn't hit a lingering failed unit
+		"-p", "Restart=no",
+		"-p", "Description=Briard guest VM (" + s.unit() + ")",
+	}
+	if bin := shutdownBin(); bin != "" && s.QMPSock != "" {
+		args = append(args,
+			"-p", "ExecStop="+bin+" --guest-shutdown="+s.QMPSock,
+			"-p", "TimeoutStopSec="+strconv.Itoa(int(guestStopTimeout.Seconds())),
+		)
+	}
+	return append(append(args, "--"), launchExec(s)...)
+}
+
+// shutdownBin is the absolute path ExecStop invokes: this very binary, which grows a
+// --guest-shutdown mode for the purpose. /proc/self/exe is read at LAUNCH time, before any
+// self-update could have renamed it, and under install.sh it resolves to the committed
+// /var/lib/briard/briard-agent -- the stable path, so a later update swaps the file under a unit
+// line that stays correct. (The uncovered corner is launching a guest during a self-update TRIAL
+// boot, where it resolves to briard-agent.next and a commit renames that away. systemd then
+// fails the ExecStop and falls through to SIGTERM, i.e. exactly the old behaviour: a lost
+// improvement, never a new failure.)
+func shutdownBin() string {
+	bin, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return bin
+}
+
 // Launch boots the guest as a transient systemd service (systemd-run) and waits
 // until QEMU has created the control socket. The unit is detached from the agent's
 // cgroup, so it outlives an agent restart. Note the socket exists
@@ -303,14 +360,7 @@ func Launch(ctx context.Context, s QEMUSpec) (*Guest, error) {
 	if s.NetMode == NetMacvtap && s.NetWrapBin == "" {
 		return nil, fmt.Errorf("platform: NetMacvtap requires NetWrapBin (the fd-passing launch wrapper)")
 	}
-	args := []string{
-		"--unit=" + unit,
-		"--collect", // GC a prior dead instance so re-launch doesn't hit a lingering failed unit
-		"-p", "Restart=no",
-		"-p", "Description=Briard guest VM (" + unit + ")",
-		"--",
-	}
-	args = append(args, launchExec(s)...)
+	args := launchArgs(s)
 	if err := secureQMPDir(s.QMPSock); err != nil {
 		return nil, err
 	}
@@ -366,10 +416,21 @@ func unitActive(unit string) bool {
 // Stop terminates the guest VM by stopping its transient service (the self-fence
 // VM-destroy backstop). It is NOT called on a normal agent shutdown — an agent
 // restart must be transparent to the guest. No-op-safe if gone.
+//
+// It KILLS QEMU first, and had to start doing so once the unit grew an ExecStop. Every caller of
+// this is a caller that wants the VM gone now and cannot wait: the self-fence backstop reaches
+// for it on a guest that is already wedged, and the rollback leg on a guest whose disk is about
+// to be reverted out from under it. A graceful ACPI powerdown asks such a guest a question it
+// will not answer, so going through ExecStop would buy nothing and cost a full TimeoutStopSec on
+// the two paths least able to spend it. Killing the main process first means the unit deactivates
+// on its own and the stop below is bookkeeping.
 func (g *Guest) Stop() error {
 	if g == nil || g.unit == "" {
 		return nil
 	}
+	// Best-effort: a unit that is already gone makes this fail, which is not a problem worth
+	// reporting — stopUnit below is what decides whether the guest is really down.
+	_ = exec.Command("systemctl", "kill", "--signal=SIGKILL", g.unit).Run()
 	return stopUnit(g.unit)
 }
 

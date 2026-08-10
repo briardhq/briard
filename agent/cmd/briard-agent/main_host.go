@@ -11,6 +11,7 @@ import (
 
 	"briard.io/agent/host"
 	"briard.io/agent/install"
+	"briard.io/agent/platform"
 	"briard.io/agent/selfupdate"
 )
 
@@ -20,6 +21,12 @@ import (
 // from the environment for now; the north-bound shared/api report/config seam is wired here.
 func runHost(ctx context.Context) error {
 	return host.Run(ctx, host.ConfigFromEnv(), log.Printf)
+}
+
+// runGuestShutdown asks the VM on the given monitor socket to power off cleanly and waits until
+// it is actually gone. Host-only (it pulls in platform/QEMU), stubbed in a `-tags guest` build.
+func runGuestShutdown(ctx context.Context, qmpSock string) error {
+	return platform.ShutdownVM(ctx, qmpSock, platform.GuestShutdownGrace)
 }
 
 // runFetchInstall downloads + verifies the signed artifact set into dest (assertion e),

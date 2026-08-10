@@ -270,3 +270,67 @@ func TestQEMUArgsMinimal(t *testing.T) {
 		t.Errorf("minimal spec missing control channel or headless:\n%s", got)
 	}
 }
+
+// The guest unit's STOP contract, which is the half of the unit with no observable effect until
+// the machine is going down -- and so the half that was silently absent. Stopping the unit
+// SIGTERMs QEMU, which the guest experiences as a power cut; systemd stops every unit on a host
+// reboot; so without an ExecStop, a user rebooting their own host power-cut the appliance.
+//
+// Three things are asserted and each one fails differently in the field:
+//
+//   - ExecStop names this binary's --guest-shutdown mode against THIS guest's monitor socket.
+//     A wrong socket would power down someone else's VM, or nothing at all, and look identical.
+//   - Both properties land BEFORE the "--" separator. After it they are not properties at all,
+//     they are extra argv for qemu -- the unit would launch (qemu ignores nothing, it would
+//     fail) or, worse, start fine and stop dirty. This ordering is invisible in review.
+//   - TimeoutStopSec exceeds the grace the ExecStop itself waits. The other order puts
+//     systemd's SIGKILL through the middle of a shutdown still making progress, i.e. it
+//     manufactures the power cut the whole mechanism exists to prevent.
+func TestLaunchArgsCleanStopContract(t *testing.T) {
+	const sock = "/run/briard/qmp/qmp.sock"
+	args := launchArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", QMPSock: sock})
+
+	sep := -1
+	var execStop, timeout string
+	for i, a := range args {
+		switch {
+		case a == "--" && sep < 0:
+			sep = i
+		case strings.HasPrefix(a, "ExecStop="):
+			execStop = a
+			if sep >= 0 {
+				t.Errorf("ExecStop at %d is AFTER the -- at %d; it would be qemu argv, not a unit property", i, sep)
+			}
+		case strings.HasPrefix(a, "TimeoutStopSec="):
+			timeout = a
+			if sep >= 0 {
+				t.Errorf("TimeoutStopSec at %d is AFTER the -- at %d", i, sep)
+			}
+		}
+	}
+	if sep < 0 {
+		t.Fatalf("no -- separator in the systemd-run args: %v", args)
+	}
+	if !strings.HasSuffix(execStop, " --guest-shutdown="+sock) {
+		t.Errorf("ExecStop = %q, want it to end with --guest-shutdown=%s", execStop, sock)
+	}
+	if !strings.HasPrefix(execStop, "ExecStop=/") {
+		t.Errorf("ExecStop = %q, want an absolute binary path (systemd requires one)", execStop)
+	}
+	if want := "TimeoutStopSec=75"; timeout != want {
+		t.Errorf("TimeoutStopSec = %q, want %q", timeout, want)
+	}
+	if guestStopTimeout <= GuestShutdownGrace {
+		t.Errorf("TimeoutStopSec (%s) must exceed the ExecStop's own grace (%s), or systemd kills mid-shutdown",
+			guestStopTimeout, GuestShutdownGrace)
+	}
+}
+
+// No monitor socket, no promise. A unit that advertises a clean stop it has no way to perform
+// would burn the whole TimeoutStopSec on every stop and then kill QEMU anyway.
+func TestLaunchArgsNoMonitorNoStopContract(t *testing.T) {
+	args := strings.Join(launchArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s"}), " ")
+	if strings.Contains(args, "ExecStop") || strings.Contains(args, "TimeoutStopSec") {
+		t.Errorf("a monitor-less guest should carry no stop contract:\n%s", args)
+	}
+}

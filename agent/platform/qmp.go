@@ -154,6 +154,74 @@ func (g *Guest) Shutdown(ctx context.Context, grace time.Duration) error {
 	return g.WaitStopped(ctx, grace)
 }
 
+// GuestShutdownGrace bounds the clean powerdown ShutdownVM waits for. A NixOS guest's own
+// shutdown was measured at ~25s, so this is generous rather than tight; the unit's
+// TimeoutStopSec is set above it so systemd's SIGKILL arrives after we have given up, never
+// through the middle of a shutdown that was working.
+const GuestShutdownGrace = 60 * time.Second
+
+// ShutdownVM is Guest.Shutdown for a caller that has a socket path and nothing else: the guest
+// unit's own ExecStop, which runs as a separate process with no Guest handle to hold.
+//
+// It exists as a sibling rather than a reuse because of one detail that would otherwise make it
+// silently vacuous. Guest.Shutdown confirms the stop with WaitStopped, which polls `systemctl
+// is-active` -- and inside its own unit's ExecStop the unit reads "deactivating", not "active".
+// WaitStopped would therefore return SUCCESS immediately, reporting a clean shutdown while the
+// guest was still flushing, and systemd would proceed to kill QEMU underneath it. The whole
+// mechanism would look like it worked.
+//
+// So this judges the VM by the MONITOR SOCKET instead, which belongs to QEMU rather than to
+// systemd's opinion of QEMU: a dial that no longer connects means the process is gone (QEMU
+// unlinks the socket at exit; a leftover file refuses the connection instead -- both are a
+// failed dial, so neither needs special-casing).
+//
+// A socket that is already unreachable on entry is success, not failure. The commonest caller is
+// a stop that follows something else having killed QEMU already (Stop's SIGKILL, a crash), and
+// "there is no VM to power down" is that request satisfied.
+func ShutdownVM(ctx context.Context, qmpSock string, grace time.Duration) error {
+	if !qmpReachable(ctx, qmpSock) {
+		return nil // nothing there to power down
+	}
+	if _, err := qmpExecute(ctx, qmpSock, "system_powerdown", nil); err != nil {
+		if !qmpReachable(ctx, qmpSock) {
+			return nil // it went away while we were asking -- the request is moot, not failed
+		}
+		return err
+	}
+	deadline := time.Now().Add(grace)
+	for {
+		if !qmpReachable(ctx, qmpSock) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("platform: guest at %s still running %s after the power button", qmpSock, grace)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// qmpReachable reports whether anything is still listening on the monitor socket -- the probe
+// ShutdownVM uses for "is QEMU gone". It dials and hangs up without speaking QMP: the handshake
+// would tell us nothing more and costs a round trip on a process that is busy dying.
+func qmpReachable(ctx context.Context, path string) bool {
+	if path == "" {
+		return false
+	}
+	dial, cancel := context.WithTimeout(ctx, qmpTimeout)
+	defer cancel()
+	var d net.Dialer
+	c, err := d.DialContext(dial, "unix", path)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
 // Accelerated reports whether the running VM is actually being accelerated by KVM, and
 // whether the host has KVM at all -- QEMU's own answer (`query-kvm`), not an inference from
 // the argv or from /dev/kvm.

@@ -142,5 +142,48 @@ pkgs.testers.runNixOSTest {
 
     print("agent restart was transparent to the guest: same qemu, Primary held, VIP uninterrupted")
     print(host.succeed("journalctl -u briard-agent | tail -30"))
+
+    # === ACT 2 [V3.26a]: the other half of the same contract. ===
+    # Act 1 proved stopping the AGENT leaves the guest alone. This proves stopping the GUEST UNIT
+    # powers the machine down rather than pulling its plug — the case a host reboot creates, since
+    # systemd stops every unit on the way down. Before the unit had an ExecStop, that SIGTERMed
+    # qemu, and the guest experienced its owner installing distro updates as a power cut.
+    #
+    # The agent is stopped FIRST, deliberately: it mirrors a host shutdown, and it proves the clean
+    # stop does not depend on the daemon still being alive to arrange it. The mechanism is the unit
+    # file, which outlives the agent that wrote it.
+    host.succeed("systemctl stop briard-agent.service")
+    host.succeed("systemctl is-active briard-guest.service")  # still serving: act 1, restated
+    serial_before = int(host.succeed("wc -c < /tmp/guest-serial.log").strip())
+
+    stop_start = host.succeed("date +%s").strip()
+    host.succeed("systemctl stop briard-guest.service")
+    stop_secs = int(host.succeed("date +%s").strip()) - int(stop_start)
+    print(f"stopping briard-guest.service took {stop_secs}s")
+
+    # 1) OUR side: the ExecStop ran, spoke QMP, and waited for QEMU to be gone.
+    host.succeed("journalctl -u briard-guest.service | grep -q 'guest-shutdown: the guest powered off cleanly'")
+
+    # 2) THE GUEST'S side, which is the assertion that cannot be faked by our own logging: its
+    #    kernel's last words. `reboot: Power down` is printed only at the end of a full systemd
+    #    shutdown — targets stopped, filesystems unmounted, page cache flushed. A SIGTERMed qemu
+    #    prints nothing further at all; the console simply stops mid-line. So this single line is
+    #    the durability claim, made by the machine rather than about it.
+    serial = host.succeed("cat /tmp/guest-serial.log")
+    tail = serial[serial_before:]
+    print(f"guest console after the stop ({len(tail)} bytes):\n{tail[-2000:]}")
+    assert "reboot: Power down" in tail, (
+        "the guest never reached a clean power-off — it was killed, not shut down"
+    )
+
+    # 3) It was the ExecStop that did it, not systemd's TimeoutStopSec expiring into a SIGKILL.
+    #    The bound is set to exclude the TimeoutStopSec path (75s) rather than to be tight: a
+    #    clean shutdown that took 65s is still clean, and the guest's own shutdown was measured at
+    #    ~25s. What must never pass is a unit that waits out its timeout and power-cuts the guest
+    #    anyway — the old behaviour wearing the new behaviour's log line.
+    assert stop_secs < 70, f"the stop took {stop_secs}s — that is the timeout killing it, not a clean powerdown"
+
+    host.fail("systemctl is-active briard-guest.service")
+    print(f"stopping the guest unit powered the guest down cleanly in {stop_secs}s")
   '';
 }

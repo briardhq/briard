@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,5 +138,107 @@ func TestSecureQMPDirIsOwnerOnly(t *testing.T) {
 	// No socket configured is not an error -- most launches want no monitor at all.
 	if err := secureQMPDir(""); err != nil {
 		t.Errorf("empty QMP socket should be a no-op: %v", err)
+	}
+}
+
+// fakeVM serves QMP the way QEMU does but over MANY connections, because ShutdownVM dials
+// repeatedly (a reachability probe, the command, then one probe per poll). It also models the
+// part that matters: when told to power down, the VM eventually goes away -- listener closed and
+// socket unlinked, exactly as QEMU does at exit. dies=false leaves it running forever, which is
+// the guest that ignores the ACPI button.
+func fakeVM(t *testing.T, dies bool, linger time.Duration) (path string, powered func() bool) {
+	t.Helper()
+	path = filepath.Join(testsock.Dir(t), "qmp.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	asked := false
+	closeOnce := sync.OnceFunc(func() { l.Close(); os.Remove(path) })
+	t.Cleanup(closeOnce)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_, _ = c.Write([]byte(`{"QMP":{"version":{"qemu":{"major":10}},"capabilities":[]}}` + "\n"))
+				sc := bufio.NewScanner(c)
+				for sc.Scan() {
+					var req struct {
+						Execute string `json:"execute"`
+					}
+					if json.Unmarshal(sc.Bytes(), &req) != nil {
+						return
+					}
+					_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
+					if req.Execute != "system_powerdown" {
+						continue
+					}
+					mu.Lock()
+					asked = true
+					mu.Unlock()
+					if dies {
+						time.AfterFunc(linger, closeOnce) // the guest takes a moment to flush
+					}
+				}
+			}()
+		}
+	}()
+	return path, func() bool { mu.Lock(); defer mu.Unlock(); return asked }
+}
+
+// The happy path, and the one that would be vacuous if it judged the VM by its systemd unit:
+// ShutdownVM must press the power button AND wait for QEMU to actually be gone. The linger is
+// what makes the wait non-trivial -- a version that returned as soon as the command was accepted
+// would pass an "asked?" check while the guest was still writing.
+func TestShutdownVMWaitsForTheVMToGo(t *testing.T) {
+	path, powered := fakeVM(t, true, 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := ShutdownVM(ctx, path, 5*time.Second); err != nil {
+		t.Fatalf("ShutdownVM: %v", err)
+	}
+	if !powered() {
+		t.Error("returned success without ever sending system_powerdown")
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Errorf("returned after %s, before the VM was gone (it lingered 250ms)", elapsed)
+	}
+	if qmpReachable(ctx, path) {
+		t.Error("ShutdownVM returned nil while the monitor was still reachable")
+	}
+}
+
+// A guest that ignores the power button is a real outcome and must be REPORTED, not waited out
+// silently -- the caller (systemd's ExecStop) has a harder measure to fall back on.
+func TestShutdownVMReportsAGuestThatIgnoresIt(t *testing.T) {
+	path, powered := fakeVM(t, false, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := ShutdownVM(ctx, path, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("ShutdownVM returned nil for a VM that never went away")
+	}
+	if !powered() {
+		t.Error("gave up without ever sending system_powerdown")
+	}
+	if !strings.Contains(err.Error(), "still running") {
+		t.Errorf("error = %q, want it to name the VM as still running", err)
+	}
+}
+
+// Nothing there to power down is the request satisfied, not a failure. This is the commonest
+// ExecStop by far: Stop() SIGKILLs QEMU first, so the stop that follows finds an empty socket --
+// and an error there would make systemd report the guest unit as failed on every self-fence.
+func TestShutdownVMOnAnAbsentVMIsSuccess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := ShutdownVM(ctx, filepath.Join(testsock.Dir(t), "gone.sock"), time.Second); err != nil {
+		t.Errorf("absent VM: %v, want nil", err)
 	}
 }

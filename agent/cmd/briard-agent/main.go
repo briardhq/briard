@@ -40,6 +40,7 @@ func main() {
 	reportCard := flag.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
 	fetchInstall := flag.String("fetch-install", "", "download and verify the signed release into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING)")
 	mintFlockName := flag.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
+	guestShutdown := flag.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
 	flag.Parse()
 
 	// Mint the household-visible name. An installer-internal helper rather than a `briard`
@@ -87,6 +88,29 @@ func main() {
 		if err := runFetchInstall(ctx, *fetchInstall); err != nil {
 			log.Fatalf("fetch-install: %v", err)
 		}
+		return
+	}
+
+	// The guest unit's ExecStop (platform.launchArgs writes the line; systemd runs it). On a host
+	// shutdown this is the only thing that gets a chance to power the appliance down cleanly --
+	// the alternative is the SIGTERM systemd would otherwise send QEMU, which the guest
+	// experiences as a power cut.
+	//
+	// A flag rather than a `briard` subcommand for the same reason as --report-card and
+	// --mint-flock-name: nobody types it. It is plumbing between the agent and a unit file the
+	// agent itself wrote.
+	//
+	// NEVER FATAL, and that is the load-bearing part. A non-zero exit here would make systemd
+	// report the guest unit as failed to stop and, worse, could delay the host's own shutdown
+	// over a VM that is already gone. Every failure degrades to precisely the old behaviour --
+	// systemd kills QEMU after TimeoutStopSec -- so the honest response is to say what happened
+	// in the journal and get out of the way.
+	if *guestShutdown != "" {
+		if err := runGuestShutdown(ctx, *guestShutdown); err != nil {
+			log.Printf("guest-shutdown: %v (systemd will stop the VM the hard way)", err)
+			return
+		}
+		log.Printf("guest-shutdown: the guest powered off cleanly")
 		return
 	}
 
