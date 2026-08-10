@@ -639,10 +639,27 @@ if command -v systemctl >/dev/null 2>&1; then
 	# stays `briard-<mac tail>`, derived in-guest from the NIC's own address, because changing a
 	# hostname mid-lease is a change no one can predict a server's reaction to and a rename must
 	# never risk the address. So the wording says "a briard- client", which is true of both.
-	if [ -n "$VIP_IP" ]; then
-		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ (or http://$VIP_IP/) -- no service is installed on it yet"
+	# The service line, and the reason it is a branch rather than a constant. "no service is
+	# installed on it yet" is true of a FIRST install and false of a cattle reinstall: the service
+	# manifest is PET ($STATE/service.json, beside the identity), so the agent rebuilds the promoter
+	# chain from it at bring-up and the service comes back on its own. Measured 2026-08-10 --
+	# a reinstall printed "no service is installed" while Home Assistant was already on its way back
+	# up, which is the same false claim [V3.28] just took out of the front door, in a third place.
+	#
+	# Unlike the front door, this script CAN see the inventory: the file is right there, and it is
+	# the very file the agent reads. Best-effort on the name (a manifest whose shape we cannot parse
+	# still gets a true sentence, just a vaguer one).
+	if [ -f "$STATE/service.json" ]; then
+		svc=$(grep -o '"name":"[^"]*"' "$STATE/service.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+		[ -n "$svc" ] && SERVICE_NOTE="$svc is already installed on it and is coming back up" \
+		              || SERVICE_NOTE="the service already installed on it is coming back up"
 	else
-		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ -- it takes its address from your router, where it shows up as a \"briard-\" client -- no service is installed on it yet"
+		SERVICE_NOTE="no service is installed on it yet"
+	fi
+	if [ -n "$VIP_IP" ]; then
+		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ (or http://$VIP_IP/) -- $SERVICE_NOTE"
+	else
+		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ -- it takes its address from your router, where it shows up as a \"briard-\" client -- $SERVICE_NOTE"
 	fi
 else
 	die "no systemd (this install path targets systemd hosts)"
