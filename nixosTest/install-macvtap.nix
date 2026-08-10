@@ -432,10 +432,20 @@ pkgs.testers.runNixOSTest {
     print("pet volume survived the cattle wipe: the guest reattached it")
 
     def restart_node():
-        """Stop briard and bring it back: a fresh guest boot, so promotion runs again and
+        """POWER-CUT the node and bring it back: a fresh guest boot, so promotion runs again and
         briard-vip re-resolves the service address from scratch. The guest is a SIBLING transient
-        unit, so stopping the agent alone would leave qemu holding the overlay."""
-        host.succeed("systemctl stop briard-agent.service briard-guest.service")
+        unit, so stopping the agent alone would leave qemu holding the overlay.
+
+        The SIGKILL is load-bearing, not a shortcut [V3.26a]. What this sets up is the
+        unplanned-failover case, and [V3.23]'s entire argument for storing the address is that an
+        unplanned failover is, in the field, usually a power cut. Once the guest unit grew an
+        ExecStop, a plain `systemctl stop` became a CLEAN shutdown -- which unmounts the volume and
+        therefore flushes .vip-address whether or not the product ever fsynced it. Keeping the
+        graceful stop here would have left the assertion below green against a reverted V3.23,
+        testing the harness's good manners instead of the product's durability."""
+        host.succeed("systemctl stop briard-agent.service")
+        host.succeed("systemctl kill --signal=SIGKILL briard-guest.service")
+        host.wait_until_fails("systemctl is-active briard-guest.service", timeout=60)
         client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
         host.succeed("systemctl start briard-agent.service")
 

@@ -171,7 +171,11 @@ pkgs.testers.runNixOSTest {
     #    the durability claim, made by the machine rather than about it.
     serial = host.succeed("cat /tmp/guest-serial.log")
     tail = serial[serial_before:]
-    print(f"guest console after the stop ({len(tail)} bytes):\n{tail[-2000:]}")
+    # Print the SPEAKING lines, not a byte window: the console's tail is a long run of blanks, so
+    # a `tail[-2000:]` shows a screenful of nothing on the one run where someone needs to read it.
+    spoken = [ln for ln in tail.splitlines() if ln.strip()]
+    print(f"guest console after the stop ({len(tail)} bytes, {len(spoken)} non-blank lines):")
+    print("\n".join(spoken[-40:]))
     assert "reboot: Power down" in tail, (
         "the guest never reached a clean power-off — it was killed, not shut down"
     )
