@@ -645,10 +645,51 @@ in
     # rather than adding anything, and its default HandlePowerKey=poweroff is what we want.
     systemd.services.systemd-logind.wantedBy = [ "multi-user.target" ];
 
-    # DRBD 9: the out-of-tree 9.2.16 module (the one with quorum),
-    # built against the default 6.18 LTS kernel and loaded at boot. /proc/drbd then
-    # reports a 9.x module.
-    boot.extraModulePackages = [ config.boot.kernelPackages.drbd ];
+    # DRBD 9: the out-of-tree module (the one with quorum), built against the default
+    # 6.18 LTS kernel and loaded at boot. /proc/drbd then reports a 9.x module.
+    #
+    # PINNED AHEAD OF NIXPKGS, and it will stay pinned. nixos-26.05 ships 9.2.16 and
+    # will keep shipping it for the channel's life: nixpkgs does not track the 9.2
+    # maintenance line, unstable has already jumped to the 9.3 feature branch, so no
+    # channel bump is coming. Three releases of the 9.2 line are worth having here:
+    #
+    #   9.2.17  DRBD asks the kernel for BLK_FEAT_STABLE_WRITES again. Kernel-side
+    #           changes had silently dropped the flag, and DRBD needs it structurally:
+    #           the same page feeds the local write AND the network send, so a page
+    #           rewritten under writeback makes the two replicas diverge. Our backing
+    #           disk is virtio-blk, which does not advertise it, and btrfs sits
+    #           directly on /dev/drbd0 -- so 9.2.16 on 6.18 replicates without the
+    #           guarantee. This one alone justifies the pin.
+    #   9.2.18  Quorum arithmetic: a CONNECTED peer that is diskless *unintentionally*
+    #           (a detached disk -- an anchor whose drive died, or the attach/detach
+    #           window our pairing drives) was counted as a storage voter holding data.
+    #           Wrong count, in calc_quorum, on the failover path, for the failure this
+    #           product exists to survive. Also: `drbdadm attach` now waits for UUID
+    #           negotiation and REPORTS a stale/diverged attach instead of returning 0
+    #           with the device quietly diskless.
+    #   9.2.19  Holds a primary-loss survivor at Consistent until the post-loss
+    #           reconcile settles, gap-free, so it cannot declare itself authoritative
+    #           before learning whether a peer holds a write it is missing. Plus the
+    #           silent-divergence family LINBIT shipped two weeks early in April.
+    #
+    # NOT 9.3.x, though it is the same `overrideAttrs` away: 9.2 is the maintenance
+    # branch, 9.3 is where new functionality lands, and 9.3 makes resync-without-
+    # replication the default -- a rewrite of the exact path our heal invariants and
+    # failover timings measure. 9.3 also brings variable bitmap granularity, and 9.2
+    # REFUSES to attach metadata written with any granularity but 4k -- a trapdoor for
+    # a product whose OS (and so whose DRBD module) can roll backwards.
+    #
+    # Refresh: bump `version`, then `nix-prefetch-url --type sha256 <the url>` and
+    # `nix hash convert --hash-algo sha256 --to sri <base32>`.
+    boot.extraModulePackages = [
+      (config.boot.kernelPackages.drbd.overrideAttrs (_: {
+        version = "9.2.19";
+        src = pkgs.fetchurl {
+          url = "https://pkg.linbit.com//downloads/drbd/9/drbd-9.2.19.tar.gz";
+          hash = "sha256-bhmvViC/m03IgP/g6kBHkCLJx6D8PKXK7oa9Uy57XcE=";
+        };
+      }))
+    ];
     boot.kernelModules = [ "drbd" ];
 
     # The DRBD kernel module shells out to a userland helper on some events; its
