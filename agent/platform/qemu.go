@@ -368,7 +368,11 @@ func Launch(ctx context.Context, s QEMUSpec) (*Guest, error) {
 		return nil, fmt.Errorf("platform: systemd-run guest: %w: %s", err, out)
 	}
 	if err := waitForSocket(ctx, s.ControlSock); err != nil {
-		_ = stopUnit(unit)
+		// FORCE, not the graceful stop: this is a guest that never even produced its control
+		// socket, so asking it to power itself off politely spends the whole ExecStop grace
+		// waiting for an ACPI reply from something that has not finished booting -- inside a
+		// failure path that the bring-up budget is already counting against.
+		_ = forceStopUnit(unit)
 		return nil, err
 	}
 	return &Guest{ControlSock: s.ControlSock, QMPSock: s.QMPSock, unit: unit}, nil
@@ -428,10 +432,17 @@ func (g *Guest) Stop() error {
 	if g == nil || g.unit == "" {
 		return nil
 	}
-	// Best-effort: a unit that is already gone makes this fail, which is not a problem worth
-	// reporting — stopUnit below is what decides whether the guest is really down.
-	_ = exec.Command("systemctl", "kill", "--signal=SIGKILL", g.unit).Run()
-	return stopUnit(g.unit)
+	return forceStopUnit(g.unit)
+}
+
+// forceStopUnit takes the guest down NOW: SIGKILL the cgroup, then stop the unit to reap it.
+// The kill is what makes it immediate — with an ExecStop on the unit, a plain stop is a request
+// for a clean powerdown, and every caller here is one that cannot wait for one.
+func forceStopUnit(unit string) error {
+	// Best-effort: a unit that is already gone makes this fail, which is not worth reporting --
+	// stopUnit below is what decides whether the guest is really down.
+	_ = exec.Command("systemctl", "kill", "--signal=SIGKILL", unit).Run()
+	return stopUnit(unit)
 }
 
 func stopUnit(unit string) error {
