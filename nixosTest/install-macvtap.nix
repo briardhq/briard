@@ -164,7 +164,7 @@ pkgs.testers.runNixOSTest {
         blank in a captured log, and dumping it raw once made a 94 KB file look empty. Strip the
         carriage returns and select, rather than trusting the shape of a wall of text."""
         return host.succeed(
-            f"tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | grep -aE '{pattern}' | tail -40 || true"
+            f"tr -d '\\r' < /var/log/briard-guest-console.log 2>/dev/null | grep -aE '{pattern}' | tail -40 || true"
         )
 
     def diagnose(where):
@@ -174,7 +174,7 @@ pkgs.testers.runNixOSTest {
         # EARLIER boot, where the address was acquired and should have been remembered.
         print(f"=== {where}: briard-vip, all boots ===")
         print(host.succeed(
-            "tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | grep -a 'briard-vip:' || echo '(no briard-vip lines at all)'"
+            "tr -d '\\r' < /var/log/briard-guest-console.log 2>/dev/null | grep -a 'briard-vip:' || echo '(no briard-vip lines at all)'"
         ))
         print(f"=== {where}: what the guest said about its address ===")
         print(guest_console("briard-vip|dhcpcd|briard-data|eth0|eth2|Failed|error"))
@@ -192,15 +192,15 @@ pkgs.testers.runNixOSTest {
     host.succeed("ls -l /dev/kvm")
     client.wait_until_succeeds("ping -c1 -W2 192.168.1.1", timeout=30)
 
-    # Capture the guest's console from the FIRST boot onwards. The host cannot reach the guest over
-    # macvtap, so this is the only witness to anything that happens inside it -- and a drop-in laid
-    # down before install.sh writes the unit is picked up when it daemon-reloads, so the very first
-    # guest is captured rather than only the ones after a restart.
-    host.succeed(
-        "mkdir -p /run/systemd/system/briard-agent.service.d && "
-        "printf '[Service]\\nEnvironment=GUEST_SERIAL=/tmp/guest-serial.log\\n' "
-        "> /run/systemd/system/briard-agent.service.d/serial.conf"
-    )
+    # The guest console. The host cannot reach the guest over macvtap, so this is the only witness to
+    # anything that happens inside it -- which is why THE INSTALLER now wires it, and why this test
+    # no longer lays down its own drop-in.
+    #
+    # The drop-in was a vacuous green of the exact shape [V3.7g-1] warned about: it granted this rig
+    # the witness that every real install went without, so the console every field diagnosis depended
+    # on (V3.20-V3.23) was one the product never actually shipped, and the test could not have said
+    # so. Reading the installer's own path is what makes the capture a tested property instead of a
+    # local convenience.
 
     # --- refuse-with-fix / never-a-half-install: a bogus NIC dies before touching networking ---
     # (The report-card refusals themselves are proven in report-card.nix; here we prove the
@@ -269,6 +269,24 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=120)
     print("off-box client reached the leased VIP over the macvtap substrate")
 
+    # THE CONSOLE CAPTURE ITSELF, asserted rather than assumed. Every helper above reads this file
+    # through `2>/dev/null ... || true`, because a diagnostic must not become the reason a test
+    # fails -- which means a MISSING file is indistinguishable from a quiet boot, and the capture
+    # could silently stop shipping exactly the way it silently never shipped. So it is asserted once,
+    # here, where it must fail if the installer stops wiring GUEST_SERIAL.
+    #
+    # Non-empty AND recognisable: a file qemu merely created proves the env var arrived, not that the
+    # guest's console is on the other end of it. The kernel banner is the cheapest thing only a real
+    # ttyS0 stream contains.
+    host.succeed("test -s /var/log/briard-guest-console.log")
+    host.succeed(
+        "tr -d '\\r' < /var/log/briard-guest-console.log | grep -aqE 'Linux version|NixOS|systemd'"
+    )
+    # It must not be world-readable: it carries the household's hostnames and addresses.
+    mode = host.succeed("stat -c%a /var/log/briard-guest-console.log").strip()
+    assert mode in ("600", "640"), f"the guest console is mode {mode} -- readable beyond root"
+    print("the INSTALLER's own guest-console capture is live, non-empty and not world-readable")
+
     # What a stranger actually gets. The install ships NO service, so the front door is
     # what answers -- and it says so, rather than the node looking broken or serving a workload
     # nobody chose. This is the assertion that would catch a payload sneaking back into the
@@ -301,7 +319,7 @@ pkgs.testers.runNixOSTest {
     def mdns_state(where):
         print(f"=== {where}: the guest's publisher and daemon ===")
         print(host.succeed(
-            "tr -d '\\r' < /tmp/guest-serial.log 2>/dev/null | "
+            "tr -d '\\r' < /var/log/briard-guest-console.log 2>/dev/null | "
             "grep -aiE 'avahi|mdns|entry group|Established|Not permitted|briard-identity' | tail -40 "
             "|| echo '(nothing about mdns on the guest console)'"
         ))

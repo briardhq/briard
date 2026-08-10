@@ -18,6 +18,10 @@
 #                   `rm -rf /opt/briard` + reinstall = a fresh host.
 #   /var/lib/briard = pet: the DRBD data volume + identity -- survives reinstall.
 #   /run/briard   = tmpfs flags.
+#   /var/log/briard-guest-console.log = the guest's serial console. NEITHER cattle nor pet: a
+#                   host log, kept out of both so it outlives the cattle reset (the console you
+#                   want is the one from the boot that made you reinstall) and stays off the
+#                   replicated volume (it is node-local). Rolled to .prev past BRIARD_CONSOLE_MAX.
 #
 # Artifact source: BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging
 # dir (the hermetic install tests, and a future offline install). Unset = the
@@ -63,6 +67,24 @@ DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
 # Passing the host CPU through is free for us because a briard guest never migrates and never
 # saves RAM state. Set BRIARD_CPU=qemu64 to fall back if a host's passthrough is ever the suspect.
 CPU_MODEL="${BRIARD_CPU:-max}"
+# The guest's serial console (its kernel + systemd), captured to the host. Under macvtap the host
+# CANNOT reach the guest over the network at all, so this file is the ONLY witness to anything that
+# happens inside the VM -- and it is what every field diagnosis this epoch actually ran on (V3.20's
+# mDNS name, V3.21's address family, V3.22's wedged publisher, V3.23's lost address).
+#
+# It was missing here until now, and the shape of the miss is the point: install-macvtap.nix lays a
+# GUEST_SERIAL drop-in over the unit this script writes, and lab/container.nix sets it too, so every
+# rig that debugs a guest granted itself the witness while every REAL install discarded it. The
+# stranger who meets the next defect had nothing to look at and nothing to send us.
+#
+# Neither cattle nor pet: NOT under $PREFIX, because the console you most want is the one from the
+# boot that made you `rm -rf /opt/briard`, so it has to outlive the cattle reset -- and NOT on the
+# replicated volume, because it is node-local by nature and node-local writes onto a replicated
+# volume are the exact mistake V3.26b just swept. A host log belongs in /var/log.
+# Set BRIARD_CONSOLE= (empty) to opt out.
+CONSOLE="${BRIARD_CONSOLE:-/var/log/briard-guest-console.log}"
+# Roll to .prev past this size, so the capture costs at most 2x it on disk. See the rotate script.
+CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # 32 MiB
 # This node's name and this flock's name are NOT constants and NOT knobs: both are minted into pet
 # state in step 6b, once $STATE exists and the agent binary is on disk. See there for why they are
 # two identifiers rather than the one hardcoded `guest` this used to be.
@@ -479,6 +501,54 @@ ExecStart=$PREFIX/net-up.sh
 WantedBy=multi-user.target
 EOF
 
+# The console capture, and the one thing it needs that qemu will not do: a bound.
+#
+# qemu appends to this file and NEVER truncates, deliberately (agent/platform/qemu.go argues it:
+# the guest is relaunched on every OS upgrade, every agent restart and every rollback, so
+# truncating means the incarnation you need is precisely the one just overwritten by the boot that
+# replaced it). Correct -- and unbounded appending is a disk-filling bug on a machine nobody
+# watches, which is every machine this ships to. So the file is rolled to .prev once it passes the
+# cap: one generation, so the cost is bounded at 2x and the PREVIOUS story is still there.
+#
+# A script on disk rather than an inline `ExecStartPre=/bin/sh -c ...`: systemd expands `$f` in a
+# unit line as one of ITS environment variables, so every shell variable would need `$$` and every
+# quote would have to survive both parsers. Same pattern as net-up.sh, and it can be read and run
+# by a human debugging the thing at 2am.
+CONSOLE_ENV=""
+if [ -n "$CONSOLE" ]; then
+	cat > "$PREFIX/console-rotate.sh" <<EOF
+#!/bin/sh
+# Roll the guest console if it has grown past the cap. Runs as briard-agent's ExecStartPre.
+# ALWAYS exits 0: a node must never fail to start because a log could not be rotated.
+set -u
+f="$CONSOLE"
+max=$CONSOLE_MAX
+if [ -f "\$f" ]; then
+	s=\$(stat -c%s "\$f" 2>/dev/null || echo 0)
+	[ "\$s" -gt "\$max" ] 2>/dev/null && mv -f "\$f" "\$f.prev" 2>/dev/null
+fi
+# Pre-create it so the console is not world-readable: qemu would create it under the unit's umask,
+# and a guest console carries the household's hostnames and addresses. Not secret, not public.
+#
+# The subshell is load-bearing, and it cost a test to find: \`:\` is a POSIX SPECIAL builtin, so a
+# redirection failure on it is fatal to the shell itself -- \`|| true\` never runs and the script
+# exits non-zero. On a host with a read-only or absent /var/log that turned this line into "the
+# agent does not start", which is a catastrophic way for a LOGGING convenience to fail. Inside a
+# subshell the failure exits the subshell and the fallback holds.
+[ -e "\$f" ] || ( : > "\$f" ) 2>/dev/null || true
+chmod 0640 "\$f" 2>/dev/null || true
+exit 0
+EOF
+	chmod +x "$PREFIX/console-rotate.sh"
+	mkdir -p "$(dirname "$CONSOLE")"
+	# NOTE what the rotation does NOT bound, stated rather than implied: the check runs when the
+	# AGENT starts, not when a guest launches, so a guest crash-looping under one long-lived agent
+	# keeps appending past the cap until something restarts the agent. Bounding that needs a writer
+	# we control instead of a qemu chardev, which is a bigger change than this file deserves.
+	CONSOLE_ENV="Environment=GUEST_SERIAL=$CONSOLE
+ExecStartPre=$PREFIX/console-rotate.sh"
+fi
+
 # In macvtap mode the agent renders the guest launch behind the fd-passing wrapper;
 # in bridge mode neither var is set and the agent opens taps by name (the default).
 NET_ENV=""
@@ -527,6 +597,7 @@ Environment=FLOCK_ID=$FLOCK_ID
 Environment=FLOCK_NAME=$FLOCK_NAME
 $NET_ENV
 $KEY_ENV
+$CONSOLE_ENV
 # NO HEALTH_URL. It used to bake the address a second time, and under DHCP there is nothing to
 # bake -- the address is acquired inside the guest at promotion, so only the guest knows it. The
 # agent asks (VIP_DEV above is how it knows where to look) and rebuilds the probe target each
