@@ -77,6 +77,10 @@ func ConfigFromEnv() Config {
 		QEMUBinary:  env("QEMU", "qemu-system-x86_64"),
 		QEMUDataDir: os.Getenv("QEMU_DATADIR"), // "" -> qemu default; the bundle sets <prefix>/share/qemu
 		Accel:       env("ACCEL", "kvm:tcg"),
+		// `max` = every feature the accelerator can give the guest, which under KVM is the
+		// host's own CPU. The escape hatch (BRIARD_CPU=qemu64 at the installer, CPU= here) is
+		// for a host where the passthrough itself is the suspect -- one env line beats a release.
+		CPUModel:    env("CPU", "max"),
 		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
 		Cores:       atoi(os.Getenv("CORES"), 2),
 		GuestDisk:   os.Getenv("GUEST_DISK"),

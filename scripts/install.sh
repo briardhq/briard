@@ -57,6 +57,12 @@ VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows i
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
 # one-liner. Written in whole GiB -- the dd fallback parses it that way.
 DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
+# The guest's CPU model. "max" = every feature the accelerator can expose, which under KVM is this
+# host's own CPU: qemu's DEFAULT (qemu64) is below x86-64-v2 and costs the guest aes/sha-ni/sse4.2
+# (so software TLS, sha256 and crc32c) plus the CPUID bits its kernel needs to mitigate Spectre.
+# Passing the host CPU through is free for us because a briard guest never migrates and never
+# saves RAM state. Set BRIARD_CPU=qemu64 to fall back if a host's passthrough is ever the suspect.
+CPU_MODEL="${BRIARD_CPU:-max}"
 # This node's name and this flock's name are NOT constants and NOT knobs: both are minted into pet
 # state in step 6b, once $STATE exists and the agent binary is on disk. See there for why they are
 # two identifiers rather than the one hardcoded `guest` this used to be.
@@ -501,6 +507,7 @@ Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/w
 Environment=QEMU=$QEMU
 Environment=QEMU_DATADIR=$QEMU_DATADIR
 Environment=ACCEL=kvm:tcg
+Environment=CPU=$CPU_MODEL
 Environment=GUEST_DISK=$OVERLAY
 Environment=DATA_DISK=$DATA
 Environment=CONTROL_SOCK=$RUNDIR/ctl.sock

@@ -52,6 +52,7 @@ func main() {
 	guest, err := platform.Launch(ctx, platform.QEMUSpec{
 		Binary:      env("QEMU", "qemu-system-x86_64"),
 		Accel:       env("ACCEL", "kvm:tcg"),
+		CPUModel:    env("CPU", "max"), // the agent's default (config.go) -- tests run what prod runs
 		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
 		Cores:       atoi(os.Getenv("CORES"), 2),
 		DiskImage:   os.Getenv("GUEST_DISK"), // writable overlay, prepared by the testScript

@@ -17,8 +17,25 @@ import (
 // qemu-system directly (libvirt is a later backend behind this same boundary). Accel is a QEMU accel list, e.g. "kvm:tcg" -- KVM where
 // available, TCG fallback (the Windows-Home / no-nested-virt case).
 type QEMUSpec struct {
-	Binary      string // qemu-system-x86_64
-	Accel       string // e.g. "kvm:tcg"
+	Binary string // qemu-system-x86_64
+	Accel  string // e.g. "kvm:tcg"
+	// CPUModel is qemu's `-cpu`. Empty = qemu's default, which on x86_64 is `qemu64`:
+	// a 1990s-baseline model BELOW x86-64-v2 (60 CPUID features against the host's 190,
+	// measured on the shipped qemu 10.2). It has no aes, sha-ni, pclmulqdq, ssse3, sse4.1/4.2,
+	// avx*, bmi1/2, popcnt, rdrand, rdtscp, xsave, invpcid, pdpe1gb, tsc-deadline or pmu --
+	// so guest TLS, nix's sha256, OCI digest checks and btrfs/DRBD crc32c all run the software
+	// path, and the guest kernel cannot apply Spectre/SSBD mitigations at all because the
+	// spec-ctrl/ibpb/stibp bits are not advertised. Passing the host's real CPU through costs
+	// nothing here: the usual reason not to is live migration or a RAM-bearing savevm, and this
+	// product does NEITHER -- a guest never moves hosts, and every snapshot it takes is
+	// disk-only (snapshot.go, and QMP blockdev-snapshot-internal-sync). An HA failover is a
+	// fresh boot on the other node, which re-reads CPUID.
+	//
+	// `max`, not `host`: under KVM the two expand to an identical feature set (verified by
+	// query-cpu-model-expansion), but `host` HARD-FAILS without KVM ("CPU model 'host' requires
+	// KVM") and Accel is a fallback LIST -- kvm:tcg. A bare `host` would turn every no-virt host
+	// from slow-but-booting into not-booting, which is exactly the case the tcg fallback exists for.
+	CPUModel    string
 	MemoryMB    int
 	Cores       int
 	DiskImage   string // guest OS disk; empty in kernel/initrd boots
@@ -106,8 +123,11 @@ const (
 
 // qemuArgs renders the QEMU argv (excluding the binary). Pure; unit-tested.
 func qemuArgs(s QEMUSpec) []string {
-	args := []string{
-		"-machine", "accel=" + s.Accel,
+	args := []string{"-machine", "accel=" + s.Accel}
+	if s.CPUModel != "" {
+		args = append(args, "-cpu", s.CPUModel)
+	}
+	args = append(args,
 		"-m", strconv.Itoa(s.MemoryMB),
 		"-smp", strconv.Itoa(s.Cores),
 		"-no-reboot",
@@ -115,9 +135,9 @@ func qemuArgs(s QEMUSpec) []string {
 		// The host<->guest control channel: a virtio-serial port named
 		// guestagent.ControlPort, backed by a host unix socket QEMU serves.
 		"-device", "virtio-serial-pci",
-		"-chardev", "socket,id=briardctl,path=" + s.ControlSock + ",server=on,wait=off",
-		"-device", "virtserialport,chardev=briardctl,name=" + guestagent.ControlPort,
-	}
+		"-chardev", "socket,id=briardctl,path="+s.ControlSock+",server=on,wait=off",
+		"-device", "virtserialport,chardev=briardctl,name="+guestagent.ControlPort,
+	)
 	if s.QMPSock != "" {
 		// Wait=off so a guest never blocks on the monitor being connected: the agent dials
 		// it only for the rare deliberate operations, and a VM that cannot boot

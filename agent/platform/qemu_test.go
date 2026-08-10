@@ -245,6 +245,20 @@ func TestQEMUArgsDataDir(t *testing.T) {
 	}
 }
 
+// CPUModel renders `-cpu <model>`; empty omits it so qemu keeps its own default. The
+// assertion that matters is the ABSENCE of a bare `-cpu host`: `host` requires KVM, Accel is
+// a kvm:tcg fallback list, and a host that lands on tcg would then not boot at all.
+func TestQEMUArgsCPUModel(t *testing.T) {
+	with := strings.Join(qemuArgs(QEMUSpec{Accel: "kvm:tcg", ControlSock: "/s", CPUModel: "max"}), " ")
+	if !strings.Contains(with, "-cpu max") {
+		t.Errorf("CPUModel should render -cpu:\n%s", with)
+	}
+	without := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s"}), " ")
+	if strings.Contains(without, "-cpu") {
+		t.Errorf("empty CPUModel should omit -cpu:\n%s", without)
+	}
+}
+
 // Without disks/bridge, no -drive/-netdev appear, but the control channel and
 // headless flags always do.
 func TestQEMUArgsMinimal(t *testing.T) {

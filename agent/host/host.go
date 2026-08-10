@@ -74,6 +74,7 @@ type Config struct {
 	QEMUBinary  string
 	QEMUDataDir string // qemu `-L` firmware dir; "" = qemu's default (set for the relocatable bundle)
 	Accel       string
+	CPUModel    string // qemu `-cpu`; "" = qemu's default (qemu64, x86-64-v1). See platform.QEMUSpec.
 	MemoryMB    int
 	Cores       int
 	GuestDisk   string
@@ -416,6 +417,7 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 		Binary:      cfg.QEMUBinary,
 		DataDir:     cfg.QEMUDataDir,
 		Accel:       cfg.Accel,
+		CPUModel:    cfg.CPUModel,
 		MemoryMB:    cfg.MemoryMB,
 		Cores:       cfg.Cores,
 		DiskImage:   cfg.GuestDisk,
