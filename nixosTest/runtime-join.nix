@@ -23,6 +23,7 @@ let
   promoterSnippet = ''
     [[promoter]]
     [promoter.resources.r0]
+    adjust-resource-on-start = false
     start = [ "briard-data.service", "podman-briard-payload.service", "briard-vip.service" ]
   '';
 
@@ -38,6 +39,18 @@ let
         { address = "10.0.0.${toString config.virtualisation.test.nodeNumber}"; prefixLength = 24; }
       ];
       environment.systemPackages = [ pkgs.curl ];
+      # The service address, NAMED -- exactly as lib.nix's mkNode does, and for the reason that
+      # node exists. This file builds its own node instead of using mkNode, so it does not inherit
+      # that mkForce. [V3.19] removed the guest's baked VIP (`vipFallback = ""`) because no address
+      # is right in a house we have not seen, which means every agent-less harness must name one.
+      # This one did not: briard-vip fell through to the DHCP branch on a network with no DHCP
+      # server, failed, and took the VIP and the payload with it -- surfacing three layers away as
+      # a connect timeout on `curl http://192.168.1.100:8080/healthz`. It has had no full green
+      # nightly since 2026-08-08, the night before [V3.19] landed.
+      systemd.services.briard-vip.serviceConfig.Environment = mkForce [
+        "VIP_DEV=eth1"
+        "VIP_ADDR=192.168.1.100/24"
+      ];
       systemd.services.drbd-reactor.wantedBy = mkForce [ ];
       systemd.tmpfiles.rules = [ "d /run/briard-drbd 0755 root root -" ];
       environment.etc = {
