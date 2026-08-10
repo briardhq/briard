@@ -482,6 +482,39 @@ func TestPrewarmFailsWhenTheImageCannotBeWarmed(t *testing.T) {
 	}
 }
 
+// cacheService must never damage the manifest it already holds. The bare WriteFile it used to be
+// truncated the target first, so a crash inside the write left half a manifest -- which
+// installedService reads as "bringing up with no service", silently, on a node whose replicated
+// .service-manifest still names what it is meant to be running.
+//
+// Blocking the temp path with a directory forces the failure after the caller has committed to
+// the write. The assertion is deliberately two-sided: the old implementation returns nil AND
+// overwrites, so it fails on the first check, not merely on the second.
+func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "service.json")
+	cfg := Config{ServiceCache: cache}
+	prior := []byte(`{"name":"home-assistant"}`)
+	if err := cfg.cacheService(prior); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cache + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temp file lingered after a good write: %v", err)
+	}
+	if err := os.Mkdir(cache+".tmp", 0o755); err != nil { // the staging path is now unusable
+		t.Fatal(err)
+	}
+	if err := cfg.cacheService([]byte(`{"name":"immich"}`)); err == nil {
+		t.Fatal("cacheService onto a blocked temp path returned nil, want an error")
+	}
+	got, err := os.ReadFile(cache)
+	if err != nil {
+		t.Fatalf("prior manifest unreadable after a failed cache write: %v", err)
+	}
+	if string(got) != string(prior) {
+		t.Errorf("failed cache write damaged the manifest: got %q, want the prior %q", got, prior)
+	}
+}
+
 // A service installed at RUNTIME must land in the live config immediately, not at the next agent
 // restart. The gap was invisible in the log and total in effect: cfg.resources() is gated on
 // cfg.Service.Name, so between installing a service and restarting, the node reported no appliance

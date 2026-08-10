@@ -261,6 +261,17 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 
 // CacheService writes the manifest to the node-local cache. Written only after the health gate
 // passes, so a failed install is never the thing a restart converges to.
+//
+// Atomic and durable (temp + fsync + rename + directory fsync), which it was not: a bare
+// WriteFile over an existing file truncates first, so a crash inside the write left a half a
+// manifest, and an unflushed one left no manifest at all for a commit interval after the install
+// returned. Neither is loud. installedService reads an unparseable cache as "bringing up with no
+// service" and says so once to the log, while the volume's .service-manifest still names the
+// service the node is meant to be running -- bring-up never consults it (only the install path
+// does, via priorService), so the node just quietly comes back empty. The service spec is the one
+// input to BringUp that comes from a file instead of being re-derived by the host, which is
+// exactly why it is the one that needed this. Same defect as [V3.23], node-local instead of
+// replicated.
 func (cfg Config) cacheService(raw []byte) error {
 	if cfg.ServiceCache == "" {
 		return nil
@@ -268,7 +279,40 @@ func (cfg Config) cacheService(raw []byte) error {
 	if err := os.MkdirAll(filepath.Dir(cfg.ServiceCache), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(cfg.ServiceCache, raw, 0o600)
+	tmp := cfg.ServiceCache + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil { // durable BEFORE the rename publishes it
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, cfg.ServiceCache); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	// The rename lives in the parent's dirent until the parent is flushed -- and on a first
+	// install the file is new, so without this the publish itself is what a power cut takes.
+	d, err := os.Open(filepath.Dir(cfg.ServiceCache))
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // adoptInstalledService refreshes the LIVE config from the node-local manifest cache after a

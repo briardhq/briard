@@ -30,6 +30,37 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// A failed save must leave the PREVIOUS cache intact. Blocking the temp path with a directory is
+// the cheap way to make the write fail after the caller has committed to it.
+//
+// STATED PLAINLY, because the point of these tests is not to flatter the diff: this one does NOT
+// cover the fsync [V3.26b] added -- it passes against the pre-fsync implementation too, which
+// already staged through a temp file. Durability is not observable from userspace without cutting
+// power mid-write, so the fsync is closed by reading the code and by [V3.9]'s rig if it is ever
+// built, not here. What this locks down is the atomicity the fsync sits on top of, which nothing
+// else asserted. (agent/host's sibling test IS a real mutation guard -- that one was a bare
+// WriteFile.)
+func TestSaveAssignmentFailureKeepsThePriorCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "assignment.json")
+	prior := api.Assignment{Tenant: "default", Role: model.RoleAnchor}
+	if err := SaveAssignment(path, prior); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".tmp", 0o755); err != nil { // the staging path is now unusable
+		t.Fatal(err)
+	}
+	if err := SaveAssignment(path, api.Assignment{Tenant: "other", Role: model.RoleAnchor}); err == nil {
+		t.Fatal("save onto a blocked temp path returned nil, want an error")
+	}
+	got, ok, err := LoadAssignment(path)
+	if err != nil || !ok {
+		t.Fatalf("prior cache unreadable after a failed save: ok=%v err=%v", ok, err)
+	}
+	if got != prior {
+		t.Errorf("failed save damaged the cache: got %+v, want the prior %+v", got, prior)
+	}
+}
+
 func TestLoadMissingIsNotAnError(t *testing.T) {
 	_, ok, err := LoadAssignment(filepath.Join(t.TempDir(), "absent.json"))
 	if ok || err != nil {
