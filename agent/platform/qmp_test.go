@@ -255,7 +255,12 @@ func TestShutdownVMOnAnAbsentVMIsSuccess(t *testing.T) {
 // but before the setup/command deadline split it failed after the context's minutes rather
 // than after qmpTimeout.
 func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "qmp.sock")
+	// testsock.Dir, not t.TempDir: this test's name is long enough that a CI runner's TMPDIR
+	// plus the test-name-derived directory clears sun_path's 108 bytes, and the kernel reports
+	// the overflow as a bare "bind: invalid argument". Which is exactly what happened -- green
+	// locally, red on CI -- i.e. the asymmetry that package's doc comment was written about,
+	// walked into by a test written to catch a different hang.
+	path := filepath.Join(testsock.Dir(t), "qmp.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
