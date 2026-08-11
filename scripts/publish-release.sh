@@ -251,7 +251,14 @@ verify)
 	# install.sh still defaulting to the old flat root would fetch nothing and fail closed, which
 	# is safe but silent -- and would not be caught by any check above, since every one of them
 	# uses $CHANNEL rather than what the script itself believes.
-	curl -fsS "$SITE/install.sh" | grep -q "BRIARD_CHANNEL_URL:-$CHANNEL" ||
+	# Downloaded to a FILE and then grepped, never `curl … | grep -q`. `-q` exits on the first
+	# match, which closes the pipe under a curl that is still writing; curl then dies with
+	# "(23) Failure writing output to destination" and `||` reads that as the assertion failing.
+	# Measured on the first real run of this check: a correctly-published channel was reported as
+	# wrong. A verification step that cries wolf is worse than none, because the next person
+	# learns to skip it.
+	curl -fsS "$SITE/install.sh" -o "$tmp/install.sh" || die "install.sh is not fetchable at $SITE"
+	grep -q "BRIARD_CHANNEL_URL:-$CHANNEL" "$tmp/install.sh" ||
 		die "the served install.sh does not default to $CHANNEL — it would look for artifacts in the wrong place"
 	say "$CHANNEL verifies end to end: signed manifest, every artifact matching, install.sh served at $SITE and pointing here"
 	;;
