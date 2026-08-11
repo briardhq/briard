@@ -13,9 +13,14 @@
 // name — docker, podman, nix, gh, and most closely tailscaled/tailscale, which is our exact
 // shape: a daemon plus a CLI, for a managed service with an agent on user hardware.
 //
-// Every verb here is an INJECTOR: it submits an api.Directive to the running agent over
-// its admin socket and prints the terminal outcome. The agent does the work, through the same
+// Most verbs here are INJECTORS: they submit an api.Directive to the running agent over
+// its admin socket and print the terminal outcome. The agent does the work, through the same
 // path the cloud's directives take.
+//
+// `alerts` and `logs` are the exception, and it is a deliberate one rather than a gap. They READ
+// the node's log surfaces directly, touching no socket, because the situation they exist for is
+// the agent being DOWN — an injector would answer "cannot reach the agent" precisely when the
+// operator most needs an answer. See logs.go.
 package cli
 
 import (
@@ -61,6 +66,10 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runHandover(ctx, args[1:], stdout, stderr)
 	case "os":
 		return runOS(ctx, args[1:], stdout, stderr)
+	case "alerts":
+		return runAlerts(ctx, args[1:], stdout, stderr)
+	case "logs":
+		return runLogs(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "briard: unknown command %q\n\n", args[0])
 		usage(stderr)
@@ -72,14 +81,20 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `briard — administer the node this command runs on.
 
 Usage:
+  briard alerts                       what this node has warned about (both surfaces)
+  briard logs                         what this node has logged (-follow to stream)
   briard service install <name>       install a catalogued service on this node
   briard handover                     hand this node's work to a peer (a planned failover)
   briard os upgrade <closure>         switch this node to a system closure, health-gated
   briard directive <kind> [payload]   submit a directive to the local agent
   briard help                         show this message
 
-Every command talks to the running briard-agent over its admin socket
-(`+defaultSock+`, override with -sock or $ADMIN_SOCK) and needs root.
+`+"`alerts`"+` and `+"`logs`"+` read this node's logs and work even when the agent is down.
+The rest talk to the running briard-agent over its admin socket
+(`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
+
+This node does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`
+is how you ask it what is wrong. Run it when something looks off, or on a schedule.
 
 `)
 }
