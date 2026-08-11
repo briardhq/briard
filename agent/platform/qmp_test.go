@@ -242,3 +242,56 @@ func TestShutdownVMOnAnAbsentVMIsSuccess(t *testing.T) {
 		t.Errorf("absent VM: %v, want nil", err)
 	}
 }
+
+// A QEMU that accepts the connection and then says nothing must not hold the caller for the
+// caller's whole budget. This is the frozen-QEMU case (SIGSTOP: the socket is still in the
+// listen backlog, so the connect succeeds and the greeting never comes), and it is exactly
+// what both recovery paths meet -- the recovery ladder's ACPI attempt and the rollback leg's,
+// each of which budgets minutes for stop-plus-relaunch and would otherwise spend all of it
+// inside the greeting Decode before it could fall back to a forced stop.
+//
+// The listener here accepts and holds the connection WITHOUT writing a greeting, which is the
+// whole fixture. The assertion is the elapsed time, not the error: the call fails either way,
+// but before the setup/command deadline split it failed after the context's minutes rather
+// than after qmpTimeout.
+func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qmp.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- c // hold it open, silent -- never write the greeting
+	}()
+
+	// A budget far longer than qmpTimeout, like the recovery ladder's and the rollback leg's.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { _, e := dialQMP(ctx, path); done <- e }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("dialQMP succeeded against a listener that never sent a greeting")
+		}
+		if elapsed := time.Since(start); elapsed > 3*qmpTimeout {
+			t.Errorf("dialQMP took %v to give up; want ~%v -- the caller's deadline is being "+
+				"used for the handshake again, which is the frozen-QEMU hang", elapsed, qmpTimeout)
+		}
+	case <-time.After(3 * qmpTimeout):
+		t.Fatalf("dialQMP still blocked after %v on a silent QEMU: it is waiting out the "+
+			"caller's 30m deadline, so a wedged guest hangs the recovery ladder", 3*qmpTimeout)
+	}
+	if c := <-accepted; c != nil {
+		c.Close()
+	}
+}

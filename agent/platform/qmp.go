@@ -64,11 +64,30 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 		return nil, fmt.Errorf("platform: dial QMP %s: %w", path, err)
 	}
 	q := &qmpConn{c: c, dec: json.NewDecoder(c)}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = c.SetDeadline(deadline)
-	} else {
-		_ = c.SetDeadline(time.Now().Add(qmpTimeout))
+	// THE HANDSHAKE IS BOUNDED BY qmpTimeout, THE COMMAND BY THE CALLER'S CONTEXT, and the two
+	// must not share a deadline. This used to hand the caller's deadline to both, which read as
+	// "the caller decides how long it is willing to wait" and behaved as a hang: a frozen QEMU
+	// never sends the greeting, and a caller with a long budget then blocks on a Decode for the
+	// whole of it. The recovery ladder (host.rebootGuest) budgets ~9.5 minutes for stop +
+	// relaunch, so its ACPI attempt sat in this Decode for nine minutes before it could fall
+	// back to the forced stop -- found by nixosTest/agent-recover, which SIGSTOPs QEMU and is
+	// the first caller whose guest is frozen rather than merely unhealthy. The rollback leg
+	// (osUpgrade.restore) carries the identical budget and had the identical latent hang; it had
+	// simply never met a QEMU that was not answering, because a guest that fails a health gate
+	// still has a live monitor.
+	//
+	// The split is not a compromise between the two numbers, it is the honest bound for each.
+	// Connection setup on a local unix socket is sub-second on any QEMU that is alive at all, so
+	// no useful caller is served by waiting longer -- silence here means the process is gone or
+	// stopped, which more waiting cannot change. A COMMAND is different: SnapshotCreateLive can
+	// legitimately run for minutes, so capping the whole conversation at qmpTimeout would have
+	// traded this hang for a broken snapshot. Hence the deadline is tightened for the handshake
+	// and handed back to the caller's context before the command runs.
+	setupDeadline := time.Now().Add(qmpTimeout)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(setupDeadline) {
+		setupDeadline = deadline // a caller in more of a hurry than we are still wins
 	}
+	_ = c.SetDeadline(setupDeadline)
 	// The greeting arrives unprompted; read it before speaking, or the handshake races it.
 	var greeting qmpMessage
 	if err := q.dec.Decode(&greeting); err != nil {
@@ -83,6 +102,15 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 		q.close()
 		return nil, err
 	}
+	// Handshake done: restore exactly what the command would have got before -- the caller's
+	// deadline, or qmpTimeout when it set none. Only the setup phase above changes, so a
+	// long-running command keeps the budget its caller chose and a deadline-less caller keeps
+	// the bound it has always had.
+	cmdDeadline := time.Now().Add(qmpTimeout)
+	if deadline, ok := ctx.Deadline(); ok {
+		cmdDeadline = deadline
+	}
+	_ = c.SetDeadline(cmdDeadline)
 	return q, nil
 }
 
