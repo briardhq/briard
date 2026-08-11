@@ -30,9 +30,24 @@
 let
   # crun without the two subsystems this product cannot reach.
   #
-  # CRIU (checkpoint/restore) is the expensive one: nixpkgs' crun links it unconditionally, criu
-  # PROPAGATES python3, and that is 148 MB of interpreter in an appliance that has no Python in it.
-  # Upstream treats it as optional -- `configure.ac` carries `--disable-criu`, every use site is
+  # CRIU (checkpoint/restore) is the expensive one: nixpkgs' crun links it unconditionally and criu
+  # PROPAGATES python3 -- an interpreter in an appliance that has no Python in it.
+  #
+  # ⚠️ QUOTE THE WIRE NUMBERS, NOT THE NAR NUMBERS, because this trade was first argued with the
+  # wrong ones and looked ~3x better than it is. The cache stores xz (`Compression: xz`, 2.4-6x)
+  # and the disk ships zstd, so what anyone actually waits on is:
+  #     install download   438 -> 377 MB   (61 MB, 14%)   measured, both images built
+  #     closure fetch      -67 MB xz       (python3 56.5 + libkrunfw 7.8 + libkrun 1.8 + criu 0.8)
+  # against a cost of ~14.3 MB xz (podman 13.9 + crun 0.4) that WE serve instead of the CDN, plus a
+  # ~47s podman rebuild per nixpkgs bump. Kept on those numbers (owner, 2026-08-12) -- but it is a
+  # near thing, and it is the only package we deviate from stock on for SIZE rather than function.
+  #
+  # There is no cheaper cut. python3's entire foothold is two files -- criu's `bin/criu-ns` and its
+  # wrapper, a helper script nothing here calls -- so `rm`ing them would drop 56.5 MB while keeping
+  # checkpoint/restore. It is NOT worth doing: any change to criu rebuilds crun rebuilds podman, so
+  # the cost is identical, the saving smaller, and a `rm` of a path upstream may rename fails OPEN.
+  #
+  # Upstream treats CRIU as optional -- `configure.ac` carries `--disable-criu`, every use site is
   # behind `#if HAVE_CRIU` (src/checkpoint.c, src/libcrun/criu.c), and crun *dlopens* libcriu at
   # runtime; nixpkgs' `NIX_LDFLAGS = "-lcriu"` exists only to pin the store reference that the
   # dlopen would otherwise leave dangling. So this removes `podman container checkpoint`, and
@@ -44,7 +59,7 @@ let
   #
   # `criu = null` RATHER THAN FILTERING buildInputs BY NAME, and the difference is which way it
   # breaks. A name filter fails OPEN -- a nixpkgs bump that renames the input silently re-admits
-  # 148 MB and every closure grows with nobody told. Overriding the named argument fails CLOSED:
+  # the interpreter and every closure grows with nobody told. Overriding the named argument fails CLOSED:
   # if the argument goes away, `.override` throws at eval and CI stops. The same reasoning applies
   # to the NIX_LDFLAGS reset, which is coupled to a nixpkgs implementation detail and will fail as
   # a link error rather than quietly.
@@ -88,10 +103,10 @@ in
   # reference; the backend is unchanged.
   virtualisation.containers.containersConf.cniPlugins = lib.mkForce [ ];
 
-  # -162 MB, jointly with `disableInstallerTools` below: python3 had TWO referrers (criu, and
-  # nixos-rebuild), so neither lever alone removes it. They are separable in principle and joint in
-  # effect, which is why they are both here and why removing one of them later will look like it
-  # saved nothing.
+  # -162 MB of closure / -61 MB of install download, jointly with `disableInstallerTools` below:
+  # python3 had TWO referrers (criu, and nixos-rebuild), so neither lever alone removes it. They are
+  # separable in principle and joint in effect, which is why they are both here and why removing one
+  # of them later will look like it saved nothing.
   virtualisation.podman.package = pkgs.podman.override { crun = leanCrun; };
 
   # The other half of the python3 pair. `nixos-rebuild` is a Python program now, and this guest does
