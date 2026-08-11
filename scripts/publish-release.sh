@@ -50,7 +50,10 @@
 # this one.
 set -euo pipefail
 
-CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
+# The artifact set lives under /release/; install.sh lives at the site root (the advertised
+# one-liner). SITE is DERIVED rather than a second knob -- one setting, one place to override.
+CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io/release}"
+SITE="${CHANNEL%/release}"
 STAGE_DEFAULT="./.release"
 
 die() { echo "publish-release: $*" >&2; exit 1; }
@@ -187,9 +190,33 @@ publish)
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 	[ -f "$DIR/install.sh" ] || die "no install.sh in $DIR — run \`stage\` (it embeds the keyring)"
-	nix run nixpkgs#awscli2 -- s3 sync "$DIR" "$(echo "$RELEASE_WRITE" | sed 's|^s3://\([^?]*\).*|s3://\1|')" \
-		--endpoint-url "https://$(echo "$RELEASE_WRITE" | sed 's|.*endpoint=\([^&]*\).*|\1|')" \
-		--exclude VERSION --no-progress
+	bucket=$(echo "$RELEASE_WRITE" | sed 's|^s3://\([^?]*\).*|s3://\1|')
+	endpoint="https://$(echo "$RELEASE_WRITE" | sed 's|.*endpoint=\([^&]*\).*|\1|')"
+
+	# THE ARTIFACT SET, under /release/, with --delete.
+	#
+	# ⚠️ `--delete` IS ONLY SAFE BECAUSE OF THE PREFIX, and the near-miss is worth recording: this
+	# bucket ALSO holds `catalog/` -- live runtime content the agent fetches for
+	# `briard service install`, uploaded by hand and produced by nothing in this repo -- plus
+	# install.sh at the root. A bare `--delete` against the bucket root would have removed the
+	# catalog on the next publish and broken service installs fleet-wide, silently, because
+	# nothing here knows the catalog exists. Scoped to the prefix a release owns, the flag can
+	# only remove things a release put there.
+	#
+	# What it buys: a RENAMED artifact cleans itself up. Overwrite-by-fixed-name leaves nothing
+	# behind, but a rename (nixos.qcow2 -> nixos.qcow2.zst) stranded the old key forever, and a
+	# 2.5 GB orphan that no signed manifest references is exactly the kind of thing that is
+	# still being served years later.
+	#
+	# install.sh is EXCLUDED here and uploaded to the root below -- it is the advertised
+	# one-liner and does not live in the release namespace.
+	nix run nixpkgs#awscli2 -- s3 sync "$DIR" "$bucket/release/" \
+		--endpoint-url "$endpoint" \
+		--delete --exclude VERSION --exclude install.sh --no-progress
+
+	# ...and the installer itself, at the root the one-liner names.
+	nix run nixpkgs#awscli2 -- s3 cp "$DIR/install.sh" "$bucket/install.sh" \
+		--endpoint-url "$endpoint" --no-progress
 	say "published — now run: ./scripts/publish-release.sh verify"
 	;;
 
@@ -217,8 +244,16 @@ verify)
 		[ "$gotsize" = "$size" ] || die "$name: size $gotsize != manifest $size"
 		echo "    ok  $name  ($gotsize bytes)"
 	done
-	curl -fsS -o /dev/null "$CHANNEL/install.sh" || die "install.sh is not served at the channel root"
-	say "$CHANNEL verifies end to end: signed manifest, every artifact matching, install.sh served"
+	# install.sh at the SITE root, not under the artifact prefix -- that is the URL the advertised
+	# one-liner names, so it is the one this must assert.
+	curl -fsS -o /dev/null "$SITE/install.sh" || die "install.sh is not served at $SITE/install.sh"
+	# The installer a stranger runs must agree with where the artifacts actually are. A published
+	# install.sh still defaulting to the old flat root would fetch nothing and fail closed, which
+	# is safe but silent -- and would not be caught by any check above, since every one of them
+	# uses $CHANNEL rather than what the script itself believes.
+	curl -fsS "$SITE/install.sh" | grep -q "BRIARD_CHANNEL_URL:-$CHANNEL" ||
+		die "the served install.sh does not default to $CHANNEL — it would look for artifacts in the wrong place"
+	say "$CHANNEL verifies end to end: signed manifest, every artifact matching, install.sh served at $SITE and pointing here"
 	;;
 
 *)

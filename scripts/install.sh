@@ -91,7 +91,16 @@ CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # 32 MiB
 NET_GUARD_SECS="${BRIARD_NET_GUARD_SECS:-45}"
 UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
 NET_PEER="${BRIARD_NET_PEER:-}"       # a LAN host to ping to confirm we kept our footing
-CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}" # signed release channel base (network fetch)
+# The signed release channel base (network fetch). UNDER /release/ rather than at the site root,
+# so the release set has a namespace of its own: the bucket also serves `catalog/` (live runtime
+# content the agent fetches for `briard service install`) and THIS script at the root, and those
+# are three independent lifecycles that used to share one flat namespace. With the artifacts under
+# a prefix the publish sync can be `--delete` -- scoped to what a release owns -- which is what
+# makes a renamed artifact clean itself up instead of stranding the old key forever.
+#
+# This script stays at the ROOT, because `curl -fsSL https://get.briard.io/install.sh | sudo sh`
+# is the advertised command and the one path that is not ours to move.
+CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io/release}"
 KEYRING="${BRIARD_KEYRING:-$PREFIX/keyring.pem}"       # the bundled release public key (verify root)
 
 # The release signing public key(s), embedded at release time. install.sh is fetched over TLS from

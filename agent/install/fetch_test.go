@@ -465,3 +465,49 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 		t.Errorf("round-tripped agent mode = %o, want 0755", fi.Mode().Perm())
 	}
 }
+
+// The channel lives under a PATH PREFIX (https://get.briard.io/release), not at a host root, so
+// the artifact set has a namespace of its own and the publish sync can be --delete. That makes
+// prefix preservation load-bearing: a joinURL that replaced the path instead of appending would
+// send every fetch to the site root, where it would find the catalog and install.sh and no
+// artifacts — failing closed, but for a reason nobody would guess from the error.
+func TestFetchVerifiedHonoursABaseURLPath(t *testing.T) {
+	c, guest := compressedChannel(t)
+	// Serve the whole channel one level down, exactly as the bucket does.
+	root := c.serve()
+	dest := stagedFresh(t)
+	f := &Fetcher{BaseURL: root + "/release", Keyring: c.kr}
+	// The prefixed server: /release/<name> serves what the flat one served at /<name>.
+	prefixed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/release/")
+		if name == r.URL.Path { // not under the prefix — the site root, which holds no artifacts
+			http.NotFound(w, r)
+			return
+		}
+		b, ok := c.bodies[name]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	t.Cleanup(prefixed.Close)
+	f.BaseURL = prefixed.URL + "/release"
+
+	if err := f.FetchVerified(context.Background(), dest); err != nil {
+		t.Fatalf("a channel under /release was not fetchable: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
+	if err != nil {
+		t.Fatalf("guest image not staged from the prefixed channel: %v", err)
+	}
+	if !bytes.Equal(got, guest) {
+		t.Error("image fetched from the prefixed channel differs")
+	}
+	// The failable control: the SAME server at the site root serves no artifacts, so a fetcher
+	// that dropped the prefix must not accidentally pass.
+	bare := &Fetcher{BaseURL: prefixed.URL, Keyring: c.kr}
+	if err := bare.FetchVerified(context.Background(), stagedFresh(t)); err == nil {
+		t.Error("fetching from the site root succeeded; the prefix is not actually load-bearing in this test")
+	}
+}
