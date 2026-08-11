@@ -14,9 +14,11 @@
 # What a GUEST downloads is unchanged, because substituters are ranked and lower
 # wins: we serve `Priority: 100`, cache.nixos.org serves 40. Stock nixpkgs keeps
 # coming from the public CDN; only our overlaid paths (drbd / drbd-reactor /
-# reverse-proxy / briard-agent) and this guest's own toplevel come from us —
-# measured 2026-07-30: 56 paths, 74 MB of a ~1.45 GB closure. `check` reports that
-# split and IS the assertion that it still holds.
+# reverse-proxy / briard-agent / podman + crun) and this guest's own toplevel come
+# from us — measured 2026-08-11: 79 paths, 140 MB of a 982 MB closure. `check`
+# reports that split and IS the assertion that it still holds. (Was 56 paths, 74 MB
+# of ~1.45 GB before [B.5]: the closure shrank by a third while our share grew, since
+# slimming crun changes podman's hash and takes it off the public cache.)
 #
 # Holding the rest costs us storage (first publish ~476 MB; later releases are
 # incremental, since store paths are content-addressed) and buys a real property:
@@ -26,7 +28,7 @@
 # creates a nix-cache-info carrying StoreDir only. It is uploaded once by hand
 # (see `cache-info`), and `verify` re-checks it against the live cache so the
 # assumption is tested rather than remembered. Without it we would rank at nix's
-# default and could outrank the CDN, which is precisely the 1.45 GB per guest the
+# default and could outrank the CDN, which is precisely the ~1 GB per guest the
 # split exists to avoid.
 #
 # ALWAYS RUN `verify` AFTER `publish`, and expect a skip rather than be surprised

@@ -177,7 +177,9 @@ let
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs, for data.snapshot/restore
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
-          pkgs.podman # podman, for payload.pin (retag the serve image —)
+          # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
+          # differently-wrapped copy of the runtime (configuration.nix explains; [B.5]).
+          config.virtualisation.podman.package # podman, for payload.pin (retag the serve image —)
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
         # then Serve() returns nil on the clean EOF when the host disconnects (wire.go)

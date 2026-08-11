@@ -531,6 +531,12 @@ let
   havePayload = cfg.image != null;
 in
 {
+  # What this appliance does not carry ([B.5]). Imported here rather than folded into the callers so
+  # that the SAME slimming applies to the shipped disk and to every nixosTest that boots this
+  # module -- a guest the tests exercise fatter than the one strangers install would prove nothing
+  # about the one strangers install.
+  imports = [ ./slim.nix ];
+
   # The payload slot as a NixOS option so the same guest image serves nothing, the test
   # fixture, or HA, without forking the DRBD/promoter/VIP scaffolding around it. Only the
   # container image + where its data subvolume lands and mounts differ; the unit name
@@ -602,9 +608,13 @@ in
     # field guest. Nix takes a *list*, ranks them by the `Priority` each serves in
     # its nix-cache-info (lower wins), and fetches each path from the best one that
     # has it: stock nixpkgs comes from the public CDN at 40, and only our overlaid
-    # paths (drbd/drbd-reactor/reverse-proxy/briard-agent) + this guest's own
-    # `toplevel` come from cache.briard.io at 100 — measured 74 MB of a 1611 MB
-    # closure, the closure-*diff* effect, not a re-image. Our cache
+    # paths (drbd/drbd-reactor/reverse-proxy/briard-agent/podman+crun) + this guest's
+    # own `toplevel` come from cache.briard.io at 100 — measured 140 MB of a 982 MB
+    # closure, the closure-*diff* effect, not a re-image. (Both numbers moved with
+    # [B.5]: the closure fell 1611 → 982 MB, while OUR share rose 74 → 140 MB,
+    # because slimming crun took podman off the public cache with it. A guest fetches
+    # far less overall and slightly more of it from us — stated here because the
+    # second half of that trade is the one nobody would notice.) Our cache
     # actually HOLDS the whole closure (nix refuses to write a cache whose
     # references it does not have — see scripts/publish-cache.sh); priority, not
     # content, is what keeps the guest off it for stock paths. The upside of that
@@ -869,7 +879,14 @@ in
       description = "Warm the pinned payload image into local podman storage (standby readiness)";
       wantedBy = [ "multi-user.target" ];
       restartTriggers = [ cfg.imageFile ];
-      path = [ pkgs.podman ];
+      # `config.virtualisation.podman.package`, NEVER `pkgs.podman`, here and at every other podman
+      # call site in this image. They are not the same derivation: the NixOS module wraps podman
+      # with its own helper/binary paths (`/run/wrappers` for the setuid shadow, systemd for
+      # container healthchecks), so naming `pkgs.podman` in a unit does not reuse the podman that
+      # is on the node's PATH -- it ships a SECOND, differently-wrapped copy. Measured at 57 MB of
+      # pure duplication ([B.5]), and worse than the size: two runtimes on one node, of which the
+      # unit-local one is the one missing the wrappers.
+      path = [ config.virtualisation.podman.package ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -892,7 +909,7 @@ in
       description = "Pre-stage upgrade-target payload images into local podman storage";
       wantedBy = [ "multi-user.target" ];
       after = [ "briard-payload-warm.service" ];
-      path = [ pkgs.podman ];
+      path = [ config.virtualisation.podman.package ]; # the module's podman, not a second copy
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -922,7 +939,7 @@ in
       wantedBy = [ ];
       after = [ "briard-data.service" "briard-payload-warm.service" ];
       requires = [ "briard-data.service" ];
-      path = [ pkgs.coreutils pkgs.podman ];
+      path = [ pkgs.coreutils config.virtualisation.podman.package ]; # not a second podman
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
