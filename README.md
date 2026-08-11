@@ -46,10 +46,18 @@ suitable, rather than half-installing and leaving you to work out why.
 What you get is the **node**: ready, replicating, and able to fail over. It installs **no
 service** — a machine is set up first, and then you choose what runs on it.
 
-**If something goes wrong, there are two logs and you want both.** `journalctl -u briard-agent`
-is the host's side; `/var/log/briard-guest-console.log` is the guest's own serial console, which
-is the only view into the VM — the guest is a full citizen of your LAN but is deliberately
-isolated from the host, so nothing else can see inside it. Both belong in any bug report.
+**If something goes wrong, there are two logs and you want both.** `sudo briard logs` reads them
+together: `journalctl -u briard-agent` is the host's side, and `/var/log/briard-guest-console.log`
+is the guest's own serial console — the only view into the VM, which is a full citizen of your LAN
+but is deliberately isolated from the host, so nothing else can see inside it. Both belong in any
+bug report.
+
+**Nothing will tell you when something breaks.** A free install talks to no server of ours, so
+there is nobody to send you mail: the node records what it notices and waits to be asked.
+`sudo briard alerts` is how you ask. It reads both logs above and prints what this node has warned
+about — a lost replica, an upgrade that failed and rolled back, a guest that lost contact with its
+host — and names any surface it could not read, so an empty result is never a guess. Nothing is
+pushed to you, so run it when something looks off, or on a timer.
 
 ## Install a service
 
