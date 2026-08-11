@@ -264,6 +264,32 @@ let
   image = import "${nixpkgs}/nixos/lib/make-disk-image.nix" {
     inherit lib pkgs;
     config = sys.config;
+    # DO NOT BAKE THE NIXPKGS CHANNEL INTO THE IMAGE. make-disk-image defaults this to `true`,
+    # which copies the whole nixpkgs source tree in so that `<nixpkgs>` and `nix-env -iA nixos.x`
+    # work for a human at the console. Measured [B.5]: 188 MB of source costing **512 MB of the
+    # shipped disk**, because it is 52,665 mostly-tiny .nix files and every one of them rounds up
+    # to a 4 KiB block.
+    #
+    # ⚠️ IT IS INVISIBLE TO THE CLOSURE. The channel is not referenced by `system.build.toplevel`,
+    # so `nix path-info -S` on the system says 982 MB and is RIGHT while the artifact a stranger
+    # downloads is 1691 MB. Measuring the closure is not measuring the download; B.5 slimmed the
+    # closure by 631 MB and did not touch this at all.
+    #
+    # Nothing in the product reads it -- the agent updates by handing `nix-env --set` an explicit
+    # store path and running switch-to-configuration, which never evaluates an expression. Its only
+    # purpose was console convenience, and [B.5] had already disabled most of that without meaning
+    # to: `setNixPath = false` leaves the guest with no `nix-path`, nix 2.34's compiled-in default
+    # for it is EMPTY (checked, not assumed), so `<nixpkgs>` already resolved to nothing and
+    # `nix-shell -p` / `nix-build '<nixpkgs>'` already failed. The one surviving user was
+    # `nix-env -iA nixos.<attr>`, which reads ~/.nix-defexpr directly. Half a gigabyte for one
+    # command on a box whose whole doctrine is dumb hands.
+    #
+    # WHAT THIS COSTS: OFFLINE package installation at the console. Networked rescue still works
+    # through flakes by full URL (`nix shell github:NixOS/nixpkgs/nixos-26.05#tcpdump`); guest WAN
+    # is a standing product requirement, and a node with no network is one you are reaching through
+    # the host anyway. If offline rescue is ever wanted, buy it back as a few named tools in
+    # environment.systemPackages -- tens of MB, not 512.
+    copyChannel = false;
     format = "qcow2";
     partitionTableType = "legacy";
     # NOT "auto". Auto sizes the disk to the closure plus a small margin, which left ~1.9 GB
