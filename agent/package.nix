@@ -33,7 +33,7 @@ buildGoModule {
   pname = "briard-agent" + (if tags == [ ] then "" else "-" + builtins.concatStringsSep "-" tags);
   inherit version;
   src = ../.;
-  vendorHash = "sha256-5qbgoM8+XGR9gxMHkq+WqNO9EqTTk+1s9bZ6poMBYQc=";
+  vendorHash = "sha256-4d/F5wfaBgNfrt0bv6IuElUAR/wVr7yG8BYOX0dSq6c=";
   subPackages = [ "agent/cmd/briard-agent" ];
   inherit tags;
   env.CGO_ENABLED = 0;

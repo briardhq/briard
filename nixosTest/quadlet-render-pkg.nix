@@ -7,7 +7,7 @@ buildGoModule {
   pname = "quadlet-render";
   version = "0.0.0";
   src = ../.;
-  vendorHash = "sha256-5qbgoM8+XGR9gxMHkq+WqNO9EqTTk+1s9bZ6poMBYQc=";
+  vendorHash = "sha256-4d/F5wfaBgNfrt0bv6IuElUAR/wVr7yG8BYOX0dSq6c=";
   subPackages = [ "nixosTest/quadlet-render" ];
   meta.description = "Render a Briard service manifest to quadlet units (test helper)";
 }

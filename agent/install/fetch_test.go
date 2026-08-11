@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
+
 	"briard.io/agent/selfupdate"
 )
 
@@ -263,5 +265,114 @@ func TestFetchVerifiedRefusesPreexistingDest(t *testing.T) {
 	}
 	if err := c.fetcher().FetchVerified(context.Background(), dest); err == nil {
 		t.Fatal("FetchVerified into a pre-existing dest should error (never merge into it)")
+	}
+}
+
+// ---- compressed artifacts (.zst) --------------------------------------------------------
+//
+// The big two ship compressed and are expanded HERE, after the signed-hash check. These tests
+// pin both halves of that: the expansion happens at all, and it happens only downstream of
+// verification — a tampered .zst must be refused without ever reaching the decoder.
+
+// zstdOf compresses b the way the release pipeline does.
+func zstdOf(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// compressedChannel serves the guest image + qemu bundle as .zst, the shape the release
+// publishes, with `briard-agent` left plain (the bootstrap fetches it with curl, before any
+// agent exists to decompress).
+func compressedChannel(t *testing.T) (*channel, []byte) {
+	t.Helper()
+	agent := []byte("the briard-agent static binary")
+	guest := bytes.Repeat([]byte("guest-image-chunk;"), 4096)
+	qemu := []byte("qemu-bundle.tar contents")
+	guestZ, qemuZ := zstdOf(t, guest), zstdOf(t, qemu)
+	bytesByName := map[string][]byte{
+		"briard-agent":        agent,
+		"nixos.qcow2.zst":     guestZ,
+		"qemu-bundle.tar.zst": qemuZ,
+	}
+	arts := []Entry{
+		{Name: "briard-agent", SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
+		{Name: "nixos.qcow2.zst", SHA256: sha(guestZ), Size: int64(len(guestZ))},
+		{Name: "qemu-bundle.tar.zst", SHA256: sha(qemuZ), Size: int64(len(qemuZ))},
+	}
+	return newChannel(t, arts, bytesByName), guest
+}
+
+func TestFetchVerifiedExpandsCompressedArtifacts(t *testing.T) {
+	c, guest := compressedChannel(t)
+	dest := stagedFresh(t)
+	if err := c.fetcher().FetchVerified(context.Background(), dest); err != nil {
+		t.Fatalf("compressed channel: %v", err)
+	}
+	// The staging dir holds the names install.sh expects — which is why shipping these
+	// compressed needed no change to install.sh.
+	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
+	if err != nil {
+		t.Fatalf("guest image not expanded: %v", err)
+	}
+	if !bytes.Equal(got, guest) {
+		t.Errorf("expanded guest image is %d bytes, want %d", len(got), len(guest))
+	}
+	qb, err := os.ReadFile(filepath.Join(dest, "qemu-bundle.tar"))
+	if err != nil {
+		t.Fatalf("qemu bundle not expanded: %v", err)
+	}
+	if string(qb) != "qemu-bundle.tar contents" {
+		t.Errorf("expanded qemu bundle = %q", qb)
+	}
+	// The compressed copies are gone: leaving them would double the staging footprint on a disk
+	// the report card has already sized.
+	for _, n := range []string{"nixos.qcow2.zst", "qemu-bundle.tar.zst"} {
+		if _, err := os.Stat(filepath.Join(dest, n)); !os.IsNotExist(err) {
+			t.Errorf("%s survived expansion (want removed)", n)
+		}
+	}
+}
+
+// The ordering assertion: corrupt the COMPRESSED bytes and the fetch must die on the hash, with
+// nothing expanded and nothing committed. If expansion ever moved upstream of verification this
+// is the test that fails.
+func TestFetchVerifiedRefusesTamperedCompressedArtifact(t *testing.T) {
+	c, _ := compressedChannel(t)
+	z := c.bodies["nixos.qcow2.zst"]
+	tampered := append([]byte(nil), z...)
+	tampered[len(tampered)/2] ^= 0xff
+	c.bodies["nixos.qcow2.zst"] = tampered
+	dest := stagedFresh(t)
+	err := c.fetcher().FetchVerified(context.Background(), dest)
+	assertRefused(t, dest, err, ErrArtifactMismatch)
+}
+
+// A .zst whose hash matches but whose payload is not a zstd stream: a mis-built release, not an
+// attack. It must fail loudly rather than commit a staging dir holding a corrupt guest image.
+func TestFetchVerifiedRefusesUndecodableCompressedArtifact(t *testing.T) {
+	junk := []byte("this is not a zstd stream at all")
+	agent := []byte("the briard-agent static binary")
+	c := newChannel(t, []Entry{
+		{Name: "briard-agent", SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
+		{Name: "nixos.qcow2.zst", SHA256: sha(junk), Size: int64(len(junk))},
+	}, map[string][]byte{"briard-agent": agent, "nixos.qcow2.zst": junk})
+	dest := stagedFresh(t)
+	err := c.fetcher().FetchVerified(context.Background(), dest)
+	if err == nil {
+		t.Fatal("undecodable .zst was accepted")
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("undecodable .zst still produced a staging dir at %s", dest)
 	}
 }

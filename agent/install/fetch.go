@@ -31,7 +31,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"briard.io/agent/selfupdate"
 )
@@ -48,6 +51,16 @@ const (
 	// MaxArtifactSize is the absolute per-artifact ceiling, above the manifest's own Size (which
 	// is the real bound). The guest image is ~2.5 GB; 8 GiB leaves room without being unbounded.
 	maxArtifactSize = 8 << 30
+
+	// CompressedSuffix marks an artifact shipped compressed and expanded here, after
+	// verification, to its name minus the suffix. Measured: the guest image goes 1178 -> 377 MB
+	// and the qemu bundle 86 -> 19 MB, which is what a household link actually waits on.
+	//
+	// Only the two big artifacts carry it. `briard-agent` deliberately does NOT: install.sh
+	// fetches the bootstrap agent with plain curl/wget BEFORE any agent exists to decompress
+	// anything, so a compressed agent would be an artifact the bootstrap cannot open. The one
+	// file that has to be readable by a shell stays readable by a shell.
+	compressedSuffix = ".zst"
 )
 
 // ErrNoKeyring is returned when no release keyring is wired. Fail CLOSED: with no trusted key
@@ -198,6 +211,59 @@ func (f *Fetcher) fetchArtifact(ctx context.Context, dir string, a Entry) error 
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != a.SHA256 {
 		return fmt.Errorf("%w: %s sha256 %s != manifest %s", ErrArtifactMismatch, a.Name, got, a.SHA256)
+	}
+	// ⚠️ EXPANSION HAPPENS HERE AND NOWHERE EARLIER. Everything above this line has established
+	// that these bytes are the bytes the release signed; only now is it safe to hand them to a
+	// decoder. Streaming the download THROUGH a decompressor would have been less code and would
+	// have fed attacker-controlled input to a parser before any signature was checked — the
+	// ordering, not the decompression, is the security-relevant part.
+	if strings.HasSuffix(clean, compressedSuffix) {
+		return expand(filepath.Join(dir, clean), mode)
+	}
+	return nil
+}
+
+// Expand decompresses src (a verified .zst) to src minus the suffix, then removes src. The
+// staging dir therefore ends up holding exactly the filenames install.sh already expects
+// (nixos.qcow2, qemu-bundle.tar), which is why shipping them compressed needed no change to
+// install.sh at all.
+//
+// The output is bounded by maxArtifactSize even though these bytes are signed: the manifest pins
+// the COMPRESSED size, so nothing in it constrains how far they expand, and a release that was
+// mis-built (or a signing key that was misused) should hit a ceiling rather than fill the disk of
+// a machine that has not finished installing yet. Defence in depth, one io.LimitReader.
+func expand(src string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("install: open %s: %w", filepath.Base(src), err)
+	}
+	defer in.Close()
+	zr, err := zstd.NewReader(in)
+	if err != nil {
+		return fmt.Errorf("install: zstd reader for %s: %w", filepath.Base(src), err)
+	}
+	defer zr.Close()
+
+	dst := strings.TrimSuffix(src, compressedSuffix)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return fmt.Errorf("install: create %s: %w", filepath.Base(dst), err)
+	}
+	n, err := io.Copy(out, io.LimitReader(zr.IOReadCloser(), maxArtifactSize+1))
+	cerr := out.Close()
+	if err != nil {
+		return fmt.Errorf("install: decompress %s: %w", filepath.Base(src), err)
+	}
+	if cerr != nil {
+		return fmt.Errorf("install: close %s: %w", filepath.Base(dst), cerr)
+	}
+	if n > maxArtifactSize {
+		return fmt.Errorf("%w: %s expands past the %d-byte ceiling", ErrArtifactMismatch, filepath.Base(src), int64(maxArtifactSize))
+	}
+	// The compressed copy has served its purpose; leaving it would double the staging dir's
+	// footprint on a disk the report card has already sized.
+	if err := os.Remove(src); err != nil {
+		return fmt.Errorf("install: remove %s: %w", filepath.Base(src), err)
 	}
 	return nil
 }

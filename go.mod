@@ -2,7 +2,10 @@ module briard.io
 
 go 1.25.0
 
-require filippo.io/age v1.3.1
+require (
+	filippo.io/age v1.3.1
+	github.com/klauspost/compress v1.19.2
+)
 
 require (
 	filippo.io/hpke v0.4.0 // indirect

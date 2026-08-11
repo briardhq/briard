@@ -9,7 +9,7 @@ buildGoModule {
   pname = "briard-selfupdate-stub";
   version = "0.0.0";
   src = ../.;
-  vendorHash = "sha256-5qbgoM8+XGR9gxMHkq+WqNO9EqTTk+1s9bZ6poMBYQc=";
+  vendorHash = "sha256-4d/F5wfaBgNfrt0bv6IuElUAR/wVr7yG8BYOX0dSq6c=";
   subPackages = [ "nixosTest/briard-selfupdate-stub" ];
   meta.description = "Test stand-in agent for the self-update pivot proof";
 }

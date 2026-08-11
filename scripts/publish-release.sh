@@ -11,7 +11,11 @@
 #   manifest.json.sig  a RAW 64-byte detached Ed25519 signature over the exact manifest bytes
 #                      (PureEdDSA over the whole file — no separate hash step)
 #   <name>             each artifact at the base URL: briard-agent (0755), briard-net-wrap
-#                      (0755), qemu-bundle.tar, nixos.qcow2
+#                      (0755), qemu-bundle.tar.zst, nixos.qcow2.zst — the big two travel
+#                      COMPRESSED and the agent expands them after verifying the signed hash,
+#                      so the manifest pins the compressed bytes (what the network carries).
+#                      The agent itself is never compressed: the bootstrap fetches it with curl
+#                      before anything exists that could decompress it.
 #   install.sh         at the channel root, fetched by the one-liner before any verification
 #                      exists — which is why the repo being public and readable IS the answer
 #                      to the `curl | sh` objection.
@@ -95,12 +99,32 @@ stage)
 	    -cf "$DIR/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .
 	chmod 0644 "$DIR/qemu-bundle.tar"
 
+	# COMPRESS THE BIG TWO. Measured on the shipped set: the guest image 1178 -> 377 MB and the
+	# bundle 86 -> 19 MB, so an install goes from ~1273 MB on the wire to ~404 MB. The agent
+	# expands them after verifying the signed hash (agent/install/fetch.go).
+	#
+	# `briard-agent` and `briard-net-wrap` are deliberately left PLAIN. install.sh fetches the
+	# bootstrap agent with curl/wget before any agent exists to decompress anything -- compress it
+	# and the installer cannot open the tool whose job is opening things.
+	#
+	# -19 not --ultra: 23s and 377 MB against gzip -9's 85s and 465 MB, on a file published once
+	# and downloaded by every household. -T0 uses the release box's cores; it does not change the
+	# output, so the manifest hash is unaffected by what machine staged it.
+	#
+	# The manifest below then pins the COMPRESSED bytes, which is what the network carries and
+	# therefore what a signature has to cover.
+	for f in nixos.qcow2 qemu-bundle.tar; do
+		nix run nixpkgs#zstd -- -19 -T0 -q --rm "$DIR/$f" -o "$DIR/$f.zst" ||
+			die "compressing $f failed"
+		chmod 0644 "$DIR/$f.zst"
+	done
+
 	# The manifest, in the verifier's exact shape. `mode` is emitted only where it is not the
 	# 0644 default, matching `omitempty` on the reading side.
 	{
 		printf '{"artifacts":['
 		first=1
-		for f in briard-agent briard-net-wrap qemu-bundle.tar nixos.qcow2; do
+		for f in briard-agent briard-net-wrap qemu-bundle.tar.zst nixos.qcow2.zst; do
 			[ -f "$DIR/$f" ] || die "staged file missing: $f"
 			sum=$(sha256sum "$DIR/$f" | cut -d' ' -f1)
 			size=$(stat -c%s "$DIR/$f")
