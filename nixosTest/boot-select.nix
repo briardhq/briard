@@ -31,8 +31,7 @@
 # delivery is os-stage's proof, not this one.
 #
 # It needs no payload: `BOOT_SELECT=1` returns before bring-up ever runs and the guest is given
-# no NICs at all, so a payload would never be observed. Its own disk variant costs the nightly
-# nothing, since this rides `debug`.
+# no NICs at all, so a payload would never be observed.
 #
 # Heavy (nested VM), so it rides the `integration` tag; `nix flake check` skips it. Run:
 #   nix build .#tests.boot-select -L
@@ -87,16 +86,19 @@ pkgs.testers.runNixOSTest {
             # VM to go -- rather than being stopped from out here. That ordering is what keeps
             # a power cut away from the launch that has just rewritten the guest's bootloader,
             # which is where killing QEMU hung the NEXT boot about half the time.
-            #
-            # The shutdown is NOT asserted to have been clean, and that is a real gap, not an
-            # oversight: under this NESTED harness an L2 guest completes no shutdown by any
-            # trigger (os.poweroff or the ACPI button alike) and prints no kernel console
-            # output at all, while the identical disk and qemu build power off in ~2 s on real
-            # qemu. So the driver waits, reports, and falls back to the power cut -- and it is
-            # that quiet wait that stabilises this sequence. Both mechanisms are unit-tested
-            # and hand-verified live; restoring the end-to-end assertion needs a non-nested
-            # rig.
             host.wait_until_fails(f"systemctl is-active --quiet {unit}", timeout=180)
+            # And the stop must have been CLEAN, not the driver's power-cut fallback. This
+            # assertion is the point of the whole ordering above: without it the test passes
+            # just as happily on a killed QEMU, which is the state that made it flaky. The
+            # driver prints this marker only after the guest agent acknowledged `os.poweroff`
+            # AND the QEMU monitor socket disappeared, i.e. the VM is actually gone -- so it
+            # is the guest's exit being asserted, not our intent to ask for it.
+            #
+            # It was long believed unassertable here: a nested L2 guest was thought to complete
+            # no shutdown by any trigger. That was wrong (and the second symptom, an empty
+            # console, was `-serial file:` truncating on open). Measured before this landed:
+            # 4 consecutive runs, 3 clean shutdowns each, 12/12, no fallbacks.
+            host.succeed(f"journalctl -u {unit} | grep -q CLEAN_SHUTDOWN")
         finally:
             # Always dump the guest console -- grub speaks on ttyS0 too, so a launch that
             # never reaches the agent still leaves its evidence here.

@@ -262,6 +262,12 @@ in
       agent-readopt = agentReadopt; # an agent restart re-adopts the running guest
       agent-deadman = agentDeadman; # a lone node holds (never self-outages) when its agent dies
       os-stage = osStage; # a closure the guest does NOT have, fetched over a cache
+      # The boot selector. Promoted back from `debug` once the premise that demoted it turned
+      # out to be false: an L2 guest under nesting DOES complete a clean shutdown, by BOTH
+      # triggers. This sequence needs the guest stopped cleanly between launches, and it now is
+      # -- so the power cut that hung the next boot about half the time no longer happens, and
+      # the test ASSERTS the clean stop rather than tolerating its absence.
+      boot-select = bootSelect;
     };
 
     # The frozen host-agent self-update pivot (Type=notify commit/revert gate).
@@ -285,14 +291,6 @@ in
     # Debug harnesses — deliberately EXCLUDED from allTests / the nightly `.#all` (flake.nix
     # merges this into the flat `.#tests.*` only). Run by hand in a repro loop.
     debug = {
-      # The boot selector, proven live -- but NOT in the nightly, because it cannot
-      # be made reliable here. The sequence needs the guest stopped CLEANLY between launches,
-      # and a nested L2 guest completes no shutdown by any trigger, so the harness
-      # power-cuts it moments after it rewrote its own bootloader -- and the next boot then
-      # sometimes never comes up at all. That failure is the honest consequence of a power cut
-      # at the worst possible moment, which is precisely what the product avoids and this
-      # harness cannot. Promote it back to `integration` when the non-nested rig exists.
-      boot-select = bootSelect;
       reactor-pause-deadlock = reactorPauseDeadlock;
       # Spike: can a service be installed at runtime as a podman pod (quadlet), and does
       # that pod work as a promoter chain member? Answers a design question; promoted or deleted

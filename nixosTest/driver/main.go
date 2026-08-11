@@ -122,22 +122,23 @@ func main() {
 		// flaky before a monitor existed. Shutting down as ordinary work rather than from a
 		// signal handler also keeps the shutdown out of systemd's stop job for this unit.
 		// Ask the guest OS itself, over the channel we already hold, and confirm by watching
-		// the VM disappear. NOT the ACPI button: under this NESTED harness an L2 guest never
-		// acts on it, though the identical disk, qemu build and command power off in ~2 s on
-		// real qemu. Either way the guest must stop CLEANLY here -- the alternative is
-		// killing QEMU moments after the guest rewrote its own bootloader, which made the
-		// next boot hang about half the time.
+		// the VM disappear. The ACPI button would serve too: this route was chosen because a
+		// nested L2 guest was believed to act on neither, and that turned out to be wrong --
+		// the guest unit's own ExecStop powers the guest off over QMP in ~2 s under the same
+		// nesting. Either way the guest must stop CLEANLY here -- the alternative is killing
+		// QEMU moments after the guest rewrote its own bootloader, which made the next boot
+		// hang about half the time.
 		down, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := g.PowerOff(down); err != nil {
 			log.Printf("poweroff request failed: %v", err)
 		}
 		if err := guest.WaitStopped(down, 25*time.Second); err != nil {
-			// Expected NESTED, and only nested: an L2 guest under a nixosTest L1 never
-			// completes a shutdown by any trigger, while the identical disk and qemu build
-			// power off in ~2 s on real qemu. Falling through to the deferred Stop
-			// power-cuts it -- acceptable here only because the wait above has left the
-			// guest idle with its writes flushed, which is what stops this test flaking.
+			// A real failure now, not the expected nested outcome it was once thought to be.
+			// The fallback is kept because falling through to the deferred Stop leaves the
+			// guest idle with its writes flushed, which is a better power cut than an abrupt
+			// one -- but the caller ASSERTS the CLEAN_SHUTDOWN marker below, so taking this
+			// branch reds the test rather than passing quietly as it used to.
 			log.Printf("guest did not stop cleanly, falling back to the power cut: %v", err)
 			return
 		}
