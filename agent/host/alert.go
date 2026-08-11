@@ -69,7 +69,7 @@ func (a *redundancyAlerter) observe(ctx context.Context, st api.NodeStatus) {
 }
 
 func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
-	a.logf("alert [%s] %s — %s", al.Level, al.Title, al.Body) // local trail, regardless of notifier
+	a.logf("%s", notify.LogLine(al)) // local trail, regardless of notifier -- what `briard alerts` reads
 	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := a.n.Notify(nctx, al); err != nil {

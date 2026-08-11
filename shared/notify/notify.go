@@ -32,6 +32,28 @@ type Alert struct {
 	Body  string
 }
 
+// LogMarker is what `briard alerts` looks for. Every alert on a node writes a line beginning
+// with it, whatever the notifier -- so the local trail is findable by one substring across
+// surfaces that share no logger: the host agent's journal and the guest's serial console.
+//
+// A SUBSTRING rather than a structured record on purpose. The two surfaces are read back as
+// plain text (journalctl output and a file qemu appends the guest's console to), so anything
+// richer would have to survive being interleaved with kernel lines -- and the reader is also a
+// human with grep, who should not need this tool to find an alert.
+const LogMarker = "alert ["
+
+// LogLine renders an alert as the one local-trail line every emitter writes BEFORE attempting
+// delivery. Delivery is the half that can be absent (the free tier configures no notifier at
+// all) or can fail; the trail is the half that is always there, which is what makes
+// `briard alerts` truthful on a node that pushes nothing anywhere.
+//
+// Emitters that hold a plain string rather than an Alert format this shape by hand -- the guest
+// deadman, which must not link this package (see its Alert field). Keep them in step: this
+// function is the shape of record.
+func LogLine(a Alert) string {
+	return fmt.Sprintf("%s%s] %s — %s", LogMarker, a.Level, a.Title, a.Body)
+}
+
 // Notifier delivers an Alert out of the home. Implementations: Ntfy (the v1 default,
 // zero-setup push) and Log (no external dependency -- records locally, the standalone
 // fallback). Delivery is best-effort: a failed Notify is logged by the caller, never fatal.
@@ -74,7 +96,7 @@ func Log(logf func(string, ...any)) Notifier { return logNotifier{logf: logf} }
 type logNotifier struct{ logf func(string, ...any) }
 
 func (l logNotifier) Notify(_ context.Context, a Alert) error {
-	l.logf("ALERT [%s] %s — %s", a.Level, a.Title, a.Body)
+	l.logf("%s", LogLine(a)) // the same shape the emitters' own trail uses, so `briard alerts` finds both
 	return nil
 }
 

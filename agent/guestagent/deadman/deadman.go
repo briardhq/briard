@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+// The levels a deadman alert carries, matching notify.Level's values (shared/notify) without
+// importing it. That package reaches an ntfy endpoint over HTTP, and this code runs INSIDE the
+// guest, whose binary is built `-tags guest` precisely so it never links net/http and the TLS
+// stack behind it. Two string constants are a smaller cost than that, and the pairing is
+// asserted where the two meet rather than left to a reader (guestagent's Alert wiring).
+//
+// The level is carried at all rather than assumed, because one of the three alerts below is a
+// RECOVERY. Before this the callback took a bare message, so anything reading the trail had to
+// label every deadman alert a warning -- which meant "your house is fine again" arrived looking
+// exactly like "your house is in trouble".
+const (
+	LevelWarning   = "warning"
+	LevelRecovered = "recovered"
+)
+
 // Episode is the persisted backoff state for one degraded stretch. It survives a deadman reboot
 // (stored node-locally, NEVER on the replicated DRBD volume) so the backoff GROWS across reboots
 // instead of resetting to the burst cadence on every boot. Reset to zero the moment the host
@@ -44,7 +59,7 @@ type Monitor struct {
 	Now    func() time.Time                                      // injectable clock
 	Quorum func(context.Context) (peers, connected int, e error) // read DRBD quorum locally
 	Reboot func(context.Context) error                           // GRACEFUL reboot (systemctl reboot)
-	Alert  func(string)                                          // owner-facing degradation alert
+	Alert  func(level, msg string)                               // owner-facing degradation alert; levels below
 	Logf   func(string, ...any)                                  // operational log
 	State  StateStore                                            // persisted backoff across a reboot
 
@@ -79,9 +94,9 @@ func (m *Monitor) logf(format string, a ...any) {
 	}
 }
 
-func (m *Monitor) alert(msg string) {
+func (m *Monitor) alert(level, msg string) {
 	if m.Alert != nil {
-		m.Alert(msg)
+		m.Alert(level, msg)
 	}
 }
 
@@ -154,7 +169,7 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 	}) {
 	case Serve:
 		if degraded {
-			m.alert(fmt.Sprintf("briard %s: host-agent link restored — resuming normal operation", m.Node))
+			m.alert(LevelRecovered, fmt.Sprintf("briard %s: host-agent link restored — resuming normal operation", m.Node))
 			ep = Episode{}
 			if m.State != nil {
 				_ = m.State.Save(ep)
@@ -167,7 +182,7 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 			if qerr != nil {
 				reason = fmt.Sprintf("quorum unreadable (%v)", qerr)
 			}
-			m.alert(fmt.Sprintf("briard %s: host agent unreachable — degraded, holding (%s)", m.Node, reason))
+			m.alert(LevelWarning, fmt.Sprintf("briard %s: host agent unreachable — degraded, holding (%s)", m.Node, reason))
 			degraded = true
 		}
 	case Reboot:
@@ -179,7 +194,7 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 			}
 		}
 		if !degraded {
-			m.alert(fmt.Sprintf("briard %s: host agent unreachable — rebooting to recover / fail over", m.Node))
+			m.alert(LevelWarning, fmt.Sprintf("briard %s: host agent unreachable — rebooting to recover / fail over", m.Node))
 		}
 		degraded = true
 		m.logf("deadman: rebooting (attempt %d, quorum-safe)", ep.Attempt)

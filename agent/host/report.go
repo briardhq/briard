@@ -140,7 +140,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		logf("directive kind=upgrade: payload %s -> %s", current, d.Payload)
 		if _, err := up.UpgradePayload(uctx, spec, current, d.Payload); err != nil {
 			logf("directive upgrade failed (rolled back): %v", err)
-			escalate(ctx, n, spec.Name, "payload upgrade", current+" -> "+d.Payload, err)
+			escalate(ctx, n, logf, spec.Name, "payload upgrade", current+" -> "+d.Payload, err)
 			return rolledBack(err.Error())
 		}
 		logf("directive upgrade applied: now serving %s", d.Payload)
@@ -176,7 +176,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		logf("directive kind=upgrade-system: staging %s", d.Payload)
 		if err := up.Stage(uctx, d.Payload, guestagent.StageSource{}); err != nil {
 			logf("directive upgrade-system: staging failed, not switching (node unchanged): %v", err)
-			escalate(ctx, n, spec.Name, "OS stage", d.Payload, err)
+			escalate(ctx, n, logf, spec.Name, "OS stage", d.Payload, err)
 			return failed(err.Error())
 		}
 		// Decide HOW to activate before touching anything. Committing
@@ -186,7 +186,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		method, reasons, err := up.ActivationMethod(uctx, d.Payload)
 		if err != nil {
 			logf("directive upgrade-system: could not determine activation method, not switching: %v", err)
-			escalate(ctx, n, spec.Name, "OS activation check", d.Payload, err)
+			escalate(ctx, n, logf, spec.Name, "OS activation check", d.Payload, err)
 			return failed(err.Error())
 		}
 		if method != guest.ActivateSwitch {
@@ -212,14 +212,14 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 				return rolledBack(err.Error())
 			case err != nil && back:
 				logf("directive upgrade-system rolled back: %v", err)
-				escalate(ctx, n, spec.Name, "OS upgrade (reboot)", d.Payload, err)
+				escalate(ctx, n, logf, spec.Name, "OS upgrade (reboot)", d.Payload, err)
 				return rolledBack(err.Error())
 			case err != nil:
 				// The node did NOT come back on the target and was not returned to where it
 				// started -- the one outcome that needs a human, so do not dress it up as a
 				// rollback the way a switch failure is allowed to.
 				logf("directive upgrade-system FAILED without a clean rollback: %v", err)
-				escalate(ctx, n, spec.Name, "OS upgrade (reboot)", d.Payload, err)
+				escalate(ctx, n, logf, spec.Name, "OS upgrade (reboot)", d.Payload, err)
 				return failed(err.Error())
 			}
 			logf("directive upgrade-system applied: rebooted into %s", d.Payload)
@@ -234,11 +234,11 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		switch {
 		case err != nil && back:
 			logf("directive upgrade-system rolled back: %v", err)
-			escalate(ctx, n, spec.Name, "OS upgrade", d.Payload, err)
+			escalate(ctx, n, logf, spec.Name, "OS upgrade", d.Payload, err)
 			return rolledBack(err.Error())
 		case err != nil:
 			logf("directive upgrade-system FAILED without a clean rollback: %v", err)
-			escalate(ctx, n, spec.Name, "OS upgrade", d.Payload, err)
+			escalate(ctx, n, logf, spec.Name, "OS upgrade", d.Payload, err)
 			return failed(err.Error())
 		}
 		logf("directive upgrade-system applied: now running %s", d.Payload)
@@ -273,7 +273,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		defer cancel()
 		if err := up.WriteCert(cctx, b.Cert, key); err != nil {
 			logf("directive cert (%s) failed: %v", b.Name, err)
-			escalate(ctx, n, b.Name, "cert renewal", b.Name, err)
+			escalate(ctx, n, logf, b.Name, "cert renewal", b.Name, err)
 			return failed(err.Error())
 		}
 		logf("directive cert applied: renewed cert for %s written to the volume", b.Name)
@@ -299,7 +299,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		if err := su.Stage(sctx, u); err != nil {
 			// Refuse-and-stay: a bad/absent signature or a failed fetch keeps the running binary.
 			logf("directive agent-update refused (current kept): %v", err)
-			escalate(ctx, n, "briard-agent", "agent self-update", u.Version, err)
+			escalate(ctx, n, logf, "briard-agent", "agent self-update", u.Version, err)
 			return failed(err.Error())
 		}
 		// Staged + armed. The host loop restarts the unit once this outcome is acked, so the
@@ -314,17 +314,31 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 
 // escalate pushes an alert when an upgrade fails: upgrades are rare, so this
 // isn't fatigue -- and a failure includes a *wedged* rollback (the RollbackTimeout expired
-// mid-recovery), the case the rollback bound exists to surface instead of hanging silently. Best-effort;
-// nil notifier (witness) is a no-op.
-func escalate(ctx context.Context, n notify.Notifier, service, kind, target string, cause error) {
+// mid-recovery), the case the rollback bound exists to surface instead of hanging silently.
+//
+// IT WRITES THE LOCAL TRAIL FIRST, and that ordering is the point rather than a detail. This
+// function used to do nothing BUT hand the alert to the notifier -- which on the free tier is
+// notify.Nop(), because there is no cloud contact to configure one from. So every failed OS
+// upgrade, payload upgrade, cert renewal and agent self-update on a free node produced an alert
+// that reached NOBODY: not the owner, not the journal, not a support bundle. The one place a
+// person looks after "it stopped working" held no record that briard had noticed anything.
+//
+// The redundancy alerter had this line from the start (alert.go); this path simply never grew
+// it, and nothing failed loudly enough to say so -- an alert nobody receives looks exactly like
+// an alert nobody needed to receive.
+//
+// A nil notifier (a witness) still logs: it has no owner to push to, but it has a journal.
+func escalate(ctx context.Context, n notify.Notifier, logf func(string, ...any), service, kind, target string, cause error) {
+	al := notify.Alert{
+		Level: notify.Warning,
+		Title: "Briard: " + kind + " failed",
+		Body:  fmt.Sprintf("service %s: %s to %s failed and rolled back — %v", service, kind, target, cause),
+	}
+	logf("%s", notify.LogLine(al))
 	if n == nil {
 		return
 	}
 	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_ = n.Notify(nctx, notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: " + kind + " failed",
-		Body:  fmt.Sprintf("service %s: %s to %s failed and rolled back — %v", service, kind, target, cause),
-	})
+	_ = n.Notify(nctx, al)
 }

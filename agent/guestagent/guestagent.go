@@ -1226,7 +1226,17 @@ func RunDeadman(ctx context.Context) error {
 			}
 			return nil
 		},
-		Alert: func(msg string) { fmt.Fprintln(os.Stderr, "briard-deadman:", msg) }, // real owner delivery
+		// The deadman's owner-facing channel, and the ONLY alert on the node that is not written
+		// by the host agent -- so it is also the one most easily missed. It goes to this process's
+		// stderr, which systemd puts in the GUEST's journal, which the guest's ttyS0 console
+		// carries out to the host's /var/log/briard-guest-console.log. Under macvtap that file is
+		// the sole witness to anything inside the VM (install.sh), and it shares no logger with
+		// the host agent -- so `briard alerts` reads both surfaces and cannot merely tail one.
+		//
+		// The "alert [<level>] " prefix is notify.LogLine's shape, hand-written because the guest
+		// binary must not link shared/notify (see deadman.LevelWarning). It is what makes this
+		// line findable amid the kernel and systemd traffic sharing the console.
+		Alert: func(level, msg string) { fmt.Fprintf(os.Stderr, "briard-deadman: alert [%s] %s\n", level, msg) },
 		Logf:  func(f string, a ...any) { fmt.Fprintf(os.Stderr, "briard-deadman: "+f+"\n", a...) },
 		State: deadman.FileState{Path: deadmanStatePath},
 	}

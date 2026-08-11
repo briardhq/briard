@@ -32,7 +32,7 @@ func newHarness() *harness {
 		Now:    func() time.Time { return h.now },
 		Quorum: func(context.Context) (int, int, error) { return h.peers, h.connected, h.quorumErr },
 		Reboot: func(context.Context) error { h.reboots++; return nil },
-		Alert:  func(s string) { h.alerts = append(h.alerts, s) },
+		Alert:  func(level, s string) { h.alerts = append(h.alerts, "["+level+"] "+s) },
 		State:  &memState{},
 	}
 	return h
@@ -159,9 +159,21 @@ func TestMonitorRecoversOnContact(t *testing.T) {
 	if degraded || ep.Attempt != 0 {
 		t.Errorf("did not recover on contact: degraded=%v ep=%+v", degraded, ep)
 	}
-	// The last alert is the recovery one.
+	// The last alert is the recovery one -- and it is LEVELLED as one. The level is asserted
+	// separately from the wording because a reader of the local trail (`briard alerts`) sorts by
+	// it: this alert says the house is fine again, and shipping it as a warning would make the
+	// all-clear indistinguishable from the trouble it clears.
 	if len(h.alerts) == 0 || !contains(h.alerts[len(h.alerts)-1], "restored") {
 		t.Errorf("missing recovery alert, alerts=%v", h.alerts)
+	}
+	if last := h.alerts[len(h.alerts)-1]; !contains(last, "["+LevelRecovered+"]") {
+		t.Errorf("recovery alert = %q, want it levelled %s", last, LevelRecovered)
+	}
+	// ...and the degradation alerts before it are NOT recovered-level.
+	for _, a := range h.alerts[:len(h.alerts)-1] {
+		if !contains(a, "["+LevelWarning+"]") {
+			t.Errorf("degradation alert = %q, want it levelled %s", a, LevelWarning)
+		}
 	}
 }
 
