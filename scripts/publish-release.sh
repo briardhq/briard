@@ -119,26 +119,21 @@ stage)
 		chmod 0644 "$DIR/$f.zst"
 	done
 
-	# The manifest, in the verifier's exact shape. `mode` is emitted only where it is not the
-	# 0644 default, matching `omitempty` on the reading side.
-	{
-		printf '{"artifacts":['
-		first=1
-		for f in briard-agent briard-net-wrap qemu-bundle.tar.zst nixos.qcow2.zst; do
-			[ -f "$DIR/$f" ] || die "staged file missing: $f"
-			sum=$(sha256sum "$DIR/$f" | cut -d' ' -f1)
-			size=$(stat -c%s "$DIR/$f")
-			mode=$(stat -c%a "$DIR/$f")
-			[ $first -eq 1 ] || printf ','
-			first=0
-			if [ "$mode" = "755" ]; then
-				printf '{"name":"%s","sha256":"%s","size":%s,"mode":493}' "$f" "$sum" "$size"
-			else
-				printf '{"name":"%s","sha256":"%s","size":%s}' "$f" "$sum" "$size"
-			fi
-		done
-		printf ']}'
-	} > "$DIR/manifest.json"
+	# The manifest, written BY THE AGENT rather than by this script.
+	#
+	# It used to be a printf loop right here, hand-assembling the JSON -- including `"mode":493`,
+	# which is 0o755 converted to decimal by a human and re-checked by nobody. That made the
+	# format a contract between a shell script and a Go struct with nothing holding the two in
+	# step: a renamed field, a mode that stopped being hand-converted, or a size that drifted from
+	# what the reader bounds on would have published a channel no agent could install, and neither
+	# side's tests could have caught it. The writer now shares its types with the reader
+	# (agent/install), so the round trip is testable in one language and the format cannot
+	# disagree with itself.
+	#
+	# The binary used is the one STAGED IN THIS DIRECTORY -- the exact agent this release ships,
+	# so the manifest is written by the same build that will later read it on a node.
+	[ -x "$DIR/briard-agent" ] || die "no staged briard-agent to write the manifest with"
+	"$DIR/briard-agent" --stage-manifest "$DIR" || die "writing the manifest failed"
 	jq -e . "$DIR/manifest.json" >/dev/null || die "the manifest we just wrote is not valid JSON"
 
 	# install.sh, WITH THE RELEASE PUBKEY EMBEDDED. The source tree carries a placeholder, and

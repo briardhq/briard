@@ -25,3 +25,9 @@ func runFetchInstall(context.Context, string) error {
 func runGuestShutdown(context.Context, string) error {
 	return errors.New("agent: built with -tags guest (guest-only); guest-shutdown is host-only")
 }
+
+// runStageManifest is host-only too: it lives in the install package, which the guest trim
+// excludes. Only a release pipeline calls it, and a release pipeline is never a guest.
+func runStageManifest(string) error {
+	return errors.New("agent: built with -tags guest (guest-only); stage-manifest is host-only")
+}

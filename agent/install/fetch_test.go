@@ -376,3 +376,92 @@ func TestFetchVerifiedRefusesUndecodableCompressedArtifact(t *testing.T) {
 		t.Errorf("undecodable .zst still produced a staging dir at %s", dest)
 	}
 }
+
+// ---- the writer/reader round trip -------------------------------------------------------
+//
+// The point of WriteManifest existing at all: the bytes the release publishes are described by
+// the same code that later reads them. This drives the REAL writer over a staging dir, signs its
+// output, serves it, and runs the REAL FetchVerified against it — so a format change that breaks
+// the contract fails here rather than at a stranger's first install.
+
+func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
+	stage := t.TempDir()
+	agent := []byte("the briard-agent static binary")
+	guest := bytes.Repeat([]byte("guest-image-chunk;"), 4096)
+	write := func(name string, b []byte, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(stage, name), b, mode); err != nil {
+			t.Fatal(err)
+		}
+		// WriteFile respects umask, so force the mode we are asserting on.
+		if err := os.Chmod(filepath.Join(stage, name), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("briard-agent", agent, 0o755)
+	write("nixos.qcow2.zst", zstdOf(t, guest), 0o644)
+	// Files that describe the set must NOT become artifacts of it.
+	write("install.sh", []byte("#!/bin/sh\n"), 0o755)
+
+	if err := WriteManifest(stage); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	mb, err := os.ReadFile(filepath.Join(stage, ManifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man Manifest
+	if err := json.Unmarshal(mb, &man); err != nil {
+		t.Fatalf("the manifest we just wrote does not parse: %v", err)
+	}
+	if len(man.Artifacts) != 2 {
+		t.Fatalf("manifest lists %d artifacts, want 2 (install.sh must be excluded): %+v", len(man.Artifacts), man.Artifacts)
+	}
+	// The mode round-trips as a NUMBER the reader applies, which is the thing the old
+	// hand-written "mode":493 got right only by luck.
+	for _, a := range man.Artifacts {
+		if a.Name == "briard-agent" && a.Mode != 0o755 {
+			t.Errorf("agent mode = %o, want 0755", a.Mode)
+		}
+		if a.Name == "nixos.qcow2.zst" && a.Mode != 0 {
+			t.Errorf("0644 artifact emitted a mode (%o); want omitted", a.Mode)
+		}
+	}
+
+	// Now serve exactly those bytes and let the real fetcher consume them.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kr, err := selfupdate.NewKeyring(pubPEM(t, pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies := map[string][]byte{ManifestName: mb, ManifestName + sigSuffix: ed25519.Sign(priv, mb)}
+	for _, a := range man.Artifacts {
+		b, err := os.ReadFile(filepath.Join(stage, a.Name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies[a.Name] = b
+	}
+	c := &channel{t: t, priv: priv, kr: kr, bodies: bodies, missing: map[string]bool{}}
+	dest := stagedFresh(t)
+	if err := (&Fetcher{BaseURL: c.serve(), Keyring: kr}).FetchVerified(context.Background(), dest); err != nil {
+		t.Fatalf("a manifest written by WriteManifest was refused by FetchVerified: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
+	if err != nil {
+		t.Fatalf("guest image not expanded: %v", err)
+	}
+	if !bytes.Equal(got, guest) {
+		t.Error("round-tripped guest image differs from the staged one")
+	}
+	fi, err := os.Stat(filepath.Join(dest, "briard-agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("round-tripped agent mode = %o, want 0755", fi.Mode().Perm())
+	}
+}

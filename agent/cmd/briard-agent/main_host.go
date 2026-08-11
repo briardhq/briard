@@ -54,3 +54,11 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	f := &install.Fetcher{BaseURL: base, Keyring: kr, Logf: log.Printf}
 	return f.FetchVerified(ctx, dest)
 }
+
+// runStageManifest writes dir/manifest.json describing the artifacts staged in dir -- the
+// release pipeline's writer, so the bytes a release publishes are described by the same code
+// that installs them (agent/install.WriteManifest). Host-side for the same reason as
+// runFetchInstall: it lives in the install package, which the `-tags guest` trim excludes.
+func runStageManifest(dir string) error {
+	return install.WriteManifest(dir)
+}

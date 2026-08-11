@@ -39,6 +39,7 @@ func main() {
 	deadman := flag.Bool("deadman", false, "run as the in-guest watchdog for the host agent")
 	reportCard := flag.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
 	fetchInstall := flag.String("fetch-install", "", "download and verify the signed release into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING)")
+	stageManifest := flag.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer")
 	mintFlockName := flag.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	guestShutdown := flag.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
 	flag.Parse()
@@ -57,6 +58,24 @@ func main() {
 			log.Fatalf("mint-flock-name: %v", err)
 		}
 		fmt.Fprintln(os.Stdout, name)
+		return
+	}
+
+	// The release pipeline's manifest writer, and it is HERE rather than in the shell script that
+	// calls it for exactly the reason --mint-flock-name is: the manifest is a CONTRACT between the
+	// publisher and every installing node, and it used to have two implementations -- a printf
+	// loop in publish-release.sh (hand-assembling JSON, including `"mode":493`, which is 0o755
+	// written in decimal by a human) and the struct in agent/install. Writing it with the same
+	// code that reads it is what makes the format unable to disagree with itself.
+	//
+	// Same category as --report-card and --fetch-install: a pipeline invokes it, it does one
+	// thing, it exits. It costs nothing in the shipped binary -- sha256 and encoding/json are
+	// already linked -- and runStageManifest is stubbed out of a `-tags guest` build, so the
+	// guest trim is unaffected.
+	if *stageManifest != "" {
+		if err := runStageManifest(*stageManifest); err != nil {
+			log.Fatalf("stage-manifest: %v", err)
+		}
 		return
 	}
 

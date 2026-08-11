@@ -31,16 +31,52 @@
 # Heavy (two nested guest boots + a multi-GB guest disk) -> rides the `install` nightly tag
 # alongside install-bridge, qemu-bundle + report-card. Run:
 #   nix build .#tests.install-macvtap -L
-{ pkgs, guestDisk, agent, qemuBundle }:
+{ pkgs, guestDisk, agent, qemuBundle, selfupdateStub }:
 let
-  # Same staging as install-bringup, plus the macvtap launch wrapper the substrate needs.
-  staging = pkgs.runCommand "briard-install-staging-macvtap" { } ''
-    mkdir -p "$out/qemu"
-    cp ${agent}/bin/briard-agent "$out/briard-agent"
-    cp ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
-    cp -r ${qemuBundle}/. "$out/qemu/"
-    cp ${guestDisk}/nixos.qcow2 "$out/nixos.qcow2"
+  # THE RELEASE CHANNEL, BUILT THE WAY A RELEASE IS BUILT.
+  #
+  # This used to be a `staging` dir of loose uncompressed files handed to install.sh through
+  # BRIARD_ARTIFACTS -- a shape nothing ships: the qemu bundle as a DIRECTORY rather than the
+  # tarball a real install unpacks, and no manifest, signature or compression anywhere. So the
+  # installer's actual first act on a stranger's machine (fetch a signed, compressed set over
+  # HTTP and verify it before touching the disk) was the one link in the chain no test ran, and
+  # BRIARD_ARTIFACTS -- an escape hatch -- was what every install test proved instead.
+  #
+  # Everything here mirrors scripts/publish-release.sh, and the manifest is written by the REAL
+  # writer (`briard-agent --stage-manifest`) -- the same binary that reads it back during the
+  # install below. A format change that breaks that round trip now fails HERE instead of at a
+  # stranger's first install.
+  channel = pkgs.runCommand "briard-test-channel" {
+    nativeBuildInputs = [ pkgs.zstd pkgs.openssl pkgs.gnutar ];
+  } ''
+    mkdir -p "$out"
+    install -m0755 ${agent}/bin/briard-agent        "$out/briard-agent"
+    install -m0755 ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
+    # Deterministic tar, same flags as the release script: the bundle is a directory in the store
+    # and the channel contract wants one file.
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+        -cf qemu-bundle.tar -C ${qemuBundle} .
+    zstd -19 -q --rm qemu-bundle.tar -o "$out/qemu-bundle.tar.zst"
+    zstd -19 -q ${guestDisk}/nixos.qcow2 -o "$out/nixos.qcow2.zst"
+    chmod 0644 "$out"/*.zst
+    # The production writer, not a re-implementation in Nix -- which would have tested this file
+    # against itself and proven nothing about what a release actually publishes.
+    "$out/briard-agent" --stage-manifest "$out"
   '';
+  # ⚠️ THE CHANNEL IS SIGNED AT RUNTIME, NOT HERE, and that is a constraint rather than a
+  # preference: a signing key committed to the repo trips `TestNoSecretMaterial` (internal/arch),
+  # the ★ guard that refuses a PRIVATE KEY block anywhere in the tree. It is right to refuse one
+  # -- a throwaway test key is still a private key sitting in a public repo, and the guard cannot
+  # tell the difference, which is exactly why it should not try. So the test mints a keypair
+  # inside the VM and signs there.
+  #
+  # The VM serves a SYMLINK FARM over the store rather than a copy: the channel is ~400 MB and
+  # only one small file in it (the signature) has to be writable, so copying it would cost the
+  # test half a gigabyte of VM disk to add 64 bytes.
+  # What install.sh needs to reach the channel: where it lives, and the release public key it
+  # verifies the manifest against. Exactly the two the shipped one-liner sets. The keyring is
+  # minted into /root at test start (see the signing step in the script).
+  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_KEYRING=/root/keyring.pem";
   installScript = ../scripts/install.sh;
 in
 pkgs.testers.runNixOSTest {
@@ -208,8 +244,32 @@ pkgs.testers.runNixOSTest {
     # that step is not irreversible the way the bridge enslave is -- install-bridge.nix keeps the
     # sharper version of this check -- but "refuses and changes nothing" must hold on the default
     # substrate too, so it is asserted here in the mode's own terms.)
+    # The release channel, served over HTTP for the rest of this test. Every install below goes
+    # through the REAL network path -- fetch the signed manifest, verify it against the keyring,
+    # verify each artifact's hash, expand the compressed ones -- which is what a stranger's
+    # machine does and what BRIARD_ARTIFACTS was quietly standing in for.
+    # Mint a release keypair and sign the manifest the channel derivation already wrote. The
+    # signed bytes are the ones the writer produced -- signing does not re-serialise them, so what
+    # the agent verifies is exactly what `--stage-manifest` emitted.
+    stub = "${selfupdateStub}/bin/briard-selfupdate-stub"
+    host.succeed(f"{stub} keygen /root/release.key /root/keyring.pem")
+    # A symlink farm over the read-only store: only the signature needs to be a real file here.
+    host.succeed("mkdir -p /srv && ln -sf ${channel}/* /srv/")
+    host.succeed(f"{stub} sign /root/release.key /srv/manifest.json | base64 -d > /srv/manifest.json.sig")
+    host.succeed("test -s /srv/manifest.json.sig")
+
+    host.succeed(
+        f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
+    )
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/manifest.json -o /dev/null", timeout=30)
+    # The manifest is SIGNED and the artifacts are COMPRESSED -- assert the shape before relying
+    # on it, so a channel that silently went back to loose plaintext files cannot pass as green.
+    host.succeed("curl -sf http://127.0.0.1:8099/manifest.json.sig -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/nixos.qcow2.zst -o /dev/null")
+    host.fail("curl -sf http://127.0.0.1:8099/nixos.qcow2 -o /dev/null")
+
     host.fail(
-        "BRIARD_ARTIFACTS=${staging} BRIARD_NET_MODE=macvtap BRIARD_NIC=nope999 sh ${installScript}"
+        "${channelEnv} BRIARD_NET_MODE=macvtap BRIARD_NIC=nope999 sh ${installScript}"
     )
     host.fail("ip link show briard0")       # nothing half-built
     host.fail("ip link show briard-drbd0")
@@ -219,7 +279,7 @@ pkgs.testers.runNixOSTest {
     # BRIARD_UNIT_DIR=/run/systemd/system: NixOS's /etc/systemd/system is a read-only store
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     host.succeed(
-        "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
+        "${channelEnv} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
 
@@ -411,7 +471,7 @@ pkgs.testers.runNixOSTest {
     # (cattle), and does NOT recreate the pet data.img. net-up.sh is idempotent, so it adopts the
     # macvtaps that are already up rather than re-creating them.
     host.succeed(
-        "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
+        "${channelEnv} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched

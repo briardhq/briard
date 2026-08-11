@@ -207,7 +207,9 @@ let
   # qemu (no distro qemu) + a nested guest; plus the cattle/pet reinstall. It carries that
   # mode-independent chain here from the bridge test, so the default substrate carries it.
   installMacvtap = import ./install-macvtap.nix {
-    inherit pkgs guestDisk;
+    # selfupdateStub serves the signed release channel over HTTP so the install runs the REAL
+    # network path (fetch + verify + expand) rather than the BRIARD_ARTIFACTS escape hatch.
+    inherit pkgs guestDisk selfupdateStub;
     agent = agentPkg;
     qemuBundle = qemuBundle.bundle;
   };
