@@ -69,10 +69,26 @@ func (a *redundancyAlerter) observe(ctx context.Context, st api.NodeStatus) {
 }
 
 func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
-	a.logf("%s", notify.LogLine(al)) // local trail, regardless of notifier -- what `briard alerts` reads
+	fireAlert(ctx, a.n, a.logf, al)
+}
+
+// FireAlert is how every alert on the host side leaves: the local trail FIRST, then delivery.
+// The order is the point. Delivery is the half that can be absent (the free tier configures no
+// notifier at all) or can simply fail, so writing the trail after it would make the RECORD of
+// an alert conditional on the alert having been delivered -- exactly backwards for the tier
+// that delivers nothing, and what makes `briard alerts` truthful there (notify.LogLine).
+//
+// A nil notifier is a supported case, not a bug: a witness builds none (it has no redundancy
+// signal to report), and it can still reach here from the recovery ladder, whose subject is the
+// guest rather than the replica set. The trail is then the whole of the delivery.
+func fireAlert(ctx context.Context, n notify.Notifier, logf func(string, ...any), al notify.Alert) {
+	logf("%s", notify.LogLine(al)) // local trail, regardless of notifier -- what `briard alerts` reads
+	if n == nil {
+		return
+	}
 	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := a.n.Notify(nctx, al); err != nil {
-		a.logf("alert delivery failed (%s): %v", al.Level, err)
+	if err := n.Notify(nctx, al); err != nil {
+		logf("alert delivery failed (%s): %v", al.Level, err)
 	}
 }

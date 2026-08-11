@@ -365,9 +365,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// (systemd restarts it), and a per-call deadline also closes the channel — either way
 	// observe returns ErrChannelDown, and we re-dial + re-handshake rather than go blind
 	// forever (the older behaviour: one drop and the host never sees the guest again).
-	// A warm guest just re-attaches and observe resumes; a guest that stays unreachable
-	// keeps us retrying (escalating to a VM reboot is B.22b). A cancelled ctx is a clean
-	// shutdown.
+	// A warm guest just re-attaches and observe resumes; a guest that stays unreachable past
+	// the recovery window gets its VM restarted, and after K of those the host stops and says
+	// so (guestrecover.go, B.22b). A cancelled ctx is a clean shutdown.
 	//
 	// TERMINAL OUTCOMES LIVE HERE, NOT IN observe, and is why. observe returns on a dead
 	// channel, so anything held in its frame goes with it — and an OS upgrade ALWAYS bounces the
@@ -379,7 +379,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// closure mechanisms failing on the same case is what made this a deterministic loop on a
 	// broken release rather than an occasional retry.
 	var pendingOutcomes []api.DirectiveOutcome
+	var recovery guestRecovery
 	for {
+		served := time.Now()
 		err := cfg.observe(ctx, client, mgr, alerter, n, rep, agg, assignment.Tenant, local, &pendingOutcomes, logf)
 		if ctx.Err() != nil {
 			return nil
@@ -387,6 +389,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		if !errors.Is(err, guestagent.ErrChannelDown) {
 			return err // observe only returns nil (handled above) or ErrChannelDown
 		}
+		// How long the channel that just died had been up is the only evidence available for
+		// whether this is a NEW incident or the same guest failing again, and it has to be
+		// taken here — recover() is called once per drop and cannot see the stretch before it.
+		recovery.served(time.Since(served))
 		logf("control channel down (%v); reconnecting", err)
 		_ = client.Close()
 		// An OS upgrade that rebooted the guest has already re-established the
@@ -398,12 +404,13 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			logf("adopting the channel the upgrade path re-established")
 			continue
 		}
-		client, err = reconnect(ctx, cfg.ControlSock, logf)
+		// Wait for the guest to come back, and restart its VM if it does not. Rebinding the
+		// Manager is part of the swap recover() owns — a reboot replaces the channel and the VM
+		// together, so Run cannot rebind to a fresh channel without also being told about a
+		// fresh VM, which is why this is no longer a bare reconnect + rebind here.
+		client, err = mgr.recover(ctx, &recovery, n)
 		if err != nil {
-			return nil // ctx cancelled while reconnecting — clean shutdown
-		}
-		if mgr != nil {
-			mgr.rebind(client) // rebind to the fresh connection
+			return nil // ctx cancelled while recovering — clean shutdown
 		}
 	}
 }

@@ -460,11 +460,14 @@ func (u *osUpgrade) restore(ctx context.Context, qspec platform.QEMUSpec, prev s
 // agent itself being what died. Neither route's request means the machine stopped, so both
 // end in WaitStopped: the caller's next act is to touch a disk QEMU may still hold open.
 //
-// Both stops in this file go through here now -- the reboot path's, which needs the
-// guest's bootloader rewrite to survive, and the rollback leg's, which needs DRBD to record
-// its quorum state. They differ in what they do when it fails: the reboot path abandons the
-// upgrade (a guest that will not go down keeps serving its old generation), the rollback leg
-// forces it (there is nothing left to preserve by waiting).
+// Every stop that is not a self-fence goes through here -- the reboot upgrade's, which needs
+// the guest's bootloader rewrite to survive; the rollback leg's, which needs DRBD to record its
+// quorum state; and the recovery ladder's, which needs the same DRBD record on a guest that is
+// wedged rather than upgrading. They differ in what they do when it fails: the reboot path
+// abandons the upgrade (a guest that will not go down keeps serving its old generation), while
+// the rollback leg and the recovery ladder force it (there is nothing left to preserve by
+// waiting). Hence the neutral log prefix below: by the time this runs, which of the three is
+// calling is not something the messages can assume.
 func stopCleanly(ctx context.Context, g *platform.Guest, client *guestagent.Client, logf func(string, ...any)) error {
 	perr := client.PowerOff(ctx)
 	if perr == nil {
@@ -474,7 +477,7 @@ func stopCleanly(ctx context.Context, g *platform.Guest, client *guestagent.Clie
 			perr = err
 		}
 	}
-	logf("os-upgrade: guest agent did not stop the machine (%v); trying the power button", perr)
+	logf("guest-stop: guest agent did not stop the machine (%v); trying the power button", perr)
 	if err := g.Shutdown(ctx, shutdownGrace); err != nil {
 		// A FAILED REQUEST IS NOT A FAILED SHUTDOWN, and reading it as one is what defeated
 		// on its first instrumented run: os.poweroff is `systemctl poweroff --no-block`
@@ -490,7 +493,7 @@ func stopCleanly(ctx context.Context, g *platform.Guest, client *guestagent.Clie
 		// grace makes this a probe rather than another wait -- WaitStopped answers immediately
 		// when the unit is already gone.
 		if g.WaitStopped(ctx, 0) == nil {
-			logf("os-upgrade: the guest was already down — the request landed, its reply did not")
+			logf("guest-stop: the guest was already down — the request landed, its reply did not")
 			return nil
 		}
 		return errors.Join(perr, err)
