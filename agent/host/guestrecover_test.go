@@ -3,6 +3,8 @@ package host
 import (
 	"testing"
 	"time"
+
+	"briard.io/agent/guestagent/deadman"
 )
 
 // The ladder spends its attempts in order and then stops, announcing the give-up exactly once.
@@ -101,5 +103,31 @@ func TestRecoveryWindowIsLongerThanAnyOrdinaryBounce(t *testing.T) {
 		t.Errorf("guestRecoveryReset (%v) <= guestRecoveryWindow (%v): a node could be declared "+
 			"recovered without ever having outlived the wait that judges it",
 			guestRecoveryReset, guestRecoveryWindow)
+	}
+}
+
+// THE TWO REFLEXES MUST NOT RACE, and DESIGN 8.7 states the ordering as an invariant: a live
+// host acts FIRST, because its recovery is the cleaner one (stop, relaunch, re-drive bring-up
+// from outside) while the guest's is a self-reboot taken blind to whether the host is coming
+// back. The two clocks only ever run together in one situation -- the channel is broken while
+// both processes are alive, each seeing the other's silence -- and that is exactly when the
+// order decides which mechanism recovers the node.
+//
+// Nothing asserted it until this rung existed, because until then only one of the two constants
+// was here. Both are now, so the invariant is checkable, and it is worth checking: the numbers
+// live in different packages, are read by different processes, and a future tuning of either
+// would silently invert the design with no test failing anywhere.
+//
+// The margin is against the WHOLE host-side action, not just the wait -- the host still has to
+// stop the guest and relaunch it after the window closes.
+func TestHostActsBeforeTheGuestSideDeadman(t *testing.T) {
+	// The earliest the guest can fire is its base with no jitter.
+	guestFires := deadman.DefaultDeadman
+	// The latest the host acts: the window, plus the clean-stop attempt it makes before forcing.
+	hostActs := guestRecoveryWindow + shutdownGrace
+	if hostActs >= guestFires {
+		t.Errorf("host acts at ~%v but the guest deadman can fire at %v: the guest would "+
+			"self-reboot before a live host could recover it, inverting DESIGN 8.7",
+			hostActs, guestFires)
 	}
 }
