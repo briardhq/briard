@@ -3,9 +3,10 @@
 # vendored via vendorHash. Runs host-side on the machine, or `--guest` inside the
 # guest VM to serve the host over the virtio-serial channel.
 #
-# vendorHash: regenerate on go.mod/go.sum changes (set to lib.fakeHash, build,
-# copy the reported "got:" hash). vendorHash is module-wide, so it's unaffected by
-# build tags (the vendor dir carries every dep; tags only change what the binary links).
+# vendorHash lives in ../vendor-hash.nix, which every Go package here imports -- it used to be
+# copied into eight files kept in step by comments, so adding one dependency meant editing eight
+# of them in lockstep. That file carries the regenerate recipe. It is module-wide, so it is
+# unaffected by build tags (the vendor dir carries every dep; tags only change what links).
 #
 # tags: pass [ "guest" ] to build the guest-only binary -- it excludes the host
 # subsystems (platform/QEMU launcher, net/http, crypto/tls), roughly halving the binary
@@ -33,7 +34,7 @@ buildGoModule {
   pname = "briard-agent" + (if tags == [ ] then "" else "-" + builtins.concatStringsSep "-" tags);
   inherit version;
   src = ../.;
-  vendorHash = "sha256-4d/F5wfaBgNfrt0bv6IuElUAR/wVr7yG8BYOX0dSq6c=";
+  vendorHash = import ../vendor-hash.nix;
   subPackages = [ "agent/cmd/briard-agent" ];
   inherit tags;
   env.CGO_ENABLED = 0;
