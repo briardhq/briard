@@ -86,6 +86,7 @@ let
   agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; };
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # host restarts a wedged guest
+  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # B.10: rebuild the guest from its image, keep the data
 
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
   # a SHORT T_deadman so the reflex fires in seconds (baked into the guest-agent unit's env).
@@ -268,6 +269,7 @@ in
       # here the GUEST goes silent and the host restarts its VM. Minutes long by construction --
       # it measures the wait, because a ladder that acts too soon is worse than one that waits.
       agent-recover = agentRecover;
+      guest-rescue = guestRescue;
       os-stage = osStage; # a closure the guest does NOT have, fetched over a cache
       # The boot selector. Promoted back from `debug` once the premise that demoted it turned
       # out to be false: an L2 guest under nesting DOES complete a clean shutdown, by BOTH

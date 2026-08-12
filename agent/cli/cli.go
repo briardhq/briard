@@ -66,6 +66,8 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runHandover(ctx, args[1:], stdout, stderr)
 	case "os":
 		return runOS(ctx, args[1:], stdout, stderr)
+	case "rescue":
+		return runRescue(ctx, args[1:], stdout, stderr)
 	case "alerts":
 		return runAlerts(ctx, args[1:], stdout, stderr)
 	case "logs":
@@ -86,6 +88,7 @@ Usage:
   briard service install <name>       install a catalogued service on this node
   briard handover                     hand this node's work to a peer (a planned failover)
   briard os upgrade <closure>         switch this node to a system closure, health-gated
+  briard rescue                       rebuild this node's guest from its image (-yes to confirm)
   briard directive <kind> [payload]   submit a directive to the local agent
   briard help                         show this message
 
@@ -200,6 +203,59 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 // back — belongs to whatever can see every node (the cloud, or a lab script driving both). This
 // verb evicts the node it runs on and says what happened, which is exactly what a node can know:
 // `drbd-reactorctl evict` says "not me", never "you". Run it on the peer to come back.
+// runRescue rebuilds this node's guest from the verified image under its OS-disk overlay (B.10).
+//
+// IT REQUIRES -yes, and that is the only place in this CLI that does. Every other verb here is
+// reversible or health-gated: an OS upgrade rolls back, a service install restores its data, a
+// handover can be handed back. This one discards the guest's OS disk, and nothing brings back what
+// was on it. A confirmation flag is the cheapest possible guard against the one invocation nobody
+// meant to type, and it costs an operator who did mean it four characters.
+//
+// It does NOT prompt interactively. The situations this verb exists for include a node being
+// driven over SSH from a script, and a prompt that sometimes appears is worse than a flag that
+// always must — it makes the safe path the one that varies by terminal.
+func runRescue(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("briard rescue", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	yes := fs.Bool("yes", false, "confirm: discard this node's guest OS disk and rebuild it")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprint(stderr, "briard rescue: takes no arguments\n")
+		return 2
+	}
+	if !*yes {
+		// Say what survives as well as what goes. An operator reaching for this is usually unsure
+		// whether they are about to lose their data, and the answer -- no -- is the thing that
+		// decides whether they run it.
+		fmt.Fprint(stderr, `briard rescue: this discards the guest's OS disk and rebuilds it from
+the signed image it was installed from. The node comes back with a factory code
+half and re-pulls its service images, which needs working network.
+
+Your DATA IS NOT TOUCHED: the replicated volume, this node's identity and the
+service it is pinned to all survive. What is lost is anything written to the
+guest's own OS disk since install.
+
+Read `+"`briard logs`"+` first. Re-run with -yes when you have.
+`)
+		return 2
+	}
+	fmt.Fprint(stdout, "rebuilding the guest from its backing image (the data disk is not touched)\n")
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveRescue})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "rescue failed: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprint(stdout, "rebuilt and re-converged\n")
+	return 0
+}
+
 func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard handover", flag.ContinueOnError)
 	fs.SetOutput(stderr)

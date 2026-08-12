@@ -254,3 +254,54 @@ func TestOSUpgradeUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// `briard rescue` WITHOUT -yes must not reach the agent. This is the only destructive verb in the
+// CLI -- everything else here is reversible or health-gated -- so the guard is asserted on the
+// wire, not on the exit code: a version that printed the warning and submitted anyway would still
+// exit non-zero on a refusing fake and look correct.
+func TestRescueWithoutConfirmationSubmitsNothing(t *testing.T) {
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone})
+	var out, errOut bytes.Buffer
+	code := Main(context.Background(), []string{"rescue", "-sock", sock}, &out, &errOut)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (usage refusal)", code)
+	}
+	if ds := seen(); len(ds) != 0 {
+		t.Fatalf("agent saw %+v -- an unconfirmed rescue reached the node", ds)
+	}
+	// The refusal has to answer the question an operator actually has before running this, which
+	// is whether they are about to lose their data. If that sentence goes, the guard is still
+	// there but the reason to trust it is not.
+	if !strings.Contains(errOut.String(), "DATA IS NOT TOUCHED") {
+		t.Errorf("refusal did not say the data survives; got:\n%s", errOut.String())
+	}
+}
+
+// With -yes it submits exactly one rescue directive, and carries no payload -- the node rescues
+// itself from its own disk, so there is nothing for a caller to name (or to get wrong).
+func TestRescueConfirmedSubmitsOneDirective(t *testing.T) {
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone})
+	var out, errOut bytes.Buffer
+	code := Main(context.Background(), []string{"rescue", "-yes", "-sock", sock}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
+	}
+	ds := seen()
+	if len(ds) != 1 || ds[0].Kind != api.DirectiveRescue || ds[0].Payload != "" {
+		t.Fatalf("agent saw %+v, want exactly one rescue with no payload", ds)
+	}
+}
+
+// A refused rescue exits non-zero, so a script driving this can tell a rebuilt node from one that
+// declined -- the CLI-wide contract, and it matters most on the verb whose failure means the node
+// is still broken.
+func TestRescueRefusedExitsNonZero(t *testing.T) {
+	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "not an overlay"})
+	var out, errOut bytes.Buffer
+	if code := Main(context.Background(), []string{"rescue", "-yes", "-sock", sock}, &out, &errOut); code != 1 {
+		t.Errorf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "not an overlay") {
+		t.Errorf("the node's reason was not surfaced; got %q", errOut.String())
+	}
+}

@@ -86,6 +86,11 @@ type upgrader interface {
 	Stage(ctx context.Context, closure string, src guestagent.StageSource) error             //b: pull the closure in BEFORE anything switches to it
 	ActivationMethod(ctx context.Context, target string) (guest.Activation, []string, error) // V3.17c1: switch-only or reboot-only, decided before activating
 	WriteCert(ctx context.Context, cert, key string) error                                   //: apply a renewed cert to the vol
+	// RescueGuest rebuilds the guest from the verified image under its overlay (B.10) -- the one
+	// recovery rung that is never a reflex. It is on this interface rather than beside it because
+	// it performs the same VM+channel+Manager swap the upgrade legs do, and a second owner of that
+	// swap would be a second way to do it.
+	RescueGuest(ctx context.Context) error
 }
 
 // selfUpdater is the slice of the host-agent self-update the agent-update directive drives
@@ -129,6 +134,24 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		return done
 	case api.DirectiveLog:
 		logf("directive kind=log payload=%q", d.Payload)
+		return done
+	case api.DirectiveRescue:
+		if up == nil {
+			logf("directive kind=rescue ignored (no guest on this node)")
+			return failed("no guest on this node")
+		}
+		// The bound is the bring-up budget plus room for the stop, and it is generous on purpose:
+		// past the rebuild the old overlay is GONE, so a context that expires mid-bring-up leaves
+		// a node needing another rescue rather than one that reverted. There is nothing to revert
+		// to -- that is the nature of this rung, and the reason it is never automatic.
+		rctx, cancel := context.WithTimeout(ctx, upgradeBudget)
+		defer cancel()
+		logf("directive kind=rescue: rebuilding the guest from its backing image")
+		if err := up.RescueGuest(rctx); err != nil {
+			logf("directive rescue failed: %v", err)
+			return failed(err.Error())
+		}
+		logf("directive rescue applied: the guest was rebuilt and re-converged")
 		return done
 	case api.DirectiveUpgrade:
 		if up == nil || spec.Name == "" || d.Payload == "" {

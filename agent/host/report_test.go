@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -26,6 +27,7 @@ type fakeUpgrader struct {
 	spec              model.ServiceSpec
 	oldImg, newImg    string
 	target            string // Upgrade's system closure (whole-OS)
+	rescued           bool   // RescueGuest was called (B.10)
 	certCert          string // WriteCert's cert PEM
 	certKey           string // WriteCert's key PEM
 	err               error
@@ -461,5 +463,50 @@ func TestApplyDirectiveUpgradeSystemStillRefusesAnEmptyTarget(t *testing.T) {
 	}
 	if up.sysCalled {
 		t.Error("nothing should have been upgraded")
+	}
+}
+
+// RescueGuest records the call; the fake never touches a disk. The real one is proven by
+// nixosTest/guest-rescue.nix, which is the only place a rebuilt overlay can be observed.
+func (f *fakeUpgrader) RescueGuest(context.Context) error {
+	f.rescued = true
+	return f.err
+}
+
+// A rescue directive drives RescueGuest and needs NOTHING else: no payload (the node rescues
+// itself from its own disk, so there is nothing for a caller to name or get wrong) and no
+// ServiceSpec (an OS-disk rebuild is a property of the node, and a fresh install carries the zero
+// spec -- the same trap that once made the shipped node un-upgradable, DirectiveUpgradeSystem).
+func TestApplyDirectiveRescue(t *testing.T) {
+	up := &fakeUpgrader{}
+	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
+		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	if !up.rescued {
+		t.Error("RescueGuest was not called")
+	}
+	if o.State != api.OutcomeDone {
+		t.Errorf("outcome = %+v, want done", o)
+	}
+}
+
+// A node with no guest refuses rather than pretending. There is no rollback past a rescue -- the
+// old overlay is gone -- so "failed" has to be reachable and honest.
+func TestApplyDirectiveRescueRefusesWithoutAGuest(t *testing.T) {
+	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
+		nil, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	if o.State != api.OutcomeFailed {
+		t.Errorf("outcome with no upgrader = %+v, want failed", o)
+	}
+}
+
+// The node's reason reaches the caller verbatim: this verb's refusals ("not an overlay", "the
+// backing image is not readable") are the operator's only guidance, and a dispatch that swallowed
+// them would leave `briard rescue` saying only that something went wrong.
+func TestApplyDirectiveRescueSurfacesTheReason(t *testing.T) {
+	up := &fakeUpgrader{err: errors.New("not an overlay")}
+	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
+		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not an overlay") {
+		t.Errorf("outcome = %+v, want failed carrying the node's reason", o)
 	}
 }

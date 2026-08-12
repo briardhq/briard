@@ -259,6 +259,19 @@ const (
 	//                        digest already present is a no-op. It never changes what the node serves,
 	//                        which is what lets the cloud fan it out to every anchor before committing
 	//                        anything.
+	DirectiveRescue = "rescue" // Payload = "" — rebuild this node's guest from the verified image
+	//                        under its OS-disk overlay: stop the VM, discard the overlay, lay down
+	//                        a fresh one on the same backing file, bring it up. The REPLICATED DATA
+	//                        DISK is not touched, so identity, replica and service pin all survive —
+	//                        the same node returns with a factory code half.
+	//
+	//                        THE ONE DIRECTIVE THAT IS NEVER A REFLEX (B.10). Every other recovery
+	//                        rung fires on its own; this waits for a human — or, later, a cloud that
+	//                        has read the logs and decided. It is drastic, its result is uncertain,
+	//                        and the rebuilt guest must re-pull its OCI images over the WAN at
+	//                        exactly the moment something is already wrong. Refused outright on a
+	//                        disk with no backing image: that is not an overlay, it is the only copy
+	//                        of itself.
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place
 	//                        (keeps its data); a blank joiner (anchor/witness) brings up and resyncs

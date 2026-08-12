@@ -338,6 +338,96 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 	}
 }
 
+// RescueGuest rebuilds this node's guest from the verified image under its overlay: stop the VM,
+// discard the OS disk, lay down a fresh overlay on the same backing file, bring it up, re-converge.
+// The replicated DATA disk is never touched, so the node's identity, its DRBD replica and the
+// service manifest pinned on it all survive -- what comes back is the same node with a factory
+// code half, not a new node.
+//
+// B.10's last rung, and the ONLY one that is not a reflex. Everything above it (relaunch, reboot,
+// the cadence) fires on its own; this fires when a human, or later the cloud, has read the logs and
+// decided. The reasoning is in platform/overlay.go: the remedy is drastic, its result uncertain,
+// and the rebuilt guest must re-pull its OCI images over the WAN at the worst possible moment.
+// Automating it against an unknown fault would be a coin flip that can deepen the outage.
+//
+// It is a method on osUpgrade for the reason recover() is: a rebuild replaces the VM, the channel
+// and the Manager together, and one place knows how to put all three back.
+//
+// STOPPING IS CLEAN FIRST, FORCED AS THE FALLBACK -- the same order and the same reason as the
+// rollback leg, and it matters MORE here, not less. The data disk is where DRBD keeps its
+// metadata, and a clean stop is what lets it record MDF_HAVE_QUORUM + prev_members on the way
+// down. Forcing would hand the rebuilt guest a stranded replica to come back to, which on the one
+// node whose code half was just discarded is exactly the wrong pairing.
+func (u *osUpgrade) RescueGuest(ctx context.Context) error {
+	qspec := u.cfg.guestSpec()
+
+	// Refuse BEFORE stopping anything. A node whose disk cannot be rebuilt should keep running the
+	// guest it has, and finding that out after the VM is down would turn a refusal into an outage.
+	backing, err := qspec.BackingFile(ctx)
+	if err != nil {
+		return fmt.Errorf("rescue: read the guest disk's backing image: %w", err)
+	}
+	if backing == "" {
+		return fmt.Errorf("rescue: %s is not an overlay (no backing image), so there is nothing to "+
+			"rebuild it from; this node was not laid down by install.sh's overlay path", qspec.DiskImage)
+	}
+	// THE SECOND REFUSAL, and it is not obvious until you ask where the mesh lives. A paired node's
+	// DRBD configuration -- the `.res` naming its peers -- is written by the agent into the GUEST's
+	// /etc/drbd.d, which is on the overlay this verb discards. So is the node-id under /etc/briard,
+	// which exists precisely so it has the same lifetime as that .res. And the host does not keep a
+	// copy: applyPair unmarshals the cloud's MeshSpec, applies it, and forgets it.
+	//
+	// So rebuilding a PAIRED node returns it un-meshed: alive, serving from its own replica, and no
+	// longer replicating to anyone until the cloud re-pairs it. That is not a rescue, it is a
+	// different kind of outage, and nothing on this node can undo it. Refuse and say who can.
+	//
+	// Asked over the channel BEFORE the stop, so a node that cannot be rescued keeps the guest it
+	// has. An unreadable cluster is NOT a refusal: this verb exists for broken guests, and treating
+	// "I could not ask" as "you are paired" would make it useless on exactly those. The cost of
+	// being wrong that way is a single-node install being told it is paired; the cost the other way
+	// is silently un-meshing an anchor.
+	if cl, e := u.client.Cluster(ctx, u.cfg.Resource.Name); e != nil {
+		u.logf("rescue: could not read the cluster (%v); proceeding -- this verb is for guests that "+
+			"cannot answer, so an unreadable one is expected here", e)
+	} else if len(cl.Peers) > 0 {
+		return fmt.Errorf("rescue: this node is paired with %d peer(s), and its mesh configuration "+
+			"lives on the disk this would discard -- rebuilding would return it un-meshed and only "+
+			"the cloud can re-pair it. Rescue is supported on an unpaired node; for a paired one, "+
+			"ask the cloud", len(cl.Peers))
+	}
+	u.logf("rescue: rebuilding the guest from %s (the data disk is not touched)", backing)
+
+	if platform.Running(ctx, qspec) {
+		if e := stopCleanly(ctx, u.vm, u.client, u.logf); e != nil {
+			u.logf("rescue: could not stop the guest cleanly, forcing (%v)", e)
+			if e := u.vm.Stop(); e != nil {
+				return fmt.Errorf("rescue: stop the guest: %w", e)
+			}
+		} else {
+			u.logf("rescue: stopped the guest cleanly")
+		}
+	}
+
+	if _, e := qspec.RebuildOverlay(ctx); e != nil {
+		return fmt.Errorf("rescue: %w", e)
+	}
+	u.logf("rescue: overlay rebuilt; bringing the guest up")
+
+	// Detached, like every other recovery path here: this IS the recovery and must not inherit a
+	// deadline only to find there is no time left to finish it. Past this point the old disk is
+	// gone, so a bring-up that fails leaves a node that needs another rescue, not a rollback.
+	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget)
+	defer cancel()
+	g, client, e := u.cfg.bringUp(rb, qspec, u.logf)
+	if e != nil {
+		return fmt.Errorf("rescue: bring the rebuilt guest up: %w", e)
+	}
+	u.vm = g
+	u.rebind(client)
+	u.logf("rescue: the guest was rebuilt and has re-converged")
+	return nil
+}
+
 // relaunchGuest starts a guest whose unit has stopped. It is rebootGuest without the stop: there
 // is nothing running to take down, and asking systemd to stop an inactive unit -- or QEMU to
 // answer an ACPI button -- would only spend the shutdown grace discovering that.
