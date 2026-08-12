@@ -1197,27 +1197,44 @@ func StampMtime(path string) time.Time {
 const deadmanStatePath = "/var/lib/briard-deadman/episode.json"
 
 // RunDeadman runs the host-agent deadman as its OWN long-running process — the briard-deadman
-// guest service. It watches the contact stamp ServeStamped bumps and, once
-// the host agent has been silent past T_deadman, reboots the guest — gracefully (so the promoter
-// teardown demotes cleanly and the reboot IS the failover trigger), and ONLY when the cluster
-// keeps quorum without this node (a lone node holds, never self-outages). It is a separate
-// process from the guest agent precisely so a crash-looping agent (while the host is down) can't
-// reset the timer. BRIARD_DEADMAN[/_JITTER/_TICK] tune the threshold.
+// guest service. It watches the contact stamp ServeStamped bumps and, once the host agent has
+// been silent past T_deadman, reboots the guest — gracefully (so the promoter teardown demotes
+// cleanly and the reboot IS the failover trigger), and ONLY when deadman.RebootAllowed says no
+// peer loses quorum over it. It is a separate process from the guest agent precisely so a
+// crash-looping agent (while the host is down) can't reset the timer.
+// BRIARD_DEADMAN[/_JITTER/_TICK] tune the threshold.
+//
+// It also SERVES that same gate on the private host<->guest link, so the host's own rung can ask
+// the one question it cannot answer from outside (gate.go). The listener is started only when the
+// link has an address, and a bind failure is logged rather than fatal: losing the gate costs the
+// host its guard, while exiting here would cost the node its reflex entirely.
 func RunDeadman(ctx context.Context) error {
 	node, _ := os.Hostname()
 	x := NewOSExecutor()
+	gate := &deadman.Gate{
+		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, "briard-deadman: "+f+"\n", a...) },
+	}
+	if addr := os.Getenv("BRIARD_GATE_ADDR"); addr != "" {
+		go func() {
+			if err := gate.Serve(ctx, addr); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "briard-deadman: gate listener down, the host rung is blind: %v\n", err)
+			}
+		}()
+	}
 	mon := &deadman.Monitor{
 		Node:        node,
 		Base:        durationEnv("BRIARD_DEADMAN", deadman.DefaultDeadman),
 		Window:      durationEnv("BRIARD_DEADMAN_JITTER", deadman.DefaultJitter),
 		Tick:        durationEnv("BRIARD_DEADMAN_TICK", 0),
 		LastContact: func() time.Time { return StampMtime(ContactStampPath) },
-		Quorum: func(ctx context.Context) (int, int, error) {
+		Gate:        gate,
+		Fabric: func(ctx context.Context) (deadman.Fabric, error) {
 			out, err := x.Run(ctx, "drbdsetup", "status", "--json")
 			if err != nil {
-				return 0, 0, err
+				return deadman.Fabric{}, err
 			}
-			return drbd.PeerCounts(out)
+			peers, connected, quorate, err := drbd.PeerCounts(out)
+			return deadman.Fabric{Peers: peers, Connected: connected, Quorate: quorate}, err
 		},
 		Reboot: func(ctx context.Context) error {
 			out, err := x.Run(ctx, "systemctl", "reboot") // GRACEFUL — never `reboot -f`

@@ -1,14 +1,25 @@
-# The host-agent deadman on a LONE (quorum-critical) node MUST NOT self-outage — the
-# load-bearing safety property "a deadman reboot can never cause a serving outage".
+# The host-agent deadman on a LONE node REBOOTS — and the reboot surfaces to the supervisor.
 #
-# Single-node harness (like agent-readopt): the guest is DRBD single-node, so it is
-# quorum-critical — QuorumSafe(total=1) is false → the deadman must HOLD (keep serving), never
-# reboot. We kill the host agent for well past T_deadman (baked short via BRIARD_DEADMAN in the
-# guest image) and prove: the guest keeps serving (VIP uninterrupted), the SAME qemu process is
-# still running (no reboot), and the in-guest deadman actually evaluated and chose to hold (its
-# log rides the guest serial via ForwardToConsole). Then the host agent returns and the deadman
-# recovers. (The quorum-SAFE → reboots-and-fails-over path needs a 2-node harness; the reboot
-# decision itself is unit-proven, and the mechanism is the ordinary graceful-reboot failover.)
+# This test used to assert the opposite (a lone node holds, keeps serving, never reboots) because
+# the gate derived the single-node case from the majority formula: departing loses quorum, so hold.
+# True, and irrelevant — there is no peer to outage, quorum is guaranteed the moment it comes back,
+# and the data is on its own disk. What holding actually bought was a reflex that did nothing at
+# all on the shape most briard installs have: the node alerted once and then sat wedged and silent
+# indefinitely. V3.31 made single-node its own clause in deadman.RebootAllowed.
+#
+# Single-node harness (like agent-readopt): the guest is DRBD single-node, so it exercises exactly
+# that clause. We kill the host agent for well past T_deadman (baked short via BRIARD_DEADMAN in
+# the guest image) and prove three things:
+#
+#   1. the in-guest deadman evaluated and chose to REBOOT (its log rides the guest serial),
+#   2. QEMU EXITED rather than resetting inside itself — `-no-reboot` is what makes a guest restart
+#      an event the supervisor can see, instead of a gap in the control channel indistinguishable
+#      from every other gap,
+#   3. the host agent, on returning, brings the guest back.
+#
+# (2) is the assertion most worth having. A guest that reset in place would leave the same QEMU pid
+# running, the VIP would blip, and every other check here would still pass — while the agent had
+# silently stopped being able to observe or count its charge's restarts.
 #
 # Heavy (nested VM) → the `integration` tag. Run on the self-hosted L0:
 #   gh workflow run vm-test.yml -f test=agent-deadman
@@ -74,56 +85,50 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
 
-    qemu_before = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
+    qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     print(f"guest qemu pid before: {qemu_before}")
 
-    # A continuous VIP poller — a deadman self-outage (a wrong reboot) would show FAIL ticks.
-    host.succeed(
-        "rm -f /tmp/vip.log; "
-        "( i=0; while [ $i -lt 60 ]; do "
-        "curl -fsS -m3 http://192.168.1.100/healthz >/dev/null 2>&1 && echo PASS || echo FAIL; "
-        "i=$((i+1)); sleep 0.5; done > /tmp/vip.log 2>&1 & )"
-    )
-    host.wait_until_succeeds("test $(wc -l < /tmp/vip.log) -ge 3", timeout=15)
-
     # === THE PROOF: kill the host agent and leave it dead well past T_deadman (baked ~8s). ===
-    # The guest keeps running (agent lifecycle decoupled from the guest). Its deadman sees
-    # no host contact, fires — and, being a lone (quorum-critical) node, must HOLD, not reboot.
+    # The guest keeps running (agent lifecycle decoupled from the guest). Its deadman sees no host
+    # contact, fires — and, being a lone node with nobody to outage, must REBOOT.
     host.succeed("systemctl stop briard-agent")
 
     # The separate briard-deadman guest service (decoupled from the crash-looping guest agent) sees
     # the contact stamp go stale past T_deadman (~8s) and evaluates.
-    host.wait_until_succeeds(
-        "grep -q 'briard-deadman' /tmp/guest-serial.log", timeout=90
-    )
-    # It must have chosen to HOLD (quorum-critical), never reboot.
-    host.succeed("grep -q 'degraded, holding' /tmp/guest-serial.log")
-    host.fail("grep -q 'deadman: rebooting' /tmp/guest-serial.log")
+    host.wait_until_succeeds("grep -q 'briard-deadman' /tmp/guest-serial.log", timeout=90)
 
-    # 1) Same qemu process — the lone node did NOT reboot itself.
-    qemu_after = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
-    print(f"guest qemu pid after deadman fired: {qemu_after}")
-    assert qemu_before == qemu_after, f"lone node rebooted ({qemu_before} -> {qemu_after}) — deadman self-outaged"
+    # 1) It chose to REBOOT, and said so. The inverse assertion ("degraded, holding") is what this
+    # test carried until V3.31; if the gate is ever re-derived from the majority formula, a lone
+    # node silently goes back to holding and this is the line that catches it.
+    host.wait_until_succeeds("grep -q 'deadman: rebooting' /tmp/guest-serial.log", timeout=120)
+    host.fail("grep -q 'degraded, holding' /tmp/guest-serial.log")
 
-    # 2) Zero VIP interruption while the agent was dead + the deadman held.
-    host.wait_until_succeeds("test $(wc -l < /tmp/vip.log) -ge 60", timeout=60)
-    fails = int(host.succeed("grep -c FAIL /tmp/vip.log || true").strip() or "0")
-    passes = int(host.succeed("grep -c PASS /tmp/vip.log || true").strip() or "0")
-    print(f"VIP poll while the agent was dead: {passes} PASS / {fails} FAIL")
-    assert passes >= 20, f"poller barely ran ({passes} PASS) — not a real window"
-    assert fails == 0, f"VIP dropped {fails} tick(s) — a lone node self-outaged on the deadman"
+    # 2) QEMU EXITED — the restart is visible to the supervisor rather than hidden inside the VM.
+    # This is `-no-reboot` doing its job, and it is what lets the host count restarts, damp a crash
+    # loop, and relaunch a stopped guest without waiting out the silence window.
+    host.wait_until_fails(f"kill -0 {qemu_before}", timeout=180)
+    host.succeed("! systemctl is-active --quiet briard-guest.service")
+    print("guest rebooted itself; qemu exited and the unit stopped (visible to the supervisor)")
 
-    # === Recovery: the host agent returns → it re-adopts the running guest → the deadman clears. ===
-    since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
+    # === Recovery: the host agent returns and brings the guest back. ===
+    # A lone node's self-reboot cannot complete without the agent — nothing else launches VMs — so
+    # this half is the other side of the same design: the agent is the sole policy supervisor, and
+    # every restart passes through it.
     host.succeed("systemctl start briard-agent")
-    host.wait_until_succeeds(
-        f"journalctl -u briard-agent --since='{since}' | grep -q 're-adopting running guest'", timeout=120
-    )
-    host.wait_until_succeeds("grep -q 'link restored' /tmp/guest-serial.log", timeout=60)
-    # Still the same guest, still serving.
-    assert qemu_before == host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0], "guest changed on recovery"
-    host.succeed("curl -fsS http://192.168.1.100/healthz")
+    # ONE query, and it must match QEMU rather than anything mentioning the disk. A bare
+    # `pgrep -f guest.qcow2` also matches the transient `systemd-run … -drive file=/tmp/guest.qcow2`
+    # wrapper the agent launches through, so a wait would return on the wrapper, the wrapper would
+    # exit, and a second pgrep a moment later would find nothing. (Measured: the wait returned in
+    # 0.02 s, before the guest unit had even started.) Taking the pid from the wait's own output
+    # closes the gap between the two calls as well.
+    qemu_after = host.wait_until_succeeds(
+        "pgrep -f 'qemu-system-x86_64.*guest.qcow2'", timeout=300
+    ).strip().splitlines()[0]
+    assert qemu_after != qemu_before, f"same qemu pid {qemu_after} — the guest never actually restarted"
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
+    print(f"guest came back: pid {qemu_before} -> {qemu_after}, converged and serving")
 
-    print("a lone node holds (keeps serving) when its host agent dies — the deadman never self-outages")
+    print("a lone node reboots itself when its host agent dies, and the reboot goes through the supervisor")
   '';
 }

@@ -56,12 +56,17 @@ type Monitor struct {
 	Window time.Duration // jitter window (DefaultJitter)
 	Tick   time.Duration // evaluation cadence; 0 -> 15s
 
-	Now    func() time.Time                                      // injectable clock
-	Quorum func(context.Context) (peers, connected int, e error) // read DRBD quorum locally
-	Reboot func(context.Context) error                           // GRACEFUL reboot (systemctl reboot)
-	Alert  func(level, msg string)                               // owner-facing degradation alert; levels below
-	Logf   func(string, ...any)                                  // operational log
-	State  StateStore                                            // persisted backoff across a reboot
+	Now    func() time.Time                      // injectable clock
+	Fabric func(context.Context) (Fabric, error) // read the DRBD cluster view locally
+	Reboot func(context.Context) error           // GRACEFUL reboot (systemctl reboot)
+	Alert  func(level, msg string)               // owner-facing degradation alert; levels below
+	Logf   func(string, ...any)                  // operational log
+	State  StateStore                            // persisted backoff across a reboot
+
+	// Gate, when set, receives every tick's verdict so the HOST rung can read it over the private
+	// link (gate.go). Nil in unit tests and in any build with no such link — the deadman's own
+	// behaviour does not depend on it, which is why it is published rather than consulted.
+	Gate *Gate
 
 	// LastContact, when set, is the source of truth for the last host-agent contact — a stamp file
 	// the (per-connection, crash-loop-prone) guest agent touches on each request, read by this
@@ -145,14 +150,22 @@ func (m *Monitor) Run(ctx context.Context) error {
 // returns the updated episode + degraded flag. Pure of timing (now is passed in), so the whole
 // loop behaviour is unit-testable without a ticker or a real clock.
 func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degraded bool) (Episode, bool) {
-	// Quorum is read only to gate a reboot; a failed read is treated as NOT safe (never reboot on
-	// unknown quorum). It's irrelevant while the link is alive (Decide short-circuits to Serve),
-	// so a probe error during normal operation is harmless.
-	peers, connected, qerr := 0, 0, error(nil)
-	if m.Quorum != nil {
-		peers, connected, qerr = m.Quorum(ctx)
+	// The fabric is read only to gate a reboot; a failed read is treated as NOT allowed (never
+	// reboot on an unknown cluster). It's irrelevant while the link is alive (Decide
+	// short-circuits to Serve), so a probe error during normal operation is harmless.
+	//
+	// Note the asymmetry with the HOST rung, which treats an unreadable gate as ALLOWED. Both are
+	// "fail toward the safer answer" from where they stand: in here, not knowing the cluster means
+	// not knowing whether a peer depends on us, so we hold; out there, not reaching the gate at
+	// all means the guest is far past wedged, which is the case the host rung exists for.
+	fab, ferr := Fabric{}, error(nil)
+	if m.Fabric != nil {
+		fab, ferr = m.Fabric(ctx)
 	}
-	quorumSafe := qerr == nil && QuorumSafe(peers+1, connected)
+	allowed := ferr == nil && RebootAllowed(fab)
+	if m.Gate != nil {
+		m.Gate.Publish(allowed, ferr)
+	}
 
 	eff := EffectiveDeadman(m.Base, m.Window, fmt.Sprintf("%s:%d", m.Node, ep.Attempt))
 	sinceReboot := time.Duration(1 << 62) // "never" until a reboot stamps it
@@ -163,7 +176,7 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 	switch Decide(Input{
 		SinceContact: m.sinceContact(now),
 		Deadman:      eff,
-		QuorumSafe:   quorumSafe,
+		Allowed:      allowed,
 		SinceReboot:  sinceReboot,
 		Attempt:      ep.Attempt,
 	}) {
@@ -178,9 +191,12 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 		}
 	case Hold:
 		if !degraded {
+			// Now the only two ways to reach Hold, and the first is finally a true statement:
+			// single-node and already-lost-quorum both take the Reboot branch (RebootAllowed), so
+			// a node that holds really does have a peer depending on it.
 			reason := "quorum-critical (rebooting would drop a serving peer)"
-			if qerr != nil {
-				reason = fmt.Sprintf("quorum unreadable (%v)", qerr)
+			if ferr != nil {
+				reason = fmt.Sprintf("cluster state unreadable (%v)", ferr)
 			}
 			m.alert(LevelWarning, fmt.Sprintf("briard %s: host agent unreachable — degraded, holding (%s)", m.Node, reason))
 			degraded = true

@@ -36,6 +36,33 @@ NIC="${BRIARD_NIC:-}"                 # host NIC to enslave/parent; empty = the 
 BRIDGE="${BRIARD_BRIDGE:-br-briard}"
 TAP="${BRIARD_TAP:-briard0}"          # the guest's service NIC (eth2, the VIP)
 DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's DRBD NIC (eth1); idle single-node, addressed on pairing
+# THE PRIVATE HOST<->GUEST LINK (the guest's eth3). A plain tap, on neither the bridge nor the
+# macvtap parent: a point-to-point wire between this host and its own guest, with fixed addresses
+# at both ends. Substrate-independent by construction, which is the point -- macvtap deliberately
+# isolates guest from host, so without this the host has NO network path to the VM it runs.
+#
+# It is created on EVERY install, not only on a managed cloud-witness pairing as it used to be.
+# Two things ride it and neither is optional on the tier that has it worst:
+#   - the deadman's reboot gate (deadman/gate.go), which is how the host rung avoids power-cycling
+#     a node whose departure would cost a peer its quorum. Gating it on pairing put the guard on
+#     paired multi-anchor nodes -- which survive a reboot anyway -- and left it absent on the lone
+#     node, where a wrong reboot is a real outage.
+#   - the host-side witness-forwarder on a managed pairing, which listens at PRIV_HOST_IP:7789 and
+#     has always needed this address to exist.
+# The addresses are FLEET CONSTANTS shared with the cloud's mesh composer (cloud/server/pair.go:
+# witnessHostAddr / witnessGuestIP) and with the guest image, which bakes its end statically.
+PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
+PRIV_HOST_CIDR="10.9.9.1/24"
+# The private link's bring-up, shared VERBATIM by both substrates' net-up.sh. All three commands
+# are idempotent, so a reboot or a re-run is a no-op. It lives in a variable rather than being
+# written into each heredoc because the two copies must not be able to drift: a private link that
+# exists under bridge and not under macvtap would take the host rung's guard away on precisely the
+# default substrate.
+PRIV_UP="# The private host<->guest link (the guest's eth3): a plain tap, on neither the bridge nor
+# the macvtap parent, carrying this host's end of a point-to-point wire to its own VM.
+ip link show $PRIV_TAP >/dev/null 2>&1 || ip tuntap add $PRIV_TAP mode tap
+ip addr replace $PRIV_HOST_CIDR dev $PRIV_TAP
+ip link set $PRIV_TAP up"
 # Net substrate. "macvtap" (DEFAULT) makes the guest's NICs macvtap children of the host
 # NIC directly: L2 citizenship with NO bridge and NO host-IP move, so no SSH-risk moment and no net
 # guard -- the least invasive substrate, proven green and validated no worse than bridge. "bridge" is the validated fallback (BRIARD_NET_MODE=bridge): enslaves the host NIC to an
@@ -264,6 +291,7 @@ for t in $DRBD_TAP $TAP; do
 		ip link set \$t up
 	fi
 done
+$PRIV_UP
 EOF
 	chmod +x "$PREFIX/net-up.sh"
 	say "macvtap substrate on $NIC (no bridge; host keeps its IP on $NIC)"
@@ -332,6 +360,7 @@ for t in $DRBD_TAP $TAP; do
 		ip link set \$t up
 	fi
 done
+$PRIV_UP
 EOF
 chmod +x "$PREFIX/net-up.sh"
 
@@ -597,6 +626,11 @@ Environment=NODE=$NODE_NAME
 # unset: single-node needs no DRBD address, just the NIC present.
 Environment=SYSTEM_TAP=$DRBD_TAP
 Environment=SERVICE_TAP=$TAP
+# WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
+# every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot
+# gate over it, and that guard matters MOST on the single node this env never used to reach. The
+# name is historical -- the cloud-witness forwarder was its first user, not its only one.
+Environment=WITNESS_TAP=$PRIV_TAP
 Environment=VIP_DEV=eth2
 Environment=VIP_ADDR=$VIP
 Environment=FLOCK_ID=$FLOCK_ID

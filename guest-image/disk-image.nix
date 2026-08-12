@@ -153,6 +153,22 @@ let
       };
       networking.nameservers = [ "10.0.2.3" ]; # SLIRP's resolver, forwarded to the host's
 
+      # eth3 -- the private host<->guest link -- addressed HERE, in the image, rather than by the
+      # agent at pairing time as it used to be. The address is the same one the cloud's mesh
+      # composer hands out (cloud/server/pair.go: witnessGuestIP), so a managed pairing's
+      # net.configure now does `ip addr replace` on an address that is already correct: a no-op
+      # instead of a reconfiguration.
+      #
+      # BAKED, and that is the whole point rather than a tidiness preference. The host reads this
+      # guest's reboot gate over this link when the CONTROL CHANNEL IS DEAD (deadman/gate.go) --
+      # which is exactly when no agent is available to have configured anything. An address
+      # assigned by the agent would be reliably absent in the one failure it exists to serve, and
+      # present in all the ones it does not. It is a point-to-point wire whose other end we also
+      # own, so there is nothing here to collide with and nobody to ask.
+      networking.interfaces.eth3.ipv4.addresses = [
+        { address = "10.9.9.2"; prefixLength = 24; }
+      ];
+
       # drbd.conf includes the .res files the agent drops at runtime into a
       # writable /etc/drbd.d (the framework drbd-* tests bake these via lib.nix).
       environment.etc."drbd.conf".text = ''include "/etc/drbd.d/*.res";'';
@@ -201,17 +217,23 @@ let
       # The host-agent deadman as its OWN long-running service — decoupled from the
       # per-connection guest agent (which crash-loops while the host is down, so an in-process
       # timer would keep resetting). It watches the contact stamp the guest agent bumps and, once
-      # the host agent is silent past T_deadman, reboots the guest — quorum-gated + graceful
+      # the host agent is silent past T_deadman, reboots the guest — gated + graceful
       #. guestAgentEnv carries a short BRIARD_DEADMAN for the deadman test.
+      #
+      # It also SERVES that gate to the host on the private link (BRIARD_GATE_ADDR), which is the
+      # only reason the host's own rung can avoid power-cycling a node whose departure would cost
+      # a peer its quorum: every other way of asking rides the channel whose death is the trigger.
+      # After network-online so the baked eth3 address exists before the listener binds it.
       systemd.services.briard-deadman = {
         description = "Briard host-agent deadman (reboots the guest if the host agent goes silent)";
         wantedBy = [ "multi-user.target" ];
-        after = [ "systemd-tmpfiles-setup.service" ];
+        after = [ "systemd-tmpfiles-setup.service" "network-online.target" ];
+        wants = [ "network-online.target" ];
         path = [
-          pkgs.drbd # drbdsetup, for the quorum gate
+          pkgs.drbd # drbdsetup, for the reboot gate
           pkgs.systemd # systemctl reboot
         ];
-        environment = guestAgentEnv;
+        environment = { BRIARD_GATE_ADDR = "10.9.9.2:7790"; } // guestAgentEnv;
         serviceConfig = {
           ExecStart = "${briardAgent}/bin/briard-agent --deadman";
           Restart = "always";

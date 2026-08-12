@@ -178,27 +178,43 @@ func TestPeerCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peers, connected, err := PeerCounts(raw)
+	peers, connected, quorate, err := PeerCounts(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peers != 2 || connected != 2 {
-		t.Errorf("status-primary PeerCounts = (peers=%d, connected=%d), want (2, 2)", peers, connected)
+	if peers != 2 || connected != 2 || !quorate {
+		t.Errorf("status-primary PeerCounts = (peers=%d, connected=%d, quorate=%v), want (2, 2, true)",
+			peers, connected, quorate)
 	}
 
 	// A configured-but-disconnected peer still counts toward the total (quorum denominator),
 	// but not toward connected — so a node at the quorum edge is detectable.
 	disconnected := []byte(`[{"name":"r0","role":"Primary","devices":[{"quorum":true}],` +
 		`"connections":[{"connection-state":"Connected"},{"connection-state":"StandAlone"}]}]`)
-	peers, connected, err = PeerCounts(disconnected)
+	peers, connected, quorate, err = PeerCounts(disconnected)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peers != 2 || connected != 1 {
-		t.Errorf("mixed PeerCounts = (peers=%d, connected=%d), want (2, 1)", peers, connected)
+	if peers != 2 || connected != 1 || !quorate {
+		t.Errorf("mixed PeerCounts = (peers=%d, connected=%d, quorate=%v), want (2, 1, true)",
+			peers, connected, quorate)
 	}
 
-	if _, _, err := PeerCounts([]byte("[]")); err == nil {
+	// Quorum lost — the input to the gate's "already failed, nothing to protect" clause. Folded
+	// per-device: ANY volume without quorum makes the node non-quorate, since DRBD refuses writes.
+	noQuorum := []byte(`[{"name":"r0","role":"Primary","devices":[{"quorum":true},{"quorum":false}],` +
+		`"connections":[{"connection-state":"StandAlone"},{"connection-state":"StandAlone"}]}]`)
+	if _, _, quorate, err = PeerCounts(noQuorum); err != nil || quorate {
+		t.Errorf("PeerCounts on a partly non-quorate node = (quorate=%v, err=%v), want (false, nil)", quorate, err)
+	}
+
+	// No devices at all must not come out quorate by vacuous truth — the same fold ParseCluster
+	// makes, and the reason a diskless/unprovisioned node cannot claim the write path.
+	if _, _, quorate, err = PeerCounts([]byte(`[{"name":"r0","role":"Secondary","devices":[]}]`)); err != nil || quorate {
+		t.Errorf("PeerCounts with no devices = (quorate=%v, err=%v), want (false, nil)", quorate, err)
+	}
+
+	if _, _, _, err := PeerCounts([]byte("[]")); err == nil {
 		t.Error("want error when status is empty")
 	}
 }

@@ -113,18 +113,24 @@ func ParseCluster(raw []byte, resource string) (model.Cluster, error) {
 	return model.Cluster{}, fmt.Errorf("drbd: resource %q not in status", resource)
 }
 
-// PeerCounts reads `drbdsetup status --json` for the first resource and returns how many peers
-// are CONFIGURED (connected or not — DRBD lists every configured connection) and how many are
-// currently CONNECTED. These are the inputs to the deadman's "would the cluster keep quorum
-// without me" gate: total cluster votes = peers + 1 (self). v0 is single-resource, so the
-// first resource is the one; it errors if the status is empty. It only reads (CONTRIBUTING.md invariant 2).
-func PeerCounts(raw []byte) (peers, connected int, err error) {
+// PeerCounts reads `drbdsetup status --json` for the first resource and returns the three inputs
+// to the deadman's reboot gate: how many peers are CONFIGURED (connected or not — DRBD lists
+// every configured connection), how many are currently CONNECTED, and whether THIS node is
+// quorate. v0 is single-resource, so the first resource is the one; it errors if the status is
+// empty. It only reads (CONTRIBUTING.md invariant 2).
+//
+// Quorate is folded exactly as ParseCluster folds it, and must stay that way: quorum is
+// per-device, any volume without it means DRBD refuses writes (on-no-quorum=io-error), and a node
+// with no devices at all must not come out quorate by vacuous truth. It is here rather than left
+// to the caller because the gate reads all three from ONE sample — deriving "am I quorate" from a
+// second, later call would let the two halves disagree about the moment they describe.
+func PeerCounts(raw []byte) (peers, connected int, quorate bool, err error) {
 	var resources []statusResource
 	if err := json.Unmarshal(raw, &resources); err != nil {
-		return 0, 0, fmt.Errorf("drbd: parse status: %w", err)
+		return 0, 0, false, fmt.Errorf("drbd: parse status: %w", err)
 	}
 	if len(resources) == 0 {
-		return 0, 0, fmt.Errorf("drbd: no resource in status")
+		return 0, 0, false, fmt.Errorf("drbd: no resource in status")
 	}
 	r := resources[0]
 	peers = len(r.Connections)
@@ -133,5 +139,11 @@ func PeerCounts(raw []byte) (peers, connected int, err error) {
 			connected++
 		}
 	}
-	return peers, connected, nil
+	quorate = len(r.Devices) > 0
+	for _, d := range r.Devices {
+		if !d.Quorum {
+			quorate = false
+		}
+	}
+	return peers, connected, quorate, nil
 }

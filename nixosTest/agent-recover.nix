@@ -71,11 +71,42 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
 
+    # === PHASE 1: the VM is GONE (not merely quiet) -- relaunched at once, no window. ===
+    #
+    # These are two different situations that reach the host as ONE signal, a dead control channel.
+    # Because of `-no-reboot` a guest that reboots itself EXITS, so "the unit stopped" is the
+    # ordinary case, not the exotic one -- and waiting ten minutes for a socket belonging to a dead
+    # process would be pure outage. The agent asks systemd instead of inferring from the channel.
+    #
+    # The timing assertion is the whole point: a regression here is SILENT, because the node still
+    # recovers, just a window later. Killing QEMU is exactly what the guest's own graceful reboot
+    # looks like from out here.
+    gone = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    print(f"killing the guest QEMU (pid {gone}) -- the shape of a guest that rebooted itself")
+    killed_at = time.monotonic()
+    host.succeed(f"kill -9 {gone}")
+
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 'the guest unit is stopped; relaunching'", timeout=180
+    )
+    relaunch_took = time.monotonic() - killed_at
+    assert relaunch_took < 300, f"took {relaunch_took:.0f}s to notice a STOPPED unit -- it is waiting out the silence window instead of asking systemd"
+    print(f"agent noticed the stopped unit and relaunched after {relaunch_took:.0f}s")
+
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 'guest relaunched and converged'", timeout=900
+    )
+    restarted = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    assert restarted != gone, f"same qemu pid {restarted} -- nothing was relaunched"
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
+    print(f"guest back after a clean exit: pid {gone} -> {restarted}")
+
+    # === PHASE 2: the guest is RUNNING but wedged -- the window, then the power cycle. ===
     # --- the guest stops answering, and never starts again on its own ---
     # SIGSTOP the nested QEMU: the whole VM freezes, so the control channel dies AND every
     # re-dial the host makes finds a socket nothing is reading. This is the shape of the case
     # the ladder exists for -- indistinguishable, from outside, from a guest that has crashed.
-    frozen = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
+    frozen = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     print(f"freezing the guest QEMU (pid {frozen}) and leaving it frozen")
     host.succeed(f"kill -STOP {frozen}")
     froze_at = time.monotonic()
@@ -87,17 +118,23 @@ pkgs.testers.runNixOSTest {
 
     # It waits out the recovery window, then says what it is about to do -- on the local trail
     # `briard alerts` reads (notify.LogMarker), because on the free tier that trail is the only
-    # delivery there is. The timeout is generous against the 3-minute window plus the ~10s each
+    # delivery there is. The timeout is generous against the 10-minute window plus the ~10s each
     # re-dial spends on its handshake deadline.
     host.wait_until_succeeds(
-        "journalctl -u briard-agent | grep -q 'alert \\[warning\\] Briard: restarting an unresponsive guest'",
-        timeout=420,
+        "journalctl -u briard-agent | grep -q 'alert \\[warning\\] Briard: the guest has stopped answering'",
+        timeout=1200,
     )
     waited = time.monotonic() - froze_at
 
-    # THE PATIENCE ASSERTION. Anything under two minutes means the window was shortened or
-    # bypassed, and the product is now restarting VMs over bounces that heal themselves.
-    assert waited >= 120, f"host restarted the guest after only {waited:.0f}s -- the recovery window is not being honoured"
+    # THE PATIENCE ASSERTION, and it is the reason this test costs a quarter of an hour.
+    #
+    # The bound is not arbitrary: the host's window sits ABOVE the guest deadman's own threshold
+    # (6m + up to 60s of jitter) so that a guest able to reboot itself gracefully gets to do so,
+    # and the host power-cycle is the backstop for when that failed. A shortened window inverts
+    # that -- the host would win every race and the clean demote would never happen -- while
+    # leaving every other assertion in this file passing. So the floor is checked against the
+    # guest's LATEST possible fire, not against a round number.
+    assert waited >= 420, f"host acted after only {waited:.0f}s -- inside the guest deadman's own window (6m+jitter), so the host would pre-empt the graceful reboot it is supposed to back up"
     print(f"host held off for {waited:.0f}s before acting")
 
     # A frozen QEMU answers neither its agent nor the ACPI button, so the clean stop must fail
@@ -112,8 +149,12 @@ pkgs.testers.runNixOSTest {
     # the node was a restart of the VM, not a re-dial to the one that was already there. A
     # reconnect-only implementation fails right here.
     host.wait_until_fails(f"kill -0 {frozen}", timeout=180)
-    host.wait_until_succeeds("pgrep -f guest.qcow2", timeout=300)
-    restarted = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
+    # One query, and the pattern must match QEMU rather than anything mentioning the disk -- a bare
+    # `pgrep -f guest.qcow2` also matches the transient `systemd-run` wrapper the agent launches
+    # through, which exits moments later (see agent-deadman for the measured failure).
+    restarted = host.wait_until_succeeds(
+        "pgrep -f 'qemu-system-x86_64.*guest.qcow2'", timeout=300
+    ).strip().splitlines()[0]
     assert restarted != frozen, f"same QEMU pid {restarted} after recovery -- the guest was never restarted"
     print(f"guest restarted: pid {frozen} -> {restarted}")
 
@@ -126,9 +167,19 @@ pkgs.testers.runNixOSTest {
     )
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
 
-    # The ladder stopped at one. It restarts on a schedule of incidents, not on a timer.
-    restarts = int(host.succeed("journalctl -u briard-agent | grep -c 'restarting an unresponsive guest' || true").strip())
-    assert restarts == 1, f"{restarts} restart alerts for one incident -- the ladder is flapping"
+    # ANNOUNCED ONCE. recover() re-evaluates every time the window closes, which on a guest that
+    # never came back is forever -- so an alert that re-fired would move the flap this rung exists
+    # to prevent from the VM to the owner's phone.
+    alerts = int(host.succeed("journalctl -u briard-agent | grep -c 'Briard: the guest has stopped answering' || true").strip())
+    assert alerts == 1, f"{alerts} degraded alerts for one incident -- the announce-once latch is broken"
+
+    # AND THE INCIDENT CLOSES ITSELF. The guest came back, so the owner is told it is over. This
+    # is the half that used to be missing: the ladder announced trouble and then never mentioned
+    # it again either way, so a resolved incident looked exactly like an ignored one.
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 'alert \\[recovered\\] Briard: the guest is answering again'",
+        timeout=120,
+    )
 
     print("host recovered an unresponsive guest by restarting its VM")
     print(host.succeed("journalctl -u briard-agent | tail -40"))

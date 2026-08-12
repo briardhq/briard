@@ -20,20 +20,28 @@ type harness struct {
 	now       time.Time
 	peers     int
 	connected int
+	quorate   bool
 	quorumErr error
 	reboots   int
 	alerts    []string
+	gate      *Gate
 }
 
 func newHarness() *harness {
-	h := &harness{now: time.Unix(1_000_000, 0)}
+	h := &harness{now: time.Unix(1_000_000, 0), quorate: true}
+	h.gate = &Gate{
+		Now: func() time.Time { return h.now },
+	}
 	h.mon = &Monitor{
 		Node: "n1", Base: DefaultDeadman, Window: 0, // window 0 -> deterministic (base) for the tests
-		Now:    func() time.Time { return h.now },
-		Quorum: func(context.Context) (int, int, error) { return h.peers, h.connected, h.quorumErr },
+		Now: func() time.Time { return h.now },
+		Fabric: func(context.Context) (Fabric, error) {
+			return Fabric{Peers: h.peers, Connected: h.connected, Quorate: h.quorate}, h.quorumErr
+		},
 		Reboot: func(context.Context) error { h.reboots++; return nil },
 		Alert:  func(level, s string) { h.alerts = append(h.alerts, "["+level+"] "+s) },
 		State:  &memState{},
+		Gate:   h.gate,
 	}
 	return h
 }
@@ -95,14 +103,36 @@ func TestMonitorHoldsWhenQuorumCritical(t *testing.T) {
 	}
 }
 
-// A lone node (solo/free) is quorum-critical → holds (keeps serving), never reboots.
-func TestMonitorSoloHolds(t *testing.T) {
+// A lone node (solo/free) REBOOTS. It used to hold, on the reasoning that a single node is its
+// own quorum and departing loses it — which is true and irrelevant: there is no peer to outage,
+// quorum is guaranteed the moment it comes back, and the data is on its own disk. Holding meant
+// the reflex did nothing at all on the shape most briard installs have, leaving a wedged node
+// wedged forever behind a single alert.
+//
+// This is the assertion that would silently rot if the gate were ever re-derived from the
+// majority formula, so it names the whole reason rather than just the expected number.
+func TestMonitorSoloReboots(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
-	h.peers, h.connected = 0, 0 // single node: total 1
+	h.peers, h.connected = 0, 0 // single node: no configured peers
 	h.advance(DefaultDeadman + time.Minute)
-	if _, degraded := h.tick(Episode{}, false); h.reboots != 0 || !degraded {
-		t.Errorf("solo node: reboots=%d degraded=%v, want hold (0 reboots, degraded)", h.reboots, degraded)
+	ep, degraded := h.tick(Episode{}, false)
+	if h.reboots != 1 || !degraded || ep.Attempt != 1 {
+		t.Errorf("solo node: reboots=%d degraded=%v ep=%+v, want one reboot (nobody else to outage)",
+			h.reboots, degraded, ep)
+	}
+}
+
+// The other clause the old gate lacked: a node that has ALREADY lost quorum is serving nobody
+// (DRBD refuses its writes), so there is nothing to preserve by staying up and a reboot is free.
+// The partitioned anchor — WAN out, peer and cloud witness both unreachable.
+func TestMonitorRebootsWhenAlreadyOutOfQuorum(t *testing.T) {
+	h := newHarness()
+	h.contactNow()
+	h.peers, h.connected, h.quorate = 2, 0, false // 3-voter cluster, fully partitioned
+	h.advance(DefaultDeadman + time.Minute)
+	if _, _ = h.tick(Episode{}, false); h.reboots != 1 {
+		t.Errorf("out-of-quorum node: reboots=%d, want 1 (it is serving nobody)", h.reboots)
 	}
 }
 
@@ -117,9 +147,9 @@ func TestMonitorHoldsOnQuorumError(t *testing.T) {
 	}
 }
 
-// Backoff: after a reboot, a second tick within the backoff window holds (no double reboot);
-// past it (with the link still dead) it reboots again — the burst→slow cadence.
-func TestMonitorBacksOffBetweenReboots(t *testing.T) {
+// Cadence: after a reboot, ticks within RebootCadence hold (no reboot loop); past it, with the
+// link still dead, it reboots again — forever, never a hard stop.
+func TestMonitorHoldsTheCadenceBetweenReboots(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
 	h.peers, h.connected = 2, 2
@@ -128,17 +158,21 @@ func TestMonitorBacksOffBetweenReboots(t *testing.T) {
 	if h.reboots != 1 {
 		t.Fatalf("first reboot missing")
 	}
-	// A tick 10s later: attempt 1 backoff is 30s -> still holding.
-	h.advance(10 * time.Second)
-	ep, degraded = h.tick(ep, degraded)
-	if h.reboots != 1 {
-		t.Errorf("rebooted within the backoff window (%d) — should hold", h.reboots)
+	// Ticks across the whole cadence must not produce a second reboot. The old ramp let one
+	// through at 30s; on a lone node — which now reaches this path at all — that is a second
+	// service interruption half a minute after the first.
+	for _, d := range []time.Duration{10 * time.Second, time.Minute, 30 * time.Minute} {
+		h.advance(d)
+		ep, degraded = h.tick(ep, degraded)
+		if h.reboots != 1 {
+			t.Fatalf("rebooted %v into the %v cadence (reboots=%d) — should hold", d, RebootCadence, h.reboots)
+		}
 	}
-	// A tick well past the backoff: reboots again (attempt=2).
-	h.advance(2 * time.Minute)
+	// Past the cadence: reboots again (attempt=2).
+	h.advance(RebootCadence)
 	ep, _ = h.tick(ep, degraded)
 	if h.reboots != 2 || ep.Attempt != 2 {
-		t.Errorf("did not reboot past the backoff: reboots=%d ep=%+v", h.reboots, ep)
+		t.Errorf("did not reboot past the cadence: reboots=%d ep=%+v", h.reboots, ep)
 	}
 }
 

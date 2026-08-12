@@ -130,6 +130,30 @@ func qemuArgs(s QEMUSpec) []string {
 	args = append(args,
 		"-m", strconv.Itoa(s.MemoryMB),
 		"-smp", strconv.Itoa(s.Cores),
+		// EVERY RESTART GOES THROUGH THE SUPERVISOR. `-no-reboot` makes QEMU exit on a guest
+		// reset rather than quietly starting the machine again inside the same process, so a
+		// guest that reboots itself surfaces as a unit that STOPPED -- an event the agent can
+		// see, count and act on -- instead of as a gap in the control channel indistinguishable
+		// from every other gap. The agent is the guest's sole policy supervisor (`-p Restart=no`,
+		// see GuestUnit), and a supervisor that cannot observe its charge restarting is not
+		// supervising it.
+		//
+		// Two properties follow, both relied on elsewhere. The boot selector stays genuinely
+		// ONE-SHOT: `-smbios briard_boot=staging` is armed per LAUNCH (see BootStaging), so a
+		// guest that reset in place would come up on the staged generation a second time, when
+		// the whole point is that the next launch is the host's decision. And a guest that
+		// panics its way through boot exits rather than spinning invisibly, which is what lets
+		// the recovery loop damp a crash loop instead of racing one.
+		//
+		// The cost is that the guest cannot complete its own reboot -- it needs the agent to
+		// relaunch it. That is exactly why the recovery loop checks this unit's state before
+		// anything else (host/guestrecover.go): a stopped unit is relaunched at once, with no
+		// window and no gate, because a VM that is not running can neither heal itself nor
+		// outage a peer.
+		//
+		// (Recorded 2026-08-12. The flag was here from the first commit with no comment and no
+		// doc anywhere; the above is the justification it never had, arrived at by asking what
+		// would actually break without it.)
 		"-no-reboot",
 		"-display", "none",
 		// The host<->guest control channel: a virtio-serial port named
