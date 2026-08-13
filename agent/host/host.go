@@ -20,7 +20,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"briard.io/agent/cloud"
@@ -36,13 +35,6 @@ import (
 	"briard.io/shared/sdnotify"
 	"briard.io/shared/telemetry"
 )
-
-// readyOnce fires the systemd readiness signal (sd_notify READY=1) exactly once per agent
-// process, the first time the node is observed healthy. Under Type=notify this is the
-// self-update commit gate: a trialed agent that never gets healthy never sends
-// READY, so its ExecStartPost/commit never runs and the update reverts. Process-global because
-// there is one agent per process and READY is a service-manager-global fact.
-var readyOnce sync.Once
 
 // orNode returns id when set, else the node name. It is what makes the flock-scoped VIP MAC a
 // pure addition: a node installed before FlockID existed, and every agent-less harness, has no id
@@ -215,6 +207,13 @@ type Config struct {
 	UpdateRunDir  string
 	UpdateUnit    string
 	Version       string
+
+	// beat is the systemd watchdog keep-alive (V3.32), NOT configuration: Run builds it from the
+	// environment systemd sets and it rides here for the same reason Overlay does -- so every
+	// method that already holds a cfg can reach it without threading one more argument down a
+	// call chain that is deep by design. nil is the ordinary state outside systemd (dev runs, the
+	// lab fleet, tests) and every method on it is nil-safe, so a zero Config works everywhere.
+	beat *beat
 }
 
 // statusReader is the DRBD/quorum slice of the guest client the snapshot needs -- kept
@@ -254,6 +253,9 @@ type guestReader interface {
 // The guest is always stopped on return.
 func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	logf("%s", versionBanner(cfg.Version)) // name the running build before anything else
+	// The watchdog keep-alive, built before anything that could block so every operation below is
+	// covered. nil outside systemd. Set on the local cfg, which is the copy every call below takes.
+	cfg.beat = newBeat(logf)
 	// A service installed at RUNTIME is not described by the environment, so rebuild it
 	// from the node-local manifest cache before anything derives from cfg. Without this an agent
 	// restart would re-derive the chain from env alone and silently drop the installed service
@@ -261,6 +263,15 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if spec, chain, rendered, ok := cfg.installedService(logf); ok {
 		logf("installed service %q restored from cache; promoter chain %v", spec.Name, chain)
 		cfg.Service, cfg.Promoter, cfg.ServiceRendered = spec, chain, rendered
+	}
+	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
+	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
+	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
+	// one being that an agent whose guest never converges would never arm its watchdog. Sent
+	// BEFORE bringUp so the watchdog covers bring-up and the recovery ladder, which are the
+	// stretches that most need it. No-op when not under Type=notify.
+	if err := sdnotify.Ready(); err != nil {
+		logf("sd_notify READY failed (non-fatal): %v", err)
 	}
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
@@ -520,14 +531,26 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// `systemctl restart briard-agent` (e.g. an agent self-update) leaves qemu
 	// serving; the restarted agent finds it active and re-adopts over the persisted
 	// control socket instead of booting a second VM.
+	// Bound the whole launch -> converge phase, including the wait for qemu to bind the control
+	// socket below. HOISTED ABOVE THE LAUNCH (V3.32): the comment always claimed to bound "the
+	// whole launch -> converge phase" while the deadline actually started after the launch, so
+	// the systemd calls that start the VM ran under the caller's unbounded context. Bounding them
+	// matches what this always said it did, and it is what lets the watchdog lease cover bring-up
+	// rather than only its tail.
+	bringup, cancel := context.WithTimeout(ctx, cfg.BringUpBudget)
+	defer cancel()
+	// The watchdog rides this operation's own budget: pings until bring-up finishes (the cancel
+	// above) or overruns it. See beat.go for why the lease is the budget rather than a flag.
+	cfg.beat.Lease(bringup)
+
 	var g *platform.Guest
-	adopted := platform.Running(ctx, qspec)
+	adopted := platform.Running(bringup, qspec)
 	if adopted {
 		logf("re-adopting running guest (%s)", platform.GuestUnit)
 		g = platform.Adopt(qspec)
 	} else {
 		var err error
-		if g, err = platform.Launch(ctx, qspec); err != nil {
+		if g, err = platform.Launch(bringup, qspec); err != nil {
 			return nil, nil, fmt.Errorf("host: launch guest: %w", err)
 		}
 	}
@@ -543,10 +566,6 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		ServiceUnits:  cfg.ServiceRendered.Files,
 		ServiceImages: cfg.ServiceRendered.ImageUnits,
 	}
-	// Bound the whole launch -> converge phase, including the wait for qemu to bind the control
-	// socket below.
-	bringup, cancel := context.WithTimeout(ctx, cfg.BringUpBudget)
-	defer cancel()
 	// Establish the control channel. On a fresh launch, wait patiently for qemu to bind the
 	// socket rather than exiting on the first "connection refused": exiting crash-loops
 	// the agent -- systemd restarts it, the guest-disk reformat (briard-fleet-pre) re-runs, and
@@ -699,21 +718,32 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	defer t.Stop()
 	cr := &certRequester{}         // node-side CSR handshake state, lives for the observe loop
 	su := cfg.newSelfUpdater(logf) // signed host-agent self-update; nil when no keyring provisioned
+	// EVERY cfg.beat.Beat() below sits in front of one ctx-BOUNDED call, and that is the whole
+	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever
+	// a gap would otherwise open. It is not one ping per cycle -- these calls carry 5s deadlines
+	// each, so a slow-but-entirely-healthy iteration can run ~35s and would force a threshold
+	// four times larger than it needs to be. A datagram costs nothing; a gap costs detection
+	// latency. See beat.go.
 	for {
 		// The served image + running system are read from the guest each cycle (the
 		// replicated pin / current-system), so they're correct even on a survivor that
 		// converged-at-promotion. The image is also the payload-upgrade baseline.
+		cfg.beat.Beat()
 		img := cfg.currentImage(ctx, r)
+		cfg.beat.Beat()
 		sys := cfg.currentSystem(ctx, r)
+		cfg.beat.Beat()
 		st, probe, err := cfg.snapshot(ctx, r, img, sys)
 		if errors.Is(err, guestagent.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
+		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant
 		// Resource telemetry is a soak leak-instrument, not product-health: it does NOT ride
 		// the report. Measured each cycle and written to the out-of-band collector
 		// file the soak reads L0-side; best-effort, never gates the observe loop.
+		cfg.beat.Beat()
 		res := cfg.resources(ctx, r)
 		cfg.writeTelemetry(res, logf)
 		// Fold this cycle's sample into the hourly rollup and upload the aggregates
@@ -722,6 +752,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// Retries next cycle; only a success prunes the completed ones.
 		if agg != nil && rep != nil {
 			agg.add(time.Now(), res)
+			cfg.beat.Beat()
 			mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			if err := rep.ReportMetrics(mctx, cfg.Node, agg.snapshot()); err != nil {
 				logf("metrics upload failed: %v", err)
@@ -733,20 +764,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s image=%s%s",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
 			orDash(probe), st.Image, resourceLog(res))
-		// Signal systemd readiness the first time this node is healthy — the self-update
-		// commit gate. Until READY, a trialed agent hasn't proven itself, so its
-		// ExecStartPost/commit never runs and a bad update reverts. No-op when not under Type=notify.
-		if st.Healthy {
-			readyOnce.Do(func() {
-				if err := sdnotify.Ready(); err != nil {
-					logf("sd_notify READY failed (non-fatal): %v", err)
-				} else {
-					logf("sd_notify READY — node healthy (self-update commit gate)")
-				}
-			})
-		}
 		alerter.observe(ctx, st) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		if rep != nil {
+			cfg.beat.Beat()
 			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			csr := cr.pendingCSR // ride a queued CSR up (nil on every ordinary report)
 			directives, err := rep.Report(rctx, api.ReportRequest{Status: st, CSR: csr, Outcomes: *pending})
@@ -759,6 +779,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				}
 				*pending = nil // acked -- collect this cycle's fresh outcomes below
 				for _, d := range directives {
+					// Per directive, not per batch: a batch of slow ones would otherwise open
+					// exactly the gap this rule exists to close. The legs that block for minutes
+					// (the upgrade path, the recovery ladder) take their own lease.
+					cfg.beat.Beat()
 					o := cfg.dispatch(ctx, d, r, up, img, n, cr, su, logf)
 					cfg.adoptInstalledService(d, o, logf)
 					if o.ID != "" {
@@ -791,6 +815,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// pendingOutcomes. Outcomes close the loop on an intent the cloud announced;
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
+			cfg.beat.Beat()
 			o := cfg.dispatch(ctx, rq.d, r, up, img, n, cr, su, logf)
 			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
 			cfg.adoptInstalledService(rq.d, o, logf)

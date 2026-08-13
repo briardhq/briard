@@ -500,6 +500,10 @@ func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRec
 func (u *osUpgrade) awaitChannel(ctx context.Context, window time.Duration) (*guestagent.Client, error) {
 	wctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
+	// The single longest legitimate stall in the agent -- ten minutes on a wedged guest, by design.
+	// Leased on its OWN deadline, so the watchdog neither misfires through it nor has to be widened
+	// to survive it. Ending the wait ends the lease, whichever way it ends (V3.32).
+	u.cfg.beat.Lease(wctx)
 	return reconnect(wctx, u.cfg.ControlSock, u.logf)
 }
 
@@ -512,6 +516,13 @@ func (u *osUpgrade) awaitChannel(ctx context.Context, window time.Duration) (*gu
 func (u *osUpgrade) rebootGuest(ctx context.Context) (*guestagent.Client, error) {
 	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget+3*shutdownGrace)
 	defer cancel()
+	// Leased for the STOP phase in particular. bringUp below takes its own lease, but the stop
+	// ahead of it does not: stopCleanly spends up to a full shutdownGrace, and u.vm.Stop() takes no
+	// context at all -- so rb's deadline bounds this stretch on paper while nothing is watching it.
+	// That is precisely the shape the watchdog is for, and precisely why the lease must be here
+	// rather than only inside bringUp (V3.32; the un-ctx'd Stop is why an enclosing deadline is not
+	// a bound).
+	u.cfg.beat.Lease(rb)
 
 	qspec := u.cfg.guestSpec()
 	if platform.Running(rb, qspec) {

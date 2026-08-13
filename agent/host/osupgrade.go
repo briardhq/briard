@@ -406,6 +406,11 @@ func (u *osUpgrade) restore(ctx context.Context, qspec platform.QEMUSpec, prev s
 	// before the forced stop it falls back to.
 	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget+3*shutdownGrace)
 	defer cancel()
+	// Leased like the recovery ladder's power-cycle, and for the same reason: the stop ahead of the
+	// bring-up spends real time in calls that do not all take a context. This leg matters more than
+	// most -- it runs on a node that is already degraded, where a watchdog misfire would restart the
+	// agent in the middle of the rollback it is performing (V3.32).
+	u.cfg.beat.Lease(rb)
 	u.logf("os-upgrade: rolling back to %s (%v)", prev, cause)
 
 	errs := []error{cause}
