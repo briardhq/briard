@@ -2,11 +2,17 @@
 # stripped of everything downstream (no broken payload, no snapshot/restore, no btrfs race).
 #
 # One node promotes r0 (so drbd-services@r0.target is active and drbd-reactor has written its
-# `Before=drbd-reactor.service` drop-in), then we time a BARE maintenance pause. On the buggy
+# `Before=drbd-reactor.service` drop-in), then we time a BARE stop of the daemon. On the buggy
 # config the reactor, as it stops, tears down its own `drbdsetup events2` feed, restarts it,
 # re-emits exists-events, and fires one last `systemctl start drbd-services@r0.target` — which
 # systemd sequences BEHIND the reactor's own stop (the Before= ordering), so neither can proceed
 # → ~90s SIGKILL. With the drop-in removed first → a few ms.
+#
+# WHO REMOVES IT IS THE POINT, and it changed. The defusal used to live in the `reactor.pause`
+# verb, and this file mirrored the verb's commands; [B.85] moved it onto drbd-reactor.service's
+# ExecStop, because the same deadlock hangs every stop the verb never sees — a shutdown, the
+# deadman's reboot, a user rebooting the host. This file now disarms NOTHING by hand, so a green
+# run is a statement about the shipped unit rather than about three lines copied into a test.
 #
 # Unlike an upgrade test this asserts on the DEADLOCK itself (pause duration), which is
 # deterministic (the 90s hang was 16/16 across earlier runs; only the downstream unmount was
@@ -61,24 +67,31 @@ pkgs.testers.runNixOSTest {
     # that could not have deadlocked at all — green for the wrong reason. Asserted, not assumed.
     node1.succeed("test -f ${beforeOverride}")
 
-    # THE PAUSE — exactly what the guest agent's `reactor.pause` verb runs
-    # (agent/guestagent/guestagent.go, verbReactorPause): remove the ordering drop-in, reload,
-    # stop the daemon. Mirrored here rather than driven through the agent because the verb is
-    # three commands with no decision in it, while reaching it needs a nested guest plus a host
-    # on the far side of a virtio-serial channel. What that gives up is coverage of the verb's
-    # own plumbing — the class of defect where the unit's PATH lacks a binary, which bit us once
-    # — and that is carried by the lab fleet demos, which run the real agent.
-    # Keep this sequence in step with the verb.
+    # A BARE STOP, WITH NOTHING DISARMED FIRST — and that is the whole test now.
+    #
+    # This used to mirror `reactor.pause`'s three commands (rm the drop-in, reload, stop) because
+    # the verb carried the defusal. [B.85] moved it onto drbd-reactor.service's own ExecStop,
+    # since the identical deadlock hangs every OTHER stop too — a shutdown, the deadman's reboot,
+    # a host reboot — none of which come through the verb. Mirroring the verb after that would
+    # have been worse than useless: MEASURED, this file passed in 401ms with the two manual
+    # commands deleted, i.e. it had stopped being able to tell whose defusal it was timing.
+    #
+    # So it asks the only question with an owner left: stop a promoted reactor the way everything
+    # in the product actually stops it, and see whether the unit disarms itself. `reactor.pause`
+    # is now literally this line (verbReactorPause), so driving the verb through a nested guest
+    # would add a virtio-serial channel and prove nothing more.
     start = time.monotonic()
-    node1.succeed("rm -f ${beforeOverride}")
-    node1.succeed("systemctl daemon-reload")
     node1.succeed("systemctl stop drbd-reactor.service")
     ms = int((time.monotonic() - start) * 1000)
     print(f"pause timing: REACTOR_PAUSE_MS={ms}")
 
     # A clean stop is milliseconds; the deadlock is the full ~90s TimeoutStopSec. 10s splits them
-    # with a huge margin either way. This asserts the deadlock is GONE.
-    assert ms < 10000, f"reactor.pause took {ms}ms — the promote-vs-stop deadlock is present (expect <10s)"
+    # with a huge margin either way. This asserts the deadlock is GONE — and, since nothing above
+    # disarms it by hand, that drbd-reactor.service's ExecStop is what removed it.
+    assert ms < 10000, (
+        f"stopping a promoted drbd-reactor took {ms}ms — the promote-vs-stop deadlock is present "
+        f"(expect <10s); drbd-reactor.service's ExecStop is what should have defused it"
+    )
 
     # And the pause was a PAUSE, not an outage: stop-services-on-exit defaults false, so the
     # promoted services and the DRBD Primary stay up while the daemon is down. Without this, a

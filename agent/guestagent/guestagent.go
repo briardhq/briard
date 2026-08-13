@@ -1026,23 +1026,22 @@ func dispatch(x Executor) dispatchFunc {
 			// `drbd-reactorctl disable` is deferred -- its systemctl reload proved flaky.
 			// The snippet arg is reserved for that future per-resource path.)
 			//
-			// FIRST defuse the promote-vs-stop deadlock. On stop, drbd-reactor tears down
-			// its `drbdsetup events2` feed, restarts it, and fires one last `systemctl start
-			// drbd-services@r0.target`. drbd-reactor also drops a `Before=drbd-reactor.service`
-			// override on that target (reactor-50-before.conf), so systemd sequences that start
-			// BEHIND this very stop -> neither completes -> 90s TimeoutStopSec SIGKILL, and the
-			// SIGKILL+revive is what later unmounts the data volume mid-upgrade. Removing the
-			// override (+ daemon-reload) before the stop makes the dying reactor's promote an
-			// instant no-op (target already active, no ordering) -> clean exit. Race-free: the
-			// override is (re)written only in drbd-reactor's Promoter::new (i.e. on resume), never
-			// on the per-promote path, so nothing re-arms it during the pause window. `rm -f` is
-			// idempotent (no-op if the promoter never wrote it). See the reactor-* contract tests.
-			if err := run("rm", "-f", reactorBeforeOverride); err != nil {
-				return nil, err
-			}
-			if err := run("systemctl", "daemon-reload"); err != nil {
-				return nil, err
-			}
+			// A BARE STOP, and the promote-vs-stop deadlock it used to have to dodge is now
+			// defused by the unit itself. This verb once removed drbd-reactor's own
+			// `Before=drbd-reactor.service` override (reactor-50-before.conf) and reloaded
+			// first, because a stopping reactor fires one last `systemctl start
+			// drbd-services@r0.target` that the override sequences BEHIND this very stop ->
+			// neither completes -> 90s TimeoutStopSec SIGKILL. That defusal moved onto
+			// drbd-reactor.service's ExecStop ([B.85], guest-image/configuration.nix), because
+			// the same deadlock hangs every OTHER stop too -- a shutdown, the deadman's reboot,
+			// a host reboot -- none of which come through here.
+			//
+			// So the steps are gone rather than kept as belt-and-braces: this verb and that unit
+			// ship in the same closure (the guest agent is built INTO the guest image,
+			// disk-image.nix), so there is no version in which one is present without the other,
+			// and duplicating it only buys a second place to have to keep correct. Measured
+			// after the move: a bare stop of a promoted reactor completes in 401ms
+			// (nixosTest/reactor-pause-deadlock.nix, which now drives exactly this line).
 			return nil, run("systemctl", "stop", "drbd-reactor.service")
 		case verbReactorResume:
 			// Restart the daemon; it re-reads config and adopts the already-Primary services,
@@ -1262,11 +1261,11 @@ func RunDeadman(ctx context.Context) error {
 
 const reactorPath = "/etc/drbd-reactor.d/briard.toml"
 
-// reactorBeforeOverride is the drop-in drbd-reactor writes to order drbd-services@r0.target
-// Before= the reactor daemon. Removing it around reactor.pause defuses the promote-vs-stop
-// deadlock. Path is fixed for v0's single resource (r0); drbd-reactor recreates it in
-// Promoter::new on the next reactor start (resume), so the pause defuse is self-restoring.
-const reactorBeforeOverride = "/run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf"
+// (The drop-in drbd-reactor writes over its own promoter target --
+// /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf -- was named here while
+// reactor.pause removed it by hand. That defusal is drbd-reactor.service's ExecStop now
+// ([B.85], guest-image/configuration.nix), so the path belongs to the unit that acts on it and
+// nothing in Go needs to know it.)
 
 // vipEnvPath is the optional EnvironmentFile briard-vip.service reads its VIP_DEV
 // from; the agent writes it via net.configure when the VIP is not on the baked NIC.

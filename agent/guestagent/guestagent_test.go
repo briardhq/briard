@@ -1048,13 +1048,18 @@ func TestReactorPauseResumeCommands(t *testing.T) {
 	if err := g.ReactorResume(context.Background(), "briard"); err != nil {
 		t.Fatal(err)
 	}
-	// No maintenance marker: briard-converge is a switch-free gate,
-	// so there is nothing autonomous to hold off during a managed op. Pause defuses the promote-vs-stop
-	// promote-vs-stop deadlock (rm the Before= override + daemon-reload) THEN stops the daemon
-	// (services + Primary stay up); resume restarts it (re-adopts, no demote, rewrites the override).
+	// No maintenance marker: briard-converge is a switch-free gate, so there is nothing
+	// autonomous to hold off during a managed op. Pause stops the daemon (services + Primary stay
+	// up); resume restarts it (re-adopts, no demote).
+	//
+	// TWO COMMANDS, NOT FOUR, AND THE ABSENCE IS THE ASSERTION. Pause used to `rm` drbd-reactor's
+	// `Before=` drop-in and daemon-reload first, to defuse the promote-vs-stop deadlock. That
+	// defusal moved onto drbd-reactor.service's ExecStop ([B.85]), which also covers the stops
+	// this verb never sees -- a shutdown, the deadman's reboot, a host reboot. The two ship in one
+	// closure (the guest agent is built INTO the guest image), so a copy here would only be a
+	// second place to keep right. If these commands come back, they came back for a reason that
+	// needs writing down.
 	want := [][]string{
-		{"rm", "-f", "/run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf"},
-		{"systemctl", "daemon-reload"},
 		{"systemctl", "stop", "drbd-reactor.service"},
 		{"systemctl", "start", "drbd-reactor.service"},
 	}

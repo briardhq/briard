@@ -90,19 +90,25 @@ pkgs.testers.runNixOSTest {
     require_primary("baseline")
     assert active(), "CONTRACT PRECOND: payload not active at baseline"
     born = since()
-    node1.succeed("test -f ${beforeOverride}")  # see the pause: its absence would hide a deadlock
+    # NON-VACUITY for the pause below: the drop-in must be armed, or the stop could not have
+    # deadlocked and a clean pause would prove nothing. Its REMOVAL is now the unit's job
+    # (drbd-reactor.service ExecStop, [B.85]) rather than this script's.
+    node1.succeed("test -f ${beforeOverride}")
 
     # === #1 THE PAUSE =========================================================================
     # Exactly what the guest agent's `reactor.pause` verb runs (agent/guestagent/guestagent.go,
-    # verbReactorPause): remove drbd-reactor's own `Before=` ordering drop-in, reload, stop the
-    # daemon. Mirrored here rather than driven through the agent because the verb is three
-    # commands with no decision in it, while reaching it needs a nested guest plus a host on the
-    # far side of a virtio-serial channel. What that gives up is coverage of the verb's own
-    # plumbing — the class of defect where the unit's PATH lacks a binary, which bit us once
-    # — and that is carried by the lab fleet demos, which run the real agent.
-    # The DURATION is reactor-pause-deadlock's gate, not this test's. Keep this in step with the verb.
-    node1.succeed("rm -f ${beforeOverride}")
-    node1.succeed("systemctl daemon-reload")
+    # verbReactorPause): stop the daemon. One command with no decision in it, so it is run here
+    # rather than driven through the agent, which would need a nested guest plus a host on the far
+    # side of a virtio-serial channel. What that gives up is coverage of the verb's own plumbing —
+    # the class of defect where the unit's PATH lacks a binary, which bit us once — and that is
+    # carried by the lab fleet demos, which run the real agent.
+    #
+    # NOTHING IS DISARMED FIRST any more. The verb used to `rm` drbd-reactor's `Before=` drop-in
+    # and reload before stopping, to dodge the promote-vs-stop deadlock, and this file mirrored
+    # it; [B.85] moved that defusal onto drbd-reactor.service's ExecStop, so the bare stop below
+    # is the whole of it. The DURATION is reactor-pause-deadlock's gate, not this test's — what is
+    # under test here is that a pause is non-destructive, a claim about the state the stop leaves
+    # behind however it got there. Keep this in step with the verb.
     node1.succeed("systemctl stop drbd-reactor.service")
 
     # === #2 NON-DESTRUCTIVE ===================================================================
