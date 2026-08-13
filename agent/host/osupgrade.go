@@ -49,9 +49,18 @@ import (
 // state) all lives on the qcow2, which is exactly what the snapshot holds.
 
 // shutdownGrace bounds each clean-stop attempt. A guest that has not powered off in this long
-// is not going to: systemd's own shutdown jobs time out at 90 s, so anything past it is a
-// guest that is stuck rather than slow.
-const shutdownGrace = 90 * time.Second
+// is not going to: a converged guest -- DRBD Primary, volume mounted, payload serving, VIP up --
+// was MEASURED powering itself off in 1.5 s, so 30 s is twenty times the observed cost and still
+// well inside a stop worth waiting for.
+//
+// IT WAS 90 s, WHICH IS SYSTEMD'S DefaultTimeoutStopSec, AND THE COLLISION HID A BUG FOR MONTHS
+// ([B.85]). A unit inside the guest was deadlocking on stop and eating that exact timeout; this
+// grace expired in the same instant the guest's SIGKILL fired, so the ACPI fallback appeared to
+// power the machine off in 1.5 s when all it had done was arrive as the deadlock resolved
+// itself. Every clean stop paid 90 s and looked like it worked. A grace SHORTER than the guest's
+// own patience is what makes the next fault of that shape fail loudly instead of silently: the
+// fallback then genuinely does the work, and a fallback that fires every time is visible.
+const shutdownGrace = 30 * time.Second
 
 // ErrHandoverRequired is the refusal: this node is serving, a peer could take the work, and
 // applying the update means a reboot -- which on an HA pair IS a failover. Sequencing a

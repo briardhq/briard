@@ -36,7 +36,7 @@ import (
 // pings, which is chosen, rather than by the longest stall, which is not.
 //
 // ⚠️ ONE CAVEAT CARRIES THE WEIGHT: an enclosing ctx with a deadline does not make a step bounded.
-// rebootGuest builds a 9.5-minute ctx and then calls u.vm.Stop(), which takes no ctx at all; if
+// rebootGuest builds a 6.5-minute ctx and then calls u.vm.Stop(), which takes no ctx at all; if
 // that hangs, the deadline does nothing, because nobody is watching it. The per-step question is
 // whether every blocking call inside either takes the ctx or has a watcher closing its fd.
 //

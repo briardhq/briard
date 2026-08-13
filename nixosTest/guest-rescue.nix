@@ -86,6 +86,12 @@ pkgs.testers.runNixOSTest {
         "--setenv=NODE=guest --setenv=SERVICE_TAP=svc0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
+        # GUEST_SERIAL is the only window into the guest during a stop, and it is why [B.85] sat
+        # unexplained: the host watches the VM's systemd unit and has no console on what is
+        # inside it, so 90 seconds of a guest ignoring `os.poweroff` and 90 seconds of a guest
+        # shutting down slowly look identical from out here. The chardev APPENDS across launches
+        # (platform.qemuArgs), so one file holds the guest that was stopped AND the rebuilt one.
+        "--setenv=GUEST_SERIAL=/tmp/guest-console.log "
         "${agent}/bin/briard-agent"
     )
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
@@ -132,6 +138,42 @@ pkgs.testers.runNixOSTest {
         "journalctl -u briard-agent | grep -q 'rescue: the guest was rebuilt and has re-converged'",
         timeout=900,
     )
+
+    # === [B.85]: THE CLEAN STOP MUST ACTUALLY BE THE CLEAN ROUTE ===
+    # The stop above goes through host.stopCleanly, which asks the guest agent first (`os.poweroff`
+    # -> `systemctl poweroff --no-block`) and keeps the ACPI power button as the fallback for a
+    # guest whose agent is gone. It was measured taking the fallback EVERY time on a healthy node,
+    # and the reason was invisible from out here: the host watches its guest's systemd unit and has
+    # no console on what is inside it, so "the request was ignored" and "the shutdown is stuck" look
+    # identical. GUEST_SERIAL above is what made the difference legible, and it is why it is set.
+    #
+    # What it showed: the shutdown STARTED a second after the request, then drbd-reactor deadlocked
+    # on its own stop for a full 90s TimeoutStopSec and was SIGKILLed -- the promote-vs-stop
+    # deadlock of nixosTest/reactor-pause-deadlock.nix, on the shutdown path, where nothing was
+    # defusing it. Fixed on drbd-reactor.service's ExecStop (guest-image/configuration.nix).
+    #
+    # TWO ASSERTIONS, because either alone passes for the wrong reason. The fallback line proves
+    # the AGENT route worked -- a guest that still deadlocks reaches the power button, and its
+    # absence is the whole claim. The console proves WHY, and guards the case where some future
+    # stop hangs on a different unit: a deadlock that moved would still be silent up here.
+    # (\r stripped -- it is a serial console.)
+    stopleg = host.succeed(
+        "journalctl -u briard-agent -o short-precise | grep -aE 'guest-stop|guest-shutdown|rescue:' || true"
+    )
+    print(stopleg)
+    assert "trying the power button" not in stopleg, (
+        "the guest agent's os.poweroff did not stop the machine and stopCleanly fell back to ACPI "
+        f"-- [B.85] is back, and the clean route is not the route being taken:\n{stopleg}"
+    )
+
+    stuck = host.succeed(
+        "tr -d '\\r' < /tmp/guest-console.log | "
+        "grep -aoE 'A stop job is running for [^(]*' | sort -u || true"
+    )
+    assert not stuck.strip(), (
+        f"the guest's shutdown had to wait on a unit, which is what [B.85] was:\n{stuck}"
+    )
+    print("clean stop: the agent route took it, and no unit held the guest's shutdown")
 
     # (1) THE VM REALLY WENT DOWN AND CAME BACK. A different QEMU is serving, so the sequence ran
     # rather than short-circuiting -- the honest in-VM half of "it was rebuilt". The other half,

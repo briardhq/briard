@@ -159,6 +159,15 @@ let
   # nightly. Hermetic same reason as the contract suite above.
   reactorPauseDeadlock = import ./reactor-pause-deadlock.nix { inherit pkgs guestModule; };
 
+  # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing [B.85]:
+  # a lib.nix node converged the same way — DRBD Primary, volume mounted, payload serving, VIP up,
+  # the reactor's `Before=` drop-in present — powered itself off in 1.5s while the SHIPPED guest
+  # sat in that deadlock for 90s. The throwaway harness that showed this is not kept: it was green
+  # against a broken product, which is the most expensive kind of test to leave lying around.
+  # The gate lives on the real artifact instead (guest-rescue asserts the agent route was taken
+  # and that no unit held the guest's shutdown), and reactor-pause-deadlock stays the isolated
+  # red/green for the deadlock itself.
+
   # Upgrade + TLS-serving mechanism tests. Hermetic nixosTests on the
   # dummy guest (like the DRBD net), but each boots a multi-node cluster with
   # pre-staged images — converge-payload alone runs ~6 min.

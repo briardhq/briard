@@ -68,8 +68,8 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 	// must not share a deadline. This used to hand the caller's deadline to both, which read as
 	// "the caller decides how long it is willing to wait" and behaved as a hang: a frozen QEMU
 	// never sends the greeting, and a caller with a long budget then blocks on a Decode for the
-	// whole of it. The recovery ladder (host.rebootGuest) budgets ~9.5 minutes for stop +
-	// relaunch, so its ACPI attempt sat in this Decode for nine minutes before it could fall
+	// whole of it. The recovery ladder (host.rebootGuest) budgets ~6.5 minutes for stop +
+	// relaunch, so its ACPI attempt sat in this Decode for that whole budget before it could fall
 	// back to the forced stop -- found by nixosTest/agent-recover, which SIGSTOPs QEMU and is
 	// the first caller whose guest is frozen rather than merely unhealthy. The rollback leg
 	// (osUpgrade.restore) carries the identical budget and had the identical latent hang; it had

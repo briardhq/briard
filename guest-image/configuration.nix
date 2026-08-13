@@ -793,6 +793,42 @@ in
         Type = "notify";
         ExecStart = "${pkgs.drbd-reactor}/bin/drbd-reactor";
         Restart = "on-failure";
+        # DEFUSE THE PROMOTE-VS-STOP DEADLOCK ON EVERY STOP, not just on the one the agent
+        # drives. drbd-reactor writes itself an ordering drop-in saying drbd-services@r0.target
+        # comes Before= this daemon; on the way DOWN that reverses, so systemd stops the daemon
+        # first and the target after. A stopping reactor re-emits its exists-events and fires one
+        # last `systemctl start drbd-services@r0.target`, systemd refuses it (destructive: a
+        # shutdown is already queued), the reactor reads the refusal as a failed start and answers
+        # with `systemctl stop drbd-services@r0.target` -- a job it then WAITS for, and which the
+        # ordering above sequences behind its own stop. Neither can proceed: 90s TimeoutStopSec,
+        # then SIGKILL.
+        #
+        # MEASURED, from the guest's console during `briard rescue` ([B.85]): the shutdown began
+        # 1s after os.poweroff, deadlocked at +11.5s, and finished at +101s. It was read as "the
+        # guest agent ignores os.poweroff" because the host has no console on its guest and the
+        # two 90s constants -- this TimeoutStopSec and the host's shutdownGrace -- expired
+        # together, so the ACPI fallback appeared to do the work the SIGKILL had just done.
+        #
+        # Removing the drop-in first is drbd-reactor's own sanctioned defusal: it is what
+        # `reactor.pause` does (guestagent.go, verbReactorPause), and it is race-free because the
+        # promoter only (re)writes the file in Promoter::new -- i.e. on the next START -- so
+        # nothing re-arms it while we are stopping. The deadlock and this defusal are gated by
+        # nixosTest/reactor-pause-deadlock.nix.
+        #
+        # ON ExecStop RATHER THAN IN THE VERB, and that is the point: this stop happens on paths
+        # no agent verb touches -- the deadman's `systemctl reboot`, a user rebooting the host
+        # (the guest unit's ExecStop -> ACPI -> this same shutdown), a guest that reboots itself.
+        # systemd runs ExecStop= before it signals the process, so the ordering is gone before the
+        # reactor's last gasp. Both commands are `-` prefixed: a failure here must never turn a
+        # stop into a failed stop, and `rm -f` on an absent file is already a no-op (a reactor
+        # that never promoted wrote no drop-in).
+        #
+        # PAIRED with `reactorBeforeOverride` in agent/guestagent/guestagent.go -- same path,
+        # deliberately written out rather than shared, for v0's single resource (r0).
+        ExecStop = [
+          "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf"
+          "-${config.systemd.package}/bin/systemctl daemon-reload"
+        ];
       };
     };
 
