@@ -168,15 +168,24 @@ pkgs.testers.runNixOSTest {
     # SIGABRT + GOTRACEBACK=all: every goroutine's stack at the moment it wedged. This is the half
     # of the feature that closes the bug rather than clearing it.
     host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -q 'SIGABRT'")
-    # NOT anchored with ^: journalctl prefixes every line with its own timestamp/unit
-    # ("... briard-agent[841]: goroutine 1 [syscall]:"), so a start-of-line anchor here can never
-    # match and the assertion would be vacuous in the direction that looks like a real failure.
-    host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -qE 'goroutine [0-9]+ \\['")
-    # The dump must actually NAME the wedge — the whole reason for dumping every goroutine rather
-    # than the one that happened to take the signal. Either frame proves it located the blocking
-    # call; which of the two survives depends on inlining, which is not a property worth asserting.
+    # Deliberately loose. Two earlier versions of this assertion pinned the goroutine-header
+    # FORMAT and both were wrong -- journalctl prefixes every line, so '^goroutine' can never
+    # match, and current Go prints "goroutine 0 gp=0x.. m=1 mp=0x.. [idle]:" rather than
+    # "goroutine 0 [idle]:". Runtime formatting is not a property this test has any business
+    # depending on; it would go red on a toolchain bump while the feature worked perfectly.
+    dumped = int(host.succeed(
+        f"journalctl -u briard-agent --since='{since}' | grep -cE 'goroutine [0-9]+' || true"
+    ).strip())
+    assert dumped >= 2, f"only {dumped} goroutine header(s) in the dump; expected a full traceback"
+
+    # THE ASSERTION THAT CARRIES THE POINT, and it doubles as the proof that GOTRACEBACK=all is
+    # load-bearing rather than decorative. The signal lands on whichever goroutine happens to take
+    # it -- goroutine 0, sysmon, parked in futex -- NOT on the wedged one. So under the default
+    # (`single`) the dump would name that and stop, and this frame could not appear. Its presence
+    # means the traceback reached the goroutine that is actually stuck, and named the exact call:
+    #   os.WriteFile -> briard.io/agent/host.Config.writeTelemetry (host.go:931)
     host.succeed(
-        f"journalctl -u briard-agent --since='{since}' | grep -qE 'writeTelemetry|os\\.WriteFile'"
+        f"journalctl -u briard-agent --since='{since}' | grep -q 'host.Config.writeTelemetry'"
     )
 
     # === 5) THE GUEST WAS NEVER TOUCHED ===
