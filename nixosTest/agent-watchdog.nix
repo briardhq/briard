@@ -168,10 +168,15 @@ pkgs.testers.runNixOSTest {
     # SIGABRT + GOTRACEBACK=all: every goroutine's stack at the moment it wedged. This is the half
     # of the feature that closes the bug rather than clearing it.
     host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -q 'SIGABRT'")
-    host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -qE '^goroutine [0-9]+'")
-    # The dump should actually name the blocking write — the whole point of dumping all of them.
+    # NOT anchored with ^: journalctl prefixes every line with its own timestamp/unit
+    # ("... briard-agent[841]: goroutine 1 [syscall]:"), so a start-of-line anchor here can never
+    # match and the assertion would be vacuous in the direction that looks like a real failure.
+    host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -qE 'goroutine [0-9]+ \\['")
+    # The dump must actually NAME the wedge — the whole reason for dumping every goroutine rather
+    # than the one that happened to take the signal. Either frame proves it located the blocking
+    # call; which of the two survives depends on inlining, which is not a property worth asserting.
     host.succeed(
-        f"journalctl -u briard-agent --since='{since}' | grep -q 'writeTelemetry'"
+        f"journalctl -u briard-agent --since='{since}' | grep -qE 'writeTelemetry|os\\.WriteFile'"
     )
 
     # === 5) THE GUEST WAS NEVER TOUCHED ===
