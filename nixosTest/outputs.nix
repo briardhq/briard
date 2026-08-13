@@ -86,6 +86,7 @@ let
   agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; };
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # host restarts a wedged guest
+  agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # V3.32: init restarts a wedged AGENT
   guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # B.10: rebuild the guest from its image, keep the data
 
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
@@ -269,6 +270,10 @@ in
       # here the GUEST goes silent and the host restarts its VM. Minutes long by construction --
       # it measures the wait, because a ladder that acts too soon is worse than one that waits.
       agent-recover = agentRecover;
+      # The third of the trio, and the rung the other two cannot reach: there the GUEST is what
+      # fails, here the AGENT is -- alive, so nothing in the product can see it, which is why
+      # this one is init's job rather than ours.
+      agent-watchdog = agentWatchdog;
       guest-rescue = guestRescue;
       os-stage = osStage; # a closure the guest does NOT have, fetched over a cache
       # The boot selector. Promoted back from `debug` once the premise that demoted it turned

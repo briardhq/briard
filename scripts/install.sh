@@ -648,9 +648,37 @@ $CONSOLE_ENV
 # would silently win here gates readiness, the OS health gate and a rollback.
 Environment=STATUS_EVERY=5s
 Environment=ASSIGNMENT_CACHE=$STATE/assignment.json
+# GOTRACEBACK=all is what makes the watchdog below worth having (V3.32). Its default signal is
+# SIGABRT, and Go answers SIGABRT by dumping goroutine stacks and dying -- so a trip leaves the
+# stack of every goroutine at the moment the agent wedged, which is the diagnosis for a bug whose
+# whole difficulty is leaving no evidence. Go's default, "single", dumps only the CURRENT
+# goroutine, and at signal-delivery time that is an arbitrary one: useless here. Restarting the
+# agent is the lesser half of this feature; the traceback is the half that closes the bug.
+Environment=GOTRACEBACK=all
+Type=notify
+NotifyAccess=main
+# READY=1 means THE AGENT started -- config read, loop entered -- not that the node is healthy.
+# So this bounds a config read, not a bring-up, and 30s is generous for that. It deliberately does
+# NOT have to cover BringUpBudget: the agent signals ready before it brings the guest up, which is
+# what lets the watchdog cover bring-up and the recovery ladder instead of arming only after a
+# node first converges (an agent whose guest never converges would otherwise never arm one at all).
+TimeoutStartSec=30
+# The watchdog: systemd kills the unit if the agent stops sending WATCHDOG=1 for this long, and
+# Restart= brings it back. Sized by the longest GAP between pings, not by the longest thing the
+# agent legitimately does -- the agent beats between its bounded steps and takes a lease across the
+# long ones, so a ten-minute recovery is covered without widening this. WATCHDOG_USEC (which
+# systemd derives from this line) is the agent's only source for its ping interval, so this number
+# has exactly one definition.
+WatchdogSec=20
 ExecStart=$AGENT
 Restart=on-failure
 RestartSec=3
+# Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
+# SIGTERM already unwinds cooperatively (signal.NotifyContext), but the recovery and rollback legs
+# run on deliberately DETACHED contexts so they cannot be cancelled halfway, and rebootGuest alone
+# budgets BringUpBudget+3*shutdownGrace. At 90s a forced restart SIGKILLs the agent partway through
+# a recovery -- the one moment the machine can least afford it.
+TimeoutStopSec=600
 [Install]
 WantedBy=multi-user.target
 EOF
