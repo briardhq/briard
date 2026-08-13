@@ -149,6 +149,10 @@ func ConfigFromEnv() Config {
 		NotifyURL:       os.Getenv("NOTIFY_URL"),                                    // ntfy topic URL for alerts; "" -> log-only
 		TelemetryPath:   os.Getenv("TELEMETRY_PATH"),                                // out-of-band soak collector file; "" -> don't write
 		MetricsWindow:   durEnv("METRICS_WINDOW", time.Hour),                        // cloud aggregate rollup bucket; soak shortens it to exercise rollover
+		// A TEST FIXTURE, read here so it has one home rather than a stray Getenv in the observe
+		// loop. agent-watchdog.nix sets it to wedge that goroutine on purpose; nothing else does,
+		// install.sh writes no such variable, and unset is a no-op. See wedgeForTest.
+		WedgeFIFO: os.Getenv("BRIARD_WEDGE_FIFO"),
 		// The installed service (the upgrade target); empty on a diskless node, and empty
 		// BY DEFAULT — a node is installed before it is given anything to run, so
 		// SERVICE_IMAGE unset means "no service". That default is the whole of what makes

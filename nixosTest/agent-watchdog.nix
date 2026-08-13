@@ -11,12 +11,25 @@
 # about the part that is hard.
 #
 # So the wedge here leaves the PROCESS entirely alive and blocks only the observe goroutine, which
-# is the real failure shape. It needs no fault-injection hook, because the product already has the
-# shape: writeTelemetry does an os.WriteFile that takes no context, in the observe loop, every
-# cycle. Point TELEMETRY_PATH at a path whose ".tmp" sibling is a FIFO with no reader and open(2)
-# blocks forever — an uninterruptible syscall, no deadline, no ctx to honour. Go hands the P off to
-# another thread, so the runtime, the timers and every other goroutine keep running perfectly. A
-# bare `time.Ticker` pinger would go on reporting liveness through the whole thing.
+# is the real failure shape: open(2) on a FIFO with no reader blocks forever — an uninterruptible
+# syscall, no deadline, no ctx to honour. Go hands the P off to another thread, so the runtime, the
+# timers and every other goroutine keep running perfectly. A bare `time.Ticker` pinger would go on
+# reporting liveness through the whole thing.
+#
+# THAT WEDGE USED TO BE THE PRODUCT'S OWN, and why it no longer is belongs here. writeTelemetry did
+# an un-`ctx`'d os.WriteFile in the observe loop every cycle, so pointing TELEMETRY_PATH's ".tmp"
+# sibling at a reader-less FIFO wedged the agent with no fault-injection hook at all. That was a
+# real latent defect (B.87) and not a contrivance — telemetry, the least important thing in the
+# loop, could take the node's supervisor down — and fixing it moved the write onto its own
+# goroutine. Which took the lever away: the shape this test must produce is exactly the shape the
+# fix makes unreachable. So the lever is now EXPLICIT, `BRIARD_WEDGE_FIFO`, opened at the same
+# point in the same loop the write used to sit at. It is a fixture, it is named like one, nothing
+# else sets it, and install.sh writes no such variable.
+#
+# The old lever is not gone though — it is now an ASSERTION (step 2). The same reader-less FIFO
+# under TELEMETRY_PATH must NOT take the agent down any more, and under the pre-B.87 code that
+# step fails by tripping the watchdog it exists to prove is not needed there. The defect this test
+# was built on has become one of the things it defends.
 #
 # THAT IS THE MUTATION CHECK, and it is the point of the test: replace beat/lease with a timer
 # goroutine and this test must FAIL (no restart, the wait_until_succeeds times out). A test that
@@ -88,9 +101,13 @@ pkgs.testers.runNixOSTest {
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
           STATUS_EVERY = "2s";
           GUEST_SERIAL = "/tmp/guest-serial.log";
-          # The wedge point. Off on a shipped install; the soak sets it, and so do we — the
-          # blocking write is the product's, not the test's.
+          # Off on a shipped install; the soak sets it, and so do we — step 2 needs a real
+          # telemetry path to hang, to prove that hanging it no longer costs anything.
           TELEMETRY_PATH = "/tmp/telemetry.json";
+          # The wedge point (step 3). A fixture, and the only consumer of this variable anywhere.
+          # The path does not exist yet, which is the disarmed state: the agent opens it every
+          # cycle and gets ENOENT until the test mkfifos it.
+          BRIARD_WEDGE_FIFO = "/tmp/wedge.fifo";
           # Without this the SIGABRT dump names one arbitrary goroutine instead of the wedged one.
           GOTRACEBACK = "all";
         };
@@ -140,22 +157,52 @@ pkgs.testers.runNixOSTest {
     restarts_before = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
     print(f"guest qemu pid {qemu_before}, agent restarts so far {restarts_before}")
 
-    # Prove telemetry is actually being written before we sabotage it, or the wedge below would be
-    # a no-op that this test could not distinguish from a working watchdog.
+    # Prove telemetry is actually being written before we sabotage it, or step 2 would be a
+    # no-op that this test could not distinguish from a working fix.
     host.wait_until_succeeds("test -s /tmp/telemetry.json", timeout=30)
+
+    # === 2) B.87: A HUNG TELEMETRY PATH IS NO LONGER THE AGENT'S PROBLEM ===
+    # This is the wedge this test used to USE, kept as the thing it now DEFENDS. os.WriteFile
+    # opens "<TELEMETRY_PATH>.tmp" O_WRONLY|O_CREATE|O_TRUNC; on a FIFO with no reader that
+    # open(2) blocks forever, and it stands in for the realistic trigger — an NFS or FUSE mount
+    # under TELEMETRY_PATH gone unresponsive. It must now cost samples and nothing else.
+    b87_since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
+    b87_restarts = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
+    host.succeed("rm -f /tmp/telemetry.json.tmp && mkfifo /tmp/telemetry.json.tmp")
+
+    # Non-vacuous first: the writer really is stuck, not merely slow. Without this the step
+    # would pass just as well against a FIFO nothing ever tried to open.
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since='{b87_since}' | grep -q 'telemetry write is not keeping up'",
+        timeout=60,
+    )
+    # Now the assertion. Well past WatchdogSec=20 with the write hung, the agent must not have
+    # been restarted and must still be serving. Pre-B.87 this is where the watchdog fired.
+    host.succeed("sleep 45")
+    b87_now = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
+    assert b87_now == b87_restarts, (
+        f"a hung TELEMETRY_PATH took the agent down ({b87_restarts} -> {b87_now} restarts) — "
+        "the telemetry write is back on the observe goroutine (B.87)"
+    )
+    host.succeed("systemctl is-active briard-agent")
+    host.succeed("curl -fsS http://192.168.1.100/healthz")
+    # The writer goroutine stays parked in that open(2) for the life of this process — nothing
+    # short of a reader frees it — so telemetry is dead until the restart in step 4 brings up a
+    # fresh one. Removing the FIFO here only stops the NEXT process re-wedging on it.
+    host.succeed("rm -f /tmp/telemetry.json.tmp")
 
     since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
 
-    # === 2) THE WEDGE: alive, but the observe goroutine is gone ===
-    # os.WriteFile opens "<TELEMETRY_PATH>.tmp" O_WRONLY|O_CREATE|O_TRUNC. On a FIFO with no
-    # reader that open(2) blocks forever. No ctx, no deadline, nothing to cancel.
-    host.succeed("rm -f /tmp/telemetry.json.tmp && mkfifo /tmp/telemetry.json.tmp")
+    # === 3) THE WEDGE: alive, but the observe goroutine is gone ===
+    # The explicit fixture. Same syscall, same loop, same position — the agent opens
+    # BRIARD_WEDGE_FIFO each cycle and has been getting ENOENT until now.
+    host.succeed("mkfifo /tmp/wedge.fifo")
 
     # The process must still be ALIVE and running other goroutines — that is what separates this
     # from SIGSTOP, and what a bare-timer pinger would sail straight through.
     host.wait_until_succeeds("test $(pgrep -cf 'bin/briard-agent') -ge 1", timeout=10)
 
-    # === 3) THE WATCHDOG FIRES ===
+    # === 4) THE WATCHDOG FIRES ===
     # WatchdogSec=20, so the miss lands within ~20s of the last beat; allow generous slack for a
     # loaded nested VM. NRestarts growing is the assertion systemd itself makes.
     host.wait_until_succeeds(
@@ -164,7 +211,7 @@ pkgs.testers.runNixOSTest {
     )
     host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -qi 'watchdog'")
 
-    # === 4) AND IT LEFT THE DIAGNOSIS BEHIND ===
+    # === 5) AND IT LEFT THE DIAGNOSIS BEHIND ===
     # SIGABRT + GOTRACEBACK=all: every goroutine's stack at the moment it wedged. This is the half
     # of the feature that closes the bug rather than clearing it.
     host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -q 'SIGABRT'")
@@ -183,12 +230,14 @@ pkgs.testers.runNixOSTest {
     # it -- goroutine 0, sysmon, parked in futex -- NOT on the wedged one. So under the default
     # (`single`) the dump would name that and stop, and this frame could not appear. Its presence
     # means the traceback reached the goroutine that is actually stuck, and named the exact call:
-    #   os.WriteFile -> briard.io/agent/host.Config.writeTelemetry (host.go:931)
+    #   os.OpenFile -> briard.io/agent/host.Config.wedgeForTest
+    # (before B.87 this frame read host.Config.writeTelemetry, which is the whole story of this
+    # test in one line: the same assertion, now naming a fixture instead of a defect.)
     host.succeed(
-        f"journalctl -u briard-agent --since='{since}' | grep -q 'host.Config.writeTelemetry'"
+        f"journalctl -u briard-agent --since='{since}' | grep -q 'host.Config.wedgeForTest'"
     )
 
-    # === 5) THE GUEST WAS NEVER TOUCHED ===
+    # === 6) THE GUEST WAS NEVER TOUCHED ===
     # An involuntary restart must re-adopt exactly as a deliberate one does.
     host.succeed("systemctl is-active briard-guest.service")
     qemu_mid = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
@@ -197,7 +246,7 @@ pkgs.testers.runNixOSTest {
         "a cure worse than the disease"
     )
 
-    # === 6) CLEAR THE FAULT: the agent recovers, and stops tripping ===
+    # === 7) CLEAR THE FAULT: the agent recovers, and stops tripping ===
     # Deliberately NOT "wait for another re-adopt". Once the FIFO is gone the agent that is
     # already running simply carries on; no further restart is needed, and demanding one asserts
     # a recovery the product correctly does not perform. (An earlier version did exactly that and
@@ -206,8 +255,10 @@ pkgs.testers.runNixOSTest {
     # Removing the FIFO also does not unblock an open(2) already waiting on it, so the agent may
     # still be wedged here and take one more watchdog cycle. The assertion below is true either
     # way, which is why it is the one worth making: a FRESH telemetry file can only appear if the
-    # observe loop reached writeTelemetry again, whichever route it took to get there.
-    host.succeed("rm -f /tmp/telemetry.json.tmp /tmp/telemetry.json")
+    # observe loop reached the handoff again, whichever route it took to get there. It doubles as
+    # the proof that step 2's permanently-parked writer did not outlive its process — this file
+    # can only be written by the writer the restart started.
+    host.succeed("rm -f /tmp/wedge.fifo /tmp/telemetry.json")
     host.wait_until_succeeds("test -s /tmp/telemetry.json", timeout=180)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     host.succeed("systemctl is-active briard-agent")

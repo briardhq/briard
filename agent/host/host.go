@@ -214,6 +214,18 @@ type Config struct {
 	// call chain that is deep by design. nil is the ordinary state outside systemd (dev runs, the
 	// lab fleet, tests) and every method on it is nil-safe, so a zero Config works everywhere.
 	beat *beat
+
+	// telemetry is the goroutine that owns TelemetryPath, and like beat it is machinery rather
+	// than configuration: Run builds it and it rides here so writeTelemetry can reach it without
+	// threading one more argument through observe. nil = telemetry off (the shipped state, and
+	// every unit test); writeTelemetry is nil-safe. See telemetryWriter for why it is a
+	// goroutine and not a deadline (B.87).
+	telemetry *telemetryWriter
+
+	// WedgeFIFO is a TEST FIXTURE, not a product knob: a path the observe loop opens each cycle
+	// so agent-watchdog.nix can wedge that goroutine on purpose. Empty everywhere but that test.
+	// See wedgeForTest for why this is explicit rather than borrowed from a defect.
+	WedgeFIFO string
 }
 
 // statusReader is the DRBD/quorum slice of the guest client the snapshot needs -- kept
@@ -256,6 +268,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// The watchdog keep-alive, built before anything that could block so every operation below is
 	// covered. nil outside systemd. Set on the local cfg, which is the copy every call below takes.
 	cfg.beat = newBeat(logf)
+	// The telemetry writer, built once here and for the same reason the beat is: it must outlive
+	// any single observe() call, since the re-dial loop below runs many of them and a second
+	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.
+	cfg.telemetry = cfg.newTelemetryWriter(ctx, logf)
 	// A service installed at RUNTIME is not described by the environment, so rebuild it
 	// from the node-local manifest cache before anything derives from cfg. Without this an agent
 	// restart would re-derive the chain from env alone and silently drop the installed service
@@ -745,7 +761,11 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// file the soak reads L0-side; best-effort, never gates the observe loop.
 		cfg.beat.Beat()
 		res := cfg.resources(ctx, r)
-		cfg.writeTelemetry(res, logf)
+		cfg.writeTelemetry(res, logf) // a handoff, never a write: see telemetryWriter (B.87)
+		// The deliberate wedge point, off unless a test arms it. It sits HERE, where the
+		// un-ctx'd write used to be, so what agent-watchdog.nix measures is a stall at the same
+		// place in the same loop. See wedgeForTest.
+		cfg.wedgeForTest(logf)
 		// Fold this cycle's sample into the hourly rollup and upload the aggregates
 		// (never raw) up the cloud seam -- the product-health subset re-added deliberately
 		//. Best-effort like the rest of telemetry: a failed upload keeps the buckets and
@@ -912,16 +932,86 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 	return &res
 }
 
-// WriteTelemetry publishes this cycle's resource sample to the out-of-band collector file
-// the soak reads L0-side -- the internal host→lab channel that replaces putting
-// telemetry on the cloud report. Latest-wins via atomic write-rename (a reader never sees a
-// torn sample); no history is kept (the soak samples at rest each cycle). Best-effort: a
-// disabled path (standalone / no soak) or a write miss just logs, never touching the observe
-// loop -- telemetry is a signal, not a gate. Restart-robustness is irrelevant (scratch file).
-func (cfg Config) writeTelemetry(res *telemetry.NodeResources, logf func(string, ...any)) {
+// telemetryWriter owns the ONLY goroutine that touches TelemetryPath, and it exists because the
+// least important thing in the observe loop was the one thing able to stop it (B.87). Every
+// other call in that loop carries a 5s deadline. This one could not: there is no ctx-aware file
+// write in the standard library, so a deadline handed to os.WriteFile would be decoration --
+// open(2) on a hung mount (an unresponsive NFS or FUSE path under TELEMETRY_PATH) blocks
+// uninterruptibly and no timer reaches it. The answer is therefore isolation rather than a
+// bound: the write happens on a goroutine of its own and the loop only ever does a
+// non-blocking send, so the worst a stuck path can cost is the samples themselves.
+//
+// Latest-wins, depth 1, drop when the writer is busy -- and that is not a concession forced by
+// the channel, it is what the file already meant. writeTelemetryFile publishes the newest
+// sample by atomic rename and keeps no history, so a sample the writer never got to is
+// indistinguishable from one it overwrote a cycle later.
+type telemetryWriter struct {
+	ch chan *telemetry.NodeResources
+	// dropped edge-triggers the log below. Touched ONLY by the sender (observe is the sole
+	// caller of writeTelemetry, and there is one observe at a time), never by the goroutine, so
+	// it needs no lock.
+	dropped bool
+}
+
+// newTelemetryWriter starts that goroutine, or returns nil when no path is configured -- the
+// shipped state, since install.sh sets no TELEMETRY_PATH. writeTelemetry is nil-safe, so a
+// Config built without one (every unit test, every standalone node) still works.
+//
+// The goroutine is deliberately NOT joined at shutdown. A writer wedged in open(2) cannot be
+// cancelled by anything short of the mount coming back, so waiting for it would reintroduce the
+// hang one call further out; the process exits over it instead, which is exactly what a
+// best-effort instrument should be allowed to cost.
+func (cfg Config) newTelemetryWriter(ctx context.Context, logf func(string, ...any)) *telemetryWriter {
 	if cfg.TelemetryPath == "" {
+		return nil
+	}
+	w := &telemetryWriter{ch: make(chan *telemetry.NodeResources, 1)}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case res := <-w.ch:
+				cfg.writeTelemetryFile(res, logf)
+			}
+		}
+	}()
+	return w
+}
+
+// WriteTelemetry hands this cycle's resource sample to the writer goroutine, and never waits.
+// Nil-safe: no TelemetryPath (or a Config that never started a writer) means telemetry is off.
+func (cfg Config) writeTelemetry(res *telemetry.NodeResources, logf func(string, ...any)) {
+	w := cfg.telemetry
+	if w == nil {
 		return
 	}
+	select {
+	case w.ch <- res:
+		if w.dropped {
+			logf("telemetry writer caught up; sampling again")
+			w.dropped = false
+		}
+	default:
+		// The writer is still inside the previous write: a slow or hung TELEMETRY_PATH. Drop
+		// this sample and carry on -- the loop this instruments must never wait on it. Edge-
+		// triggered, so a path that never comes back says so once instead of every cycle.
+		if !w.dropped {
+			logf("telemetry write is not keeping up (%s); dropping samples until it does", cfg.TelemetryPath)
+			w.dropped = true
+		}
+	}
+}
+
+// WriteTelemetryFile publishes one resource sample to the out-of-band collector file the soak
+// reads L0-side -- the internal host→lab channel that replaces putting telemetry on the cloud
+// report. Latest-wins via atomic write-rename (a reader never sees a torn sample); no history is
+// kept (the soak samples at rest each cycle). Best-effort: a write miss just logs.
+// Restart-robustness is irrelevant (scratch file).
+//
+// Runs on the writer goroutine, never on the observe loop -- see telemetryWriter for why the
+// distinction is the whole point of this file existing at all.
+func (cfg Config) writeTelemetryFile(res *telemetry.NodeResources, logf func(string, ...any)) {
 	b, err := json.Marshal(res)
 	if err != nil {
 		logf("telemetry marshal failed: %v", err)
@@ -935,6 +1025,33 @@ func (cfg Config) writeTelemetry(res *telemetry.NodeResources, logf func(string,
 	if err := os.Rename(tmp, cfg.TelemetryPath); err != nil {
 		logf("telemetry rename failed: %v", err)
 	}
+}
+
+// WedgeForTest blocks the calling goroutine for as long as WedgeFIFO names a FIFO with no
+// reader, and does nothing at all otherwise. It is a FIXTURE, named so, and it is in the product
+// deliberately.
+//
+// The watchdog (V3.32) exists to catch an agent that is alive but has one goroutine stuck in an
+// uninterruptible syscall, and the test that proves it has to produce exactly that. It used to
+// get it for free from writeTelemetry's un-ctx'd write -- point TELEMETRY_PATH's .tmp sibling at
+// a reader-less FIFO and the observe loop stopped while the runtime, the timers and every other
+// goroutine kept running perfectly. Fixing that (B.87) took the lever away, and no bounded call
+// can replace it: the shape the watchdog must catch is precisely the shape the rest of this file
+// now makes unreachable. So the lever is explicit rather than borrowed from a defect.
+//
+// Unset everywhere but that test. install.sh writes no such variable, and an unreadable or
+// absent path is a silent no-op -- which is the fail-safe direction, because a fixture that
+// quietly fails to engage makes agent-watchdog.nix go RED (no trip) rather than green.
+func (cfg Config) wedgeForTest(logf func(string, ...any)) {
+	if cfg.WedgeFIFO == "" {
+		return
+	}
+	f, err := os.OpenFile(cfg.WedgeFIFO, os.O_WRONLY, 0)
+	if err != nil {
+		return // armed but not engaged: nothing there to block on
+	}
+	logf("wedge fixture: %s got a reader; the observe loop is moving again", cfg.WedgeFIFO)
+	_ = f.Close()
 }
 
 // selfResources measures this agent process's own resident set (KB) and open fd count from
