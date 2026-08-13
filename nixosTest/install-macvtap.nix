@@ -585,5 +585,66 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
     print(f"followed the router from {vip} to {moved}, same identity, and stopped answering at the old one")
+
+    # ---- THE SELF-UPDATE PIVOT, ON THE UNIT install.sh ACTUALLY WROTE [B.84] ---------------
+    # agent-selfupdate.nix proves this mechanism on a unit it constructs ITSELF, and that is
+    # exactly the gap B.84 named: it stayed green while the SHIPPED install had the Go half
+    # switched on (a keyring is bundled, so newSelfUpdater builds a live updater) and none of the
+    # on-disk half it acts through. An agent-update staged a binary into a directory the unit did
+    # not run from, armed a flag nothing consumed, restarted onto the same binary and reported
+    # success -- and, since nothing cleared the flag, did it again every cycle.
+    # So these assertions deliberately read the INSTALLED unit and drive the INSTALLED wrappers
+    # ([[verification-assertions-must-fail]]: a test that builds its own environment does not
+    # prove the shipped one).
+    host.succeed("test -x /opt/briard/agent/briard-exec")
+    host.succeed("test -x /opt/briard/agent/briard-commit")
+    host.succeed("test -x /opt/briard/agent/briard-agent")
+    unit = host.succeed("systemctl cat briard-agent.service")
+    for want in (
+        "Type=notify",
+        "ExecStart=/opt/briard/agent/briard-exec",
+        "ExecStartPost=/opt/briard/agent/briard-commit",
+        # The third leg: the layout the agent stages into must BE the directory ExecStart runs
+        # from. Left at its default it was /var/lib/briard while the unit ran out of /opt --
+        # so a commit would be a cross-filesystem rename at best and a no-op at worst.
+        "Environment=UPDATE_BASE=/opt/briard/agent",
+        # A failed trial is by construction a burst of rapid start failures; without this it can
+        # trip systemd's start limiter and leave the node down for the one reason self-update
+        # exists to avoid.
+        "StartLimitIntervalSec=0",
+    ):
+        assert want in unit, f"the shipped unit is missing {want!r} — self-update has no on-disk half"
+
+    # A GOOD UPDATE COMMITS. The candidate is a copy of the running agent, so it genuinely reaches
+    # READY rather than standing in for something that would. The proof is the rename: briard-commit
+    # moves .next onto the committed path and clears the marker, so both flags end up gone.
+    host.succeed("cp -a /opt/briard/agent/briard-agent /opt/briard/agent/briard-agent.next")
+    host.succeed("touch /run/briard/update")
+    host.succeed("systemctl restart briard-agent.service")
+    host.wait_until_succeeds("test ! -e /opt/briard/agent/briard-agent.next", timeout=120)
+    host.succeed("test ! -e /run/briard/trial")
+    host.succeed("test ! -e /run/briard/update")
+    host.succeed("systemctl is-active briard-agent.service")
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+
+    # A BROKEN UPDATE REVERTS, timerlessly. The flag is single-use, so the restart that follows the
+    # failed start finds none and falls back to the committed binary. Nothing has to remember to
+    # undo anything -- the property that lets the pivot stay frozen.
+    host.succeed("sha256sum /opt/briard/agent/briard-agent > /tmp/committed.sha")
+    host.succeed(
+        "printf '#!/bin/sh\\nexit 1\\n' > /opt/briard/agent/briard-agent.next && "
+        "chmod +x /opt/briard/agent/briard-agent.next"
+    )
+    host.succeed("touch /run/briard/update")
+    # The start itself FAILS -- that is the gate doing its job -- so systemctl returns non-zero.
+    host.succeed("systemctl restart briard-agent.service || true")
+    host.wait_until_succeeds("systemctl is-active briard-agent.service", timeout=180)
+    host.succeed("sha256sum -c /tmp/committed.sha")             # came back on the COMMITTED binary
+    host.succeed("test -e /opt/briard/agent/briard-agent.next")  # the broken one was NOT committed
+    host.succeed("test ! -e /run/briard/trial")                 # and cannot be re-trialled
+    host.succeed("test ! -e /run/briard/update")
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    host.succeed("rm -f /opt/briard/agent/briard-agent.next")
+    print("the shipped unit commits a good agent update and reverts a broken one")
   '';
 }

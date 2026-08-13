@@ -603,6 +603,50 @@ fi
 # pointing the agent at a missing file would be worse than leaving it unset.
 KEY_ENV=""
 [ -f "$KEYRING" ] && KEY_ENV="Environment=UPDATE_KEYRING=$KEYRING"
+
+# ---- the self-update PIVOT (B.84) -------------------------------------------------------
+# Two frozen wrapper scripts and the unit fields that use them. Until this existed the shipped
+# install had the Go half of self-update switched ON (KEY_ENV above) and none of the on-disk half
+# it acts through: an agent-update staged a binary into a directory the unit did not run from,
+# armed a flag nothing on disk consumed, restarted onto the SAME binary, and reported success --
+# and since nothing cleared the flag it did that again every cycle, bouncing the agent until a
+# reboot cleared /run. An update that silently does nothing, on a loop.
+#
+# FROZEN, and that is the whole safety property: these two scripts are dumb, agent-INDEPENDENT
+# shell, so a bug in the volatile agent can never wedge the mechanism that replaces it. They are
+# the verbatim pair proven in nixosTest/agent-selfupdate.nix -- change one and change both, and
+# see install-macvtap.nix, which now proves the SHIPPED pair rather than a unit a test wrote for
+# itself.
+#
+# UPDATE_BASE is the fix for the third leg: selfupdate.Layout defaults to /var/lib/briard while
+# ExecStart runs out of $PREFIX/agent, so a staged candidate landed on the wrong side of the
+# gate -- and on a possibly different filesystem, which would break the atomic-rename commit even
+# once the wrappers existed. Point it at the directory the committed binary actually lives in.
+UPDATE_BASE="$PREFIX/agent"
+cat > "$PREFIX/agent/briard-exec" <<EOF
+#!/bin/sh
+# Pick the binary this boot runs: a staged candidate if one is armed, else the committed one.
+set -eu
+if [ -e $RUNDIR/update ]; then
+	mv $RUNDIR/update $RUNDIR/trial   # consume SINGLE-USE (rename, not delete): a crash
+	exec $UPDATE_BASE/briard-agent.next   #   can't re-trial forever, and briard-commit can
+else                                      #   still tell a trial boot from a normal one
+	rm -f $RUNDIR/trial               # discard a failed trial's marker -- this IS the revert
+	exec $UPDATE_BASE/briard-agent
+fi
+EOF
+cat > "$PREFIX/agent/briard-commit" <<EOF
+#!/bin/sh
+# ExecStartPost: systemd runs this ONLY after READY=1, so reaching it means the trial started.
+set -eu
+if [ -e $RUNDIR/trial ]; then
+	mv $UPDATE_BASE/briard-agent.next $UPDATE_BASE/briard-agent   # atomic same-fs commit
+	rm -f $RUNDIR/trial
+fi
+EOF
+chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
+# $RUNDIR itself is already created up with the other directories; the flags inside it are tmpfs
+# by virtue of living under /run, which is what makes a power loss mid-trial revert for free.
 cat > "$UNIT_DIR/briard-agent.service" <<EOF
 [Unit]
 Description=briard host agent (single node)
@@ -670,9 +714,21 @@ TimeoutStartSec=30
 # systemd derives from this line) is the agent's only source for its ping interval, so this number
 # has exactly one definition.
 WatchdogSec=20
-ExecStart=$AGENT
+# Self-update's on-disk half (B.84). ExecStart is the frozen picker, not the agent: it chooses the
+# committed binary or an armed candidate. ExecStartPost is the commit, and systemd runs it ONLY
+# after READY=1 -- which IS the gate. A candidate that will not exec, panics, or hangs before loop
+# entry never sends READY, so the start fails, the commit never runs, and the next start finds the
+# single-use flag already consumed and falls back to the committed binary. The revert is implicit
+# and timerless; nothing has to remember to undo anything.
+Environment=UPDATE_BASE=$UPDATE_BASE
+ExecStart=$PREFIX/agent/briard-exec
+ExecStartPost=$PREFIX/agent/briard-commit
 Restart=on-failure
 RestartSec=3
+# A failed trial followed by its revert must never latch the unit as dead. Without this, the
+# revert path -- which is by construction a burst of rapid start failures -- can trip systemd's
+# start limiter and leave the node down for the one reason self-update exists to avoid.
+StartLimitIntervalSec=0
 # Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
 # SIGTERM already unwinds cooperatively (signal.NotifyContext), but the recovery and rollback legs
 # run on deliberately DETACHED contexts so they cannot be cancelled halfway, and rebootGuest alone

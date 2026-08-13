@@ -94,9 +94,15 @@ pkgs.testers.runNixOSTest {
         serviceConfig = {
           Type = "notify";
           NotifyAccess = "main"; # the trial binary signals READY from MAINPID, as the agent does
-          # Production uses TimeoutStartSec>=180 (>= worst-case healthy convergence); shortened
-          # here so the up-but-unhealthy HANG assertion resolves in seconds. The mechanism it
+          # Production uses TimeoutStartSec=30, and it bounds a CONFIG READ rather than a
+          # convergence: V3.32 moved READY to loop entry, because a supervisor's readiness is not
+          # the health of the thing it supervises. This comment used to say >=180 for exactly the
+          # reason that changed — READY once waited for the node to be healthy. Shortened further
+          # here so the up-but-unhealthy HANG assertion resolves in seconds; the mechanism it
           # exercises (timeout trips → start fails → no commit) is identical at any value.
+          #
+          # The wrappers below are the pair install.sh now writes (B.84). Change one, change both
+          # — and install-macvtap.nix proves the SHIPPED pair, which this test structurally cannot.
           TimeoutStartSec = 15;
           ExecStart = "${briardExec}"; # pick committed vs trial binary
           ExecStartPost = "${briardCommit}"; # runs ONLY after READY=1 → commit on success
