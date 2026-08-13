@@ -823,8 +823,30 @@ in
         # stop into a failed stop, and `rm -f` on an absent file is already a no-op (a reactor
         # that never promoted wrote no drop-in).
         #
-        # PAIRED with `reactorBeforeOverride` in agent/guestagent/guestagent.go -- same path,
-        # deliberately written out rather than shared, for v0's single resource (r0).
+        # WHY IT IS SAFE TO FIRE ON STOPS WE DO NOT INITIATE -- the obvious objection, since this
+        # now runs on every stop rather than on the one an agent verb drives. NOT because we are
+        # the only ones who stop it: we are not, and that is the whole point (a user rebooting
+        # their own machine is a stop nobody asked us about). It is because the drop-in's only
+        # legitimate function is a START ordering -- drbd-services@r0.target before this daemon --
+        # while on the stop side its sole effect is the deadlock, and drbd-reactor recreates it in
+        # `Promoter::new` before the next start. So there is no stop for which removing it is
+        # wrong, whoever initiated it. An argument that does not depend on who is stopping us is
+        # the only kind worth having here, because that is not ours to control.
+        #
+        # WHAT DOES NOT GET IT, measured rather than assumed: a CRASH. systemd runs ExecStop= on
+        # an explicit stop, on a restart and in a shutdown transaction, but NOT when the main
+        # process dies on its own (that path runs ExecStopPost= only). Which is fine twice over --
+        # a dead reactor has no last gasp to sequence, and `Restart=on-failure` then restarts it
+        # through `Promoter::new`, which rewrites the drop-in anyway. It also means the one shape
+        # that could have made a `daemon-reload` loop -- crash, restart, crash -- cannot, because
+        # the crash half never reaches this.
+        #
+        # The `daemon-reload` is not optional: removing the file leaves the `Before=` in systemd's
+        # in-memory graph, so the deadlock would survive its own defusal.
+        #
+        # PAIRED with the same path in nixosTest/{reactor-pause-deadlock,maintenance-contract}.nix,
+        # deliberately written out rather than shared, for v0's single resource (r0): a test that
+        # imported the constant could not notice the product changing it.
         ExecStop = [
           "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf"
           "-${config.systemd.package}/bin/systemctl daemon-reload"
