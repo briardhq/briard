@@ -62,6 +62,14 @@ import (
 // fallback then genuinely does the work, and a fallback that fires every time is visible.
 const shutdownGrace = 30 * time.Second
 
+// reapGrace bounds the last question stopCleanly asks -- "is the machine gone?" -- after both
+// stop routes have failed to say anything useful about it. It is deliberately much shorter than
+// shutdownGrace because it waits for something much smaller: not a guest shutting down (that has
+// already had its grace by then) but systemd finishing with a QEMU process that has already
+// exited. Measured at ~3 s live ([B.98]); this is three times that and still cheap enough that
+// the reboot path's worst case stays inside rebootGuest's budget.
+const reapGrace = 10 * time.Second
+
 // ErrHandoverRequired is the refusal: this node is serving, a peer could take the work, and
 // applying the update means a reboot -- which on an HA pair IS a failover. Sequencing a
 // failover is not a decision a node makes about itself, so the node-local path declines and
@@ -468,6 +476,17 @@ func (u *osUpgrade) restore(ctx context.Context, qspec platform.QEMUSpec, prev s
 	return true, fmt.Errorf("OS upgrade rolled back to %s: %w", prev, errors.Join(errs...))
 }
 
+// guestStopper is the two-method slice of *platform.Guest that stopCleanly actually uses: ask
+// the machine to stop, and ask whether it has. Narrowed to an interface so the STOPPING window
+// -- a guest that is on its way down but not yet gone -- can be exercised without a live systemd
+// unit, which is the state [B.98] hid in and which no test could reach while this took a
+// concrete *Guest. Both methods are nil-receiver-safe on the real type, so nothing changes for
+// a caller holding a nil guest.
+type guestStopper interface {
+	Shutdown(ctx context.Context, grace time.Duration) error
+	WaitStopped(ctx context.Context, grace time.Duration) error
+}
+
 // stopCleanly takes the guest down without power-cutting it, by two independent routes with
 // the agent first: ask the guest OS in its own terms over the channel we already
 // hold, and fall back to the ACPI power button for the case that route cannot cover -- the
@@ -482,7 +501,7 @@ func (u *osUpgrade) restore(ctx context.Context, qspec platform.QEMUSpec, prev s
 // the rollback leg and the recovery ladder force it (there is nothing left to preserve by
 // waiting). Hence the neutral log prefix below: by the time this runs, which of the three is
 // calling is not something the messages can assume.
-func stopCleanly(ctx context.Context, g *platform.Guest, client *guestagent.Client, logf func(string, ...any)) error {
+func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client, logf func(string, ...any)) error {
 	perr := client.PowerOff(ctx)
 	if perr == nil {
 		if err := g.WaitStopped(ctx, shutdownGrace); err == nil {
@@ -503,10 +522,23 @@ func stopCleanly(ctx context.Context, g *platform.Guest, client *guestagent.Clie
 		// the very act-2b restart the clean stop exists to avoid.
 		//
 		// Both routes' errors are therefore evidence about a REQUEST, never about the machine.
-		// Only one question settles it, and it is free to ask: is the VM still there? A zero
-		// grace makes this a probe rather than another wait -- WaitStopped answers immediately
-		// when the unit is already gone.
-		if g.WaitStopped(ctx, 0) == nil {
+		// Only one question settles it: is the VM still there?
+		//
+		// IT ASKED WITH A ZERO GRACE UNTIL [B.98], WHICH ANSWERS ONE INSTANT TOO EARLY. Stopping
+		// is not instantaneous and it is not one event: QEMU unlinks its monitor socket the
+		// moment it exits, while the unit stays active until systemd reaps it. Measured live on
+		// a standby, socket gone at :25 and unit inactive at :28 -- so a glance inside that gap
+		// says "still running" about a machine that has already stopped, and the reboot upgrade
+		// was abandoned on a guest that had done exactly as it was told.
+		//
+		// reapGrace, not shutdownGrace, and the difference is the whole reason this stays cheap:
+		// by here the machine has ALREADY had its chance to shut down -- either Shutdown could
+		// not reach QEMU at all (it is gone; only the unit is outstanding) or it pressed the
+		// button and waited a full grace. Neither leaves a guest shutdown still to run, so what
+		// remains is systemd finishing with a dead process, which is seconds. A short, named
+		// window keeps the worst case inside the budget rebootGuest was always sized for
+		// (BringUpBudget + 3*shutdownGrace) instead of spending a third grace here.
+		if g.WaitStopped(ctx, reapGrace) == nil {
 			logf("guest-stop: the guest was already down — the request landed, its reply did not")
 			return nil
 		}

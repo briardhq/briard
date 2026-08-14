@@ -470,6 +470,105 @@ func TestStopCleanlyTreatsAnAlreadyStoppedGuestAsClean(t *testing.T) {
 	}
 }
 
+// fakeGuest is a guest whose STATE the test controls, which the socket-and-unit rig above
+// cannot do: `newStopRig`'s unit does not exist, so its machine reads as already-stopped no
+// matter what, and the one state [B.98] lives in -- STOPPING, i.e. QEMU gone but the unit not
+// yet reaped -- has no expression there. The QMP wiring these fakes stand in for is asserted
+// directly in agent/platform/qmp_test.go; what is under test here is the ESCALATION DECISION.
+//
+//	stopsAfter  how long until the machine is down (guestStays = never on its own)
+//	shutdownErr what the power button does; nil means it works, and a working press stops it
+type fakeGuest struct {
+	stopsAfter  time.Duration
+	shutdownErr error
+	started     time.Time
+	shutdowns   int
+}
+
+const guestStays = time.Hour // longer than any grace: this machine will not stop by itself
+
+// WaitStopped answers from the fake's own clock, and COMPRESSES the grace it is handed: a real
+// shutdownGrace is 30s, and a test that genuinely waited two of them to prove a timeout would
+// cost a minute to say something the fake already knows. The distinction the tests actually
+// need survives compression -- a zero grace is a glance and must still see a running machine,
+// while any real grace is a wait and must see it stop.
+func (g *fakeGuest) WaitStopped(ctx context.Context, grace time.Duration) error {
+	if grace > 200*time.Millisecond {
+		grace = 200 * time.Millisecond
+	}
+	deadline := time.Now().Add(grace)
+	for {
+		if time.Since(g.started) >= g.stopsAfter {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("guest still running")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func (g *fakeGuest) Shutdown(context.Context, time.Duration) error {
+	g.shutdowns++
+	if g.shutdownErr != nil {
+		return g.shutdownErr
+	}
+	g.stopsAfter = 0 // the press landed and the machine went down
+	return nil
+}
+
+// [B.98] THE LOST REPLY, on a guest that is STILL STOPPING rather than already stopped.
+//
+// `os.poweroff` is `--no-block`, so a guest doing exactly as it was told can close the channel
+// before the reply lands: the host sees EOF, which is indistinguishable from a dead agent. Both
+// routes then fail — the agent is unreachable, and the power button has nothing to press because
+// QEMU has already exited — and the verdict comes down to the last probe. It asked with a ZERO
+// grace, which answers "still running" during the seconds between QEMU exiting and the unit going
+// inactive. So a guest that had shut down perfectly was recorded as having refused, its upgrade
+// abandoned, and it came back on its old generation.
+//
+// It only ever bit a STANDBY: a node with a workload to quiesce takes long enough that the reply
+// wins the race, which is why the live tier stayed green while the path was broken.
+//
+// Note what is NOT asserted: that the power button went unpressed. Pressing it is harmless here
+// and costs nothing — the dial fails at once precisely because QEMU is gone — and forbidding it
+// would mean waiting before escalating, which would slow every genuinely dead agent down by a
+// full grace for no gain. The bug was never the press; it was the verdict after it.
+func TestStopCleanlyWaitsOutAGuestThatIsStillStopping(t *testing.T) {
+	// A channel that is closed under us: PowerOff gets EOF, the shape of a lost reply.
+	cconn, sconn := net.Pipe()
+	sconn.Close()
+	c := guestagent.NewClient(cconn)
+	t.Cleanup(func() { c.Close() })
+
+	// QEMU has already exited, so there is no monitor socket left to dial -- the live failure
+	// was exactly this, `dial ...guest.sock: no such file or directory`. The machine finishes
+	// stopping shortly after, which is the window the zero-grace probe fell into: a glance says
+	// "running", the wait says "gone".
+	g := &fakeGuest{
+		stopsAfter:  50 * time.Millisecond,
+		shutdownErr: errors.New("dial QMP: no such file or directory"),
+		started:     time.Now(),
+	}
+	if err := stopCleanly(context.Background(), g, c, t.Logf); err != nil {
+		t.Fatalf("a guest that goes down on its own has stopped cleanly; got %v", err)
+	}
+}
+
+// The fallback still has to fire for the case it exists for: the agent route is unusable AND the
+// machine is genuinely still up.
+//
+// This used to run on `newStopRig`, and [B.98] retired that rig here rather than adapting it: its
+// unit does not exist, so its machine reads as ALREADY STOPPED. Once a failed request stopped
+// being treated as a refusal, "already stopped" correctly means the power button is never
+// pressed -- so the old rig could no longer express "still up", and the assertion only ever held
+// because the code escalated blindly. A guest that must be stopped is modelled here as one that
+// does not stop by itself; the QMP wiring the press travels over is asserted in
+// agent/platform/qmp_test.go.
 func TestStopCleanlyFallsBackToThePowerButton(t *testing.T) {
 	// StatusExec refuses every command, which is what a guest whose agent is present but broken
 	// looks like -- and near enough to one that is gone for this route's purpose.
@@ -477,13 +576,40 @@ func TestStopCleanlyFallsBackToThePowerButton(t *testing.T) {
 	go guestagent.Serve(context.Background(), sconn, &statusExec{})
 	c := guestagent.NewClient(cconn)
 	t.Cleanup(func() { c.Close() })
-	g, q := newStopRig(t)
+	g := &fakeGuest{stopsAfter: guestStays, started: time.Now()} // and the press works
 
 	if err := stopCleanly(context.Background(), g, c, t.Logf); err != nil {
 		t.Fatalf("a refused os.poweroff must fall through to ACPI, not fail: %v", err)
 	}
-	if got := q.got(); len(got) != 1 || got[0] != "system_powerdown" {
-		t.Errorf("want the power button pressed exactly once, got %q", got)
+	if g.shutdowns != 1 {
+		t.Errorf("want the power button pressed exactly once, got %d presses", g.shutdowns)
+	}
+}
+
+// And it must still FAIL when neither route works on a machine that stays up. This is the
+// outcome the reboot path depends on being loud: it leaves the node running on its old
+// generation -- degraded but serving -- rather than power-cutting a guest whose bootloader it
+// has just rewritten. Worth pinning next to the two clean-stop cases above, because [B.98]
+// changed how long this takes to decide and it would be easy to lose the refusal itself.
+func TestStopCleanlyReportsAGuestThatWillNotGoDown(t *testing.T) {
+	cconn, sconn := net.Pipe()
+	go guestagent.Serve(context.Background(), sconn, &statusExec{})
+	c := guestagent.NewClient(cconn)
+	t.Cleanup(func() { c.Close() })
+	g := &fakeGuest{
+		stopsAfter:  guestStays,
+		shutdownErr: errors.New("dial QMP: no such file or directory"),
+		started:     time.Now(),
+	}
+
+	err := stopCleanly(context.Background(), g, c, t.Logf)
+	if err == nil {
+		t.Fatal("both routes failed on a running guest — that must be reported, not passed off as a clean stop")
+	}
+	// Both routes' evidence, not just the last one: the caller's message says "clean shutdown
+	// refused", and which route refused is the first thing anyone reading it needs.
+	if !strings.Contains(err.Error(), "refusing systemctl poweroff") || !strings.Contains(err.Error(), "dial QMP") {
+		t.Errorf("want both the agent and the power-button failure in the error, got %v", err)
 	}
 }
 
