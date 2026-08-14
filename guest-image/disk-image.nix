@@ -203,9 +203,14 @@ let
         # back on the port for the *next* host connection, which a genuine disconnect
         # (host-agent restart -> self-update; or a re-adopt) produces. `on-failure`
         # would NOT restart a clean exit, leaving the port dead and the new host's
-        # handshake blocked. A virtio-serial read blocks (never EOF-loops) while no host
-        # is connected, so a reopened port just waits -- no restart flapping. StartLimit
-        # off so this critical channel never permanently gives up.
+        # handshake blocked. StartLimit off so this critical channel never permanently gives up.
+        #
+        # This comment used to claim a virtio-serial read BLOCKS while no host is connected, so a
+        # reopened port just waits and there is no flapping. That is true only of a BRIEF gap: with
+        # the host end gone for good, the reopened port returns EOF on the first read and the exit
+        # is immediate, so Restart=always spun ~48x in 30s ([B.35]). The agent now pauses before
+        # exiting on a clean EOF (hostAbsentPause in main.go) -- the restart policy here is
+        # unchanged, and correct; what was wrong was the assumption that made it free.
         startLimitIntervalSec = 0; # [Unit] section: never permanently give up on this channel
         serviceConfig = {
           ExecStart = "${briardAgent}/bin/briard-agent --guest";

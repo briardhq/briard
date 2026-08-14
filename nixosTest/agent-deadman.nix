@@ -129,6 +129,22 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     print(f"guest came back: pid {qemu_before} -> {qemu_after}, converged and serving")
 
+    # 4) The guest agent did not spend the outage crash-looping. It serves ONE host connection and
+    # exits on EOF (Restart=always puts it back on a freshly opened port), and with the host end gone
+    # for good every reopen EOFs the instant it is read — ~48 restarts in 30s before [B.35]. It now
+    # pauses ~5s before that exit, so a whole run costs a couple of restarts. Both bounds matter:
+    # the upper one catches the busy loop coming back, the lower one catches this grep going stale
+    # against a systemd message that moved (a rename would make the assertion vacuously pass, and
+    # this is the only place that counts these).
+    restarts = int(
+        host.succeed(
+            "grep -c 'briard-guest-agent.service: Scheduled restart job' /tmp/guest-serial.log || true"
+        ).strip()
+    )
+    print(f"guest-agent restarts across the run: {restarts}")
+    assert restarts >= 1, "no guest-agent restart logged at all — the grep string has gone stale"
+    assert restarts < 8, f"{restarts} guest-agent restarts — the EOF crash loop is back"
+
     print("a lone node reboots itself when its host agent dies, and the reboot goes through the supervisor")
   '';
 }

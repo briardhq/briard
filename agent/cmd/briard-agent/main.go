@@ -193,8 +193,35 @@ func runGuest(ctx context.Context) error {
 
 	// ServeStamped bumps the deadman's contact stamp on each request; the deadman itself runs in
 	// its own process (briard-deadman → RunDeadman), decoupled from this connection lifecycle.
-	return guestagent.ServeStamped(ctx, conn, guestagent.NewOSExecutor())
+	if err := guestagent.ServeStamped(ctx, conn, guestagent.NewOSExecutor()); err != nil {
+		return err
+	}
+
+	// Clean EOF: the host end went away. The unit's Restart=always puts this process straight back
+	// on a freshly opened port for the next host connection -- but only the FIRST of those restarts
+	// is a reconnect. While the host agent is down for good (stopped, not bouncing), the reopened
+	// port reports EOF the instant it is read: qemu's chardev is `server=on,wait=off`, and
+	// virtio-serial reports "no host attached" as end-of-file rather than by blocking. So exiting
+	// immediately is a crash loop -- measured at ~48 restarts in 30s ([B.35]) -- that spams the
+	// journal and churns the restart counter for the whole outage without bringing the channel back
+	// one second sooner. Pausing here delays a genuine reconnect by at most hostAbsentPause, which
+	// the host's own re-dial retry already absorbs, and turns the loop into a slow knock.
+	//
+	// Deliberately NOT a retry on this same fd: reopening per connection is the shipped behaviour of
+	// the one channel the product cannot lose, and this bug is cosmetic. Slow the loop, don't
+	// redesign it.
+	select {
+	case <-ctx.Done():
+	case <-time.After(hostAbsentPause):
+	}
+	return nil
 }
+
+// hostAbsentPause is how long a guest agent that found no host on the port waits before exiting
+// into systemd's restart. Short enough that a returning host agent is not kept waiting (its dial
+// retries anyway), long enough that a host-down window costs a handful of restarts instead of
+// hundreds.
+const hostAbsentPause = 5 * time.Second
 
 // guestStopGrace is how long a cancelled guest agent may take to unwind before it is ended
 // outright. Long enough for an in-flight verb to finish and answer, short enough that a stop is
