@@ -621,20 +621,60 @@ func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 	}
 }
 
-// A data node with no address -- neither configured nor reported -- is not healthy. It is the
-// node nobody in the house can reach, which is the defect V3.19 exists for; answering it like a
-// witness ("healthy == quorate") is how that defect stayed invisible.
-func TestSnapshot_DataNodeWithNoAddressIsUnhealthy(t *testing.T) {
+// A PRIMARY with no address -- neither configured nor reported -- is not healthy. It is the node
+// nobody in the house can reach, which is the defect V3.19 exists for; answering it like a witness
+// ("healthy == quorate") is how that defect stayed invisible. B.90 is what it looks like in the
+// flesh: briard-vip timed out waiting for DHCP, took drbd-services@r0 down with it, and the node
+// went on being quorate the whole time.
+func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 	var probed string
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
-	r := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}, health: true, vip: "", probed: &probed}
+	// Quorate AND up to date -- everything a secondary needs to read healthy below. The primary
+	// bit is the only difference, and it has to be enough on its own.
+	r := fakeStatus{
+		qs:     model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true},
+		health: true, vip: "", probed: &probed,
+	}
 
 	st, _, _ := cfg.snapshot(context.Background(), r, "", "")
 	if st.Healthy {
-		t.Error("a quorate data node holding no service address must NOT read healthy")
+		t.Error("a quorate primary holding no service address must NOT read healthy")
 	}
 	if probed != "" {
 		t.Errorf("nothing to probe, yet it probed %q", probed)
+	}
+}
+
+// A SECONDARY holds no service address because the VIP is promoter-driven, not because anything
+// is wrong with it -- so its health is participation, the same rule the witness follows. Reporting
+// it unhealthy made every correct HA pair read DEGRADED in the cloud's view forever, with a
+// standing "1 node unhealthy" nobody could act on (B.91).
+func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T) {
+	cfg := Config{Node: "n2", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
+	participating := model.QuorumState{Primary: false, Quorate: true, Diskful: true, UpToDate: true}
+
+	st, probe, _ := cfg.snapshot(context.Background(), fakeStatus{qs: participating, vip: ""}, "", "")
+	if !st.Healthy {
+		t.Error("a quorate, up-to-date secondary is doing its whole job and must read healthy")
+	}
+	if probe != "" {
+		t.Errorf("a secondary has nothing to probe, got %q", probe)
+	}
+
+	// Not up to date == not a viable failover target. This is the node-local fact the OS-upgrade
+	// gate already leans on (model.QuorumState.UpToDate exists because that gate had nothing else
+	// to ask a Secondary); health must not be softer than the gate.
+	syncing := participating
+	syncing.UpToDate = false
+	if st, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: syncing, vip: ""}, "", ""); st.Healthy {
+		t.Error("a secondary still syncing must not read healthy")
+	}
+
+	// Non-quorate is the partitioned survivor: participating in nothing.
+	isolated := participating
+	isolated.Quorate = false
+	if st, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: isolated, vip: ""}, "", ""); st.Healthy {
+		t.Error("a non-quorate secondary must not read healthy")
 	}
 }
 

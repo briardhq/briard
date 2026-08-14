@@ -1113,7 +1113,24 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 	if cfg.Diskless {
 		st.Healthy = qs.Quorate
 	} else if url := guest.ResolveHealthURL(rctx, r, cfg.Diskless, cfg.VIPDev, cfg.HealthURL); url == "" {
-		st.Healthy = false // a service address we neither set nor were told: nothing serves yet
+		// No address to probe means two opposite things, and telling them apart is the whole
+		// of this branch:
+		//
+		//   - a SECONDARY has no address because the VIP is promoter-driven and it was not
+		//     promoted. That is the system working. Its health is participation, exactly as a
+		//     witness's is -- replicating, quorate and up to date is a secondary doing its
+		//     whole job, and there is nothing else to ask it. Reporting it unhealthy made
+		//     every correct HA pair permanently DEGRADED in the cloud's view, with a standing
+		//     "1 node unhealthy" nobody could act on.
+		//   - a PRIMARY has no address because the thing that should have given it one did
+		//     not. That is the node the house cannot reach, which is the defect V3.19 exists
+		//     for and which B.90 caught in the flesh (briard-vip timing out on DHCP took the
+		//     whole promoter chain down). It stays unhealthy, and must: a primary that reads
+		//     healthy because it is quorate is the zombie V3.19 was written to abolish.
+		//
+		// Nor does the front door offer a way out of the distinction: it is partOf
+		// briard-vip.service, so on a secondary it is not running to answer a /healthz at all.
+		st.Healthy = !qs.Primary && qs.Quorate && qs.UpToDate
 	} else {
 		probe = url
 		// Prefer the in-guest probe (payload.health) so the health signal survives a substrate
