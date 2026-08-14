@@ -136,7 +136,7 @@ the honest version of "see for yourself":
 ```sh
 nix build .#tests.drbd-failover -L   # kill the primary → survivor takes over, data intact
 nix build .#tests.drbd-fence -L      # partition the minority → it self-fences
-nix build .#tests.ha-payload -L      # real Home Assistant serving in the payload slot
+nix build .#tests.hass-payload -L      # real Home Assistant serving in the payload slot
 nix build .#drbd                     # the whole failover net
 nix log .#tests.drbd-fence           # what a run printed
 ```

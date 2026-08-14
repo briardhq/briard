@@ -6,12 +6,12 @@
 # home's `.storage` is sealed client-side (age) to an off-box target and restored
 # byte-faithfully, with the sacred config intact and the disposable recorder DB excluded.
 #
-# Harness scope matches ha-upgrade*.nix: single-node lib.nix, the backup CLI drives
+# Harness scope matches hass-upgrade*.nix: single-node lib.nix, the backup CLI drives
 # shared/backup directly (the same code the guest agent's backup.save/backup.restore
 # verbs run in the product — unit-tested in agent/guestagent). Restoring *over* a live
 # `.storage` + rebooting HA onto it needs the payload stopped, which in a lib.nix rig
 # makes the promoter demote+unmount (the maintenance-bracket hazard, host-orchestrated
-# in the product) — so, as in ha-upgrade-rollback.nix, this restores into a clean tree and
+# in the product) — so, as in hass-upgrade-rollback.nix, this restores into a clean tree and
 # asserts byte-fidelity + content, the two things that need REAL HA `.storage`.
 { pkgs, guestModule, briardBackup }:
 
@@ -29,7 +29,7 @@ let
   restored = "/var/restored";
 in
 pkgs.testers.runNixOSTest {
-  name = "ha-backup";
+  name = "hass-backup";
 
   nodes.node1 =
     { ... }:

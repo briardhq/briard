@@ -1,5 +1,5 @@
 # Selects the dummy stateful fixture as the unit payload — the test-side sibling of
-# guest-image/ha-payload.nix.
+# guest-image/hass-payload.nix.
 #
 # The payload slot defaults to nothing, so this fixture has to be selected — and being selected
 # only from nixosTest/ is what makes "the shipped artifact runs no service" a property the tree

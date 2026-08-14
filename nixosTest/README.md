@@ -15,7 +15,7 @@ share no code, the seam and the guest image being all they have in common.
 | reachable | `curl -fsS <VIP>/healthz` everywhere; `https://<name>` in `tls-serving.nix`; and with **no backend configured** in `zero-service.nix` — the shipped shape, where the front door itself is what answers |
 | single-primary | `drbd-promote.nix` (promote unit on the primary and nowhere else) |
 | minority-refuses | `drbd-fence.nix`, `drbd-witness-loss.nix` (isolated minority demotes, never promotes) |
-| data-not-rewound | `drbd-failover.nix`, `ha-failover.nix` (`t2 >= t1` ticks across the kill) |
+| data-not-rewound | `drbd-failover.nix`, `hass-failover.nix` (`t2 >= t1` ticks across the kill) |
 | settles-in-slo | `wait_until_succeeds(..., timeout=N)` bounds on the post-kill reconverge |
 | alert-correctness | not here — needs a long-running fleet (red ⇒ alert ⇒ gate blocks; heal ⇒ recovered ⇒ green) |
 | no-silent-restarts | not here — a hermetic run is too short for a crash loop to appear |

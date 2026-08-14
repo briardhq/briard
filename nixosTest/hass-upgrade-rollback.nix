@@ -1,6 +1,6 @@
 # The forced-failure path + rollback-with-history-intact.
 #
-# The sibling (ha-upgrade.nix) proves a REAL recorder migration *succeeds* with
+# The sibling (hass-upgrade.nix) proves a REAL recorder migration *succeeds* with
 # its data intact. This proves the other half: when the upgrade breaks something that
 # worked before, the health-gate (agent/guest/entrygate) TRIPS, and the
 # pre-upgrade {code + data} snapshot is a valid rollback point that still holds the
@@ -21,7 +21,7 @@
 # test reads HA's real verdict without authenticating — then feeds the pre/post samples
 # to the real gate via entrygate-eval, asserting VERDICT=rollback.
 #
-# Harness scope matches ha-upgrade.nix: single-node lib.nix, primitives driven directly
+# Harness scope matches hass-upgrade.nix: single-node lib.nix, primitives driven directly
 # (the Manager's maintenance bracket + the ReadinessAssessor seam are unit-tested in
 # agent/guest — the guest agent is virtio-serial-only, so the real Manager can't run in a
 # lib.nix node). What is NEW here: the gate trips on a real HA entry regression, and a
@@ -53,7 +53,7 @@ let
   namedRowByIdPrefixQ = "SELECT s.state_id || '|' || m.entity_id || '|' || COALESCE(s.state,'') FROM states s JOIN states_meta m ON s.metadata_id = m.metadata_id WHERE s.state_id = ";
 in
 pkgs.testers.runNixOSTest {
-  name = "ha-upgrade-rollback";
+  name = "hass-upgrade-rollback";
 
   nodes.node1 =
     { ... }:

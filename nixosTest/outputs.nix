@@ -26,35 +26,35 @@ let
   # checkable data.
   shippedGuestModule = ../guest-image/configuration.nix;
   guestModule = ./dummy-guest.nix; # configuration.nix + the dummy fixture in the slot
-  haGuestModule = ../guest-image/ha-guest.nix; # same guest, HA in the payload slot
-  haUpgradeGuestModule = ../guest-image/ha-upgrade-guest.nix; # HA on the from-image, to warm-staged
+  hassGuestModule = ../guest-image/hass-guest.nix; # same guest, HA in the payload slot
+  hassUpgradeGuestModule = ../guest-image/hass-upgrade-guest.nix; # HA on the from-image, to warm-staged
 
   # HA in the slot: real Home Assistant boots and serves at the VIP, its recorder
   # SQLite + .storage landing on the DRBD subvolume.
-  haPayload = import ./ha-payload.nix { inherit pkgs; guestModule = haGuestModule; };
+  hassPayload = import ./hass-payload.nix { inherit pkgs; guestModule = hassGuestModule; };
 
   # Kill the primary → HA fails over with config intact at the same VIP.
-  haFailover = import ./ha-failover.nix { inherit pkgs; guestModule = haGuestModule; };
+  hassFailover = import ./hass-failover.nix { inherit pkgs; guestModule = hassGuestModule; };
 
   # A real HA upgrade (2025.11.0 → 2025.12.0) carrying a real recorder schema
   # migration (v52 unit_class) through the pipeline, its data intact.
-  haUpgrade = import ./ha-upgrade.nix { inherit pkgs; guestModule = haUpgradeGuestModule; };
+  hassUpgrade = import ./hass-upgrade.nix { inherit pkgs; guestModule = hassUpgradeGuestModule; };
 
   # The forced-failure half — a real regressed migration (briard_canary) trips
   # the S1 health-gate (entrygate-eval judges HA's real config-entry states) and the
   # {code + data} rollback restores HA to `from` with its recorder history intact.
   entrygateEval = pkgs.callPackage ./entrygate-eval-pkg.nix { };
-  haUpgradeRollback = import ./ha-upgrade-rollback.nix {
+  hassUpgradeRollback = import ./hass-upgrade-rollback.nix {
     inherit pkgs entrygateEval;
-    guestModule = haUpgradeGuestModule;
+    guestModule = hassUpgradeGuestModule;
   };
 
   # Off-site encrypted `.storage` backup — the sacred config sealed client-side
   # (age) to an off-box target and restored byte-faithfully (the cheap DR half).
   briardBackup = pkgs.callPackage ./briard-backup-pkg.nix { };
-  haBackup = import ./ha-backup.nix {
+  hassBackup = import ./hass-backup.nix {
     inherit pkgs briardBackup;
-    guestModule = haGuestModule;
+    guestModule = hassGuestModule;
   };
 
   # THE SHIPPED ARTIFACT: the bootable disk `install.sh` lays down, running no service. This
@@ -262,11 +262,11 @@ in
 
     # Real Home Assistant in the payload slot (2.4 GB image boot).
     ha = {
-      ha-payload = haPayload;
-      ha-failover = haFailover;
-      ha-upgrade = haUpgrade; # real recorder schema migration through the upgrade
-      ha-upgrade-rollback = haUpgradeRollback; # real regression trips the gate → {code+data} rollback
-      ha-backup = haBackup; # off-site encrypted .storage backup + restore
+      hass-payload = hassPayload;
+      hass-failover = hassFailover;
+      hass-upgrade = hassUpgrade; # real recorder schema migration through the upgrade
+      hass-upgrade-rollback = hassUpgradeRollback; # real regression trips the gate → {code+data} rollback
+      hass-backup = hassBackup; # off-site encrypted .storage backup + restore
     };
 
     # Agent-in-the-loop: the agent drives a real guest under *nested*

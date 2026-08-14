@@ -5,6 +5,6 @@
 {
   imports = [
     ./configuration.nix
-    ./ha-payload.nix
+    ./hass-payload.nix
   ];
 }

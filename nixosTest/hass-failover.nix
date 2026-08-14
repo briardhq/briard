@@ -32,7 +32,7 @@ let
     };
 in
 pkgs.testers.runNixOSTest {
-  name = "ha-failover";
+  name = "hass-failover";
 
   # crash() is QemuMachine-only and the primary is selected dynamically.
   skipTypeCheck = true;

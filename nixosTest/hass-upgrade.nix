@@ -27,7 +27,7 @@
 # agent is virtio-serial-only, so running the Manager in-node here isn't possible without
 # a product change. What is NEW and untested until now — a real recorder schema migration
 # surviving the upgrade with its data intact — is exactly what this proves. The
-# forced-failure → rollback half is ha-upgrade-rollback.
+# forced-failure → rollback half is hass-upgrade-rollback.
 { pkgs, guestModule }:
 
 let
@@ -50,7 +50,7 @@ let
   colsQ = "SELECT group_concat(name) FROM pragma_table_info('statistics_meta');";
 in
 pkgs.testers.runNixOSTest {
-  name = "ha-upgrade";
+  name = "hass-upgrade";
 
   nodes.node1 =
     { ... }:

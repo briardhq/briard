@@ -1,5 +1,5 @@
 # The entrygate-eval CLI: runs the real S1 health-gate verdict
-# (agent/guest/entrygate) so ha-upgrade-rollback.nix can judge HA's real config-entry
+# (agent/guest/entrygate) so hass-upgrade-rollback.nix can judge HA's real config-entry
 # states instead of re-implementing the gate in Python. Same Go module as the agent +
 # driver, so it shares their vendorHash (one definition, vendor-hash.nix).
 { buildGoModule }:

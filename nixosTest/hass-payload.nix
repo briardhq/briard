@@ -5,7 +5,7 @@
 # promote and start the ordered unit {promote → data mount → payload → VIP}, then
 # assert HA actually boots and serves at the VIP — and that its recorder SQLite +
 # `.storage` landed on the DRBD btrfs subvolume. Single node:
-# this validates the payload wiring, not failover (that is ha-failover), and HA is heavy
+# this validates the payload wiring, not failover (that is hass-failover), and HA is heavy
 # enough that one instance is the right cost.
 { pkgs, guestModule }:
 
@@ -16,7 +16,7 @@ let
   };
 in
 pkgs.testers.runNixOSTest {
-  name = "ha-payload";
+  name = "hass-payload";
 
   nodes.node1 =
     { ... }:

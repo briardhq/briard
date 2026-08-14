@@ -1,8 +1,8 @@
 # The HA upgrade-pair guest: HA boots on the `from` image (2025.11.0,
 # recorder schema 51) with the `to` image (2025.12.0, schema 53) warm-staged as the
-# upgrade target, so ha-upgrade.nix can drive the payload-upgrade primitives and
+# upgrade target, so hass-upgrade.nix can drive the payload-upgrade primitives and
 # prove the REAL recorder migration (v52 — statistics_meta.unit_class) survives with
-# its data intact. Same payload slot as ha-guest.nix; only the image pair (from the
+# its data intact. Same payload slot as hass-guest.nix; only the image pair (from the
 # fixture, guest-image/pkgs/home-assistant-image-pair) + the staged target differ.
 { pkgs, ... }:
 {

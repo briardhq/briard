@@ -135,7 +135,7 @@
           system = "x86_64-linux";
           modules = [
             { nixpkgs.overlays = [ self.overlays.default ]; }
-            ./guest-image/ha-guest.nix
+            ./guest-image/hass-guest.nix
           ];
         };
       } // (labOutputs.nixosConfigurations or { });
