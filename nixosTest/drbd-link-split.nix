@@ -347,19 +347,24 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         print(f"{m.name} before act 2: {disks(m)}")
 
-    # ⚠️ FORCE THE DETECTION SKEW -- this is what makes the fork reachable, and what makes B.100
-    # ~1-in-13 in the wild rather than every time. DRBD detects a dead link when a ping goes
-    # unacked, and it pings every `ping-int` with INDEPENDENT PHASE on each node, so which anchor
-    # notices first, and by how much, is a coin flip spread over the ping interval. Measured live,
-    # n2 noticed **512ms before** n1 -- so its demote was already committed when n1 came to decide,
-    # n1 saw `primary_nodes=0`, and `[lost-peer]` sent it to UpToDate instead of Outdated. Driven
-    # with both anchors noticing ~4ms apart (which is what an identical iptables cut produces), the
-    # demote can never get ahead and the pair is always safe: measured, node1 decided at +15ms and
-    # the demote arrived at +49ms.
+    # ⚠️ BIAS WHICH ANCHOR NOTICES FIRST. This is what makes the fork reachable, and it is why
+    # B.100 is ~1-in-13 in the wild rather than every time. DRBD decides a link is dead by ping
+    # timeout, per connection per node, so which anchor notices first depends on where each one
+    # happens to be in its own ping cycle. The fork needs the EVICTING node to notice first and get
+    # its demote committed before the survivor's `[lost-peer]` decision. Live, n2 won by 512ms.
     #
-    # So the skew is set rather than waited for: node2 notices fast, node1 slowly. Nothing else
-    # about the fault changes, and no timing is faked -- this only makes a phase relationship that
-    # occurs naturally occur on demand.
+    # MEASURED, and the ordering is the whole of it:
+    #   without these options -- node1 noticed FIRST (node2 5.5ms later), the demote arrived at
+    #     +45ms, node1 had already decided at +18.6ms -> Outdated -> safe;
+    #   with them            -- node2 noticed first, demote committed at +16.7ms, node1 decided at
+    #     +42.6ms -> UpToDate -> promotes -> fork.
+    #
+    # ⚠️ AND THE HALF THAT DOES NOT WORK, so nobody trusts it: node1's slow ping does NOT reliably
+    # delay its detection. It still logged `PingAck did not arrive in time` promptly, because a
+    # ping was already in flight when the cut landed and it timed out on the old schedule. What
+    # does the work is speeding the EVICTOR up, so its demote is already moving when the survivor
+    # starts deciding. This biases the order; it does not dictate it -- which is also why the
+    # margin, not the mechanism, is what to check if this ever goes flaky.
     node2.succeed("drbdsetup net-options r0 0 --ping-int=1 --ping-timeout=1")    # peer 0 = node1
     node1.succeed("drbdsetup net-options r0 1 --ping-int=120 --ping-timeout=300")  # peer 1 = node2
 
