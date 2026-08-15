@@ -87,8 +87,12 @@ let
   # iptables is NOT in the shipped guest's path (`networking.firewall.enable = false`), and this
   # test needs to drop packets for one peer only. Added here rather than in lib.nix: no other
   # topology cuts an edge, and the shipped image should not grow a tool for a test's benefit.
+  # `promoter = false; payload = false` -- NOT defaults-by-accident. drbd-reactor is never started
+  # here (the roles are driven by hand precisely so the election is not a variable), so the
+  # promoter snippet would configure a daemon that never runs, and `payload` would drag the dummy
+  # OCI image into a build for a test that never launches a container.
   diskNode = {
-    imports = [ (h.mkNode { inherit resource; }) ];
+    imports = [ (h.mkNode { inherit resource; promoter = false; payload = false; }) ];
     environment.systemPackages = [ pkgs.iptables ];
   };
   witnessNode = h.mkNode {
