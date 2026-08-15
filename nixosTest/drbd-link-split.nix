@@ -37,18 +37,24 @@
 # `drbdadm primary` refuses with *"Need access to UpToDate data"* and the pair rejoins clean.
 # **A bare link flap does not fork the pair** — DRBD handles it correctly.
 #
-# ACT 2 — the roll's timing, which is what makes it dangerous. The eviction is armed on DRBD's own
-# event stream, so it fires while the survivor is still deciding. The survivor then goes
-# `disk( Consistent -> UpToDate ) [lost-peer]` and PROMOTES — stale data, peer unreachable. That
-# is the safety failure, and it reproduces here at +42.6ms against the live capture's +34.5ms.
+# ACT 2 — the roll's timing, which is what makes it dangerous, THROUGH TO THE FORK. The eviction is
+# armed on DRBD's own event stream so it fires while the survivor is still deciding. The full chain,
+# every link of it asserted:
 #
-# ⚠️ IT STILL DOES NOT REACH THE FORK, and the reason is worth more than the reproduction would be:
-# **nothing writes.** The device is not mounted and no I/O runs, so a peerless Primary never bumps
-# a new current UUID and there is no second generation to collide. The reconnect lands
-# `uuid_compare()=no-sync by rule=reconnected`. Live, n2 was serving a mounted btrfs with a running
-# payload for 527ms before it demoted, and THOSE WRITES are the divergence. Finishing this wants
-# I/O on the peerless Primary (dirty the device between the cut and the demote) — a small, known
-# step, left undone rather than half-done.
+#   1. both anchors keep quorum off the one diskless tiebreaker;
+#   2. the evicting node writes while peerless-Primary and so starts a new generation;
+#   3. the survivor goes `disk( Consistent -> UpToDate ) [lost-peer]` on STALE data and PROMOTES
+#      (+42.6ms measured, against the live capture's +34.5ms);
+#   4. it writes too, and the generations diverge;
+#   5. the link returns → `Split-Brain detected but unresolved` → **StandAlone on both, permanently**,
+#      because no `after-sb-*` policy is configured.
+#
+# ⚠️ THE TWO 4K WRITES ARE LOAD-BEARING, and were the last thing to be understood. DRBD bumps a
+# peerless Primary's current UUID **lazily**, on the first write it cannot replicate — that bump IS
+# the divergence. With an unmounted device and no I/O it never happens, and the pair rejoins
+# `no-sync by rule=reconnected` even though the survivor has already wrongly promoted (measured,
+# twice, before the writes were added). Live, n2 was serving a mounted btrfs with a running payload
+# for 527ms, so its writes did this for free.
 #
 # THREE THINGS THE TIMING WORK MEASURED, which outlive this file:
 #   * the survivor's decision window is ~20–43ms from its own detection of the link loss;
@@ -123,16 +129,19 @@ let
       case "$l" in
         *conn-name:node1*connection:Connected*) ;;
         *conn-name:node1*connection:*)
-          # ⚠️ THE DEMOTE MUST NOT BE INSTANT, and this delay is the whole difference between a
-          # clean handover and a fork. A Primary that loses its last peer bumps a NEW CURRENT UUID
-          # ~13ms later -- that bump IS the divergence. Demote before it and there is nothing to
-          # fork: measured, node2 demoted 10ms after noticing, never bumped, and the pair rejoined
-          # clean even though node1 had already wrongly promoted. Live, n2 sat peerless-Primary for
-          # 527ms and bumped at +13ms.
+          # ⚠️ WRITE BEFORE DEMOTING -- this single 4K write is what makes it a FORK rather than a
+          # clean handover. DRBD bumps a peerless Primary's new current UUID LAZILY, on the first
+          # write that cannot be replicated; that bump IS the divergence. With an unmounted device
+          # and no I/O the bump never happens, and the pair rejoins `no-sync by rule=reconnected`
+          # even though the survivor has already wrongly promoted -- measured, twice.
           #
-          # So: late enough to diverge, early enough that node1 still sees `primary_nodes=0` when
-          # it decides (measured at +42.6ms after its own detection). 20ms sits between the two.
-          sleep 0.02
+          # Live, n2 was serving a mounted btrfs with a running payload for 527ms before it
+          # demoted, so its writes did this for free. Here it has to be asked for.
+          #
+          # `oflag=direct` so it reaches DRBD instead of sitting in the page cache, and one block
+          # so it costs ~1ms: the demote still has to commit before the survivor decides, ~20-43ms
+          # after ITS detection.
+          dd if=/dev/urandom of=/dev/drbd0 bs=4k count=1 oflag=direct 2>/dev/null
           # DEMOTE, THEN LOG -- nothing forks between here and the demote. `drbdsetup`, not
           # `drbdadm`: drbdadm re-parses drbd.conf every invocation and cost 18.7ms.
           drbdsetup secondary r0
@@ -374,6 +383,14 @@ pkgs.testers.runNixOSTest {
     print(f"node1 after the RACED demote: {disks(node1)}")
     raced_promote = node1.execute("drbdadm primary r0")[0] == 0
     print(f"node1 promoted after the raced demote: {raced_promote}; state {disks(node1)}")
+    # ...and the OTHER half of the divergence. node2 started a new generation from its own
+    # unreplicable write; node1 must start one too, or there is only one fork and DRBD would simply
+    # resync the stale side. This is the write the household's service would have been doing all
+    # along -- the moment the wrongly-promoted node serves anything, this is what it does.
+    if raced_promote:
+        node1.succeed("dd if=/dev/urandom of=/dev/drbd0 bs=4k count=1 oflag=direct")
+        print(f"node1 wrote as the wrongly-promoted primary; state {disks(node1)}")
+
     if raced_promote:
         # THE SAFETY FAILURE, stated as such. A node whose disk was `Consistent` -- stale, peer
         # unreachable -- was licensed to call itself authoritative and take the house. The fork is
