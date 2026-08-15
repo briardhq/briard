@@ -327,6 +327,14 @@ in
       # agent, no nesting, config baked into the image — and when is decided, this is its
       # acceptance test.
       drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs guestModule; };
+      # — **ALSO RED BY DESIGN** ([B.100]), and the mirror image of the one above. That is the GAIN
+      # side of the tiebreaker guard: a restarted survivor has no runtime `quorum[NOW]`, so it can
+      # never gain quorum from a diskless node. This is the KEEP side: a broken link BETWEEN the
+      # two anchors leaves `quorum[NOW]` true on BOTH, so both keep quorum, both may write, and the
+      # household's data forks into a permanent StandAlone. It is the one fault shape
+      # `block()`/`crash()` cannot express, because nothing leaves the cluster — only the edge
+      # between the two data nodes fails, and the witness stays reachable from both.
+      drbd-link-split = import ./drbd-link-split.nix { inherit pkgs guestModule; };
       # `netbird-selfhost`, `witness-proxy-gray` and `witness-proxy-fence` join this tag from
       # outputs-private.nix.
     };
