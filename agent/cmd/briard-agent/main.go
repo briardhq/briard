@@ -210,6 +210,19 @@ func runGuest(ctx context.Context) error {
 	// Deliberately NOT a retry on this same fd: reopening per connection is the shipped behaviour of
 	// the one channel the product cannot lose, and this bug is cosmetic. Slow the loop, don't
 	// redesign it.
+	//
+	// CLOSE BEFORE PAUSING, and that ordering is the whole fix. The busy loop this replaced was
+	// load-bearing for RE-ADOPT: with the guest port closed, qemu's virtio-serial flow control
+	// stops draining the chardev socket, so a returning host agent's handshake request waits in
+	// the socket buffer until the next instance opens the port and reads it. Pausing with the port
+	// still OPEN reverses that -- qemu hands the frame into a port nobody is reading, and closing
+	// the fd on the way out DISCARDS it. The host then waits out its handshake deadline for a reply
+	// to a request that no longer exists, drops the connection, EOFs us again, and re-arms the same
+	// cycle: `systemctl restart briard-agent` could never re-attach to a live guest (the agent
+	// self-update path), which is what agent-readopt caught. The pause costs the host at most
+	// hostAbsentPause of delay, which its handshake deadline absorbs; holding the port through it
+	// costs the channel outright.
+	conn.Close() // hand the port back so qemu buffers the next host request instead of losing it
 	select {
 	case <-ctx.Done():
 	case <-time.After(hostAbsentPause):
