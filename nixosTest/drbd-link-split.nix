@@ -29,25 +29,38 @@
 # together they say the tiebreaker is only ever safe when exactly one side was quorate a moment
 # ago — which a node failure guarantees and a LINK failure does not.
 #
-# WHAT IT PROVES, AND WHAT IT DELIBERATELY DOES NOT. It reproduces the ROOT CAUSE — both anchors
-# quorate at once off one diskless tiebreaker — deterministically, in ~30s. It does NOT reach the
-# FORK, and that is a finding rather than a shortfall: driven at test speed, the surviving node
-# OUTDATES ITSELF (`[far-away]`, the standard response to an unreachable Primary) and is then
-# disqualified — `drbdadm primary` refuses with *"Need access to UpToDate data"*, the pair rejoins
-# Connected, and nothing forks. **A bare link flap therefore does not fork the pair.**
+# TWO ACTS, AND WHAT EACH ONE ACTUALLY PROVES.
 #
-# The live fork needed the demote to land INSIDE a millisecond-wide window. Measured from the
-# 2026-08-15 capture, relative to n1 noticing the link was gone: `UpToDate -> Consistent` at
-# +3.3ms, n2's demote arriving via the witness at **+12.6ms**, `primary_nodes=0` at +16.5ms, and
-# `Consistent -> UpToDate [lost-peer]` at +34.5ms. The demote beat the self-outdating, so the
-# stale node was licensed to call itself authoritative. Wait even a second, as this test does, and
-# the window has closed. **That is why B.100 only ever appears during a ROLL:** a planned handover
-# is the one thing that issues a demote in the instant a link is flapping.
+# ACT 1 — the control, and the ROOT CAUSE. Cut the edge, wait, then demote. Both anchors keep
+# quorum off the one diskless tiebreaker (asserted; red today, and that assertion IS B.100). But
+# the survivor OUTDATES ITSELF ~18ms after noticing (`[far-away]` / `[lost-peer]`), so
+# `drbdadm primary` refuses with *"Need access to UpToDate data"* and the pair rejoins clean.
+# **A bare link flap does not fork the pair** — DRBD handles it correctly.
 #
-# So the fork half wants a variant that races the demote against the survivor's self-outdating
-# (a watcher on the primary that demotes the moment it sees the peer go). Left unwritten rather
-# than half-written: the value is as the acceptance test for whichever fix is chosen, and what
-# that fix is has not been decided.
+# ACT 2 — the roll's timing, which is what makes it dangerous. The eviction is armed on DRBD's own
+# event stream, so it fires while the survivor is still deciding. The survivor then goes
+# `disk( Consistent -> UpToDate ) [lost-peer]` and PROMOTES — stale data, peer unreachable. That
+# is the safety failure, and it reproduces here at +42.6ms against the live capture's +34.5ms.
+#
+# ⚠️ IT STILL DOES NOT REACH THE FORK, and the reason is worth more than the reproduction would be:
+# **nothing writes.** The device is not mounted and no I/O runs, so a peerless Primary never bumps
+# a new current UUID and there is no second generation to collide. The reconnect lands
+# `uuid_compare()=no-sync by rule=reconnected`. Live, n2 was serving a mounted btrfs with a running
+# payload for 527ms before it demoted, and THOSE WRITES are the divergence. Finishing this wants
+# I/O on the peerless Primary (dirty the device between the cut and the demote) — a small, known
+# step, left undone rather than half-done.
+#
+# THREE THINGS THE TIMING WORK MEASURED, which outlive this file:
+#   * the survivor's decision window is ~20–43ms from its own detection of the link loss;
+#   * **the ~1-in-13 rate is a PING-PHASE COIN FLIP** — DRBD pings each peer every `ping-int` with
+#     independent phase, so which anchor notices first, and by how much, is luck. Live, n2 won by
+#     512ms. With an identical cut both notice ~4ms apart and the survivor always wins, which is
+#     why every un-skewed attempt came out safe. Act 2 sets the skew with `net-options` rather than
+#     waiting for it;
+#   * the demote must be LATE ENOUGH to diverge and EARLY ENOUGH to beat the decision. Demote
+#     within ~13ms of noticing and there is nothing to fork even though the survivor still wrongly
+#     promotes. Our own evict path (cloud directive → agent poll → `drbd-reactorctl`) is slow, and
+#     that latency is what puts a real roll's demote squarely in the dangerous zone.
 #
 # ⚠️ THIS TEST IS EXPECTED TO FAIL until B.100 is fixed — it asserts the property, not the
 # behaviour ([[verification-assertions-must-fail]]). It lives in the `debug` tag for the same
@@ -77,6 +90,59 @@ let
     diskless = true;
     promoter = false;
   };
+
+  # THE EVICTION, ARMED. It must fire from INSIDE the guest: the window between the survivor
+  # noticing the peer is gone and disqualifying itself is ~18ms (measured -- see the header), and a
+  # command round-tripped through the test driver's console takes an order of magnitude longer. So
+  # this waits on `drbdsetup events2`, the same event stream drbd-reactor itself consumes, and
+  # demotes the instant the connection breaks.
+  #
+  # This is a faithful stand-in for what the roll actually does, not a contrivance: `Rollout.System`
+  # enqueues a handover, the agent runs an evict, and the demote is therefore ALREADY IN FLIGHT
+  # when a link flaps under it. Measured live, the evict landed 5s after the link came back and
+  # took 20s to apply. Arming it on the event makes deterministic what is otherwise 1-in-13.
+  # ⚠️ `stdbuf -oL` IS LOad-BEARING, not tidiness: `drbdsetup events2` writes to a PIPE, so libc
+  # block-buffers it at 4KB and the events sit unseen until the buffer fills -- which, for a
+  # handful of state changes, is never. The first version of this watcher armed correctly, saw the
+  # link break, and demoted nothing.
+  #
+  # The key is `connection:`, NOT `conn:` -- read out of drbd-utils 9.33.0
+  # (`user/v9/drbdsetup_events2.c:897`) rather than guessed, after a matcher on `conn:` silently
+  # matched nothing and the armed eviction never fired. A line reads:
+  #
+  #   change connection name:r0 peer-node-id:1 conn-name:node1 connection:Connecting role:Unknown
+  #
+  # `conn-name:` lets this watch ONE peer, so the witness connection cannot trigger it. Every event
+  # is logged: the next person to touch this should not have to re-derive the format either.
+  raceDemote = pkgs.writeShellScript "race-demote" ''
+    export PATH=/run/current-system/sw/bin:$PATH
+    exec >>/tmp/race-demote.log 2>&1
+    echo "armed $(date +%s.%N)"
+    stdbuf -oL drbdsetup events2 r0 | while read -r l; do
+      echo "ev: $l"          # NO `date` here: a fork per event cost 7.2ms of the budget below
+      case "$l" in
+        *conn-name:node1*connection:Connected*) ;;
+        *conn-name:node1*connection:*)
+          # ⚠️ THE DEMOTE MUST NOT BE INSTANT, and this delay is the whole difference between a
+          # clean handover and a fork. A Primary that loses its last peer bumps a NEW CURRENT UUID
+          # ~13ms later -- that bump IS the divergence. Demote before it and there is nothing to
+          # fork: measured, node2 demoted 10ms after noticing, never bumped, and the pair rejoined
+          # clean even though node1 had already wrongly promoted. Live, n2 sat peerless-Primary for
+          # 527ms and bumped at +13ms.
+          #
+          # So: late enough to diverge, early enough that node1 still sees `primary_nodes=0` when
+          # it decides (measured at +42.6ms after its own detection). 20ms sits between the two.
+          sleep 0.02
+          # DEMOTE, THEN LOG -- nothing forks between here and the demote. `drbdsetup`, not
+          # `drbdadm`: drbdadm re-parses drbd.conf every invocation and cost 18.7ms.
+          drbdsetup secondary r0
+          rc=$?
+          echo "demote rc=$rc $(date +%s.%N) on: $l"
+          exit 0
+          ;;
+      esac
+    done
+  '';
 in
 pkgs.testers.runNixOSTest {
   name = "drbd-link-split";
@@ -190,8 +256,8 @@ pkgs.testers.runNixOSTest {
                    if m.execute("dmesg | grep -q 'using tiebreaker logic to keep'")[0] == 0]
     print(f"quorate after the cut: {both_quorate}; used the tiebreaker: {tiebreakers}")
 
-    # Drive the rest of the measured sequence: the serving node lets go, the other takes over.
-    # Neither step is exotic -- it is an ordinary planned handover, which is exactly the point.
+    # ACT 1's demote is LATE ON PURPOSE -- seconds, not milliseconds. It is the control: with the
+    # window missed, the survivor has already disqualified itself and the pair must rejoin cleanly.
     node2.succeed("drbdadm secondary r0")
 
     def disks(m):
@@ -250,12 +316,87 @@ pkgs.testers.runNixOSTest {
             f"BOTH anchors kept quorum on a single-link failure ({both_quorate}, tiebreaker: {tiebreakers}) "
             "-- exactly one may, or both may write and the data forks"
         )
-    if not promoted:
-        # NOT a failure -- the opposite. Recorded so a future green run cannot be misread as "the
-        # fork was fixed" when what actually happened is that this scenario never reached a fork.
-        print("NOTE: node1 refused to promote on a Consistent disk ('Need access to UpToDate data'). "
-              "The double quorum above is real, but THIS sequence does not reach a fork -- the live "
-              "B.100 run did, so something else in it let the stale node become UpToDate.")
+    if promoted:
+        # Act 1 is the CONTROL and must stay safe. If a late demote ever starts licensing the
+        # survivor too, the window has widened and act 2's careful timing is no longer the story.
+        failures.append(
+            "act 1: node1 promoted on a stale disk even though the demote was seconds late -- "
+            "the survivor's self-outdating no longer protects the ordinary case"
+        )
+    # ================= ACT 2: the same fault with the EVICTION ALREADY IN FLIGHT =================
+    # Act 1 missed the window by seconds and the pair was fine. This is the roll's timing: the
+    # demote is armed on DRBD's own event stream, so it fires the instant the link breaks -- inside
+    # the ~18ms before the survivor disqualifies itself. Nothing else changes.
+    for m in disk_nodes:
+        m.wait_until_succeeds("drbdadm cstate r0 | grep -c Connected | grep -q 2", timeout=120)
+    node1.wait_until_succeeds("test $(drbdadm dstate r0 | cut -d/ -f1) = UpToDate", timeout=120)
+    node2.succeed("drbdadm primary r0")
+    for m in disk_nodes:
+        print(f"{m.name} before act 2: {disks(m)}")
+
+    # ⚠️ FORCE THE DETECTION SKEW -- this is what makes the fork reachable, and what makes B.100
+    # ~1-in-13 in the wild rather than every time. DRBD detects a dead link when a ping goes
+    # unacked, and it pings every `ping-int` with INDEPENDENT PHASE on each node, so which anchor
+    # notices first, and by how much, is a coin flip spread over the ping interval. Measured live,
+    # n2 noticed **512ms before** n1 -- so its demote was already committed when n1 came to decide,
+    # n1 saw `primary_nodes=0`, and `[lost-peer]` sent it to UpToDate instead of Outdated. Driven
+    # with both anchors noticing ~4ms apart (which is what an identical iptables cut produces), the
+    # demote can never get ahead and the pair is always safe: measured, node1 decided at +15ms and
+    # the demote arrived at +49ms.
+    #
+    # So the skew is set rather than waited for: node2 notices fast, node1 slowly. Nothing else
+    # about the fault changes, and no timing is faked -- this only makes a phase relationship that
+    # occurs naturally occur on demand.
+    node2.succeed("drbdsetup net-options r0 0 --ping-int=1 --ping-timeout=1")    # peer 0 = node1
+    node1.succeed("drbdsetup net-options r0 1 --ping-int=120 --ping-timeout=300")  # peer 1 = node2
+
+    node2.succeed("systemd-run --unit=race-demote ${raceDemote}")
+    cut(node1, node2)
+    cut(node2, node1)
+
+    for m in disk_nodes:
+        wait_peer_lost(m)
+
+    # BOUNDED, and the watcher's own log is printed either way -- an armed eviction that did not
+    # fire is indistinguishable from one that fired and lost, and only the timestamps tell them
+    # apart. (The first version silently never fired: see the stdbuf note on the script.)
+    raced = False
+    for _ in range(60):
+        if node2.execute("test $(drbdadm role r0) = Secondary")[0] == 0:
+            raced = True
+            break
+        time.sleep(1)
+    print("race-demote log:\n" + node2.execute("cat /tmp/race-demote.log")[1])
+    print(f"the armed eviction demoted node2: {raced}")
+
+    # Did the survivor come out UpToDate (licensed to promote -> fork) or Outdated (disqualified)?
+    # This one transition IS the defect; everything else follows from it.
+    print(f"node1 after the RACED demote: {disks(node1)}")
+    raced_promote = node1.execute("drbdadm primary r0")[0] == 0
+    print(f"node1 promoted after the raced demote: {raced_promote}; state {disks(node1)}")
+    if raced_promote:
+        # THE SAFETY FAILURE, stated as such. A node whose disk was `Consistent` -- stale, peer
+        # unreachable -- was licensed to call itself authoritative and take the house. The fork is
+        # what follows when there are writes to diverge; this is the step that permits it.
+        failures.append(
+            "a STALE node promoted while its peer was unreachable: node1 went "
+            "disk( Consistent -> UpToDate ) [lost-peer] because the demote beat its self-outdating, "
+            "then took the house -- the step every fork of this pair goes through"
+        )
+
+    # Put node1's ping timers back before healing: the skew above is for the FAULT, and leaving a
+    # 30s ping-timeout in place makes the reconnect handshake -- the thing that detects the fork --
+    # take longer than the settle wait. Measured: without this the pair was still Connecting when
+    # the wait gave up, so a real split-brain would have gone unrecorded.
+    node1.succeed("drbdsetup net-options r0 1 --ping-int=10 --ping-timeout=5")
+    heal(node1, node2)
+    heal(node2, node1)
+    for m in disk_nodes:
+        settled = wait_settled(m, timeout=240)
+        print(f"{m.name} settled on {settled} after act 2; connections: {conn_states(m)}")
+        if m.name not in forked and m.execute("dmesg | grep -q 'Split-Brain detected but unresolved'")[0] == 0:
+            forked.append(m.name)
+
     if forked:
         failures.append(
             f"the pair forked and will not re-join: split-brain on {forked}, left StandAlone "
