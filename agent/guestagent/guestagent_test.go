@@ -1338,3 +1338,40 @@ func TestFirstCIDRParsesOnlyInet(t *testing.T) {
 		}
 	}
 }
+
+// The boot id is what lets the host tell a bounced in-guest agent from a rebooted guest, so the
+// handshake has to carry it end to end -- read in the guest, over the wire, onto the Client
+// ([B.102]).
+func TestHandshakeReportsBootID(t *testing.T) {
+	f := &fakeExec{files: map[string]string{bootIDPath: "0f9c2b1e-3d4a-4c5b-8e7f-1a2b3c4d5e6f\n"}}
+	g := dial(t, f)
+	h, err := g.Handshake(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "0f9c2b1e-3d4a-4c5b-8e7f-1a2b3c4d5e6f" // trailing newline trimmed
+	if h.BootID != want {
+		t.Errorf("hello boot id = %q, want %q", h.BootID, want)
+	}
+	if g.BootID() != want {
+		t.Errorf("Client.BootID() = %q, want %q", g.BootID(), want)
+	}
+}
+
+// A guest that cannot produce a boot id must still HANDSHAKE. The handshake is what proves the
+// channel is live and what the host refuses an incompatible guest on; failing it over a field
+// no host has ever needed to drive a guest would turn a missing diagnostic into an unusable
+// node. Empty then reads as "no evidence", which is what the host's reboot check requires.
+func TestHandshakeWithoutBootIDStillSucceeds(t *testing.T) {
+	g := dial(t, &fakeExec{}) // ReadFile of an unseeded path is os.ErrNotExist
+	h, err := g.Handshake(context.Background())
+	if err != nil {
+		t.Fatalf("a guest with no readable boot id must still handshake: %v", err)
+	}
+	if h.BootID != "" || g.BootID() != "" {
+		t.Errorf("boot id = %q/%q, want empty", h.BootID, g.BootID())
+	}
+	if h.Version != api.GuestProtocol {
+		t.Errorf("version = %d, want %d", h.Version, api.GuestProtocol)
+	}
+}

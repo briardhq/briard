@@ -1,9 +1,15 @@
 package host
 
 import (
+	"context"
+	"errors"
+	"net"
+	"os"
 	"testing"
 	"time"
 
+	"briard.io/agent/guest"
+	"briard.io/agent/guestagent"
 	"briard.io/agent/guestagent/deadman"
 )
 
@@ -259,4 +265,75 @@ func TestTheGuestDeadmanFiresBeforeTheHostActs(t *testing.T) {
 	// reboot ENDS the VM's unit (`-no-reboot`), so from the host's side the guest never "rebooted"
 	// at all -- it stopped, and the host started it. The two rungs cannot both act on one guest:
 	// whichever runs first changes the state the other observes.
+}
+
+// bootExec is a guest that answers the handshake with a given boot id and refuses everything
+// else -- enough to build the two Clients guestRebooted compares, over the real wire.
+type bootExec struct{ boot string }
+
+func (e *bootExec) Run(_ context.Context, name string, _ ...string) ([]byte, error) {
+	return nil, errors.New("bootExec: refusing " + name)
+}
+func (e *bootExec) WriteFile(string, []byte) error { return errors.New("bootExec: refusing WriteFile") }
+func (e *bootExec) Sethostname(string) error       { return errors.New("bootExec: refusing Sethostname") }
+func (e *bootExec) ReadFile(string) ([]byte, error) {
+	if e.boot == "" {
+		return nil, os.ErrNotExist // a guest too old to report one
+	}
+	return []byte(e.boot + "\n"), nil
+}
+
+func dialBoot(t *testing.T, boot string) *guestagent.Client {
+	t.Helper()
+	cconn, sconn := net.Pipe()
+	go guestagent.Serve(context.Background(), sconn, &bootExec{boot: boot})
+	c := guestagent.NewClient(cconn)
+	t.Cleanup(func() { c.Close() })
+	if _, err := c.Handshake(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// [B.102]: a guest that reboots underneath the agent comes back on a channel that looks exactly
+// like a bounced in-guest agent's, and the host must not resume observing a guest it never
+// converged. The boot id is the only thing that separates the two, and it must be conclusive in
+// BOTH directions -- silence from an old guest is not a reboot, or every ordinary bounce would
+// re-converge a healthy serving Primary.
+func TestGuestRebootedNeedsBothBootIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		was, now string
+		want     bool
+	}{
+		{"a different boot is a reboot", "boot-a", "boot-b", true},
+		{"the same boot is a bounced agent", "boot-a", "boot-a", false},
+		{"a guest too old to answer is not evidence", "", "boot-b", false},
+		{"a host that never learned one is not evidence", "boot-a", "", false},
+		{"neither side knows", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{}
+			u := newOSUpgrade(cfg, nil, dialBoot(t, tc.was), guest.Config{}, func(string, ...any) {})
+			got, from, to := u.guestRebooted(dialBoot(t, tc.now))
+			if got != tc.want {
+				t.Errorf("guestRebooted(%q -> %q) = %v, want %v", tc.was, tc.now, got, tc.want)
+			}
+			if from != tc.was || to != tc.now {
+				t.Errorf("reported %q -> %q, want %q -> %q", from, to, tc.was, tc.now)
+			}
+		})
+	}
+}
+
+// A nil channel on either side is the agent's own startup or teardown, never a reboot.
+func TestGuestRebootedIsNilSafe(t *testing.T) {
+	u := newOSUpgrade(Config{}, nil, nil, guest.Config{}, func(string, ...any) {})
+	if got, _, _ := u.guestRebooted(dialBoot(t, "boot-b")); got {
+		t.Error("no prior channel must not read as a reboot")
+	}
+	u = newOSUpgrade(Config{}, nil, dialBoot(t, "boot-a"), guest.Config{}, func(string, ...any) {})
+	if got, _, _ := u.guestRebooted(nil); got {
+		t.Error("no fresh channel must not read as a reboot")
+	}
 }

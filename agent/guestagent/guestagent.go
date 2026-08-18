@@ -202,6 +202,13 @@ const (
 // knows where it lives.
 const dataMountRoot = "/var/lib/briard"
 
+// bootIDPath is the kernel's per-boot identifier, which the handshake reports so the host can
+// recognise a guest that rebooted underneath it ([B.102]). The kernel mints it once per boot and
+// it survives every in-guest agent restart, which is exactly the line the host needs drawn --
+// and unlike a hostname or an address it is not something bring-up sets, so it cannot be
+// confused with the convergence it is used to trigger.
+const bootIDPath = "/proc/sys/kernel/random/boot_id"
+
 // guestCapabilities is the verb set the guest advertises in its handshake -- the honest
 // capability list a host negotiates against (Client.Supports). Keep in sync with the
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
@@ -519,7 +526,16 @@ func dispatch(x Executor) dispatchFunc {
 		case verbHello:
 			// Report our protocol version + capabilities so the host can negotiate/refuse
 			//. No side effects; safe to call before anything else.
-			return api.GuestHello{Version: api.GuestProtocol, Capabilities: guestCapabilities}, nil
+			//
+			// The boot_id rides along because the host cannot otherwise tell a bounced agent
+			// from a rebooted guest ([B.102]). Read best-effort: a hello that FAILED would be
+			// a guest the host refuses to drive, and no host has ever needed this field to
+			// drive one -- so an unreadable boot_id is reported as absent, not as an error.
+			hello := api.GuestHello{Version: api.GuestProtocol, Capabilities: guestCapabilities}
+			if b, err := x.ReadFile(bootIDPath); err == nil {
+				hello.BootID = strings.TrimSpace(string(b))
+			}
+			return hello, nil
 		case verbSetHostname:
 			var req hostnameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -1715,6 +1731,7 @@ type Client struct {
 	c       *conn
 	version int             // negotiated guest protocol version (0 until Handshake)
 	caps    map[string]bool // verbs the guest advertised (nil until Handshake)
+	bootID  string          // which BOOT of the guest answered (empty until Handshake, or from a guest too old to say)
 }
 
 // NewClient wraps a connection to the guest (virtio-serial in prod, net.Pipe in tests).
@@ -1738,6 +1755,7 @@ func (g *Client) Handshake(ctx context.Context) (api.GuestHello, error) {
 			h.Version, api.MinGuestProtocol, api.GuestProtocol)
 	}
 	g.version = h.Version
+	g.bootID = h.BootID
 	g.caps = make(map[string]bool, len(h.Capabilities))
 	for _, c := range h.Capabilities {
 		g.caps[c] = true
@@ -1763,6 +1781,11 @@ func (g *Client) Supports(verb string) bool {
 
 // ProtocolVersion is the negotiated guest protocol version (0 before a handshake).
 func (g *Client) ProtocolVersion() int { return g.version }
+
+// BootID identifies the guest BOOT this channel reached, from the handshake. Empty before a
+// handshake, and empty from a guest too old to report one -- so a caller comparing two of them
+// must treat an empty side as no evidence rather than as a difference ([B.102]).
+func (g *Client) BootID() string { return g.bootID }
 
 // SetHostname renames the guest to this node's name so DRBD's `on <name>` matching
 // works (see verbSetHostname). Idempotent.

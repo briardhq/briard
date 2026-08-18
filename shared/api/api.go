@@ -18,10 +18,19 @@ const (
 )
 
 // GuestHello is the guest's handshake reply: its protocol version plus the verbs it
-// supports (fine-grained capability negotiation on top of the coarse version gate).
+// supports (fine-grained capability negotiation on top of the coarse version gate), and
+// which BOOT of the guest is answering.
+//
+// BootID is the guest kernel's boot_id, and it is the host's only way to tell "the in-guest
+// agent bounced" from "the guest rebooted underneath me" -- two events that look identical
+// on the channel and need opposite responses ([B.102]). The agent serves one connection then
+// exits, so a handshake re-running proves nothing; the boot_id is stable across that and
+// changes only across an actual boot. Empty from a guest too old to send it, which reads as
+// "no evidence" rather than "a new boot" -- the host must not re-converge on silence.
 type GuestHello struct {
 	Version      int      `json:"version"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	BootID       string   `json:"boot_id,omitempty"`
 }
 
 // EnrollRequest asks an overlay provider to admit this node to the tenant network.

@@ -285,7 +285,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 			}
 			u.logf("guest-recovery: the guest unit is stopped; relaunching (attempt %d)", r.attempts)
 			lastAction = time.Now()
-			client, err := u.relaunchGuest(ctx)
+			client, err := u.converge(ctx)
 			if err != nil {
 				u.logf("guest-recovery: relaunch attempt %d failed: %v", r.attempts, err)
 				continue
@@ -301,6 +301,30 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		// within one window rather than waiting out the full two hours.
 		client, err := u.awaitChannel(ctx, r.waitFor())
 		if err == nil {
+			// ANSWERING IS NOT CONVERGED, and telling the two apart is [B.102]. The guest unit is
+			// Restart=always and qemu runs -no-reboot, so a guest kernel panic exits qemu and
+			// systemd relaunches it with NO agent involved. What comes back is the baked image:
+			// runtime identity -- hostname, addresses, the .res -- is applied by bring-up and is
+			// never baked, which is why bring-up is deliberately one call. The channel, though,
+			// comes back exactly as a bounced in-guest agent's does, so this branch used to
+			// re-attach and resume OBSERVING a guest it had not CONVERGED: no second CONVERGED
+			// line, connected=0 healthy=false for the rest of the run, the node dark on the wire
+			// while the peer served alone.
+			if reboot, from, to := u.guestRebooted(client); reboot {
+				u.logf("guest-recovery: the guest rebooted underneath us (boot %s -> %s); "+
+					"re-converging rather than resuming", from, to)
+				// Hand the channel back first: the in-guest agent serves ONE connection at a
+				// time, so holding this one open would make bring-up's own re-dial wait out a
+				// guest that is answering perfectly well.
+				_ = client.Close()
+				fresh, cerr := u.converge(ctx)
+				if cerr != nil {
+					u.logf("guest-recovery: re-converging the rebooted guest failed: %v", cerr)
+					continue // back round the ladder, which will reach for a restart
+				}
+				u.resolved(ctx, n, r)
+				return fresh, nil
+			}
 			u.resolved(ctx, n, r)
 			u.rebind(client)
 			return client, nil
@@ -428,23 +452,42 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 	return nil
 }
 
-// relaunchGuest starts a guest whose unit has stopped. It is rebootGuest without the stop: there
-// is nothing running to take down, and asking systemd to stop an inactive unit -- or QEMU to
-// answer an ACPI button -- would only spend the shutdown grace discovering that.
+// converge brings the guest to the state the host means it to be in, and is the ONE place that
+// does: bringUp launches a stopped guest and adopts a running one (it decides from
+// platform.Running), then drives the same hostname -> addresses -> DRBD -> quorate sequence
+// either way. Both of this ladder's non-reboot exits therefore share it -- the guest whose unit
+// stopped and had to be started, and the guest that came back on its own but came back FRESH
+// ([B.102]) -- because they need the identical thing done and there is no second way to do it
+// (AGENTS §5).
 //
-// Detached from the caller's context for the reason the rollback leg is: this IS the recovery, and
-// it must not inherit a deadline in order to find there is no time left to recover.
-func (u *osUpgrade) relaunchGuest(ctx context.Context) (*guestagent.Client, error) {
+// Detached from the caller's context for the reason the rollback leg is: this IS the recovery,
+// and it must not inherit a deadline in order to find there is no time left to recover.
+func (u *osUpgrade) converge(ctx context.Context) (*guestagent.Client, error) {
 	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget)
 	defer cancel()
 
 	g, client, err := u.cfg.bringUp(rb, u.cfg.guestSpec(), u.logf)
 	if err != nil {
-		return nil, fmt.Errorf("guest-recovery: relaunch the guest: %w", err)
+		return nil, fmt.Errorf("guest-recovery: bring the guest up: %w", err)
 	}
 	u.vm = g
 	u.rebind(client)
 	return client, nil
+}
+
+// guestRebooted reports whether the channel just re-established reached a DIFFERENT boot of the
+// guest than the one the host last converged, and the two boot ids so the caller can say so.
+//
+// Both sides must be known for this to answer yes. A guest too old to report a boot id sends
+// nothing, and silence is not evidence of a reboot -- reading it as one would re-converge a
+// healthy serving Primary on every ordinary channel bounce, which is a worse fault than the one
+// this detects ([B.102]).
+func (u *osUpgrade) guestRebooted(fresh *guestagent.Client) (bool, string, string) {
+	if u.client == nil || fresh == nil {
+		return false, "", ""
+	}
+	was, now := u.client.BootID(), fresh.BootID()
+	return was != "" && now != "" && was != now, was, now
 }
 
 // resolved tells the owner the guest is answering again, on BOTH ways out of the ladder -- the
