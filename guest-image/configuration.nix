@@ -1193,20 +1193,17 @@ in
     networking.dhcpcd.denyInterfaces = [ "eth1" "eth2" "eth3" ];
 
     # Answer ARP only on the interface that HOLDS the address (and source kernel ARP probes
-    # from the outgoing interface's own address). Linux's default weak-host ARP (arp_ignore=0)
-    # answers "who-has <DRBD address>" from the SERVICE NIC too whenever both NICs share an L2
-    # -- which they do on any household that wires both ports into one switch, and on the lab
-    # bridge, where it was measured splitting a flock (2026-08-18): the peer's post-reboot
-    # re-ARP cached the service NIC's MAC, replication silently transited eth2 for as long as
-    # eth2 held the VIP address, and the eviction's teardown then turned the flow into a
-    # silent per-source blackhole (an address-less interface under any rp_filter>=1 refuses
-    # every source that does not route back out of it) -- 37s of one-way partition against
-    # DRBD's 500ms ping-timeout, i.e. a split-brain with no failure anywhere.
-    #
-    # Every address here is hand-placed on the NIC that owns its traffic (the agent's
-    # net.configure, briard-vip's lease, the witness link), so there is nothing for weak-host
-    # ARP to add -- only the cross-NIC ambiguity to remove. The VIP takeover's gratuitous ARP
-    # is explicit (vipArping crafts its own frames) and unaffected by either setting.
+    # from the outgoing interface's own address). Both NICs can share one L2 -- a household
+    # that wires both ports into one switch -- and Linux's weak-host default (arp_ignore=0)
+    # then lets the SERVICE NIC answer for the DRBD address: the peer caches the wrong MAC,
+    # replication silently transits eth2 while it holds the VIP address, and the moment a VIP
+    # teardown strips that address, source validation turns the flow into a silent one-way
+    # blackhole -- far longer than DRBD's 500ms ping deadline, i.e. a split-brain with no
+    # failure anywhere. Every address here is hand-placed on the NIC that owns its traffic
+    # (the agent's net.configure, briard-vip's lease, the witness link), so weak-host ARP adds
+    # nothing and only the cross-NIC ambiguity is removed. The VIP takeover's gratuitous ARP
+    # is explicit (vipArping crafts its own frames) and unaffected by either setting. The
+    # measured chain: briard-farm docs/V3.md [B.101].
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.arp_ignore" = 1;
       "net.ipv4.conf.default.arp_ignore" = 1;
