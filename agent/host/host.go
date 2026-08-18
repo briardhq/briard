@@ -867,6 +867,15 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applyHandover(ctx, e, d, logf)
 	}
+	if d.Kind == api.DirectiveSync {
+		// The pre-eviction flush, standalone: the same narrow slice of the guest as the
+		// handover it precedes.
+		e, ok := r.(guestEvictor)
+		if !ok {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot sync"}
+		}
+		return cfg.applySync(ctx, e, d, logf)
+	}
 	if d.Kind == api.DirectivePair {
 		// Runtime anchor pairing needs the guest client's mesh verbs
 		// (adjust/bring-up), not the narrow upgrader; r is that client.

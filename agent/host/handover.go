@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"briard.io/shared/api"
 )
@@ -23,10 +24,18 @@ import (
 // A node that claimed more than it can see would be guessing on the house's behalf.
 
 // guestEvictor is the slice of the guest client a handover drives. Narrow on purpose: this path
-// must not be able to reach anything that changes what the node runs.
+// must not be able to reach anything that changes what the node runs. FsSync clears that bar —
+// it flushes dirty pages that were going to be written anyway, changing only WHEN.
 type guestEvictor interface {
 	ReactorEvict(ctx context.Context, keepMasked, unmask bool) error
+	FsSync(ctx context.Context) (string, error)
 }
+
+// fsSyncTimeout bounds the pre-eviction flush. Generous — a write-heavy payload can owe the
+// volume real data — but finite, and the timeout path CONTINUES into the eviction rather than
+// aborting it: a device on which sync hangs is a device to evict away from, and the unmount
+// will retry the same writeback with the same result either way.
+const fsSyncTimeout = 60 * time.Second
 
 // Handover payload words. Deliberately three named states rather than a bool pair: "" is the
 // ordinary handover, and the two others are the reboot path's halves, which are meaningless
@@ -64,10 +73,45 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 	default:
 		logf("directive kind=handover: handing the work to a peer")
 	}
+	if !unmask {
+		// Flush the data volume FIRST ([B.100a]): the eviction's unmount writes back every
+		// dirty page inside the demote path — under the peer's promotion and DRBD's ping
+		// deadline — and that flush is unbounded (proportional to dirty data, not to time).
+		// Syncing here moves the bulk across while nothing is racing; the unmount then owes
+		// only the seconds since. Best-effort by design: on error or timeout the eviction
+		// PROCEEDS — a sick device argues for moving the house, not for keeping it — and an
+		// older guest without the verb answers unknown-verb, which lands here too.
+		sctx, cancel := context.WithTimeout(ctx, fsSyncTimeout)
+		detail, err := g.FsSync(sctx)
+		cancel()
+		if err != nil {
+			logf("directive kind=handover: pre-eviction sync failed (evicting anyway): %v", err)
+		} else {
+			logf("directive kind=handover: pre-eviction sync: %s", detail)
+		}
+	}
 	if err := g.ReactorEvict(ctx, keepMasked, unmask); err != nil {
 		logf("directive handover failed: %v", err)
 		return failed(err.Error())
 	}
 	logf("directive handover applied")
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
+}
+
+// ApplySync handles a DirectiveSync: flush the replicated volume now, on its own, so a handover
+// sent moments later unmounts a volume that owes almost nothing ([B.100a] — the sequencer's
+// sync → settle → evict ordering; applyHandover's own sync then moves only the settle window's
+// accumulation). Unlike the in-handover sync this one REPORTS failure: the caller asked for
+// exactly this flush and deserves the truth about it, and nothing downstream is blocked on the
+// answer.
+func (cfg Config) applySync(ctx context.Context, g guestEvictor, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	sctx, cancel := context.WithTimeout(ctx, fsSyncTimeout)
+	detail, err := g.FsSync(sctx)
+	cancel()
+	if err != nil {
+		logf("directive kind=sync failed: %v", err)
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}
+	}
+	logf("directive kind=sync: %s", detail)
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: detail}
 }

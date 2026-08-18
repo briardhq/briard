@@ -192,7 +192,15 @@ const (
 	verbResources     = "sys.resources"  // read appliance resource telemetry
 	verbBackupSave    = "backup.save"    // tar+age-encrypt .storage/config to an off-site path
 	verbBackupRestore = "backup.restore" // age-decrypt+extract a backup into the data dir
+	verbFsSync        = "fs.sync"        // flush the data volume's dirty pages (pre-eviction pre-copy)
 )
+
+// dataMountRoot is where briard-data mounts the replicated volume — the guest image's
+// `btrfsRoot` (guest-image/configuration.nix), restated here the way manifestPinPath restates a
+// path under it. fs.sync carries no path on the wire on purpose: the verb has exactly one
+// meaning ("flush the replicated volume"), and the node that mounts the volume is the one that
+// knows where it lives.
+const dataMountRoot = "/var/lib/briard"
 
 // guestCapabilities is the verb set the guest advertises in its handshake -- the honest
 // capability list a host negotiates against (Client.Supports). Keep in sync with the
@@ -210,6 +218,7 @@ var guestCapabilities = []string{
 	verbCertWrite,
 	verbResources,
 	verbBackupSave, verbBackupRestore,
+	verbFsSync,
 }
 
 const (
@@ -1019,6 +1028,26 @@ func dispatch(x Executor) dispatchFunc {
 				args = append(args, "--keep-masked")
 			}
 			return nil, run("drbd-reactorctl", args...)
+		case verbFsSync:
+			// Flush the replicated volume's dirty pages BEFORE an eviction, so the unmount's
+			// writeback — which runs inside the demote path, under the peer's promotion and
+			// DRBD's ping deadline — moves only the last seconds of writes instead of
+			// everything since the last natural writeback. Protocol C acks a write once it is
+			// on both disks, but dirty PAGE CACHE is on no disk yet: for a write-heavy payload
+			// the unmount flush is unbounded, and this verb is the pre-copy that bounds it.
+			//
+			// `stat -c %m` names the mount holding the path; equal to the path itself means the
+			// data volume is mounted here (a Primary). Anything else — a Secondary or witness
+			// that never mounted it — has nothing of ours to flush, which is an ANSWER, not an
+			// error: the caller asked "make sure your dirty data is small", and it already is.
+			out, err := x.Run(ctx, "stat", "-c", "%m", dataMountRoot)
+			if err != nil || strings.TrimSpace(string(out)) != dataMountRoot {
+				return "skipped: data volume not mounted here", nil
+			}
+			if err := run("sync", "-f", dataMountRoot); err != nil {
+				return nil, err
+			}
+			return "synced", nil
 		case verbReactorPause:
 			// Pause the promoter by stopping the drbd-reactor daemon: stop-services-on-exit
 			// defaults false, so the promoted services + DRBD Primary stay up while it is
@@ -2062,6 +2091,15 @@ func (g *Client) ReactorActive(ctx context.Context) (bool, error) {
 	var active bool
 	err := g.c.call(ctx, verbReactorActive, struct{}{}, &active)
 	return active, err
+}
+
+// FsSync flushes the replicated data volume's dirty pages — the pre-copy that bounds an
+// eviction's unmount flush ([B.100a]). Returns the guest's one-word account ("synced", or
+// "skipped: ..." on a node with nothing mounted — a Secondary answering honestly, not failing).
+func (g *Client) FsSync(ctx context.Context) (string, error) {
+	var detail string
+	err := g.c.call(ctx, verbFsSync, struct{}{}, &detail)
+	return detail, err
 }
 
 // ReactorResume re-adopts the promoter (drbd-reactor enable); it re-runs the initial

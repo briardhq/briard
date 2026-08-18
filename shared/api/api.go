@@ -294,6 +294,15 @@ const (
 	//                        the way up; `unmask` releases that and evicts nothing. Sent by the cloud
 	//                        when rolling a pair, or injected locally by `briard handover`
 	//                        -- both land in the same dispatch.
+	DirectiveSync = "sync" // Payload empty. Flush the node's replicated data volume (dirty page
+	//                        cache -> both disks), so a handover issued moments later unmounts a
+	//                        volume that owes almost nothing -- the pre-copy half of the eviction
+	//                        discipline ([B.100a]). The sequencer sends it to the node it is about
+	//                        to evict BEFORE its settle window, so the flush's own replication
+	//                        burst lands while the fleet is still under observation rather than
+	//                        inside the demote path. Node-local and idempotent; a node with
+	//                        nothing mounted (a Secondary, a witness) reports done("skipped"),
+	//                        which is an answer, not a failure.
 )
 
 // CertBundle is a renewed cert the controller pushes down (JSON-encoded into a DirectiveCert's

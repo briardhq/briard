@@ -172,3 +172,46 @@ func TestServiceManifestReadsBack(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 }
+
+// The pre-eviction flush ([B.100a]). What matters: it syncs the MOUNTED volume and answers
+// "skipped" -- success, not error -- on a node that has it unmounted, because a Secondary
+// asked to make its dirty data small is already done.
+func TestFsSyncFlushesTheMountedVolume(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name == "stat" {
+			return []byte(dataMountRoot + "\n"), nil // the path IS its own mount point
+		}
+		return nil, nil
+	}}
+	g := dial(t, f)
+	detail, err := g.FsSync(context.Background())
+	if err != nil {
+		t.Fatalf("FsSync: %v", err)
+	}
+	if detail != "synced" {
+		t.Fatalf("detail = %q, want synced", detail)
+	}
+	if !ran(f, "sync", "-f", dataMountRoot) {
+		t.Fatalf("no sync -f %s; runs=%v", dataMountRoot, f.runs)
+	}
+}
+
+func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name == "stat" {
+			return []byte("/\n"), nil // the dir sits on the root fs: nothing of ours mounted
+		}
+		return nil, nil
+	}}
+	g := dial(t, f)
+	detail, err := g.FsSync(context.Background())
+	if err != nil {
+		t.Fatalf("FsSync on an unmounted volume must succeed, got: %v", err)
+	}
+	if !strings.HasPrefix(detail, "skipped") {
+		t.Fatalf("detail = %q, want skipped", detail)
+	}
+	if ran(f, "sync", "-f", dataMountRoot) {
+		t.Fatal("synced a volume that is not mounted -- that flushes the ROOT fs for nothing")
+	}
+}
