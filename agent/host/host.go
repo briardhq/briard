@@ -231,7 +231,13 @@ type Config struct {
 // statusReader is the DRBD/quorum slice of the guest client the snapshot needs -- kept
 // small so it's unit-testable without a live control channel.
 type statusReader interface {
-	Status(ctx context.Context, resource string) (model.QuorumState, error)
+	// Cluster reads this node's whole DRBD view -- its own quorum state AND its peers -- from
+	// one sample. The peers are what let the redundancy alert tell "a peer is gone" from "the
+	// only other copy of the data is gone" ([B.102]); they stop here and do not ride the cloud
+	// wire (shared/model.Cluster). It is the same drbd.status verb the QuorumState summary
+	// rides, so this reads strictly more from the same call rather than costing another.
+	Cluster(ctx context.Context, resource string) (model.Cluster, error)
+
 	// PayloadHealth probes the payload's /healthz from INSIDE the guest (macvtap-safe: the
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
@@ -749,7 +755,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		sys := cfg.currentSystem(ctx, r)
 		cfg.beat.Beat()
-		st, probe, err := cfg.snapshot(ctx, r, img, sys)
+		st, cl, probe, err := cfg.snapshot(ctx, r, img, sys)
 		if errors.Is(err, guestagent.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
@@ -784,7 +790,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s image=%s%s",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
 			orDash(probe), st.Image, resourceLog(res))
-		alerter.observe(ctx, st) // edge-triggered redundancy warning (nil-safe on witness/single-node)
+		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		if rep != nil {
 			cfg.beat.Beat()
 			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -1098,15 +1104,15 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // address all along and never printed it, which made "the node reports healthy and nobody can
 // reach it" -- the exact shape of V3.19 -- undiagnosable from a journal. Under DHCP the address is
 // not in any config file either, so the log is the only place a human can find it.
-func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, string, error) {
+func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, model.Cluster, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, Image: served, System: system, AgentVersion: cfg.Version}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	qs, err := r.Status(rctx, cfg.Resource.Name)
+	cl, err := r.Cluster(rctx, cfg.Resource.Name)
 	if err != nil {
-		return st, "", err // zero QuorumState, Healthy=false
+		return st, cl, "", err // zero QuorumState, Healthy=false
 	}
-	st.Quorum = qs
+	st.Quorum = cl.QuorumState
 	// The name this node is REALLY publishing, not the one it was configured with. A read error
 	// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
 	// make a silent conflict-rename permanently invisible, which is the whole failure being
@@ -1120,7 +1126,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 	// node with no address is a node nobody in the house can reach.
 	var probe string
 	if cfg.Diskless {
-		st.Healthy = qs.Quorate
+		st.Healthy = cl.Quorate
 	} else if url := guest.ResolveHealthURL(rctx, r, cfg.Diskless, cfg.VIPDev, cfg.HealthURL); url == "" {
 		// No address to probe means two opposite things, and telling them apart is the whole
 		// of this branch:
@@ -1139,7 +1145,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 		//
 		// Nor does the front door offer a way out of the distinction: it is partOf
 		// briard-vip.service, so on a secondary it is not running to answer a /healthz at all.
-		st.Healthy = !qs.Primary && qs.Quorate && qs.UpToDate
+		st.Healthy = !cl.Primary && cl.Quorate && cl.UpToDate
 	} else {
 		probe = url
 		// Prefer the in-guest probe (payload.health) so the health signal survives a substrate
@@ -1152,7 +1158,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 		}
 		st.Healthy = healthy
 	}
-	return st, probe, nil
+	return st, cl, probe, nil
 }
 
 // CurrentImage reports the payload image this node actually serves: the replicated pin

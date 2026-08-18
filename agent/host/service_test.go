@@ -45,6 +45,7 @@ func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, erro
 	f.steps = append(f.steps, "status")
 	return model.QuorumState{Primary: f.primary, Quorate: true}, nil
 }
+
 func (f *fakeInstaller) ServiceRender(context.Context, map[string]string, []string) error {
 	f.steps = append(f.steps, "render")
 	return f.renderEr

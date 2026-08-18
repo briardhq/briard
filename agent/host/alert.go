@@ -5,8 +5,21 @@ import (
 	"fmt"
 	"time"
 
-	"briard.io/shared/api"
+	"briard.io/shared/model"
 	"briard.io/shared/notify"
+)
+
+// redundancy is what this node's replica set currently is, and it is three states rather than
+// two because "a peer is gone" and "the only other copy of the household's data is gone" are
+// different facts that the peer COUNT cannot tell apart ([B.102], inherited from [B.100]). On
+// the shipped anchor+anchor+witness flock both losses read as connected 1-of-2; only one of
+// them means the house is down to a single disk.
+type redundancy int
+
+const (
+	redundancyFull    redundancy = iota // every expected peer connected
+	redundancyReduced                   // a peer is gone; a usable copy of the data remains, or we cannot tell
+	redundancyAlone                     // no connected peer carries a usable copy: one disk left
 )
 
 // redundancyAlerter fires an edge-triggered alert when a data node loses replica
@@ -22,49 +35,98 @@ type redundancyAlerter struct {
 	node  string
 	peers int // expected connected peers (mesh size - 1)
 	logf  func(string, ...any)
-	last  int // -1 unprimed, 0 full, 1 reduced
+	last  redundancy
+	armed bool // false until the first definite reading has primed `last`
 }
 
 func newRedundancyAlerter(n notify.Notifier, node string, peers int, logf func(string, ...any)) *redundancyAlerter {
-	return &redundancyAlerter{n: n, node: node, peers: peers, logf: logf, last: -1}
+	return &redundancyAlerter{n: n, node: node, peers: peers, logf: logf}
 }
 
-// Observe classifies the current status and fires on a full<->reduced transition. Not
+// classify reads the replica set the way the household experiences it. The peer COUNT decides
+// whether anything is missing; the peer LIST decides whether what is missing was the second
+// copy -- model.Cluster carries both from one sample, which is why this takes a Cluster rather
+// than the QuorumState summary that rides the cloud wire.
+//
+// AN UNKNOWN IS NOT AN ALARM. A guest too old to report peers sends none, and a resource with
+// nothing to say about its peers must fall back to the weaker claim rather than announce a lost
+// second copy it cannot see -- the same rule the reconnect check follows for boot ids. So
+// redundancyAlone requires positive evidence: peers we can read, none of which can take over.
+func (a *redundancyAlerter) classify(cl model.Cluster) redundancy {
+	switch {
+	case cl.Connected >= a.peers:
+		return redundancyFull
+	case cl.PeerCanTakeOver():
+		return redundancyReduced
+	case len(cl.Peers) > 0:
+		return redundancyAlone
+	default:
+		return redundancyReduced // no peer detail: say only what the count supports
+	}
+}
+
+// observe classifies the current cluster and fires on a change of state. Not
 // quorate (an outage or the minority side of a partition) is out of scope for this
 // warning -- a single node can't distinguish a minority partition from a true outage;
 // that's the controller's fleet view -- so it holds state without firing.
-func (a *redundancyAlerter) observe(ctx context.Context, st api.NodeStatus) {
+//
+// It fires on EVERY change between the three states, not only on entering and leaving trouble.
+// The reduced -> alone edge is the one this exists for: a household whose peer anchor drops out
+// while a witness keeps it quorate has lost its second copy, and under a two-state machine that
+// transition looked like more of what had already been reported.
+func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster) {
 	if a == nil || a.peers <= 0 {
 		return
 	}
-	if !st.Quorum.Quorate {
+	if !cl.Quorate {
 		return // outage / minority: not this alert
 	}
-	cur := 0
-	if st.Quorum.Connected < a.peers {
-		cur = 1
-	}
-	if a.last == -1 { // prime silently on the first definite reading (no startup false-positive)
-		a.last = cur
+	cur := a.classify(cl)
+	if !a.armed { // prime silently on the first definite reading (no startup false-positive)
+		a.last, a.armed = cur, true
 		return
 	}
 	if cur == a.last {
 		return // no transition
 	}
 	a.last = cur
-	if cur == 1 {
-		a.fire(ctx, notify.Alert{
+	a.fire(ctx, a.alertFor(cur, cl))
+}
+
+// alertFor is what the owner is actually told, and each body claims only what was read.
+//
+// The reduced body's reassurance is CONDITIONAL for that reason: it is added when a peer that
+// could take over was actually seen, and omitted when the peer list was empty, where the
+// honest statement is the count alone. Saying "another node still holds a copy" on no evidence
+// is the failure this whole item is about, pointed the other way.
+func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Alert {
+	switch cur {
+	case redundancyFull:
+		return notify.Alert{
+			Level: notify.Recovered,
+			Title: "Briard: redundancy restored",
+			Body:  fmt.Sprintf("node %s reconnected all replicas (%d/%d connected).", a.node, cl.Connected, a.peers),
+		}
+	case redundancyAlone:
+		return notify.Alert{
+			Level: notify.Warning,
+			Title: "Briard: no second copy",
+			Body: fmt.Sprintf("node %s is the only node left holding your data (%d/%d peers connected, "+
+				"none of them with a usable copy). It is still serving, but until a peer comes back "+
+				"there is no second copy of your files and nothing to fail over to.",
+				a.node, cl.Connected, a.peers),
+		}
+	default:
+		reassurance := ""
+		if cl.PeerCanTakeOver() {
+			reassurance = " Another node still holds a full copy of your data."
+		}
+		return notify.Alert{
 			Level: notify.Warning,
 			Title: "Briard: reduced redundancy",
 			Body: fmt.Sprintf("node %s lost a replica connection (%d/%d connected) — still serving, "+
-				"but one more failure would cause an outage.", a.node, st.Quorum.Connected, a.peers),
-		})
-	} else {
-		a.fire(ctx, notify.Alert{
-			Level: notify.Recovered,
-			Title: "Briard: redundancy restored",
-			Body:  fmt.Sprintf("node %s reconnected all replicas (%d/%d connected).", a.node, st.Quorum.Connected, a.peers),
-		})
+				"but one more failure would cause an outage.%s", a.node, cl.Connected, a.peers, reassurance),
+		}
 	}
 }
 
