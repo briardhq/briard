@@ -1192,6 +1192,28 @@ in
     # is what makes denying it here and leasing it there coexist rather than fight.
     networking.dhcpcd.denyInterfaces = [ "eth1" "eth2" "eth3" ];
 
+    # Answer ARP only on the interface that HOLDS the address (and source kernel ARP probes
+    # from the outgoing interface's own address). Linux's default weak-host ARP (arp_ignore=0)
+    # answers "who-has <DRBD address>" from the SERVICE NIC too whenever both NICs share an L2
+    # -- which they do on any household that wires both ports into one switch, and on the lab
+    # bridge, where it was measured splitting a flock (2026-08-18): the peer's post-reboot
+    # re-ARP cached the service NIC's MAC, replication silently transited eth2 for as long as
+    # eth2 held the VIP address, and the eviction's teardown then turned the flow into a
+    # silent per-source blackhole (an address-less interface under any rp_filter>=1 refuses
+    # every source that does not route back out of it) -- 37s of one-way partition against
+    # DRBD's 500ms ping-timeout, i.e. a split-brain with no failure anywhere.
+    #
+    # Every address here is hand-placed on the NIC that owns its traffic (the agent's
+    # net.configure, briard-vip's lease, the witness link), so there is nothing for weak-host
+    # ARP to add -- only the cross-NIC ambiguity to remove. The VIP takeover's gratuitous ARP
+    # is explicit (vipArping crafts its own frames) and unaffected by either setting.
+    boot.kernel.sysctl = {
+      "net.ipv4.conf.all.arp_ignore" = 1;
+      "net.ipv4.conf.default.arp_ignore" = 1;
+      "net.ipv4.conf.all.arp_announce" = 2;
+      "net.ipv4.conf.default.arp_announce" = 2;
+    };
+
     # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
     # answers for the one name it publishes and browses for nothing.
     #
