@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -332,5 +333,34 @@ func TestLaunchArgsNoMonitorNoStopContract(t *testing.T) {
 	args := strings.Join(launchArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s"}), " ")
 	if strings.Contains(args, "ExecStop") || strings.Contains(args, "TimeoutStopSec") {
 		t.Errorf("a monitor-less guest should carry no stop contract:\n%s", args)
+	}
+}
+
+// TestUnitAtRest pins the reading that [B.103] turned on: "deactivating" is a unit that is
+// still running its ExecStop, and calling it stopped is what let a Launch collide with the
+// guest it had just asked to go away. The at-rest set is deliberately small -- anything not
+// named here keeps the caller waiting.
+func TestUnitAtRest(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  bool
+	}{
+		{"inactive", true}, // stopped, or never existed -- systemctl says the same for both
+		{"failed", true},   // dead, and the unit stays only as a corpse --collect will reap
+		{"deactivating", false},
+		{"active", false},
+		{"activating", false},
+		{"reloading", false},
+		{"refreshing", false}, // a state this code does not know: wait, do not assume
+		{"", false},
+	} {
+		if got := unitAtRest(tc.state, nil); got != tc.want {
+			t.Errorf("unitAtRest(%q) = %v, want %v", tc.state, got, tc.want)
+		}
+	}
+	// A systemctl that failed is not an answer about the unit. Reading its empty output as
+	// "inactive" would declare a running guest gone on any transient hiccup.
+	if unitAtRest("inactive", errors.New("systemctl: exit status 1")) {
+		t.Error("unitAtRest reported at-rest despite a systemctl error")
 	}
 }

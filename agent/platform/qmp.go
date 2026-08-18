@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -192,11 +190,14 @@ const GuestShutdownGrace = 60 * time.Second
 // unit's own ExecStop, which runs as a separate process with no Guest handle to hold.
 //
 // It exists as a sibling rather than a reuse because of one detail that would otherwise make it
-// silently vacuous. Guest.Shutdown confirms the stop with WaitStopped, which polls `systemctl
-// is-active` -- and inside its own unit's ExecStop the unit reads "deactivating", not "active".
-// WaitStopped would therefore return SUCCESS immediately, reporting a clean shutdown while the
-// guest was still flushing, and systemd would proceed to kill QEMU underneath it. The whole
-// mechanism would look like it worked.
+// useless here, in either direction the underlying check could go. Guest.Shutdown confirms the
+// stop with WaitStopped, which judges the unit by its ActiveState -- and inside its own unit's
+// ExecStop the unit reads "deactivating" for as long as this function runs. Reading that as
+// stopped (`systemctl is-active`, which is what WaitStopped did before [B.103]) returns SUCCESS
+// immediately, reporting a clean shutdown while the guest is still flushing, and systemd goes on
+// to kill QEMU underneath it; reading it as still-running, which is what WaitStopped does now,
+// waits on a state only this function's own return can clear. Vacuous one way, self-deadlocked
+// the other.
 //
 // So this judges the VM by the MONITOR SOCKET instead, which belongs to QEMU rather than to
 // systemd's opinion of QEMU: a dial that no longer connects means the process is gone (QEMU
@@ -286,21 +287,23 @@ func (g *Guest) Accelerated(ctx context.Context) (enabled, present bool, err err
 // that a shutdown happened: every way of ASKING for one (the guest agent's os.poweroff, the
 // ACPI button) returns as soon as the request is accepted, and the caller's next act is
 // usually to touch the disk QEMU still has open.
+//
+// "Gone" means the unit is at rest, not merely non-"active" -- see unitAtRest and [B.103].
 func (g *Guest) WaitStopped(ctx context.Context, grace time.Duration) error {
 	if g == nil || g.unit == "" {
 		return nil
 	}
 	deadline := time.Now().Add(grace)
 	for {
-		if !unitActive(g.unit) {
+		if unitStopped(g.unit) {
 			return nil
 		}
 		if time.Now().After(deadline) {
 			// Report what the unit still looks like: "the guest ignored us" and "it powered
 			// off but the unit lingered" are different faults with the same symptom.
-			state, _ := exec.Command("systemctl", "is-active", g.unit).Output()
+			state, _ := unitState(g.unit)
 			return fmt.Errorf("platform: guest %s still running %s after being asked to stop (unit is %q)",
-				g.unit, grace, strings.TrimSpace(string(state)))
+				g.unit, grace, state)
 		}
 		select {
 		case <-ctx.Done():

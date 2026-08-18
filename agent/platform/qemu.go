@@ -441,6 +441,39 @@ func unitActive(unit string) bool {
 	return strings.TrimSpace(string(out)) == "active"
 }
 
+// unitState reads a unit's ActiveState. systemctl answers for units that do not exist too
+// (an absent unit is "inactive", exit 0), so the error return means systemctl itself failed
+// -- which is not an answer about the unit and must not be read as one.
+func unitState(unit string) (string, error) {
+	out, err := exec.Command("systemctl", "show", "-p", "ActiveState", "--value", unit).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// unitAtRest reports whether an ActiveState reading means the unit is FINISHED -- gone or
+// dead, with nothing of it still running -- as distinct from merely not-"active".
+//
+// The distinction is the whole of [B.103]. A transient unit spends its ExecStop in
+// "deactivating", which is not "active"; a caller that asks `is-active` therefore hears
+// "stopped" about a guest that is still flushing, and the next Launch trips over the unit it
+// was told had gone ("already loaded or has a fragment file"), rolling back a good upgrade.
+// Measured: the collision landed 2s into a stop that took 19s in the adjacent run.
+//
+// It names the states that MEAN at-rest rather than excluding the ones that mean running, so
+// an unfamiliar reading -- a systemd that grew a state, an empty line from a systemctl that
+// failed -- keeps the caller waiting instead of declaring a running guest gone. Waiting costs
+// a bounded grace and reports what it saw; the other direction costs the upgrade.
+func unitAtRest(state string, err error) bool {
+	if err != nil {
+		return false
+	}
+	return state == "inactive" || state == "failed"
+}
+
+// unitStopped is unitAtRest over a live systemctl.
+func unitStopped(unit string) bool {
+	return unitAtRest(unitState(unit))
+}
+
 // Stop terminates the guest VM by stopping its transient service (the self-fence
 // VM-destroy backstop). It is NOT called on a normal agent shutdown — an agent
 // restart must be transparent to the guest. No-op-safe if gone.
