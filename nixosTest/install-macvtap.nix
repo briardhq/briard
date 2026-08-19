@@ -293,6 +293,18 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip -d link show briard0 | grep -q macvtap")
     host.succeed("ip -o link show briard-drbd0 | grep -q 'briard-drbd0@eth1'")
 
+    # DELTA 2b [B.106]: the host end of each macvtap holds NO IPv6 address. The device carries the
+    # MAC the wrapper pins -- the GUEST's -- so a host left to autoconfigure derives the same
+    # EUI-64 identifier the guest derives on the same L2, and its avahi joins mDNS on the guest's
+    # segment. Not vacuous in a hermetic test with no router: a link-local needs no advertisement,
+    # it appears from the device coming up alone (measured on real hardware 2026-08-19), so this
+    # fails on any installer without the procfs write.
+    for dev in ("briard0", "briard-drbd0"):
+        host.succeed(f"grep -qx 1 /proc/sys/net/ipv6/conf/{dev}/disable_ipv6")
+        assert host.succeed(f"ip -6 addr show dev {dev}").strip() == "", (
+            f"{dev} holds an IPv6 address -- the host is speaking on the guest's identity"
+        )
+
     # The guest converges on the bundled qemu, launched behind the fd-passing wrapper.
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64")
@@ -466,6 +478,12 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip -o -4 addr show dev eth1 | grep -qw 192.168.1.1")
     # Non-vacuity for the re-green proof below: with the guest gone the VIP no longer answers.
     client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
+    # [B.106] arm the repair path: an install predating the fix left its macvtaps autoconfiguring,
+    # and net-up.sh adopts devices that already exist rather than re-creating them. Put one back the
+    # way such a host would have it -- the reinstall below must flush it, which is the whole reason
+    # the write sits outside net-up.sh's create branch.
+    host.succeed("echo 0 > /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
+    host.wait_until_succeeds("ip -6 addr show dev briard0 | grep -q inet6", timeout=30)
 
     # Reinstall: the SAME one command. It re-lays /opt from staging, recreates a FRESH guest overlay
     # (cattle), and does NOT recreate the pet data.img. net-up.sh is idempotent, so it adopts the
@@ -475,6 +493,11 @@ pkgs.testers.runNixOSTest {
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched
+    # [B.106] the repair landed on the device that was already up, not just on freshly created ones.
+    host.succeed("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
+    assert host.succeed("ip -6 addr show dev briard0").strip() == "", (
+        "the reinstall adopted briard0 but left it autoconfiguring on the guest's MAC"
+    )
 
     # Green again on the re-fetched bundle: the OFF-BOX client reaches the VIP -- AT THE SAME
     # ADDRESS. The flock id is PET state (/var/lib/briard/flock-id), so it survived the cattle

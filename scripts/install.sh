@@ -288,8 +288,23 @@ ip link set $NIC up
 for t in $DRBD_TAP $TAP; do
 	if ! ip link show \$t >/dev/null 2>&1; then
 		ip link add link $NIC name \$t type macvtap mode bridge
-		ip link set \$t up
 	fi
+	# The HOST end of a macvtap holds NO address. The device carries the GUEST's MAC, so a host
+	# that autoconfigures on it derives the SAME EUI-64 identifier the guest derives, on the same
+	# L2 -- a duplicate address whose winner DAD picks and whose loser silently drops it -- and the
+	# host's avahi joins mDNS on the guest's segment, where the name is the guest's to publish.
+	# Ubuntu ships net.ipv6.conf.default.accept_ra=1 and every new device inherits the "default"
+	# values, so that is what happens unless we say otherwise [B.106]. Outside the create branch on
+	# purpose: on a fresh device this runs before it is up, so no advertisement can be accepted at
+	# all; on a device that already exists (reboot, re-run, the cattle-wipe reinstall) the write
+	# flushes what it already picked up, which is how an upgraded install gets repaired. A procfs
+	# write rather than sysctl(8) because this script must run on stock hosts and on NixOS.
+	# The bridge substrate needs no counterpart: its taps are bridge PORTS, and Linux does not
+	# autoconfigure a device that has a master (measured 2026-08-19).
+	if [ -e /proc/sys/net/ipv6/conf/\$t/disable_ipv6 ]; then
+		echo 1 > /proc/sys/net/ipv6/conf/\$t/disable_ipv6
+	fi
+	ip link set \$t up
 done
 $PRIV_UP
 EOF
