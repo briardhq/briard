@@ -43,6 +43,8 @@
 #                       's3://get-briard-io?endpoint=<account>.r2.cloudflarestorage.com&region=auto'
 #   RELEASE_SIGN_KEY    PKCS8 PEM Ed25519 private key (sign mode; release secret store)
 #   RELEASE_PUBKEY      PKIX PEM public key, for `verify` (default: alongside the private key)
+#   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
+#   RELEASE_PURGE_TOKEN optional: bearer token for RELEASE_PURGE_URL (see `publish` for why)
 #
 # Run from the repo root. See also scripts/publish-cache.sh — the OS-closure cache, a
 # DISTINCT trust root (nix's per-path narinfo signatures). The two keys are deliberately not
@@ -210,13 +212,52 @@ publish)
 	#
 	# install.sh is EXCLUDED here and uploaded to the root below -- it is the advertised
 	# one-liner and does not live in the release namespace.
+	#
+	# THE MANIFEST AND ITS SIGNATURE ARE ALSO EXCLUDED, and cp'd LAST. Observed live on two
+	# consecutive publishes (2026-08-19): `sync --delete` emitted BOTH an upload and a delete
+	# for release/manifest.json in a single run, in whichever order the parallel operations
+	# happened to land -- the second time the delete won and the live channel 404'd its
+	# manifest until a hand-run `cp` restored it. Taking the pair out of the sync removes the
+	# key from --delete's reach, and uploading it after the artifacts buys the right ordering
+	# for free: a client racing a publish now sees a coherent old set, a coherent new set, or
+	# a manifest/signature mismatch that fails closed -- never a manifest naming bytes that
+	# are not there yet.
 	nix run nixpkgs#awscli2 -- s3 sync "$DIR" "$bucket/release/" \
 		--endpoint-url "$endpoint" \
-		--delete --exclude VERSION --exclude install.sh --no-progress
+		--delete --exclude VERSION --exclude install.sh \
+		--exclude manifest.json --exclude manifest.json.sig --no-progress
+	for f in manifest.json manifest.json.sig; do
+		nix run nixpkgs#awscli2 -- s3 cp "$DIR/$f" "$bucket/release/$f" \
+			--endpoint-url "$endpoint" --no-progress
+	done
 
 	# ...and the installer itself, at the root the one-liner names.
 	nix run nixpkgs#awscli2 -- s3 cp "$DIR/install.sh" "$bucket/install.sh" \
 		--endpoint-url "$endpoint" --no-progress
+
+	# PURGE THE EDGE, or a REpublish contradicts itself for hours. The CDN in front of the
+	# public URL caches the big artifacts (measured: the .zst files, max-age 14400; the small
+	# ones come back uncached) -- and `verify`'s own downloads are what prime it. So the second
+	# and every later publish serves the NEW manifest with the OLD image until expiry, and each
+	# install in that window fails closed on the hash check. Found live 2026-08-19; the
+	# first-ever publish went green only because nothing was cached yet. The purge list is read
+	# off the staged manifest so a renamed artifact cannot drift out of it. Purging is
+	# CDN-specific, so it rides behind two env vars -- but a publish without them warns loudly,
+	# because the alternative is a silently stale channel.
+	if [ -n "${RELEASE_PURGE_URL:-}" ] && [ -n "${RELEASE_PURGE_TOKEN:-}" ]; then
+		need curl; need jq
+		jq --arg c "$CHANNEL" --arg s "$SITE" \
+			'{files: ([.artifacts[].name | $c+"/"+.]
+			          + [$c+"/manifest.json", $c+"/manifest.json.sig", $s+"/install.sh"])}' \
+			"$DIR/manifest.json" |
+		curl -sf -X POST -H "Authorization: Bearer $RELEASE_PURGE_TOKEN" \
+			-H "Content-Type: application/json" "$RELEASE_PURGE_URL" --data @- |
+		jq -e '.success == true' >/dev/null ||
+			die "published, but the edge purge FAILED -- the CDN may serve the previous release for hours; purge by hand, then verify"
+		say "edge cache purged"
+	else
+		say "WARNING: RELEASE_PURGE_URL/RELEASE_PURGE_TOKEN unset -- the edge may serve the previous release's artifacts for up to 4h (verify will rightly fail until it clears)"
+	fi
 	say "published — now run: ./scripts/publish-release.sh verify"
 	;;
 
