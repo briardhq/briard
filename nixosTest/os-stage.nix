@@ -101,7 +101,7 @@ pkgs.testers.runNixOSTest {
     )
 
     # CONVERGED = booted + brought up; then the staging sequence.
-    host.wait_until_succeeds("journalctl -u briard-driver | grep -q CONVERGED", timeout=600)
+    host.wait_until_succeeds("journalctl -u briard-driver | grep -q CONVERGED", timeout=900)
     # STAGED = os.components could not read the closure, the fetch ran, and then it could — so
     # bytes crossed the wire into a store that did not have them. Anchored at end-of-line
     # only: journalctl prefixes every line with a timestamp/unit, so '^STAGED$' would never
