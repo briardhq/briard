@@ -833,7 +833,11 @@ func TestStageRealisesClosureFromBakedCaches(t *testing.T) {
 	if err := g.Stage(context.Background(), closure, StageSource{}); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"nix-store", "--realise", closure}}
+	// The trailing sync is load-bearing, not hygiene: nix registers the staged paths durably
+	// but not their DATA, so without it a crash-consistent capture taken moments later (the
+	// switch path's live snapshot, a power cut) restores a registered-but-torn closure that
+	// nix will never re-fetch ([B.65]).
+	want := [][]string{{"nix-store", "--realise", closure}, {"sync"}}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v (no --option: the image's own substituters)", f.runs, want)
 	}
@@ -855,9 +859,29 @@ func TestStageFromOverridesCacheAndKey(t *testing.T) {
 		"nix-store", "--realise", closure,
 		"--option", "substituters", src.URL,
 		"--option", "trusted-public-keys", src.Key,
-	}}
+	}, {"sync"}}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
+	}
+}
+
+// A failed realise must not sync: the sync exists to make a SUCCESSFUL stage durable, and
+// running it after a failure would only blur whose error the caller sees.
+func TestStageSkipsSyncWhenRealiseFails(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, _ []string) ([]byte, error) {
+		if name == "nix-store" {
+			return nil, errors.New("substituter unreachable")
+		}
+		return nil, nil
+	}}
+	g := dial(t, f)
+	if err := g.Stage(context.Background(), "/nix/store/abc123-nixos-system-guest-26.05", StageSource{}); err == nil {
+		t.Fatal("a failed realise must fail the stage")
+	}
+	for _, r := range f.runs {
+		if r[0] == "sync" {
+			t.Errorf("sync ran after a failed realise: %v", f.runs)
+		}
 	}
 }
 
@@ -979,6 +1003,24 @@ func TestComponentsReadsNamedClosureIntoFields(t *testing.T) {
 	}
 	if c != want {
 		t.Errorf("components = %+v,\nwant %+v", c, want)
+	}
+}
+
+// An EMPTY kernel-params is damage, never a value: no bootable generation has an empty
+// command line, but a closure whose data pages were lost to a crash-consistent capture
+// reads exactly this way — registered, symlinks intact, file content gone ([B.65]: the
+// restored rollback snapshot). Handing "" back as a diffable value routed a switch-only
+// change down the reboot path, into the very generation whose files are torn.
+func TestComponentsRefusesEmptyKernelParams(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name == "cat" {
+			return []byte("\n"), nil // torn file: exists, content gone
+		}
+		return []byte("/resolved" + args[len(args)-1] + "\n"), nil
+	}}
+	g := dial(t, f)
+	if _, err := g.Components(context.Background(), "/nix/store/tgt"); err == nil {
+		t.Fatal("an empty kernel-params read must fail, not diff")
 	}
 }
 

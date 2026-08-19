@@ -871,7 +871,18 @@ func dispatch(x Executor) dispatchFunc {
 					args = append(args, "--option", "trusted-public-keys", req.FromKey)
 				}
 			}
-			return nil, run("nix-store", args...)
+			if err := run("nix-store", args...); err != nil {
+				return nil, err
+			}
+			// Make what was just staged DURABLE, not merely written. Nix registers the paths
+			// with a synced db transaction but does not fsync their data (fsync-store-paths
+			// defaults off), so for a window after staging the store db says "valid" about
+			// files whose pages exist only in memory. Anything that captures the disk in that
+			// window — the switch path's crash-consistent SnapshotCreateLive moments from now,
+			// or a host power cut — then restores a REGISTERED-but-TORN closure, which nix
+			// will never re-fetch. Measured ([B.65]): a restored target's kernel-params read
+			// back empty, flipping the activation verdict to reboot for a switch-only pair.
+			return nil, run("sync")
 		case verbOSComponents:
 			req, err := systemReq(payload)
 			if err != nil {
@@ -905,6 +916,17 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, fmt.Errorf("os.components: %s/kernel-params: %w", root, err)
 			}
 			c.KernelParams = strings.TrimSpace(string(out))
+			// An empty read is damage, never a value. No bootable generation has an empty
+			// command line (ours always carry console/root/loglevel), but a closure whose
+			// data pages were lost to a crash-consistent capture reads exactly this way —
+			// registered in the store db, symlinks intact, file content gone ([B.65]: a
+			// restored rollback snapshot). Returning "" would hand the caller a diffable
+			// value, and ActivationFor would then route a switch-only change down the reboot
+			// path — into the very generation whose files are torn. Refuse instead, naming
+			// the likely cause, so the directive fails diagnosably.
+			if c.KernelParams == "" {
+				return nil, fmt.Errorf("os.components: %s/kernel-params read EMPTY — the closure's data is damaged (torn snapshot restore or power cut after staging?)", root)
+			}
 			return c, nil
 		case verbOSSwitch:
 			req, err := systemReq(payload)
