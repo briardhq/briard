@@ -44,7 +44,11 @@ The installer checks the machine first and **refuses with the reason** if it is 
 suitable, rather than half-installing and leaving you to work out why.
 
 What you get is the **node**: ready, replicating, and able to fail over. It installs **no
-service** — a machine is set up first, and then you choose what runs on it.
+service** — a machine is set up first, and then you choose what runs on it. The installer's
+closing line tells you where the node answers: **`http://briard-<name>.local/`** (or
+`http://<vip>/`) — the name first, because the name stays true if the address ever moves, and
+the address as the fallback for a client whose mDNS does not resolve (Android is the usual
+offender).
 
 **If something goes wrong, there are two logs and you want both.** `sudo briard logs` reads them
 together: `journalctl -u briard-agent` is the host's side, and `/var/log/briard-guest-console.log`
@@ -73,10 +77,10 @@ failing over and rolling back with the catalog unreachable. The install pulls th
 its data on the replicated volume, and starts it behind a health gate that reverts the node if
 it does not come up.
 
-> **Alpha gap:** the front door at `http://<vip>/` does not route to a service you install this
-> way yet — it keeps serving Briard's own page, and the service answers on its own port
-> (Home Assistant: `http://<vip>:8123/`). Per-domain routing to installed services is the next
-> thing landing. The catalog is also one entry long today.
+> **Alpha gap:** the front door at `http://briard-<name>.local/` (or `http://<vip>/`) does not
+> route to a service you install this way yet — it keeps serving Briard's own page, and the
+> service answers on its own port (Home Assistant: `http://briard-<name>.local:8123/`).
+> Per-domain routing to installed services is the next thing landing. The catalog is also one entry long today.
 
 ## How it works
 

@@ -86,6 +86,11 @@ replacement, the mechanism is deliberately dumb and agent-independent: a frozen 
 starts the new binary, and the new binary signalling readiness *is* the commit. If it never
 signals, the old one comes back with no timer, no coordinator, and no decision to get wrong.
 
+The agent itself is watched by init: a systemd watchdog catches the one failure shape with
+no other reflex — an agent that is alive but stuck. A trip kills it with a full stack dump
+of every goroutine in the journal (evidence, not just a restart), the restarted agent
+re-adopts the running guest, and your service never notices.
+
 ## Local-first, and cloudless by default
 
 **The home keeps working with the internet down, and with our cloud down.** Local access is

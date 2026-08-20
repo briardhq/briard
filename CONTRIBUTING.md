@@ -72,6 +72,17 @@ Some specific defaults, so they are not a surprise in review:
 - **One way per concern.** Go standard library `net/http` for HTTP, standard `log` for logging,
   `fmt.Errorf` with `%w` for error wrapping. No client framework, no logging framework, no error
   package. Shared types are defined once in `shared/` and imported by both sides, never redefined.
+- **Durable writes have one shape.** A fact whose only copy is the file must survive a power cut:
+  node-local state is written tmp + fsync + rename (`agent/selfupdate/layout.go` is the canonical
+  form); writes on the replicated volume are `sync -f`'d, because stopping the guest *is* a power
+  cut to the guest. This holds across language boundaries — a shell script gets the same care as a
+  Go verb.
+- **Name components for the role, not the mechanism**, and prefer the standard term over an
+  invented one (`reverse-proxy`, not a coined name): the audience is developers who already have
+  the precise word, and the name should outlive the implementation.
+- **Comments document the current state.** A comment says what the code does and why it is shaped
+  that way — never "was/until/now". The temporal record lives elsewhere; if a comment only makes
+  sense as history, it belongs in a commit message.
 
 ## Testing
 
@@ -82,6 +93,14 @@ Some specific defaults, so they are not a surprise in review:
 - **New behaviour ships with the test that proves it**, and the test must be able to fail. An
   assertion that cannot fail — because the sandbox is offline, or the condition is vacuously true —
   is worse than no assertion, because it reads as coverage.
+- **Tests declare their own values.** A test that inherits a product default cannot see that
+  default being wrong — a defect that matches the lab is invisible to the lab. Name the address,
+  the flag, the threshold in the test itself.
+- **Assert from the user's vantage where the claim is about reachability.** A name is not
+  published because a unit exists; it is published when something *else* can resolve it — so the
+  mDNS tests ask from a second machine, over the same resolution path a real client uses.
+- **A fallback's test is a delta over the default's, never the other way round.** If deleting the
+  fallback would cost you a proof about the default, the proof is in the wrong file.
 - Keep the `internal/arch` guards green.
 
 You can run the fast suite anywhere:
