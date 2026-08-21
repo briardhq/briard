@@ -4,7 +4,7 @@
 # outside it (the host/payload boundary, V0). drbd-reactor's promoter
 # drives the ordered failover unit {DRBD-primary → data mount → payload → VIP}
 # on whichever node holds the DRBD primary role. The per-resource
-# promoter rules are supplied per-deployment as a snippet in /etc/drbd-reactor.d
+# promoter rules are supplied per-deployment as a snippet the agent drops into /run/briard/drbd-reactor.d
 # (the agent writes them in prod, V0; the harness writes them in tests),
 # so this image stays generic and the daemon is idle until one appears.
 { config, pkgs, lib, ... }:
@@ -54,6 +54,10 @@ let
   # The harnesses DECLARE their own device and address (nixosTest/lib.nix, and the driver-based
   # tests via VIP_DEV/VIP_ADDR), which turns an inherited assumption into a stated one.
   vipEnvPath = "/run/briard/vip.env";
+  # Where the agent drops drbd-reactor's promoter snippet. Tmpfs, and PAIRED with the Go const
+  # guestagent.reactorPath -- different languages, so no shared import; the agent-side comment
+  # names this file back.
+  reactorSnippetDir = "/run/briard/drbd-reactor.d";
   # The FLOCK's service address, replicated with the data. Same shape, same place and same
   # write-authority as imagePinFile: a small flock-scoped fact at the btrfs root, written only by
   # the node that holds the volume (only a Primary can mount it), read by whoever promotes next.
@@ -720,13 +724,26 @@ in
       pkgs.drbd-reactor # failover orchestrator (in-repo package)
     ];
 
-    # drbd-reactor daemon: runs from boot watching DRBD, idle until a promoter
-    # snippet for some resource is dropped into /etc/drbd-reactor.d.
+    # drbd-reactor's promoter snippet lives on TMPFS, and is agent-written like everything else
+    # node-scoped ([V3b.16b]). The host re-derives it from cfg.Promoter at every bring-up, so
+    # persisting it bought nothing and cost the one thing that matters: a snippet on the overlay
+    # outlived the agent that wrote it, which is what let a boot-started reactor promote against
+    # configuration nobody had just restated ([V3b.16]). One lifetime for every fact the agent
+    # writes means stale configuration cannot exist.
+    #
+    # A second, nearly-free backstop to [V3b.16a]'s gate, and the reason this is worth doing rather
+    # than merely tidy: a reactor with no snippet is IDLE even if something starts it. The two
+    # mechanisms fail independently.
+    #
+    # POINTED AT /run rather than symlinked into /etc: drbd-reactor takes the directory as config,
+    # so this is a one-line edit and not a link somebody has to keep correct. The agent-less
+    # harnesses declare their own snippet into the same directory (nixosTest/lib.nix).
     environment.etc."drbd-reactor.toml".text = ''
-      snippets = "/etc/drbd-reactor.d"
+      snippets = "${reactorSnippetDir}"
     '';
     systemd.tmpfiles.rules = [
-      "d /etc/drbd-reactor.d 0755 root root -"
+      "d /run/briard 0755 root root -"
+      "d ${reactorSnippetDir} 0755 root root -"
       # DRBD's own state dir. Without it every attach logs
       #   lk_bdev_save(/var/lib/drbd/drbd-minor-0.lkbd) failed: No such file or directory
       # which is harmless (it caches the backing device's last known size) but sat directly on top
@@ -755,44 +772,24 @@ in
       "R! /root/.cache/nix - - - - -"
     ];
 
-    # THIS NODE'S NAME, restored before anything can act on it.
+    # THIS NODE'S NAME is set by the agent at every bring-up (sys.hostname) and NOTHING in this
+    # image restores it. A `briard-identity` oneshot used to, reading it back from
+    # /etc/briard/node-id before drbd-reactor could act; [V3b.16b] deleted the unit and the file.
+    # The reasoning is kept because it is a shape rather than one unit's story.
     #
-    # The guest's baked hostname is "guest" (disk-image.nix) and the agent renames it at every
-    # bring-up with syscall.Sethostname -- which does NOT survive a reboot. The DRBD `.res` naming
-    # that same node DOES: it is written to /etc/drbd.d and stays there. So after a guest reboot
-    # the persistent config says `on briard-node-<id>` while the running system is called "guest",
-    # drbd-reactor starts from boot, promotes into the mismatch, drbd@<res> fails, and the failed
-    # promote job is never retried -- the node parks quorate but never Primary, with no VIP, no
-    # dhcpcd and no address. Found on the L0 runner (V3.20); invisible before it, because the
-    # baked hostname and the node name were THE SAME LITERAL and the boot-time promote matched by
-    # luck.
+    # What it solved (V3.20): the baked hostname is "guest" (disk-image.nix) and
+    # syscall.Sethostname does not survive a reboot, while the `.res` naming this node did. So a
+    # rebooted guest ran as "guest" against a persistent config saying `on briard-node-<id>`, the
+    # boot-started reactor promoted into the mismatch, drbd@<res> failed, and a failed promote is
+    # never retried -- the node parked quorate but never Primary, with no VIP and no address.
+    # Invisible before V3.20 because the baked hostname and the node name were the SAME LITERAL.
     #
-    # The fix is to give the two facts the same LIFETIME, not merely the same moment: sys.hostname
-    # persists the name beside the .res, and this restores it Before drbd-reactor. Ordering only
-    # against drbd-reactor is sufficient -- drbd@ and drbd-promote@ are started BY it, so they
-    # inherit the ordering.
-    #
-    # SINCE [V3b.16a] the ordering is also held from the other end: drbd-reactor no longer starts
-    # at boot at all, and the bring-up that starts it sets this node's hostname first. So this unit
-    # is now the belt to that braces -- it restores the name EARLY, before anything the agent has
-    # not asked for could act on it -- rather than the only thing standing between a reboot and a
-    # promote into a name mismatch.
-    #
-    # Conditioned on the file, and that condition is not the tmpfs anti-pattern [V3b.16] found: the
-    # name lives in /etc precisely so it outlives a reboot, and its absence means "this node has
-    # never been told who it is" (a first boot, or an agent-less harness that names itself), which
-    # is a real state and not a missing agent. Keeping the baked name is the right answer to it.
-    systemd.services.briard-identity = {
-      description = "Briard node identity (restore this node's hostname)";
-      wantedBy = [ "multi-user.target" ];
-      before = [ "drbd-reactor.service" ];
-      unitConfig.ConditionPathExists = "/etc/briard/node-id";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.nettools}/bin/hostname -F /etc/briard/node-id";
-      };
-    };
+    # The fix then was to give the two facts one lifetime by making the NAME persistent. This is the
+    # same principle read the other way: make the `.res` EPHEMERAL and the name with it. Both are
+    # node-scoped, the host re-derives both at every bring-up (cfg.Node, cfg.Resource), and
+    # [V3b.16a] means nothing can promote before that bring-up has happened. Two facts with one
+    # lifetime cannot disagree -- and this way there is no third copy on disk to be right or wrong
+    # about, which is what a restored-at-boot file always is.
 
     # THE PROMOTER IS ARMED BY THE AGENT, NEVER BY BOOT ([V3b.16a]). Failover is still entirely
     # drbd-reactor's (AGENTS §4.2 is untouched: nothing here promotes or demotes) -- what changed

@@ -396,14 +396,21 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 			"rebuild it from; this node was not laid down by install.sh's overlay path", qspec.DiskImage)
 	}
 	// THE SECOND REFUSAL, and it is not obvious until you ask where the mesh lives. A paired node's
-	// DRBD configuration -- the `.res` naming its peers -- is written by the agent into the GUEST's
-	// /etc/drbd.d, which is on the overlay this verb discards. So is the node-id under /etc/briard,
-	// which exists precisely so it has the same lifetime as that .res. And the host does not keep a
-	// copy: applyPair unmarshals the cloud's MeshSpec, applies it, and forgets it.
+	// DRBD configuration -- the `.res` naming its peers -- is written by the agent into the GUEST,
+	// and rebuilding the overlay discards it.
 	//
-	// So rebuilding a PAIRED node returns it un-meshed: alive, serving from its own replica, and no
-	// longer replicating to anyone until the cloud re-pairs it. That is not a rescue, it is a
-	// different kind of outage, and nothing on this node can undo it. Refuse and say who can.
+	// ⚠️ THE REASON THIS REFUSAL EXISTED IS GONE, AND LIFTING IT IS A DECISION NOBODY HAS TAKEN.
+	// It read "the host does not keep a copy: applyPair unmarshals the cloud's MeshSpec, applies it,
+	// and forgets it." Since [V3b.16b] the host DOES keep a copy, durably, and re-pushes it at every
+	// bring-up -- which is exactly what the rescue's own bring-up would do. So the refusal is now
+	// conservative rather than necessary. It stays until someone decides deliberately, because
+	// "probably fine" is the wrong standard for the verb that discards a node's disk, and because
+	// the cloud-witness half of a managed pairing is NOT yet restored the same way (the host
+	// forwarder is a systemd-run transient unit that only applyPair starts).
+	//
+	// Until then: rebuilding a PAIRED node is treated as returning it un-meshed -- alive, serving
+	// from its own replica, and no longer replicating to anyone until the cloud re-pairs it. That is
+	// not a rescue, it is a different kind of outage. Refuse and say who can.
 	//
 	// Asked over the channel BEFORE the stop, so a node that cannot be rescued keeps the guest it
 	// has. An unreadable cluster is NOT a refusal: this verb exists for broken guests, and treating

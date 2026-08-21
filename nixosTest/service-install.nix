@@ -205,7 +205,7 @@ pkgs.testers.runNixOSTest {
     quoted = ", ".join(f'"{u}"' for u in chain)
     snippet = f'[[promoter]]\n[promoter.resources.r0]\nstart = [ {quoted} ]\n'
     for m in disk_nodes:
-        m.succeed(f"install -D /dev/stdin /etc/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
+        m.succeed(f"install -D /dev/stdin /run/briard/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 

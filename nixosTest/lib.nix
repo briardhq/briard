@@ -8,7 +8,7 @@
 { pkgs, guestModule }:
 
 let
-  inherit (pkgs.lib) concatMapStringsSep mkForce mkIf optionalAttrs;
+  inherit (pkgs.lib) concatMapStringsSep mkForce mkIf;
   inherit (pkgs) lib;
 
   # The promoter's ordered unit, identical everywhere it's used. The payload is a member only
@@ -105,13 +105,25 @@ let
         ];
         EnvironmentFile = mkForce [ ];
       };
-      environment.etc = {
-        "drbd.conf".text = ''include "/etc/drbd.d/*.res";'';
-        "drbd.d/r0.res".text = resource;
-      }
-      // optionalAttrs promoter {
-        "drbd-reactor.d/briard.toml".text = promoterSnippet payload;
-      };
+      # /etc/drbd.conf is the one file drbdadm looks for at a path we do not choose, so the harness
+      # states it here (the shipped image states the identical glob in disk-image.nix, which these
+      # nodes do not import).
+      environment.etc."drbd.conf".text = ''include "/run/briard/drbd.d/*.res";'';
+      # BOTH agent-written files are on TMPFS in the product now ([V3b.16b]), so neither can be
+      # declared through environment.etc any more. tmpfiles symlinks put the same store files at the
+      # exact paths the agent would write, which keeps the harness stating its own configuration
+      # while running the product's own layout -- and drbd-reactor reads a symlinked snippet
+      # identically (the etc form was a store symlink too, which is why `drbd-reactorctl evict`
+      # never minded). Paths that match the product are the point: the divergence between these
+      # nodes and the disk-image guest is where [V3b.16] lived.
+      systemd.tmpfiles.rules = [
+        "d /run/briard/drbd.d 0755 root root -"
+        "L+ /run/briard/drbd.d/r0.res - - - - ${pkgs.writeText "r0.res" resource}"
+      ]
+      ++ lib.optionals promoter [
+        "d /run/briard/drbd-reactor.d 0755 root root -"
+        "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" (promoterSnippet payload)}"
+      ];
     };
 in
 {

@@ -169,12 +169,16 @@ let
         { address = "10.9.9.2"; prefixLength = 24; }
       ];
 
-      # drbd.conf includes the .res files the agent drops at runtime into a
-      # writable /etc/drbd.d (the framework drbd-* tests bake these via lib.nix).
-      environment.etc."drbd.conf".text = ''include "/etc/drbd.d/*.res";'';
+      # drbd.conf includes the .res files the agent drops at runtime. TMPFS since [V3b.16b]: the
+      # `.res` is node-scoped, the host re-derives it at every bring-up (from cfg.Resource, which
+      # the mesh cache now durably holds even for a runtime pairing), and a copy that outlives the
+      # agent that wrote it is the only kind that can be stale. /etc/drbd.conf itself stays put --
+      # drbdadm looks for that one file at a path we do not choose, and it is the POINTER, not the
+      # state. (The framework drbd-* tests declare both halves themselves, via lib.nix.)
+      environment.etc."drbd.conf".text = ''include "/run/briard/drbd.d/*.res";'';
       systemd.tmpfiles.rules = [
-        "d /etc/drbd.d 0755 root root -"
-        "d /run/briard 0755 root root -" # the deadman contact stamp + kmsg cursor live here
+        "d /run/briard 0755 root root -" # the deadman contact stamp + kmsg cursor live here too
+        "d /run/briard/drbd.d 0755 root root -"
       ];
 
       # The in-guest control agent: opens the virtio-serial port and serves the

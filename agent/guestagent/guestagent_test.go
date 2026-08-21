@@ -95,11 +95,11 @@ func TestProvisionWritesConfigsAndCreatesMD(t *testing.T) {
 	if !res.CreatedMetadata {
 		t.Error("a fresh disk must report CreatedMetadata=true")
 	}
-	if f.files["/etc/drbd.d/r0.res"] != "RES" {
-		t.Errorf(".res = %q", f.files["/etc/drbd.d/r0.res"])
+	if f.files["/run/briard/drbd.d/r0.res"] != "RES" {
+		t.Errorf(".res = %q", f.files["/run/briard/drbd.d/r0.res"])
 	}
-	if f.files["/etc/drbd-reactor.d/briard.toml"] != "REACTOR" {
-		t.Errorf("reactor toml = %q", f.files["/etc/drbd-reactor.d/briard.toml"])
+	if f.files["/run/briard/drbd-reactor.d/briard.toml"] != "REACTOR" {
+		t.Errorf("reactor toml = %q", f.files["/run/briard/drbd-reactor.d/briard.toml"])
 	}
 	// Create-md is run WITHOUT --force -- it's the probe (and the create, on a fresh disk).
 	want := [][]string{{"drbdadm", "create-md", "r0"}}
@@ -136,11 +136,11 @@ func TestAdjustRewritesConfigAndAdjustsNeverCreatesMD(t *testing.T) {
 	if err := g.Adjust(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if f.files["/etc/drbd.d/r0.res"] != "THREE-PEER-RES" {
-		t.Errorf(".res = %q, want the rewritten peer set", f.files["/etc/drbd.d/r0.res"])
+	if f.files["/run/briard/drbd.d/r0.res"] != "THREE-PEER-RES" {
+		t.Errorf(".res = %q, want the rewritten peer set", f.files["/run/briard/drbd.d/r0.res"])
 	}
-	if f.files["/etc/drbd-reactor.d/briard.toml"] != "REACTOR" {
-		t.Errorf("reactor toml = %q", f.files["/etc/drbd-reactor.d/briard.toml"])
+	if f.files["/run/briard/drbd-reactor.d/briard.toml"] != "REACTOR" {
+		t.Errorf("reactor toml = %q", f.files["/run/briard/drbd-reactor.d/briard.toml"])
 	}
 	// Exactly `drbdadm adjust r0` -- no create-md (the load-bearing negative: adjust must not be
 	// able to wipe the primary's replica the way a stray create-md --force could).
@@ -429,14 +429,23 @@ func TestSetHostname(t *testing.T) {
 	if f.hostname != "n1" {
 		t.Errorf("hostname = %q, want n1", f.hostname)
 	}
-	// AND it must be persisted, which is the half that was missing. syscall.Sethostname does not
-	// survive a guest reboot; the `.res` naming this node in /etc/drbd.d does. That asymmetry left
-	// a rebooted guest called "guest" while its own config said `on n1`, so drbd-reactor promoted
-	// into a mismatch at boot and the node parked quorate-but-never-Primary -- no VIP, no address.
-	// Two facts that must agree need the same LIFETIME, not just the same moment.
-	if got := f.files[nodeIDPath]; got != "n1\n" {
-		t.Errorf("%s = %q, want %q -- an unpersisted hostname is lost on reboot while the .res "+
-			"that names it is not", nodeIDPath, got, "n1\n")
+	// AND IT PERSISTS NOTHING, which is the same rule read the other way round.
+	//
+	// It used to write /etc/briard/node-id, because syscall.Sethostname does not survive a guest
+	// reboot while the `.res` naming this node did -- so a rebooted guest ran as "guest" against
+	// its own config saying `on n1`, drbd-reactor promoted into the mismatch at boot, and the node
+	// parked quorate-but-never-Primary with no VIP and no address (V3.20).
+	//
+	// Two facts that must agree need one LIFETIME. V3.20 gave them one by making the NAME durable;
+	// [V3b.16b] gives them one by making the `.res` EPHEMERAL, so both are re-derived from the host
+	// at every bring-up and nothing can promote before that bring-up has happened ([V3b.16a]).
+	// Asserting the ABSENCE is what stops the deleted file returning as a well-meant restore-at-
+	// boot: a third copy on disk is a third thing that can be wrong.
+	for path := range f.files {
+		if strings.Contains(path, "node-id") {
+			t.Errorf("sys.hostname wrote %s -- the name is node-scoped and re-pushed at every "+
+				"bring-up, so a persisted copy can only ever be a stale one", path)
+		}
 	}
 }
 
@@ -573,7 +582,7 @@ func TestProvisionWitnessSkipsReactorAndCreateMD(t *testing.T) {
 	if res.CreatedMetadata {
 		t.Error("a diskless witness has no metadata to create")
 	}
-	if _, ok := f.files["/etc/drbd-reactor.d/briard.toml"]; ok {
+	if _, ok := f.files["/run/briard/drbd-reactor.d/briard.toml"]; ok {
 		t.Error("witness should not write a reactor config")
 	}
 	if len(f.runs) != 0 {
@@ -652,10 +661,10 @@ func TestBringUpDataNode(t *testing.T) {
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if f.files["/etc/drbd.d/r0.res"] == "" {
+	if f.files["/run/briard/drbd.d/r0.res"] == "" {
 		t.Error("BringUp wrote no .res")
 	}
-	if f.files["/etc/drbd-reactor.d/briard.toml"] == "" {
+	if f.files["/run/briard/drbd-reactor.d/briard.toml"] == "" {
 		t.Error("data node got no reactor config")
 	}
 	want := [][]string{
@@ -696,7 +705,7 @@ func TestBringUpWitness(t *testing.T) {
 	if err := g.BringUp(context.Background(), BringUpSpec{Resource: demoResource(), Diskless: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.files["/etc/drbd-reactor.d/briard.toml"]; ok {
+	if _, ok := f.files["/run/briard/drbd-reactor.d/briard.toml"]; ok {
 		t.Error("witness should not get a reactor config")
 	}
 	want := [][]string{{"systemctl", "start", "drbd@r0.target"}}
@@ -1166,7 +1175,7 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 	if err := BringUpGuest(context.Background(), sock, spec); err != nil {
 		t.Fatal(err)
 	}
-	if f.files["/etc/drbd.d/r0.res"] == "" {
+	if f.files["/run/briard/drbd.d/r0.res"] == "" {
 		t.Error("bring-up wrote no .res over the socket")
 	}
 }

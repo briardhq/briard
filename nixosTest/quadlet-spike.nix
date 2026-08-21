@@ -168,8 +168,8 @@ pkgs.testers.runNixOSTest {
         '"spikepod-pod.service", "spike-a.service", "spike-b.service", "briard-vip.service" ]\n'
     )
     for m in disk_nodes:
-        m.succeed("rm -f /etc/drbd-reactor.d/briard.toml")
-        m.succeed(f"install -D /dev/stdin /etc/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
+        m.succeed("rm -f /run/briard/drbd-reactor.d/briard.toml")
+        m.succeed(f"install -D /dev/stdin /run/briard/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
         m.succeed("systemctl start drbd-reactor.service")
 
     def role(m):

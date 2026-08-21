@@ -541,23 +541,21 @@ func dispatch(x Executor) dispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if err := x.Sethostname(req.Name); err != nil {
-				return nil, err
-			}
-			// PERSIST it, in the same breath, and this is load-bearing rather than tidy.
+			// IN MEMORY AND NOWHERE ELSE, which is the whole of it now. This used to also persist
+			// the name to /etc/briard/node-id for briard-identity.service to restore at boot,
+			// because the `.res` it must match survived a reboot and syscall.Sethostname did not:
+			// the guest came back as the baked "guest" against a persistent `on briard-node-<id>`,
+			// the boot-started reactor promoted into the mismatch, and a failed promote is never
+			// retried -- quorate but never Primary, no VIP, no address (V3.20, on the L0 runner;
+			// invisible before it because the two were the SAME LITERAL).
 			//
-			// The `.res` this hostname must match is written to /etc and SURVIVES a guest reboot;
-			// syscall.Sethostname does not, so the guest comes back up as the baked "guest" while
-			// the persistent .res still says `on briard-node-<id>`. drbd-reactor runs from boot
-			// and promotes the moment it sees a snippet -- into that mismatch -- and the failed
-			// promote job is never retried, so the node parks quorate-but-never-primary: no VIP,
-			// no dhcpcd, no address (found on the L0 runner, V3.20).
-			//
-			// It was invisible until V3.20 because the baked hostname and the node name were the
-			// SAME LITERAL, so the boot-time promote matched by luck. Two facts that must agree
-			// need the same LIFETIME, not merely the same moment -- briard-identity.service reads
-			// this back before drbd-reactor can act.
-			return nil, x.WriteFile(nodeIDPath, []byte(req.Name+"\n"))
+			// Two facts that must agree need one LIFETIME, and V3.20 gave them one by making the
+			// NAME persistent. [V3b.16b] gives them one the other way -- the `.res` is ephemeral
+			// too, both are re-derived from the host at every bring-up, and [V3b.16a] means nothing
+			// can promote before that bring-up. The file, the unit and its silent
+			// keep-the-baked-name fallback are all deleted: a third copy on disk is a third thing
+			// that can be wrong.
+			return nil, x.Sethostname(req.Name)
 		case verbProvision:
 			var req ProvisionRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -1340,7 +1338,14 @@ func RunDeadman(ctx context.Context) error {
 	return mon.Run(ctx)
 }
 
-const reactorPath = "/etc/drbd-reactor.d/briard.toml"
+// reactorPath is where the agent drops drbd-reactor's promoter snippet. TMPFS since [V3b.16b]:
+// the host re-derives it from cfg.Promoter at every bring-up, so a persistent copy could only ever
+// be a stale one that outlived the agent that wrote it -- and a reactor with no snippet is idle,
+// which is a second, independent backstop to [V3b.16a]'s gate.
+//
+// PAIRED with guest-image/configuration.nix's reactorSnippetDir, which points drbd-reactor.toml's
+// `snippets` at this directory. Different languages, so no shared import.
+const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 
 // (The drop-in drbd-reactor writes over its own promoter target --
 // /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf -- was named here while
@@ -1353,12 +1358,6 @@ const reactorPath = "/etc/drbd-reactor.d/briard.toml"
 // ([V3b.16a]) -- which is safe only because the promoter that starts briard-vip is itself
 // agent-started, so nothing can read this file before bring-up has written it.
 const vipEnvPath = "/run/briard/vip.env"
-
-// nodeIDPath is where sys.hostname persists this node's name so the guest can restore it at boot,
-// BEFORE drbd-reactor gets a chance to promote against a `.res` that names it. /etc, deliberately:
-// it must have the same lifetime as the .res in /etc/drbd.d, and having the same lifetime is the
-// entire point (see verbSetHostname).
-const nodeIDPath = "/etc/briard/node-id"
 
 const (
 	// mdnsEnvPath is the EnvironmentFile briard-mdns.service reads the flock's visible name from.
@@ -1374,7 +1373,22 @@ const (
 	mdnsUnit = "briard-mdns.service"
 )
 
-func resPath(resource string) string { return filepath.Join("/etc/drbd.d", resource+".res") }
+// resDir is where the agent drops the DRBD resource config. TMPFS, and it is the LAST of the four
+// node-scoped facts to get there ([V3b.16b]) because it was the only one the host could not
+// re-derive: applyPair used to apply the cloud's mesh and forget it, so an ephemeral `.res` would
+// have returned a runtime-paired node un-meshed on every reboot -- what RescueGuest refuses to do.
+// The mesh cache (agent/host's cacheMesh) is what earned this move: the host durably owns the mesh
+// it writes now, so the guest's copy can have the one lifetime everything else here has.
+//
+// With this there is nothing node-scoped left on the guest's overlay, so a rebooted guest cannot
+// act on configuration nobody has just restated -- the promoter is gated ([V3b.16a]) and every
+// input is re-pushed at bring-up.
+//
+// PAIRED with guest-image/disk-image.nix's `include` glob in /etc/drbd.conf: drbdadm looks for that
+// one file at a path we do not choose, and it is what points at this directory.
+const resDir = "/run/briard/drbd.d"
+
+func resPath(resource string) string { return filepath.Join(resDir, resource+".res") }
 
 // durationEnv reads a time.Duration from env key k, or returns def when unset/unparseable.
 func durationEnv(k string, def time.Duration) time.Duration {

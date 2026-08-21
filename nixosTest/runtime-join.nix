@@ -10,14 +10,15 @@
 # onto the freshly-joined anchor. Same split as the rest of the HA net (lib.nix drives the DRBD
 # primitives, the agent logic is at-rest -- [[v3-2-real-ha-upgrade]]).
 #
-# lib.nix bakes r0.res read-only; runtime growth needs a WRITABLE config, so this node points
-# drbd.conf at /run/briard-drbd and the testScript writes the .res there (exactly what the guest's
-# drbd.provision/drbd.adjust verbs do to /etc/drbd.d in the real guest). No nested KVM (the L1 node
+# lib.nix declares r0.res as a read-only store symlink; runtime growth needs to REWRITE it, so this
+# test writes its own .res straight into the product path the agent uses (/run/briard/drbd.d) --
+# exactly what the guest's drbd.provision/drbd.adjust verbs do. No nested KVM (the L1 node
 # runs DRBD directly), so it rides the fast `drbd` tag.
 { pkgs, guestModule }:
 
 let
-  inherit (pkgs.lib) concatMapStringsSep mkForce mkIf optionalAttrs;
+  inherit (pkgs.lib) concatMapStringsSep mkForce mkIf;
+  inherit (pkgs) lib;
 
   # The promoter's ordered chain (identical to lib.nix): workload -> VIP on the primary.
   promoterSnippet = ''
@@ -27,8 +28,8 @@ let
     start = [ "briard-data.service", "podman-briard-payload.service", "briard-vip.service" ]
   '';
 
-  # A node like lib.nix's mkNode, but with drbd.conf pointing at a WRITABLE dir so the testScript
-  # can rewrite r0.res at runtime (the whole point). The baked r0.res is deliberately absent.
+  # A node like lib.nix's mkNode, but with no baked r0.res so the testScript can write and rewrite
+  # it at runtime (the whole point).
   mkNode =
     { diskless ? false, promoter ? true }:
     { config, ... }:
@@ -58,13 +59,18 @@ let
         ];
         EnvironmentFile = mkForce [ ];
       };
-      systemd.tmpfiles.rules = [ "d /run/briard-drbd 0755 root root -" ];
-      environment.etc = {
-        "drbd.conf".text = ''include "/run/briard-drbd/*.res";'';
-      }
-      // optionalAttrs promoter {
-        "drbd-reactor.d/briard.toml".text = promoterSnippet;
-      };
+      # THE PRIVATE WRITABLE DIR IS GONE, and that is [V3b.16b] paying this test back. It pointed
+      # drbd.conf at its own /run/briard/drbd.d because the product's .res lived in read-only
+      # environment.etc while this test has to REWRITE it at runtime. The product's .res is on
+      # tmpfs now, at a path the agent writes and rewrites, so the test drives the real one --
+      # which is what "exactly what the guest's drbd.provision/drbd.adjust verbs do" was always
+      # meant to mean. The promoter snippet moved with it, declared as a tmpfiles symlink.
+      systemd.tmpfiles.rules = [ "d /run/briard/drbd.d 0755 root root -" ]
+        ++ lib.optionals promoter [
+          "d /run/briard/drbd-reactor.d 0755 root root -"
+          "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" promoterSnippet}"
+        ];
+      environment.etc."drbd.conf".text = ''include "/run/briard/drbd.d/*.res";'';
     };
 
   # R0 over a node list; the exact form agent/drbd/config.go renders (what drbd.adjust writes).
@@ -115,10 +121,10 @@ pkgs.testers.runNixOSTest {
     for m in [anchor1, anchor2, witness]:
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
-        m.succeed("mkdir -p /run/briard-drbd")
+        m.succeed("mkdir -p /run/briard/drbd.d")
 
     # --- Phase 1: anchor1 comes up single-node (mesh-of-one) green, serving the VIP ---
-    anchor1.succeed("cp ${singleRes} /run/briard-drbd/r0.res")
+    anchor1.succeed("cp ${singleRes} /run/briard/drbd.d/r0.res")
     anchor1.succeed("drbdadm create-md --force r0")
     anchor1.succeed("systemctl start drbd@r0.target")
     anchor1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")  # peer-less -> UpToDate
@@ -137,17 +143,17 @@ pkgs.testers.runNixOSTest {
     # --- Phase 2: bring the joiners up BLANK on the 3-node config, ready to connect ---
     # anchor2: a fresh (blank) replica -> Inconsistent, it will SyncTarget from anchor1. It must
     # NOT new-current-uuid (that would declare it UpToDate and split-brain the primary's data).
-    anchor2.succeed("cp ${threeRes} /run/briard-drbd/r0.res")
+    anchor2.succeed("cp ${threeRes} /run/briard/drbd.d/r0.res")
     anchor2.succeed("drbdadm create-md --force r0")
     anchor2.succeed("systemctl start drbd@r0.target")
     # Witness: diskless quorum voter -- no metadata, no create-md.
-    witness.succeed("cp ${threeRes} /run/briard-drbd/r0.res")
+    witness.succeed("cp ${threeRes} /run/briard/drbd.d/r0.res")
     witness.succeed("systemctl start drbd@r0.target")
 
     # --- THE RUNTIME GROWTH: adjust anchor1 mesh-of-one -> 3-node mesh, in place ---
     # Exactly what the drbd.adjust verb runs (rewrite the .res + `drbdadm adjust`): no create-md,
     # no restart, the primary's disk stays attached + UpToDate and it keeps serving.
-    anchor1.succeed("cp ${threeRes} /run/briard-drbd/r0.res")
+    anchor1.succeed("cp ${threeRes} /run/briard/drbd.d/r0.res")
     anchor1.succeed("drbdadm adjust r0")
 
     # Both peers connect; the blank anchor resyncs from anchor1 and reaches UpToDate; quorum is now
