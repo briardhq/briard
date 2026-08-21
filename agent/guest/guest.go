@@ -125,9 +125,11 @@ type Config struct {
 	// fallback for a node whose address we did set. "" is NOT "no probe" — see Diskless.
 	HealthURL string
 	// VIPDev is the guest NIC the VIP lives on, when the agent named it (VIP_DEV). Only a
-	// device WE named is safe to read an address back from: with it unset the guest falls back
-	// to its baked eth1, which in the agent-less harnesses also carries the DRBD address, and
-	// "the first address on eth1" is then the replication link rather than the VIP.
+	// device WE named is safe to read an address back from, and unset means this node claims no
+	// VIP at all -- so there is no address to resolve and nothing to probe. (It used to mean the
+	// guest fell back to a baked eth1, which in the agent-less harnesses also carries the DRBD
+	// address: "the first address on eth1" was then the replication link rather than the VIP.
+	// [V3b.16a] deleted that fallback; [V3b.16] is what it cost in the field.)
 	VIPDev string
 	// Diskless marks a witness: no payload, no VIP, nothing to probe — its health follows
 	// quorum. This is the ONLY thing that means "never probe". Emptiness cannot carry that

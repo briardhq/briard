@@ -47,11 +47,17 @@ let
       # server, failed, and took the VIP and the payload with it -- surfacing three layers away as
       # a connect timeout on `curl http://192.168.1.100:8080/healthz`. It has had no full green
       # nightly since 2026-08-08, the night before [V3.19] landed.
-      systemd.services.briard-vip.serviceConfig.Environment = mkForce [
-        "VIP_DEV=eth1"
-        "VIP_ADDR=192.168.1.100/24"
-      ];
-      systemd.services.drbd-reactor.wantedBy = mkForce [ ];
+      #
+      # EnvironmentFile goes with it: the product REQUIRES /run/briard/vip.env now ([V3b.16a]) and
+      # there is no agent here to write one. drbd-reactor needs no forcing any more either -- the
+      # product no longer starts it at boot, because the agent arms the promoter at bring-up.
+      systemd.services.briard-vip.serviceConfig = {
+        Environment = mkForce [
+          "VIP_DEV=eth1"
+          "VIP_ADDR=192.168.1.100/24"
+        ];
+        EnvironmentFile = mkForce [ ];
+      };
       systemd.tmpfiles.rules = [ "d /run/briard-drbd 0755 root root -" ];
       environment.etc = {
         "drbd.conf".text = ''include "/run/briard-drbd/*.res";'';

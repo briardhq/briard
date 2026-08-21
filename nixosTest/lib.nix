@@ -61,8 +61,11 @@ let
     '';
 
   # A test node: the unit image + a backing disk (unless diskless) + its private
-  # DRBD address + the resource. `promoter` adds the promoter snippet; drbd-reactor
-  # never auto-starts (the tests provision DRBD, then start it by hand).
+  # DRBD address + the resource. `promoter` adds the promoter snippet; the tests provision DRBD,
+  # then start drbd-reactor by hand -- which since [V3b.16a] is what the PRODUCT does too (the
+  # agent arms the promoter at bring-up), so this file no longer has to force it off. That
+  # divergence was the last one between the disk-image guest and these nodes, and it was the
+  # divergence [V3b.16] fell into.
   mkNode =
     {
       resource,
@@ -91,11 +94,17 @@ let
       # eth1 here, not eth2: these guests are agent-less and have one service NIC, which is also
       # where their private DRBD address lives. That co-location is the reason briard-vip only
       # takes the NIC down when the address came from DHCP.
-      systemd.services.briard-vip.serviceConfig.Environment = mkForce [
-        "VIP_DEV=eth1"
-        "VIP_ADDR=192.168.1.100/24"
-      ];
-      systemd.services.drbd-reactor.wantedBy = mkForce [ ];
+      #
+      # EnvironmentFile is dropped with it: the product REQUIRES /run/briard/vip.env now
+      # ([V3b.16a]), and there is no agent here to write one. Stating both halves is the harness
+      # declaring its own configuration -- the same rule the reactor snippet above follows.
+      systemd.services.briard-vip.serviceConfig = {
+        Environment = mkForce [
+          "VIP_DEV=eth1"
+          "VIP_ADDR=192.168.1.100/24"
+        ];
+        EnvironmentFile = mkForce [ ];
+      };
       environment.etc = {
         "drbd.conf".text = ''include "/etc/drbd.d/*.res";'';
         "drbd.d/r0.res".text = resource;

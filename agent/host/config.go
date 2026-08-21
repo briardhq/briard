@@ -112,8 +112,8 @@ func ConfigFromEnv() Config {
 		Role:         role,
 		SystemDev:    os.Getenv("SYSTEM_DEV"),  // e.g. eth1 (the DRBD NIC); "" -> single-node, no DRBD NIC
 		SystemCIDR:   os.Getenv("SYSTEM_CIDR"), // e.g. 10.0.0.2/24
-		VIPDev:       os.Getenv("VIP_DEV"),     // e.g. eth2 on a data node; "" -> guest's baked default (eth1)
-		VIPAddr:      os.Getenv("VIP_ADDR"),    // e.g. 192.168.9.50/24; "" -> the guest's baked default
+		VIPDev:       os.Getenv("VIP_DEV"),     // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
+		VIPAddr:      os.Getenv("VIP_ADDR"),    // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
 		FlockID:      os.Getenv("FLOCK_ID"),    // flock-scoped VIP MAC seed; "" -> fall back to the node name
 		FlockName:    os.Getenv("FLOCK_NAME"),  // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
 		Resource: drbd.Resource{

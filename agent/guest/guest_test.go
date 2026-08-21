@@ -738,9 +738,10 @@ func TestResolveHealthURL(t *testing.T) {
 		// flight. It reads as not-ready, never as healthy.
 		{"no address held", false, "eth2", "", "", nil, ""},
 
-		// A device we did not NAME is a device we know nothing about: with VIP_DEV unset the
-		// guest falls back to its baked eth1, which in the agent-less harnesses also carries
-		// the DRBD address -- "the first address on eth1" would be the replication link.
+		// A device we did not NAME is a device we know nothing about: with VIP_DEV unset this
+		// node claims no VIP, so there is no address to ask about. (Before [V3b.16a] it fell back
+		// to a baked eth1, which in the agent-less harnesses also carries the DRBD address --
+		// "the first address on eth1" would have been the replication link.)
 		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},
 
 		// An old guest predating net.vip is one that still has a baked address to fall back

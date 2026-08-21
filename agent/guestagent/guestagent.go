@@ -44,7 +44,7 @@ const (
 	verbProvision = "drbd.provision"     // write configs + create-md
 	verbUp        = "drbd.up"            // start drbd@<res>.target (attach+connect)
 	verbInitUUID  = "drbd.init-uptodate" // new-current-uuid: declare a fresh resource UpToDate
-	verbReactor   = "drbd.reactor.start" // start drbd-reactor (it then promotes)
+	verbReactor   = "drbd.reactor.start" // start drbd-reactor (it then promotes) -- the ONLY thing that does
 	verbStatus    = "drbd.status"        // drbdsetup status --json -> model.Cluster (QuorumState + peers)
 	verbAdjust    = "drbd.adjust"        // rewrite the .res + `drbdadm adjust` (runtime mesh growth)
 )
@@ -630,6 +630,16 @@ func dispatch(x Executor) dispatchFunc {
 			if _, err := resourceReq(payload); err != nil {
 				return nil, err
 			}
+			// ARMING THE PROMOTER, and since [V3b.16a] this is the only thing that ever does: the
+			// guest unit is `wantedBy = [ ]`, so drbd-reactor does not start at boot. Everything
+			// bring-up does above -- hostname, NIC addressing, vip.env, the .res, the promoter
+			// snippet, a runtime service's units -- is therefore GUARANTEED to be in place before
+			// anything can promote, on a reboot as well as on a first install. It used to be
+			// guaranteed only on a first install, and losing that race is [V3b.16].
+			//
+			// Idempotent, deliberately: `systemctl start` on a running daemon is a no-op, so
+			// re-converging a healthy node costs nothing, and an agent that died inside a
+			// maintenance bracket re-arms the promoter it left stopped ([V3b.15]).
 			return nil, run("systemctl", "start", "drbd-reactor.service")
 		case verbStatus:
 			req, err := resourceReq(payload)
@@ -1135,10 +1145,14 @@ func dispatch(x Executor) dispatchFunc {
 				}
 			}
 			// The VIP's device AND address are agent-determined: record them where
-			// briard-vip.service reads them (an optional EnvironmentFile). Idempotent
-			// (whole-file write), and each line is independently optional -- an unset one
-			// leaves the guest's baked fallback in force rather than blanking it, which is
-			// what keeps the agent-less harnesses working.
+			// briard-vip.service reads them, which since [V3b.16a] is a REQUIRED EnvironmentFile
+			// with nothing baked behind it. Idempotent (whole-file write).
+			//
+			// An unset VIP_ADDR is the ordinary DHCP case and the unit expects it. An unset
+			// VIP_DEV now means the node claims no VIP at all -- a witness, which has no promoter
+			// and never starts briard-vip. A data node reaching promotion without one is a broken
+			// configuration and fails loudly there, rather than guessing a NIC ([V3b.16] guessed
+			// the replication NIC and took a second DHCP lease on it).
 			var env []byte
 			if req.VIPDev != "" {
 				env = append(env, "VIP_DEV="+req.VIPDev+"\n"...)
@@ -1334,8 +1348,10 @@ const reactorPath = "/etc/drbd-reactor.d/briard.toml"
 // ([B.85], guest-image/configuration.nix), so the path belongs to the unit that acts on it and
 // nothing in Go needs to know it.)
 
-// vipEnvPath is the optional EnvironmentFile briard-vip.service reads its VIP_DEV
-// from; the agent writes it via net.configure when the VIP is not on the baked NIC.
+// vipEnvPath is the REQUIRED EnvironmentFile briard-vip.service reads its VIP_DEV and VIP_ADDR
+// from; the agent writes it via net.configure at every bring-up. Nothing is baked behind it
+// ([V3b.16a]) -- which is safe only because the promoter that starts briard-vip is itself
+// agent-started, so nothing can read this file before bring-up has written it.
 const vipEnvPath = "/run/briard/vip.env"
 
 // nodeIDPath is where sys.hostname persists this node's name so the guest can restore it at boot,
@@ -2182,6 +2198,12 @@ type BringUpSpec struct {
 // quorum forms; the caller observes convergence via Status. A witness (Diskless,
 // no Promoter) provisions the config and comes up, but creates no metadata and
 // runs no promoter.
+//
+// THE ORDER IS THE GUARANTEE, not merely the sequence ([V3b.16a]). Nothing else starts
+// drbd-reactor -- not boot, not a target -- so every step above happens-before any promotion can,
+// on a reboot exactly as on a first install. Quorum does not wait on the reactor either (drbd.up
+// attaches DRBD itself), and the caller gates on QUORATE rather than Primary, so there is no
+// cycle: bring-up never waits for a promotion it is the precondition of.
 func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 	res := spec.Resource
 	var reactorCfg string

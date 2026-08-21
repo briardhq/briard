@@ -33,24 +33,26 @@ let
   # default; converge re-points it at the data's pinned image (or refuses). So "which
   # image serves" is a promotion-time decision, not baked into the unit.
   serveImage = "briard-payload:serve";
-  # The VIP's address AND device are both agent-determined in prod: net.configure writes
-  # VIP_ADDR + VIP_DEV to vipEnvPath, and the EnvironmentFile overrides these baked values.
+  # The VIP's address AND device are both agent-determined: net.configure writes VIP_ADDR +
+  # VIP_DEV here, and briard-vip.service reads this file and NOTHING ELSE. Nothing is baked, so
+  # there is nothing to fall back to and no address or NIC anyone has to attribute after the fact.
   #
   # The address used to be baked outright ("v0 fixed service VIP, not a knob"). That made the
   # product work on the one subnet our lab happens to use and **fail green** on every other:
   # the readiness probe runs in-guest, against an address the guest itself owns, so a node no
-  # one in the house could reach still reported ready (V3.19). The LAN owns this value now.
+  # one in the house could reach still reported ready (V3.19). The LAN owns that value now.
   #
-  # AND NOTHING IS BAKED HERE EITHER, as of step 3. This was kept for one more step as the
-  # agent-less harnesses' fallback; that made it the last place our lab's subnet sat in the
-  # product image, and a fallback that every test agrees with is indistinguishable from a
-  # default nobody chose -- which is the shape of the original defect. Empty means DHCP: the
-  # router tells us the answer, inside its own pool, instead of us guessing at someone's house.
+  # The DEVICE went the same way, and it took a field failure to earn it: a guest that reboots
+  # while its host agent is absent has no /run (tmpfs), so briard-vip ran on the baked `eth1` --
+  # the DRBD replication NIC -- claimed the service address there, and took a SECOND DHCP lease
+  # doing it, because the client-id is derived from that NIC's own MAC ([V3b.16]). The baked
+  # device was only ever the agent-less harnesses' fallback, and a fallback every test agrees
+  # with is indistinguishable from a default nobody chose. Deleting it is safe for exactly one
+  # reason, and that reason is the whole of [V3b.16a]: drbd-reactor no longer starts at boot, so
+  # nothing can read this file before the agent has written it (see drbd-reactor.service below).
   #
-  # The harnesses now DECLARE their address (nixosTest/lib.nix, and the driver-based tests via
-  # VIP_ADDR), which turns an inherited assumption into a stated one.
-  vipFallback = "";
-  vipDev = "eth1";
+  # The harnesses DECLARE their own device and address (nixosTest/lib.nix, and the driver-based
+  # tests via VIP_DEV/VIP_ADDR), which turns an inherited assumption into a stated one.
   vipEnvPath = "/run/briard/vip.env";
   # The FLOCK's service address, replicated with the data. Same shape, same place and same
   # write-authority as imagePinFile: a small flock-scoped fact at the btrfs root, written only by
@@ -156,7 +158,7 @@ let
     # It watches the PUBLISHED ADDRESS specifically, not the whole interface: IPv6 churn (SLAAC on
     # a dual-stack router adds records for ~9s) never wedged it in the reproduction, so waiting for
     # that too would delay every promotion for nothing.
-    dev="''${VIP_DEV:-${vipDev}}"
+    dev="$VIP_DEV"
     want="''${VIP_ADDR%%/*}"
     # Nothing to wait for if we have no address: the publish below will fail on its own terms,
     # and stalling the full 20s first would turn a broken state into a slow broken state.
@@ -770,8 +772,16 @@ in
     # against drbd-reactor is sufficient -- drbd@ and drbd-promote@ are started BY it, so they
     # inherit the ordering.
     #
-    # Conditioned on the file: a guest that has never been told who it is (first boot, and every
-    # agent-less harness) keeps the baked name rather than failing a unit over it.
+    # SINCE [V3b.16a] the ordering is also held from the other end: drbd-reactor no longer starts
+    # at boot at all, and the bring-up that starts it sets this node's hostname first. So this unit
+    # is now the belt to that braces -- it restores the name EARLY, before anything the agent has
+    # not asked for could act on it -- rather than the only thing standing between a reboot and a
+    # promote into a name mismatch.
+    #
+    # Conditioned on the file, and that condition is not the tmpfs anti-pattern [V3b.16] found: the
+    # name lives in /etc precisely so it outlives a reboot, and its absence means "this node has
+    # never been told who it is" (a first boot, or an agent-less harness that names itself), which
+    # is a real state and not a missing agent. Keeping the baked name is the right answer to it.
     systemd.services.briard-identity = {
       description = "Briard node identity (restore this node's hostname)";
       wantedBy = [ "multi-user.target" ];
@@ -784,9 +794,37 @@ in
       };
     };
 
+    # THE PROMOTER IS ARMED BY THE AGENT, NEVER BY BOOT ([V3b.16a]). Failover is still entirely
+    # drbd-reactor's (AGENTS §4.2 is untouched: nothing here promotes or demotes) -- what changed
+    # is WHEN the orchestrator is allowed to start, and the answer is "once the host has told this
+    # guest who it is, where its NICs are, and what its promoter chain is". guestagent's BringUp
+    # ends in `systemctl start drbd-reactor.service`, and that is now the only thing that starts it.
+    #
+    # WHY, and it is not the agent-absence case alone. The promoter snippet lives on the PERSISTENT
+    # overlay, so on a first install there is no snippet and the ordering held by construction --
+    # but on every reboot afterwards the snippet is already on disk and a boot-started reactor
+    # RACES the agent's reconnect -> net.configure -> vip.env. The agent usually won, which is why
+    # this looked like an agent-absence bug when a stranger's node finally lost the race ([V3b.16]:
+    # the VIP claimed on the DRBD NIC, under a second DHCP identity, mDNS dead, probe blind).
+    #
+    # THERE IS NO DEADLOCK TO DESIGN AROUND, which is what makes it nearly free: bring-up gates on
+    # QUORATE, not Primary (host.go), so the agent never waits for a promotion; and quorum does not
+    # need the reactor either, because the agent attaches DRBD itself (drbd.provision + drbd.up).
+    # So promotion may safely wait for the agent, and does.
+    #
+    # THE COST, stated rather than buried: a permanently absent agent -- /opt/briard wiped, the unit
+    # masked, an incompatible binary after an upgrade -- is now a TOTAL outage rather than a
+    # degraded-but-serving node. Accepted: [V3b.16] is the field evidence for what
+    # degraded-but-serving actually looked like, and a node that plainly does not serve is more
+    # honest and more repairable than one that is up in a way nobody can see or fix.
+    #
+    # It also makes bring-up the one place that arms the promoter, so an agent SIGKILLed inside a
+    # maintenance bracket -- whose resume existed only on the dead process's stack ([V3b.15]) --
+    # re-arms it by restarting. And it makes the agent-less state inert, so the deadman's reboot
+    # cycle stops churning DRBD and the household's DHCP server on every pass.
     systemd.services.drbd-reactor = {
       description = "drbd-reactor — DRBD failover orchestrator";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = [ ];
       after = [ "network.target" ];
       path = [ pkgs.drbd pkgs.systemd ]; # drbdsetup/drbdadm + systemd management
       serviceConfig = {
@@ -1052,8 +1090,12 @@ in
     #    unified NIC layout eth1 is always the DRBD NIC and the VIP lives on
     #    eth2 — the installer sets VIP_DEV=eth2 even single-node (eth1 sits idle until
     #    a pairing addresses it), so a second anchor can join without a guest reboot.
-    #    The baked eth1 default is only the fallback for agent-less harnesses (the
-    #    lib.nix framework tests, whose lone service NIC is eth1) — the file overrides it.
+    #
+    #    THE FILE IS REQUIRED, not optional, and there is no baked device or address behind it
+    #    ([V3b.16a]). It can only be missing if something started this unit that the agent did not
+    #    configure — which the promoter gate makes impossible, since drbd-reactor itself is
+    #    agent-started. So "no VIP configuration" is now an error rather than a guess, and the one
+    #    guess it used to make claimed the service address on the replication NIC ([V3b.16]).
     systemd.services.briard-vip = {
       description = "Briard service VIP";
       wantedBy = [ ];
@@ -1061,8 +1103,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        Environment = [ "VIP_DEV=${vipDev}" "VIP_ADDR=${vipFallback}" ];
-        EnvironmentFile = "-${vipEnvPath}";
+        EnvironmentFile = vipEnvPath;
         # Resolve-claim-record: static address, else the flock's replicated one, else DHCP.
         # It brings the NIC up itself (the framework does that for the nixosTests; a disk-image
         # guest's NIC may still be down) -- idempotent, and it has to happen before DHCP can ask.
@@ -1108,17 +1149,19 @@ in
       after = [ "briard-vip.service" "avahi-daemon.service" ];
       requires = [ "avahi-daemon.service" ];
       serviceConfig = {
-        # The address briard-vip ACTUALLY claimed, so the name cannot drift from it. Three
-        # sources, last wins: baked fallback, the agent-written config, and the live file that
-        # records what was really taken -- which under DHCP is the only one that knows.
+        # The address briard-vip ACTUALLY claimed, so the name cannot drift from it. Two sources,
+        # last wins: the agent-written config, and the live file that records what was really
+        # taken -- which under DHCP is the only one that knows. Both are REQUIRED ([V3b.16a]): this
+        # unit can only run downstream of a briard-vip that ran, which can only run downstream of
+        # an agent that configured it, so an absent file is a broken node and not a bare one.
         #
         # FLOCK_NAME comes from the agent (net.mdnsname) and has NO baked fallback on purpose: a
         # node with no minted name must publish nothing rather than publish a guess, and
-        # `briard-.local` is worse than silence. ConditionPathExists enforces that -- the unit
-        # stays inactive rather than failing in a restart loop, because "this node has no name" is
-        # a legitimate state (every agent-less harness) and not an error.
-        Environment = "VIP_ADDR=${vipFallback}";
-        EnvironmentFile = [ "-${vipEnvPath}" "-${vipLivePath}" "-${mdnsEnvPath}" ];
+        # `briard-.local` is worse than silence. ConditionPathExists enforces that, and it is the
+        # one file here whose absence is NOT a fault: it tracks whether the flock has a minted name
+        # (FLOCK_NAME="" -> net.mdnsname deliberately writes nothing), never whether an agent is
+        # present. So the unit stays inactive rather than failing in a restart loop.
+        EnvironmentFile = [ vipEnvPath vipLivePath mdnsEnvPath ];
         # avahi-publish holds the record for as long as it runs and withdraws it on exit, so the
         # unit's lifetime IS the record's lifetime -- no cleanup path to get wrong on demotion.
         ExecStart = "${vipPublish}";
