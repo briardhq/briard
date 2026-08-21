@@ -173,7 +173,7 @@ agent/          the host daemon: orchestration, and the provider seams
   agent/host    orchestration — talks to providers only through interfaces
   agent/drbd    reads DRBD status; drives nothing
   agent/guest   the host↔guest boundary and the upgrade/rollback mechanism
-shared/         wire types (api) and domain types (model), plus the dns/notify seams
+shared/         wire types (api) and domain types (model), plus the notify seam
 guest-image/    the NixOS guest: DRBD, drbd-reactor, and the payload slot (empty as shipped)
 reverse-proxy/  the front door: answers the VIP, terminates TLS, hot-reloads certs
 internal/arch   the architecture guards, as failing tests
