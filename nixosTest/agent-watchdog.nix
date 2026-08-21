@@ -250,27 +250,36 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         f"journalctl -u briard-agent --since='{long_since}' | grep -q 'kind=service-install'"
     )
-    # NON-VACUOUS, and this is the assertion that must be able to fail. If the call returned
-    # inside the watchdog interval it never entered the unpinged window this step exists to test,
-    # and everything below would pass against the defect.
-    assert took >= 20, (
-        f"the directive returned in {took}s, inside WatchdogSec=20 -- this step no longer "
-        f"exercises an unpinged window, so the survival asserted below proves nothing"
-    )
+    # THE DEFECT, and the JOURNAL is the witness to assert on first, because it is the only
+    # race-free one: systemd logs the trip immediately, while the two counters below are read in
+    # the gap between the SIGABRT and RestartSec=2 and have not caught up yet. The first run of
+    # this step proved that the hard way -- NRestarts still read equal, and MainPID had gone to 0.
+    host.fail(f"journalctl -u briard-agent --since='{long_since}' | grep -q 'Watchdog timeout'")
 
-    # THE DEFECT. Pre-lease this is where it lands: the watchdog fires mid-directive, systemd
-    # SIGABRTs the agent, and Restart=on-failure brings up a successor 2 s later.
-    long_now = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
-    assert long_now == long_restarts, (
-        f"a {took}s directive took the agent down ({long_restarts} -> {long_now} restarts) -- "
-        f"dispatch is running unleased under the watchdog (V3b.15)"
-    )
+    # ...and it is still the same process that took the directive. MainPID reads 0 while the unit
+    # is down, which is what a mid-directive kill looks like caught inside RestartSec.
     long_pid_now = host.succeed("systemctl show -p MainPID --value briard-agent").strip()
     assert long_pid_now == long_pid, (
-        f"the agent process changed across the directive ({long_pid} -> {long_pid_now}) -- it was "
-        f"restarted mid-install"
+        f"the agent is no longer the process that took the directive ({long_pid} -> "
+        f"{long_pid_now}; 0 means it is down and has not been restarted yet) -- it was killed "
+        f"mid-install (V3b.15)"
     )
-    host.fail(f"journalctl -u briard-agent --since='{long_since}' | grep -qi 'watchdog timeout'")
+    long_now = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
+    assert long_now == long_restarts, (
+        f"the agent restarted across a {took}s directive ({long_restarts} -> {long_now}) -- "
+        f"dispatch is running unleased under the watchdog (V3b.15)"
+    )
+
+    # NON-VACUOUS -- the assertion that must be able to fail, and deliberately placed AFTER
+    # survival rather than before it. The window has to outlast WatchdogSec or "the agent
+    # survived" says nothing; but WITHOUT the lease the process dies AT the threshold, so `took`
+    # pins to ~20 s, and an up-front guard on that number would report a vacuous test in the one
+    # case where the honest answer is the defect (measured: 20 s, run 32479570974). With the lease
+    # the fetch spends its full 30 s client timeout, so a surviving agent clears 25 s with room.
+    assert took >= 25, (
+        f"the directive returned in {took}s -- the catalog fetch is no longer spending its 30 s "
+        f"timeout, so this step covers no unpinged window and the survival above proves nothing"
+    )
 
     # AND THE OPERATOR GOT AN ANSWER. The install FAILS here -- the catalog is unreachable by
     # construction -- and it must say so. The difference between a failed DIRECTIVE and a failed
