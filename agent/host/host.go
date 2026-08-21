@@ -188,6 +188,20 @@ type Config struct {
 	CatalogURL   string
 	ServiceCache string
 
+	// MeshCache is where a runtime pairing's MeshSpec is kept NODE-LOCALLY, for the same reason
+	// ServiceCache exists and to close the same hole one step further out ([V3b.16b]).
+	//
+	// The mesh arrives as a cloud directive and is applied to the guest, which writes it into the
+	// guest's /etc. But bring-up REWRITES the guest's .res from cfg.Resource on every pass, and
+	// cfg.Resource comes from the PEERS env — which install.sh never sets. So without this a
+	// runtime-paired anchor whose guest rebooted came back rewritten to the single-node self-peer,
+	// against on-disk DRBD metadata recording real peers: exactly what RescueGuest refuses to do,
+	// happening silently. The host must durably own what it told the guest.
+	//
+	// The SPEC is cached rather than the derived drbd.Resource: it is what the cloud actually said,
+	// and the resource is re-derived from it the same way applyPair derives it. "" disables.
+	MeshCache string
+
 	// Overlay remote-reach; nil = LAN-only/standalone (the default). The agent
 	// brings it up *after* the guest converges -- it's parallel to the failover path, so
 	// a failure warns but never fails bring-up -- and reports its health through
@@ -285,6 +299,18 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if spec, chain, rendered, ok := cfg.installedService(logf); ok {
 		logf("installed service %q restored from cache; promoter chain %v", spec.Name, chain)
 		cfg.Service, cfg.Promoter, cfg.ServiceRendered = spec, chain, rendered
+	}
+	// A mesh joined at RUNTIME is not described by the environment either, and it is the more
+	// dangerous of the two to forget: bring-up REWRITES the guest's .res from cfg.Resource every
+	// time, so a paired anchor whose guest rebooted was rewritten back to the single-node self-peer
+	// on 127.0.0.1 — against on-disk DRBD metadata recording real peers and a different node-id.
+	// That is what RescueGuest refuses to do, happening on an ordinary reboot ([V3b.16b]).
+	//
+	// After installedService and for the same reason it is where it is: everything below derives
+	// from cfg, so both restores must land before anything reads it.
+	if res, ok := cfg.cachedMesh(logf); ok {
+		logf("paired mesh restored from cache: %s, %d peers", res.Name, len(res.Peers))
+		cfg.Resource = res
 	}
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness

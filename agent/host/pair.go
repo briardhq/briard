@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
+	"briard.io/shared/atomicfile"
 )
 
 // guestMesher is the slice of the guest client the pairing reconcile drives: give the node its
@@ -69,24 +71,9 @@ func (cfg Config) applyPair(ctx context.Context, g guestMesher, w witnessStarter
 // witness bring-up is diskless with no promoter. Blank-join only: invalidating an already-seeded
 // joiner to re-home it is the cloud's.
 func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessStarter, spec api.MeshSpec, logf func(string, ...any)) error {
-	target := drbd.Resource{Name: spec.Resource, Device: spec.Device}
-	self := -1
-	for i, p := range spec.Peers {
-		peer := drbd.Peer{Name: p.Name, NodeID: p.NodeID, Address: p.Address, Disk: p.Disk}
-		// A forwarded cloud-witness mesh (spec.Witness set) reaches the diskless voter through
-		// this node's OWN host forwarder, so every DISK anchor carries a witness-side local
-		// address distinct from its LAN mesh Address -- which flips drbd.Config to the explicit-
-		// connection form. The witness peer itself gets none (it is the diskless target).
-		if spec.Witness != nil && p.Disk != "" {
-			peer.WitnessLocal = spec.Witness.LocalAddr
-		}
-		target.Peers = append(target.Peers, peer)
-		if p.Name == cfg.Node {
-			self = i
-		}
-	}
-	if self < 0 {
-		return fmt.Errorf("pair: this node %q is not in the target mesh", cfg.Node)
+	target, self, err := meshTarget(spec, cfg.Node)
+	if err != nil {
+		return err
 	}
 
 	// Give this node its replication-subnet NIC address before touching DRBD (DRBD binds/connects
@@ -116,12 +103,15 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 
 	if spec.Join {
 		logf("pair: joining as %s (diskless=%t) -- fresh bring-up + resync from the primary", cfg.Node, diskless)
-		return g.BringUp(ctx, guestagent.BringUpSpec{
+		if err := g.BringUp(ctx, guestagent.BringUpSpec{
 			Resource:  target,
 			Diskless:  diskless,
 			FreshInit: false, // NEVER seed a joiner: attach + resync as SyncTarget
 			Promoter:  promoter,
-		})
+		}); err != nil {
+			return err
+		}
+		return cfg.cacheMesh(spec, logf)
 	}
 
 	// The existing serving primary: apply the wider mesh to the RUNNING resource -- no create-md,
@@ -131,7 +121,92 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 	if len(promoter) > 0 {
 		req.ReactorConfig = drbd.ReactorConfig(target.Name, promoter)
 	}
-	return g.Adjust(ctx, req)
+	if err := g.Adjust(ctx, req); err != nil {
+		return err
+	}
+	return cfg.cacheMesh(spec, logf)
+}
+
+// meshTarget renders a MeshSpec into this node's DRBD resource and returns its own index in the
+// peer list. Split out of reconcileMesh because the RESTORE path needs the identical derivation:
+// a cached spec has to become the same .res the pairing produced, and a second rendering of the
+// same fact is a second thing that can drift (AGENTS §5).
+func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
+	target := drbd.Resource{Name: spec.Resource, Device: spec.Device}
+	self := -1
+	for i, p := range spec.Peers {
+		peer := drbd.Peer{Name: p.Name, NodeID: p.NodeID, Address: p.Address, Disk: p.Disk}
+		// A forwarded cloud-witness mesh (spec.Witness set) reaches the diskless voter through
+		// this node's OWN host forwarder, so every DISK anchor carries a witness-side local
+		// address distinct from its LAN mesh Address -- which flips drbd.Config to the explicit-
+		// connection form. The witness peer itself gets none (it is the diskless target).
+		if spec.Witness != nil && p.Disk != "" {
+			peer.WitnessLocal = spec.Witness.LocalAddr
+		}
+		target.Peers = append(target.Peers, peer)
+		if p.Name == node {
+			self = i
+		}
+	}
+	if self < 0 {
+		return drbd.Resource{}, -1, fmt.Errorf("pair: this node %q is not in the target mesh", node)
+	}
+	return target, self, nil
+}
+
+// CacheMesh records the mesh this node has just been reconciled to, node-locally and durably.
+//
+// AFTER the apply, never before: the cache's meaning is "what this node IS in", so a pairing that
+// failed halfway must not leave a mesh the next bring-up would converge to. Same rule and the same
+// reason as cacheService writing only past the health gate.
+//
+// A write failure is LOUD BUT NOT FATAL, and the log line says what it costs, because the pairing
+// itself succeeded and undoing it over a cache miss would be the worse trade -- the node is meshed
+// and serving; what it has lost is the ability to still be meshed after its guest reboots.
+func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error {
+	if cfg.MeshCache == "" {
+		return nil
+	}
+	b, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.Write(cfg.MeshCache, b, 0o600, 0o700); err != nil {
+		logf("pair: WARNING: could not cache the mesh (%v); this node is paired now, but a guest "+
+			"reboot would bring it back un-meshed on the single-node config from PEERS", err)
+		return nil
+	}
+	return nil
+}
+
+// CachedMesh rebuilds this node's DRBD resource from the last pairing it applied. ok is false when
+// nothing has ever been paired -- the shipped single-node state, where PEERS (or its self-peer
+// default) is the right answer and this file is correctly absent.
+//
+// An unusable cache is reported and treated as absent, matching installedService: bringing up on
+// the env mesh is what this node did before there was a cache at all, so it is the conservative
+// fallback rather than a new failure mode. A spec that no longer names this node is the same case
+// (a rename, or a cache carried onto another node) and says so distinctly, because "your mesh does
+// not know you" is a different thing to go looking for than "your mesh will not parse".
+func (cfg Config) cachedMesh(logf func(string, ...any)) (drbd.Resource, bool) {
+	if cfg.MeshCache == "" {
+		return drbd.Resource{}, false
+	}
+	b, err := os.ReadFile(cfg.MeshCache)
+	if err != nil {
+		return drbd.Resource{}, false // absent = never paired, the shipped state
+	}
+	var spec api.MeshSpec
+	if err := json.Unmarshal(b, &spec); err != nil {
+		logf("mesh cache at %s is unusable (%v); bringing up on the configured PEERS mesh", cfg.MeshCache, err)
+		return drbd.Resource{}, false
+	}
+	target, _, err := meshTarget(spec, cfg.Node)
+	if err != nil {
+		logf("mesh cache at %s does not name this node (%v); bringing up on the configured PEERS mesh", cfg.MeshCache, err)
+		return drbd.Resource{}, false
+	}
+	return target, true
 }
 
 // BringUpWitness stands up this anchor's host-side path to the cloud witness: address the

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/api"
+	"briard.io/shared/atomicfile"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
 )
@@ -262,57 +262,23 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 // CacheService writes the manifest to the node-local cache. Written only after the health gate
 // passes, so a failed install is never the thing a restart converges to.
 //
-// Atomic and durable (temp + fsync + rename + directory fsync), which it was not: a bare
-// WriteFile over an existing file truncates first, so a crash inside the write left a half a
-// manifest, and an unflushed one left no manifest at all for a commit interval after the install
-// returned. Neither is loud. installedService reads an unparseable cache as "bringing up with no
-// service" and says so once to the log, while the volume's .service-manifest still names the
-// service the node is meant to be running -- bring-up never consults it (only the install path
-// does, via priorService), so the node just quietly comes back empty. The service spec is the one
-// input to BringUp that comes from a file instead of being re-derived by the host, which is
-// exactly why it is the one that needed this. Same defect as [V3.23], node-local instead of
-// replicated.
+// Atomic and durable (shared/atomicfile), which it was not: a bare WriteFile over an existing file
+// truncates first, so a crash inside the write left half a manifest, and an unflushed one left no
+// manifest at all for a commit interval after the install returned. Neither is loud.
+// installedService reads an unparseable cache as "bringing up with no service" and says so once to
+// the log, while the volume's .service-manifest still names the service the node is meant to be
+// running -- bring-up never consults it (only the install path does, via priorService), so the node
+// just quietly comes back empty. Same defect as [V3.23], node-local instead of replicated.
+//
+// The service spec used to be described here as "the one input to BringUp that comes from a file
+// instead of being re-derived by the host". It was not: the MESH is the other one, and it had no
+// cache at all, so a runtime-paired node's guest reboot rewrote its .res from the stale PEERS env
+// ([V3b.16b]). Two node-scoped facts, two caches, one rule -- see cacheMesh.
 func (cfg Config) cacheService(raw []byte) error {
 	if cfg.ServiceCache == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.ServiceCache), 0o700); err != nil {
-		return err
-	}
-	tmp := cfg.ServiceCache + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil { // durable BEFORE the rename publishes it
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, cfg.ServiceCache); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	// The rename lives in the parent's dirent until the parent is flushed -- and on a first
-	// install the file is new, so without this the publish itself is what a power cut takes.
-	d, err := os.Open(filepath.Dir(cfg.ServiceCache))
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		d.Close()
-		return err
-	}
-	return d.Close()
+	return atomicfile.Write(cfg.ServiceCache, raw, 0o600, 0o700)
 }
 
 // adoptInstalledService refreshes the LIVE config from the node-local manifest cache after a

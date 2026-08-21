@@ -170,6 +170,7 @@ func ConfigFromEnv() Config {
 		// is the marketing site; a service catalog is not a web page.
 		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
 		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/service.json"),
+		MeshCache:         env("MESH_CACHE", "/var/lib/briard/mesh.json"),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		SnapshotRetention: atoi(os.Getenv("SNAPSHOT_RETENTION"), 0),
 		// Host-agent self-update. UPDATE_KEYRING points at a PEM file of trusted

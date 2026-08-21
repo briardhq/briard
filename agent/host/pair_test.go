@@ -3,9 +3,12 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
@@ -269,5 +272,97 @@ func TestApplyPairOutcome(t *testing.T) {
 	bad := cfg.applyPair(context.Background(), f, &fakeWitness{}, api.Directive{ID: "p2", Kind: api.DirectivePair, Payload: "{not json"}, func(string, ...any) {})
 	if bad.State != api.OutcomeFailed {
 		t.Errorf("malformed payload outcome = %+v, want failed", bad)
+	}
+}
+
+// THE DEFECT THIS EXISTS FOR, asserted end-to-end at the host seam ([V3b.16b]): a node that was
+// paired at RUNTIME must still be in that mesh after its agent restarts, because bring-up rewrites
+// the guest's .res from cfg.Resource on every pass.
+//
+// Failable by construction rather than by timing. The "after the reboot" half rebuilds Config the
+// way ConfigFromEnv does on a fresh process -- PEERS unset, so the single-node self-peer -- and
+// then applies the restore. Without cacheMesh/cachedMesh the restore is a no-op and the assertions
+// below see 127.0.0.1 and one peer, which is exactly what the field would have seen.
+func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "mesh.json")
+
+	// Before: this node knows only what install.sh gave it -- no PEERS, so a mesh of one on
+	// loopback. This is the shipped single-node state, and the thing that must NOT come back.
+	lone := drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{
+		{Name: "anchorA", NodeID: 0, Address: "127.0.0.1:7789", Disk: "/dev/vdb"},
+	}}
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
+		MeshCache: cache, Resource: lone}
+
+	// The cloud pairs it into the 3-voter mesh.
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
+		Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
+	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reboot: a brand-new Config, as a restarted agent builds it -- the pairing is nowhere in
+	// its environment. Only the cache can put the mesh back.
+	fresh := Config{Node: "anchorA", MeshCache: cache, Resource: lone}
+	res, ok := fresh.cachedMesh(func(string, ...any) {})
+	if !ok {
+		t.Fatal("a node paired at runtime came back with no cached mesh: bring-up would rewrite " +
+			"its .res to the single-node self-peer, against metadata that records real peers")
+	}
+	fresh.Resource = res
+
+	// What bring-up would now write into the guest -- the assertion that matters, since the .res is
+	// the artefact the defect corrupted.
+	got := fresh.Resource.Config()
+	for _, want := range []string{"on anchorA", "on anchorB", "on witness", "connection-mesh"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("post-restart .res missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "127.0.0.1") {
+		t.Errorf("post-restart .res fell back to the single-node loopback peer:\n%s", got)
+	}
+	if n := len(fresh.Resource.Peers); n != 3 {
+		t.Errorf("post-restart mesh has %d peers, want the 3 it was paired into", n)
+	}
+	// The node's own node-id must survive too: coming back as node-id 0 when the pairing made it
+	// something else is what makes DRBD refuse the metadata rather than merely lose a peer.
+	for _, p := range fresh.Resource.Peers {
+		if p.Name == "anchorA" && p.Address != "10.0.0.1:7789" {
+			t.Errorf("this node's own stanza = %+v, want its replication address", p)
+		}
+	}
+}
+
+// A cache that cannot be used is not a failure mode of its own: the node falls back to the mesh its
+// environment describes, which is what it did before a cache existed. Loud, never fatal.
+func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct{ name, body string }{
+		{"unparseable", "{not json"},
+		// A spec that does not name this node -- a rename, or a cache carried onto another node.
+		{"does not name this node", `{"resource":"r0","peers":[{"name":"someone-else","node_id":0,"address":"10.0.0.9:7789","disk":"/dev/vdb"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := filepath.Join(dir, tc.name+".json")
+			if err := os.WriteFile(cache, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var said int
+			cfg := Config{Node: "anchorA", MeshCache: cache}
+			if _, ok := cfg.cachedMesh(func(string, ...any) { said++ }); ok {
+				t.Error("an unusable mesh cache must read as absent, not as a mesh")
+			}
+			if said != 1 {
+				t.Errorf("logged %d times, want exactly one line naming the cache", said)
+			}
+		})
+	}
+	// Never paired: absent is the shipped single-node state and says nothing at all.
+	var said int
+	cfg := Config{Node: "anchorA", MeshCache: filepath.Join(dir, "nope.json")}
+	if _, ok := cfg.cachedMesh(func(string, ...any) { said++ }); ok || said != 0 {
+		t.Errorf("absent cache: ok=%v logged=%d, want a silent false (nothing was ever paired)", ok, said)
 	}
 }
