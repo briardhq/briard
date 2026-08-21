@@ -35,6 +35,13 @@
 # goroutine and this test must FAIL (no restart, the wait_until_succeeds times out). A test that
 # cannot fail against the design it rejects proves only that systemd works.
 #
+# AND IT PROVES THE OTHER DIRECTION, which is the one that shipped broken. A watchdog is only
+# as good as its false-positive rate: an agent doing work that legitimately takes minutes must
+# NOT be killed for it. `dispatch` runs synchronously on the observe loop and that loop is the
+# only pinger, so every directive longer than WatchdogSec is a SIGABRT rather than an outcome --
+# which is exactly what [V3b.15] found in the field, on a verb measured working two months
+# earlier. Step 3 is that case, and it fails without the lease.
+#
 # It also asserts the two things that make the feature worth having rather than merely working:
 #   * the GOROUTINE DUMP. WatchdogSignal defaults to SIGABRT and Go answers it with every
 #     goroutine's stack, so the trip names the wedge instead of just clearing it. That needs
@@ -64,7 +71,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.diskSize = 10240;
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM
-      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl ];
+      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.iptables ];
 
       # THE SHIPPED WATCHDOG SHAPE. These four lines are the ones install.sh writes; the rest of
       # the unit mirrors agent-readopt's harness. WatchdogSec is what makes WATCHDOG_USEC appear
@@ -104,10 +111,15 @@ pkgs.testers.runNixOSTest {
           # Off on a shipped install; the soak sets it, and so do we — step 2 needs a real
           # telemetry path to hang, to prove that hanging it no longer costs anything.
           TELEMETRY_PATH = "/tmp/telemetry.json";
-          # The wedge point (step 3). A fixture, and the only consumer of this variable anywhere.
+          # The wedge point (step 4). A fixture, and the only consumer of this variable anywhere.
           # The path does not exist yet, which is the disarmed state: the agent opens it every
           # cycle and gets ENOENT until the test mkfifos it.
           BRIARD_WEDGE_FIFO = "/tmp/wedge.fifo";
+          # Step 3's catalog. A shipped node reads the real one over the WAN; this harness is
+          # hermetic, so the fetch needs somewhere local to go -- and step 3 makes that somewhere
+          # unreachable on purpose. Set here rather than in the step because the agent reads its
+          # configuration once, at start.
+          CATALOG_URL = "http://127.0.0.1:8098/catalog";
           # Without this the SIGABRT dump names one arbitrary goroutine instead of the wedged one.
           GOTRACEBACK = "all";
         };
@@ -187,13 +199,98 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl is-active briard-agent")
     host.succeed("curl -fsS http://192.168.1.100/healthz")
     # The writer goroutine stays parked in that open(2) for the life of this process — nothing
-    # short of a reader frees it — so telemetry is dead until the restart in step 4 brings up a
+    # short of a reader frees it — so telemetry is dead until the restart in step 5 brings up a
     # fresh one. Removing the FIFO here only stops the NEXT process re-wedging on it.
     host.succeed("rm -f /tmp/telemetry.json.tmp")
 
+    # === 3) V3b.15: AN HONEST LONG DIRECTIVE MUST NOT TRIP THE WATCHDOG ===
+    # Step 2's question asked the other way round, and this is the half that shipped broken.
+    # A wedged agent must be caught; an agent doing work that legitimately takes minutes must not
+    # be. `dispatch` is called synchronously on the observe loop (host.go), and that loop is the
+    # ONLY thing that pings systemd -- by design, per beat.go: a ticker on its own goroutine would
+    # report "alive" straight through the wedge step 4 builds. So while a directive runs, nothing
+    # pings, and any directive longer than WatchdogSec=20 ends in SIGABRT instead of an outcome.
+    #
+    # NOT A RACE -- IT SHIPPED. `WatchdogSec=20` landed 2026-08-13 on a `service install` measured
+    # at 48.8 s from the published channel a week earlier, and the next person to run the verb was
+    # a stranger, seven days after that ([V3.29] -> [V3b.15]). Twenty-one seconds from `directive
+    # kind=service-install submitted locally` to `Watchdog timeout (limit 20s)!`, then SIGABRT and
+    # a CLI printing "the agent closed the connection without reporting an outcome" -- because the
+    # admin socket died with the process holding it.
+    #
+    # WHY THE CATALOG IS BLACKHOLED RATHER THAN MERELY SLOW. What this step needs is the product's
+    # own verb, on the real dispatch path, spending real time -- deterministically, with no second
+    # moving part to go wrong. A DROPped port gives exactly that: fetchManifest is the FIRST thing
+    # applyServiceInstall does, its client carries a 30 s timeout (shared/manifest/fetch.go), and a
+    # SYN into a DROP rule draws no RST -- so the window is 30 s, fixed by the code under test
+    # rather than by a fixture's sleep. -I, not -A: NixOS's firewall accepts loopback early in its
+    # own chain, so an appended rule would never see the packet. It stands for something real, too
+    # -- a stalled channel is a failure this product has already met (the 4 h stale-artifact
+    # window, 2026-08-19).
+    #
+    # NOTHING IS MUTATED. The hang is upstream of the ReactorActive guard and of every write, so a
+    # node that fails here is a node that was never touched -- which is why this can sit in the
+    # middle of a test that goes on to assert the guest was never rebooted.
+    host.succeed("iptables -I INPUT 1 -p tcp --dport 8098 -j DROP")
+
+    long_since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
+    long_restarts = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
+    long_pid = host.succeed("systemctl show -p MainPID --value briard-agent").strip()
+
+    t_dir0 = int(host.succeed("date +%s").strip())
+    # `briard-agent <verb>` IS the CLI (a bare first argument is a subcommand, main.go), and the
+    # admin socket is the default on both sides. Flags BEFORE the name: Go's flag package stops at
+    # the first non-flag argument, so `install fixture -sock ...` would leave the flag positional.
+    rc, out = host.execute("${agent}/bin/briard-agent service install fixture 2>&1")
+    took = int(host.succeed("date +%s").strip()) - t_dir0
+    print(f"service install returned rc={rc} after {took}s:\n{out}")
+
+    # It really did reach dispatch -- the same line the stranger's journal opens with. Without
+    # this, a CLI that failed to connect at all would look like a pass.
+    host.succeed(
+        f"journalctl -u briard-agent --since='{long_since}' | grep -q 'kind=service-install'"
+    )
+    # NON-VACUOUS, and this is the assertion that must be able to fail. If the call returned
+    # inside the watchdog interval it never entered the unpinged window this step exists to test,
+    # and everything below would pass against the defect.
+    assert took >= 20, (
+        f"the directive returned in {took}s, inside WatchdogSec=20 -- this step no longer "
+        f"exercises an unpinged window, so the survival asserted below proves nothing"
+    )
+
+    # THE DEFECT. Pre-lease this is where it lands: the watchdog fires mid-directive, systemd
+    # SIGABRTs the agent, and Restart=on-failure brings up a successor 2 s later.
+    long_now = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
+    assert long_now == long_restarts, (
+        f"a {took}s directive took the agent down ({long_restarts} -> {long_now} restarts) -- "
+        f"dispatch is running unleased under the watchdog (V3b.15)"
+    )
+    long_pid_now = host.succeed("systemctl show -p MainPID --value briard-agent").strip()
+    assert long_pid_now == long_pid, (
+        f"the agent process changed across the directive ({long_pid} -> {long_pid_now}) -- it was "
+        f"restarted mid-install"
+    )
+    host.fail(f"journalctl -u briard-agent --since='{long_since}' | grep -qi 'watchdog timeout'")
+
+    # AND THE OPERATOR GOT AN ANSWER. The install FAILS here -- the catalog is unreachable by
+    # construction -- and it must say so. The difference between a failed DIRECTIVE and a failed
+    # AGENT is the whole finding: the stranger was not told an install had failed, they were left
+    # holding a dead socket, which reads as "did that work?" rather than "that did not work".
+    assert rc != 0, f"the install reported success against an unreachable catalog:\n{out}"
+    assert "without reporting an outcome" not in out, (
+        f"the CLI lost the socket mid-directive -- the agent died under it (V3b.15):\n{out}"
+    )
+
+    host.succeed("iptables -D INPUT -p tcp --dport 8098 -j DROP")
+    host.succeed("systemctl is-active briard-agent")
+    host.succeed("curl -fsS http://192.168.1.100/healthz")
+    print(f"a {took}s directive ran to a reported outcome with the watchdog armed")
+
+    # The window steps 5 and 6 read for the trip. Taken here, AFTER step 3, so a watchdog line
+    # found below can only have come from the wedge.
     since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
 
-    # === 3) THE WEDGE: alive, but the observe goroutine is gone ===
+    # === 4) THE WEDGE: alive, but the observe goroutine is gone ===
     # The explicit fixture. Same syscall, same loop, same position — the agent opens
     # BRIARD_WEDGE_FIFO each cycle and has been getting ENOENT until now.
     host.succeed("mkfifo /tmp/wedge.fifo")
@@ -202,7 +299,7 @@ pkgs.testers.runNixOSTest {
     # from SIGSTOP, and what a bare-timer pinger would sail straight through.
     host.wait_until_succeeds("test $(pgrep -cf 'bin/briard-agent') -ge 1", timeout=10)
 
-    # === 4) THE WATCHDOG FIRES ===
+    # === 5) THE WATCHDOG FIRES ===
     # WatchdogSec=20, so the miss lands within ~20s of the last beat; allow generous slack for a
     # loaded nested VM. NRestarts growing is the assertion systemd itself makes.
     host.wait_until_succeeds(
@@ -211,7 +308,7 @@ pkgs.testers.runNixOSTest {
     )
     host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -qi 'watchdog'")
 
-    # === 5) AND IT LEFT THE DIAGNOSIS BEHIND ===
+    # === 6) AND IT LEFT THE DIAGNOSIS BEHIND ===
     # SIGABRT + GOTRACEBACK=all: every goroutine's stack at the moment it wedged. This is the half
     # of the feature that closes the bug rather than clearing it.
     host.succeed(f"journalctl -u briard-agent --since='{since}' | grep -q 'SIGABRT'")
@@ -237,7 +334,7 @@ pkgs.testers.runNixOSTest {
         f"journalctl -u briard-agent --since='{since}' | grep -q 'host.Config.wedgeForTest'"
     )
 
-    # === 6) THE GUEST WAS NEVER TOUCHED ===
+    # === 7) THE GUEST WAS NEVER TOUCHED ===
     # An involuntary restart must re-adopt exactly as a deliberate one does.
     host.succeed("systemctl is-active briard-guest.service")
     qemu_mid = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
@@ -246,7 +343,7 @@ pkgs.testers.runNixOSTest {
         "a cure worse than the disease"
     )
 
-    # === 7) CLEAR THE FAULT: the agent recovers, and stops tripping ===
+    # === 8) CLEAR THE FAULT: the agent recovers, and stops tripping ===
     # Deliberately NOT "wait for another re-adopt". Once the FIFO is gone the agent that is
     # already running simply carries on; no further restart is needed, and demanding one asserts
     # a recovery the product correctly does not perform. (An earlier version did exactly that and
