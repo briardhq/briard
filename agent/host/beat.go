@@ -150,3 +150,30 @@ func (b *beat) Lease(ctx context.Context) {
 		}
 	}()
 }
+
+// budget bounds an operation and puts it under the watchdog IN ONE CALL, and it exists because
+// those two facts must agree and nothing made them.
+//
+// [V3b.15] is what a disagreement costs. Every long operation here already declared a budget;
+// what none of the forward paths did was lease it, so `service install` — a verb measured at
+// 48.8 s — ran unpinged under WatchdogSec=20 and was SIGABRTed on every shipped node for a week.
+// The leases that DID exist were all on recovery and rollback paths ([V3.32] annotated where a
+// wedge was feared and not where work is merely long), and the two sets did not overlap at all.
+//
+// So the deadline and the lease are no longer two things a caller has to remember to write next
+// to each other. Forgetting the lease now means forgetting the budget, which is not a subtle
+// omission: an unbounded operation on the observe loop is visible, and Lease panics on a context
+// with no deadline rather than quietly covering for it.
+//
+// The predicate does not disappear under the lease, it CHANGES — steady state asserts the loop is
+// progressing, a budget asserts this operation finished inside the bound it declared. Nothing is
+// unwatched: normal completion ends the lease through the `defer cancel()` the caller already
+// writes, and an overrun ends it at the deadline, where the watchdog fires with the traceback.
+//
+// Nil-safe through Lease, so a dev run, the lab fleet and any harness with no WatchdogSec get the
+// deadline and no goroutine.
+func (b *beat) budget(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	bctx, cancel := context.WithTimeout(ctx, d)
+	b.Lease(bctx)
+	return bctx, cancel
+}

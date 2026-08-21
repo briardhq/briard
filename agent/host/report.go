@@ -120,7 +120,7 @@ type selfUpdater interface {
 // health-gate reverted), or failed (couldn't apply / no clean revert). The caller reports it
 // back so the cloud moves the intent terminal -- the durable answer a post-outage reconcile
 // polls. Re-delivery of an already-applied directive is an idempotent no-op that re-reports done.
-func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec model.ServiceSpec, current string, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration) api.DirectiveOutcome {
+func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec model.ServiceSpec, current string, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
 	done := api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -144,7 +144,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		// past the rebuild the old overlay is GONE, so a context that expires mid-bring-up leaves
 		// a node needing another rescue rather than one that reverted. There is nothing to revert
 		// to -- that is the nature of this rung, and the reason it is never automatic.
-		rctx, cancel := context.WithTimeout(ctx, upgradeBudget)
+		rctx, cancel := wd.budget(ctx, upgradeBudget)
 		defer cancel()
 		logf("directive kind=rescue: rebuilding the guest from its backing image")
 		if err := up.RescueGuest(rctx); err != nil {
@@ -158,7 +158,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 			logf("directive kind=upgrade ignored (no payload/upgrader/target on this node)")
 			return failed("no payload/upgrader/target on this node")
 		}
-		uctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		uctx, cancel := wd.budget(ctx, 10*time.Minute)
 		defer cancel()
 		logf("directive kind=upgrade: payload %s -> %s", current, d.Payload)
 		if _, err := up.UpgradePayload(uctx, spec, current, d.Payload); err != nil {
@@ -188,7 +188,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		// AwaitOSReady polls until this context ends — so the number is a product property
 		// rather than a timeout detail. Config.UpgradeBudget carries that reasoning and the
 		// bounds on lowering it.
-		uctx, cancel := context.WithTimeout(ctx, upgradeBudget)
+		uctx, cancel := wd.budget(ctx, upgradeBudget)
 		defer cancel()
 		// Pull the closure in first. This is deliberately OUTSIDE the upgrade:
 		// a stage failure means the bytes never arrived, so nothing was quiesced,
@@ -292,7 +292,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 			logf("directive cert (%s): no matching key held -- awaiting a fresh cert-request", b.Name)
 			return failed("no matching key held")
 		}
-		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		cctx, cancel := wd.budget(ctx, 30*time.Second)
 		defer cancel()
 		if err := up.WriteCert(cctx, b.Cert, key); err != nil {
 			logf("directive cert (%s) failed: %v", b.Name, err)
@@ -316,7 +316,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 			return done // idempotent: a re-offer of the running version is a no-op
 		}
 		// Bound the fetch+verify; staging is atomic, so a timeout here can't leave a torn slot.
-		sctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		sctx, cancel := wd.budget(ctx, 10*time.Minute)
 		defer cancel()
 		logf("directive kind=agent-update: fetch+verify %s (%s)", u.Version, u.URL)
 		if err := su.Stage(sctx, u); err != nil {

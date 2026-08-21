@@ -115,9 +115,9 @@ func TestApplyDirective(t *testing.T) {
 	var logs []string
 	logf := func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
 	spec := model.ServiceSpec{Name: "dummy", Image: "img:v0"}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveLog, Payload: "x"}, nil, spec, "img:v0", nil, nil, nil, logf, testUpgradeBudget)
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveNoop}, nil, spec, "img:v0", nil, nil, nil, logf, testUpgradeBudget)
-	applyDirective(context.Background(), api.Directive{Kind: "weird"}, nil, spec, "img:v0", nil, nil, nil, logf, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveLog, Payload: "x"}, nil, spec, "img:v0", nil, nil, nil, logf, testUpgradeBudget, nil)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveNoop}, nil, spec, "img:v0", nil, nil, nil, logf, testUpgradeBudget, nil)
+	applyDirective(context.Background(), api.Directive{Kind: "weird"}, nil, spec, "img:v0", nil, nil, nil, logf, testUpgradeBudget, nil)
 	joined := strings.Join(logs, "\n")
 	for _, want := range []string{"kind=log payload=\"x\"", "kind=noop acked", `kind="weird" unhandled`} {
 		if !strings.Contains(joined, want) {
@@ -133,7 +133,7 @@ func TestApplyDirective(t *testing.T) {
 func TestApplyDirectiveUpgrade(t *testing.T) {
 	up := &fakeUpgrader{}
 	spec := model.ServiceSpec{Name: "dummy", Image: "briard-dummy:v0", DataDir: "/var/lib/briard/dummy"}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up, spec, "briard-dummy:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up, spec, "briard-dummy:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if !up.called || up.oldImg != "briard-dummy:v0" || up.newImg != "briard-dummy:v1" || up.spec.Name != "dummy" {
 		t.Errorf("UpgradePayload call = %+v (called=%v), want dummy v0->v1", up, up.called)
 	}
@@ -144,7 +144,7 @@ func TestApplyDirectiveUpgrade(t *testing.T) {
 func TestApplyDirectiveUpgradeBaselineIsCurrent(t *testing.T) {
 	up := &fakeUpgrader{}
 	spec := model.ServiceSpec{Name: "dummy", Image: "briard-dummy:v0", DataDir: "/d"}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v2"}, up, spec, "briard-dummy:v1", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v2"}, up, spec, "briard-dummy:v1", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.oldImg != "briard-dummy:v1" || up.newImg != "briard-dummy:v2" {
 		t.Errorf("upgrade baseline = %q->%q, want the current v1->v2", up.oldImg, up.newImg)
 	}
@@ -155,7 +155,7 @@ func TestApplyDirectiveUpgradeBaselineIsCurrent(t *testing.T) {
 func TestApplyDirectiveUpgradeSystem(t *testing.T) {
 	up := &fakeUpgrader{}
 	spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/var/lib/briard/dummy"}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}, up, spec, "img:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}, up, spec, "img:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if !up.sysCalled || up.target != "/nix/store/abc-nixos-system" || up.called {
 		t.Errorf("Upgrade call = %+v, want the OS switch to the target closure (not UpgradePayload)", up)
 	}
@@ -169,7 +169,7 @@ func TestApplyDirectiveUpgradeSystemStagesFirst(t *testing.T) {
 	up := &fakeUpgrader{}
 	spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/var/lib/briard/dummy"}
 	const target = "/nix/store/abc-nixos-system"
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target}, up, spec, "img:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target}, up, spec, "img:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.staged != target {
 		t.Errorf("staged %q, want the switch target %q", up.staged, target)
 	}
@@ -185,7 +185,7 @@ func TestApplyDirectiveUpgradeSystemStageFailureDoesNotSwitch(t *testing.T) {
 	up := &fakeUpgrader{stageErr: fmt.Errorf("substituter unreachable")}
 	fn := &fakeNotifier{}
 	spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}
-	o := applyDirective(context.Background(), api.Directive{ID: "9", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}, up, spec, "img:v0", fn, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	o := applyDirective(context.Background(), api.Directive{ID: "9", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}, up, spec, "img:v0", fn, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.sysCalled {
 		t.Error("switched despite a failed stage — the closure is not in the store")
 	}
@@ -204,7 +204,7 @@ func TestApplyDirectiveUpgradeSystemDecidesActivationFirst(t *testing.T) {
 	up := &fakeUpgrader{}
 	spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}
 	const target = "/nix/store/abc-nixos-system"
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target}, up, spec, "img:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target}, up, spec, "img:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.activationFor != target {
 		t.Errorf("activation checked for %q, want the target %q", up.activationFor, target)
 	}
@@ -243,7 +243,7 @@ func TestApplyDirectiveUpgradeSystemRebootTarget(t *testing.T) {
 			}
 			fn := &fakeNotifier{}
 			spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}
-			o := applyDirective(context.Background(), api.Directive{ID: "7", Kind: api.DirectiveUpgradeSystem, Payload: target}, up, spec, "img:v0", fn, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+			o := applyDirective(context.Background(), api.Directive{ID: "7", Kind: api.DirectiveUpgradeSystem, Payload: target}, up, spec, "img:v0", fn, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 			if up.sysCalled {
 				t.Error("switched a reboot-only target — that is the switch-then-maybe-reboot the rule forbids")
 			}
@@ -269,7 +269,7 @@ func TestApplyDirectiveUpgradeSystemRebootNeedsStagingFirst(t *testing.T) {
 		stageErr: fmt.Errorf("no route to cache"),
 	}
 	spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}
-	o := applyDirective(context.Background(), api.Directive{ID: "9", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, spec, "img:v0", &fakeNotifier{}, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	o := applyDirective(context.Background(), api.Directive{ID: "9", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, spec, "img:v0", &fakeNotifier{}, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.rebootTarget != "" {
 		t.Errorf("rebooted into %q after staging failed", up.rebootTarget)
 	}
@@ -283,7 +283,7 @@ func TestApplyDirectiveUpgradeSystemRebootNeedsStagingFirst(t *testing.T) {
 func TestApplyDirectiveUpgradeSystemRefusesOnActivationError(t *testing.T) {
 	up := &fakeUpgrader{activationErr: fmt.Errorf("guest unreachable")}
 	spec := model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}
-	o := applyDirective(context.Background(), api.Directive{ID: "8", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, spec, "img:v0", &fakeNotifier{}, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	o := applyDirective(context.Background(), api.Directive{ID: "8", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, spec, "img:v0", &fakeNotifier{}, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.sysCalled || o.State != api.OutcomeFailed {
 		t.Errorf("switched=%v outcome=%+v, want no switch and failed", up.sysCalled, o)
 	}
@@ -295,13 +295,13 @@ func TestApplyDirectiveUpgradeEscalates(t *testing.T) {
 	up := &fakeUpgrader{err: fmt.Errorf("health-gate tripped -> rolled back")}
 	fn := &fakeNotifier{}
 	spec := model.ServiceSpec{Name: "dummy", Image: "briard-dummy:v0"}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up, spec, "briard-dummy:v0", fn, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up, spec, "briard-dummy:v0", fn, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning {
 		t.Fatalf("a failed upgrade must escalate one warning, got %+v", fn.alerts)
 	}
 	// A successful upgrade must NOT escalate.
 	up2, fn2 := &fakeUpgrader{}, &fakeNotifier{}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up2, spec, "briard-dummy:v0", fn2, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up2, spec, "briard-dummy:v0", fn2, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if len(fn2.alerts) != 0 {
 		t.Errorf("a successful upgrade must not escalate, got %+v", fn2.alerts)
 	}
@@ -314,7 +314,7 @@ func TestApplyDirectiveCert(t *testing.T) {
 	up := &fakeUpgrader{}
 	cr := &certRequester{}
 	// Leg 1: the cloud asks for a CSR.
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveCertRequest, Payload: "briard.test"}, up, model.ServiceSpec{Name: "briard-payload"}, "", nil, cr, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveCertRequest, Payload: "briard.test"}, up, model.ServiceSpec{Name: "briard-payload"}, "", nil, cr, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if cr.pendingCSR == nil || cr.keyPEM == "" {
 		t.Fatal("cert-request must generate a keypair + a CSR queued for upload")
 	}
@@ -323,7 +323,7 @@ func TestApplyDirectiveCert(t *testing.T) {
 	}
 	// Leg 3: the signed cert (cert-only) arrives and is paired with the stashed key.
 	bundle, _ := json.Marshal(api.CertBundle{Name: "briard.test", Cert: "CERTPEM"})
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveCert, Payload: string(bundle)}, up, model.ServiceSpec{Name: "briard-payload"}, "", nil, cr, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveCert, Payload: string(bundle)}, up, model.ServiceSpec{Name: "briard-payload"}, "", nil, cr, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.certCert != "CERTPEM" || up.certKey != cr.keyPEM {
 		t.Errorf("WriteCert got cert=%q key=%q, want the cert paired with the node's stashed key", up.certCert, up.certKey)
 	}
@@ -334,7 +334,7 @@ func TestApplyDirectiveCert(t *testing.T) {
 func TestApplyDirectiveCertNoKeySkips(t *testing.T) {
 	up := &fakeUpgrader{}
 	bundle, _ := json.Marshal(api.CertBundle{Name: "briard.test", Cert: "CERTPEM"})
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveCert, Payload: string(bundle)}, up, model.ServiceSpec{Name: "briard-payload"}, "", nil, &certRequester{}, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveCert, Payload: string(bundle)}, up, model.ServiceSpec{Name: "briard-payload"}, "", nil, &certRequester{}, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.certCert != "" {
 		t.Errorf("cert with no held key must be skipped, got WriteCert cert=%q", up.certCert)
 	}
@@ -347,7 +347,7 @@ func TestApplyDirectiveAgentUpdateStages(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v1"}
 	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "https://rel/agent", Sig: "c2ln"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
-		nil, model.ServiceSpec{}, "", nil, nil, su, func(string, ...any) {}, testUpgradeBudget)
+		nil, model.ServiceSpec{}, "", nil, nil, su, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("agent-update outcome = %+v, want done", o)
 	}
@@ -363,7 +363,7 @@ func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
 	fn := &fakeNotifier{}
 	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "https://rel/agent", Sig: "bad"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
-		nil, model.ServiceSpec{}, "", fn, nil, su, func(string, ...any) {}, testUpgradeBudget)
+		nil, model.ServiceSpec{}, "", fn, nil, su, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeFailed {
 		t.Fatalf("a refused update outcome = %+v, want failed", o)
 	}
@@ -381,7 +381,7 @@ func TestApplyDirectiveAgentUpdateIdempotent(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v2"}
 	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "https://rel/agent", Sig: "c2ln"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
-		nil, model.ServiceSpec{}, "", nil, nil, su, func(string, ...any) {}, testUpgradeBudget)
+		nil, model.ServiceSpec{}, "", nil, nil, su, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("re-offer of the running version outcome = %+v, want done", o)
 	}
@@ -394,7 +394,7 @@ func TestApplyDirectiveAgentUpdateIdempotent(t *testing.T) {
 func TestApplyDirectiveAgentUpdateNoUpdaterRefuses(t *testing.T) {
 	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "u", Sig: "s"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
-		nil, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+		nil, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeFailed {
 		t.Errorf("agent-update with no updater = %+v, want failed", o)
 	}
@@ -406,18 +406,18 @@ func TestApplyDirectiveOutcome(t *testing.T) {
 	spec := model.ServiceSpec{Name: "dummy", Image: "briard-dummy:v0", DataDir: "/d"}
 	nolog := func(string, ...any) {}
 
-	if o := applyDirective(context.Background(), api.Directive{ID: "1", Kind: api.DirectiveNoop}, nil, spec, "", nil, nil, nil, nolog, testUpgradeBudget); o.ID != "1" || o.State != api.OutcomeDone {
+	if o := applyDirective(context.Background(), api.Directive{ID: "1", Kind: api.DirectiveNoop}, nil, spec, "", nil, nil, nil, nolog, testUpgradeBudget, nil); o.ID != "1" || o.State != api.OutcomeDone {
 		t.Errorf("noop outcome = %+v, want done id=1", o)
 	}
 	up := &fakeUpgrader{}
-	if o := applyDirective(context.Background(), api.Directive{ID: "2", Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up, spec, "briard-dummy:v0", nil, nil, nil, nolog, testUpgradeBudget); o.State != api.OutcomeDone {
+	if o := applyDirective(context.Background(), api.Directive{ID: "2", Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, up, spec, "briard-dummy:v0", nil, nil, nil, nolog, testUpgradeBudget, nil); o.State != api.OutcomeDone {
 		t.Errorf("upgrade outcome = %+v, want done", o)
 	}
 	upErr := &fakeUpgrader{err: fmt.Errorf("gate tripped")}
-	if o := applyDirective(context.Background(), api.Directive{ID: "3", Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, upErr, spec, "briard-dummy:v0", &fakeNotifier{}, nil, nil, nolog, testUpgradeBudget); o.State != api.OutcomeRolledBack {
+	if o := applyDirective(context.Background(), api.Directive{ID: "3", Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}, upErr, spec, "briard-dummy:v0", &fakeNotifier{}, nil, nil, nolog, testUpgradeBudget, nil); o.State != api.OutcomeRolledBack {
 		t.Errorf("failed-upgrade outcome = %+v, want rolled-back", o)
 	}
-	if o := applyDirective(context.Background(), api.Directive{ID: "4", Kind: "weird"}, nil, spec, "", nil, nil, nil, nolog, testUpgradeBudget); o.State != api.OutcomeFailed {
+	if o := applyDirective(context.Background(), api.Directive{ID: "4", Kind: "weird"}, nil, spec, "", nil, nil, nil, nolog, testUpgradeBudget, nil); o.State != api.OutcomeFailed {
 		t.Errorf("unhandled outcome = %+v, want failed", o)
 	}
 }
@@ -425,7 +425,7 @@ func TestApplyDirectiveOutcome(t *testing.T) {
 // A node with no payload (witness / empty spec) ignores an upgrade directive.
 func TestApplyDirectiveUpgradeIgnoredWithoutTarget(t *testing.T) {
 	up := &fakeUpgrader{}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "x"}, up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgrade, Payload: "x"}, up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if up.called {
 		t.Error("must not upgrade when the node has no payload spec")
 	}
@@ -439,7 +439,7 @@ func TestApplyDirectiveUpgradeSystemOnAZeroServiceNode(t *testing.T) {
 	up := &fakeUpgrader{}
 	const target = "/nix/store/abc-nixos-system"
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target},
-		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 
 	if o.State != api.OutcomeDone {
 		t.Errorf("outcome = %q (%s), want done -- a node with no service is still a node", o.State, o.Detail)
@@ -457,7 +457,7 @@ func TestApplyDirectiveUpgradeSystemOnAZeroServiceNode(t *testing.T) {
 func TestApplyDirectiveUpgradeSystemStillRefusesAnEmptyTarget(t *testing.T) {
 	up := &fakeUpgrader{}
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: ""},
-		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State == api.OutcomeDone {
 		t.Error("an upgrade-system with no target must not report done")
 	}
@@ -480,7 +480,7 @@ func (f *fakeUpgrader) RescueGuest(context.Context) error {
 func TestApplyDirectiveRescue(t *testing.T) {
 	up := &fakeUpgrader{}
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
-		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if !up.rescued {
 		t.Error("RescueGuest was not called")
 	}
@@ -493,7 +493,7 @@ func TestApplyDirectiveRescue(t *testing.T) {
 // old overlay is gone -- so "failed" has to be reachable and honest.
 func TestApplyDirectiveRescueRefusesWithoutAGuest(t *testing.T) {
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
-		nil, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+		nil, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeFailed {
 		t.Errorf("outcome with no upgrader = %+v, want failed", o)
 	}
@@ -505,7 +505,7 @@ func TestApplyDirectiveRescueRefusesWithoutAGuest(t *testing.T) {
 func TestApplyDirectiveRescueSurfacesTheReason(t *testing.T) {
 	up := &fakeUpgrader{err: errors.New("not an overlay")}
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
-		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget)
+		up, model.ServiceSpec{}, "", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not an overlay") {
 		t.Errorf("outcome = %+v, want failed carrying the node's reason", o)
 	}

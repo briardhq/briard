@@ -891,7 +891,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applyPair(ctx, m, platformWitness{}, d, logf)
 	}
-	return applyDirective(ctx, d, up, cfg.Service, img, n, cr, su, logf, cfg.UpgradeBudget)
+	return applyDirective(ctx, d, up, cfg.Service, img, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
 }
 
 // OverlayStatus reads the overlay's health for the status snapshot. Nil when no

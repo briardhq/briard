@@ -48,7 +48,7 @@ func (cfg Config) applyPair(ctx context.Context, g guestMesher, w witnessStarter
 	}
 	logf("directive kind=pair: reconcile %s to a %d-peer mesh (join=%t)", spec.Resource, len(spec.Peers), spec.Join)
 	// A blank join resyncs the whole volume from the primary; bound it generously but finitely.
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	pctx, cancel := cfg.beat.budget(ctx, 10*time.Minute)
 	defer cancel()
 	if err := cfg.reconcileMesh(pctx, g, w, spec, logf); err != nil {
 		logf("directive pair failed: %v", err)

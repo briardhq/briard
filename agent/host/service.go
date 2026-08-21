@@ -95,7 +95,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 	if d.Payload == "" {
 		return failed("no service named")
 	}
-	ctx, cancel := context.WithTimeout(ctx, installBudget)
+	ctx, cancel := cfg.beat.budget(ctx, installBudget)
 	defer cancel()
 
 	m, _, err := cfg.fetchManifest(ctx, d.Payload)
@@ -138,7 +138,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if d.Payload == "" {
 		return failed("no service named")
 	}
-	ctx, cancel := context.WithTimeout(ctx, installBudget)
+	ctx, cancel := cfg.beat.budget(ctx, installBudget)
 	defer cancel()
 
 	m, raw, err := cfg.fetchManifest(ctx, d.Payload)
@@ -496,7 +496,7 @@ func (cfg Config) adjustChain(ctx context.Context, g serviceInstaller, chain []s
 // the order the guest manager's rollback uses — and if the data cannot be rolled back the
 // promoter is deliberately left PAUSED rather than resumed onto poisoned data.
 func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, dataDir string, next quadlet.Rendered, prior *quadlet.Rendered, priorSubdirs []string, priorRaw, snap string, previous []string, logf func(string, ...any), cause error) api.DirectiveOutcome {
-	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), revertBudget)
+	rctx, rcancel := cfg.beat.budget(context.WithoutCancel(ctx), revertBudget)
 	defer rcancel()
 
 	bothFailed := func(what string, err error) api.DirectiveOutcome {

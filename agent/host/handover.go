@@ -81,7 +81,7 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 		// only the seconds since. Best-effort by design: on error or timeout the eviction
 		// PROCEEDS — a sick device argues for moving the house, not for keeping it — and an
 		// older guest without the verb answers unknown-verb, which lands here too.
-		sctx, cancel := context.WithTimeout(ctx, fsSyncTimeout)
+		sctx, cancel := cfg.beat.budget(ctx, fsSyncTimeout)
 		detail, err := g.FsSync(sctx)
 		cancel()
 		if err != nil {
@@ -105,7 +105,7 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 // exactly this flush and deserves the truth about it, and nothing downstream is blocked on the
 // answer.
 func (cfg Config) applySync(ctx context.Context, g guestEvictor, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
-	sctx, cancel := context.WithTimeout(ctx, fsSyncTimeout)
+	sctx, cancel := cfg.beat.budget(ctx, fsSyncTimeout)
 	detail, err := g.FsSync(sctx)
 	cancel()
 	if err != nil {
