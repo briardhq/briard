@@ -24,6 +24,7 @@ const testUpgradeBudget = time.Minute
 
 // fakeUpgrader records the upgrade call a directive drives.
 type fakeUpgrader struct {
+	hold              func() error // blocks inside the budget (see beat_test.go)
 	spec              model.ServiceSpec
 	oldImg, newImg    string
 	target            string // Upgrade's system closure (whole-OS)
@@ -48,6 +49,11 @@ type fakeUpgrader struct {
 }
 
 func (f *fakeUpgrader) UpgradePayload(_ context.Context, spec model.ServiceSpec, oldImage, newImage string) (guest.SnapshotRef, error) {
+	if f.hold != nil {
+		if err := f.hold(); err != nil {
+			return guest.SnapshotRef{}, err
+		}
+	}
 	f.called, f.spec, f.oldImg, f.newImg = true, spec, oldImage, newImage
 	return guest.SnapshotRef{}, f.err
 }
@@ -60,6 +66,11 @@ func (f *fakeUpgrader) Upgrade(_ context.Context, target string) (bool, error) {
 }
 
 func (f *fakeUpgrader) Stage(_ context.Context, closure string, src guestagent.StageSource) error {
+	if f.hold != nil {
+		if err := f.hold(); err != nil {
+			return err
+		}
+	}
 	f.staged, f.stagedFrom = closure, src
 	return f.stageErr
 }
@@ -469,6 +480,11 @@ func TestApplyDirectiveUpgradeSystemStillRefusesAnEmptyTarget(t *testing.T) {
 // RescueGuest records the call; the fake never touches a disk. The real one is proven by
 // nixosTest/guest-rescue.nix, which is the only place a rebuilt overlay can be observed.
 func (f *fakeUpgrader) RescueGuest(context.Context) error {
+	if f.hold != nil {
+		if err := f.hold(); err != nil {
+			return err
+		}
+	}
 	f.rescued = true
 	return f.err
 }

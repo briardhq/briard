@@ -1,6 +1,11 @@
 package host
 
 import (
+	"errors"
+	"sync"
+
+	"briard.io/shared/api"
+	"briard.io/shared/model"
 	"context"
 	"os"
 	"strconv"
@@ -127,5 +132,90 @@ func TestLeaseReleasesOnCancel(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if grew := sent.Load() - after; grew != 0 {
 		t.Fatalf("the lease pinged %d times after its context was cancelled", grew)
+	}
+}
+
+// ============================================================================================
+// THE GUARD AGAINST THE NEXT [V3b.15], and it is here rather than in report_test.go because
+// what it defends is a property of the BEAT: a directive that declares a budget must lease it.
+//
+// The defect it exists to catch is not subtle in hindsight and was invisible in practice.
+// dispatch runs synchronously on the observe loop, which is the only thing that pings systemd,
+// so nothing pings for as long as a directive runs. Every forward path declared a budget and
+// leased none of it, and a `service install` measured at 48.8 s was SIGABRTed at 20 s on every
+// shipped node for a week. Nothing failed except the product.
+//
+// HOW THESE ASSERT IT, and why there is no sleep anywhere. A test that slept past a ping
+// interval and counted pings would be a timing race on a loaded runner. Instead the fake BLOCKS
+// until the watchdog is fed: if the budget was leased, a ping arrives within a millisecond and
+// the directive completes; if it was not, no ping can ever arrive, the hold gives up, and the
+// failure surfaces as the directive's own outcome detail. The handler cannot finish without the
+// property being true, which is the strongest shape available here.
+//
+// WHAT IS NOT COVERED, so a green is not read as more than it is. `cert-request` (a 30 s budget)
+// and `agent-update` (10 m) go through the same beat.budget call and are NOT driven here: the
+// first needs a real keypair and guest, the second a real signed update, and neither earns that
+// setup for a property the other four already pin. And no test can force a SIXTH directive to be
+// added to this table -- what it does is make the pattern obvious enough to copy, and fail loudly
+// for the five paths that exist.
+// ============================================================================================
+
+// pingingBeat is a beat whose first ping closes the returned channel. Interval is a millisecond
+// so a leased budget feeds it effectively immediately; an unleased one never does, at any speed.
+func pingingBeat() (*beat, <-chan struct{}) {
+	pinged := make(chan struct{})
+	var once sync.Once
+	return &beat{
+		every: time.Millisecond,
+		send:  func() error { once.Do(func() { close(pinged) }); return nil },
+		logf:  quietf,
+	}, pinged
+}
+
+// heldUntilPinged is the fakes' hold hook: block until the watchdog is fed, or report that it
+// never was. The wait is long enough that a busy runner cannot fail it and short enough that an
+// unleased path fails the test rather than the whole package's timeout.
+func heldUntilPinged(pinged <-chan struct{}) func() error {
+	return func() error {
+		select {
+		case <-pinged:
+			return nil
+		case <-time.After(5 * time.Second):
+			return errors.New("no watchdog ping arrived while this directive ran -- its budget " +
+				"was never leased, so systemd would kill the agent mid-work (V3b.15)")
+		}
+	}
+}
+
+func TestLongDirectivesKeepTheWatchdogFed(t *testing.T) {
+	spec := model.ServiceSpec{Name: "briard-payload"}
+	for _, tc := range []struct {
+		name string
+		d    api.Directive
+	}{
+		{"rescue", api.Directive{Kind: api.DirectiveRescue}},
+		{"payload upgrade", api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}},
+		{"os upgrade", api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, pinged := pingingBeat()
+			up := &fakeUpgrader{hold: heldUntilPinged(pinged)}
+			o := applyDirective(context.Background(), tc.d, up, spec, "briard-dummy:v0",
+				&fakeNotifier{}, nil, nil, quietf, testUpgradeBudget, b)
+			if o.State != api.OutcomeDone {
+				t.Fatalf("%s did not complete: %s", tc.name, o.Detail)
+			}
+		})
+	}
+}
+
+// The verb the field report was written about, driven end to end against a real signed catalog.
+func TestServiceInstallKeepsTheWatchdogFed(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	b, pinged := pingingBeat()
+	cfg.beat = b
+	f := &fakeInstaller{primary: true, active: true, healthy: true, hold: heldUntilPinged(pinged)}
+	if o := install(cfg, f); o.State != api.OutcomeDone {
+		t.Fatalf("service install did not complete: %s", o.Detail)
 	}
 }

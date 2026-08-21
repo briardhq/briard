@@ -25,6 +25,7 @@ import (
 // fakeInstaller records the ORDER of everything the install does — the bracket's correctness is
 // an ordering property, so order is what the tests assert.
 type fakeInstaller struct {
+	hold      func() error // blocks inside the budget (see beat_test.go)
 	steps     []string
 	primary   bool
 	active    bool
@@ -47,6 +48,11 @@ func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, erro
 }
 
 func (f *fakeInstaller) ServiceRender(context.Context, map[string]string, []string) error {
+	if f.hold != nil {
+		if err := f.hold(); err != nil {
+			return err
+		}
+	}
 	f.steps = append(f.steps, "render")
 	return f.renderEr
 }

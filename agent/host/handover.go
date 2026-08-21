@@ -37,6 +37,20 @@ type guestEvictor interface {
 // will retry the same writeback with the same result either way.
 const fsSyncTimeout = 60 * time.Second
 
+// evictBudget bounds the eviction itself, and it is generous for the reason the number looks
+// arbitrary: the evict stops the services and unmounts, and an unmount SYNCS. The pre-eviction
+// flush above usually means that writeback owes little -- the sequencer sends a `sync` directive
+// ahead of the handover ([B.100a]) and this function's own FsSync catches the settle window --
+// but "usually" is not a bound, and a write-heavy payload on a slow device is exactly when a
+// handover matters most.
+//
+// It exists at all because it was MISSING, and that is the point worth keeping: this call ran on
+// the caller's unbounded context, on the observe loop, which is the one shape beat.budget cannot
+// paper over -- Lease refuses a context with no deadline, correctly, because an unbounded guest
+// RPC on that loop is the wedge the watchdog exists to catch rather than something to excuse
+// ([V3b.15]'s sweep; the number is the owner's, 2026-08-21).
+const evictBudget = 15 * time.Minute
+
 // Handover payload words. Deliberately three named states rather than a bool pair: "" is the
 // ordinary handover, and the two others are the reboot path's halves, which are meaningless
 // without each other and easy to confuse if they arrive as flags.
@@ -90,7 +104,9 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 			logf("directive kind=handover: pre-eviction sync: %s", detail)
 		}
 	}
-	if err := g.ReactorEvict(ctx, keepMasked, unmask); err != nil {
+	ectx, ecancel := cfg.beat.budget(ctx, evictBudget)
+	defer ecancel()
+	if err := g.ReactorEvict(ectx, keepMasked, unmask); err != nil {
 		logf("directive handover failed: %v", err)
 		return failed(err.Error())
 	}
