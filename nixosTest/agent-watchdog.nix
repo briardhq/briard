@@ -254,7 +254,18 @@ pkgs.testers.runNixOSTest {
     # race-free one: systemd logs the trip immediately, while the two counters below are read in
     # the gap between the SIGABRT and RestartSec=2 and have not caught up yet. The first run of
     # this step proved that the hard way -- NRestarts still read equal, and MainPID had gone to 0.
-    host.fail(f"journalctl -u briard-agent --since='{long_since}' | grep -q 'Watchdog timeout'")
+    #
+    # Counted rather than host.fail'd, which is the idiom elsewhere in this file, because THIS is
+    # the assertion that states the finding: a bare "command unexpectedly succeeded" names the
+    # grep and not the defect, and a reader meeting this in CI should not have to open the file.
+    trips = host.execute(
+        f"journalctl -u briard-agent --since='{long_since}' | grep -c 'Watchdog timeout' || true"
+    )[1].strip()
+    assert trips == "0", (
+        f"the watchdog fired {trips}x during a legitimate directive -- dispatch runs synchronously "
+        f"on the observe loop, which is the only pinger, so nothing pinged systemd for the "
+        f"{took}s the install took. The agent was SIGABRTed mid-work (V3b.15)"
+    )
 
     # ...and it is still the same process that took the directive. MainPID reads 0 while the unit
     # is down, which is what a mid-directive kill looks like caught inside RestartSec.
