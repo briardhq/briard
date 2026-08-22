@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"briard.io/agent/guestagent"
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
+	"briard.io/shared/model"
+	"briard.io/shared/notify"
 )
 
 // fakeMesher records which guest verb the pairing reconcile drove. netCalls captures every
@@ -513,5 +516,94 @@ func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 	}
 	if !explained {
 		t.Errorf("the failure did not say the guest IS meshed while the host cannot re-push it: %v", lines)
+	}
+}
+
+// meshReader is a statusReader that answers only the question warnIfMeshForgotten asks: how many
+// peers is this guest actually replicating to. Local to this file rather than a fakeStatus field,
+// because the rest of that fake's surface is noise here.
+type meshReader struct {
+	peers int
+	err   error
+}
+
+func (m meshReader) Cluster(context.Context, string) (model.Cluster, error) {
+	if m.err != nil {
+		return model.Cluster{}, m.err
+	}
+	cl := model.Cluster{}
+	for i := 0; i < m.peers; i++ {
+		cl.Peers = append(cl.Peers, model.PeerState{})
+	}
+	return cl, nil
+}
+func (m meshReader) PayloadHealth(context.Context, string) (bool, error) { return true, nil }
+func (m meshReader) MDNSPublished(context.Context) (string, error)       { return "", nil }
+func (m meshReader) VIP(context.Context, string) (string, error)         { return "", nil }
+
+// A GUEST REPLICATING TO PEERS THE HOST HAS NO RECORD OF IS AN ALERT ([V3b.16b]). Such a node is
+// serving and replicating right now, and will come back a mesh-of-one on its next guest reboot,
+// because bring-up rewrites the .res from cfg.Resource. Nothing else on this node reports it: the
+// redundancy alerter is gated on the very peer count that is missing, so it is not even built.
+//
+// This replaced RescueGuest's paired-node refusal, which guarded one destructive verb instead of
+// the condition itself.
+func TestForgottenMeshAlerts(t *testing.T) {
+	// The host's view: a lone node, which is what an absent/corrupt mesh cache leaves behind.
+	cfg := Config{Node: "anchorA", Resource: drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}}}}
+	var lines []string
+	logf := func(s string, a ...any) { lines = append(lines, fmt.Sprintf(s, a...)) }
+
+	cfg.warnIfMeshForgotten(context.Background(), meshReader{peers: 2}, notify.Nop(), logf)
+
+	var marked string
+	for _, l := range lines {
+		if strings.Contains(l, notify.LogMarker) {
+			marked = l
+		}
+	}
+	if marked == "" {
+		t.Fatalf("no alert-shaped line, so `briard alerts` would never show this: %v", lines)
+	}
+	// The trail must carry the WARNING level and say what happens and when -- an alert nobody can
+	// act on is the same defect as no alert.
+	if !strings.Contains(marked, string(notify.Warning)) {
+		t.Errorf("alert is not a warning: %q", marked)
+	}
+	for _, want := range []string{"restart", "pair this home again"} {
+		if !strings.Contains(marked, want) {
+			t.Errorf("alert does not say %q -- the owner needs the consequence and the remedy: %q", want, marked)
+		}
+	}
+}
+
+// The three states that must stay SILENT, so a rare alert keeps its meaning.
+func TestForgottenMeshStaysQuiet(t *testing.T) {
+	lone := drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}}}
+	meshed := drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}, {Name: "anchorB"}, {Name: "w"}}}
+	for _, tc := range []struct {
+		name string
+		res  drbd.Resource
+		r    meshReader
+	}{
+		// The shipped single-node install: no peers anywhere, nothing forgotten.
+		{"a genuinely single node", lone, meshReader{peers: 0}},
+		// The normal paired node: the host knows the mesh and re-pushes it every bring-up.
+		{"a node whose host knows the mesh", meshed, meshReader{peers: 2}},
+		// "I could not ask" must never be reported as "your mesh is gone". This runs at every
+		// start, including against a guest that is still settling.
+		{"an unreadable cluster", lone, meshReader{err: errors.New("channel down")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Node: "anchorA", Resource: tc.res}
+			var lines []string
+			cfg.warnIfMeshForgotten(context.Background(), tc.r, notify.Nop(),
+				func(s string, a ...any) { lines = append(lines, fmt.Sprintf(s, a...)) })
+			for _, l := range lines {
+				if strings.Contains(l, notify.LogMarker) {
+					t.Errorf("alerted on %s: %q", tc.name, l)
+				}
+			}
+		})
 	}
 }

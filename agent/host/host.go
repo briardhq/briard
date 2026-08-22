@@ -401,6 +401,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			alerter = newRedundancyAlerter(n, cfg.Node, peers, logf)
 		}
 	}
+	// The one degradation the alerter above CANNOT report, because the same condition is what stops
+	// it being built: a guest replicating to peers this host has no record of. Checked once, here,
+	// now that both the channel and the notifier exist — see warnIfMeshForgotten.
+	cfg.warnIfMeshForgotten(ctx, client, n, logf)
 	// Resolve this node's identity once at boot -- register with the cloud and
 	// cache the Assignment, or cold-boot from the cache during a cloud/WAN outage
 	// (degrade-to-local; identity is never a boot dependency). The client is built once

@@ -12,6 +12,7 @@ import (
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
+	"briard.io/shared/notify"
 )
 
 // guestMesher is the slice of the guest client the pairing reconcile drives: give the node its
@@ -225,6 +226,49 @@ func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Reso
 		return api.MeshSpec{}, drbd.Resource{}, false
 	}
 	return spec, target, true
+}
+
+// WarnIfMeshForgotten alerts when the GUEST is in a mesh the HOST cannot re-push.
+//
+// That combination is a node with a countdown on it: bring-up rewrites the guest's `.res` from
+// cfg.Resource every time, so this node replicates now and will come back a mesh-of-one on its next
+// guest reboot -- a deadman pass, a kernel panic, an OS upgrade. Nothing else notices. The peer
+// keeps a full mesh and its own redundancy alert fires, but on THIS node the redundancy alerter was
+// never even built: Run gates it on `len(cfg.Resource.Peers) - 1 > 0`, which is exactly the thing
+// that is wrong here. So the state is silent locally, and silence is the whole problem.
+//
+// It replaced RescueGuest's paired-node refusal ([V3b.16b]) rather than being added beside it. That
+// refusal blocked one destructive verb; this is the same safety property checked where the defect
+// actually is -- at every bring-up, whether or not a human reaches for rescue.
+//
+// A REAL ALERT AND NOT A LOG LINE, which is a cheaper distinction than it sounds. fireAlert writes
+// notify.LogMarker before attempting delivery, so on a paid node this pushes and on a free one it
+// still lands in the local trail `briard alerts` greps for. A plain logf would be findable by
+// neither, which for a fault whose whole nature is "nobody notices" is the wrong choice at any
+// price. Rarity is an argument for alerting being cheap, not for staying quiet.
+//
+// Reachable two ways now: a corrupt cache, or a node paired before the cache existed. A failed
+// cache WRITE is no longer one of them -- that fails the pairing outright (cacheMesh).
+//
+// An unreadable cluster says nothing. This runs at every start, including on a guest that is still
+// settling, and "I could not ask" must never be reported as "your mesh is gone".
+func (cfg Config) warnIfMeshForgotten(ctx context.Context, r statusReader, n notify.Notifier, logf func(string, ...any)) {
+	if len(cfg.Resource.Peers) > 1 {
+		return // the host knows a mesh and re-pushes it; nothing to warn about
+	}
+	cl, err := r.Cluster(ctx, cfg.Resource.Name)
+	if err != nil || len(cl.Peers) == 0 {
+		return
+	}
+	fireAlert(ctx, n, logf, notify.Alert{
+		Level: notify.Warning,
+		Title: "replication will be lost at the next restart",
+		Body: fmt.Sprintf("node %s is replicating to %d peer(s), but this machine has no record of "+
+			"that pairing, so it cannot put it back. The node is serving and replicating normally "+
+			"now; the next time its VM restarts it will come back on its own, replicating to "+
+			"nobody. Ask the cloud to pair this home again -- doing so is safe and repeatable, and "+
+			"it is what records the mesh here.", cfg.Node, len(cl.Peers)),
+	})
 }
 
 // RestoreWitnessHop re-establishes this anchor's host-side path to the cloud witness at bring-up.

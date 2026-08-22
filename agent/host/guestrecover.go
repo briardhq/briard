@@ -395,37 +395,21 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 		return fmt.Errorf("rescue: %s is not an overlay (no backing image), so there is nothing to "+
 			"rebuild it from; this node was not laid down by install.sh's overlay path", qspec.DiskImage)
 	}
-	// THE SECOND REFUSAL, and it is not obvious until you ask where the mesh lives. A paired node's
-	// DRBD configuration -- the `.res` naming its peers -- is written by the agent into the GUEST,
-	// and rebuilding the overlay discards it.
+	// A PAIRED NODE IS RESCUABLE, as of [V3b.16b]. There was a second refusal here: rebuilding
+	// discards the guest's `.res`, "and the host does not keep a copy -- applyPair unmarshals the
+	// cloud's MeshSpec, applies it, and forgets it", so a rescue returned a paired node un-meshed
+	// and only the cloud could re-pair it.
 	//
-	// ⚠️ THE REASON THIS REFUSAL EXISTED IS GONE, AND LIFTING IT IS A DECISION NOBODY HAS TAKEN.
-	// It read "the host does not keep a copy: applyPair unmarshals the cloud's MeshSpec, applies it,
-	// and forgets it." Since [V3b.16b] the host DOES keep a copy, durably, and re-pushes it at every
-	// bring-up -- which is exactly what the rescue's own bring-up would do. So the refusal is now
-	// conservative rather than necessary. It stays until someone decides deliberately, because
-	// "probably fine" is the wrong standard for the verb that discards a node's disk, and because
-	// the cloud-witness half of a managed pairing is NOT yet restored the same way (the host
-	// forwarder is a systemd-run transient unit that only applyPair starts).
+	// The host keeps a copy now, durably (cacheMesh), and re-pushes it at exactly the bring-up this
+	// verb performs -- along with the promoter snippet, the hostname and the witness hop, none of
+	// which survive on the guest any more either. So the refusal was guarding a door into a room
+	// with no floor left: everything it protected is now rebuilt by the thing it was blocking.
 	//
-	// Until then: rebuilding a PAIRED node is treated as returning it un-meshed -- alive, serving
-	// from its own replica, and no longer replicating to anyone until the cloud re-pairs it. That is
-	// not a rescue, it is a different kind of outage. Refuse and say who can.
-	//
-	// Asked over the channel BEFORE the stop, so a node that cannot be rescued keeps the guest it
-	// has. An unreadable cluster is NOT a refusal: this verb exists for broken guests, and treating
-	// "I could not ask" as "you are paired" would make it useless on exactly those. The cost of
-	// being wrong that way is a single-node install being told it is paired; the cost the other way
-	// is silently un-meshing an anchor.
-	if cl, e := u.client.Cluster(ctx, u.cfg.Resource.Name); e != nil {
-		u.logf("rescue: could not read the cluster (%v); proceeding -- this verb is for guests that "+
-			"cannot answer, so an unreadable one is expected here", e)
-	} else if len(cl.Peers) > 0 {
-		return fmt.Errorf("rescue: this node is paired with %d peer(s), and its mesh configuration "+
-			"lives on the disk this would discard -- rebuilding would return it un-meshed and only "+
-			"the cloud can re-pair it. Rescue is supported on an unpaired node; for a paired one, "+
-			"ask the cloud", len(cl.Peers))
-	}
+	// The safety property it stood for is kept, and moved to where it belongs. "This node is in a
+	// mesh the host cannot re-push" is a defect wherever it is noticed -- such a node un-meshes
+	// itself on its NEXT GUEST REBOOT whether or not anyone ever runs rescue -- so it is now
+	// detected and alerted at bring-up (warnIfMeshForgotten), on every start, rather than only in
+	// the one verb a human happens to reach for.
 	u.logf("rescue: rebuilding the guest from %s (the data disk is not touched)", backing)
 
 	if platform.Running(ctx, qspec) {
