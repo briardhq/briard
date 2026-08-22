@@ -616,6 +616,15 @@ fi
 # key sitting right there on disk unread. Only wired when a keyring actually exists: the
 # BRIARD_ARTIFACTS path (hermetic tests, install-from-source) has no channel and no key, and
 # pointing the agent at a missing file would be worse than leaving it unset.
+# The CATALOG the agent installs services FROM. Parameterised for the same reason the channel
+# is, and separately from it: /catalog/ is live runtime content on its own lifecycle, not
+# release content (nothing in a release publish touches it). Unset = the published default in
+# the agent, so a normal install is unchanged. It exists because a channel signed with any key
+# but the release key cannot use a catalog signed WITH it -- UPDATE_KEYRING is one trust root
+# for both -- which made a staged channel untestable end to end without a drop-in [V3b.21f].
+CATALOG_ENV=""
+[ -n "${BRIARD_CATALOG_URL:-}" ] && CATALOG_ENV="Environment=CATALOG_URL=$BRIARD_CATALOG_URL"
+
 KEY_ENV=""
 [ -f "$KEYRING" ] && KEY_ENV="Environment=UPDATE_KEYRING=$KEYRING"
 
@@ -665,6 +674,12 @@ chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
 cat > "$UNIT_DIR/briard-agent.service" <<EOF
 [Unit]
 Description=briard host agent (single node)
+# [Unit], not [Service] -- and it lived in the wrong section until [V3b.21d], where systemd
+# ignored it and said so on every start of every node we have ever installed. A failed trial
+# followed by its revert must never latch the unit as dead: the revert path is by construction
+# a burst of rapid start failures, so it can trip systemd's start limiter and leave the node
+# down for the one reason self-update exists to avoid.
+StartLimitIntervalSec=0
 After=briard-net.service
 Requires=briard-net.service
 [Service]
@@ -702,6 +717,7 @@ Environment=FLOCK_ID=$FLOCK_ID
 Environment=FLOCK_NAME=$FLOCK_NAME
 $NET_ENV
 $KEY_ENV
+$CATALOG_ENV
 $CONSOLE_ENV
 # NO HEALTH_URL. It used to bake the address a second time, and under DHCP there is nothing to
 # bake -- the address is acquired inside the guest at promotion, so only the guest knows it. The
@@ -743,10 +759,6 @@ ExecStart=$PREFIX/agent/briard-exec
 ExecStartPost=$PREFIX/agent/briard-commit
 Restart=on-failure
 RestartSec=3
-# A failed trial followed by its revert must never latch the unit as dead. Without this, the
-# revert path -- which is by construction a burst of rapid start failures -- can trip systemd's
-# start limiter and leave the node down for the one reason self-update exists to avoid.
-StartLimitIntervalSec=0
 # Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
 # SIGTERM already unwinds cooperatively (signal.NotifyContext), but the recovery and rollback legs
 # run on deliberately DETACHED contexts so they cannot be cancelled halfway, and rebootGuest alone
