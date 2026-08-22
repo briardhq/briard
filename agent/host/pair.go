@@ -160,9 +160,25 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 // failed halfway must not leave a mesh the next bring-up would converge to. Same rule and the same
 // reason as cacheService writing only past the health gate.
 //
-// A write failure is LOUD BUT NOT FATAL, and the log line says what it costs, because the pairing
-// itself succeeded and undoing it over a cache miss would be the worse trade -- the node is meshed
-// and serving; what it has lost is the ability to still be meshed after its guest reboots.
+// A WRITE FAILURE FAILS THE PAIRING (owner, 2026-08-22). This was a warning first, on the reasoning
+// that the guest had already applied the mesh so reporting failure would be a lie. That reads the
+// directive's promise too narrowly: **a pairing that is not persisted is not applied.** The guest's
+// copy lives until the next bring-up rewrites it from cfg.Resource, so an uncached pairing is not a
+// meshed node -- it is a node that will silently un-mesh itself on its next reboot, which is the
+// defect [V3b.16b] exists to end rather than a smaller version of it to tolerate.
+//
+// So the outcome is FAILED, and it is honest: the cloud's own Pair is idempotent at the mechanism
+// layer, so a re-enqueue re-applies to the same target mesh and re-tries this write. A retry that
+// can fix it beats a success that hides it.
+//
+// It does NOT try to undo the guest-side apply. There is no clean un-mesh, and a half-undone pairing
+// would be worse than either outcome; the node is meshed and serving while the directive says it did
+// not take, and the error says exactly that so nobody reads it as "nothing happened".
+//
+// An empty MeshCache is the documented "off" convention (AGENTS §5) rather than a failure, and it is
+// unreachable from ConfigFromEnv -- env() falls back to the default even for an explicitly empty
+// MESH_CACHE, so in production this is always configured. It exists for tests that drive the pairing
+// path without a filesystem.
 func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error {
 	if cfg.MeshCache == "" {
 		return nil
@@ -172,9 +188,11 @@ func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error 
 		return err
 	}
 	if err := atomicfile.Write(cfg.MeshCache, b, 0o600, 0o700); err != nil {
-		logf("pair: WARNING: could not cache the mesh (%v); this node is paired now, but a guest "+
-			"reboot would bring it back un-meshed on the single-node config from PEERS", err)
-		return nil
+		logf("pair: could not persist the mesh to %s (%v) -- FAILING the pairing. The guest has the "+
+			"mesh applied and is serving, but the host cannot re-push it, so this node would come "+
+			"back un-meshed on its next guest reboot. Re-deliver the pairing once the write can "+
+			"succeed; it is idempotent.", cfg.MeshCache, err)
+		return fmt.Errorf("persist the mesh to %s: %w", cfg.MeshCache, err)
 	}
 	return nil
 }

@@ -467,3 +467,51 @@ func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
 		t.Errorf("a hop that could not start said nothing actionable: %v", lines)
 	}
 }
+
+// A PAIRING THAT CANNOT BE PERSISTED IS A FAILED PAIRING (owner, 2026-08-22). This warned once, on
+// the reasoning that the guest had already applied the mesh -- but an uncached pairing is not a
+// meshed node, it is a node that un-meshes itself on its next guest reboot, which is the defect
+// [V3b.16b] exists to end. The outcome the cloud sees must say so, because Pair is idempotent and a
+// re-delivery is the thing that fixes it.
+func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
+	// A cache path whose parent cannot be created: MkdirAll over a regular file is ENOTDIR. A
+	// deterministic write failure with no permissions games, so it behaves the same as root.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
+		MeshCache: filepath.Join(blocker, "mesh.json")}
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
+		Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
+
+	payload, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeMesher{}
+	var lines []string
+	out := cfg.applyPair(context.Background(), f, &fakeWitness{},
+		api.Directive{ID: "p9", Kind: api.DirectivePair, Payload: string(payload)},
+		func(s string, a ...any) { lines = append(lines, fmt.Sprintf(s, a...)) })
+
+	if out.State != api.OutcomeFailed {
+		t.Errorf("outcome = %+v, want failed: an unpersisted mesh is a node that will come back "+
+			"un-meshed, and reporting done would hide exactly that", out)
+	}
+	// The guest-side apply still HAPPENED -- we do not half-undo a pairing -- so the operator needs
+	// the failure to say that rather than read as "nothing was done".
+	if f.adjusted == nil {
+		t.Error("the guest-side apply was skipped; this test no longer covers the case it was for")
+	}
+	var explained bool
+	for _, l := range lines {
+		if strings.Contains(l, "applied and is serving") && strings.Contains(l, "un-meshed") {
+			explained = true
+		}
+	}
+	if !explained {
+		t.Errorf("the failure did not say the guest IS meshed while the host cannot re-push it: %v", lines)
+	}
+}
