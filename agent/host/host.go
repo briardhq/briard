@@ -202,6 +202,16 @@ type Config struct {
 	// and the resource is re-derived from it the same way applyPair derives it. "" disables.
 	MeshCache string
 
+	// Mesh is the last pairing this node applied, restored from MeshCache at startup. The zero
+	// value is "never paired" -- the shipped single-node state -- and reads correctly as such,
+	// since a nil Mesh.Witness is exactly "no cloud witness in this mesh".
+	//
+	// It is kept whole, rather than only the drbd.Resource derived from it, because bring-up needs
+	// the witness block too: the host-side forwarder is a transient unit that a host reboot ends,
+	// and re-creating it is what makes a restored `.res` naming the witness true rather than
+	// aspirational (restoreWitnessHop).
+	Mesh api.MeshSpec
+
 	// Overlay remote-reach; nil = LAN-only/standalone (the default). The agent
 	// brings it up *after* the guest converges -- it's parallel to the failover path, so
 	// a failure warns but never fails bring-up -- and reports its health through
@@ -308,9 +318,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	//
 	// After installedService and for the same reason it is where it is: everything below derives
 	// from cfg, so both restores must land before anything reads it.
-	if res, ok := cfg.cachedMesh(logf); ok {
-		logf("paired mesh restored from cache: %s, %d peers", res.Name, len(res.Peers))
-		cfg.Resource = res
+	if spec, res, ok := cfg.cachedMesh(logf); ok {
+		logf("paired mesh restored from cache: %s, %d peers (cloud witness: %t)",
+			res.Name, len(res.Peers), spec.Witness != nil)
+		cfg.Resource, cfg.Mesh = res, spec
 	}
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
@@ -662,6 +673,13 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// ConfigureNet just records VIP_DEV/VIP_ADDR and skips addressing).
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
 		err = client.ConfigureNet(bringup, cfg.SystemDev, cfg.SystemCIDR, cfg.VIPDev, cfg.VIPAddr)
+	}
+	// Put this anchor's host-side hop to the cloud witness back, if its mesh has one. HERE, before
+	// DRBD comes up and long before WaitQuorate, because a witness that is not reachable when quorum
+	// is being counted is a witness that does not vote -- see restoreWitnessHop for why it is placed
+	// at this point and why it warns rather than fails.
+	if err == nil {
+		cfg.restoreWitnessHop(bringup, client, platformWitness{}, logf)
 	}
 	// Hand the guest the flock's VISIBLE name, separately from addressing and separately from the
 	// hostname above -- three identifiers, three calls, because that is what makes any one of them

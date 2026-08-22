@@ -188,25 +188,62 @@ func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error 
 // fallback rather than a new failure mode. A spec that no longer names this node is the same case
 // (a rename, or a cache carried onto another node) and says so distinctly, because "your mesh does
 // not know you" is a different thing to go looking for than "your mesh will not parse".
-func (cfg Config) cachedMesh(logf func(string, ...any)) (drbd.Resource, bool) {
+func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Resource, bool) {
 	if cfg.MeshCache == "" {
-		return drbd.Resource{}, false
+		return api.MeshSpec{}, drbd.Resource{}, false
 	}
 	b, err := os.ReadFile(cfg.MeshCache)
 	if err != nil {
-		return drbd.Resource{}, false // absent = never paired, the shipped state
+		return api.MeshSpec{}, drbd.Resource{}, false // absent = never paired, the shipped state
 	}
 	var spec api.MeshSpec
 	if err := json.Unmarshal(b, &spec); err != nil {
 		logf("mesh cache at %s is unusable (%v); bringing up on the configured PEERS mesh", cfg.MeshCache, err)
-		return drbd.Resource{}, false
+		return api.MeshSpec{}, drbd.Resource{}, false
 	}
 	target, _, err := meshTarget(spec, cfg.Node)
 	if err != nil {
 		logf("mesh cache at %s does not name this node (%v); bringing up on the configured PEERS mesh", cfg.MeshCache, err)
-		return drbd.Resource{}, false
+		return api.MeshSpec{}, drbd.Resource{}, false
 	}
-	return target, true
+	return spec, target, true
+}
+
+// RestoreWitnessHop re-establishes this anchor's host-side path to the cloud witness at bring-up.
+//
+// THE FORWARDER IS A TRANSIENT UNIT ON PURPOSE (systemd-run, detached from the agent's cgroup so an
+// agent restart leaves the hop serving), and that is not what this changes. What was missing is the
+// other half of the rule the mesh needed: nothing RE-CREATED it. applyPair was the only caller of
+// StartForwarder, and the cloud sends a pair directive on demand rather than on registration -- so a
+// HOST reboot ended the hop permanently and the restored `.res` named a witness address nothing was
+// listening on ([V3b.16b]). A GUEST reboot was never affected: the guest's eth3 is baked
+// (disk-image.nix), so its side of the private link comes back on its own.
+//
+// BEFORE WaitQuorate, which is why this is a step in bring-up rather than a call after it. With the
+// peer anchor up the node reaches 2/3 without the witness and the placement would not matter; it
+// matters in exactly the case the witness exists for -- peer also down -- where a forwarder started
+// after bring-up returns is one started after WaitQuorate has already burned the whole
+// BringUpBudget waiting for the quorum this hop was going to supply.
+//
+// LOUD BUT NEVER FATAL, and that trade is deliberately the opposite of [V3b.16a]'s. A node that
+// cannot start its forwarder can still serve on 2/3 with its peer, and failing bring-up would take
+// down a node that works -- with the promoter gated, it would not serve at all. Nor is the failure
+// silent, which is what [V3b.16a] actually refused to accept: DRBD reports the witness connection
+// down, so it lands in NodeStatus's connected count and the redundancy alerter fires on the channel
+// that already exists.
+//
+// Idempotent: StartForwarder probes is-active first, so a hop already serving is left alone and this
+// costs nothing on an agent restart or a re-adopted guest.
+func (cfg Config) restoreWitnessHop(ctx context.Context, g guestMesher, w witnessStarter, logf func(string, ...any)) {
+	if cfg.Mesh.Witness == nil || cfg.Diskless {
+		return // no cloud witness in this mesh, or this node IS the diskless voter
+	}
+	if err := cfg.bringUpWitness(ctx, g, w, cfg.Mesh.Peers, cfg.Mesh.Witness, logf); err != nil {
+		logf("WARNING: could not restore the witness hop (%v); this node comes up WITHOUT its cloud "+
+			"witness vote -- it serves while its peer anchor is up and loses quorum if that peer "+
+			"goes down. DRBD reports the witness connection down, so it also shows as a lost "+
+			"replica connection", err)
+	}
 }
 
 // BringUpWitness stands up this anchor's host-side path to the cloud witness: address the

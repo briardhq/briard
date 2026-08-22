@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -305,7 +306,7 @@ func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
 	// The reboot: a brand-new Config, as a restarted agent builds it -- the pairing is nowhere in
 	// its environment. Only the cache can put the mesh back.
 	fresh := Config{Node: "anchorA", MeshCache: cache, Resource: lone}
-	res, ok := fresh.cachedMesh(func(string, ...any) {})
+	_, res, ok := fresh.cachedMesh(func(string, ...any) {})
 	if !ok {
 		t.Fatal("a node paired at runtime came back with no cached mesh: bring-up would rewrite " +
 			"its .res to the single-node self-peer, against metadata that records real peers")
@@ -351,7 +352,7 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 			}
 			var said int
 			cfg := Config{Node: "anchorA", MeshCache: cache}
-			if _, ok := cfg.cachedMesh(func(string, ...any) { said++ }); ok {
+			if _, _, ok := cfg.cachedMesh(func(string, ...any) { said++ }); ok {
 				t.Error("an unusable mesh cache must read as absent, not as a mesh")
 			}
 			if said != 1 {
@@ -362,7 +363,107 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 	// Never paired: absent is the shipped single-node state and says nothing at all.
 	var said int
 	cfg := Config{Node: "anchorA", MeshCache: filepath.Join(dir, "nope.json")}
-	if _, ok := cfg.cachedMesh(func(string, ...any) { said++ }); ok || said != 0 {
+	if _, _, ok := cfg.cachedMesh(func(string, ...any) { said++ }); ok || said != 0 {
 		t.Errorf("absent cache: ok=%v logged=%d, want a silent false (nothing was ever paired)", ok, said)
+	}
+}
+
+// THE HOST WITNESS-FORWARDER IS RE-CREATED AT BRING-UP ([V3b.16b]). It is a transient systemd unit
+// on purpose, so a HOST reboot ends it -- and applyPair was the only thing that ever started one,
+// while the cloud sends a pair directive on demand rather than on registration. A mesh restored from
+// the cache would then name a witness address nothing was listening on.
+//
+// Driven through restoreWitnessHop rather than bringUp, which launches qemu: this is the decision
+// (does this node need a hop, and what does it start), and it is the whole of what changed.
+func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "mesh.json")
+
+	// A forwarded-witness pairing lands, exactly as the cloud would send it.
+	cfg := witnessCfg("anchorA")
+	cfg.MeshCache = cache
+	spec := forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
+	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The host reboots: a brand-new Config that knows nothing but its environment, plus the cache.
+	fresh := witnessCfg("anchorA")
+	fresh.MeshCache = cache
+	cached, res, ok := fresh.cachedMesh(func(string, ...any) {})
+	if !ok {
+		t.Fatal("no cached mesh after a forwarded-witness pairing")
+	}
+	fresh.Resource, fresh.Mesh = res, cached
+	if fresh.Mesh.Witness == nil {
+		t.Fatal("the cached mesh dropped its witness block: the .res would name a hop nothing " +
+			"re-creates, which is the whole defect")
+	}
+
+	f, w := &fakeMesher{}, &fakeWitness{}
+	fresh.restoreWitnessHop(context.Background(), f, w, func(string, ...any) {})
+	if w.started == nil {
+		t.Fatal("bring-up did not re-create the witness hop: after a host reboot the transient unit " +
+			"is gone and nothing else ever starts one")
+	}
+	// The SAME hop the pairing established -- listening where the .res says the witness peer is.
+	if w.started.Listen != "10.9.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
+		t.Errorf("restored forwarder = %+v, want the witness peer's mesh address -> the cloud proxy", w.started)
+	}
+	if w.started.Cert != fresh.WitnessCert || w.started.ServerName != "witness.briard.example" {
+		t.Errorf("restored forwarder identity = %+v, want the host-held anchor cert + expected SAN", w.started)
+	}
+	// The guest's private witness NIC is re-asserted too (idempotent over a baked address).
+	var eth3 bool
+	for _, c := range f.netCalls {
+		if c.dev == "eth3" && c.cidr == "10.9.9.2/24" {
+			eth3 = true
+		}
+	}
+	if !eth3 {
+		t.Error("the private witness link was not re-asserted on eth3")
+	}
+}
+
+// The two nodes that must NOT start a hop, so the restore cannot become a thing every node does.
+func TestWitnessHopSkippedWhereThereIsNone(t *testing.T) {
+	t.Run("a mesh with no cloud witness", func(t *testing.T) {
+		cfg := witnessCfg("anchorA") // Mesh is the zero value: never paired, so Witness is nil
+		w := &fakeWitness{}
+		cfg.restoreWitnessHop(context.Background(), &fakeMesher{}, w, func(string, ...any) {})
+		if w.started != nil {
+			t.Errorf("started a forwarder for a mesh with no cloud witness: %+v", w.started)
+		}
+	})
+	t.Run("the diskless voter itself", func(t *testing.T) {
+		cfg := witnessCfg("cloud-witness")
+		cfg.Diskless = true
+		cfg.Mesh = forwardedWitnessSpec("cloud-witness", false, "10.7.0.3/24")
+		w := &fakeWitness{}
+		cfg.restoreWitnessHop(context.Background(), &fakeMesher{}, w, func(string, ...any) {})
+		if w.started != nil {
+			t.Error("the diskless witness started a forwarder to itself")
+		}
+	})
+}
+
+// A hop that cannot start WARNS and lets bring-up continue -- deliberately the opposite of
+// [V3b.16a]'s "absence of configuration is an error", because this node can still serve on 2/3 with
+// its peer and failing bring-up would leave it serving nothing at all (the promoter is gated).
+func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
+	cfg := witnessCfg("anchorA")
+	cfg.ForwarderBin = "" // a node without the forwarder binary: bringUpWitness refuses
+	cfg.Mesh = forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
+	var lines []string
+	cfg.restoreWitnessHop(context.Background(), &fakeMesher{}, &fakeWitness{},
+		func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) })
+	var warned bool
+	for _, l := range lines {
+		if strings.Contains(l, "WARNING") && strings.Contains(l, "witness") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("a hop that could not start said nothing actionable: %v", lines)
 	}
 }
