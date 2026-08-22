@@ -3,11 +3,18 @@ package host
 import (
 	"context"
 	"strings"
+	"time"
 
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent/deadman"
 	"briard.io/agent/platform"
 )
+
+// vipVerbTimeout bounds each call this reconcile makes -- the guest read and the `ip` invocations
+// alike. The same 5s the snapshot's reads use: both are answered in milliseconds when they are
+// answered at all, so this is not a budget but the point at which waiting longer stops telling us
+// anything -- and the observe loop's watchdog threshold is sized on every call in it being bounded.
+const vipVerbTimeout = 5 * time.Second
 
 // KEEPING THE HOST'S ROUTE TO ITS OWN GUEST IN STEP WITH REALITY.
 //
@@ -70,17 +77,39 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 	if v.dev == "" || v.vipDev == "" {
 		return
 	}
-	cidr, err := r.VIP(ctx, v.vipDev)
+	// A SHUTDOWN IS NOT A DEMOTION, and this guard is the whole of that distinction.
+	//
+	// The guest is a DETACHED unit: it keeps serving across an agent stop, and an agent restart is
+	// exactly what a self-update is ([V3.4]). Reading a cancelled context as "the guest did not
+	// answer" would withdraw the route on the way out, so every restart would blip the
+	// household's reachability from its own machine for a node that never stopped serving.
+	// agent-readopt polls the VIP across a restart and asserts it never drops -- which is where
+	// this was caught. The failure the fail-open rule exists for is the opposite shape: a LIVE
+	// agent seeing a DEAD channel, i.e. a guest that has gone away while a peer may hold the VIP.
+	if ctx.Err() != nil {
+		return
+	}
+	// Bounded, like every other read in the observe loop: a guest that never answers must not hold
+	// the loop open past the watchdog threshold (the Beat rule in host.go).
+	rctx, rcancel := context.WithTimeout(ctx, vipVerbTimeout)
+	defer rcancel()
+	cidr, err := r.VIP(rctx, v.vipDev)
+	if ctx.Err() != nil {
+		return // cancelled mid-read: same reasoning as above, and err would only say so
+	}
 	want := wantVIPRoute(cidr, err)
 	if want == v.installed {
 		return
 	}
+	// The `ip` calls need their own bound -- rctx's is spent by the read above.
+	actx, acancel := context.WithTimeout(ctx, vipVerbTimeout)
+	defer acancel()
 	// Withdraw first, always -- including when the address merely MOVED (a DHCP re-lease hands
 	// the guest a different one). Two /32s to the same guest would both work, which is exactly
 	// why the stale one must go: it would keep answering long after the household's address had
 	// changed, and nobody would notice until a failover made it wrong.
 	if v.installed != "" {
-		if cerr := v.clear(ctx, v.installed, v.dev); cerr != nil {
+		if cerr := v.clear(actx, v.installed, v.dev); cerr != nil {
 			logf("vip route: withdrawing %s failed: %v -- retrying next cycle", v.installed, cerr)
 			return // leave `installed` set so the next cycle tries again
 		}
@@ -93,7 +122,7 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 		}
 		return
 	}
-	if serr := v.set(ctx, platform.VIPRoute{Addr: want, Via: deadman.GuestIP, Dev: v.dev, Src: deadman.HostIP}); serr != nil {
+	if serr := v.set(actx, platform.VIPRoute{Addr: want, Via: deadman.GuestIP, Dev: v.dev, Src: deadman.HostIP}); serr != nil {
 		logf("vip route: %v -- this host cannot reach %s (the rest of the LAN can)", serr, want)
 		return
 	}

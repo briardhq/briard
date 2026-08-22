@@ -166,6 +166,58 @@ func TestVIPRouter_FailedWithdrawalDoesNotInstallOver(t *testing.T) {
 	}
 }
 
+// A SHUTDOWN IS NOT A DEMOTION. The guest is a detached unit and keeps serving across an agent
+// stop -- and an agent restart is what a self-update IS -- so an agent on its way out must leave
+// the route alone. Withdrawing here would drop the household's reachability from its own machine
+// on every restart, for a node that never stopped serving; agent-readopt polls the VIP across a
+// restart and asserts zero dropped ticks, which is the live version of this assertion.
+//
+// The rule is enforced by two guards -- one before the read, one after, for cancellation that
+// lands mid-call -- so removing either alone leaves the other holding and this stays green. That
+// is redundancy by design, not a gap: what must never pass is BOTH being gone, and that it does
+// catch.
+func TestVIPRouter_ShutdownDoesNotWithdraw(t *testing.T) {
+	v, rr := newTestRouter("briard-priv0", "eth2")
+	v.reconcile(t.Context(), fakeStatus{vip: "192.168.9.225/24"}, quiet)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	v.reconcile(ctx, fakeStatus{vipErr: context.Canceled}, quiet)
+
+	if len(rr.cleared) != 0 {
+		t.Errorf("cleared = %v, want the route left alone: the agent is stopping, the guest is not", rr.cleared)
+	}
+	if v.installed != "192.168.9.225" {
+		t.Errorf("installed = %q, want the route still recorded across a shutdown", v.installed)
+	}
+}
+
+// ctxProbe answers VIP while recording whether the caller bounded the call. The observe loop's
+// watchdog threshold is sized on every read in it carrying a deadline (host.go's Beat rule), so an
+// unbounded verb here would let one unresponsive guest hold the loop open past it.
+type ctxProbe struct {
+	deadline bool
+	called   bool
+}
+
+func (c *ctxProbe) VIP(ctx context.Context, _ string) (string, error) {
+	c.called = true
+	_, c.deadline = ctx.Deadline()
+	return "192.168.9.225/24", nil
+}
+
+func TestVIPRouter_BoundsTheGuestRead(t *testing.T) {
+	v, _ := newTestRouter("briard-priv0", "eth2")
+	p := &ctxProbe{}
+	v.reconcile(t.Context(), p, quiet)
+	if !p.called {
+		t.Fatal("the guest was never read")
+	}
+	if !p.deadline {
+		t.Error("net.vip was called on an unbounded context -- an unresponsive guest would stall the observe loop")
+	}
+}
+
 func TestWantVIPRoute(t *testing.T) {
 	cases := []struct {
 		name string
