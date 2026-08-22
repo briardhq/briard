@@ -68,7 +68,9 @@ pkgs.testers.runNixOSTest {
 
     # Service L2 on the macvtap substrate (default): a carrier-bearing parent, the guest's
     # service NIC as a macvtap child (svc0 -> eth1, the VIP), and a host-side macvlan shim so L1 can
-    # reach the VIP (macvtap isolates host<->guest).
+    # reach the VIP (macvtap isolates host<->guest). Rig plumbing, not the product's answer to that
+    # isolation -- a real install routes the VIP over the private link ([V3b.19]); this test sets no
+    # WITNESS_TAP, so L1 stands in for the rest of the LAN. See install-macvtap for the real path.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "

@@ -33,6 +33,14 @@ pkgs.testers.runNixOSTest {
     # the same parent so L1 can still reach the guest VIP -- macvtap deliberately isolates host<->guest,
     # so without the shim L1 could not curl 192.168.1.100 (proven in the evaluation). shim0 and svc0
     # are bridge-mode siblings, so they forward internally (no external switch needed).
+    #
+    # ⚠️ THE SHIM IS RIG PLUMBING AND NOT THE PRODUCT'S ANSWER to that isolation, and the
+    # distinction is worth stating here because this rig is where it was easiest to lose: a real
+    # install carries the private host<->guest link and the agent routes the VIP over it
+    # ([V3b.19]), which is what lets the machine running the guest reach it. This test sets no
+    # WITNESS_TAP and keeps the legacy positional layout (one service tap -> the guest's eth1), so
+    # there is no such link and no route to have; L1 stands in for the rest of the LAN. The
+    # shipped shape -- uniform NIC layout, private link, route -- is proved in install-macvtap.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "

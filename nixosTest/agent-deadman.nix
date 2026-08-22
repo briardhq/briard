@@ -72,6 +72,11 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
+    # Service L2 on the macvtap substrate: carrier-bearing veth parent, the guest's service NIC as
+    # a macvtap child, and a host-side macvlan shim so L1 can reach the VIP. Rig plumbing, not the
+    # product's answer to macvtap's host<->guest isolation -- a real install routes the VIP over the
+    # private link ([V3b.19]), and this test sets no WITNESS_TAP, so it has no such link to route
+    # over and L1 stands in for the rest of the LAN.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "

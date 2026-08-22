@@ -49,6 +49,11 @@ pkgs.testers.runNixOSTest {
     # carrier-bearing veth parent, the guest's service NIC as a macvtap child, and a host-side
     # macvlan shim so L1 can curl the VIP at all (macvtap isolates host<->guest by design --
     # which is also precisely why the recovery ladder cannot probe the payload before deciding).
+    #
+    # The shim is RIG plumbing, NOT the product's answer to that isolation ([V3b.19]): a real
+    # install carries the private host<->guest link and the agent routes the VIP over it, which
+    # install-macvtap proves on the shipped install. This test sets no WITNESS_TAP, so it has no
+    # such link -- L1 here stands in for the rest of the LAN, not for the install host.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
