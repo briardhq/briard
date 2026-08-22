@@ -219,8 +219,35 @@ func TestZeroValueIsTheShippedLadder(t *testing.T) {
 	if got := r.cadenceFor(); got != guestRebootCadence {
 		t.Errorf("cadenceFor() = %v, want %v", got, guestRebootCadence)
 	}
+	if got := r.floorFor(); got != guestRelaunchFloor {
+		t.Errorf("floorFor() = %v, want %v", got, guestRelaunchFloor)
+	}
 	if got := r.resetAfter(); got != guestRecoveryReset {
 		t.Errorf("resetAfter() = %v, want %v", got, guestRecoveryReset)
+	}
+}
+
+// THE BURST IS THREE TRIES, NOT THREE SHOTS. A relaunch that fails in milliseconds -- a unit
+// name that has not come free, a device the kernel still holds -- must not spend the next attempt
+// before the condition it failed on could possibly have changed. In the field all three landed in
+// the same logged second and the node then sat out the two-hour cadence with nothing left to try
+// ([V3b.18]).
+//
+// The assertion is on the SPREAD rather than on the floor alone: what matters is how long the
+// budget takes to spend, so raising the burst or dropping the floor both have to keep it real.
+func TestTheRelaunchBurstCannotBeSpentInOneSecond(t *testing.T) {
+	if guestRelaunchFloor <= 0 {
+		t.Fatalf("guestRelaunchFloor = %v: no floor at all, so a fast-failing launch burns the budget", guestRelaunchFloor)
+	}
+	if spread := time.Duration(guestRelaunchBurst) * guestRelaunchFloor; spread < time.Minute {
+		t.Errorf("the whole relaunch budget is spent in %v (%d attempts x %v floor): too fast for "+
+			"a transient condition to clear", spread, guestRelaunchBurst, guestRelaunchFloor)
+	}
+	// And it stays well inside the cadence it falls back to -- a floor that approached the cadence
+	// would quietly delete the fast-relaunch rung the ladder exists to have.
+	if guestRelaunchFloor >= guestRebootCadence {
+		t.Errorf("guestRelaunchFloor (%v) >= guestRebootCadence (%v): the immediate relaunch is no "+
+			"longer immediate", guestRelaunchFloor, guestRebootCadence)
 	}
 }
 

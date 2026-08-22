@@ -105,6 +105,18 @@ const (
 	// succession is a broken node, and hammering it helps nobody.
 	guestRelaunchBurst = 3
 
+	// The floor between a FAILED relaunch and the next one. The burst above is three lives, and
+	// three shots inside one second is not three tries: whatever the launch failed on -- a unit
+	// name that is still stopping, a device the kernel has not released -- cannot have cleared in
+	// the time it takes to ask systemd twice, so the budget is spent before the thing it is
+	// waiting for could possibly have happened ([V3b.18], where all three landed in the same
+	// logged second and the node then sat out the two-hour cadence).
+	//
+	// It floors only the FAILING path. A relaunch that starts a VM leaves this function, and a
+	// guest that dies again afterwards is damped by the burst and then by the cadence -- so this
+	// costs an outage nothing in the case the ladder is normally in.
+	guestRelaunchFloor = 30 * time.Second
+
 	// A gate verdict older than this is treated as no verdict at all. It catches the deadman
 	// whose evaluation loop has wedged while its accept loop still answers -- the one failure
 	// where the gate keeps replying and the reply means nothing. The deadman re-evaluates every
@@ -125,6 +137,7 @@ type guestRecovery struct {
 	window    time.Duration // wait-for-self-heal before judging the guest wedged; 0 -> guestRecoveryWindow
 	cadence   time.Duration // interval between reboots of a still-wedged guest; 0 -> guestRebootCadence
 	reset     time.Duration // uptime that ends an incident; 0 -> guestRecoveryReset
+	floor     time.Duration // minimum gap between a FAILED relaunch and the next; 0 -> guestRelaunchFloor
 	attempts  int           // reboots spent on the current incident
 	announced bool          // the degraded alert has been sent for this incident
 	cleared   bool          // the all-clear has been sent for this incident
@@ -142,6 +155,13 @@ func (r *guestRecovery) cadenceFor() time.Duration {
 		return guestRebootCadence
 	}
 	return r.cadence
+}
+
+func (r *guestRecovery) floorFor() time.Duration {
+	if r.floor <= 0 {
+		return guestRelaunchFloor
+	}
+	return r.floor
 }
 
 func (r *guestRecovery) resetAfter() time.Duration {
@@ -288,6 +308,14 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 			client, err := u.converge(ctx)
 			if err != nil {
 				u.logf("guest-recovery: relaunch attempt %d failed: %v", r.attempts, err)
+				// The floor. A launch that fails in milliseconds must not spend the next attempt
+				// in the same second -- see guestRelaunchFloor: the budget is three tries, and a
+				// try that could not possibly have found the condition changed is not one.
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(r.floorFor()):
+				}
 				continue
 			}
 			u.logf("guest-recovery: guest relaunched and converged (attempt %d)", r.attempts)

@@ -101,6 +101,46 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     print(f"guest back after a clean exit: pid {gone} -> {restarted}")
 
+    # === PHASE 1b: relaunching INTO a stop that has not finished. ===
+    #
+    # `is-active` says "not active" about a unit that is spending its ExecStop, so the ladder
+    # correctly decides the VM is not running and launches -- into a name systemd has not released
+    # yet. systemd-run refuses it ("already loaded or has a fragment file"), and because a refusal
+    # costs milliseconds, all three relaunch attempts are spent inside one logged second, on a
+    # condition that clears by itself in a few. The node then sat out the two-hour cadence with
+    # nothing left to try: [V3b.18], measured on a stranger's machine.
+    #
+    # The window is made WIDE and certain rather than raced for. SIGSTOP the guest QEMU first: the
+    # control channel dies at once, and the graceful stop that follows cannot complete, because the
+    # ExecStop's ACPI request has nothing awake to answer it. So the unit sits in `deactivating`
+    # for the full TimeoutStopSec (75s) before systemd kills it -- which is also the honest test of
+    # the wait's bound, since a wait that gave up earlier than systemd does would be no wait at all.
+    print("freezing the guest QEMU and asking systemd to stop the unit -- the stop cannot finish")
+    stopping = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    host.succeed(f"kill -STOP {stopping}")
+    host.succeed("systemctl stop --no-block briard-guest.service")
+    host.wait_until_succeeds(
+        "test \"$(systemctl show -p ActiveState --value briard-guest.service)\" = deactivating", timeout=60
+    )
+
+    relaunched_before = int(host.succeed(
+        "journalctl -u briard-agent | grep -c 'guest relaunched and converged' || true"
+    ).strip())
+
+    # THE ASSERTION THAT MUST BE ABLE TO FAIL: the node comes back. Without the wait the three
+    # attempts are gone in a second and this times out -- the guest is never relaunched at all
+    # until the two-hour cadence comes round.
+    host.wait_until_succeeds(
+        "test \"$(journalctl -u briard-agent | grep -c 'guest relaunched and converged' || true)\" "
+        f"-gt {relaunched_before}",
+        timeout=900,
+    )
+    # And it came back by WAITING, not by getting lucky: the refusal never happened.
+    host.fail("journalctl -u briard-agent | grep -q 'already loaded or has a fragment file'")
+    host.wait_until_fails(f"kill -0 {stopping}", timeout=60)
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
+    print("guest relaunched out of a stop that had not finished")
+
     # === PHASE 2: the guest is RUNNING but wedged -- the window, then the power cycle. ===
     # --- the guest stops answering, and never starts again on its own ---
     # SIGSTOP the nested QEMU: the whole VM freezes, so the control channel dies AND every

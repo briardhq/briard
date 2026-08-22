@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -362,5 +363,46 @@ func TestUnitAtRest(t *testing.T) {
 	// "inactive" would declare a running guest gone on any transient hiccup.
 	if unitAtRest("inactive", errors.New("systemctl: exit status 1")) {
 		t.Error("unitAtRest reported at-rest despite a systemctl error")
+	}
+}
+
+// A unit NAME is free only once systemctl has forgotten the unit: systemd-run refuses a name
+// that is still loaded, and a unit stays loaded through its whole stop and past it, until the
+// corpse is collected. Reading "not running" as "free" is what spent three relaunch attempts in
+// one second on a guest that was still stopping ([V3b.18]).
+func TestUnitLoaded(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  bool
+	}{
+		{"not-found", false}, // systemd has forgotten it -- the only free answer
+		{"loaded", true},     // running, stopping, or a corpse: all still hold the name
+		{"masked", true},
+		{"error", true},
+		{"bad-setting", true}, // a reading this code does not know: taken, so the caller waits
+		{"", true},
+	} {
+		if got := unitLoaded(tc.state, nil); got != tc.want {
+			t.Errorf("unitLoaded(%q) = %v, want %v", tc.state, got, tc.want)
+		}
+	}
+	// A systemctl that failed is not an answer about the unit. Reading its empty output as
+	// "not-found" would launch straight into a name that is still taken -- the failure this
+	// wait exists to prevent, reached by trusting a broken systemctl.
+	if !unitLoaded("not-found", errors.New("systemctl: exit status 1")) {
+		t.Error("unitLoaded reported a free name despite a systemctl error")
+	}
+}
+
+// The wait is bounded and says what it saw. A unit that never comes free must not hang the
+// bring-up budget it is spending, and the two ways to reach the deadline -- a stop that never
+// finished, a corpse nobody reaped -- must be told apart in the message.
+func TestWaitUnitFreeGivesUpAndNamesTheState(t *testing.T) {
+	err := waitUnitFree(context.Background(), "briard-test-nonexistent-unit.service", 0)
+	if err == nil {
+		t.Skip("systemctl reports this unit as not-found here, so there is nothing to wait for")
+	}
+	if !strings.Contains(err.Error(), "still loaded") || !strings.Contains(err.Error(), "LoadState") {
+		t.Errorf("err = %v, want it to name the unit's LoadState", err)
 	}
 }

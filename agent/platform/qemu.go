@@ -388,6 +388,11 @@ func Launch(ctx context.Context, s QEMUSpec) (*Guest, error) {
 	if err := secureQMPDir(s.QMPSock); err != nil {
 		return nil, err
 	}
+	// The NAME has to be free before systemd-run will take it, and "not running" is not yet
+	// "free" -- see waitUnitFree.
+	if err := waitUnitFree(ctx, unit, unitFreeGrace); err != nil {
+		return nil, err
+	}
 	if out, err := exec.CommandContext(ctx, "systemd-run", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("platform: systemd-run guest: %w: %s", err, out)
 	}
@@ -472,6 +477,67 @@ func unitAtRest(state string, err error) bool {
 // unitStopped is unitAtRest over a live systemctl.
 func unitStopped(unit string) bool {
 	return unitAtRest(unitState(unit))
+}
+
+// unitFreeGrace bounds the wait for a stopping guest's unit name to come free. Above the unit's
+// own TimeoutStopSec, because that is the longest a stop can legitimately take before systemd
+// gives up and kills it -- and comfortably inside the default bring-up budget, which is what
+// this wait is spending.
+const unitFreeGrace = guestStopTimeout + 15*time.Second
+
+// unitLoaded reports whether a LoadState reading means the unit NAME is still taken. systemd-run
+// refuses a name that is loaded ("already loaded or has a fragment file"), and a unit stays
+// loaded for its whole stop and until systemd garbage-collects the corpse -- so a name is free
+// only once systemctl has forgotten the unit entirely.
+//
+// Like unitAtRest, it names the reading that means GONE rather than excluding the ones that mean
+// present: an unfamiliar answer, or a systemctl that failed, keeps the caller waiting instead of
+// launching into a name that is still taken.
+func unitLoaded(state string, err error) bool {
+	return err != nil || state != "not-found"
+}
+
+// waitUnitFree blocks until the transient unit name can be created again.
+//
+// It is [B.103]'s distinction one step earlier, and the step that was missing. The relaunch
+// decision asks `is-active`, so a unit spending its ExecStop reads as *not running* — true, and
+// not the same as *creatable*: systemd-run then trips over the unit that is still there, which
+// on the guest-recovery ladder spent all three relaunch attempts inside one second on a
+// condition that clears by itself in a few ([V3b.18]).
+//
+// reset-failed is the one prod that helps: a unit that has finished is garbage-collected on its
+// own (`--collect`), but a corpse someone still references is not, and clearing it is free.
+// Asked only of a unit at rest — reset-failed says nothing to a unit that is still stopping.
+func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
+	deadline := time.Now().Add(grace)
+	for {
+		if !unitLoaded(unitLoadState(unit)) {
+			return nil
+		}
+		if unitStopped(unit) {
+			_ = exec.Command("systemctl", "reset-failed", unit).Run()
+		}
+		if time.Now().After(deadline) {
+			// Name what it still looks like: a unit that is stopping and a corpse that will not
+			// be reaped are different faults reaching this line the same way.
+			active, _ := unitState(unit)
+			load, _ := unitLoadState(unit)
+			return fmt.Errorf("platform: unit %s is still loaded after %s (LoadState %q, ActiveState %q)",
+				unit, grace, load, active)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("platform: waiting for unit %s to come free: %w", unit, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// unitLoadState reads a unit's LoadState ("loaded" / "not-found"). As with unitState, an error
+// means systemctl itself failed and is not an answer about the unit.
+func unitLoadState(unit string) (string, error) {
+	out, err := exec.Command("systemctl", "show", "-p", "LoadState", "--value", unit).Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 // Stop terminates the guest VM by stopping its transient service (the self-fence
