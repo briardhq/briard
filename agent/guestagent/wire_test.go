@@ -32,7 +32,7 @@ func wirePair(t *testing.T) *conn {
 	t.Helper()
 	cc, sc := net.Pipe()
 	go serve(context.Background(), sc, echoDispatch)
-	c := &conn{rw: cc}
+	c := newConn(cc)
 	t.Cleanup(func() { c.close() })
 	return c
 }
@@ -72,7 +72,7 @@ func TestWireHandlerErrorPropagates(t *testing.T) {
 // error which leaves the channel usable.
 func TestWireChannelDownOnDeadConn(t *testing.T) {
 	cc, _ := net.Pipe()
-	c := &conn{rw: cc}
+	c := newConn(cc)
 	cc.Close()
 	if err := c.call(context.Background(), "echo", "a", nil); !errors.Is(err, ErrChannelDown) {
 		t.Errorf("call on a closed conn = %v, want ErrChannelDown", err)

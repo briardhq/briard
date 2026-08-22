@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // Wire is guestagent's private framing for the host<->guest control channel
@@ -78,6 +79,18 @@ type conn struct {
 	nextID uint64
 }
 
+// newConn wraps a stream in a host-side conn. Request ids start from the WALL CLOCK, not
+// from 1, because the stream OUTLIVES the process at both ends: QEMU keeps the guest port
+// open across a host re-dial, so an agent killed mid-call leaves its reply sitting in the
+// channel for its successor to read. Handshake resyncs past such a frame BY ID, which
+// separates the two sessions only while their ids differ -- and ids that restart at 1
+// collide on the one frame every session has, the reply to its hello [V3b.17]. A clock
+// base makes a later session's ids strictly greater than an earlier session's, so a
+// leftover frame is decidably stale rather than coincidentally distinguishable.
+func newConn(rw io.ReadWriteCloser) *conn {
+	return &conn{rw: rw, nextID: uint64(time.Now().UnixNano())}
+}
+
 func (c *conn) call(ctx context.Context, verb string, arg, reply any) error {
 	return c.callResync(ctx, verb, arg, reply, false)
 }
@@ -88,8 +101,9 @@ func (c *conn) call(ctx context.Context, verb string, arg, reply any) error {
 // virtio-serial QEMU keeps the guest port open across a host reconnect, so a re-dial can
 // find the previous session's in-flight reply ahead of ours; every frame readFrame yields
 // is complete + well-framed (it ReadFulls the declared length), so the stale one is
-// skippable by id. Only Handshake -- the first call after a (re)connect -- sets resync; a
-// *mid-session* id mismatch stays a hard desync error (ErrChannelDown -> re-dial).
+// skippable by id -- and newConn's per-session id base is what keeps those ids apart.
+// Only Handshake -- the first call after a (re)connect -- sets resync; a *mid-session*
+// id mismatch stays a hard desync error (ErrChannelDown -> re-dial).
 func (c *conn) callResync(ctx context.Context, verb string, arg, reply any, resync bool) error {
 	if err := ctx.Err(); err != nil {
 		return err

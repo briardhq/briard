@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -338,7 +339,7 @@ func TestHandshakeResyncsPastStaleFrame(t *testing.T) {
 		if err := readFrame(sc, &req); err != nil { // read the verbHello request
 			return
 		}
-		// A leftover reply from the previous session (unrelated high id), THEN the real
+		// A leftover reply from the previous session (an unrelated id), THEN the real
 		// handshake reply. The host must skip the first and match the second.
 		hello, _ := json.Marshal(api.GuestHello{Version: api.GuestProtocol, Capabilities: []string{verbHello}})
 		_ = writeFrame(sc, response{ID: req.ID + 42, Payload: json.RawMessage(`"stale reply from a dropped session"`)})
@@ -351,6 +352,84 @@ func TestHandshakeResyncsPastStaleFrame(t *testing.T) {
 	if h.Version != api.GuestProtocol {
 		t.Errorf("version = %d, want %d (resynced to the real reply)", h.Version, api.GuestProtocol)
 	}
+}
+
+// The successor of an agent that died MID-CALL re-attaches to the same channel with the
+// dead session's reply still in it, and the resync above separates the two sessions BY
+// ID -- so the frame that decides it is the one every session has in common: the reply
+// to its first request, the hello. Two real sessions over one BUFFERED stream, which is
+// what QEMU's chardev is (the guest port stays open, so bytes outlive the host process
+// that was going to read them). [V3b.17]
+func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
+	host, guest := socketPair(t)
+	taken := make(chan struct{}, 2) // buffered: session 2's signal is never read
+	go serve(context.Background(), guest, func(_ context.Context, verb string, _ json.RawMessage) (any, error) {
+		if verb != verbHello {
+			return nil, nil
+		}
+		taken <- struct{}{} // the request is read; its reply is written next
+		return api.GuestHello{Version: api.GuestProtocol, Capabilities: []string{verbHello, verbUp}}, nil
+	})
+
+	// Session 1 dies with its hello on the wire: the guest answers into a stream nobody
+	// is reading. Driven through a real Client, because which ids a real session picks is
+	// the whole question.
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	go NewClient(deadReader{Writer: host, blocked: stuck}).Handshake(context.Background())
+	<-taken
+
+	// Session 2 re-adopts the same channel.
+	g := NewClient(host)
+	t.Cleanup(func() { g.Close() })
+	if _, err := g.Handshake(context.Background()); err != nil {
+		t.Fatalf("re-adopted handshake: %v", err)
+	}
+	// The verb AFTER the handshake is where the field failure surfaced: the handshake had
+	// matched the orphan and left the real reply for this call to trip over.
+	if err := g.Up(context.Background(), "r0"); err != nil {
+		t.Fatalf("first verb after a re-adopted handshake: %v", err)
+	}
+}
+
+// deadReader is the host end of a session whose process was killed with a request on the
+// wire: writes reach the guest, reads never return. Close is a no-op -- the CHANNEL
+// outlives the process, which is the premise of the whole resync.
+type deadReader struct {
+	io.Writer
+	blocked chan struct{}
+}
+
+func (d deadReader) Read([]byte) (int, error) { <-d.blocked; return 0, io.EOF }
+func (d deadReader) Close() error             { return nil }
+
+// socketPair connects two ends over a real unix socket. BUFFERED, unlike net.Pipe: a
+// reply nobody has read yet must not block the guest's next read, which is exactly what
+// the orphaned-reply case needs (and what QEMU's chardev does).
+func socketPair(t *testing.T) (host, guest net.Conn) {
+	t.Helper()
+	ln, err := net.Listen("unix", filepath.Join(testsock.Dir(t), "pair.sock"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, aerr := ln.Accept(); aerr == nil {
+			accepted <- c
+		} else {
+			close(accepted)
+		}
+	}()
+	if host, err = net.Dial("unix", ln.Addr().String()); err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	guest = <-accepted
+	if guest == nil {
+		t.Fatal("accept failed")
+	}
+	t.Cleanup(func() { host.Close(); guest.Close() })
+	return host, guest
 }
 
 // Before a handshake, Supports is optimistic (true) -- preserving the older "just try

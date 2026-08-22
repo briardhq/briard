@@ -1787,7 +1787,7 @@ type Client struct {
 }
 
 // NewClient wraps a connection to the guest (virtio-serial in prod, net.Pipe in tests).
-func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: &conn{rw: rw}} }
+func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: newConn(rw)} }
 
 // Handshake negotiates the host<->guest protocol: it reads the guest's version +
 // capabilities and refuses a guest the host can't drive (version outside
