@@ -1276,19 +1276,40 @@ in
     # The fear behind it was real and is handled by INTERFACE instead. Avahi's default is to
     # publish an A record for every address on every interface under its own hostname; measured on
     # the real machine that produced V3.19, `giouli-desktop.local` resolved to `172.18.0.1` -- a
-    # **Docker bridge**, not the LAN address. This guest has more ways to get that wrong than a
-    # desktop: eth0 is qemu's SLIRP net (10.0.2.15) and eth3 the private guest<->host witness
-    # link, and an address from either is a name that resolves and then goes nowhere. Both are
-    # DENIED, so avahi never sees them. eth1/eth2 stay allowed because which one carries the VIP
-    # is not fixed -- production puts it on eth2, the agent-less harnesses use the baked eth1
-    # default -- and pinning one here would break the other.
+    # **Docker bridge**, not the LAN address. eth0 is qemu's SLIRP net (10.0.2.15), an address that
+    # would be a name resolving to nowhere, so it is DENIED and avahi never sees it. eth1/eth2 stay
+    # allowed because which one carries the VIP is not fixed -- production puts it on eth2, the
+    # agent-less harnesses use the baked eth1 default -- and pinning one here would break the other.
     #
-    # What the daemon may now auto-publish is `briard-node-<id>.local`, the node id, which is a
-    # name no household is ever given; the name they ARE given is published explicitly by
-    # briard-mdns, is flock-scoped, and carries the VIP and nothing else.
+    # ⚠️ eth3, THE PRIVATE HOST<->GUEST LINK, IS ALLOWED, and it is the one interface whose
+    # inclusion is a decision rather than a default ([V3b.19]). The host running this guest is the
+    # ONE machine on the LAN that cannot hear it: macvtap isolates a parent NIC from its own
+    # children, and a switch does not reflect a frame to the port it came from -- so the guest's
+    # multicast reaches every machine in the house except the one it lives in. eth3 is a plain tap
+    # (platform/qemu.go keeps it NetBridge even under macvtap, deliberately), so it is the only
+    # path by which the household's own machine can resolve the household's own name.
+    #
+    # The auto-address fear above does not reach the name a household is GIVEN. briard-mdns
+    # publishes an EXPLICIT address -- the VIP, stripped from the same VIP_ADDR the node claimed --
+    # and an explicit `avahi-publish -a` record is interface-independent, so what eth3 carries is
+    # the VIP and never 10.9.9.2. That distinction is what makes allowing eth3 safe rather than
+    # merely useful: the private address is TRANSPORT and must never become identity. It is
+    # node-scoped, while the VIP and the name are flock-scoped and survive a failover it does not.
+    # Reaching that VIP from the host is the route the agent maintains (platform/route.go).
+    #
+    # What the daemon may auto-publish is `briard-node-<id>.local`, the node id -- on eth3 that
+    # resolves to 10.9.9.2, which is true, node-scoped, and a name no household is ever given, on a
+    # two-host point-to-point wire. The name they ARE given is published explicitly by briard-mdns,
+    # is flock-scoped, and carries the VIP and nothing else.
+    #
+    # Responder-only stands: `nssmdns4 = false` below, so nothing in this guest RESOLVES a .local
+    # name through libc. The guest's two host-facing dependencies (the witness forwarder, the
+    # deadman gate) are fixed addresses precisely because they must work when everything else is
+    # dead, and a service that wants discovery (Home Assistant's zeroconf) does its own multicast
+    # rather than going through NSS.
     services.avahi = {
       enable = true;
-      denyInterfaces = [ "eth0" "eth3" ];
+      denyInterfaces = [ "eth0" ]; # eth3 is allowed on purpose -- see above ([V3b.19])
       publish.enable = true;
       publish.userServices = true; # THE gate: without it EntryGroupNew is refused and nothing publishes
       publish.addresses = true;

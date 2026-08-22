@@ -52,9 +52,9 @@ offender).
 
 **If something goes wrong, there are two logs and you want both.** `sudo briard logs` reads them
 together: `journalctl -u briard-agent` is the host's side, and `/var/log/briard-guest-console.log`
-is the guest's own serial console — the only view into the VM, which is a full citizen of your LAN
-but is deliberately isolated from the host, so nothing else can see inside it. Both belong in any
-bug report.
+is the guest's own serial console — the only view into the VM's own boot and kernel. The VM is a
+full citizen of your LAN, answering at the node's address from any machine in the house including
+this one, but nothing on the host can see *inside* it. Both belong in any bug report.
 
 **Nothing will tell you when something breaks.** A free install talks to no server of ours, so
 there is nobody to send you mail: the node records what it notices and waits to be asked.

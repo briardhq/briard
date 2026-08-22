@@ -15,6 +15,10 @@ func capable() HostFacts {
 		// that is what makes the default install -- no BRIARD_VIP, address from the router --
 		// pass rather than warn. The fixture describes the machine we expect to admit.
 		HostLeased: true,
+		// ...and it can resolve the .local name the install ends by handing over. A desktop
+		// (Ubuntu, Fedora) ships nss-mdns or systemd-resolved; a bare server may not, which is a
+		// warning about the household's own software and never a refusal.
+		HasMDNSResolver: true,
 	}
 }
 
@@ -90,6 +94,25 @@ func TestAssessWarnsStillAdmit(t *testing.T) {
 		}
 		if !r.Admit() {
 			t.Error("a wifi-only host warns but is still admitted (yellow tier)")
+		}
+	})
+	// [V3b.19] A host with no mDNS resolver is told BEFORE the install that the name it is about
+	// to be handed will not resolve on this box, and is admitted anyway: the address always works,
+	// the rest of the LAN resolves the name fine, and this is a fact about the household's own
+	// software. Refusing over it would block a perfectly good server for a convenience.
+	t.Run("no mdns resolver", func(t *testing.T) {
+		f := capable()
+		f.HasMDNSResolver = false
+		r := Assess(f)
+		c := find(t, r, "mdns")
+		if c.Status != Warn || c.Fix == "" {
+			t.Fatalf("no mDNS resolver = %+v, want warn+fix", c)
+		}
+		if !strings.Contains(c.Fix, "address") {
+			t.Errorf("the fix %q does not point at the address, which is what still works", c.Fix)
+		}
+		if !r.Admit() {
+			t.Error("a host without an mDNS resolver warns but is still admitted")
 		}
 	})
 	t.Run("below recommended disk", func(t *testing.T) {

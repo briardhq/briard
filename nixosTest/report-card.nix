@@ -14,6 +14,11 @@ pkgs.testers.runNixOSTest {
     # KVM/tun depend on the runner, so the test asserts self-consistency for the overall verdict.
     virtualisation.memorySize = 10240;
     environment.systemPackages = [ agent pkgs.iproute2 ];
+    # nss-mdns in nsswitch, so the mdns gate has a deterministic PASS to assert. It is the one
+    # gate whose fact is read out of a CONFIG FILE rather than /proc or /sys ([V3b.19]), and the
+    # unit tests can only exercise the pure check above it -- this is what puts the reader itself
+    # in front of a real /etc/nsswitch.conf.
+    services.avahi = { enable = true; nssmdns4 = true; };
   };
 
   testScript = ''
@@ -23,7 +28,7 @@ pkgs.testers.runNixOSTest {
     print(f"report-card exit={status}:\n{out}")
 
     # Every gate in the closed set is emitted.
-    for name in ["kvm", "tun", "iproute2", "memory", "network"]:
+    for name in ["kvm", "tun", "iproute2", "memory", "network", "mdns"]:
         assert name in out, f"report card is missing the {name} check"
 
     # Deterministic gates on this node PASS (concrete, non-vacuous): iproute2 installed, 8 GB RAM,
@@ -35,6 +40,10 @@ pkgs.testers.runNixOSTest {
     assert gate("iproute2") == "PASS", f"iproute2 gate = {gate('iproute2')}, want PASS"
     assert gate("memory") == "PASS", f"memory gate = {gate('memory')}, want PASS (8 GB)"
     assert gate("network") == "PASS", f"network gate = {gate('network')}, want PASS (wired virtio)"
+    # The gatherer really read this machine's nsswitch: nss-mdns is configured above, so a WARN
+    # here means hasMDNSResolver failed to see a resolver that is demonstrably present.
+    assert gate("mdns") == "PASS", f"mdns gate = {gate('mdns')}, want PASS (nss-mdns is configured)"
+    machine.succeed("grep -qE '^hosts:.*mdns' /etc/nsswitch.conf")
 
     # The exit code is self-consistent with the verdict: 0 iff no REFUSE (admitted).
     refused = "REFUSE" in out

@@ -65,6 +65,13 @@ type HostFacts struct {
 	// and testable. False also covers "we could not probe", which reads as no evidence and never
 	// as proof the address is free.
 	VIPAnswered bool
+	// HasMDNSResolver is true when this machine can resolve .local names -- nsswitch names an
+	// mDNS module (nss-mdns, or systemd-resolved, which answers mDNS through `resolve`). It is
+	// about the HOST's own software, not about us: the name we hand over resolves through
+	// whatever resolver the household already has, and a box with none resolves no .local name
+	// from any source. False also covers "could not read nsswitch", which warns rather than
+	// refuses -- absence of evidence is not evidence of absence.
+	HasMDNSResolver bool
 	// HostLeased is true when this machine's own address looks DHCP-assigned (a lease file for
 	// the default-route NIC, under any of the usual managers). EVIDENCE, not proof: a
 	// deliberately static host on a DHCP-serving LAN reads false. So it may warn and must never
@@ -186,6 +193,21 @@ func Assess(f HostFacts) Report {
 	default:
 		cs = append(cs, Check{"network", Refuse, "no usable network interface found",
 			"connect the machine to your network (wired ethernet recommended)"})
+	}
+
+	// mDNS ON THIS MACHINE. The install ends by handing over `briard-<flock>.local`, and whether
+	// that name resolves on the machine reading it is a property of the HOST, not of us: a box
+	// with no mDNS resolver resolves no .local name from anywhere, ours included. The guest now
+	// answers the query on the private link, so nothing is missing on our side ([V3b.19]) -- but
+	// saying so before the install beats a user meeting a dead name after it.
+	//
+	// Never a Refuse, and not even substrate-scoped: the address always works, the name is the
+	// convenience, and this warns about the household's own software.
+	if f.HasMDNSResolver {
+		cs = append(cs, Check{"mdns", Pass, "this machine can resolve .local names (mDNS)", ""})
+	} else {
+		cs = append(cs, Check{"mdns", Warn, "no mDNS resolver on this machine -- the briard-<name>.local address will not resolve HERE",
+			"the numeric address always works (and other machines on your LAN resolve the name fine); install avahi-daemon + libnss-mdns if you want the name on this box too"})
 	}
 
 	cs = append(cs, vipCheck(f)...)

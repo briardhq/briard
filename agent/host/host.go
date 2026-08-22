@@ -788,6 +788,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	defer t.Stop()
 	cr := &certRequester{}         // node-side CSR handshake state, lives for the observe loop
 	su := cfg.newSelfUpdater(logf) // signed host-agent self-update; nil when no keyring provisioned
+	// The host's own route to the VIP its guest holds, over the private link -- the one address
+	// macvtap hides from the machine running the guest and from nobody else ([V3b.19]). Lives for
+	// the observe loop because it remembers what it installed; see viproute.go.
+	vr := newVIPRouter(cfg.WitnessTap, cfg.VIPDev)
 	// EVERY cfg.beat.Beat() below sits in front of one ctx-BOUNDED call, and that is the whole
 	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever
 	// a gap would otherwise open. It is not one ping per cycle -- these calls carry 5s deadlines
@@ -804,6 +808,18 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		sys := cfg.currentSystem(ctx, r)
 		cfg.beat.Beat()
 		st, cl, probe, err := cfg.snapshot(ctx, r, img, sys)
+		// AHEAD of the channel-down return, and that placement is the load-bearing part. A dead
+		// channel is precisely when the local guest may have stopped serving and a PEER may have
+		// taken the VIP over -- the case where a route left pointing at our own guest replaces a
+		// working LAN path with a black hole. Reconciling here withdraws it; reconciling after the
+		// return would keep it exactly when it is most wrong.
+		//
+		// The address is asked for separately from the snapshot's health resolution, and
+		// deliberately: that one prefers the CONFIGURED address when there is one, which on a node
+		// that is not currently serving is an address this guest does not hold. A route may only
+		// follow ground truth.
+		cfg.beat.Beat()
+		vr.reconcile(ctx, r, logf)
 		if errors.Is(err, guestagent.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}

@@ -36,9 +36,36 @@ func Gather() HostFacts {
 		// Is that address already somebody's? Probed here rather than inside the check so the
 		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
 		// router picks from its own pool and this question is not ours to ask.
-		VIPAnswered: os.Getenv("VIP_ADDR") != "" && addressAnswers(os.Getenv("VIP_ADDR")),
-		HostLeased:  hostHasLease(defaultRouteNIC()),
+		VIPAnswered:     os.Getenv("VIP_ADDR") != "" && addressAnswers(os.Getenv("VIP_ADDR")),
+		HostLeased:      hostHasLease(defaultRouteNIC()),
+		HasMDNSResolver: hasMDNSResolver(),
 	}
+}
+
+// hasMDNSResolver reports whether this machine can resolve a .local name.
+//
+// nsswitch.conf is the question rather than "is avahi-daemon running", because RESOLUTION is what
+// the user actually does and a daemon nothing consults resolves nothing. Two spellings count:
+// nss-mdns (`mdns4_minimal`/`mdns`, the Debian/Ubuntu/Fedora desktop default) and systemd-resolved
+// (`resolve`), which answers mDNS itself. An unreadable file reads as false, which warns and never
+// refuses -- absence of evidence about someone else's machine is not evidence of absence.
+func hasMDNSResolver() bool {
+	b, err := os.ReadFile("/etc/nsswitch.conf")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "hosts:")
+		if !ok {
+			continue
+		}
+		for _, mod := range strings.Fields(rest) {
+			if strings.HasPrefix(mod, "mdns") || mod == "resolve" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // arpProbeWait bounds the ARP probe. A device on the same segment answers in single-digit

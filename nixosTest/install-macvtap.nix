@@ -11,6 +11,8 @@
 #      /dev/tap<ifindex> chardevs on the inherited fds — the mechanism ifname= can't provide.
 #   4. an OFF-BOX LAN client still reaches the payload at the VIP through the macvtap (the guest
 #      is a full L2 citizen), which is the whole point.
+#   5. and so does the INSTALL HOST -- by the VIP and by the name -- over the private link, which
+#      is the one machine macvtap would otherwise hide the household's own service from ([V3b.19]).
 #
 # It also proves assertion (d) -- cattle/pet reinstall: after green, `rm -rf /opt/briard`
 # (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the payload's persisted
@@ -101,7 +103,18 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
-        environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl ];
+        environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi ];
+        # An mDNS resolver ON THE INSTALL HOST, which is what a desktop install actually is
+        # ([V3b.19] was measured on one). It is here to make a dependency VISIBLE rather than to
+        # flatter the result: resolving the guest's name from this machine needs the household's
+        # own machine to speak mDNS, and a host that speaks none resolves no .local name from
+        # anywhere -- with or without us. Encoding it as rig config is how that stays honest.
+        #
+        # nssmdns4 as well as the daemon, because the gesture being fixed is a person typing the
+        # name into a browser, and a browser goes through nsswitch. The assertions below use both:
+        # avahi-resolve-host-name proves the QUERY reaches the guest over the private link and is
+        # answered there, and a curl by name proves the household's actual gesture works.
+        services.avahi = { enable = true; nssmdns4 = true; };
       };
 
     # The off-box client that must reach the VIP through the guest's macvtap.
@@ -416,6 +429,71 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://briard-{flock_name}.local/healthz", timeout=120)
     print(f"off-box client reached http://briard-{flock_name}.local/ by NAME")
 
+    # DELTA 5 [V3b.19]: THE INSTALL HOST REACHES ITS OWN GUEST -- the one machine on this L2 that
+    # could not. Everything above is proved from `client`, deliberately, and that is exactly how
+    # the defect survived: the substrate isolates a parent NIC from its own children and a switch
+    # will not reflect a frame to the port it came from, so the installer handed its user an
+    # address and a name that worked everywhere except on the machine reading them.
+    #
+    # The user-facing addresses are UNCHANGED -- the VIP and the flock name, the same two strings
+    # the client just used. The private link is transport and is never published: 10.9.9.2 appears
+    # in the ROUTE below and nowhere a household would look.
+    host.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=180)
+    print(f"the install host reached its own guest at http://{vip}/")
+
+    route = host.succeed(f"ip route get {vip}")
+    print(f"host route to the VIP: {route.strip()}")
+    assert "briard-priv0" in route, f"the host reaches {vip} some other way than the private link: {route!r}"
+    # `via` the guest's end, never on-link. The guest answers ARP only on the interface holding the
+    # address asked for (arp_ignore=1, [B.101]), so an on-link /32 installs cleanly and then
+    # black-holes -- a regression that would look like a working route in every `ip route` listing.
+    assert "10.9.9.2" in route, (
+        f"the route to {vip} is not via the guest's end of the link: {route!r} -- an on-link route "
+        f"cannot resolve the VIP's MAC under arp_ignore=1"
+    )
+
+    # NON-VACUITY, and self-healing, in one move. Take the route away and the host is returned to
+    # exactly the state measured on the stranger's desktop; a restarted agent must put it back on
+    # its own. Asserting it here rather than racing the agent at boot is what makes the failure
+    # REAL: it proves the route is the CAUSE, not merely present alongside the result.
+    #
+    # The agent is stopped for the negative half deliberately, and not to be tidy -- its observe
+    # cadence is 10s, so a reconcile could otherwise land inside the curl's own timeout and turn
+    # this into a flake that fails at nobody's fault. Stopping it leaves the GUEST serving (the
+    # guest is a detached sibling unit, as the cattle-reset below relies on), so what is measured
+    # is the isolation and nothing else.
+    host.succeed("systemctl stop briard-agent.service")
+    host.succeed(f"ip route del {vip}/32 dev briard-priv0")
+    host.fail(f"curl -fsS --max-time 5 http://{vip}/healthz")
+    print(f"without the route the host cannot reach {vip} -- the isolation is real")
+    host.succeed("systemctl start briard-agent.service")
+    host.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=180)
+    print("the agent re-established the route on its own")
+
+    # THE NAME, from the host. Its mDNS query can only have been answered over the private link --
+    # the guest's multicast on the macvtap never comes back to this machine -- so this fails if
+    # avahi is denied eth3 in the guest, which is what it is here to catch.
+    host_resolved = ""
+    for _ in range(24):
+        rc, out = host.execute(f"avahi-resolve-host-name -4 briard-{flock_name}.local")
+        if rc == 0 and vip in out:
+            host_resolved = out
+            break
+        host.sleep(5)
+    assert vip in host_resolved, (
+        f"from the install host, briard-{flock_name}.local resolved to {host_resolved!r}, not to "
+        f"{vip} -- the household's own machine still cannot find the household's own node"
+    )
+    # And it must resolve to the VIP, NOT to the private address. The name is flock-scoped and
+    # survives a failover; 10.9.9.2 is node-scoped and does not, so a name pointing at it would be
+    # the V3.20 incoherence restored in a place nobody would look for it.
+    assert "10.9.9.2" not in host_resolved, (
+        f"the name resolved to the private link address ({host_resolved!r}) -- transport must "
+        f"never become identity"
+    )
+    host.wait_until_succeeds(f"curl -fsS http://briard-{flock_name}.local/healthz", timeout=120)
+    print(f"the install host reached http://briard-{flock_name}.local/ by NAME")
+
     # The DHCP hostname deliberately does NOT follow the flock name (V3.20 decision 2): option 12
     # stays derived in-guest from the NIC's own MAC, because changing a hostname mid-lease is a
     # change no one can predict an arbitrary server's reaction to, and a rename must never risk the
@@ -463,6 +541,16 @@ pkgs.testers.runNixOSTest {
 
     pre = fsid(host)
     print(f"pre-wipe data volume fsid={pre}")
+
+    # [V3b.19] THE ROUTE IS WITHDRAWN when this node's guest stops serving, and the agent must do
+    # it on a DEAD control channel -- which is the case that matters. A guest that has gone away is
+    # a guest a PEER may have taken the VIP over from, and the peer IS reachable over the LAN; a
+    # route left pointing at our own dead guest would replace that working path with a black hole.
+    # So the guest is stopped here while the AGENT KEEPS RUNNING, because a withdrawal needs
+    # someone left to perform it. (The cattle-reset below then stops both, as a household would.)
+    host.succeed("systemctl stop briard-guest.service")
+    host.wait_until_fails(f"ip route get {vip} | grep -q briard-priv0", timeout=120)
+    print("the agent withdrew the host route when its guest stopped serving")
 
     # The honest cattle-reset gesture: stop briard (the agent AND its detached guest unit -- the
     # guest runs as a sibling transient service, so stopping the agent alone leaves
@@ -608,6 +696,15 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
     print(f"followed the router from {vip} to {moved}, same identity, and stopped answering at the old one")
+
+    # [V3b.19] The HOST's route follows the address too -- and the stale one goes. Two /32s to one
+    # guest would both work, which is exactly why the old one must not survive: it would keep
+    # answering long after the household's address had changed, and nothing would notice until a
+    # failover made it wrong. This is the re-lease path the reconcile exists for, on a real lease.
+    host.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    host.wait_until_fails(f"ip route get {vip} | grep -q briard-priv0", timeout=120)
+    host.succeed(f"ip route get {moved} | grep -q briard-priv0")
+    print(f"the host route followed the lease from {vip} to {moved}, leaving nothing behind")
 
     # ---- THE SELF-UPDATE PIVOT, ON THE UNIT install.sh ACTUALLY WROTE [B.84] ---------------
     # agent-selfupdate.nix proves this mechanism on a unit it constructs ITSELF, and that is
