@@ -668,8 +668,11 @@ Description=briard host agent (single node)
 After=briard-net.service
 Requires=briard-net.service
 [Service]
-# The agent shells out to systemd-run/systemctl by name; give it a PATH that resolves them on a
-# stock host (/usr/bin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
+# The agent shells out to systemd-run/systemctl AND to `ip` by name (the route to its own guest's
+# VIP over the private link, [V3b.19]); give it a PATH that resolves them on a stock host
+# (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
+# `ip` in particular lives in *sbin on a stock host, which is why both are listed and neither is
+# decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
 Environment=QEMU=$QEMU
 Environment=QEMU_DATADIR=$QEMU_DATADIR

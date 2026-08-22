@@ -58,6 +58,11 @@ pkgs.testers.runNixOSTest {
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
+        # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
+        # agent shells out to systemd-run, systemctl and -- since [V3b.19] -- `ip`, all BY NAME, and
+        # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
+        # is the point: the rig gets what the product gets ([V3b.19a]).
+        "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
