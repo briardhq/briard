@@ -211,10 +211,16 @@ func qemuArgs(s QEMUSpec) []string {
 	// witness-forwarder answers) comes third -> eth3: uniform on a
 	// managed/pair-capable guest, idle until a pairing addresses it (no hotplug, no
 	// reboot -- extends c-ii's uniform layout). eth3 assumes the uniform layout
-	// (system + service present, as the pairing path always sets them). A
-	// single-node/legacy guest with only a service tap has it land on eth1
-	// (positional), which the baked default vipDev matches; a data node's VIP moves
-	// to eth2, which the agent tells the guest (net.configure).
+	// (system + service present), and install.sh sets all three on EVERY install --
+	// so eth1/eth2/eth3 is the only shape any shipped node has booted with. Which NIC
+	// carries the VIP is the agent's to say (net.configure); nothing is baked
+	// guest-side, so there is no default for a positional shape to be correct against
+	// ([V3b.16a] deleted the last one).
+	//
+	// ⚠️ Omitting SystemTap slides the service NIC down to eth1 AND the witness NIC to
+	// eth2 -- where the guest's baked 10.9.9.2 is not, so the private link silently
+	// fails to exist and with it the reboot gate and the host's route to the VIP
+	// ([V3b.19]). A caller that wants any of those must set all three.
 	if s.ServiceTap != "" || s.SystemTap != "" || s.WitnessTap != "" {
 		// SLIRP's addressing is PINNED rather than defaulted, because the guest configures eth0
 		// statically from these exact numbers and runs no DHCP client for it. They happen to be
