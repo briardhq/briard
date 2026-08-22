@@ -27,24 +27,26 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")  # nested KVM present in L1
 
-    # The service L2 on the MACVTAP substrate (default): a carrier-bearing parent (a veth whose
-    # peer is up -- a dummy has no carrier and macvlan bridge-mode won't forward), the guest's service
-    # NIC as a macvtap CHILD of it (svc0 -> the guest's eth1, the VIP), and a host-side macvlan SHIM on
-    # the same parent so L1 can still reach the guest VIP -- macvtap deliberately isolates host<->guest,
-    # so without the shim L1 could not curl 192.168.1.100 (proven in the evaluation). shim0 and svc0
-    # are bridge-mode siblings, so they forward internally (no external switch needed).
+    # THE SHIPPED NIC CONTRACT, and it is the rig's job to match it rather than improve on it
+    # ([V3b.19a]). A carrier-bearing parent (a veth whose peer is up -- a dummy has no carrier and
+    # macvlan bridge-mode won't forward), then the guest's two LAN NICs as macvtap CHILDREN of it in
+    # install.sh's order -- sys0 -> the guest's eth1 (the DRBD NIC, idle on one node), svc0 -> eth2
+    # (the VIP) -- and the private host<->guest link as a plain tap holding 10.9.9.1/24, exactly as
+    # install.sh lays it down. qemu.go assigns NICs positionally, so all three or none: omit sys0 and
+    # the witness NIC lands on eth2, where the guest's baked 10.9.9.2 is not, and the private link
+    # silently fails to exist.
     #
-    # ⚠️ THE SHIM IS RIG PLUMBING AND NOT THE PRODUCT'S ANSWER to that isolation, and the
-    # distinction is worth stating here because this rig is where it was easiest to lose: a real
-    # install carries the private host<->guest link and the agent routes the VIP over it
-    # ([V3b.19]), which is what lets the machine running the guest reach it. This test sets no
-    # WITNESS_TAP and keeps the legacy positional layout (one service tap -> the guest's eth1), so
-    # there is no such link and no route to have; L1 stands in for the rest of the LAN. The
-    # shipped shape -- uniform NIC layout, private link, route -- is proved in install-macvtap.
+    # ⚠️ THIS USED TO BUILD A HOST-SIDE MACVLAN SHIM INSTEAD (shim0, 192.168.1.1/24), because macvtap
+    # isolates host<->guest and without something L1 could not curl the VIP at all. That shim was the
+    # rig granting itself a reachability THE PRODUCT DID NOT HAVE -- so no test could fail on the gap,
+    # and a stranger found it instead of us ([V3b.19]). The curl below is unchanged and now passes for
+    # the shipped reason: the agent routes the VIP over the private link. A shim here would hide that
+    # working or broken, which is the whole argument for deleting it.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
-        "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
-        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up"
+        "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
+        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
     # Writable overlay of the read-only store qcow2 + a blank DRBD backing disk.
@@ -59,15 +61,20 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
-        "--setenv=SERVICE_TAP=svc0 --setenv=STATUS_EVERY=2s "
+        # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
+        # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV stays unset, as
+        # it is on a shipped single node -- DRBD needs the NIC present, not addressed.
+        "--setenv=SYSTEM_TAP=sys0 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
+        "--setenv=STATUS_EVERY=2s "
         # The test DECLARES the service address it is about to curl. The guest image bakes none
         # (V3.19c step 3) and unset means DHCP, which nothing answers on a nixosTest's L2.
         # HEALTH_URL is deliberately left unset alongside it, so the agent resolves its probe
         # target from the address the guest actually holds -- the shipped path, exercised here
         # rather than bypassed by a baked URL that happens to agree.
-        "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
-        # Macvtap substrate: the agent launches qemu behind the fd-passing wrapper, which pins
-        # svc0's MAC to the agent's derived svc MAC (matching qemu's mac=) and opens /dev/tap<ifindex>.
+        "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
+        # Macvtap substrate: the agent launches qemu behind the fd-passing wrapper, which pins each
+        # macvtap's MAC to the agent's derived MAC (matching qemu's mac=) and opens /dev/tap<ifindex>.
+        # The witness tap is NOT passed through the wrapper -- qemu opens it by name, as in production.
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
         "${agent}/bin/briard-agent"
     )
@@ -78,6 +85,15 @@ pkgs.testers.runNixOSTest {
     # The whole point: L1 reaches Briard's front door at the agent-claimed VIP. This boots the
     # SHIPPED disk, so what answers here is the node itself, not a workload baked in for the test.
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    # ...and it reaches it THE WAY A REAL HOST DOES: over the private link, on a route the agent
+    # put there. Asserted rather than inferred from the curl, because the curl passing is what a
+    # rig-built shim used to buy too -- this is the line that tells the two apart ([V3b.19a]).
+    route = host.succeed("ip route get 192.168.1.100")
+    print(f"host route to the VIP: {route.strip()}")
+    assert "briard-priv0" in route and "10.9.9.2" in route, (
+        f"the host reaches the VIP some other way than the agent's route over the private link: "
+        f"{route!r} -- if a macvlan shim has come back, this test has stopped proving the product"
+    )
     # The piece beyond the driver: the standing observe loop reports the *correct*
     # converged NodeStatus -- quorate primary AND healthy (a failable assertion:
     # health follows the real probe, so it only flips true once the front door actually serves).

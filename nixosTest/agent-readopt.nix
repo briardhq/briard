@@ -48,11 +48,13 @@ pkgs.testers.runNixOSTest {
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
+          SYSTEM_TAP = "sys0";
           SERVICE_TAP = "svc0";
+          WITNESS_TAP = "briard-priv0";
           # The test declares its service address: the image bakes none (V3.19c step 3) and unset
           # means DHCP, which nothing answers here. HEALTH_URL stays unset so the agent resolves the
           # probe target from the address the guest actually holds.
-          VIP_DEV = "eth1";
+          VIP_DEV = "eth2";
           VIP_ADDR = "192.168.1.100/24";
           NET_MODE = "macvtap";
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
@@ -66,15 +68,23 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # Service L2 on the macvtap substrate (default): a carrier-bearing parent, the guest's
-    # service NIC as a macvtap child (svc0 -> eth1, the VIP), and a host-side macvlan shim so L1 can
-    # reach the VIP (macvtap isolates host<->guest). Rig plumbing, not the product's answer to that
-    # isolation -- a real install routes the VIP over the private link ([V3b.19]); this test sets no
-    # WITNESS_TAP, so L1 stands in for the rest of the LAN. See install-macvtap for the real path.
+    # The shipped NIC contract: a carrier-bearing parent, the guest's two LAN NICs as macvtap
+    # children in install.sh's order (sys0 -> eth1, svc0 -> eth2, the VIP), and the private
+    # host<->guest link as a plain tap at 10.9.9.1/24.
+    #
+    # ⚠️ THE VIP POLLER BELOW IS WHY THIS RIG MATTERS MOST ([V3b.19a]). It samples the VIP every
+    # 0.5s across `systemctl restart briard-agent` and asserts ZERO dropped ticks -- and since the
+    # agent now owns the host's route to that address, the poller is measuring the route as well as
+    # the guest. That caught a real regression while this conversion was being written: the
+    # reconcile withdrew the route whenever its context cancelled, so every restart -- which is what
+    # a self-update IS -- would have blipped reachability for a guest that never stopped serving.
+    # With the old macvlan shim here, nothing about the route was on this path and the poller could
+    # not have seen it.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
-        "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
-        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up"
+        "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
+        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")

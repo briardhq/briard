@@ -56,14 +56,16 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # Same service L2 as agent-recover: veth parent, macvtap child for the guest, macvlan shim so
-    # L1 can reach the VIP at all. Rig plumbing, not the product's answer to macvtap's host<->guest
-    # isolation -- a real install routes the VIP over the private link ([V3b.19]), and this test
-    # sets no WITNESS_TAP, so L1 stands in for the rest of the LAN.
+    # Same L2 as agent-recover, and it is the SHIPPED NIC contract rather than a rig convenience:
+    # veth parent, the guest's two LAN NICs as macvtap children in install.sh's order (sys0 -> eth1,
+    # svc0 -> eth2), and the private host<->guest link as a plain tap at 10.9.9.1/24. The macvlan
+    # shim this used to build was the rig granting itself reachability the product lacked; the VIP
+    # curls below now pass because the agent routes it over the private link ([V3b.19a]).
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
-        "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
-        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up"
+        "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
+        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
     # THE OVERLAY IS THE POINT: the guest disk must be a qcow2 overlay on the shipped image, the
@@ -85,8 +87,8 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=ADMIN_SOCK=/run/briard/admin.sock "
-        "--setenv=NODE=guest --setenv=SERVICE_TAP=svc0 --setenv=STATUS_EVERY=2s "
-        "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
+        "--setenv=NODE=guest --setenv=SYSTEM_TAP=sys0 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
+        "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
         # GUEST_SERIAL is the only window into the guest during a stop, and it is why [B.85] sat
         # unexplained: the host watches the VM's systemd unit and has no console on what is

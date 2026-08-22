@@ -54,11 +54,13 @@ pkgs.testers.runNixOSTest {
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
+          SYSTEM_TAP = "sys0";
           SERVICE_TAP = "svc0";
+          WITNESS_TAP = "briard-priv0";
           # The test declares its service address: the image bakes none (V3.19c step 3) and unset
           # means DHCP, which nothing answers here. HEALTH_URL stays unset so the agent resolves the
           # probe target from the address the guest actually holds.
-          VIP_DEV = "eth1";
+          VIP_DEV = "eth2";
           VIP_ADDR = "192.168.1.100/24";
           NET_MODE = "macvtap";
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
@@ -72,15 +74,21 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # Service L2 on the macvtap substrate: carrier-bearing veth parent, the guest's service NIC as
-    # a macvtap child, and a host-side macvlan shim so L1 can reach the VIP. Rig plumbing, not the
-    # product's answer to macvtap's host<->guest isolation -- a real install routes the VIP over the
-    # private link ([V3b.19]), and this test sets no WITNESS_TAP, so it has no such link to route
-    # over and L1 stands in for the rest of the LAN.
+    # The shipped NIC contract: carrier-bearing veth parent, the guest's two LAN NICs as macvtap
+    # children in install.sh's order (sys0 -> eth1, svc0 -> eth2), and the private host<->guest link
+    # as a plain tap at 10.9.9.1/24. The macvlan shim this used to build was the rig granting itself
+    # reachability the product lacked ([V3b.19a]).
+    #
+    # THE PRIVATE LINK MATTERS TWICE HERE, and the second reason is this test's own subject: the
+    # guest deadman serves its reboot GATE at 10.9.9.2:7790 over exactly this link, and the host's
+    # recovery rung reads it there. Without the link the gate had nowhere to listen, so this rig
+    # proved the guest reboots while being structurally unable to exercise the guard that decides
+    # whether it may -- a second place the rig was quietly narrower than the product.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
-        "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
-        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up"
+        "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
+        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")

@@ -45,19 +45,22 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # The service L2 on the macvtap substrate (the default), same shape as agent-bringup: a
-    # carrier-bearing veth parent, the guest's service NIC as a macvtap child, and a host-side
-    # macvlan shim so L1 can curl the VIP at all (macvtap isolates host<->guest by design --
-    # which is also precisely why the recovery ladder cannot probe the payload before deciding).
+    # The shipped NIC contract, same shape as agent-bringup: a carrier-bearing veth parent, the
+    # guest's two LAN NICs as macvtap children in install.sh's order (sys0 -> eth1, svc0 -> eth2),
+    # and the private host<->guest link as a plain tap holding 10.9.9.1/24. All three or none --
+    # qemu.go assigns NICs positionally, so omitting sys0 lands the witness NIC on eth2 and the
+    # private link silently fails to exist.
     #
-    # The shim is RIG plumbing, NOT the product's answer to that isolation ([V3b.19]): a real
-    # install carries the private host<->guest link and the agent routes the VIP over it, which
-    # install-macvtap proves on the shipped install. This test sets no WITNESS_TAP, so it has no
-    # such link -- L1 here stands in for the rest of the LAN, not for the install host.
+    # ⚠️ THIS BUILT A HOST-SIDE MACVLAN SHIM until [V3b.19a], because macvtap isolates host<->guest
+    # and L1 could not otherwise curl the VIP -- the rig handing itself a reachability the product
+    # did not have. The curls below are unchanged and now pass because the agent routes the VIP over
+    # the private link. Note the isolation itself is still real and still load-bearing HERE: it is
+    # precisely why the recovery ladder cannot probe the payload before deciding.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
-        "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
-        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up"
+        "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
+        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
@@ -67,8 +70,8 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
-        "--setenv=SERVICE_TAP=svc0 --setenv=STATUS_EVERY=2s "
-        "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
+        "--setenv=SYSTEM_TAP=sys0 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
+        "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
         "${agent}/bin/briard-agent"
     )

@@ -101,8 +101,10 @@ pkgs.testers.runNixOSTest {
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
+          SYSTEM_TAP = "sys0";
           SERVICE_TAP = "svc0";
-          VIP_DEV = "eth1";
+          WITNESS_TAP = "briard-priv0";
+          VIP_DEV = "eth2";
           VIP_ADDR = "192.168.1.100/24";
           NET_MODE = "macvtap";
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
@@ -130,14 +132,20 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # Service L2 on the macvtap substrate (as agent-readopt): carrier-bearing parent, the guest's
-    # service NIC as a macvtap child, and a host-side macvlan shim so L1 can reach the VIP. Rig
-    # plumbing, not the product's answer to macvtap's host<->guest isolation -- a real install
-    # routes the VIP over the private link ([V3b.19]), and this test sets no WITNESS_TAP.
+    # The shipped NIC contract (as agent-readopt): carrier-bearing parent, the guest's two LAN NICs
+    # as macvtap children in install.sh's order (sys0 -> eth1, svc0 -> eth2), and the private
+    # host<->guest link as a plain tap at 10.9.9.1/24. The macvlan shim this used to build was the
+    # rig granting itself reachability the product lacked ([V3b.19a]); the VIP now answers here
+    # because the agent routes it over that link.
+    #
+    # Worth knowing for the wedge steps below: a WEDGED agent cannot reconcile, so the route it
+    # already installed simply stays -- the VIP assertions across a wedge are unaffected, and a
+    # regression that made them depend on a live reconcile would show up here as a FAIL.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
-        "ip link add link parent name shim0 type macvlan mode bridge && ip addr add 192.168.1.1/24 dev shim0 && ip link set shim0 up && "
-        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up"
+        "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
+        "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
