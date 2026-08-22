@@ -542,15 +542,13 @@ pkgs.testers.runNixOSTest {
     pre = fsid(host)
     print(f"pre-wipe data volume fsid={pre}")
 
-    # [V3b.19] THE ROUTE IS WITHDRAWN when this node's guest stops serving, and the agent must do
-    # it on a DEAD control channel -- which is the case that matters. A guest that has gone away is
-    # a guest a PEER may have taken the VIP over from, and the peer IS reachable over the LAN; a
-    # route left pointing at our own dead guest would replace that working path with a black hole.
-    # So the guest is stopped here while the AGENT KEEPS RUNNING, because a withdrawal needs
-    # someone left to perform it. (The cattle-reset below then stops both, as a household would.)
-    host.succeed("systemctl stop briard-guest.service")
-    host.wait_until_fails(f"ip route get {vip} | grep -q briard-priv0", timeout=120)
-    print("the agent withdrew the host route when its guest stopped serving")
+    # [V3b.19] The route's WITHDRAWAL is proven in agent-recover, not here, and the reason is worth
+    # recording: a withdrawal needs the agent alive to perform it, but an agent alive when its guest
+    # unit stops does what it is built to do and RELAUNCHES the guest -- straight into the cattle
+    # reset below. (It also leaves nothing to stop: a stopped transient unit is garbage-collected,
+    # so naming it again is exit 5. Measured, on the first L0 run of this file.) agent-recover
+    # already kills the guest with the agent running and waits out the relaunch, so the assertion
+    # belongs where that perturbation already lives.
 
     # The honest cattle-reset gesture: stop briard (the agent AND its detached guest unit -- the
     # guest runs as a sibling transient service, so stopping the agent alone leaves

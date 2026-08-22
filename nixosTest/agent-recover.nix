@@ -94,6 +94,17 @@ pkgs.testers.runNixOSTest {
     killed_at = time.monotonic()
     host.succeed(f"kill -9 {gone}")
 
+    # [V3b.19] THE HOST'S ROUTE FOLLOWS THE GUEST AWAY, and this is the live proof of the rule that
+    # matters most: the agent is ALIVE and the channel is DEAD, which is exactly when a peer may
+    # have taken the VIP over. Leaving a /32 pointing at our own dead guest would replace the
+    # working LAN path to that peer with a black hole, so the withdrawal fails OPEN.
+    #
+    # It lives here rather than in install-macvtap because this is where the perturbation already
+    # is: a withdrawal needs the agent running, and an agent running when its guest goes away
+    # relaunches it -- which is this test's whole subject, and was a race anywhere else.
+    host.wait_until_fails("ip route get 192.168.1.100 | grep -q briard-priv0", timeout=180)
+    print("the host route was withdrawn while the guest was gone")
+
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'the guest unit is stopped; relaunching'", timeout=180
     )
@@ -107,7 +118,11 @@ pkgs.testers.runNixOSTest {
     restarted = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     assert restarted != gone, f"same qemu pid {restarted} -- nothing was relaunched"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
-    print(f"guest back after a clean exit: pid {gone} -> {restarted}")
+    # ...and comes back with it. The curl above already needs the route (this host has no other
+    # path to the VIP), but assert the route itself too: the pair withdrawn-then-restored is what
+    # says the agent is TRACKING the guest rather than having got lucky once at bring-up.
+    host.succeed("ip route get 192.168.1.100 | grep -q briard-priv0")
+    print(f"guest back after a clean exit: pid {gone} -> {restarted}, route restored")
 
     # === PHASE 1b: relaunching INTO a stop that has not finished. ===
     #
