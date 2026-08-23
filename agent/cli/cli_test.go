@@ -110,7 +110,6 @@ func TestUsageErrors(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"no command", nil},
 		{"unknown command", []string{"frobnicate"}},
 		{"no kind", []string{"directive", "-sock", sock}},
 		{"too many args", []string{"directive", "-sock", sock, "log", "a", "b"}},
@@ -303,5 +302,109 @@ func TestRescueRefusedExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "not an overlay") {
 		t.Errorf("the node's reason was not surfaced; got %q", errOut.String())
+	}
+}
+
+// TestNoArgsIsHelp: `briard` alone prints the help and SUCCEEDS. It used to start the privileged
+// host agent ([V3b.23]) — a bare word away from the CLI, and the one invocation a curious user is
+// most likely to try first. The daemon is `briard run` now, and nothing reaches this path
+// expecting a process to stay up.
+func TestNoArgsIsHelp(t *testing.T) {
+	var bare, explicit, errOut bytes.Buffer
+	if code := Main(context.Background(), nil, &bare, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0 — no arguments is the help, not a usage error", code)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr = %q, want the help on stdout (it was asked for, not complained about)", errOut.String())
+	}
+	if code := Main(context.Background(), []string{"help"}, &explicit, &errOut); code != 0 {
+		t.Fatalf("`help` exit = %d, want 0", code)
+	}
+	if bare.String() != explicit.String() {
+		t.Errorf("`briard` and `briard help` printed different things; they are the same request")
+	}
+}
+
+// TestEveryCommandIsDocumented pins the user-visible surface to a list written HERE, not read
+// from `commands`. That distinction is the whole test: dispatch and the help are one table now,
+// so they cannot disagree with each other — but they can both be wrong together, and a test that
+// iterates the table would pass while a verb quietly vanished from the product. Declaring the
+// expected set independently is the repo's own rule (CONTRIBUTING, "tests declare their own
+// values"): a test that inherits the product's list cannot see that list being wrong.
+//
+// Verified to fail: deleting the `logs` row from `commands` reds this test. The earlier draft,
+// which walked `commands` at both ends, stayed green through exactly that deletion.
+func TestEveryCommandIsDocumented(t *testing.T) {
+	want := map[string]string{
+		"alerts":    groupEveryday,
+		"logs":      groupEveryday,
+		"service":   groupEveryday,
+		"handover":  groupEveryday,
+		"rescue":    groupRepair,
+		"os":        groupRepair,
+		"directive": groupRepair,
+		"run":       groupRepair,
+	}
+	var listing bytes.Buffer
+	usage(&listing)
+
+	got := map[string]string{}
+	for _, c := range commands {
+		got[c.name] = c.group
+	}
+	for name, group := range want {
+		if got[name] == "" {
+			t.Errorf("`briard %s` is gone from the CLI; if that is deliberate, this test says so first", name)
+			continue
+		}
+		if got[name] != group {
+			t.Errorf("`briard %s` moved to the %q tier (was %q) — that is a product decision, not a refactor", name, got[name], group)
+		}
+	}
+	for name := range got {
+		if want[name] == "" {
+			t.Errorf("`briard %s` was added without a line here; a new verb is a decision about the household's surface", name)
+		}
+	}
+	for _, c := range commands {
+		if c.synopsis == "" || c.group == "" {
+			t.Errorf("command %q has no synopsis or no group, so it cannot appear in the help", c.name)
+		}
+		if !strings.Contains(listing.String(), c.name) {
+			t.Errorf("command %q dispatches but the help never names it", c.name)
+		}
+		// `run` is the one row main() intercepts before the CLI is reached; everything else must
+		// be reachable from Main, or the help is describing a word that does nothing.
+		if c.run == nil && c.name != "run" {
+			t.Errorf("command %q is documented but dispatches nowhere", c.name)
+		}
+		if c.run == nil {
+			continue
+		}
+		var out, errOut bytes.Buffer
+		if code := Main(context.Background(), []string{c.name, "--nonsense-flag"}, &out, &errOut); code == 0 {
+			t.Errorf("`briard %s --nonsense-flag` exited 0; the verb is not parsing its own arguments", c.name)
+		}
+		if strings.Contains(errOut.String(), "unknown command") {
+			t.Errorf("`briard %s` is documented but Main does not dispatch it", c.name)
+		}
+	}
+}
+
+// TestHelpForACommandPrintsItsOwnOptions: `help <cmd>` must show the flags the verb ACTUALLY
+// parses. It gets them by running the verb's own flag set rather than restating them, so this
+// asserts the delegation works — a hand-written option list is the drift this whole item is about.
+func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Main(context.Background(), []string{"help", "rescue"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"rescue", "-yes", "-sock"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("`briard help rescue` never mentioned %q:\n%s", want, out.String())
+		}
+	}
+	if code := Main(context.Background(), []string{"help", "frobnicate"}, &out, &errOut); code != 2 {
+		t.Errorf("`briard help frobnicate` exit = %d, want 2", code)
 	}
 }

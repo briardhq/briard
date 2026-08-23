@@ -53,7 +53,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
-    # Run the product agent (host mode = no --guest): boots the guest, drives the
+    # Run the product agent (host mode = plain `run`): boots the guest, drives the
     # ordered bring-up (data -> VIP, no payload -- the shipped disk runs none), then holds it in
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
     host.succeed(
@@ -81,7 +81,7 @@ pkgs.testers.runNixOSTest {
         # macvtap's MAC to the agent's derived MAC (matching qemu's mac=) and opens /dev/tap<ifindex>.
         # The witness tap is NOT passed through the wrapper -- qemu opens it by name, as in production.
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
-        "${agent}/bin/briard-agent"
+        "${agent}/bin/briard-agent run"
     )
 
     # The agent prints CONVERGED once the guest reports quorate Primary.

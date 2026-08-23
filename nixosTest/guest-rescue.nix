@@ -101,7 +101,7 @@ pkgs.testers.runNixOSTest {
         # shutting down slowly look identical from out here. The chardev APPENDS across launches
         # (platform.qemuArgs), so one file holds the guest that was stopped AND the rebuilt one.
         "--setenv=GUEST_SERIAL=/tmp/guest-console.log "
-        "${agent}/bin/briard-agent"
+        "${agent}/bin/briard-agent run"
     )
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)

@@ -59,7 +59,7 @@
 , agentVersion ? "0.0.0-dev" }:
 let
   lib = nixpkgs.lib;
-  # The guest VM only ever runs `agent --guest`, so build the trimmed guest-only binary
+  # The guest VM only ever runs `briard run --guest`, so build the trimmed guest-only binary
   # Guest-only build: no host subsystems / net/http / TLS in the shipped guest closure.
   briardAgent = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; version = agentVersion; };
 
@@ -203,7 +203,7 @@ let
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
         # then Serve() returns nil on the clean EOF when the host disconnects (wire.go)
-        # -- so `agent --guest` exits 0. The reconnect design (host.go) needs it
+        # -- so `briard run --guest` exits 0. The reconnect design (host.go) needs it
         # back on the port for the *next* host connection, which a genuine disconnect
         # (host-agent restart -> self-update; or a re-adopt) produces. `on-failure`
         # would NOT restart a clean exit, leaving the port dead and the new host's
@@ -217,7 +217,7 @@ let
         # unchanged, and correct; what was wrong was the assumption that made it free.
         startLimitIntervalSec = 0; # [Unit] section: never permanently give up on this channel
         serviceConfig = {
-          ExecStart = "${briardAgent}/bin/briard-agent --guest";
+          ExecStart = "${briardAgent}/bin/briard-agent run --guest";
           Restart = "always";
           RestartSec = 1;
         };
@@ -244,7 +244,7 @@ let
         ];
         environment = { BRIARD_GATE_ADDR = "10.9.9.2:7790"; } // guestAgentEnv;
         serviceConfig = {
-          ExecStart = "${briardAgent}/bin/briard-agent --deadman";
+          ExecStart = "${briardAgent}/bin/briard-agent run --deadman";
           Restart = "always";
           RestartSec = 2;
         };

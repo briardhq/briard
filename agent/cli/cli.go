@@ -1,7 +1,7 @@
 // Package cli is `briard` — the operator front.
 //
 // It is a MODE of the agent binary, not a second one. The binary was already a multitool
-// (--guest, --deadman, --report-card, --fetch-install), and the decisive argument against a
+// (the daemon modes, --report-card, --fetch-install), and the decisive argument against a
 // separate CLI is self-update is a single-binary story, so a second binary would need
 // its own signing, staging and update path PLUS a version-lockstep story with the agent — and a
 // CLI speaking api.Directive to a differently-versioned agent is a bug class that one binary
@@ -43,54 +43,167 @@ import (
 // surfaces as "is the agent running?", which is why that error names the path it tried.
 const defaultSock = "/run/briard/admin.sock"
 
+// A command is one row of the CLI's SINGLE source of truth: `commands` is both the dispatch table
+// and the help text. The fault this shape exists to prevent is the one that produced [V3b.23] —
+// a help listing and a real surface that had drifted apart, with no test able to notice, because
+// they were two hand-maintained lists. TestEveryCommandIsDocumented walks this table from both
+// ends, so a verb cannot be added without a line in the help or removed without losing it.
+type command struct {
+	name     string // the word the user types
+	args     string // argument synopsis, shown after the name
+	synopsis string // the one line in `briard help`
+	group    string // which heading it appears under
+	detail   string // extra prose for `briard help <name>`; may be empty
+	// run dispatches the verb. nil means the binary's main() intercepts it before the CLI is
+	// reached — true only of `run`, whose daemon modes cannot live in this package.
+	run func(ctx context.Context, args []string, stdout, stderr io.Writer) int
+	// probe is the argument list that makes this verb print its own flag defaults. `help <name>`
+	// uses it so the option list can never drift from the flags the verb actually parses.
+	probe []string
+}
+
+const (
+	groupEveryday = "Everyday"
+	groupRepair   = "Repair and maintenance"
+)
+
+// The order here is the order in the help. Everyday first, because the first screen should answer
+// "what do I do" rather than show the reader everything we can do ([V3b.20]).
+var commands = []command{
+	{
+		name: "alerts", group: groupEveryday,
+		synopsis: "what this node has warned about",
+		detail: "Reads this node's own log surfaces directly and names any it could not read, so an\n" +
+			"empty result is never a guess. A free install talks to no server of ours, so nothing is\n" +
+			"pushed to you — this is how you ask. Run it when something looks off, or on a timer.",
+		run: runAlerts, probe: []string{"-h"},
+	},
+	{
+		name: "logs", group: groupEveryday,
+		synopsis: "what this node has logged (-follow to stream)",
+		detail: "Reads both surfaces together: the host agent's journal and the guest's own serial\n" +
+			"console, which is the only view into the VM's boot and kernel. A bug report wants both.",
+		run: runLogs, probe: []string{"-h"},
+	},
+	{
+		name: "service", args: "install <name>", group: groupEveryday,
+		synopsis: "install a catalogued service on this node",
+		detail: "The name is an entry in the signed catalog. The install pulls the image, puts its data\n" +
+			"on the replicated volume, and starts it behind a health gate that reverts the node if it\n" +
+			"does not come up. It blocks until the node reaches a terminal state.",
+		run: runService, probe: []string{"install", "-h"},
+	},
+	{
+		name: "handover", group: groupEveryday,
+		synopsis: "hand this node's work to a peer (a planned failover)",
+		detail: "For when you are about to take this machine away: the peer picks the work up, rather\n" +
+			"than the flock discovering the loss on its own.",
+		run: runHandover, probe: []string{"-h"},
+	},
+	{
+		name: "rescue", group: groupRepair,
+		synopsis: "rebuild this node's guest from its image (-yes to confirm)",
+		detail: "Destructive to the guest's own disk, never to the replicated data volume. It asks for\n" +
+			"-yes because there is no undo for the rebuild itself.",
+		run: runRescue, probe: []string{"-h"},
+	},
+	{
+		name: "os", args: "upgrade <closure>", group: groupRepair,
+		synopsis: "switch this node to a system closure, health-gated",
+		detail:   "Takes a store path, so in practice this is driven by tooling rather than typed.",
+		run:      runOS, probe: []string{"upgrade", "-h"},
+	},
+	{
+		name: "directive", args: "<kind> [payload]", group: groupRepair,
+		synopsis: "submit a directive to the local agent",
+		detail: "The primitive every other verb above is sugar over. Useful when a support answer names\n" +
+			"a directive kind that has no verb of its own.",
+		run: runDirective, probe: []string{"-h"},
+	},
+	{
+		name: "run", group: groupRepair,
+		synopsis: "run the agent itself — systemd does this for you",
+		detail: "The daemon. `run` is the host agent; `run --guest` and `run --deadman` are the two\n" +
+			"in-guest modes, started by units inside the guest image. You should not need to type any\n" +
+			"of them: the installer writes the units that do.",
+		// run: nil — main() intercepts this word before the CLI sees it (the daemon modes cannot
+		// live in this package). It is in the table so it is DOCUMENTED; the test knows.
+	},
+}
+
 // Main runs one CLI invocation and returns the process exit code: 0 when the directive reached a
 // clean terminal state, 1 when the node refused or reverted it, 2 for a usage error.
 //
 // The refused/reverted case exits NON-ZERO on purpose. `briard` is the seam a script (and later
 // the UI) drives, so an op that rolled back must be distinguishable from one that worked without
 // parsing prose — an admin tool that always exits 0 is one nobody can automate against.
+//
+// No arguments prints the help and succeeds, which is the ordinary CLI contract ([V3b.23]) and
+// used to be "start the privileged host agent". Nothing reaches this path with the daemon in
+// mind any more: the units say `run`.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		usage(stderr)
-		return 2
+		usage(stdout)
+		return 0
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
+		return runHelp(ctx, args[1:], stdout, stderr)
+	}
+	for _, c := range commands {
+		if c.name != args[0] || c.run == nil {
+			continue
+		}
+		return c.run(ctx, args[1:], stdout, stderr)
+	}
+	fmt.Fprintf(stderr, "briard: unknown command %q\n\n", args[0])
+	usage(stderr)
+	return 2
+}
+
+// runHelp is `briard help [command]`. With no argument it is the whole listing; with one it is
+// that command's own prose followed by the command's own flag defaults — printed by the command,
+// not restated here, so the two cannot disagree.
+func runHelp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
 		usage(stdout)
 		return 0
-	case "directive":
-		return runDirective(ctx, args[1:], stdout, stderr)
-	case "service":
-		return runService(ctx, args[1:], stdout, stderr)
-	case "handover":
-		return runHandover(ctx, args[1:], stdout, stderr)
-	case "os":
-		return runOS(ctx, args[1:], stdout, stderr)
-	case "rescue":
-		return runRescue(ctx, args[1:], stdout, stderr)
-	case "alerts":
-		return runAlerts(ctx, args[1:], stdout, stderr)
-	case "logs":
-		return runLogs(ctx, args[1:], stdout, stderr)
-	default:
-		fmt.Fprintf(stderr, "briard: unknown command %q\n\n", args[0])
-		usage(stderr)
-		return 2
 	}
+	for _, c := range commands {
+		if c.name != args[0] {
+			continue
+		}
+		fmt.Fprintf(stdout, "briard %s\n\n%s\n", strings.TrimSpace(c.name+" "+c.args), c.synopsis)
+		if c.detail != "" {
+			fmt.Fprintf(stdout, "\n%s\n", c.detail)
+		}
+		if c.run != nil {
+			// The verb prints its OWN options. It returns 2 (flag.ErrHelp is a usage error to the
+			// verb), which is right for `briard rescue -h` and wrong for `briard help rescue` —
+			// so the exit code is ours, and both writers are stdout because this output was asked
+			// for rather than complained about.
+			fmt.Fprintln(stdout, "\nOptions:")
+			c.run(ctx, c.probe, stdout, stdout)
+		}
+		return 0
+	}
+	fmt.Fprintf(stderr, "briard help: unknown command %q\n\n", args[0])
+	usage(stderr)
+	return 2
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `briard — administer the node this command runs on.
-
-Usage:
-  briard alerts                       what this node has warned about (both surfaces)
-  briard logs                         what this node has logged (-follow to stream)
-  briard service install <name>       install a catalogued service on this node
-  briard handover                     hand this node's work to a peer (a planned failover)
-  briard os upgrade <closure>         switch this node to a system closure, health-gated
-  briard rescue                       rebuild this node's guest from its image (-yes to confirm)
-  briard directive <kind> [payload]   submit a directive to the local agent
-  briard help                         show this message
+	fmt.Fprint(w, "briard — administer the node this command runs on.\n\nUsage: briard <command> [options]\n")
+	for _, g := range []string{groupEveryday, groupRepair} {
+		fmt.Fprintf(w, "\n%s\n", g)
+		for _, c := range commands {
+			if c.group == g {
+				fmt.Fprintf(w, "  %-28s %s\n", strings.TrimSpace(c.name+" "+c.args), c.synopsis)
+			}
+		}
+	}
+	fmt.Fprint(w, `
+  help [command]               this message, or one command's options
 
 `+"`alerts`"+` and `+"`logs`"+` read this node's logs and work even when the agent is down.
 The rest talk to the running briard-agent over its admin socket
@@ -102,7 +215,6 @@ is how you ask it what is wrong. Run it when something looks off, or on a schedu
 `)
 }
 
-// runDirective is the primitive the higher-level verbs are sugar over: hand the agent a raw
 // directive and report what it did. It is deliberately the first verb built — it exercises the
 // whole door with kinds that already exist (noop, log), so the local path is proven before any
 // new directive kind widens the shared/api allowlist.

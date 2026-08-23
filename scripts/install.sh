@@ -650,13 +650,16 @@ UPDATE_BASE="$PREFIX/agent"
 cat > "$PREFIX/agent/briard-exec" <<EOF
 #!/bin/sh
 # Pick the binary this boot runs: a staged candidate if one is armed, else the committed one.
+# `run` is the daemon subcommand -- since [V3b.23] a bare invocation prints the help, so this line
+# and the units are what start an agent. This script is frozen at install time and never rewritten
+# (B.84), which is why that change arrives by REINSTALL rather than by update (alpha policy).
 set -eu
 if [ -e $RUNDIR/update ]; then
 	mv $RUNDIR/update $RUNDIR/trial   # consume SINGLE-USE (rename, not delete): a crash
-	exec $UPDATE_BASE/briard-agent.next   #   can't re-trial forever, and briard-commit can
+	exec $UPDATE_BASE/briard-agent.next run   #   cannot re-trial forever, and briard-commit can
 else                                      #   still tell a trial boot from a normal one
 	rm -f $RUNDIR/trial               # discard a failed trial's marker -- this IS the revert
-	exec $UPDATE_BASE/briard-agent
+	exec $UPDATE_BASE/briard-agent run
 fi
 EOF
 cat > "$PREFIX/agent/briard-commit" <<EOF

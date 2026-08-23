@@ -1,4 +1,4 @@
-// Command agent is the host-side Briard daemon (privileged), and -- with --guest --
+// Command agent is the host-side Briard daemon (privileged), and -- with `run --guest` --
 // the in-guest control agent that serves the host over the virtio-serial channel.
 //
 // The host half orchestrates the guest and reports status; drbd-reactor inside the
@@ -28,21 +28,79 @@ import (
 )
 
 func main() {
-	// `briard` — the operator CLI, a MODE of this binary rather than a second one.
-	// A bare first argument (no leading '-') is a subcommand; the daemon modes keep their flags,
-	// so install.sh, the systemd unit and every existing test are untouched by this door opening.
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		os.Exit(cli.Main(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	args := os.Args[1:]
+
+	// `run` is the DAEMON, and it is intercepted here rather than in agent/cli because the daemon
+	// modes (runHost, runGuest, RunDeadman) cannot live in the CLI package. agent/cli documents it
+	// in its command table all the same, so the help lists it ([V3b.23]).
+	if len(args) > 0 && args[0] == "run" {
+		runDaemon(args[1:])
+		return
 	}
 
-	guest := flag.Bool("guest", false, "run as the in-guest control agent (serve the host channel)")
-	deadman := flag.Bool("deadman", false, "run as the in-guest watchdog for the host agent")
-	reportCard := flag.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
-	fetchInstall := flag.String("fetch-install", "", "download and verify the signed release into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING)")
-	stageManifest := flag.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer")
-	mintFlockName := flag.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
-	guestShutdown := flag.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
-	flag.Parse()
+	// Internal plumbing, still flags on purpose: a pipeline or a unit file invokes each of these,
+	// nobody types them, and promoting them to verbs would put them in a help written for a
+	// household. A leading '-' that is not a help request means one of them.
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-h" && args[0] != "--help" {
+		runInternal(args)
+		return
+	}
+
+	// Everything else — including no arguments at all, which prints the help — is the CLI.
+	os.Exit(cli.Main(context.Background(), args, os.Stdout, os.Stderr))
+}
+
+// runDaemon is `briard run [--guest|--deadman]`: the long-running process, in one of its three
+// modes. The host agent is the default because it is the one a host runs.
+func runDaemon(args []string) {
+	fs := flag.NewFlagSet("briard run", flag.ExitOnError)
+	guest := fs.Bool("guest", false, "run as the in-guest control agent (serve the host channel)")
+	deadman := fs.Bool("deadman", false, "run as the in-guest watchdog for the host agent")
+	_ = fs.Parse(args)
+
+	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
+	// kill: the host agent stops its guest, and the guest agent leaves its serve loop.
+	//
+	// Note what installing this handler COSTS, because it is easy to miss: it removes Go's
+	// default "SIGTERM terminates the process". From here on, every path under this context is
+	// responsible for noticing cancellation itself, and a path parked in a blocking syscall
+	// notices nothing at all. That is precisely how the 90-second shutdown stall happened --
+	// see runGuest, which now closes its port and holds a deadline for exactly this reason.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	switch {
+	case *deadman:
+		// The host-agent deadman runs as its OWN guest service (briard-deadman), decoupled from
+		// the per-connection guest agent (which crash-loops while the host is down).
+		if err := guestagent.RunDeadman(ctx); err != nil {
+			log.Fatalf("deadman: %v", err)
+		}
+	case *guest:
+		if err := runGuest(ctx); err != nil {
+			log.Fatalf("guest agent: %v", err)
+		}
+	default:
+		// Host path: boot the guest, drive bring-up, observe status. runHost is
+		// compiled out of a `-tags guest` build (main_guest.go stubs it), so the guest
+		// binary doesn't link the host subsystems.
+		if err := runHost(ctx); err != nil {
+			log.Fatalf("host agent: %v", err)
+		}
+	}
+}
+
+// runInternal is the flag-shaped surface: helpers an installer, a release pipeline or a unit file
+// invokes, each of which does one thing and exits. They are deliberately NOT `briard` verbs —
+// see the note at each one.
+func runInternal(args []string) {
+	fs := flag.NewFlagSet("briard-agent", flag.ExitOnError)
+	reportCard := fs.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
+	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING)")
+	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer")
+	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
+	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
+	_ = fs.Parse(args)
 
 	// Mint the household-visible name. An installer-internal helper rather than a `briard`
 	// subcommand: it is not an operator verb, it is the same category as --report-card and
@@ -89,14 +147,6 @@ func main() {
 		return
 	}
 
-	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
-	// kill: the host agent stops its guest, and the guest agent leaves its serve loop.
-	//
-	// Note what installing this handler COSTS, because it is easy to miss: it removes Go's
-	// default "SIGTERM terminates the process". From here on, every path under this context is
-	// responsible for noticing cancellation itself, and a path parked in a blocking syscall
-	// notices nothing at all. That is precisely how the 90-second shutdown stall happened --
-	// see runGuest, which now closes its port and holds a deadline for exactly this reason.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -133,26 +183,11 @@ func main() {
 		return
 	}
 
-	if *deadman {
-		// The host-agent deadman runs as its OWN guest service (briard-deadman), decoupled from
-		// the per-connection guest agent (which crash-loops while the host is down).
-		if err := guestagent.RunDeadman(ctx); err != nil {
-			log.Fatalf("deadman: %v", err)
-		}
-		return
-	}
-	if *guest {
-		if err := runGuest(ctx); err != nil {
-			log.Fatalf("guest agent: %v", err)
-		}
-		return
-	}
-	// Host path: boot the guest, drive bring-up, observe status. runHost is
-	// compiled out of a `-tags guest` build (main_guest.go stubs it), so the guest
-	// binary doesn't link the host subsystems.
-	if err := runHost(ctx); err != nil {
-		log.Fatalf("host agent: %v", err)
-	}
+	// A leading '-' that named none of the above. Not a daemon invocation: since [V3b.23] the
+	// daemon is `briard run`, and falling through to it here would resurrect the very "a stray
+	// flag silently starts a privileged process" behaviour this recut removed.
+	fmt.Fprintf(os.Stderr, "briard: no internal helper named in %q (did you mean `briard run`?)\n", strings.Join(args, " "))
+	os.Exit(2)
 }
 
 // runGuest opens the virtio-serial port and serves the guestagent dispatch loop.

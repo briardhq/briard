@@ -75,7 +75,7 @@ let
     stageSystemModule = { environment.etc."briard-generation".text = "v1"; };
   };
   driverPkg = pkgs.callPackage ./driver/package.nix { };
-  agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + --guest)
+  agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + run --guest)
 
   # The macvtap fd-passing launch wrapper, installed +x (a bare store source file is 0444,
   # which systemd-run can't exec). Shared by every agent/driver-launched integration test that runs

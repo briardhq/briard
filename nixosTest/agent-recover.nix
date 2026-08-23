@@ -78,7 +78,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=SYSTEM_TAP=sys0 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
-        "${agent}/bin/briard-agent"
+        "${agent}/bin/briard-agent run"
     )
 
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)

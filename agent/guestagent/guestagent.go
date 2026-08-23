@@ -2325,7 +2325,7 @@ func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 // osExecutor is the real guest Executor: shell out + write files.
 type osExecutor struct{}
 
-// NewOSExecutor returns the production Executor used by `agent --guest`.
+// NewOSExecutor returns the production Executor used by `briard run --guest`.
 func NewOSExecutor() Executor { return osExecutor{} }
 
 func (osExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {

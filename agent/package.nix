@@ -1,6 +1,6 @@
 # The Briard agent binary, built from the repo's Go module. External deps are
 # kept minimal (CONTRIBUTING.md: new dependencies default to no); currently lego (ACME DNS-01) + its tree,
-# vendored via vendorHash. Runs host-side on the machine, or `--guest` inside the
+# vendored via vendorHash. Runs host-side on the machine, or `run --guest` inside the
 # guest VM to serve the host over the virtio-serial channel.
 #
 # vendorHash lives in ../vendor-hash.nix, which every Go package here imports -- it used to be
@@ -10,8 +10,8 @@
 #
 # tags: pass [ "guest" ] to build the guest-only binary -- it excludes the host
 # subsystems (platform/QEMU launcher, net/http, crypto/tls), roughly halving the binary
-# and shedding the TLS CVE surface the guest never uses. The guest VM runs `agent
-# --guest`; the L1 host runs the untagged (full) binary.
+# and shedding the TLS CVE surface the guest never uses. The guest VM runs
+# `briard run --guest`; the L1 host runs the untagged (full) binary.
 #
 # version: the release id stamped into the binary. Shape `<epoch>.<commit-date>.<short-rev>`
 # — e.g. `v3.20260806.92d4eee` — computed in flake.nix from `self`, i.e. DERIVED FROM THE TREE and

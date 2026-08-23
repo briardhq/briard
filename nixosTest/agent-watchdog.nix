@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
           NotifyAccess = "main";
           TimeoutStartSec = 30; # bounds a config read, NOT a bring-up: READY precedes bringUp
           WatchdogSec = 20;
-          ExecStart = "${agent}/bin/briard-agent";
+          ExecStart = "${agent}/bin/briard-agent run";
           Restart = "on-failure"; # covers a watchdog timeout, not only a non-zero exit
           RestartSec = 2;
         };

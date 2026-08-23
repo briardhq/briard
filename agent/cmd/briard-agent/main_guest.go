@@ -8,7 +8,7 @@ import (
 )
 
 // runHost is stubbed in a `-tags guest` build: the guest-only binary excludes the host
-// subsystems, so host mode is unavailable. The guest VM only ever runs `agent --guest`;
+// subsystems, so host mode is unavailable. The guest VM only ever runs `briard run --guest`;
 // if this fires, the wrong binary was deployed to a host.
 func runHost(context.Context) error {
 	return errors.New("agent: built with -tags guest (guest-only); host mode is unavailable")

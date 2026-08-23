@@ -43,7 +43,7 @@ pkgs.testers.runNixOSTest {
         wantedBy = [ ];
         path = [ pkgs.qemu pkgs.iproute2 pkgs.systemd ];
         serviceConfig = {
-          ExecStart = "${agent}/bin/briard-agent";
+          ExecStart = "${agent}/bin/briard-agent run";
           Restart = "on-failure";
           RestartSec = 2;
         };

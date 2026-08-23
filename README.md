@@ -59,7 +59,10 @@ it does not come up.
 
 ## Commands
 
-`briard` administers the node it runs on. All of it needs root.
+`briard` administers the node it runs on. All of it needs root, and `briard help <command>`
+shows one command's options.
+
+**Everyday**
 
 | | |
 |---|---|
@@ -67,9 +70,15 @@ it does not come up.
 | `sudo briard logs` | what this node has logged (`-follow` to stream) |
 | `sudo briard service install <name>` | install a catalogued service on this node |
 | `sudo briard handover` | hand this node's work to a peer (a planned failover) |
-| `sudo briard os upgrade <closure>` | switch this node to a system closure, health-gated |
+
+**Repair and maintenance**
+
+| | |
+|---|---|
 | `sudo briard rescue` | rebuild this node's guest from its image (`-yes` to confirm) |
-| `sudo briard help` | the full list, including the low-level `directive` verb |
+| `sudo briard os upgrade <closure>` | switch this node to a system closure, health-gated |
+| `sudo briard directive <kind> [payload]` | submit a directive to the local agent |
+| `sudo briard run` | run the agent itself — the installer's units do this for you |
 
 ## When something looks off
 

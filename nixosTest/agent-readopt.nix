@@ -37,7 +37,7 @@ pkgs.testers.runNixOSTest {
           pkgs.systemd # systemd-run / systemctl: the agent launches + probes the guest unit
         ];
         serviceConfig = {
-          ExecStart = "${agent}/bin/briard-agent";
+          ExecStart = "${agent}/bin/briard-agent run";
           Restart = "on-failure";
           RestartSec = 2;
         };
