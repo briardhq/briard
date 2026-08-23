@@ -70,6 +70,12 @@ pkgs.testers.runNixOSTest {
     # grub.cfg have to survive across boots -- a fresh disk each time would test nothing.
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
 
+    # Launches that have ended so far. The guest VM's own unit has the SAME name every time and
+    # --collect reaps it between launches, so its journal ACCUMULATES across the three: the
+    # honest per-launch assertion is that each launch adds exactly one clean stop, not that a
+    # clean stop appears somewhere.
+    stops = 0
+
     def boot(unit, extra=""):
         """Run the guest once and return the closure it came up on."""
         host.succeed(
@@ -99,11 +105,29 @@ pkgs.testers.runNixOSTest {
             # console, was `-serial file:` truncating on open). Measured before this landed:
             # 4 consecutive runs, 3 clean shutdowns each, 12/12, no fallbacks.
             host.succeed(f"journalctl -u {unit} | grep -q CLEAN_SHUTDOWN")
+            # ... and the guest unit's OWN stop job must have SUCCEEDED, not merely got out of
+            # the way. CLEAN_SHUTDOWN above cannot carry that: it is satisfied by the unit being
+            # at REST, and a unit whose ExecStop failed outright is `failed`, which is at rest.
+            # So without this line the whole ExecStop -- the one part of the stop that a host
+            # reboot and an OS upgrade both depend on -- can be broken in every launch and the
+            # test still passes ([B.110]).
+            global stops
+            stops += 1
+            host.succeed(
+                "test $(journalctl -u briard-guest.service | "
+                f"grep -c 'guest-shutdown: the guest powered off cleanly') = {stops}"
+            )
         finally:
             # Always dump the guest console -- grub speaks on ttyS0 too, so a launch that
             # never reaches the agent still leaves its evidence here.
             print(f"--- {unit} guest console ---")
             print(host.succeed(f"cat /tmp/{unit}-console.log || true"))
+            # The console is the window onto the guest; this is the window onto the STOP, which
+            # happens in the unit rather than in the driver. [B.110] was invisible in both the
+            # driver's log and the console -- the one line that named it ("Sent signal SIGKILL
+            # to control process (driver)") was only ever here.
+            print("--- briard-guest.service journal (the stop path) ---")
+            print(host.succeed("journalctl -u briard-guest.service --no-pager || true"))
         line = host.succeed(f"journalctl -u {unit} | grep 'BOOTED system=' | tail -1")
         return line.split("BOOTED system=")[1].strip()
 

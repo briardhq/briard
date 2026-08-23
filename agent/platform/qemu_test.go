@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -405,4 +406,57 @@ func TestWaitUnitFreeGivesUpAndNamesTheState(t *testing.T) {
 	if !strings.Contains(err.Error(), "still loaded") || !strings.Contains(err.Error(), "LoadState") {
 		t.Errorf("err = %v, want it to name the unit's LoadState", err)
 	}
+}
+
+// insideUnit must be able to say YES, or the guard it feeds is decoration -- and the guard is
+// the only thing standing between a stop job that asks for its own unit's name and a wait that
+// cannot end ([B.110]).
+//
+// The positive case needs a real invocation to point at, so it BORROWS one that is already
+// running on this machine rather than inventing a fixture: an id we made up would prove only
+// that two strings compare equal, which is not the claim. No systemd, or no running service to
+// borrow from, is a skip -- the honest answer for a machine that cannot host the question.
+func TestInsideUnitRecognisesItsOwnInvocation(t *testing.T) {
+	unit, id := borrowedInvocation(t)
+
+	t.Setenv("INVOCATION_ID", id)
+	if !insideUnit(unit) {
+		t.Errorf("insideUnit(%s) = false while holding that unit's own INVOCATION_ID %s", unit, id)
+	}
+	// The same environment must not claim membership of a DIFFERENT unit: a guard that answers
+	// yes to everything would refuse every legitimate wait, which is the expensive direction.
+	if insideUnit("briard-test-nonexistent-unit.service") {
+		t.Error("insideUnit claimed membership of a unit that does not exist")
+	}
+	// And a process systemd did not start is inside nothing.
+	t.Setenv("INVOCATION_ID", "")
+	if insideUnit(unit) {
+		t.Errorf("insideUnit(%s) = true with no INVOCATION_ID in the environment", unit)
+	}
+}
+
+// borrowedInvocation returns a running unit and its current InvocationID, skipping if this
+// machine has no systemd to ask or no running service to ask about.
+func borrowedInvocation(t *testing.T) (unit, id string) {
+	t.Helper()
+	out, err := exec.Command("systemctl", "list-units", "--type=service", "--state=running",
+		"--no-legend", "--plain").Output()
+	if err != nil {
+		t.Skipf("no systemctl to ask here: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, _, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || name == "" {
+			continue
+		}
+		raw, err := exec.Command("systemctl", "show", "-p", "InvocationID", "--value", name).Output()
+		if err != nil {
+			continue
+		}
+		if got := strings.TrimSpace(string(raw)); got != "" {
+			return name, got
+		}
+	}
+	t.Skip("no running service with an InvocationID to borrow")
+	return "", ""
 }

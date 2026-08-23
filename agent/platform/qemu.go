@@ -516,9 +516,16 @@ func unitLoaded(state string, err error) bool {
 // Asked only of a unit at rest — reset-failed says nothing to a unit that is still stopping.
 func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
 	deadline := time.Now().Add(grace)
-	for {
+	for first := true; ; first = false {
 		if !unitLoaded(unitLoadState(unit)) {
 			return nil
+		}
+		// Asked ONCE, and only once the name is known to be taken: if WE are the invocation
+		// holding it, waiting is not slow but impossible, and saying so beats spending the
+		// whole grace to say nothing ([B.110]).
+		if first && insideUnit(unit) {
+			return fmt.Errorf("platform: refusing to wait for unit %s to come free: this process is "+
+				"part of that unit's own invocation, so the name cannot be released until we return", unit)
 		}
 		if unitStopped(unit) {
 			_ = exec.Command("systemctl", "reset-failed", unit).Run()
@@ -537,6 +544,36 @@ func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// insideUnit reports whether THIS process is part of unit's current invocation -- systemd
+// spawned it as an ExecStop, an ExecStopPost, or anything else inside the unit.
+//
+// It exists because a unit's stop job asking for that unit's own name to come free is not a
+// slow wait but a closed loop: the name is held BY the caller, so the only thing that could
+// release it is the return this call is blocking. Nothing about it looks wrong from inside --
+// every state the wait reads is legitimately "still stopping" -- so it spends the caller's
+// whole budget in silence and the guest gets power-cut at the far end ([B.110]).
+//
+// The seam is $INVOCATION_ID, which systemd exports to every process it starts for a unit and
+// which the unit itself answers with for as long as that invocation lasts. Measured, from
+// inside an ExecStop: both sides read the same id, and the unit reads LoadState=loaded /
+// ActiveState=deactivating -- i.e. exactly the readings waitUnitFree treats as "keep waiting".
+//
+// Every uncertain answer is NOT-inside: an empty environment (nothing started us as a unit), a
+// systemctl that failed, an id that does not match. The guard only ever converts a
+// guaranteed-hopeless wait into an immediate error, so being wrong about it costs the bounded
+// wait we would have done anyway -- never a launch that would otherwise have succeeded.
+func insideUnit(unit string) bool {
+	id := os.Getenv("INVOCATION_ID")
+	if id == "" {
+		return false
+	}
+	out, err := exec.Command("systemctl", "show", "-p", "InvocationID", "--value", unit).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == id
 }
 
 // unitLoadState reads a unit's LoadState ("loaded" / "not-found"). As with unitState, an error

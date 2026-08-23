@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -47,6 +48,28 @@ func main() {
 	// Guest lifetime: killed when the testScript stops us (SIGTERM/SIGINT).
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	// The guest unit's ExecStop, which is THIS binary: platform.launchArgs writes that line as
+	// `/proc/self/exe --guest-shutdown=<monitor socket>`, and under this harness /proc/self/exe
+	// is the driver rather than the agent. So the driver has to answer the flag the agent
+	// answers, and for the same reasons -- including NEVER being fatal, since a non-zero exit
+	// here makes systemd report the guest unit as having failed to stop.
+	//
+	// It is load-bearing rather than tidy, because an unanswered flag here is IGNORED and not
+	// rejected: systemd then runs a second whole driver as the stop job of the unit it is
+	// stopping, and that driver re-enters platform.Launch from inside the very invocation
+	// holding the unit's name ([B.110]).
+	guestShutdown := flag.String("guest-shutdown", "",
+		"power the guest at this QMP socket off cleanly -- the guest unit's ExecStop, not an operator command")
+	flag.Parse()
+	if *guestShutdown != "" {
+		if err := platform.ShutdownVM(ctx, *guestShutdown, platform.GuestShutdownGrace); err != nil {
+			log.Printf("guest-shutdown: %v (systemd will stop the VM the hard way)", err)
+			return
+		}
+		log.Printf("guest-shutdown: the guest powered off cleanly")
+		return
+	}
 
 	sock := env("CONTROL_SOCK", "/run/briard-ctl.sock")
 	guest, err := platform.Launch(ctx, platform.QEMUSpec{
