@@ -408,3 +408,33 @@ func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
 		t.Errorf("`briard help frobnicate` exit = %d, want 2", code)
 	}
 }
+
+// TestServiceInstallPrintsWhereToReachIt: the CLI relays the agent's address line verbatim. It
+// does NOT re-derive the URL -- the agent owns the manifest's port and the node's published name,
+// so there is exactly one place the address can be wrong. The empty-Detail case is the contract
+// with an older agent (and with a witness, which promises no URL): print the outcome, skip the
+// line, never print a bare "reach it at".
+func TestServiceInstallPrintsWhereToReachIt(t *testing.T) {
+	for _, tc := range []struct {
+		name, detail, want, absent string
+	}{
+		{"with a published name", "reach it at http://briard-picked-hornet.local:8123/",
+			"reach it at http://briard-picked-hornet.local:8123/", ""},
+		{"no published name", "it answers on port 8123", "it answers on port 8123", "://"},
+		{"agent said nothing", "", "installed and healthy", "reach it at"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: tc.detail})
+			var out, errOut bytes.Buffer
+			if code := Main(context.Background(), []string{"service", "install", "-sock", sock, "home-assistant"}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr: %q)", code, errOut.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("stdout = %q, want it to mention %q", out.String(), tc.want)
+			}
+			if tc.absent != "" && strings.Contains(out.String(), tc.absent) {
+				t.Fatalf("stdout = %q, must NOT contain %q", out.String(), tc.absent)
+			}
+		})
+	}
+}

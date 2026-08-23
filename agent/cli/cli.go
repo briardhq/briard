@@ -286,8 +286,15 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		// runtime-installed service yet -- its backend is baked at guest-build time and per-domain
 		// routing is deferred with the routing work. "serving" reads as "reachable at the VIP",
 		// which walks the user to http://<vip>/ and shows them the "nothing is routed here" page.
+		//
+		// The address leads because it is the operator's next action. The agent composes it (it
+		// owns the manifest's port and the node's published name) and hands back the whole phrase;
+		// the CLI does not re-derive it, so there is one place the address can be wrong.
 		fmt.Fprintf(stdout, "%s installed and healthy\n", name)
-		fmt.Fprintf(stdout, "it answers on its own port; the front door at / does not route to it yet\n")
+		if o.Detail != "" {
+			fmt.Fprintf(stdout, "  %s\n", o.Detail)
+		}
+		fmt.Fprintf(stdout, "  the front door at / does not route to it yet\n")
 		return 0
 	case api.OutcomeRolledBack:
 		// The distinction an operator most needs: the node is back as it was, so this is a failed

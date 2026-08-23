@@ -584,3 +584,38 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 		}
 	})
 }
+
+// TestInstallSaysWhereToReachIt: a successful install hands back the address. The node holds both
+// halves -- the manifest's port and the name its own guest publishes -- and the operator holds
+// neither, so an install that reports success without them leaves the address to be guessed. A
+// stranger guessing it on 2026-08-23 landed on the front door's "nothing is routed here" page and
+// read a working install as a broken one.
+func TestInstallSaysWhereToReachIt(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	cfg.FlockName = "picked-hornet"
+	o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	if o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if want := "reach it at http://briard-picked-hornet.local:8123/"; o.Detail != want {
+		t.Fatalf("Detail = %q, want %q", o.Detail, want)
+	}
+}
+
+// ...and with NO published name there is no URL to promise. A witness, or a node whose FLOCK_NAME
+// is unset, publishes nothing over mDNS, so naming the port is the most that can be said
+// truthfully -- inventing a host for it is exactly the plausible-but-wrong address [V3.17] exists
+// to end. Asserted as an absence AND a presence: the port must be named, the URL must not appear.
+func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
+	cfg := catalogFor(t, testManifest()) // FlockName left zero on purpose
+	o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	if o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if want := "it answers on port 8123"; o.Detail != want {
+		t.Fatalf("Detail = %q, want %q", o.Detail, want)
+	}
+	if strings.Contains(o.Detail, "://") {
+		t.Fatalf("promised a URL on a node that publishes no name: %q", o.Detail)
+	}
+}

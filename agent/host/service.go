@@ -256,7 +256,22 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		logf("service install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
 	}
 	logf("service install %s: healthy, serving", m.Name)
-	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
+	// WHERE TO REACH IT, carried back as the outcome Detail. The node holds both halves and the
+	// operator holds neither: the port is the manifest's (never typed by a human) and the name is
+	// the one the guest publishes over mDNS. Without it the verb reports success and leaves the
+	// address to be guessed, which walks the user to the front door's "nothing is routed here"
+	// page and reads a working install as a broken one.
+	//
+	// Lead with the NAME, the doctrine install.sh already prints under: the name stays true if
+	// the address moves. Only the name is offered, because it is the only half this code can
+	// state truthfully -- under DHCP the VIP is acquired in-guest and rebuilt per cycle, and
+	// printing a plausible-but-wrong address is the failure [V3.17] exists to end. No published
+	// name (a witness, or FLOCK_NAME unset) means no URL to promise: say the port and stop.
+	reach := fmt.Sprintf("it answers on port %d", primary.Port)
+	if cfg.FlockName != "" {
+		reach = fmt.Sprintf("reach it at http://briard-%s.local:%d/", cfg.FlockName, primary.Port)
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
 
 // CacheService writes the manifest to the node-local cache. Written only after the health gate
