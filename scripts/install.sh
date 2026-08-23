@@ -650,7 +650,7 @@ UPDATE_BASE="$PREFIX/agent"
 cat > "$PREFIX/agent/briard-exec" <<EOF
 #!/bin/sh
 # Pick the binary this boot runs: a staged candidate if one is armed, else the committed one.
-# `run` is the daemon subcommand -- since [V3b.23] a bare invocation prints the help, so this line
+# \`run\` is the daemon subcommand -- since [V3b.23] a bare invocation prints the help, so this line
 # and the units are what start an agent. This script is frozen at install time and never rewritten
 # (B.84), which is why that change arrives by REINSTALL rather than by update (alpha policy).
 set -eu
@@ -686,10 +686,10 @@ StartLimitIntervalSec=0
 After=briard-net.service
 Requires=briard-net.service
 [Service]
-# The agent shells out to systemd-run/systemctl AND to `ip` by name (the route to its own guest's
+# The agent shells out to systemd-run/systemctl AND to \`ip\` by name (the route to its own guest's
 # VIP over the private link, [V3b.19]); give it a PATH that resolves them on a stock host
 # (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
-# `ip` in particular lives in *sbin on a stock host, which is why both are listed and neither is
+# \`ip\` in particular lives in *sbin on a stock host, which is why both are listed and neither is
 # decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
 Environment=QEMU=$QEMU
