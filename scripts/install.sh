@@ -309,7 +309,7 @@ done
 $PRIV_UP
 EOF
 	chmod +x "$PREFIX/net-up.sh"
-	say "macvtap substrate on $NIC (no bridge; host keeps its IP on $NIC)"
+	say "network: the guest will share $NIC with you (your machine keeps its own address)"
 	sh "$PREFIX/net-up.sh"
 else
 # Enslaving the host's primary NIC to the bridge briefly moves its L3 identity; on a
@@ -328,7 +328,7 @@ if ip link show "$BRIDGE" >/dev/null 2>&1 &&
 	ports="$(ls "/sys/class/net/$BRIDGE/brif" 2>/dev/null | grep -vxE "$TAP|$DRBD_TAP")" && [ -n "$ports" ]; then
 	SRC="$BRIDGE"
 	[ -n "$NIC" ] || NIC="$(printf '%s\n' "$ports" | head -n1)"
-	say "reinstall: $BRIDGE already present (port $NIC); reading host identity from the bridge"
+	say "reinstall: reusing the network setup already on $NIC"
 else
 	[ -n "$NIC" ] || NIC="$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')"
 	SRC="$NIC"
@@ -441,7 +441,7 @@ fi
 # read-only base image, recreated every install (the base may have moved).
 DATA="$STATE/data.img"
 if [ ! -f "$DATA" ]; then
-	say "creating the pet data volume ($DATA_SIZE) at $DATA"
+	say "creating the $DATA_SIZE data volume at $DATA -- your services' data lives here"
 	# THICK, not sparse. This is the one volume whose failure mode is unacceptable: DRBD replicates
 	# it and the guest writes service data into it, so a `truncate` sparse file that the host cannot
 	# actually back turns into ENOSPC *underneath a replicated filesystem*, mid-write, on the node
@@ -470,7 +470,7 @@ if [ ! -s "$FLOCK_ID_FILE" ]; then
 	(cat /proc/sys/kernel/random/uuid 2>/dev/null || od -An -N16 -tx1 /dev/urandom | tr -d ' \n') \
 		>"$FLOCK_ID_FILE" || die "could not write the flock id to $FLOCK_ID_FILE"
 	chmod 0600 "$FLOCK_ID_FILE"
-	say "generated this flock's identity at $FLOCK_ID_FILE (pet -- keep it to keep your address)"
+	say "generated this home's identity at $FLOCK_ID_FILE -- keep this file to keep your address"
 fi
 FLOCK_ID="$(cat "$FLOCK_ID_FILE")"
 [ -n "$FLOCK_ID" ] || die "the flock id at $FLOCK_ID_FILE is empty; remove it to regenerate"
@@ -503,7 +503,7 @@ if [ ! -s "$NODE_ID_FILE" ]; then
 	printf 'briard-node-%s\n' "$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')" \
 		>"$NODE_ID_FILE" || die "could not write the node id to $NODE_ID_FILE"
 	chmod 0600 "$NODE_ID_FILE"
-	say "generated this node's identity at $NODE_ID_FILE (pet -- DRBD metadata is keyed to it)"
+	say "generated this machine's identity at $NODE_ID_FILE -- keep this file; the replicated disk is keyed to it"
 fi
 NODE_NAME="$(cat "$NODE_ID_FILE")"
 [ -n "$NODE_NAME" ] || die "the node id at $NODE_ID_FILE is empty; remove it to regenerate"
@@ -523,19 +523,19 @@ if [ ! -s "$FLOCK_NAME_FILE" ]; then
 	"$AGENT" --mint-flock-name >"$FLOCK_NAME_FILE" ||
 		die "could not mint a flock name with $AGENT --mint-flock-name"
 	chmod 0644 "$FLOCK_NAME_FILE" # world-readable: it is a public name, not a secret
-	say "this flock is called $(cat "$FLOCK_NAME_FILE") (pet -- it is the name on your network)"
+	say "this install is called $(cat "$FLOCK_NAME_FILE") -- that is the name it answers to on your network"
 fi
 FLOCK_NAME="$(cat "$FLOCK_NAME_FILE")"
 [ -n "$FLOCK_NAME" ] || die "the flock name at $FLOCK_NAME_FILE is empty; remove it to regenerate"
 
 OVERLAY="$PREFIX/guest.qcow2"   # cattle: recreated each install, dropped by `rm -rf /opt/briard`
-say "creating the guest overlay at $OVERLAY"
+say "creating the VM disk at $OVERLAY"
 rm -f "$OVERLAY"
 if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
 	-b "$PREFIX/guest-image/nixos.qcow2" -F qcow2 "$OVERLAY"; then
 	die "qemu-img create failed (rc=$?)"
 fi
-say "guest overlay created"
+say "VM disk created"
 
 # ---- 7. the units: net (reboot re-create) + the agent ------------------------------
 say "writing systemd units to $UNIT_DIR"
@@ -770,7 +770,7 @@ WantedBy=multi-user.target
 EOF
 
 if command -v systemctl >/dev/null 2>&1; then
-	say "daemon-reload"
+	say "registering briard with systemd"
 	systemctl daemon-reload
 	if [ "$UNIT_DIR" = /etc/systemd/system ]; then
 		# Persistent install: enable (survive reboot) + start now.

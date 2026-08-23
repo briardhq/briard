@@ -21,6 +21,45 @@ have the right to submit the work. We deliberately do **not** ask for a Contribu
 Agreement: a CLA is what lets a company relicense contributors' code later, so not having one makes
 the no-rug-pull promise structural rather than a matter of our continued good intentions.
 
+## Build and install from source
+
+You need [Nix](https://nixos.org/download/) with flakes enabled. The Go toolchain comes from the
+dev shell — there is nothing to install globally.
+
+```sh
+nix develop                       # dev shell: go, gopls, staticcheck
+go build ./... && go test ./...   # logic + the enforced architecture guards
+nix flake check                   # flake integrity; boots no VMs
+```
+
+The one-liner in the README is the ordinary way to install. This is the same install without the
+download — you build the artifacts the installer would otherwise fetch, then point the installer at
+them. It is the path for auditing what you run, or installing from a checkout you have modified,
+and it needs Nix (as above) and a Linux host with KVM.
+
+```sh
+# build the artifacts from this checkout
+nix build .#artifacts.agent       -o result-agent
+nix build .#artifacts.net-wrap    -o result-netwrap
+nix build .#artifacts.qemu-bundle -o result-qemu
+nix build .#artifacts.guest-disk  -o result-guest    # ~2.5 GB; the guest VM image
+
+# assemble a staging directory the installer reads
+mkdir -p stage
+install -m0755 result-agent/bin/briard-agent      stage/briard-agent
+install -m0755 result-netwrap/bin/briard-net-wrap stage/briard-net-wrap
+cp -aL result-qemu stage/qemu && chmod -R u+w stage/qemu
+cp -L  result-guest/nixos.qcow2 stage/nixos.qcow2
+
+# install from the staging directory
+sudo BRIARD_ARTIFACTS="$PWD/stage" ./scripts/install.sh
+```
+
+The last step runs as root: it sets up the guest's networking and boots the VM, the same thing the
+hosted installer does — so it changes the machine, and it checks the host first and **refuses with
+the reason** if it is unsuitable. The script is the same either way, so
+[read it](scripts/install.sh) before you run it.
+
 ## The invariants — enforced, not requested
 
 These are properties of the *code*, checked at build time by `go test ./internal/arch/`. They are
@@ -110,13 +149,25 @@ go build ./... && go vet ./... && go test ./...
 nix flake check          # evaluates the flake and builds config closures; boots no VMs
 ```
 
-The VM tests need KVM and take longer, but they run on a laptop and are the honest version of
-"run it yourself":
+The VM tests boot real VMs and drive real DRBD — not mocks. They need KVM and take minutes on a
+laptop, and they are the honest version of "see for yourself":
 
 ```sh
-nix build .#tests.drbd-failover -L      # one test
-nix build .#drbd                        # a whole tag
+nix build .#tests.drbd-failover -L   # kill the primary → survivor takes over, data intact
+nix build .#tests.drbd-fence -L      # partition the minority → it self-fences
+nix build .#tests.hass-payload -L    # real Home Assistant serving in the payload slot
+nix build .#drbd                     # the whole failover net — a whole tag
+nix log .#tests.drbd-fence           # what a run printed
 ```
+
+The architecture guards above are ordinary tests, and they fail the build:
+
+```sh
+go test ./internal/arch/
+```
+
+They reject a force-promotion appearing anywhere in the tree, an orchestrator importing a concrete
+provider instead of its interface, and any direct promote/demote call.
 
 ## Where the design lives
 

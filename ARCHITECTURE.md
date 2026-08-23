@@ -100,6 +100,14 @@ What you install here goes further: it **reports nothing, ever**. No account, no
 no callback. If you install from source or from a release artifact, nothing contacts a
 service we run. You can verify that claim rather than trust it — the whole agent is here.
 
+**What the download channel records**, since it is the one place we see anything at all:
+`get.briard.io` serves signed static files, and its own request logs give a per-day, per-file
+count of successful fetches. Nothing else is kept, and nothing in that log identifies you. The
+count is deliberately **not de-duplicated** — telling a returning visitor from a new one would
+mean tracking someone — so it over-counts, and we would rather say that than imply a precision we
+did not earn. Briard itself never reports a download, or anything at all: once installed, it never
+calls home.
+
 A managed tier — where we operate the machines and are on the hook for them — is the one
 case where minimal health signals leave the house. What may ever be sent is a **closed
 allowlist**, readable in one place (`shared/api`). Two properties make it checkable:
