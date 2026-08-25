@@ -17,11 +17,15 @@ import (
 // crash. All the verdict logic lives in the pure Assess (this is just the eyes).
 func Gather() HostFacts {
 	return HostFacts{
-		DevKVM:        exists("/dev/kvm"),
-		VirtFlags:     cpuHasVirtFlags(),
-		DevNetTun:     exists("/dev/net/tun"),
-		TunModule:     tunModuleAvailable(),
-		HasIP:         onPath("ip"),
+		DevKVM:    exists("/dev/kvm"),
+		VirtFlags: cpuHasVirtFlags(),
+		DevNetTun: exists("/dev/net/tun"),
+		TunModule: tunModuleAvailable(),
+		HasIP:     onPath("ip"),
+		// /run/systemd/system is systemd's own "I am running this machine" marker (it creates the
+		// directory at boot), which is the question the install actually needs answered -- `systemctl`
+		// on PATH says only that a package is installed.
+		SystemdBooted: exists("/run/systemd/system"),
 		MemTotalMB:    memTotalMB(),
 		WiredEthernet: hasWiredEthernet(),
 		AnyEthernet:   hasAnyEthernet(),

@@ -36,11 +36,14 @@ type Check struct {
 // HostFacts is what Gather reads from the host; Assess maps it to a verdict. The split keeps the
 // verdict logic pure + fully testable (fabricate any host) and the reading a thin shim.
 type HostFacts struct {
-	DevKVM        bool // /dev/kvm present
-	VirtFlags     bool // vmx (Intel) or svm (AMD) in /proc/cpuinfo
-	DevNetTun     bool // /dev/net/tun present (the installer modprobes tun first)
-	TunModule     bool // the tun module is loaded or available to load (or built-in)
-	HasIP         bool // `ip` (iproute2) on PATH
+	DevKVM    bool // /dev/kvm present
+	VirtFlags bool // vmx (Intel) or svm (AMD) in /proc/cpuinfo
+	DevNetTun bool // /dev/net/tun present (the installer modprobes tun first)
+	TunModule bool // the tun module is loaded or available to load (or built-in)
+	HasIP     bool // `ip` (iproute2) on PATH
+	// SystemdBooted is whether systemd is PID 1 here, not merely whether systemctl is installed --
+	// the install registers units, so an OpenRC box with the binary lying around is still a refusal.
+	SystemdBooted bool
 	MemTotalMB    int
 	WiredEthernet bool // a non-loopback, non-wireless interface exists (green needs wired)
 	AnyEthernet   bool // any non-loopback interface at all (wired or wireless)
@@ -149,6 +152,26 @@ func Assess(f HostFacts) Report {
 	} else {
 		cs = append(cs, Check{"iproute2", Refuse, "`ip` (iproute2) not found on PATH",
 			"install iproute2: `sudo apt install iproute2` (or your distro's equivalent)"})
+	}
+
+	// SYSTEMD -- and it is here, with the other hard requirements, because it is one.
+	//
+	// install.sh writes unit files and runs `systemctl daemon-reload`/`enable`/`start`; there is no
+	// non-systemd path and none is planned (DESIGN §9.5 -- we do not own the host's init). It had a
+	// guard already, but the LAST branch of the script: a box booted with OpenRC or runit passed
+	// every gate, downloaded and unpacked ~400 MB into /opt/briard, created taps, formatted the
+	// data volume, wrote units nothing would ever read -- and only then heard "no systemd". Every
+	// other hard requirement refuses before anything is written; this is the one that did not.
+	//
+	// BOOTED, not merely installed. `systemctl` on PATH is the weaker question: a host with the
+	// binary present but another init as PID 1 answers yes and then fails at daemon-reload, which
+	// is exactly the late failure this check exists to move forward. /run/systemd/system is the
+	// documented "systemd is running this machine" test, so that is what is asked.
+	if f.SystemdBooted {
+		cs = append(cs, Check{"systemd", Pass, "systemd is the init", ""})
+	} else {
+		cs = append(cs, Check{"systemd", Refuse, "systemd is not running this machine (/run/systemd/system absent)",
+			"this install path targets systemd hosts -- briard registers itself as systemd units; on OpenRC/runit/s6 there is nothing for it to register with"})
 	}
 
 	// RAM -- hard floor + recommended warn.

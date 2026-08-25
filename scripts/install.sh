@@ -932,5 +932,8 @@ if command -v systemctl >/dev/null 2>&1; then
 		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ -- it takes its address from your router, where it shows up as a \"briard-\" client -- $SERVICE_NOTE"
 	fi
 else
+	# Belt, not the gate: the report card refuses a host that is not systemd-booted before anything
+	# is written (step 2). Reaching HERE means systemctl vanished between that check and this line,
+	# which is not a shape worth a nicer message -- it is worth not pretending the install finished.
 	die "no systemd (this install path targets systemd hosts)"
 fi

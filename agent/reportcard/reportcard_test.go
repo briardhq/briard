@@ -9,7 +9,7 @@ import (
 func capable() HostFacts {
 	return HostFacts{
 		DevKVM: true, VirtFlags: true, DevNetTun: true, TunModule: true,
-		HasIP: true, MemTotalMB: 16 * 1024, WiredEthernet: true, AnyEthernet: true,
+		HasIP: true, SystemdBooted: true, MemTotalMB: 16 * 1024, WiredEthernet: true, AnyEthernet: true,
 		DiskFreeMB: 64 * 1024,
 		// A capable host on an ordinary home network holds a DHCP lease, and since V3.19c step 3
 		// that is what makes the default install -- no BRIARD_VIP, address from the router --
@@ -60,6 +60,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		{"kvm module not loaded", func(f *HostFacts) { f.DevKVM = false; f.VirtFlags = true }, "kvm", "modprobe"},
 		{"no tun driver", func(f *HostFacts) { f.DevNetTun = false; f.TunModule = false }, "tun", "CONFIG_TUN"},
 		{"no iproute2", func(f *HostFacts) { f.HasIP = false }, "iproute2", "iproute2"},
+		{"not booted with systemd", func(f *HostFacts) { f.SystemdBooted = false }, "systemd", "systemd units"},
 		{"below RAM floor", func(f *HostFacts) { f.MemTotalMB = 2048 }, "memory", "4 GB"},
 		{"no network at all", func(f *HostFacts) { f.WiredEthernet = false; f.AnyEthernet = false }, "network", "network"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},

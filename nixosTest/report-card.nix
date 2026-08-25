@@ -28,7 +28,7 @@ pkgs.testers.runNixOSTest {
     print(f"report-card exit={status}:\n{out}")
 
     # Every gate in the closed set is emitted.
-    for name in ["kvm", "tun", "iproute2", "memory", "network", "mdns"]:
+    for name in ["kvm", "tun", "iproute2", "systemd", "memory", "network", "mdns"]:
         assert name in out, f"report card is missing the {name} check"
 
     # Deterministic gates on this node PASS (concrete, non-vacuous): iproute2 installed, 8 GB RAM,
@@ -38,6 +38,10 @@ pkgs.testers.runNixOSTest {
         m = re.search(r"\[(\w+)\s*\]\s+" + name + r"\b", out)
         return m.group(1) if m else None
     assert gate("iproute2") == "PASS", f"iproute2 gate = {gate('iproute2')}, want PASS"
+    # Deterministic here for the same reason iproute2 is: this VM is booted by systemd, so
+    # /run/systemd/system exists. The gate refuses a host booted with OpenRC/runit BEFORE anything
+    # is written -- install.sh had the guard already, but as its last branch, after ~400 MB landed.
+    assert gate("systemd") == "PASS", f"systemd gate = {gate('systemd')}, want PASS (this VM is systemd-booted)"
     assert gate("memory") == "PASS", f"memory gate = {gate('memory')}, want PASS (8 GB)"
     assert gate("network") == "PASS", f"network gate = {gate('network')}, want PASS (wired virtio)"
     # The gatherer really read this machine's nsswitch: nss-mdns is configured above, so a WARN
