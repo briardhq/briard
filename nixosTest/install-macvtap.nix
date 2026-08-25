@@ -103,11 +103,16 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
-        # ⚠️ SPIKE ([V3b.26b]): IPv6 OFF on the install host. The private link is unnumbered, and
-        # the only mDNS observed crossing it was IPv6 (fe80::...5353 > ff02::fb) -- avahi joins the
-        # IPv4 group on an interface only when that interface HAS a v4 address. So the host's
-        # ability to resolve its own guest's name may rest on the host having v6 link-local on the
-        # tap, which is a stranger's setting and not ours to assume. This makes the rig answer that.
+        # IPv6 OFF on the install host, permanently and on purpose ([V3b.26b]). A stranger may have
+        # disabled v6 before installing -- it is their machine and their setting -- and DESIGN §4.3
+        # puts our addressing on v4 INDEFINITELY, so nothing we ship may quietly need v6 to work.
+        #
+        # This is not hypothetical: it caught one. With the private link briefly unnumbered, avahi
+        # answered mDNS on it over IPv6 only (it joins the IPv4 group on an interface only if that
+        # interface HAS a v4 address), so [V3b.19]'s name half silently depended on the HOST having
+        # a v6 link-local on the tap. With v6 on, the name resolved and everything looked correct;
+        # with v6 off, the household's own machine could not find its own node while every other
+        # assertion in this file still passed. A rig that leaves v6 enabled cannot tell those apart.
         boot.kernel.sysctl."net.ipv6.conf.all.disable_ipv6" = 1;
         boot.kernel.sysctl."net.ipv6.conf.default.disable_ipv6" = 1;
         environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi ];
