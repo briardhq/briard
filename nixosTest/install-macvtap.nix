@@ -580,6 +580,39 @@ pkgs.testers.runNixOSTest {
         timeout=60,
     )
 
+    # --- A ROLE CYCLE, observed off-box ([V3b.26d]; its twin is DELTA 5 in install-bridge.nix,
+    # where the ⚠️ explains what an earlier, VACUOUS version of this block wrongly claimed).
+    #
+    # It does NOT prove the [B.100]/[B.101] standby discipline. That hazard is a Secondary teaching
+    # the switch the wrong port for the flock MAC, and on a lone node there is no wrong port -- it
+    # is two-node by nature and belongs to [B.113]. What is proven here: a demote really stops
+    # service seen from off-box, and re-promotion brings the VIP back on the SAME MAC.
+    #
+    # ⚠️ PLACED HERE, on a freshly-converged node, and it was at the END of this file for one run.
+    # That run failed: the self-update section restarts the agent repeatedly, and `systemctl
+    # is-active` returning true does not mean the admin socket is back -- serveLocal runs in a
+    # GOROUTINE, so READY=1 and the listen are not ordered. The CLI said so plainly ("cannot reach
+    # the agent at /run/briard/admin.sock"), which is the product being honest rather than broken;
+    # the test was asking at a moment of its own making. The socket wait below is kept anyway,
+    # because a restart precedes nothing here by accident.
+    host.wait_until_succeeds("test -S /run/briard/admin.sock", timeout=60)
+    serving_mac = client.succeed(f"ip -4 neigh show {vip} dev eth1").split()
+    serving_mac = serving_mac[serving_mac.index("lladdr") + 1]
+    host.succeed("/opt/briard/agent/briard-agent handover -keep-masked")
+    client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=120)
+    print("a demoted node stops serving, seen from off-box")
+
+    host.succeed("/opt/briard/agent/briard-agent handover -unmask")
+    client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=300)
+    client.succeed("ip neigh flush dev eth1")
+    client.wait_until_succeeds(f"ping -c1 -W2 {vip}")
+    back = client.succeed(f"ip -4 neigh show {vip} dev eth1").split()
+    print(f"off-box after re-promotion: {' '.join(back)}")
+    assert "lladdr" in back and back[back.index("lladdr") + 1] == serving_mac, (
+        f"the VIP came back on a different MAC ({' '.join(back)}, was {serving_mac}) -- the service "
+        f"identity is supposed to be the one thing a role change leaves unchanged"
+    )
+
     # FHS: pet volume under /var/lib, cattle under /opt (the cattle/pet split assertion d builds on).
     host.succeed("test -f /var/lib/briard/data.img")   # pet
     host.succeed("test -f /opt/briard/guest.qcow2")     # cattle overlay
@@ -845,29 +878,5 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     host.succeed("rm -f /opt/briard/agent/briard-agent.next")
     print("the shipped unit commits a good agent update and reverts a broken one")
-
-    # --- A ROLE CYCLE, observed off-box ([V3b.26d]; its twin is DELTA 5 in install-bridge.nix,
-    # where the ⚠️ explains what an earlier, VACUOUS version of this block wrongly claimed).
-    #
-    # It does NOT prove the [B.100]/[B.101] standby discipline. That hazard is a Secondary teaching
-    # the switch the wrong port for the flock MAC, and on a lone node there is no wrong port --
-    # it is two-node by nature and belongs to [B.113]. What is proven here: a demote really stops
-    # service seen from off-box, and re-promotion brings the VIP back on the SAME MAC.
-    serving_mac = client.succeed(f"ip -4 neigh show {moved} dev eth1").split()
-    serving_mac = serving_mac[serving_mac.index("lladdr") + 1]
-    host.succeed("/opt/briard/agent/briard-agent handover -keep-masked")
-    client.wait_until_fails(f"curl -fsS --max-time 3 http://{moved}/healthz", timeout=120)
-    print("a demoted node stops serving, seen from off-box")
-
-    host.succeed("/opt/briard/agent/briard-agent handover -unmask")
-    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-    client.succeed("ip neigh flush dev eth1")
-    client.wait_until_succeeds(f"ping -c1 -W2 {moved}")
-    back = client.succeed(f"ip -4 neigh show {moved} dev eth1").split()
-    print(f"off-box after re-promotion: {' '.join(back)}")
-    assert "lladdr" in back and back[back.index("lladdr") + 1] == serving_mac, (
-        f"the VIP came back on a different MAC ({' '.join(back)}, was {serving_mac}) -- the service "
-        f"identity is supposed to be the one thing a role change leaves unchanged"
-    )
   '';
 }
