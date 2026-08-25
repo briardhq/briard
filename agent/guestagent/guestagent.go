@@ -450,6 +450,7 @@ type netConfigureRequest struct {
 	// on-link) and nothing is routed. Named by the host, never inferred here: the guest bakes no
 	// positional knowledge of which NIC is which ([V3b.16a]).
 	PrivDev     string `json:"priv_dev,omitempty"`
+	PrivCIDR    string `json:"priv_cidr,omitempty"`
 	PrivHostIP  string `json:"priv_host_ip,omitempty"`
 	PrivHostMAC string `json:"priv_host_mac,omitempty"`
 }
@@ -464,6 +465,7 @@ type NetConfig struct {
 	VIPDev      string // the NIC the promoter claims the VIP on; "" = this node claims none
 	VIPAddr     string // the VIP itself, CIDR form; "" = DHCP decides
 	PrivDev     string // the guest NIC facing the private host link; "" = no such link
+	PrivCIDR    string // this end's own address on it -- SUBSTRATE, addressed by nobody; see the handler
 	PrivHostIP  string // the host's system-subnet address, routed over PrivDev
 	PrivHostMAC string // that end's link address, pinned as a permanent neighbour -- see the handler
 }
@@ -1230,6 +1232,20 @@ func dispatch(x Executor) dispatchFunc {
 				if err := run("ip", "link", "set", "dev", req.PrivDev, "up"); err != nil {
 					return nil, err
 				}
+				// This end's own address on the link. It is SUBSTRATE and nothing addresses it --
+				// the gate answers at the node IP, the forwarder is dialled at the node IP, the
+				// VIP is routed via the node IP. It exists for one reason, measured: avahi joins
+				// the IPv4 mDNS group on an interface only if that interface HAS a v4 address, so
+				// without it this NIC answers mDNS over IPv6 only -- and the host's end of that
+				// conversation is a stranger's machine, which may have IPv6 off. [V3b.19]'s name
+				// half then breaks silently: the household's own machine cannot find its own node
+				// while everything else works. install-macvtap runs with v6 disabled on the host
+				// precisely so nothing can pass for a reason we do not control.
+				if req.PrivCIDR != "" {
+					if err := run("ip", "addr", "replace", req.PrivCIDR, "dev", req.PrivDev); err != nil {
+						return nil, err
+					}
+				}
 				if req.PrivHostMAC != "" {
 					if err := run("ip", "neigh", "replace", req.PrivHostIP,
 						"lladdr", req.PrivHostMAC, "dev", req.PrivDev, "nud", "permanent"); err != nil {
@@ -1951,7 +1967,8 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 	return g.c.call(ctx, verbNetConfigure, netConfigureRequest{
 		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
-		PrivDev: n.PrivDev, PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
+		PrivDev: n.PrivDev, PrivCIDR: n.PrivCIDR,
+		PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
 	}, nil)
 }
 

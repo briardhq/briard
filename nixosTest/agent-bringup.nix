@@ -72,7 +72,7 @@ pkgs.testers.runNixOSTest {
         # one address anything uses to reach it, and the gate below answers there ([V3b.26b]).
         # SYSTEM_HOST_CIDR is the host's own end of that subnet, on the tap -- the rig states all
         # three because it is standing in for install.sh, which sets them together or not at all.
-        "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
+        "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.9.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
         "--setenv=STATUS_EVERY=2s "
         # The test DECLARES the service address it is about to curl. The guest image bakes none
         # (V3.19c step 3) and unset means DHCP, which nothing answers on a nixosTest's L2.

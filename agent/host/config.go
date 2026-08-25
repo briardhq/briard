@@ -117,10 +117,11 @@ func ConfigFromEnv() Config {
 		// route it over, or a device with no address, is a half-built path.
 		SystemHostCIDR: os.Getenv("SYSTEM_HOST_CIDR"), // e.g. 10.0.0.129/32
 		WitnessDev:     env("WITNESS_DEV", "eth3"),
-		VIPDev:         os.Getenv("VIP_DEV"),    // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
-		VIPAddr:        os.Getenv("VIP_ADDR"),   // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
-		FlockID:        os.Getenv("FLOCK_ID"),   // flock-scoped VIP MAC seed; "" -> fall back to the node name
-		FlockName:      os.Getenv("FLOCK_NAME"), // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
+		WitnessCIDR:    os.Getenv("WITNESS_CIDR"), // the guest's end of the private link, e.g. 10.9.9.2/24
+		VIPDev:         os.Getenv("VIP_DEV"),      // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
+		VIPAddr:        os.Getenv("VIP_ADDR"),     // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
+		FlockID:        os.Getenv("FLOCK_ID"),     // flock-scoped VIP MAC seed; "" -> fall back to the node name
+		FlockName:      os.Getenv("FLOCK_NAME"),   // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
 		Resource: drbd.Resource{
 			Name:   env("RESOURCE", "r0"),
 			Device: env("DEVICE", "/dev/drbd0"),

@@ -105,6 +105,7 @@ pkgs.testers.runNixOSTest {
           SYSTEM_DEV = "eth1";
           SYSTEM_CIDR = "10.0.0.1/24";
           SYSTEM_HOST_CIDR = "10.0.0.129/32";
+          WITNESS_CIDR = "10.9.9.2/24";
           SERVICE_TAP = "svc0";
           WITNESS_TAP = "briard-priv0";
           VIP_DEV = "eth2";

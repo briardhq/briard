@@ -200,7 +200,17 @@ type Config struct {
 	// WitnessTap. Named by the host rather than assumed by the guest, which bakes no positional
 	// knowledge of its own NIC layout ([V3b.16a]).
 	WitnessDev string
-	VIPDev     string // guest NIC the promoter claims the VIP on; "" = the guest's baked default
+	// WitnessCIDR is the GUEST's address on the private link. Pure substrate -- nothing dials it,
+	// nothing is configured with it, and it never leaves this host's tap. It exists so avahi has a
+	// v4 address to join the mDNS group with on that NIC ([V3b.26b]); without it the link speaks
+	// mDNS over IPv6 only and [V3b.19]'s name half depends on a stranger's host having v6.
+	//
+	// FIXED, not allocated, and that is safe here in a way it is not on the system subnet: this is
+	// a point-to-point wire to our own VM that never touches the LAN, so there is nobody to
+	// collide with. The system subnet is the opposite -- it rides the LAN's L2 by design, which is
+	// why THAT one must be randomized per home ([V3b.26f]).
+	WitnessCIDR string
+	VIPDev      string // guest NIC the promoter claims the VIP on; "" = the guest's baked default
 	// VIPAddr is the service address the promoter claims, in CIDR form ("192.168.9.50/24").
 	// It is the LAN's address, not ours: baking it made the product work only on the one
 	// subnet our lab happened to use, and fail GREEN everywhere else (the readiness probe
@@ -741,7 +751,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
 			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
-			PrivDev: cfg.WitnessDev, PrivHostIP: cfg.hostNodeIP(),
+			PrivDev: cfg.WitnessDev, PrivCIDR: cfg.WitnessCIDR, PrivHostIP: cfg.hostNodeIP(),
 			PrivHostMAC: cfg.privHostMAC(bringup, logf),
 		})
 	}
