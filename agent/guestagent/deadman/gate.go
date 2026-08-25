@@ -28,27 +28,32 @@ import (
 // smaller thing to pull in, and one line of key=value text needs nothing more.
 //
 // It READS NOTHING from the connection. There is no request to parse, so there is no parser to
-// get wrong: accept, write one line, close. The link it binds is private and point-to-point
-// (guest eth3 <-> host), but a surface that cannot be spoken to is cheaper than one that can.
+// get wrong: accept, write one line, close. That was cheap insurance when the link was private and
+// point-to-point; since [V3b.26b] moved the gate onto this node's own address it is what makes the
+// move safe, because the system subnet rides the LAN's L2 and the listener is no longer hidden by
+// addressing alone.
 
-// The private host<->guest link, in full. Fixed, not configured: both ends are ours, it is
-// point-to-point, and there is nobody to collide with — so a knob would only add a way for the
-// two ends to disagree (AGENTS §3). The port is adjacent to DRBD's 7789 on the same substrate.
+// GatePort is where the gate answers. Adjacent to DRBD's 7789, and the only fixed number left on
+// this path: the ADDRESS is the node's own (DESIGN §4), agent-assigned and flock-scoped, so it
+// cannot be a constant here and must not be one anywhere else either.
 //
-// These same numbers are written in three other languages — the guest image bakes GuestIP on eth3
-// and BRIARD_GATE_ADDR into the deadman unit, install.sh puts HostIP on the tap, and the cloud's
-// mesh composer hands out both for the witness forwarder (cloud/server/pair.go). There is no
-// shared constant across a Go/Nix/shell boundary, so gate_pairing_test.go reads the other files
-// and fails on drift; a comment cannot catch a rename, and the failure mode is a host rung that
-// silently cannot reach its guest.
-const (
-	GuestIP  = "10.9.9.2" // the guest's eth3 — where the gate answers
-	HostIP   = "10.9.9.1" // the host's end of the tap — where the witness forwarder listens
-	GatePort = 7790
-)
+// It used to be. The guest baked 10.9.9.2 on eth3, install.sh put 10.9.9.1 on the tap, and the
+// cloud's mesh composer handed both out -- the same numbers in four languages that cannot import
+// from each other, which is why gate_pairing_test.go existed to read the other files and fail on
+// drift. [V3b.26b] removed the duplication rather than the guard: nothing spells these addresses
+// twice any more, so there is nothing left to drift.
+const GatePort = 7790
 
-// GateAddr is the address the host dials to read this guest's reboot gate.
-func GateAddr() string { return net.JoinHostPort(GuestIP, strconv.Itoa(GatePort)) }
+// GateAddr is the address the host dials to read a guest's reboot gate: that node's node IP, the
+// one address anything uses to reach it. "" in -- a node with no address yet -- gives "", which
+// the caller reads the same as unreachable and therefore as ALLOWED, exactly as it reads a node
+// with no gate at all.
+func GateAddr(nodeIP string) string {
+	if nodeIP == "" {
+		return ""
+	}
+	return net.JoinHostPort(nodeIP, strconv.Itoa(GatePort))
+}
 
 // GateProto is the first token of the reply. A version tag rather than bare values, so the host
 // refuses to interpret something it does not recognise instead of parsing garbage into a verdict
@@ -129,10 +134,15 @@ func boolDigit(b bool) string {
 
 // Serve accepts on addr until ctx is done, answering every connection with Render().
 //
-// A failure to bind is returned, not logged and swallowed: the address is a baked constant on a
-// link we own both ends of, so the only ways to fail are a misconfigured image or a port already
-// taken — both of which mean the host rung is running blind, and blind is the state this exists
-// to end. The caller decides whether that is fatal.
+// A failure to bind is returned, not logged and swallowed: addr is a bare port, so the only ways
+// to fail are a port already taken or a misconfigured image — both of which mean the host rung is
+// running blind, and blind is the state this exists to end. The caller decides whether that is
+// fatal.
+//
+// It binds a PORT rather than an address because the address is the node's own and is assigned at
+// bring-up, so the image cannot name it (DESIGN §4). Answering on every interface is tolerable
+// only because of the property above — this reads nothing from a connection, so a wider bind adds
+// no attack surface beyond letting a reader learn whether a reboot is currently allowed.
 func (g *Gate) Serve(ctx context.Context, addr string) error {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", addr)

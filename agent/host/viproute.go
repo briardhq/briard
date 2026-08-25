@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"briard.io/agent/guest"
-	"briard.io/agent/guestagent/deadman"
 	"briard.io/agent/platform"
 )
 
@@ -39,6 +38,11 @@ const vipVerbTimeout = 5 * time.Second
 type vipRouter struct {
 	dev    string // the host's end of the private link (WITNESS_TAP); "" = no link, nothing to do
 	vipDev string // the guest NIC the VIP lands on (VIP_DEV); "" = this node claims no VIP
+	// The two ends of the link, in system-subnet terms. `via` is the guest's NODE IP -- resolvable
+	// on this device only because the agent pinned a permanent neighbour entry for it
+	// (platform.SetNodeRoute), since the guest will not ARP for an eth1 address on eth3.
+	via string // the guest's node IP
+	src string // the host's own system-subnet address, on dev
 	// installed is the address currently routed over the link; "" = no route of ours exists.
 	installed string
 	// set/clear are the platform calls, as fields so the transition table below can be tested
@@ -47,8 +51,11 @@ type vipRouter struct {
 	clear func(context.Context, string, string) error
 }
 
-func newVIPRouter(dev, vipDev string) *vipRouter {
-	return &vipRouter{dev: dev, vipDev: vipDev, set: platform.SetVIPRoute, clear: platform.ClearVIPRoute}
+func newVIPRouter(dev, vipDev, via, src string) *vipRouter {
+	return &vipRouter{
+		dev: dev, vipDev: vipDev, via: via, src: src,
+		set: platform.SetVIPRoute, clear: platform.ClearVIPRoute,
+	}
 }
 
 // wantVIPRoute answers what the host should route, from what the guest answered.
@@ -122,7 +129,7 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 		}
 		return
 	}
-	if serr := v.set(actx, platform.VIPRoute{Addr: want, Via: deadman.GuestIP, Dev: v.dev, Src: deadman.HostIP}); serr != nil {
+	if serr := v.set(actx, platform.VIPRoute{Addr: want, Via: v.via, Dev: v.dev, Src: v.src}); serr != nil {
 		logf("vip route: %v -- this host cannot reach %s (the rest of the LAN can)", serr, want)
 		return
 	}

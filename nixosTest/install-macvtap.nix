@@ -478,9 +478,10 @@ pkgs.testers.runNixOSTest {
     # `via` the guest's end, never on-link. The guest answers ARP only on the interface holding the
     # address asked for (arp_ignore=1, [B.101]), so an on-link /32 installs cleanly and then
     # black-holes -- a regression that would look like a working route in every `ip route` listing.
-    assert "10.9.9.2" in route, (
-        f"the route to {vip} is not via the guest's end of the link: {route!r} -- an on-link route "
-        f"cannot resolve the VIP's MAC under arp_ignore=1"
+    assert "10.0.0.1" in route, (
+        f"the route to {vip} is not via the guest's NODE IP: {route!r} -- an on-link route cannot "
+        f"resolve the VIP's MAC under arp_ignore=1, and the node IP is the one address on that "
+        f"link the host can resolve, because the agent pinned a permanent neighbour entry for it"
     )
 
     # NON-VACUITY, and self-healing, in one move. Take the route away and the host is returned to

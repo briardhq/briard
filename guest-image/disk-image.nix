@@ -153,21 +153,21 @@ let
       };
       networking.nameservers = [ "10.0.2.3" ]; # SLIRP's resolver, forwarded to the host's
 
-      # eth3 -- the private host<->guest link -- addressed HERE, in the image, rather than by the
-      # agent at pairing time as it used to be. The address is the same one the cloud's mesh
-      # composer hands out (cloud/server/pair.go: witnessGuestIP), so a managed pairing's
-      # net.configure now does `ip addr replace` on an address that is already correct: a no-op
-      # instead of a reconfiguration.
+      # eth3 -- the private host<->guest link -- carries NO ADDRESS. It is pure L2 plumbing: the
+      # host routes a /32 to this node's node IP over it and pins a permanent neighbour entry for
+      # it, and this side routes a /32 back (agent/platform/route.go, net.configure). Nothing on
+      # either end needs an address of its own, so the invented 10.9.9.0/24 that used to number it
+      # is gone -- one fewer private range to collide with a household's LAN ([V3b.26b]).
       #
-      # BAKED, and that is the whole point rather than a tidiness preference. The host reads this
-      # guest's reboot gate over this link when the CONTROL CHANNEL IS DEAD (deadman/gate.go) --
-      # which is exactly when no agent is available to have configured anything. An address
-      # assigned by the agent would be reliably absent in the one failure it exists to serve, and
-      # present in all the ones it does not. It is a point-to-point wire whose other end we also
-      # own, so there is nothing here to collide with and nobody to ask.
-      networking.interfaces.eth3.ipv4.addresses = [
-        { address = "10.9.9.2"; prefixLength = 24; }
-      ];
+      # THE OBJECTION THIS REPLACES, answered rather than dropped. The address used to be baked
+      # precisely because the host reads the reboot gate when the CONTROL CHANNEL IS DEAD, and an
+      # agent-assigned address looked like it would be "reliably absent in the one failure it
+      # exists to serve". It is not, and `-no-reboot` is why: the gate is consulted only on rung 3,
+      # a VM that is RUNNING but mute, and a running VM is one whose bring-up completed and
+      # therefore one whose node IP the agent already set. The case the old comment feared -- a
+      # guest that reboots itself with no agent to reconfigure it -- does not reach this code,
+      # because with `-no-reboot` that guest's unit ENDS and the host's rung 2 relaunches it
+      # (which runs bring-up) instead of asking a gate.
 
       # drbd.conf includes the .res files the agent drops at runtime. TMPFS since [V3b.16b]: the
       # `.res` is node-scoped, the host re-derives it at every bring-up (from cfg.Resource, which
@@ -232,7 +232,18 @@ let
       # It also SERVES that gate to the host on the private link (BRIARD_GATE_ADDR), which is the
       # only reason the host's own rung can avoid power-cycling a node whose departure would cost
       # a peer its quorum: every other way of asking rides the channel whose death is the trigger.
-      # After network-online so the baked eth3 address exists before the listener binds it.
+      # BRIARD_GATE_ADDR is a PORT with no address: the gate answers on whatever this node holds,
+      # because its address is now the node IP -- agent-assigned, flock-scoped, and not a thing the
+      # image can know (DESIGN §4). Binding wide is safe here in a way it would not be for any
+      # other listener: the gate READS NOTHING from a connection (accept, write one line, close),
+      # so there is no request to parse and no parser to get wrong.
+      #
+      # ⚠️ It is still a posture change worth naming: the gate used to be unreachable from the LAN
+      # by addressing alone, and the system subnet rides the LAN's L2. What a stranger on the wire
+      # gains is the ability to READ whether this node currently thinks a reboot is safe. They
+      # cannot set it -- the verdict comes from the deadman's own evaluation, never from the
+      # connection -- and flooding the listener makes the host read "unreachable", which it treats
+      # as ALLOWED, so a flood removes the guard rather than holding it shut.
       systemd.services.briard-deadman = {
         description = "Briard host-agent deadman (reboots the guest if the host agent goes silent)";
         wantedBy = [ "multi-user.target" ];
@@ -242,7 +253,7 @@ let
           pkgs.drbd # drbdsetup, for the reboot gate
           pkgs.systemd # systemctl reboot
         ];
-        environment = { BRIARD_GATE_ADDR = "10.9.9.2:7790"; } // guestAgentEnv;
+        environment = { BRIARD_GATE_ADDR = ":7790"; } // guestAgentEnv;
         serviceConfig = {
           ExecStart = "${briardAgent}/bin/briard-agent run --deadman";
           Restart = "always";

@@ -29,7 +29,10 @@ func (rr *routeRecorder) clear(_ context.Context, addr, dev string) error {
 
 func newTestRouter(dev, vipDev string) (*vipRouter, *routeRecorder) {
 	rr := &routeRecorder{}
-	v := &vipRouter{dev: dev, vipDev: vipDev, set: rr.set, clear: rr.clear}
+	// The two ends in system-subnet terms: the guest's node IP and the host's own address on the
+	// same subnet. Written out here rather than defaulted, so the test states the topology it is
+	// asserting about ([V3b.26b] -- these used to be package constants on a private 10.9.9.0/24).
+	v := &vipRouter{dev: dev, vipDev: vipDev, via: "10.0.0.1", src: "10.0.0.129", set: rr.set, clear: rr.clear}
 	return v, rr
 }
 
@@ -45,7 +48,7 @@ func TestVIPRouter_InstallsThenIsQuiet(t *testing.T) {
 		t.Fatalf("sets = %+v, want exactly one", rr.sets)
 	}
 	got := rr.sets[0]
-	want := platform.VIPRoute{Addr: "192.168.9.225", Via: "10.9.9.2", Dev: "briard-priv0", Src: "10.9.9.1"}
+	want := platform.VIPRoute{Addr: "192.168.9.225", Via: "10.0.0.1", Dev: "briard-priv0", Src: "10.0.0.129"}
 	if got != want {
 		t.Errorf("route = %+v, want %+v", got, want)
 	}

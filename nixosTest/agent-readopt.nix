@@ -49,6 +49,9 @@ pkgs.testers.runNixOSTest {
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
           SYSTEM_TAP = "sys0";
+          SYSTEM_DEV = "eth1";
+          SYSTEM_CIDR = "10.0.0.1/24";
+          SYSTEM_HOST_CIDR = "10.0.0.129/32";
           SERVICE_TAP = "svc0";
           WITNESS_TAP = "briard-priv0";
           # The test declares its service address: the image bakes none (V3.19c step 3) and unset
@@ -84,7 +87,7 @@ pkgs.testers.runNixOSTest {
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
         "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
-        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")

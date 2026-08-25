@@ -850,7 +850,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// The host's own route to the VIP its guest holds, over the private link -- the one address
 	// macvtap hides from the machine running the guest and from nobody else ([V3b.19]). Lives for
 	// the observe loop because it remembers what it installed; see viproute.go.
-	vr := newVIPRouter(cfg.WitnessTap, cfg.VIPDev)
+	vr := newVIPRouter(cfg.WitnessTap, cfg.VIPDev, cfg.guestNodeIP(), cfg.hostNodeIP())
 	// EVERY cfg.beat.Beat() below sits in front of one ctx-BOUNDED call, and that is the whole
 	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever
 	// a gap would otherwise open. It is not one ping per cycle -- these calls carry 5s deadlines

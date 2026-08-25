@@ -49,8 +49,11 @@ DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's DRBD NIC (eth1); idle 
 #     node, where a wrong reboot is a real outage.
 #   - the host-side witness-forwarder on a managed pairing, which listens at PRIV_HOST_IP:7789 and
 #     has always needed this address to exist.
-# The addresses are FLEET CONSTANTS shared with the cloud's mesh composer (cloud/server/pair.go:
-# witnessHostAddr / witnessGuestIP) and with the guest image, which bakes its end statically.
+# ⚠️ PRIV_HOST_CIDR IS ON ITS WAY OUT and survives for exactly one consumer: the cloud-witness
+# forwarder, whose address the mesh composer still hands out fleet-constant (cloud/server/pair.go).
+# The reboot gate and the host's route to the VIP have already moved to this node's own addresses
+# ([V3b.26b]), which is why SYSTEM_HOST_CIDR sits beside it below -- when the forwarder follows,
+# this line and the subnet behind it go, and the link keeps only its /32s.
 PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
 PRIV_HOST_CIDR="10.9.9.1/24"
 # The private link's bring-up, shared VERBATIM by both substrates' net-up.sh. All three commands

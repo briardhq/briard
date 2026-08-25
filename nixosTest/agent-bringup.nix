@@ -46,7 +46,7 @@ pkgs.testers.runNixOSTest {
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
         "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
-        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip link set briard-priv0 up"
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
     # Writable overlay of the read-only store qcow2 + a blank DRBD backing disk.
@@ -67,9 +67,12 @@ pkgs.testers.runNixOSTest {
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
         # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
-        # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV stays unset, as
-        # it is on a shipped single node -- DRBD needs the NIC present, not addressed.
-        "--setenv=SYSTEM_TAP=sys0 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
+        # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV/SYSTEM_CIDR are
+        # set, as they now are on a shipped single node too: eth1 carries this node's NODE IP, the
+        # one address anything uses to reach it, and the gate below answers there ([V3b.26b]).
+        # SYSTEM_HOST_CIDR is the host's own end of that subnet, on the tap -- the rig states all
+        # three because it is standing in for install.sh, which sets them together or not at all.
+        "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
         "--setenv=STATUS_EVERY=2s "
         # The test DECLARES the service address it is about to curl. The guest image bakes none
         # (V3.19c step 3) and unset means DHCP, which nothing answers on a nixosTest's L2.
@@ -95,7 +98,7 @@ pkgs.testers.runNixOSTest {
     # rig-built shim used to buy too -- this is the line that tells the two apart ([V3b.19a]).
     route = host.succeed("ip route get 192.168.1.100")
     print(f"host route to the VIP: {route.strip()}")
-    assert "briard-priv0" in route and "10.9.9.2" in route, (
+    assert "briard-priv0" in route and "10.0.0.1" in route, (
         f"the host reaches the VIP some other way than the agent's route over the private link: "
         f"{route!r} -- if a macvlan shim has come back, this test has stopped proving the product"
     )

@@ -363,7 +363,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 
 		// Ask the guest whether taking it down is safe. Unreachable is not a refusal -- see the
 		// header: the gate can withhold a reboot, never authorise one.
-		gate := readGate(ctx, deadman.GateAddr(), u.logf)
+		gate := readGate(ctx, deadman.GateAddr(u.cfg.guestNodeIP()), u.logf)
 		if r.next(gate, sinceAction, false) == stepHold {
 			// Say it ONCE per incident, whichever branch we are in. The old ladder announced only
 			// when it gave up rebooting, so a node the gate keeps denying stayed silently down --
