@@ -35,10 +35,40 @@ RUNDIR="${BRIARD_RUN:-/run/briard}"
 NIC="${BRIARD_NIC:-}"                 # host NIC to enslave/parent; empty = the default-route NIC
 BRIDGE="${BRIARD_BRIDGE:-br-briard}"
 TAP="${BRIARD_TAP:-briard0}"          # the guest's service NIC (eth2, the VIP)
-DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's DRBD NIC (eth1); idle single-node, addressed on pairing
+# THE SYSTEM SUBNET -- this node's own address, and the one canonical way anything reaches it
+# (DESIGN §4). Assigned HERE, on every install including a lone one, rather than arriving with a
+# cloud pairing as it used to: a standalone install is a single-node flock, so it is node-id 0 and
+# takes .1. Nothing about a node having an address is a property of having a peer, and making it
+# one left the lone node -- the tier that has it worst -- as the only shape with no address at all
+# ([V3b.26b]).
+#
+# FLOCK-SCOPED AND NOT DURABLE. The subnet belongs to the flock, exactly as the service MAC does
+# (deriveMAC over the flock id): an unpaired island derives its own, and on adoption the ADOPTER's
+# subnet survives while the joiner renumbers into it (DESIGN §1.2). So this address is canonical
+# within a flock epoch and no longer -- never a bookmark, never a stored config, never a DNS
+# record. That is the VIP's and the name's job, and they survive both a failover and an adoption.
+#
+# ⚠️ 10.0.0 IS A PLACEHOLDER AND A KNOWN COLLISION. It is also one of the most common real
+# household subnets, and both subnets ride ONE L2 by design -- so a home whose LAN is 10.0.0.x
+# collides head-on. Deriving it per-home from the flock id is [V3b.26f]; this variable is the seam
+# that change lands on, which is why the numbering is written once, here.
+SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-10.0.0}"
+SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
+# The HOST's own address on that subnet. It needs one because a standby has no LAN presence and
+# must still be dialable by its guest (the witness forwarder) and able to answer on-link, and
+# because the guest needs somewhere to reply to when the host dials IT (the reboot gate).
+#
+# A /32, and on the private tap rather than on the LAN NIC: under macvtap the host cannot reach
+# its own guest over the LAN at all, so the tap is the only path, and a /32 keeps the tap from
+# claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
+# node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
+# address says which side of the pair it is.
+SYSTEM_HOST_CIDR="$SYSTEM_SUBNET.129/32"
+DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's system NIC (eth1) -- its node IP, and where DRBD binds
 # THE PRIVATE HOST<->GUEST LINK (the guest's eth3). A plain tap, on neither the bridge nor the
-# macvtap parent: a point-to-point wire between this host and its own guest, with fixed addresses
-# at both ends. Substrate-independent by construction, which is the point -- macvtap deliberately
+# macvtap parent: a point-to-point wire between this host and its own guest. UNNUMBERED since
+# [V3b.26b] -- it carries this host's system-subnet /32 and nothing else, and both ends pin a
+# permanent neighbour rather than ARP across it. Substrate-independent by construction -- macvtap deliberately
 # isolates guest from host, so without this the host has NO network path to the VM it runs.
 #
 # It is created on EVERY install, not only on a managed cloud-witness pairing as it used to be.
@@ -87,35 +117,6 @@ NET_MODE="${BRIARD_NET_MODE:-macvtap}"
 # defect was invisible: the default matched the lab, so every test agreed with it.
 VIP="${BRIARD_VIP:-}"
 VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows it yet
-# THE SYSTEM SUBNET -- this node's own address, and the one canonical way anything reaches it
-# (DESIGN §4). Assigned HERE, on every install including a lone one, rather than arriving with a
-# cloud pairing as it used to: a standalone install is a single-node flock, so it is node-id 0 and
-# takes .1. Nothing about a node having an address is a property of having a peer, and making it
-# one left the lone node -- the tier that has it worst -- as the only shape with no address at all
-# ([V3b.26b]).
-#
-# FLOCK-SCOPED AND NOT DURABLE. The subnet belongs to the flock, exactly as the service MAC does
-# (deriveMAC over the flock id): an unpaired island derives its own, and on adoption the ADOPTER's
-# subnet survives while the joiner renumbers into it (DESIGN §1.2). So this address is canonical
-# within a flock epoch and no longer -- never a bookmark, never a stored config, never a DNS
-# record. That is the VIP's and the name's job, and they survive both a failover and an adoption.
-#
-# ⚠️ 10.0.0 IS A PLACEHOLDER AND A KNOWN COLLISION. It is also one of the most common real
-# household subnets, and both subnets ride ONE L2 by design -- so a home whose LAN is 10.0.0.x
-# collides head-on. Deriving it per-home from the flock id is [V3b.26f]; this variable is the seam
-# that change lands on, which is why the numbering is written once, here.
-SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-10.0.0}"
-SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
-# The HOST's own address on that subnet. It needs one because a standby has no LAN presence and
-# must still be dialable by its guest (the witness forwarder) and able to answer on-link, and
-# because the guest needs somewhere to reply to when the host dials IT (the reboot gate).
-#
-# A /32, and on the private tap rather than on the LAN NIC: under macvtap the host cannot reach
-# its own guest over the LAN at all, so the tap is the only path, and a /32 keeps the tap from
-# claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
-# node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
-# address says which side of the pair it is.
-SYSTEM_HOST_CIDR="$SYSTEM_SUBNET.129/32"
 # The pet data volume: THICK-allocated (see step 6) and sized for a real service's data, not for a
 # test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
