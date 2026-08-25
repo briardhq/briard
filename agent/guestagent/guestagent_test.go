@@ -582,8 +582,27 @@ func TestConfigureNetWritesVIPDev(t *testing.T) {
 	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "eth2", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\n" {
-		t.Errorf("%s = %q, want VIP_DEV=eth2", vipEnvPath, got)
+	// SYSTEM_DEV rides along, and the VIP unit's STOP path is why ([V3b.26d]): a standby must
+	// bring a DEDICATED service NIC down, because the flock MAC on it is shared with the peer and
+	// a Secondary emitting from it teaches the switch the wrong port ([B.100]/[B.101]) -- while a
+	// link-down on the DRBD NIC would take replication with it. The guest cannot tell those apart
+	// from VIP_DEV alone, and it may not guess ([V3b.16a]).
+	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\nSYSTEM_DEV=eth1\n" {
+		t.Errorf("%s = %q, want VIP_DEV=eth2 + SYSTEM_DEV=eth1", vipEnvPath, got)
+	}
+}
+
+// A WITNESS claims no VIP, so it gets no file at all -- SYSTEM_DEV must not create one on its own.
+// briard-vip.service takes vip.env as a REQUIRED EnvironmentFile, so a file written for a node
+// whose promoter must never run is a unit that has quietly become startable.
+func TestConfigureNetWritesNoVIPEnvForAWitness(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.3/24"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := f.files[vipEnvPath]; ok {
+		t.Errorf("a witness got %s = %q; it claims no VIP and must get no file", vipEnvPath, got)
 	}
 }
 

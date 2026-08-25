@@ -1320,6 +1320,20 @@ func dispatch(x Executor) dispatchFunc {
 			if req.VIPDev != "" {
 				env = append(env, "VIP_DEV="+req.VIPDev+"\n"...)
 			}
+			// SYSTEM_DEV beside it, and it is not decoration: the VIP unit's STOP path needs to
+			// know whether VIP_DEV is a dedicated service NIC or the DRBD NIC. A standby must bring
+			// a dedicated one DOWN -- the flock MAC is shared with the peer, and a Secondary
+			// emitting from it teaches the switch the wrong port ([B.100]/[B.101]) -- while a
+			// link-down on the DRBD NIC would take replication with it. Only the agent knows which
+			// is which; the guest bakes no positional knowledge ([V3b.16a]). See the ⚠️ on vipDown
+			// in guest-image/configuration.nix for the proxy this replaced and why it was false.
+			//
+			// Inside the VIPDev branch on purpose: a node with no VIP device is a WITNESS, which
+			// has no promoter and never starts briard-vip, and writing this file for it would
+			// hand a unit that must not run a REQUIRED EnvironmentFile it now satisfies.
+			if req.VIPDev != "" && req.Dev != "" {
+				env = append(env, "SYSTEM_DEV="+req.Dev+"\n"...)
+			}
 			if req.VIPAddr != "" {
 				env = append(env, "VIP_ADDR="+req.VIPAddr+"\n"...)
 			}

@@ -513,15 +513,28 @@ let
       ${pkgs.iproute2}/bin/ip addr del "$live" dev "$VIP_DEV" || true
     fi
     rm -f ${vipLivePath}
-    # Take the NIC DOWN, but only where the address came from DHCP -- which is exactly where the
-    # MAC is flock-scoped and therefore shared with the peer. A Secondary holding that MAC up
-    # teaches the switch the wrong port for the VIP the moment it emits any frame at all (an
-    # IPv6 RS, an mDNS query), and traffic for the service goes to the node that is not serving.
+    # TAKE THE NIC DOWN WHEN IT IS OURS ALONE. The MAC on a dedicated service NIC is flock-scoped
+    # and therefore shared with the PEER, and a Secondary holding it up teaches the switch the
+    # wrong port for the VIP the moment it emits any frame at all (an IPv6 RS, an mDNS query) --
+    # traffic for the service then goes to the node that is not serving. That is the [B.100]/[B.101]
+    # class, and it is silent: nothing is down, the address is gone, and the packets still vanish.
     #
-    # The condition is not timidity, it is the hazard: with a configured address this unit also
-    # runs in the agent-less harnesses, where VIP_DEV is eth1 -- the DRBD NIC -- and a link-down
-    # there would take replication with it. Static address => the NIC is shared => leave it up.
-    if [ -z "$configured" ]; then
+    # ⚠️ THE QUESTION IS THE DEVICE, NOT WHERE THE ADDRESS CAME FROM, and it took [V3b.26d] to see
+    # that. This used to read `[ -z "$configured" ]` -- down only under DHCP -- on the reasoning
+    # "static address => the NIC is shared => leave it up". That is a PROXY, and it stands for the
+    # thing actually feared: the agent-less harnesses set VIP_DEV=eth1, the DRBD NIC, where a
+    # link-down takes replication with it. On a SHIPPED node the proxy is simply false. A household
+    # that sets BRIARD_VIP -- a documented, supported option (DESIGN §4) -- gets VIP_DEV=eth2, a
+    # dedicated service NIC shared with nothing local, and every Secondary in that flock kept the
+    # flock MAC up. The hazard the old comment described was live on the very configuration it
+    # exempted.
+    #
+    # So: ask whether this NIC is the system/DRBD NIC. SYSTEM_DEV is written beside VIP_DEV by
+    # net.configure, so a real node always knows; an agent-less harness never sets it and falls
+    # through to the old DHCP-only rule, which is exactly the conservative answer for a NIC we
+    # cannot identify. The `-z "$configured"` arm stays, so this strictly WIDENS when the NIC
+    # comes down and can regress nothing that came down before.
+    if [ -z "$configured" ] || { [ -n "''${SYSTEM_DEV:-}" ] && [ "$VIP_DEV" != "''${SYSTEM_DEV}" ]; }; then
       ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" down || true
     fi
     exit 0
