@@ -449,8 +449,9 @@ type netConfigureRequest struct {
 	// empty = no private link (the bridge substrate, where the host shares our L2 and is simply
 	// on-link) and nothing is routed. Named by the host, never inferred here: the guest bakes no
 	// positional knowledge of which NIC is which ([V3b.16a]).
-	PrivDev    string `json:"priv_dev,omitempty"`
-	PrivHostIP string `json:"priv_host_ip,omitempty"`
+	PrivDev     string `json:"priv_dev,omitempty"`
+	PrivHostIP  string `json:"priv_host_ip,omitempty"`
+	PrivHostMAC string `json:"priv_host_mac,omitempty"`
 }
 
 // NetConfig is what the host tells the guest about its own networking, in one call. A struct
@@ -458,12 +459,13 @@ type netConfigureRequest struct {
 // different NICs, and at that width a caller transposing two strings produces a node that
 // configures itself confidently and wrongly.
 type NetConfig struct {
-	Dev        string // the system NIC -- this node's node IP lands here, and DRBD binds it
-	CIDR       string // that address, with prefix; "" leaves the NIC unaddressed
-	VIPDev     string // the NIC the promoter claims the VIP on; "" = this node claims none
-	VIPAddr    string // the VIP itself, CIDR form; "" = DHCP decides
-	PrivDev    string // the guest NIC facing the private host link; "" = no such link
-	PrivHostIP string // the host's system-subnet address, routed over PrivDev
+	Dev         string // the system NIC -- this node's node IP lands here, and DRBD binds it
+	CIDR        string // that address, with prefix; "" leaves the NIC unaddressed
+	VIPDev      string // the NIC the promoter claims the VIP on; "" = this node claims none
+	VIPAddr     string // the VIP itself, CIDR form; "" = DHCP decides
+	PrivDev     string // the guest NIC facing the private host link; "" = no such link
+	PrivHostIP  string // the host's system-subnet address, routed over PrivDev
+	PrivHostMAC string // that end's link address, pinned as a permanent neighbour -- see the handler
 }
 
 // netVIPRequest names the device to read the live VIP from (net.vip). Empty Dev = this node has
@@ -1204,17 +1206,35 @@ func dispatch(x Executor) dispatchFunc {
 					return nil, err
 				}
 			}
-			// The route back to our own host, over the private link. It is a /32 so it BEATS the
-			// on-link /24 the system address above installs -- and it has to, because under
-			// macvtap that on-link path leaves by eth1 towards a host the substrate isolates us
-			// from, so the reply to every host-originated packet would go out the wrong door and
-			// die. No neighbour entry is needed on this side: the address being asked for is on
-			// the tap the request arrives on, so arp_ignore=1 is satisfied and ordinary ARP
-			// resolves it. (The HOST's mirror does need one -- our node IP lives on eth1 while
-			// its request arrives on eth3, which is exactly what arp_ignore refuses.)
+			// The route back to our own host, over the private link, plus a PERMANENT neighbour
+			// entry for the host's end of it. Both halves are load-bearing.
+			//
+			// The route is a /32 so it beats the on-link /24 the system address above installs:
+			// under macvtap that on-link path leaves by eth1 towards a host the substrate isolates
+			// us from, so every reply to a host-originated packet would go out the wrong door.
+			//
+			// ⚠️ THE NEIGHBOUR ENTRY IS WHY THIS LINK CAN BE UNNUMBERED AT ALL, and it was found
+			// by capture, not by reasoning ([V3b.26b]). This NIC has no address, so when the
+			// kernel needs to ARP for the host it has no source address on the outgoing interface
+			// to put in the request -- and arp_announce=2 then makes it BORROW one from another
+			// NIC. What it borrows is eth0's slirp address, 10.0.2.15, which is also what every
+			// other qemu user-net picks: the request goes out as "who-has <host> tell 10.0.2.15",
+			// the host sees an ARP request apparently from its own address, and never answers.
+			// Measured on the wire in agent-deadman. Pinning the MAC means we never ask.
+			//
+			// So the link is symmetric: neither end can ARP usefully across an unnumbered wire, so
+			// both ends pin. The host's mirror is platform.SetNodeRoute, and it pins for a
+			// different reason -- our node IP lives on eth1 while its request would arrive on this
+			// NIC, which arp_ignore=1 refuses ([B.101]).
 			if req.PrivDev != "" && req.PrivHostIP != "" {
 				if err := run("ip", "link", "set", "dev", req.PrivDev, "up"); err != nil {
 					return nil, err
+				}
+				if req.PrivHostMAC != "" {
+					if err := run("ip", "neigh", "replace", req.PrivHostIP,
+						"lladdr", req.PrivHostMAC, "dev", req.PrivDev, "nud", "permanent"); err != nil {
+						return nil, err
+					}
 				}
 				if err := run("ip", "route", "replace", req.PrivHostIP+"/32", "dev", req.PrivDev); err != nil {
 					return nil, err
@@ -1931,7 +1951,7 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 	return g.c.call(ctx, verbNetConfigure, netConfigureRequest{
 		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
-		PrivDev: n.PrivDev, PrivHostIP: n.PrivHostIP,
+		PrivDev: n.PrivDev, PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
 	}, nil)
 }
 

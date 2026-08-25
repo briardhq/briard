@@ -46,6 +46,23 @@ func orNode(id, node string) string {
 	return node
 }
 
+// privHostMAC reads the private link's host-end MAC, which the guest pins so it never has to ARP
+// across an unnumbered wire. "" on any failure and the guest simply installs no neighbour entry:
+// degrading to ordinary ARP is what the link did before, and a bring-up must not fail because a
+// device read did -- but it is logged, because on this substrate that ARP does not work.
+func (cfg Config) privHostMAC(ctx context.Context, logf func(string, ...any)) string {
+	if cfg.WitnessTap == "" {
+		return ""
+	}
+	mac, err := platform.LinkMAC(ctx, cfg.WitnessTap)
+	if err != nil {
+		logf("private link: cannot read %s's MAC (%v) -- the guest will fall back to ARP, "+
+			"which on an unaddressed link sources from the wrong NIC", cfg.WitnessTap, err)
+		return ""
+	}
+	return mac
+}
+
 // setNodeRoute installs the host's standing path to its guest's node IP over the private link.
 // Skipped -- not an error -- when any of the three facts it needs is absent: a substrate with no
 // private link (the host is on-link there and needs no route), a harness that gives the host no
@@ -725,6 +742,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
 			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
 			PrivDev: cfg.WitnessDev, PrivHostIP: cfg.hostNodeIP(),
+			PrivHostMAC: cfg.privHostMAC(bringup, logf),
 		})
 	}
 	// ...and the host's own path back to it. The guest just installed its half; this is the

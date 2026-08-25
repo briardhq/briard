@@ -116,3 +116,19 @@ func TestSetNodeRouteRefusesIncompleteSpec(t *testing.T) {
 		}
 	}
 }
+
+// The MAC parse, against real `ip -o link show` text. Split out and tested because the private
+// link's host end is READ rather than derived (a tap's MAC is random per creation), so a parse
+// that silently returns "" would leave the guest with no neighbour entry and send it back to the
+// broken ARP this whole mechanism exists to avoid.
+func TestLinkMACFrom(t *testing.T) {
+	const real = `7: briard-priv0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000\    link/ether 1a:dc:6c:07:70:5b brd ff:ff:ff:ff:ff:ff`
+	if got := linkMACFrom(real); got != "1a:dc:6c:07:70:5b" {
+		t.Errorf("linkMACFrom = %q, want the ether address", got)
+	}
+	// A device with no link address must read as "" rather than as something plausible -- the
+	// caller turns "" into "no neighbour entry", which is a degradation it logs, not a wrong pin.
+	if got := linkMACFrom(`3: lo: <LOOPBACK,UP> mtu 65536 qdisc noqueue state UNKNOWN`); got != "" {
+		t.Errorf("linkMACFrom on an ether-less device = %q, want \"\"", got)
+	}
+}

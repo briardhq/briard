@@ -124,6 +124,37 @@ func SetNodeRoute(ctx context.Context, r NodeRoute) error {
 	return nil
 }
 
+// LinkMAC reads a host interface's link address. Used for the private link's host end, whose MAC
+// the guest pins as a permanent neighbour -- see the net.configure handler for why it must.
+//
+// READ, not derived, and re-read at every bring-up: `ip tuntap add` hands out a RANDOM MAC, so
+// this end's address changes whenever the tap is recreated (a host reboot re-runs net-up.sh).
+// The guest's end is the opposite -- deriveMAC makes it a function of the node name -- which is
+// why only this direction needs carrying over the channel.
+func LinkMAC(ctx context.Context, dev string) (string, error) {
+	out, err := exec.CommandContext(ctx, "ip", "-o", "link", "show", "dev", dev).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("platform: ip link show %s: %w: %s", dev, err, strings.TrimSpace(string(out)))
+	}
+	mac := linkMACFrom(string(out))
+	if mac == "" {
+		return "", fmt.Errorf("platform: no link address on %s (%q)", dev, strings.TrimSpace(string(out)))
+	}
+	return mac, nil
+}
+
+// linkMACFrom picks the ether address out of `ip -o link show` output. Split out so the parse is
+// unit-tested against real iproute2 text rather than trusted.
+func linkMACFrom(out string) string {
+	f := strings.Fields(out)
+	for i, tok := range f {
+		if tok == "link/ether" && i+1 < len(f) {
+			return f[i+1]
+		}
+	}
+	return ""
+}
+
 // ClearVIPRoute withdraws it. A route that is already gone is a success, not an error: the
 // caller's job is to leave the host with no route, and both spellings of "there is none" mean
 // the same thing to it. Anything else is reported -- a delete that fails for a reason we did not
