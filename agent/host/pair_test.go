@@ -30,9 +30,9 @@ type fakeMesher struct {
 
 type netCall struct{ dev, cidr, vipDev, vipAddr string }
 
-func (f *fakeMesher) ConfigureNet(_ context.Context, dev, cidr, vipDev, vipAddr string) error {
-	f.netCalled, f.netDev, f.netCIDR, f.vipDev = true, dev, cidr, vipDev
-	f.netCalls = append(f.netCalls, netCall{dev, cidr, vipDev, vipAddr})
+func (f *fakeMesher) ConfigureNet(_ context.Context, n guestagent.NetConfig) error {
+	f.netCalled, f.netDev, f.netCIDR, f.vipDev = true, n.Dev, n.CIDR, n.VIPDev
+	f.netCalls = append(f.netCalls, netCall{n.Dev, n.CIDR, n.VIPDev, n.VIPAddr})
 	return nil
 }
 func (f *fakeMesher) Adjust(_ context.Context, req guestagent.ProvisionRequest) error {

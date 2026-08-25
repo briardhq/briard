@@ -157,7 +157,7 @@ func TestAdjustRewritesConfigAndAdjustsNeverCreatesMD(t *testing.T) {
 func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "", "", "eth2", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "", CIDR: "", VIPDev: "eth2", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.runs) != 0 {
@@ -175,7 +175,7 @@ func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 func TestConfigureNet(t *testing.T) {
 	f := &fakeExec{output: []byte("2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever")}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -204,7 +204,7 @@ func TestConfigureNetPrunesStaleAddress(t *testing.T) {
 		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
 			"2: eth1    inet 10.9.1.7/24 scope global secondary eth1\\       valid_lft forever")}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -225,7 +225,7 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
 			"2: eth1    inet 169.254.57.250/16 scope global eth1\\       valid_lft forever")}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range f.runs {
@@ -579,7 +579,7 @@ func TestSetHostname(t *testing.T) {
 func TestConfigureNetWritesVIPDev(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "eth2", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "eth2", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\n" {
@@ -594,7 +594,7 @@ func TestConfigureNetWritesVIPDev(t *testing.T) {
 func TestConfigureNetWritesVIPAddr(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "", "", "eth2", "192.168.9.50/24"); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "", CIDR: "", VIPDev: "eth2", VIPAddr: "192.168.9.50/24"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\nVIP_ADDR=192.168.9.50/24\n" {
@@ -611,7 +611,7 @@ func TestConfigureNetWritesVIPAddr(t *testing.T) {
 func TestConfigureNetOmitsUnsetVIPAddr(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), "", "", "eth2", ""); err != nil {
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "", CIDR: "", VIPDev: "eth2", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.files[vipEnvPath]; strings.Contains(got, "VIP_ADDR") {

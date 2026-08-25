@@ -442,6 +442,28 @@ type netConfigureRequest struct {
 	CIDR    string `json:"cidr"`
 	VIPDev  string `json:"vip_dev,omitempty"`
 	VIPAddr string `json:"vip_addr,omitempty"`
+	// The private host<->guest link, when the substrate has one. PrivDev is the guest NIC facing
+	// it and PrivHostIP is the host's own address on the SYSTEM subnet, reached over that NIC by
+	// a /32 -- which must beat the on-link /24 the system address itself installs, because under
+	// macvtap that on-link path leads out of eth1 to a host the substrate isolates us from. Both
+	// empty = no private link (the bridge substrate, where the host shares our L2 and is simply
+	// on-link) and nothing is routed. Named by the host, never inferred here: the guest bakes no
+	// positional knowledge of which NIC is which ([V3b.16a]).
+	PrivDev    string `json:"priv_dev,omitempty"`
+	PrivHostIP string `json:"priv_host_ip,omitempty"`
+}
+
+// NetConfig is what the host tells the guest about its own networking, in one call. A struct
+// rather than a seventh positional argument: these are five independent facts about three
+// different NICs, and at that width a caller transposing two strings produces a node that
+// configures itself confidently and wrongly.
+type NetConfig struct {
+	Dev        string // the system NIC -- this node's node IP lands here, and DRBD binds it
+	CIDR       string // that address, with prefix; "" leaves the NIC unaddressed
+	VIPDev     string // the NIC the promoter claims the VIP on; "" = this node claims none
+	VIPAddr    string // the VIP itself, CIDR form; "" = DHCP decides
+	PrivDev    string // the guest NIC facing the private host link; "" = no such link
+	PrivHostIP string // the host's system-subnet address, routed over PrivDev
 }
 
 // netVIPRequest names the device to read the live VIP from (net.vip). Empty Dev = this node has
@@ -1182,6 +1204,22 @@ func dispatch(x Executor) dispatchFunc {
 					return nil, err
 				}
 			}
+			// The route back to our own host, over the private link. It is a /32 so it BEATS the
+			// on-link /24 the system address above installs -- and it has to, because under
+			// macvtap that on-link path leaves by eth1 towards a host the substrate isolates us
+			// from, so the reply to every host-originated packet would go out the wrong door and
+			// die. No neighbour entry is needed on this side: the address being asked for is on
+			// the tap the request arrives on, so arp_ignore=1 is satisfied and ordinary ARP
+			// resolves it. (The HOST's mirror does need one -- our node IP lives on eth1 while
+			// its request arrives on eth3, which is exactly what arp_ignore refuses.)
+			if req.PrivDev != "" && req.PrivHostIP != "" {
+				if err := run("ip", "link", "set", "dev", req.PrivDev, "up"); err != nil {
+					return nil, err
+				}
+				if err := run("ip", "route", "replace", req.PrivHostIP+"/32", "dev", req.PrivDev); err != nil {
+					return nil, err
+				}
+			}
 			// The VIP's device AND address are agent-determined: record them where
 			// briard-vip.service reads them, which since [V3b.16a] is a REQUIRED EnvironmentFile
 			// with nothing baked behind it. Idempotent (whole-file write).
@@ -1890,9 +1928,11 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 // the promoter should claim the VIP on (the two-subnet layout moves it to eth2);
 // "" leaves the guest's baked default. vipAddr does the same for the address itself, in
 // CIDR form -- the LAN decides it, so it cannot be baked. Idempotent.
-func (g *Client) ConfigureNet(ctx context.Context, dev, cidr, vipDev, vipAddr string) error {
-	return g.c.call(ctx, verbNetConfigure,
-		netConfigureRequest{Dev: dev, CIDR: cidr, VIPDev: vipDev, VIPAddr: vipAddr}, nil)
+func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
+	return g.c.call(ctx, verbNetConfigure, netConfigureRequest{
+		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
+		PrivDev: n.PrivDev, PrivHostIP: n.PrivHostIP,
+	}, nil)
 }
 
 // SetMDNSName records the flock's visible name and republishes it if this node is serving.

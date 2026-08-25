@@ -46,6 +46,41 @@ func orNode(id, node string) string {
 	return node
 }
 
+// setNodeRoute installs the host's standing path to its guest's node IP over the private link.
+// Skipped -- not an error -- when any of the three facts it needs is absent: a substrate with no
+// private link (the host is on-link there and needs no route), a harness that gives the host no
+// system address, or a node with no node IP. The setter is a parameter so the skip conditions can
+// be tested without a live network.
+func (cfg Config) setNodeRoute(ctx context.Context, set func(context.Context, platform.NodeRoute) error) error {
+	if cfg.WitnessTap == "" || cfg.hostNodeIP() == "" || cfg.guestNodeIP() == "" {
+		return nil
+	}
+	return set(ctx, platform.NodeRoute{
+		GuestIP: cfg.guestNodeIP(),
+		Dev:     cfg.WitnessTap,
+		Src:     cfg.hostNodeIP(),
+		LLAddr:  deriveMAC(cfg.Node, "wit"),
+	})
+}
+
+// hostNodeIP is the host's own address on the system subnet, bare. Empty when this host takes
+// none -- then nothing is routed and the guest is told no private host address, which is the
+// agent-less harnesses and any node whose substrate puts the host on the LAN anyway.
+func (cfg Config) hostNodeIP() string { return bareIP(cfg.SystemHostCIDR) }
+
+// guestNodeIP is the guest's address on the system subnet, bare -- the node IP, and what anything
+// reaching this node dials (DESIGN §4).
+func (cfg Config) guestNodeIP() string { return bareIP(cfg.SystemCIDR) }
+
+// bareIP strips the prefix from a CIDR. "" in, "" out: an unset address is not an error here,
+// it is a node that has none.
+func bareIP(cidr string) string {
+	if i := strings.IndexByte(cidr, '/'); i >= 0 {
+		return cidr[:i]
+	}
+	return cidr
+}
+
 // deriveMAC returns a stable, unique MAC for a guest NIC from a seed (the node name, or the flock
 // id for the VIP's NIC) + NIC role. QEMU's default MAC is identical across guests, so a fleet on a
 // shared bridge needs distinct MACs or the NICs collide (ARP never resolves). Keeps QEMU's 52:54:00
@@ -136,8 +171,18 @@ type Config struct {
 	// System/DRBD NIC address (the private subnet). When SystemDev is set, the
 	// agent configures it on the guest before bring-up so DRBD can use it; "" for a
 	// single-node guest that replicates over loopback.
-	SystemDev  string // guest NIC to address, e.g. "eth1" (the DRBD NIC)
-	SystemCIDR string // its address/prefix, e.g. "10.0.0.2/24"
+	SystemDev  string // guest NIC to address, e.g. "eth1" (the system NIC -- this node's node IP)
+	SystemCIDR string // its address/prefix, e.g. "10.0.0.1/24"
+	// SystemHostCIDR is the HOST's own address on the same system subnet, carried on its end of
+	// the private link. It exists because a standby has no LAN presence of its own and still has
+	// to be dialable by its guest (the witness forwarder) and able to answer on-link -- and
+	// because the guest needs a source address to reply to when the host dials IT (the reboot
+	// gate). "" = this host takes no system-subnet address, which is every agent-less harness.
+	SystemHostCIDR string
+	// WitnessDev is the GUEST's name for the NIC facing the private link -- the far end of
+	// WitnessTap. Named by the host rather than assumed by the guest, which bakes no positional
+	// knowledge of its own NIC layout ([V3b.16a]).
+	WitnessDev string
 	VIPDev     string // guest NIC the promoter claims the VIP on; "" = the guest's baked default
 	// VIPAddr is the service address the promoter claims, in CIDR form ("192.168.9.50/24").
 	// It is the LAN's address, not ours: baking it made the product work only on the one
@@ -677,7 +722,20 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// what the agent-less harnesses send (then ConfigureNet records VIP_DEV/VIP_ADDR and skips
 	// addressing).
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
-		err = client.ConfigureNet(bringup, cfg.SystemDev, cfg.SystemCIDR, cfg.VIPDev, cfg.VIPAddr)
+		err = client.ConfigureNet(bringup, guestagent.NetConfig{
+			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
+			PrivDev: cfg.WitnessDev, PrivHostIP: cfg.hostNodeIP(),
+		})
+	}
+	// ...and the host's own path back to it. The guest just installed its half; this is the
+	// mirror, and it is what makes the node IP mean the same thing from outside the guest as
+	// from inside it. Warn rather than fail: a host that cannot reach its own guest is degraded
+	// (the reboot gate reads unreachable, which it treats as "allowed" -- the pre-gate
+	// behaviour), not broken, and the rest of bring-up is what the household actually needs.
+	if err == nil {
+		if rerr := cfg.setNodeRoute(bringup, platform.SetNodeRoute); rerr != nil {
+			logf("node route: %v -- this host cannot reach its guest at %s", rerr, cfg.guestNodeIP())
+		}
 	}
 	// Put this anchor's host-side hop to the cloud witness back, if its mesh has one. HERE, before
 	// DRBD comes up and long before WaitQuorate, because a witness that is not reachable when quorum

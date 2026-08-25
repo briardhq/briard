@@ -62,6 +62,7 @@ PRIV_UP="# The private host<->guest link (the guest's eth3): a plain tap, on nei
 # the macvtap parent, carrying this host's end of a point-to-point wire to its own VM.
 ip link show $PRIV_TAP >/dev/null 2>&1 || ip tuntap add $PRIV_TAP mode tap
 ip addr replace $PRIV_HOST_CIDR dev $PRIV_TAP
+ip addr replace $SYSTEM_HOST_CIDR dev $PRIV_TAP
 ip link set $PRIV_TAP up"
 # Net substrate. "macvtap" (DEFAULT) makes the guest's NICs macvtap children of the host
 # NIC directly: L2 citizenship with NO bridge and NO host-IP move, so no SSH-risk moment and no net
@@ -102,6 +103,16 @@ VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows i
 # that change lands on, which is why the numbering is written once, here.
 SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-10.0.0}"
 SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
+# The HOST's own address on that subnet. It needs one because a standby has no LAN presence and
+# must still be dialable by its guest (the witness forwarder) and able to answer on-link, and
+# because the guest needs somewhere to reply to when the host dials IT (the reboot gate).
+#
+# A /32, and on the private tap rather than on the LAN NIC: under macvtap the host cannot reach
+# its own guest over the LAN at all, so the tap is the only path, and a /32 keeps the tap from
+# claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
+# node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
+# address says which side of the pair it is.
+SYSTEM_HOST_CIDR="$SYSTEM_SUBNET.129/32"
 # The pet data volume: THICK-allocated (see step 6) and sized for a real service's data, not for a
 # test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
@@ -731,6 +742,7 @@ Environment=NODE=$NODE_NAME
 Environment=SYSTEM_TAP=$DRBD_TAP
 Environment=SYSTEM_DEV=eth1
 Environment=SYSTEM_CIDR=$SYSTEM_CIDR
+Environment=SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
 Environment=SERVICE_TAP=$TAP
 # WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
 # every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot

@@ -76,6 +76,54 @@ func SetVIPRoute(ctx context.Context, r VIPRoute) error {
 	return nil
 }
 
+// NodeRoute is the host's standing path to its own guest's NODE IP over the private link -- the
+// one address anything uses to reach that node (DESIGN §4). Unlike VIPRoute it does not come and
+// go: the node IP is not a thing the guest can lose to a failover, so this is installed once at
+// bring-up and simply re-asserted.
+type NodeRoute struct {
+	GuestIP string // the guest's node IP, bare -- its address on the system subnet, held on eth1
+	Dev     string // the host's end of the private link (the tap)
+	Src     string // the host's own system-subnet address, on that tap
+	LLAddr  string // the guest's private-link MAC -- what the permanent neighbour entry pins
+}
+
+// nodeRouteArgs and nodeNeighArgs render the two `ip` argvs, pure so the one detail that cannot
+// be inferred by reading them is unit-tested rather than trusted.
+//
+// ⚠️ THE NEIGHBOUR ENTRY IS NOT AN OPTIMISATION -- without it this route black-holes. The guest's
+// node IP lives on eth1 while the host's ARP request for it arrives on eth3, and arp_ignore=1
+// (the [B.101] fix) makes the guest answer ARP only on the interface that HOLDS the address
+// asked for. So the guest stays silent and nothing resolves. Pinning the MAC means the host never
+// asks: the entry is `permanent`, so the kernel never expires it and never revalidates it. That
+// is safe precisely because the MAC is not discovered but DERIVED -- deriveMAC(node, "wit") is
+// what the agent already hands qemu for that NIC, so there is no second source to disagree.
+//
+// This is also why the link needs no addressing of its own. The older shape gave both ends
+// addresses on a private 10.9.9.0/24 purely so the host could `via` a resolvable address; pinning
+// the neighbour removes the reason for the subnet, and with it an invented range that could
+// collide with a household's LAN just as 10.0.0.0/24 can ([V3b.26f]).
+func nodeRouteArgs(r NodeRoute) []string {
+	return []string{"route", "replace", r.GuestIP + "/32", "dev", r.Dev, "src", r.Src}
+}
+
+func nodeNeighArgs(r NodeRoute) []string {
+	return []string{"neigh", "replace", r.GuestIP, "lladdr", r.LLAddr, "dev", r.Dev, "nud", "permanent"}
+}
+
+// SetNodeRoute installs both halves. Neighbour FIRST, then the route: a route whose next hop
+// cannot be resolved drops packets for as long as the gap lasts, and the gap is avoidable.
+func SetNodeRoute(ctx context.Context, r NodeRoute) error {
+	if r.GuestIP == "" || r.Dev == "" || r.Src == "" || r.LLAddr == "" {
+		return fmt.Errorf("platform: node route spec incomplete (%+v)", r)
+	}
+	for _, args := range [][]string{nodeNeighArgs(r), nodeRouteArgs(r)} {
+		if out, err := exec.CommandContext(ctx, "ip", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("platform: ip %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
 // ClearVIPRoute withdraws it. A route that is already gone is a success, not an error: the
 // caller's job is to leave the host with no route, and both spellings of "there is none" mean
 // the same thing to it. Anything else is reported -- a delete that fails for a reason we did not

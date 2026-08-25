@@ -110,12 +110,17 @@ func ConfigFromEnv() Config {
 		WitnessCA:    os.Getenv("WITNESS_CA"),
 		Node:         node,
 		Role:         role,
-		SystemDev:    os.Getenv("SYSTEM_DEV"),  // e.g. eth1 (the DRBD NIC); "" -> single-node, no DRBD NIC
-		SystemCIDR:   os.Getenv("SYSTEM_CIDR"), // e.g. 10.0.0.2/24
-		VIPDev:       os.Getenv("VIP_DEV"),     // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
-		VIPAddr:      os.Getenv("VIP_ADDR"),    // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
-		FlockID:      os.Getenv("FLOCK_ID"),    // flock-scoped VIP MAC seed; "" -> fall back to the node name
-		FlockName:    os.Getenv("FLOCK_NAME"),  // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
+		SystemDev:    os.Getenv("SYSTEM_DEV"),  // e.g. eth1 (the system NIC); "" -> leave it unaddressed
+		SystemCIDR:   os.Getenv("SYSTEM_CIDR"), // this node's node IP, e.g. 10.0.0.1/24
+		// The host's own end of the system subnet, and the guest's name for the private NIC.
+		// install.sh sets all three together or none of them: a host address with no device to
+		// route it over, or a device with no address, is a half-built path.
+		SystemHostCIDR: os.Getenv("SYSTEM_HOST_CIDR"), // e.g. 10.0.0.129/32
+		WitnessDev:     env("WITNESS_DEV", "eth3"),
+		VIPDev:         os.Getenv("VIP_DEV"),    // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
+		VIPAddr:        os.Getenv("VIP_ADDR"),   // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
+		FlockID:        os.Getenv("FLOCK_ID"),   // flock-scoped VIP MAC seed; "" -> fall back to the node name
+		FlockName:      os.Getenv("FLOCK_NAME"), // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
 		Resource: drbd.Resource{
 			Name:   env("RESOURCE", "r0"),
 			Device: env("DEVICE", "/dev/drbd0"),

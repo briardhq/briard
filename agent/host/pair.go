@@ -19,7 +19,7 @@ import (
 // replication-subnet address, then either adjust the running resource in place (the primary) or
 // bring it up fresh (a blank joiner). *guestagent.Client satisfies it; a fake drives the test.
 type guestMesher interface {
-	ConfigureNet(ctx context.Context, dev, cidr, vipDev, vipAddr string) error
+	ConfigureNet(ctx context.Context, n guestagent.NetConfig) error
 	Adjust(ctx context.Context, req guestagent.ProvisionRequest) error
 	BringUp(ctx context.Context, spec guestagent.BringUpSpec) error
 }
@@ -80,7 +80,10 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 	// Give this node its replication-subnet NIC address before touching DRBD (DRBD binds/connects
 	// there). Skipped when the sender didn't provide one (e.g. the address is already configured).
 	if spec.SystemDev != "" {
-		if err := g.ConfigureNet(ctx, spec.SystemDev, spec.SystemCIDR, cfg.VIPDev, cfg.VIPAddr); err != nil {
+		if err := g.ConfigureNet(ctx, guestagent.NetConfig{
+			Dev: spec.SystemDev, CIDR: spec.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
+			PrivDev: cfg.WitnessDev, PrivHostIP: cfg.hostNodeIP(),
+		}); err != nil {
 			return fmt.Errorf("pair: configure %s: %w", spec.SystemDev, err)
 		}
 	}
@@ -330,7 +333,7 @@ func (cfg Config) bringUpWitness(ctx context.Context, g guestMesher, w witnessSt
 		return fmt.Errorf("pair: node lacks witness-forwarder config (bin/cert/key/ca) -- cannot reach the cloud witness")
 	}
 	// Address the private witness NIC (eth3) -- vipDev="" (the witness link never carries the VIP).
-	if err := g.ConfigureNet(ctx, mw.Dev, mw.CIDR, "", ""); err != nil {
+	if err := g.ConfigureNet(ctx, guestagent.NetConfig{Dev: mw.Dev, CIDR: mw.CIDR}); err != nil {
 		return fmt.Errorf("pair: configure witness NIC %s: %w", mw.Dev, err)
 	}
 	logf("pair: starting host witness-forwarder %s -> %s (mTLS %s)", listen, mw.Target, mw.ServerName)

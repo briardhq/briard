@@ -1,6 +1,8 @@
 package platform
 
 import (
+	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -68,6 +70,49 @@ func TestSetVIPRoute_RejectsIncompleteSpec(t *testing.T) {
 	} {
 		if err := SetVIPRoute(t.Context(), blank(full)); err == nil {
 			t.Errorf("SetVIPRoute(%+v) = nil, want an error", blank(full))
+		}
+	}
+}
+
+// The node route's two argvs, and the ORDER they must be issued in. Pure rendering, so what is
+// tested is the one thing reading the code cannot confirm: that the neighbour entry is permanent
+// and pins the derived MAC, and that the route carries a src.
+//
+// Failable in the way that matters -- drop `nud permanent` and the kernel expires the entry, then
+// re-ARPs for an address the guest will not answer for on this interface (arp_ignore=1, [B.101]),
+// and the path dies minutes after it was proven working.
+func TestNodeRouteArgs(t *testing.T) {
+	r := NodeRoute{GuestIP: "10.0.0.1", Dev: "briard-priv0", Src: "10.0.0.129", LLAddr: "52:54:00:ab:cd:ef"}
+
+	wantNeigh := []string{"neigh", "replace", "10.0.0.1", "lladdr", "52:54:00:ab:cd:ef", "dev", "briard-priv0", "nud", "permanent"}
+	if got := nodeNeighArgs(r); !slices.Equal(got, wantNeigh) {
+		t.Errorf("neigh argv = %v, want %v", got, wantNeigh)
+	}
+	wantRoute := []string{"route", "replace", "10.0.0.1/32", "dev", "briard-priv0", "src", "10.0.0.129"}
+	if got := nodeRouteArgs(r); !slices.Equal(got, wantRoute) {
+		t.Errorf("route argv = %v, want %v", got, wantRoute)
+	}
+}
+
+// Every field is load-bearing, so an incomplete spec must be refused rather than handed to `ip`
+// to produce a partial path. Failable: relax the guard and each of these silently installs a
+// route with an empty argument.
+func TestSetNodeRouteRefusesIncompleteSpec(t *testing.T) {
+	full := NodeRoute{GuestIP: "10.0.0.1", Dev: "briard-priv0", Src: "10.0.0.129", LLAddr: "52:54:00:ab:cd:ef"}
+	for _, missing := range []string{"GuestIP", "Dev", "Src", "LLAddr"} {
+		r := full
+		switch missing {
+		case "GuestIP":
+			r.GuestIP = ""
+		case "Dev":
+			r.Dev = ""
+		case "Src":
+			r.Src = ""
+		case "LLAddr":
+			r.LLAddr = ""
+		}
+		if err := SetNodeRoute(context.Background(), r); err == nil {
+			t.Errorf("missing %s: want an error, got nil", missing)
 		}
 	}
 }

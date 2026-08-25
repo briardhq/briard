@@ -457,6 +457,21 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
     print("the lone node holds its node IP at 10.0.0.1, reached from off-box")
 
+    # ...AND THE HOST REACHES IT TOO, which is the half macvtap otherwise denies. Not over the LAN
+    # -- the substrate isolates the host from its own guest -- but over the private link, on a /32
+    # the agent installed with a PERMANENT neighbour entry pinning the guest's derived link MAC.
+    # Without that entry the host would ARP for a node IP that lives on eth1 while the request
+    # arrives on eth3, and arp_ignore=1 ([B.101]) makes the guest answer nothing.
+    host.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
+    nroute = host.succeed("ip route get 10.0.0.1")
+    print(f"host route to the node IP: {nroute.strip()}")
+    assert "briard-priv0" in nroute, f"the host reaches the node IP some other way: {nroute!r}"
+    # The entry is `permanent`, not merely present: a reachable/stale one would expire and then
+    # re-ARP into the silence above, so the path would die minutes after passing this test.
+    neigh = host.succeed("ip neigh show 10.0.0.1 dev briard-priv0")
+    print(f"host neighbour entry: {neigh.strip()}")
+    assert "PERMANENT" in neigh.upper(), f"the neighbour entry is not permanent: {neigh!r}"
+
     route = host.succeed(f"ip route get {vip}")
     print(f"host route to the VIP: {route.strip()}")
     assert "briard-priv0" in route, f"the host reaches {vip} some other way than the private link: {route!r}"
