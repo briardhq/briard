@@ -168,17 +168,19 @@ func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 	}
 }
 
-// ConfigureNet addresses the system/DRBD NIC (eth1): an idempotent `addr replace`
-// then a link up, both with an explicit `dev`. With no vipDev it writes no VIP file
-// (the guest keeps its baked default).
+// ConfigureNet addresses the system NIC (eth1): an idempotent `addr replace`, a read-back to see
+// what the NIC now holds, then a link up -- all with an explicit `dev`. With no vipDev it writes
+// no VIP file (the guest keeps its baked default). The NIC here holds only the wanted address, so
+// the read-back prunes nothing; TestConfigureNetPrunesStaleAddress is the failable half.
 func TestConfigureNet(t *testing.T) {
-	f := &fakeExec{}
+	f := &fakeExec{output: []byte("2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever")}
 	g := dial(t, f)
 	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
 		{"ip", "addr", "replace", "10.0.0.2/24", "dev", "eth1"},
+		{"ip", "-o", "-4", "addr", "show", "dev", "eth1", "scope", "global"},
 		{"ip", "link", "set", "dev", "eth1", "up"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
@@ -186,6 +188,50 @@ func TestConfigureNet(t *testing.T) {
 	}
 	if _, ok := f.files[vipEnvPath]; ok {
 		t.Errorf("no vipDev -> must not write %s, got %q", vipEnvPath, f.files[vipEnvPath])
+	}
+}
+
+// RENUMBERING: the NIC already holds an old address (the node's island subnet) and ConfigureNet is
+// called with the new one (the adopter's -- DESIGN §1.2). `ip addr replace` alone would leave BOTH,
+// so the stale one must be deleted, and the new one must be on the NIC before it goes.
+//
+// Failable by construction: with the prune removed this test sees two commands instead of four and
+// no `addr del` at all. It is the only place that catches it, because on a node that never had an
+// address -- every node before [V3b.26b] -- add-without-remove and add-with-remove are the same
+// thing, and the whole existing suite agrees with both.
+func TestConfigureNetPrunesStaleAddress(t *testing.T) {
+	f := &fakeExec{output: []byte(
+		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
+			"2: eth1    inet 10.9.1.7/24 scope global secondary eth1\\       valid_lft forever")}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"ip", "addr", "replace", "10.0.0.2/24", "dev", "eth1"},
+		{"ip", "-o", "-4", "addr", "show", "dev", "eth1", "scope", "global"},
+		{"ip", "addr", "del", "10.9.1.7/24", "dev", "eth1"}, // the island address, gone
+		{"ip", "link", "set", "dev", "eth1", "up"},
+	}
+	if !reflect.DeepEqual(f.runs, want) {
+		t.Errorf("runs = %v,\nwant %v", f.runs, want)
+	}
+}
+
+// A self-assigned link-local is not ours: we never put it on, so we must not take it off. Failable
+// -- dropping the 169.254 guard in allCIDRs adds an `addr del` here.
+func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
+	f := &fakeExec{output: []byte(
+		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
+			"2: eth1    inet 169.254.57.250/16 scope global eth1\\       valid_lft forever")}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), "eth1", "10.0.0.2/24", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.runs {
+		if len(r) > 2 && r[1] == "addr" && r[2] == "del" {
+			t.Errorf("deleted a link-local address: %v", r)
+		}
 	}
 }
 

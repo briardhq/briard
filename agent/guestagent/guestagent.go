@@ -481,6 +481,26 @@ func firstCIDR(out string) string {
 	return ""
 }
 
+// allCIDRs returns every global v4 address in `ip -o -4 addr show ... scope global` output, in
+// CIDR form. firstCIDR above answers "what does this NIC hold" for the VIP probe and stops at the
+// first; this answers "what must be pruned", so it cannot stop -- a NIC carrying three stale
+// addresses must give up all three. Link-local is excluded for the same reason it is there: a
+// self-assigned 169.254 is not an address we put on and not one we take off.
+func allCIDRs(out string) []string {
+	var found []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		for i, tok := range f {
+			if tok == "inet" && i+1 < len(f) {
+				if addr := f[i+1]; !strings.HasPrefix(addr, "169.254.") {
+					found = append(found, addr)
+				}
+			}
+		}
+	}
+	return found
+}
+
 // hostnameRequest carries this node's name (sys.hostname).
 type hostnameRequest struct {
 	Name string `json:"name"`
@@ -1128,15 +1148,35 @@ func dispatch(x Executor) dispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			// Address the DRBD NIC when one is given (multi-node / a paired anchor): `addr
-			// replace` is idempotent (no-op if already set), then ensure the link is up. Both
-			// take an explicit `dev` (portable across iproute2 versions). A SINGLE node
-			// replicates over loopback and has no DRBD address yet -- it only needs its VIP
-			// device recorded -- so an empty Dev/CIDR skips addressing (the unified NIC layout:
-			// eth1 is the idle DRBD NIC until pairing addresses it).
+			// Address the system NIC: this node's NODE IP, which is how anything reaches it
+			// (DESIGN §4) and where DRBD binds. `addr replace` is idempotent (no-op if already
+			// set), then ensure the link is up. Both take an explicit `dev` (portable across
+			// iproute2 versions). An empty Dev/CIDR still skips addressing -- the agent-less
+			// harnesses send that, and a witness has no VIP device either.
 			if req.Dev != "" && req.CIDR != "" {
 				if err := run("ip", "addr", "replace", req.CIDR, "dev", req.Dev); err != nil {
 					return nil, err
+				}
+				// PRUNE any OTHER global v4 address on this NIC. `addr replace` adds and updates
+				// but never removes, so a RENUMBER would leave the old address alongside the new
+				// one -- and a renumber is exactly what an adoption does to the joiner, whose
+				// island subnet gives way to the adopter's (DESIGN §1.2). Two addresses on the
+				// DRBD NIC is two plausible sources for it to bind, which is the ambiguity
+				// [B.101] spent a fork's worth of debugging on at the ARP layer.
+				//
+				// Add first, prune second, never flush-then-add: the flush form leaves the NIC
+				// momentarily addressless, and this call runs on a node that may have a peer
+				// connected. Nothing here could bite until [V3b.26b] gave a lone node an
+				// install-time address; before that there was never an old one to leave behind.
+				if out, err := x.Run(ctx, "ip", "-o", "-4", "addr", "show", "dev", req.Dev, "scope", "global"); err == nil {
+					for _, held := range allCIDRs(string(out)) {
+						if held == req.CIDR {
+							continue
+						}
+						if err := run("ip", "addr", "del", held, "dev", req.Dev); err != nil {
+							return nil, err
+						}
+					}
 				}
 				if err := run("ip", "link", "set", "dev", req.Dev, "up"); err != nil {
 					return nil, err

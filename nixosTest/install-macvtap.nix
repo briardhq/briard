@@ -441,6 +441,22 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=180)
     print(f"the install host reached its own guest at http://{vip}/")
 
+    # THE NODE IP, on a LONE node ([V3b.26b]). A standalone install is a single-node flock, so it
+    # is node-id 0 and its guest takes .1 on the system subnet -- assigned HERE, at install, not on
+    # a cloud pairing that a free-tier island never has. Before this, eth1 was deliberately left
+    # unaddressed single-node, which made the lone node the one shape in the fleet with no address
+    # of its own and left the reboot gate with nothing to aim at but a baked private-link constant.
+    #
+    # Observed from the OFF-BOX client, not asked of the guest agent: the claim is that something
+    # outside the guest reaches the guest AT this address, and asking the guest whether it
+    # configured itself is asking the actor. The client is the right observer and the host is not
+    # -- the system subnet rides the LAN L2, so any other machine reaches it on-link exactly like
+    # this, while the host is the one machine macvtap isolates (its own path is the private link's
+    # /32, which lands with the rest of the demotion).
+    client.succeed("ip route replace 10.0.0.0/24 dev eth1")
+    client.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
+    print("the lone node holds its node IP at 10.0.0.1, reached from off-box")
+
     route = host.succeed(f"ip route get {vip}")
     print(f"host route to the VIP: {route.strip()}")
     assert "briard-priv0" in route, f"the host reaches {vip} some other way than the private link: {route!r}"

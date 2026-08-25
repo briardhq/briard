@@ -83,6 +83,25 @@ NET_MODE="${BRIARD_NET_MODE:-macvtap}"
 # defect was invisible: the default matched the lab, so every test agreed with it.
 VIP="${BRIARD_VIP:-}"
 VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows it yet
+# THE SYSTEM SUBNET -- this node's own address, and the one canonical way anything reaches it
+# (DESIGN §4). Assigned HERE, on every install including a lone one, rather than arriving with a
+# cloud pairing as it used to: a standalone install is a single-node flock, so it is node-id 0 and
+# takes .1. Nothing about a node having an address is a property of having a peer, and making it
+# one left the lone node -- the tier that has it worst -- as the only shape with no address at all
+# ([V3b.26b]).
+#
+# FLOCK-SCOPED AND NOT DURABLE. The subnet belongs to the flock, exactly as the service MAC does
+# (deriveMAC over the flock id): an unpaired island derives its own, and on adoption the ADOPTER's
+# subnet survives while the joiner renumbers into it (DESIGN §1.2). So this address is canonical
+# within a flock epoch and no longer -- never a bookmark, never a stored config, never a DNS
+# record. That is the VIP's and the name's job, and they survive both a failover and an adoption.
+#
+# ⚠️ 10.0.0 IS A PLACEHOLDER AND A KNOWN COLLISION. It is also one of the most common real
+# household subnets, and both subnets ride ONE L2 by design -- so a home whose LAN is 10.0.0.x
+# collides head-on. Deriving it per-home from the flock id is [V3b.26f]; this variable is the seam
+# that change lands on, which is why the numbering is written once, here.
+SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-10.0.0}"
+SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
 # The pet data volume: THICK-allocated (see step 6) and sized for a real service's data, not for a
 # test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
@@ -700,11 +719,18 @@ Environment=GUEST_DISK=$OVERLAY
 Environment=DATA_DISK=$DATA
 Environment=CONTROL_SOCK=$RUNDIR/ctl.sock
 Environment=NODE=$NODE_NAME
-# Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (the DRBD NIC, idle single-node --
-# DRBD replicates over loopback until a pairing addresses eth1); SERVICE_TAP -> eth2, where the VIP
-# lives (VIP_DEV), held ready so a second anchor can join without a guest reboot. SYSTEM_DEV is left
-# unset: single-node needs no DRBD address, just the NIC present.
+# Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (this node's node IP, and the DRBD NIC --
+# DRBD replicates over loopback until a pairing gives it a peer); SERVICE_TAP -> eth2, where the VIP
+# lives (VIP_DEV), held ready so a second anchor can join without a guest reboot.
+#
+# SYSTEM_DEV/SYSTEM_CIDR are set on EVERY install now, single node included. They used to be left
+# unset here ("single-node needs no DRBD address, just the NIC present") and to arrive only with a
+# cloud pairing -- which made a lone node the one shape in the fleet with no address of its own,
+# and left everything that must reach it (the reboot gate above all) with nothing to aim at but a
+# baked private-link constant ([V3b.26b]).
 Environment=SYSTEM_TAP=$DRBD_TAP
+Environment=SYSTEM_DEV=eth1
+Environment=SYSTEM_CIDR=$SYSTEM_CIDR
 Environment=SERVICE_TAP=$TAP
 # WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
 # every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot

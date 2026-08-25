@@ -667,14 +667,15 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	if err == nil {
 		// Rename the guest to this node first: DRBD matches the running hostname against
 		// the `on <name>` stanzas, so create-md fails until the (baked "guest") image is
-		// renamed to cfg.Node. Then address the system/DRBD NIC (if any) -- DRBD
-		// binds/connects on it, so it must be up before drbd@<res>.target starts.
+		// renamed to cfg.Node. Then address the system NIC -- DRBD binds/connects on it,
+		// so it must be up before drbd@<res>.target starts.
 		err = client.SetHostname(bringup, cfg.Node)
 	}
-	// Configure the guest's NICs when either a DRBD NIC is given (multi-node / a paired anchor --
-	// address it so DRBD binds/connects there) OR a VIP device is (the unified layout puts the VIP
-	// on eth2 even single-node, since eth1 is the idle DRBD NIC held ready for pairing -- then
-	// ConfigureNet just records VIP_DEV/VIP_ADDR and skips addressing).
+	// Configure the guest's NICs when either a system NIC is given -- which since [V3b.26b] is
+	// EVERY installed node, lone ones included: eth1 carries this node's node IP, the one address
+	// anything uses to reach it (DESIGN §4), and DRBD binds there -- OR a VIP device is, which is
+	// what the agent-less harnesses send (then ConfigureNet records VIP_DEV/VIP_ADDR and skips
+	// addressing).
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
 		err = client.ConfigureNet(bringup, cfg.SystemDev, cfg.SystemCIDR, cfg.VIPDev, cfg.VIPAddr)
 	}
