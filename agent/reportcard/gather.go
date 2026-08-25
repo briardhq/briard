@@ -27,7 +27,7 @@ func Gather() HostFacts {
 		AnyEthernet:   hasAnyEthernet(),
 		PrimaryNICBus: primaryNICBus(),
 		DiskFreeMB:    diskFreeMB(installRoot()),
-		HostCIDR:      hostCIDR(defaultRouteNIC()),
+		HostCIDR:      hostCIDR(DefaultRouteNIC()),
 		// The address the install is about to hand the guest. install.sh already computes it
 		// (BRIARD_VIP, CIDR form) and passes it here the same way it passes NET_MODE -- the card
 		// cannot judge an address it is not told about, and this is the last gate before a VM
@@ -36,8 +36,8 @@ func Gather() HostFacts {
 		// Is that address already somebody's? Probed here rather than inside the check so the
 		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
 		// router picks from its own pool and this question is not ours to ask.
-		VIPAnswered:     os.Getenv("VIP_ADDR") != "" && addressAnswers(os.Getenv("VIP_ADDR")),
-		HostLeased:      hostHasLease(defaultRouteNIC()),
+		VIPAnswered:     os.Getenv("VIP_ADDR") != "" && AddressAnswers(os.Getenv("VIP_ADDR")),
+		HostLeased:      hostHasLease(DefaultRouteNIC()),
 		HasMDNSResolver: hasMDNSResolver(),
 	}
 }
@@ -72,7 +72,11 @@ func hasMDNSResolver() bool {
 // milliseconds; anything slower than this is a device we would rather not block an install on.
 const arpProbeWait = 750 * time.Millisecond
 
-// addressAnswers reports whether some machine on this segment already owns cidr's address.
+// AddressAnswers reports whether some machine on this segment already owns cidr's address.
+//
+// Exported for its second caller: the subnet draw asks the same question of a candidate flock
+// subnet's .1 ([V3b.26f]). One mechanism, two questions -- the VIP's is "is the address the user
+// named already taken", the draw's is "is another flock already living here".
 //
 // It provokes the kernel into resolving ARP by sending one datagram at the address (discard port,
 // nothing listens, and nothing needs to -- ARP sits below UDP, so any IPv4 host on the segment
@@ -83,7 +87,7 @@ const arpProbeWait = 750 * time.Millisecond
 // this gate turns evidence-of-use into a refusal, and must never turn absence-of-evidence into
 // permission -- a sleeping device will not answer, and the install proceeds, as it did before this
 // check existed.
-func addressAnswers(cidr string) bool {
+func AddressAnswers(cidr string) bool {
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil || ip.To4() == nil {
 		return false // malformed: the check itself refuses on that, with a better message
@@ -210,7 +214,7 @@ func diskFreeMB(path string) int {
 // /proc/net/route (no iproute2 dependency), then resolves /sys/class/net/<dev>/device to a bus:
 // a USB NIC's device link points under .../usb..., a PCIe NIC's under .../pci....
 func primaryNICBus() string {
-	dev := defaultRouteNIC()
+	dev := DefaultRouteNIC()
 	if dev == "" {
 		return ""
 	}
@@ -228,9 +232,9 @@ func primaryNICBus() string {
 	}
 }
 
-// defaultRouteNIC reads the interface owning the default route (destination 00000000) from
+// DefaultRouteNIC reads the interface owning the default route (destination 00000000) from
 // /proc/net/route -- the NIC macvtap would parent onto. "" if none.
-func defaultRouteNIC() string {
+func DefaultRouteNIC() string {
 	f, err := os.Open("/proc/net/route")
 	if err != nil {
 		return ""

@@ -36,7 +36,7 @@ NIC="${BRIARD_NIC:-}"                 # host NIC to enslave/parent; empty = the 
 BRIDGE="${BRIARD_BRIDGE:-br-briard}"
 TAP="${BRIARD_TAP:-briard0}"          # the guest's service NIC (eth2, the VIP)
 # THE SYSTEM SUBNET -- this node's own address, and the one canonical way anything reaches it
-# (DESIGN §4). Assigned HERE, on every install including a lone one, rather than arriving with a
+# (DESIGN §4). Assigned on EVERY install including a lone one, rather than arriving with a
 # cloud pairing as it used to: a standalone install is a single-node flock, so it is node-id 0 and
 # takes .1. Nothing about a node having an address is a property of having a peer, and making it
 # one left the lone node -- the tier that has it worst -- as the only shape with no address at all
@@ -48,28 +48,28 @@ TAP="${BRIARD_TAP:-briard0}"          # the guest's service NIC (eth2, the VIP)
 # within a flock epoch and no longer -- never a bookmark, never a stored config, never a DNS
 # record. That is the VIP's and the name's job, and they survive both a failover and an adoption.
 #
-# ⚠️ 10.0.0 IS A PLACEHOLDER AND A KNOWN COLLISION. It is also one of the most common real
-# household subnets, and both subnets ride ONE L2 by design -- so a home whose LAN is 10.0.0.x
-# collides head-on. Deriving it per-home from the flock id is [V3b.26f]; this variable is the seam
-# that change lands on, which is why the numbering is written once, here.
-SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-10.0.0}"
-SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
-# The HOST's own address on that subnet. It needs one because a standby has no LAN presence and
-# must still be dialable by its guest (the witness forwarder) and able to answer on-link, and
-# because the guest needs somewhere to reply to when the host dials IT (the reboot gate).
+# ⚠️ NO LONGER A NUMBER WRITTEN HERE, and that is the whole of [V3b.26f]. It used to default to
+# 10.0.0 -- one of the most common real household subnets there is, the one every Xfinity gateway
+# ships -- while both subnets ride ONE L2 by design, so a home whose LAN was 10.0.0.x collided
+# head-on, and [V3b.26b] made that live rather than latent by giving every install an address.
+# The subnet is now DRAWN per home in step 4b, checked against the network this machine can
+# actually see, and every address positional in it is derived there alongside it.
 #
-# A /32, and on the private tap rather than on the LAN NIC: under macvtap the host cannot reach
-# its own guest over the LAN at all, so the tap is the only path, and a /32 keeps the tap from
-# claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
-# node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
-# address says which side of the pair it is.
-SYSTEM_HOST_CIDR="$SYSTEM_SUBNET.129/32"
+# This variable is the escape hatch and the only thing the draw can be told: set it to a bare
+# "10.42.7" to pin the subnet. Empty means draw one, which is every normal install.
+SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-}"
 DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's system NIC (eth1) -- its node IP, and where DRBD binds
 # THE PRIVATE HOST<->GUEST LINK (the guest's eth3). A plain tap, on neither the bridge nor the
-# macvtap parent: a point-to-point wire between this host and its own guest. UNNUMBERED since
-# [V3b.26b] -- it carries this host's system-subnet /32 and nothing else, and both ends pin a
-# permanent neighbour rather than ARP across it. Substrate-independent by construction -- macvtap deliberately
-# isolates guest from host, so without this the host has NO network path to the VM it runs.
+# macvtap parent: a point-to-point wire between this host and its own guest. Substrate-independent
+# by construction -- macvtap deliberately isolates guest from host, so without this the host has NO
+# network path to the VM it runs.
+#
+# ADDRESSED AT BOTH ENDS, and [V3b.26b] measured why it cannot be unnumbered even though nothing
+# routes by those addresses: avahi joins the IPv4 mDNS group on an interface only if that interface
+# HAS a v4 address, so an unnumbered link answers a name query over IPv6 link-local alone -- which
+# works until the household's host has IPv6 off, and DESIGN §4.3 puts our addressing on v4
+# indefinitely. Pure substrate all the same: the traffic that matters rides this host's own
+# system-subnet /32s over it, and both ends pin a permanent neighbour rather than ARP across it.
 #
 # It is created on EVERY install, not only on a managed cloud-witness pairing as it used to be.
 # Two things ride it and neither is optional on the tier that has it worst:
@@ -82,22 +82,16 @@ DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's system NIC (eth1) -- i
 # ⚠️ PRIV_HOST_CIDR IS ON ITS WAY OUT and survives for exactly one consumer: the cloud-witness
 # forwarder, whose address the mesh composer still hands out fleet-constant (cloud/server/pair.go).
 # The reboot gate and the host's route to the VIP have already moved to this node's own addresses
-# ([V3b.26b]), which is why SYSTEM_HOST_CIDR sits beside it below -- when the forwarder follows,
-# this line and the subnet behind it go, and the link keeps only its /32s.
+# ([V3b.26b]), which is why SYSTEM_HOST_CIDR is derived beside it in step 4b -- when the forwarder
+# follows, PRIV_HOST_CIDR and the subnet behind it go, and the link keeps only its /32s.
 PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
-PRIV_HOST_CIDR="10.11.9.1/24"
-PRIV_GUEST_CIDR="10.11.9.2/24"
-# The private link's bring-up, shared VERBATIM by both substrates' net-up.sh. All three commands
-# are idempotent, so a reboot or a re-run is a no-op. It lives in a variable rather than being
-# written into each heredoc because the two copies must not be able to drift: a private link that
-# exists under bridge and not under macvtap would take the host rung's guard away on precisely the
-# default substrate.
-PRIV_UP="# The private host<->guest link (the guest's eth3): a plain tap, on neither the bridge nor
-# the macvtap parent, carrying this host's end of a point-to-point wire to its own VM.
-ip link show $PRIV_TAP >/dev/null 2>&1 || ip tuntap add $PRIV_TAP mode tap
-ip addr replace $PRIV_HOST_CIDR dev $PRIV_TAP
-ip addr replace $SYSTEM_HOST_CIDR dev $PRIV_TAP
-ip link set $PRIV_TAP up"
+# The link's subnet, drawn in step 4b exactly like the flock's above and for a quieter version of
+# the same reason. It cannot collide at L2 -- a point-to-point tap reaches no LAN -- but the
+# HOST'S ROUTING TABLE IS SHARED, so a household on the link's subnet gives the host two identical
+# on-link /24s, one via its LAN NIC and one via our tap, and Linux picks between them by metric
+# and insertion order. Both directions can then break and neither choice is ours ([V3b.26f]).
+# Set to a bare "10.11.203" to pin it; empty means draw.
+PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
 # Net substrate. "macvtap" (DEFAULT) makes the guest's NICs macvtap children of the host
 # NIC directly: L2 citizenship with NO bridge and NO host-IP move, so no SSH-risk moment and no net
 # guard -- the least invasive substrate, proven green and validated no worse than bridge. "bridge" is the validated fallback (BRIARD_NET_MODE=bridge): enslaves the host NIC to an
@@ -299,6 +293,76 @@ QEMU_DATADIR="$PREFIX/qemu/share/qemu"
 modprobe tun 2>/dev/null || true
 [ -e /dev/net/tun ] || die "/dev/net/tun absent (kernel built without CONFIG_TUN)"
 mkdir -p /etc/modules-load.d && printf 'tun\n' > /etc/modules-load.d/briard.conf
+
+# ---- 4b. the two private subnets: draw them, then keep them -------------------------
+# THE FLOCK SUBNET AND THE PRIVATE LINK, drawn here rather than written into this script.
+#
+# Why here and not with the other identifiers in step 6b, where they belong by nature: step 5 is
+# about to BUILD the substrate out of these numbers, so they have to exist first. The agent binary
+# landed in step 3, which is the earliest they can.
+#
+# PET, exactly like the node id and the flock name below. Re-running the installer is a routine
+# thing in this alpha ([[alpha-reinstall-only-policy]]), and a re-run that redrew would renumber a
+# live node -- silently breaking a mesh whose peers still hold the old address. So the draw happens
+# once, on a machine that has never drawn; after that this file is the answer. Delete it to redraw.
+#
+# The draw itself is in the BINARY (agent/subnet) for the same reason --mint-flock-name is: it is a
+# table of conventional occupants, a prefix cut over this host's own routes and an ARP probe of the
+# candidate, and none of that should exist twice in two languages.
+SUBNET_FILE="$STATE/subnets"
+if [ ! -s "$SUBNET_FILE" ] && { [ -z "$SYSTEM_SUBNET" ] || [ -z "$PRIV_SUBNET" ]; }; then
+	"$AGENT" --draw-subnets >"$SUBNET_FILE.new" ||
+		die "could not draw this node's subnets; set BRIARD_SYSTEM_SUBNET and BRIARD_PRIV_SUBNET to ranges this network has free"
+	mv -f "$SUBNET_FILE.new" "$SUBNET_FILE"
+fi
+# Parsed with sed rather than sourced. The file is ours and root-owned, but a `.` makes every line
+# in it executable and there is no reason to hand that power to a file we need two numbers out of.
+# The pattern doubles as the format's assertion: anything that is not a bare 10.a.b reads as
+# absent, and the guards below fire rather than the substrate being built out of a typo.
+if [ -s "$SUBNET_FILE" ]; then
+	[ -n "$SYSTEM_SUBNET" ] ||
+		SYSTEM_SUBNET="$(sed -n 's/^SYSTEM_SUBNET=\(10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$SUBNET_FILE")"
+	[ -n "$PRIV_SUBNET" ] ||
+		PRIV_SUBNET="$(sed -n 's/^PRIV_SUBNET=\(10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$SUBNET_FILE")"
+fi
+[ -n "$SYSTEM_SUBNET" ] || die "no system subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_SYSTEM_SUBNET"
+[ -n "$PRIV_SUBNET" ] || die "no private-link subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_PRIV_SUBNET"
+# Record what this node ACTUALLY numbers itself from, the env overrides included. Otherwise a
+# BRIARD_SYSTEM_SUBNET set on one run and forgotten on the next renumbers a live node back to the
+# drawn value in silence -- the exact failure the pet file exists to prevent, arriving by the
+# escape hatch instead of by the draw.
+printf 'SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\n' "$SYSTEM_SUBNET" "$PRIV_SUBNET" >"$SUBNET_FILE" ||
+	die "could not record this node's subnets at $SUBNET_FILE"
+chmod 0644 "$SUBNET_FILE" # not a secret: the addresses are on the wire the moment the guest boots
+say "this node numbers itself from $SYSTEM_SUBNET.0/24 (its own address is $SYSTEM_SUBNET.1)"
+
+# Everything below is DERIVED, and the derivation is positional on purpose: a /24 whose addresses
+# are read off the node-id needs no allocator, no state and no agreement beyond the subnet itself.
+SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
+# The HOST's own address on that subnet. It needs one because a standby has no LAN presence and
+# must still be dialable by its guest (the witness forwarder) and able to answer on-link, and
+# because the guest needs somewhere to reply to when the host dials IT (the reboot gate).
+#
+# A /32, and on the private tap rather than on the LAN NIC: under macvtap the host cannot reach
+# its own guest over the LAN at all, so the tap is the only path, and a /32 keeps the tap from
+# claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
+# node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
+# address says which side of the pair it is.
+SYSTEM_HOST_CIDR="$SYSTEM_SUBNET.129/32"
+PRIV_HOST_CIDR="$PRIV_SUBNET.1/24"
+PRIV_GUEST_CIDR="$PRIV_SUBNET.2/24"
+
+# The private link's bring-up, shared VERBATIM by both substrates' net-up.sh. All three commands
+# are idempotent, so a reboot or a re-run is a no-op. It lives in a variable rather than being
+# written into each heredoc because the two copies must not be able to drift: a private link that
+# exists under bridge and not under macvtap would take the host rung's guard away on precisely the
+# default substrate.
+PRIV_UP="# The private host<->guest link (the guest's eth3): a plain tap, on neither the bridge nor
+# the macvtap parent, carrying this host's end of a point-to-point wire to its own VM.
+ip link show $PRIV_TAP >/dev/null 2>&1 || ip tuntap add $PRIV_TAP mode tap
+ip addr replace $PRIV_HOST_CIDR dev $PRIV_TAP
+ip addr replace $SYSTEM_HOST_CIDR dev $PRIV_TAP
+ip link set $PRIV_TAP up"
 
 # ---- 5. networking: the guest's L2 substrate (bridge enslave, or macvtap) -----------
 if [ "$NET_MODE" = macvtap ]; then

@@ -399,6 +399,33 @@ pkgs.testers.runNixOSTest {
     flock_name = host.succeed("cat /var/lib/briard/flock-name").strip()
     node_id = host.succeed("cat /var/lib/briard/node-id").strip()
     print(f"flock name={flock_name!r} node id={node_id!r}")
+
+    # THE DRAWN SUBNETS ([V3b.26f]). Neither number is ours to spell any more: both are drawn per
+    # home at install and checked against the network the host can see, so every assertion below
+    # reads what this install actually chose. A rig that kept spelling 10.0.0.1 would not merely
+    # fail -- the NEGATIVE assertions ("the name must not resolve to the private address") would
+    # pass VACUOUSLY, which is the one way a test lies while staying green.
+    subnets = host.succeed("cat /var/lib/briard/subnets")
+    system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
+    priv_subnet = host.succeed("sed -n 's/^PRIV_SUBNET=//p' /var/lib/briard/subnets").strip()
+    print(f"drawn subnets: {subnets.strip()!r}")
+    for label, drawn in (("system", system_subnet), ("private link", priv_subnet)):
+        assert drawn.startswith("10.") and drawn.count(".") == 2, (
+            f"the {label} subnet is {drawn!r}, not a bare 10.a.b -- install.sh built the substrate "
+            f"out of something the draw did not produce"
+        )
+    # The draw HAPPENED, rather than a constant surviving under a new name. Both old values are in
+    # the exclusion table, so neither can come back out of the draw by chance.
+    assert system_subnet != "10.0.0", "the system subnet is still the hardcoded 10.0.0"
+    assert priv_subnet != "10.11.9", "the private link is still the hardcoded 10.11.9"
+    # The link pool is 10.11.x and the flock pool excludes it, which is what keeps a node's private
+    # link off its own flock's subnet no matter what either draw returns.
+    assert priv_subnet.startswith("10.11."), f"the private link {priv_subnet!r} is outside its pool"
+    assert not system_subnet.startswith("10.11."), (
+        f"the system subnet {system_subnet!r} landed in the private link's pool"
+    )
+    node_ip = f"{system_subnet}.1"
+    priv_guest_ip = f"{priv_subnet}.2"
     assert node_id.startswith("briard-node-"), f"node id is {node_id!r}"
     assert node_id != "guest", "the node id is still the hardcoded literal this item removed"
     assert len(flock_name.split("-")) == 2, f"the flock name {flock_name!r} is not two words"
@@ -448,7 +475,7 @@ pkgs.testers.runNixOSTest {
     # address and a name that worked everywhere except on the machine reading them.
     #
     # The user-facing addresses are UNCHANGED -- the VIP and the flock name, the same two strings
-    # the client just used. The private link is transport and is never published: 10.11.9.2 appears
+    # the client just used. The private link is transport and is never published: its address appears
     # in the ROUTE below and nowhere a household would look.
     host.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=180)
     print(f"the install host reached its own guest at http://{vip}/")
@@ -465,22 +492,22 @@ pkgs.testers.runNixOSTest {
     # -- the system subnet rides the LAN L2, so any other machine reaches it on-link exactly like
     # this, while the host is the one machine macvtap isolates (its own path is the private link's
     # /32, which lands with the rest of the demotion).
-    client.succeed("ip route replace 10.0.0.0/24 dev eth1")
-    client.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
-    print("the lone node holds its node IP at 10.0.0.1, reached from off-box")
+    client.succeed(f"ip route replace {system_subnet}.0/24 dev eth1")
+    client.wait_until_succeeds(f"ping -c1 -W2 {node_ip}", timeout=60)
+    print(f"the lone node holds its node IP at {node_ip}, reached from off-box")
 
     # ...AND THE HOST REACHES IT TOO, which is the half macvtap otherwise denies. Not over the LAN
     # -- the substrate isolates the host from its own guest -- but over the private link, on a /32
     # the agent installed with a PERMANENT neighbour entry pinning the guest's derived link MAC.
     # Without that entry the host would ARP for a node IP that lives on eth1 while the request
     # arrives on eth3, and arp_ignore=1 ([B.101]) makes the guest answer nothing.
-    host.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
-    nroute = host.succeed("ip route get 10.0.0.1")
+    host.wait_until_succeeds(f"ping -c1 -W2 {node_ip}", timeout=60)
+    nroute = host.succeed(f"ip route get {node_ip}")
     print(f"host route to the node IP: {nroute.strip()}")
     assert "briard-priv0" in nroute, f"the host reaches the node IP some other way: {nroute!r}"
     # The entry is `permanent`, not merely present: a reachable/stale one would expire and then
     # re-ARP into the silence above, so the path would die minutes after passing this test.
-    neigh = host.succeed("ip neigh show 10.0.0.1 dev briard-priv0")
+    neigh = host.succeed(f"ip neigh show {node_ip} dev briard-priv0")
     print(f"host neighbour entry: {neigh.strip()}")
     assert "PERMANENT" in neigh.upper(), f"the neighbour entry is not permanent: {neigh!r}"
 
@@ -490,7 +517,7 @@ pkgs.testers.runNixOSTest {
     # `via` the guest's end, never on-link. The guest answers ARP only on the interface holding the
     # address asked for (arp_ignore=1, [B.101]), so an on-link /32 installs cleanly and then
     # black-holes -- a regression that would look like a working route in every `ip route` listing.
-    assert "10.0.0.1" in route, (
+    assert node_ip in route, (
         f"the route to {vip} is not via the guest's NODE IP: {route!r} -- an on-link route cannot "
         f"resolve the VIP's MAC under arp_ignore=1, and the node IP is the one address on that "
         f"link the host can resolve, because the agent pinned a permanent neighbour entry for it"
@@ -529,9 +556,10 @@ pkgs.testers.runNixOSTest {
         f"{vip} -- the household's own machine still cannot find the household's own node"
     )
     # And it must resolve to the VIP, NOT to the private address. The name is flock-scoped and
-    # survives a failover; 10.11.9.2 is node-scoped and does not, so a name pointing at it would be
+    # survives a failover; the private-link address is node-scoped and does not, so a name pointing at
+    # it would be
     # the V3.20 incoherence restored in a place nobody would look for it.
-    assert "10.11.9.2" not in host_resolved, (
+    assert priv_guest_ip not in host_resolved, (
         f"the name resolved to the private link address ({host_resolved!r}) -- transport must "
         f"never become identity"
     )
@@ -650,6 +678,15 @@ pkgs.testers.runNixOSTest {
         "the node id was regenerated by a cattle reinstall -- DRBD's `on <name>` is keyed to it, "
         "so the guest would no longer recognise the metadata on the volume it just kept"
     )
+    # And the SUBNETS are pet, for a reason the flock name's does not cover ([V3b.26f]): re-running
+    # the installer is routine in this alpha, and a re-run that redrew would renumber a live node
+    # -- silently, while its peers still hold the old address. The draw happens once, on a machine
+    # that has never drawn.
+    assert host.succeed("cat /var/lib/briard/subnets") == subnets, (
+        f"the subnets were redrawn by a re-run ({subnets.strip()!r} -> "
+        f"{host.succeed('cat /var/lib/briard/subnets').strip()!r}) -- a re-run must not renumber a node"
+    )
+    host.succeed(f"ip route get {node_ip} | grep -q briard-priv0")
     client.wait_until_succeeds(f"curl -fsS http://briard-{flock_name}.local/healthz", timeout=180)
     print(f"the name survived the cattle reinstall: http://briard-{flock_name}.local/")
     print(f"reinstall reached green again on the re-fetched cattle, at the same leased {vip}")
