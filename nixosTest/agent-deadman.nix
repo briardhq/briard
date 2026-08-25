@@ -106,6 +106,20 @@ pkgs.testers.runNixOSTest {
     # Boot + converge (the agent launches the guest, drives bring-up).
     host.succeed("systemctl start briard-agent")
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
+
+    # TEMPORARY INSTRUMENTATION ([V3b.26b] spike -- remove before the item closes). A netns model
+    # of this exact shape passes, node IP and VIP alike, under the shipped arp discipline. The rig
+    # disagrees, so print what the rig actually BUILT rather than reasoning about what it should
+    # have ([[verification-assertions-must-fail]]: instrument before theorising).
+    print("=== host addrs on the private link ===\n" + host.succeed("ip -o addr show dev briard-priv0"))
+    print("=== host neigh ===\n" + host.execute("ip neigh show dev briard-priv0")[1])
+    print("=== host routes over the link ===\n" + host.execute("ip route show dev briard-priv0")[1])
+    print("=== route to the node IP ===\n" + host.execute("ip route get 10.0.0.1")[1])
+    print("=== route to the VIP ===\n" + host.execute("ip route get 192.168.1.100")[1])
+    print("=== can the host reach the node IP at all? ===\n" + host.execute("ping -c2 -W2 10.0.0.1")[1])
+    print("=== the agent's own words ===\n"
+          + host.execute("journalctl -u briard-agent | grep -iE 'route|neigh|configure|vip' | tail -20")[1])
+
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
 
     qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
