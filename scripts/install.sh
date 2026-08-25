@@ -350,7 +350,14 @@ SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
 # claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
 # node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
 # address says which side of the pair it is.
-SYSTEM_HOST_CIDR="$SYSTEM_SUBNET.129/32"
+SYSTEM_HOST_IP="$SYSTEM_SUBNET.129"
+# ⚠️ THE PREFIX IS SUBSTRATE-DEPENDENT, and this is the macvtap value. Under macvtap the host is
+# ISOLATED from its own guest on the LAN, so this address lives on the private tap and must be a
+# /32: a /24 there would claim an on-link route for the whole system subnet over a wire that
+# reaches exactly one machine, competing with the route the guest's own peers need. Under bridge
+# mode the host is genuinely ON that L2 (it holds the address on the bridge, beside its LAN one),
+# so the honest prefix is the subnet's -- the bridge branch of step 5 overrides this.
+SYSTEM_HOST_CIDR="$SYSTEM_HOST_IP/32"
 PRIV_HOST_CIDR="$PRIV_SUBNET.1/24"
 PRIV_GUEST_CIDR="$PRIV_SUBNET.2/24"
 
@@ -374,6 +381,14 @@ if [ "$NET_MODE" = macvtap ]; then
 	# NIC throughout, and the per-VM-start create/destroy the cattle-host model wants comes for
 	# free (macvtaps auto-vanish with the parent). Needs the fd-passing launch wrapper.
 	[ -n "$NET_WRAP" ] || die "NET_MODE=macvtap needs the briard-net-wrap wrapper (absent from staging)"
+	# THE SUBSTRATE FORK, declared here and consumed by the unit in step 7 ([V3b.26c]). Everything
+	# in it is L2 and nothing above L2 differs: same subnets, same addresses, same VIP device name.
+	# macvtap: three guest NICs, each a device the HOST creates -- the service NIC is its own
+	# macvtap child carrying the flock MAC, and the private link is a third tap.
+	SERVICE_TAP_ENV="$TAP"
+	WITNESS_TAP_ENV="$PRIV_TAP"
+	WITNESS_CIDR_ENV="$PRIV_GUEST_CIDR"
+	VIP_PARENT_ENV=""   # eth2 is a kernel-enumerated NIC here; the guest makes nothing
 	[ -n "$NIC" ] || NIC="$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')"
 	[ -n "$NIC" ] || die "no host NIC given and no default route to infer one (set BRIARD_NIC)"
 	ip link show "$NIC" >/dev/null 2>&1 || die "host NIC $NIC not found"
@@ -413,6 +428,17 @@ EOF
 	say "network: the guest will share $NIC with you (your machine keeps its own address)"
 	sh "$PREFIX/net-up.sh"
 else
+# THE SUBSTRATE FORK's other half ([V3b.26c]) -- the Linux clone of the Windows shape. ONE tap, so
+# the guest gets ONE kernel NIC (eth1) and MAKES its service identity: a macvlan child named eth2
+# carrying the flock MAC, which the agent delivers over the channel. No third tap, so no eth3.
+SERVICE_TAP_ENV=""
+WITNESS_TAP_ENV=""
+WITNESS_CIDR_ENV=""
+VIP_PARENT_ENV="eth1"   # the NIC the guest builds eth2 on top of
+# The host is genuinely on the system subnet here (its address goes on the bridge), so the prefix
+# is the subnet's rather than the macvtap /32 -- see SYSTEM_HOST_IP in step 4b. Set BEFORE net-up.sh
+# is written, because the heredoc bakes this value.
+SYSTEM_HOST_CIDR="$SYSTEM_HOST_IP/24"
 # Enslaving the host's primary NIC to the bridge briefly moves its L3 identity; on a
 # remote-adopted box that can cut the very SSH session running this script. So the move
 # is one netlink batch (minimal window) AND armed with a self-cancelling watchdog that
@@ -466,22 +492,38 @@ if ! { ip link show $BRIDGE >/dev/null 2>&1 && [ "\$(ip -o -4 addr show dev $BRI
 	ip link set $BRIDGE up
 	[ -n "$GW" ] && ip route replace default via $GW dev $BRIDGE || true
 fi
-# The guest's two NIC taps on the bridge: the DRBD NIC (eth1, idle single-node -> addressed on
-# pairing) and the service NIC (eth2, the VIP). Both on the same L2 so a paired second anchor
-# reaches this one directly. Order sets the guest's ethN: SYSTEM_TAP is eth1, SERVICE_TAP eth2.
-for t in $DRBD_TAP $TAP; do
-	if ! ip link show \$t >/dev/null 2>&1; then
-		ip tuntap add \$t mode tap
-		ip link set \$t master $BRIDGE
-		ip link set \$t up
-	fi
-done
-$PRIV_UP
+# THE GUEST'S ONE TAP ON THE BRIDGE -- the system NIC (eth1), carrying this node's system MAC.
+#
+# ONE, not two, since [V3b.26c]. This substrate is the Linux clone of the Windows shape, and
+# Windows admits exactly one tap per qemu process ([V3b.1a]: the file-static tap_overlapped), so a
+# second tap is not expressible there. The service identity -- the flock-scoped MAC the VIP rides,
+# which failover MOVES -- is therefore made INSIDE the guest, as a macvlan child of this NIC named
+# eth2. Two identities behind one switch port, which is a different ARP geometry than two taps and
+# the reason [B.101]'s strong-host discipline is worth re-reading here.
+if ! ip link show $DRBD_TAP >/dev/null 2>&1; then
+	ip tuntap add $DRBD_TAP mode tap
+	ip link set $DRBD_TAP master $BRIDGE
+	ip link set $DRBD_TAP up
+fi
+# THE HOST'S OWN ADDRESS ON THE SYSTEM SUBNET, on the bridge -- and NO private host<->guest link.
+#
+# There is no eth3 in this mode ([V3b.26a] settled it as option (iii)): a bridged tap already puts
+# host and guest on ONE L2, so the host reaches its guest natively and the private link would be a
+# second tap Windows cannot give us anyway. Everything the link carried moves here -- the deadman's
+# reboot gate and the host's path to the VIP are both plain on-link now, so the agent installs no
+# /32 and no permanent neighbour (it sees no WITNESS_TAP and does nothing, by construction).
+#
+# A /24 rather than the macvtap /32: here the claim is TRUE. The host is on this segment, and it
+# needs the on-link route to reach the guest's node IP at all.
+[ -n "$SYSTEM_HOST_CIDR" ] && ip addr replace $SYSTEM_HOST_CIDR dev $BRIDGE || true
 EOF
 chmod +x "$PREFIX/net-up.sh"
 
 net_revert() {
 	say "net guard: reverting bridge (kept the host on $NIC)"
+	# $TAP is named here as well as $DRBD_TAP even though this mode now creates only the latter
+	# ([V3b.26c]): a box installed BEFORE the conversion has a second tap enslaved to this bridge,
+	# and a revert that leaves it behind strands a port on a bridge it is about to delete.
 	for t in "$TAP" "$DRBD_TAP"; do
 		ip link set "$t" nomaster 2>/dev/null || true
 		ip link del "$t" 2>/dev/null || true
@@ -814,13 +856,20 @@ Environment=SYSTEM_TAP=$DRBD_TAP
 Environment=SYSTEM_DEV=eth1
 Environment=SYSTEM_CIDR=$SYSTEM_CIDR
 Environment=SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
-Environment=WITNESS_CIDR=$PRIV_GUEST_CIDR
-Environment=SERVICE_TAP=$TAP
+Environment=WITNESS_CIDR=$WITNESS_CIDR_ENV
+# SERVICE_TAP and WITNESS_TAP are EMPTY under bridge mode, and that is the substrate fork
+# ([V3b.26c]) reaching the agent. Empty reads exactly as unset everywhere downstream: qemu renders
+# no second or third NIC, the node route and the VIP route both no-op on an absent WITNESS_TAP, and
+# the host-side service-MAC pin has nowhere to go -- which is correct, because in that mode the MAC
+# is the guest's to hold. VIP_PARENT is the other side of the same coin: it names the NIC the guest
+# builds VIP_DEV on when nothing on the host built it.
+Environment=SERVICE_TAP=$SERVICE_TAP_ENV
+Environment=VIP_PARENT=$VIP_PARENT_ENV
 # WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
 # every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot
 # gate over it, and that guard matters MOST on the single node this env never used to reach. The
 # name is historical -- the cloud-witness forwarder was its first user, not its only one.
-Environment=WITNESS_TAP=$PRIV_TAP
+Environment=WITNESS_TAP=$WITNESS_TAP_ENV
 Environment=VIP_DEV=eth2
 Environment=VIP_ADDR=$VIP
 Environment=FLOCK_ID=$FLOCK_ID

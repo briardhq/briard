@@ -142,7 +142,12 @@ type Config struct {
 	// taps on a bridge, opened by name (today's install.sh substrate); "macvtap" (NetMacvtap) =
 	// macvtap chardevs, which the NetWrapBin fd-passing wrapper attaches to qemu. NetWrapBin is
 	// required in macvtap mode and unused otherwise.
-	NetMode    string
+	NetMode string
+	// VIPParent is the guest NIC to build VIPDev on, as a macvlan child carrying the flock MAC.
+	// Set only under the bridge substrate, where the host gives the guest ONE tap and the service
+	// identity is therefore the guest's to make ([V3b.26c]). Empty under macvtap, where the host
+	// built the device itself and the MAC is pinned at launch.
+	VIPParent  string
 	NetWrapBin string
 
 	// Host-side cloud-witness forwarder. A managed pairing directive (MeshSpec.Witness)
@@ -581,7 +586,7 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 		// The service NIC carries the VIP and nothing else, so its MAC is the VIP's identity --
 		// flock-scoped, not node-scoped (see Config.FlockID). The DRBD and witness NICs stay
 		// node-derived: those MUST differ per node or the NICs collide and ARP never resolves.
-		ServiceMAC: deriveMAC(orNode(cfg.FlockID, cfg.Node), "svc"),
+		ServiceMAC: cfg.serviceMAC(),
 		SystemTap:  cfg.SystemTap,
 		SystemMAC:  deriveMAC(cfg.Node, "sys"),
 		WitnessTap: cfg.WitnessTap,
@@ -751,8 +756,12 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
 			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
-			PrivDev: cfg.WitnessDev, PrivCIDR: cfg.WitnessCIDR, PrivHostIP: cfg.hostNodeIP(),
+			PrivDev: cfg.privDev(), PrivCIDR: cfg.WitnessCIDR, PrivHostIP: cfg.hostNodeIP(),
 			PrivHostMAC: cfg.privHostMAC(bringup, logf),
+			// The same MAC the macvtap substrate pins host-side at launch, derived the same way
+			// from the same seed -- so the two substrates present the identical L2 identity and
+			// only differ in WHO creates the device holding it ([V3b.26c]).
+			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
 		})
 	}
 	// ...and the host's own path back to it. The guest just installed its half; this is the
@@ -1369,4 +1378,32 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// serviceMAC is the flock-scoped MAC the VIP rides -- the one identity a failover MOVES, which is
+// why it is derived from the FLOCK id rather than the node's (see Config.FlockID). One function
+// because two substrates now need the same answer for different reasons: macvtap pins it on the
+// host's service macvtap at launch, and bridge mode hands it to the GUEST, which builds the device
+// itself ([V3b.26c]). Two derivations would be two chances for the substrates to disagree about
+// who this flock is.
+func (cfg Config) serviceMAC() string { return deriveMAC(orNode(cfg.FlockID, cfg.Node), "svc") }
+
+// privDev is the guest's name for the private-link NIC, or "" when this substrate has no private
+// link at all.
+//
+// WitnessDev alone is NOT the question, and the difference is a bring-up failure rather than a
+// cosmetic one. WitnessDev defaults to "eth3" unconditionally (config.go), because until
+// [V3b.26c] every shipped node had three NICs. Under the bridge substrate there is no third NIC:
+// one tap is all Windows can express, so the private link does not exist and its jobs moved onto
+// the shared L2 ([V3b.26a] option (iii)). Sending the guest the NAME of a device that is not
+// there makes it try to bring that device up, which fails, which fails the whole net.configure --
+// so the node never converges, on the substrate that has no other way to work.
+//
+// The TAP is the honest question: the host end is the thing whose existence decides whether there
+// is a link, and the agent already refuses to route over an absent one (setNodeRoute, vipRouter).
+func (cfg Config) privDev() string {
+	if cfg.WitnessTap == "" {
+		return ""
+	}
+	return cfg.WitnessDev
 }

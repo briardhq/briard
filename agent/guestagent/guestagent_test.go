@@ -1551,3 +1551,90 @@ func TestHandshakeWithoutBootIDStillSucceeds(t *testing.T) {
 		t.Errorf("version = %d, want %d", h.Version, api.GuestProtocol)
 	}
 }
+
+// THE BRIDGE SUBSTRATE'S SERVICE IDENTITY: the host hands the guest one NIC, so the guest builds
+// the second MAC itself ([V3b.26c]). Three properties, and each one is a defect if it goes.
+func TestConfigureNetMakesTheServiceNIC(t *testing.T) {
+	// `ip link show dev eth2` must FAIL for the create branch to be reached -- that is the
+	// existence check, and a fake that succeeds at everything would silently test the other half.
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if len(args) >= 4 && args[0] == "link" && args[1] == "show" && args[3] == "eth2" {
+			return nil, errors.New("Device \"eth2\" does not exist.")
+		}
+		return []byte("2: eth1    inet 10.7.7.1/24 scope global eth1\\       valid_lft forever"), nil
+	}}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{
+		Dev: "eth1", CIDR: "10.7.7.1/24", VIPDev: "eth2", VIPAddr: "192.168.9.50/24",
+		VIPParent: "eth1", VIPMAC: "52:54:00:ab:cd:ef",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var add []string
+	for _, r := range f.runs {
+		if len(r) > 2 && r[1] == "link" && r[2] == "add" {
+			add = r
+		}
+		// (1) NEVER brought up here. `ip link add` leaves the device down and that IS the standby
+		// discipline: a Secondary holding the flock MAC up teaches the switch the wrong port for
+		// the VIP ([B.100]/[B.101]). briard-vip.service owns the up, on promotion.
+		if len(r) >= 6 && r[1] == "link" && r[2] == "set" && r[4] == "eth2" && r[5] == "up" {
+			t.Errorf("brought the service NIC up at configure time (%v) -- that is the promoter's call", r)
+		}
+	}
+	if add == nil {
+		t.Fatalf("no `ip link add` for the service NIC; runs = %v", f.runs)
+	}
+	// (2) A macvlan child of the NIC the host named, in bridge mode so child and parent can talk.
+	want := []string{"ip", "link", "add", "eth2", "link", "eth1", "address", "52:54:00:ab:cd:ef", "type", "macvlan", "mode", "bridge"}
+	if !reflect.DeepEqual(add, want) {
+		t.Errorf("create = %v, want %v", add, want)
+	}
+	// (3) The MAC is set AT CREATION. A macvlan comes up holding a kernel-random MAC, and a frame
+	// emitted before a follow-up `link set address` teaches the switch a port for an address
+	// nobody owns -- so an argv that sets it afterwards is a real, narrow defect.
+	for i, a := range add {
+		if a == "address" && i < len(add)-1 && add[i+1] == "52:54:00:ab:cd:ef" {
+			return
+		}
+	}
+	t.Errorf("the flock MAC is not set in the create call: %v", add)
+}
+
+// Under macvtap the host built the device, so the guest must create NOTHING -- the failable half
+// of the test above, and the one that keeps this from firing on the default substrate.
+func TestConfigureNetMakesNoNICUnderMacvtap(t *testing.T) {
+	f := &fakeExec{output: []byte("2: eth1    inet 10.7.7.1/24 scope global eth1\\       valid_lft forever")}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{
+		Dev: "eth1", CIDR: "10.7.7.1/24", VIPDev: "eth2", VIPAddr: "192.168.9.50/24",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.runs {
+		if len(r) > 2 && r[1] == "link" && r[2] == "add" {
+			t.Errorf("created %v with no VIPParent -- under macvtap the host owns that device", r)
+		}
+	}
+}
+
+// An EXISTING service NIC has its MAC re-asserted rather than assumed. The flock MAC is
+// flock-scoped, so an adoption changes it under a device that outlives the change (DESIGN §1.2);
+// without this the joiner keeps presenting its old flock's identity on the LAN.
+func TestConfigureNetReassertsTheFlockMAC(t *testing.T) {
+	f := &fakeExec{output: []byte("2: eth1    inet 10.7.7.1/24 scope global eth1\\       valid_lft forever")}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{
+		Dev: "eth1", CIDR: "10.7.7.1/24", VIPDev: "eth2", VIPAddr: "192.168.9.50/24",
+		VIPParent: "eth1", VIPMAC: "52:54:00:11:22:33",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ip", "link", "set", "dev", "eth2", "address", "52:54:00:11:22:33"}
+	for _, r := range f.runs {
+		if reflect.DeepEqual(r, want) {
+			return
+		}
+	}
+	t.Errorf("an existing service NIC kept whatever MAC it had; runs = %v", f.runs)
+}

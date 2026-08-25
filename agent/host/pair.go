@@ -82,7 +82,13 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 	if spec.SystemDev != "" {
 		if err := g.ConfigureNet(ctx, guestagent.NetConfig{
 			Dev: spec.SystemDev, CIDR: spec.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
-			PrivDev: cfg.WitnessDev, PrivHostIP: cfg.hostNodeIP(),
+			// privDev(), not WitnessDev: under the bridge substrate there is no third NIC and naming
+			// one fails the call ([V3b.26c] -- see the helper). Same reason as bring-up's call site.
+			PrivDev: cfg.privDev(), PrivHostIP: cfg.hostNodeIP(),
+			// And the service identity, because THIS is the renumbering call: an adoption is where
+			// the joiner takes the adopter's flock (DESIGN §1.2), so it is where a guest-made eth2
+			// would otherwise keep presenting its old flock's MAC on the LAN.
+			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
 		}); err != nil {
 			return fmt.Errorf("pair: configure %s: %w", spec.SystemDev, err)
 		}

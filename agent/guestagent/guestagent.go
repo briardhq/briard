@@ -453,6 +453,13 @@ type netConfigureRequest struct {
 	PrivCIDR    string `json:"priv_cidr,omitempty"`
 	PrivHostIP  string `json:"priv_host_ip,omitempty"`
 	PrivHostMAC string `json:"priv_host_mac,omitempty"`
+	// THE SERVICE IDENTITY, WHEN THE GUEST HAS TO MAKE IT ITSELF ([V3b.26c]). Under the bridge
+	// substrate the host gives us ONE tap -- all Windows can express -- so VIPDev is not a NIC
+	// anyone handed us; VIPParent names the NIC to build it on as a macvlan child, and VIPMAC is
+	// the flock-scoped MAC that child must carry, because failover moves a MAC and never just an
+	// address. Both empty = the host built the device (macvtap), and nothing here creates anything.
+	VIPParent string `json:"vip_parent,omitempty"`
+	VIPMAC    string `json:"vip_mac,omitempty"`
 }
 
 // NetConfig is what the host tells the guest about its own networking, in one call. A struct
@@ -468,6 +475,8 @@ type NetConfig struct {
 	PrivCIDR    string // this end's own address on it -- SUBSTRATE, addressed by nobody; see the handler
 	PrivHostIP  string // the host's system-subnet address, routed over PrivDev
 	PrivHostMAC string // that end's link address, pinned as a permanent neighbour -- see the handler
+	VIPParent   string // the NIC to build VIPDev on as a macvlan child; "" = the host already built it
+	VIPMAC      string // the flock MAC that child carries; meaningless without VIPParent
 }
 
 // netVIPRequest names the device to read the live VIP from (net.vip). Empty Dev = this node has
@@ -1256,6 +1265,48 @@ func dispatch(x Executor) dispatchFunc {
 					return nil, err
 				}
 			}
+			// THE SERVICE IDENTITY, MADE HERE. Under the bridge substrate the host hands us one
+			// NIC, so the second MAC this node must present -- the flock-scoped one the VIP rides
+			// and a failover MOVES -- has to be created inside the guest as a macvlan child
+			// ([V3b.26c]). Under macvtap this block does nothing: the host built the device and
+			// VIPParent is empty.
+			//
+			// `mode bridge` so the child and its parent can talk to each other as well as to the
+			// LAN. The MAC is set AT CREATION rather than after, so the device never exists
+			// holding a random one -- a macvlan comes up with a kernel-random MAC, and a frame
+			// emitted in that window teaches the switch a port for an address nobody owns.
+			//
+			// ⚠️ CREATED DOWN, AND LEFT DOWN. `ip link add` leaves a device administratively down
+			// and that is exactly the standby discipline: briard-vip.service brings VIP_DEV up on
+			// promotion and takes it down on demotion, because a Secondary holding the flock MAC
+			// up teaches the switch the wrong port for the VIP the moment it emits anything at
+			// all ([B.100]/[B.101]). Bringing it up here would hand every standby that defect.
+			if req.VIPParent != "" && req.VIPDev != "" {
+				// The parent, up. Usually redundant with the system-NIC block above -- VIPParent IS
+				// req.Dev in the shipped shape -- but this block must stand on its own: a caller may
+				// name a parent that block never touched, and a macvlan on a down parent is a device
+				// that exists and carries nothing.
+				if err := run("ip", "link", "set", "dev", req.VIPParent, "up"); err != nil {
+					return nil, err
+				}
+				if _, err := x.Run(ctx, "ip", "link", "show", "dev", req.VIPDev); err != nil {
+					add := []string{"link", "add", req.VIPDev, "link", req.VIPParent}
+					if req.VIPMAC != "" {
+						add = append(add, "address", req.VIPMAC)
+					}
+					if err := run("ip", append(add, "type", "macvlan", "mode", "bridge")...); err != nil {
+						return nil, err
+					}
+				} else if req.VIPMAC != "" {
+					// It already exists -- re-assert the MAC rather than assume it. The flock MAC
+					// is FLOCK-scoped, so an adoption changes it under a device that outlives the
+					// change ([V3b.26b]), and this call is the one that would otherwise leave the
+					// joiner presenting its old flock's identity.
+					if err := run("ip", "link", "set", "dev", req.VIPDev, "address", req.VIPMAC); err != nil {
+						return nil, err
+					}
+				}
+			}
 			// The VIP's device AND address are agent-determined: record them where
 			// briard-vip.service reads them, which since [V3b.16a] is a REQUIRED EnvironmentFile
 			// with nothing baked behind it. Idempotent (whole-file write).
@@ -1969,6 +2020,7 @@ func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
 		PrivDev: n.PrivDev, PrivCIDR: n.PrivCIDR,
 		PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
+		VIPParent: n.VIPParent, VIPMAC: n.VIPMAC,
 	}, nil)
 }
 

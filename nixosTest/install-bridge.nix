@@ -15,9 +15,19 @@
 #
 # ⚠️ THIS FILE IS NOT A DELETION CANDIDATE, and its header said it was until [V3b.26]. Bridge mode
 # stopped being a fallback on its way out and became Windows' ONLY possible L2 shape, plus its
-# Linux clone -- so this converts into the bridge-mode test rather than being deleted ([V3b.26d]).
-# What it asserts below still describes the OLD meaning (an enslaved bridge carrying two taps);
-# the new one is one tap plus a guest-made macvlan, and rewriting these assertions is (d)'s work.
+# Linux clone -- so this CONVERTED into the bridge-mode test rather than being deleted, in
+# [V3b.26d] (2026-08-25).
+#
+# What "bridge mode" means since that conversion, and what DELTA 2 below is here to catch if it
+# ever silently reverts: ONE tap on the bridge, not two. The guest gets one kernel NIC (eth1,
+# holding the per-node system MAC) and MAKES its service identity itself -- a macvlan child named
+# eth2 carrying the flock MAC, created over the control channel. There is no eth3 and no private
+# host<->guest link: a bridged tap already puts host and guest on one L2, so the host holds its
+# system-subnet address on the BRIDGE and reaches its guest natively.
+#
+# ⚠️ The honest limit, per [[fleet-macvtap-fidelity]]'s both-ways rule: this clones the
+# GUEST-VISIBLE shape, not the Windows pathology underneath it (tap-windows6's boot-establishment
+# rule, `netsh bridge`, the checksum offload). Those stay [V3b.1a]'s territory and a real desktop's.
 #
 # Heavy (a nested guest boot on the bundled qemu), rides the `install` nightly tag.
 # Run: nix build .#tests.install-bridge -L
@@ -124,9 +134,23 @@ pkgs.testers.runNixOSTest {
     host.fail("ip -o -4 addr show dev eth1 | grep -qw 192.168.1.1")  # it really MOVED, not copied
     client.succeed("ping -c1 -W2 192.168.1.1")  # host still reachable THROUGH the bridged NIC
 
-    # The guest's NICs are plain taps ON the bridge (not macvtap children) -- the substrate itself.
-    host.succeed("bridge link show | grep -q briard0")
+    # --- DELTA 2 (the conversion, [V3b.26d]): ONE tap on the bridge, and no private link.
+    #
+    # This is the assertion that makes the file worth keeping. Windows admits exactly one tap per
+    # qemu process ([V3b.1a]), so a second one here would be a Linux-only shape pretending to be
+    # the Windows twin -- the macvlan-shim mistake again ([[fleet-macvtap-fidelity]]), and
+    # invisible from every other angle because two taps work perfectly well on Linux.
     host.succeed("bridge link show | grep -q briard-drbd0")
+    host.fail("bridge link show | grep -q briard0")
+    host.fail("ip link show briard-priv0")
+
+    # The host holds its system-subnet address on the BRIDGE -- it is genuinely on that L2 here,
+    # which is why there is no private link to carry it. Read from the drawn subnet ([V3b.26f]),
+    # never spelled: a rig that spells a subnet the installer draws asserts about a coincidence.
+    system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
+    node_ip, host_ip = f"{system_subnet}.1", f"{system_subnet}.129"
+    host.succeed(f"ip -o -4 addr show dev br-briard | grep -qw {host_ip}")
+    print(f"host on the system subnet at {host_ip}, on the bridge")
 
     # The guest boots on the BUNDLED qemu and the agent converges to quorate Primary holding the VIP.
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
@@ -136,6 +160,37 @@ pkgs.testers.runNixOSTest {
     # enslaved host bridge -- not the install host curling itself.
     client.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     print("off-box client reached the VIP through the enslaved bridge")
+
+    # --- DELTA 4 (THE ONE THAT PROVES THE GUEST MADE ITS OWN IDENTITY): from OFF-BOX, the VIP and
+    # the node IP resolve to DIFFERENT MACs.
+    #
+    # Two identities behind one switch port is the whole shape, and it is only observable from
+    # outside: asking the guest whether it created a device is asking the actor, and the host sees
+    # both addresses over the same bridge either way. The client resolving them to two distinct
+    # link addresses is the property that matters -- one is the per-node system MAC on the tap,
+    # the other is the flock MAC on the macvlan the guest built, and a failover MOVES the second
+    # one alone. If the guest had silently put the VIP on eth1 instead, everything above would
+    # still pass and this is the only line that would not.
+    client.succeed(f"ip route replace {system_subnet}.0/24 dev eth1")
+    client.wait_until_succeeds(f"ping -c1 -W2 {node_ip}", timeout=60)
+    client.succeed("ping -c1 -W2 192.168.1.100")
+
+    def mac_of(addr):
+        for _ in range(12):
+            out = client.succeed(f"ip -4 neigh show {addr} dev eth1 || true").split()
+            if "lladdr" in out:
+                return out[out.index("lladdr") + 1]
+            client.sleep(2)
+        return ""
+
+    vip_mac, node_mac = mac_of("192.168.1.100"), mac_of(node_ip)
+    print(f"off-box: VIP -> {vip_mac}, node IP -> {node_mac}")
+    assert vip_mac and node_mac, f"the client could not resolve both (vip={vip_mac!r} node={node_mac!r})"
+    assert vip_mac != node_mac, (
+        f"the VIP and the node IP share one MAC ({vip_mac}) -- the guest did not make a second "
+        f"identity, so a failover would have no MAC to move and this is macvtap's shape wearing "
+        f"bridge mode's name"
+    )
 
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'role=anchor primary=true quorate=true.*healthy=true'",

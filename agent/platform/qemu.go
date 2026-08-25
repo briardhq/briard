@@ -210,17 +210,23 @@ func qemuArgs(s QEMUSpec) []string {
 	// model. The witness NIC (a private guest<->host link the host's
 	// witness-forwarder answers) comes third -> eth3: uniform on a
 	// managed/pair-capable guest, idle until a pairing addresses it (no hotplug, no
-	// reboot -- extends c-ii's uniform layout). eth3 assumes the uniform layout
-	// (system + service present), and install.sh sets all three on EVERY install --
-	// so eth1/eth2/eth3 is the only shape any shipped node has booted with. Which NIC
-	// carries the VIP is the agent's to say (net.configure); nothing is baked
-	// guest-side, so there is no default for a positional shape to be correct against
-	// ([V3b.16a] deleted the last one).
+	// reboot -- extends c-ii's uniform layout). Which NIC carries the VIP is the
+	// agent's to say (net.configure); nothing is baked guest-side, so there is no
+	// default for a positional shape to be correct against ([V3b.16a] deleted the
+	// last one).
 	//
-	// ⚠️ Omitting SystemTap slides the service NIC down to eth1 AND the witness NIC to
-	// eth2 -- where the guest's baked 10.11.9.2 is not, so the private link silently
-	// fails to exist and with it the reboot gate and the host's route to the VIP
-	// ([V3b.19]). A caller that wants any of those must set all three.
+	// ⚠️ THE NIC COUNT IS THE SUBSTRATE FORK, and since [V3b.26c] it is two shapes
+	// rather than one. Under macvtap install.sh sets all three, so the guest boots
+	// eth1/eth2/eth3. Under BRIDGE mode it sets only SystemTap: one tap is all
+	// Windows can express ([V3b.1a]), so the guest boots eth1 alone and MAKES eth2
+	// itself -- a macvlan child carrying the flock MAC -- and there is no eth3 at all
+	// ([V3b.26a] option (iii): a bridged tap already puts host and guest on one L2,
+	// so the private link has nothing left to do). Both shapes present the same L3.
+	//
+	// ⚠️ Omitting SystemTap is still the thing that breaks: it slides whatever else is
+	// set DOWN an index, so the service NIC becomes eth1 and the witness NIC eth2,
+	// and every address the agent hands out lands on the wrong device. A caller
+	// setting ServiceTap or WitnessTap must set SystemTap too.
 	if s.ServiceTap != "" || s.SystemTap != "" || s.WitnessTap != "" {
 		// SLIRP's addressing is PINNED rather than defaulted, because the guest configures eth0
 		// statically from these exact numbers and runs no DHCP client for it. They happen to be
@@ -240,9 +246,14 @@ func qemuArgs(s QEMUSpec) []string {
 			"-device", "virtio-net-pci,netdev=net2"+macArg(s.ServiceMAC))
 	}
 	if s.WitnessTap != "" {
-		// The witness NIC is ALWAYS a plain tap (NetBridge), even under NetMacvtap: it is
-		// the private guest<->host link the witness-forwarder answers, and macvtap would
-		// isolate exactly that path (decision).
+		// The witness NIC is ALWAYS a plain tap, even under NetMacvtap: it is the private
+		// guest<->host link the witness-forwarder answers, and macvtap would isolate exactly
+		// that path (decision).
+		//
+		// ⚠️ NetBridge is passed here as "a tap qemu opens by name", NOT as "this node is in
+		// bridge mode" -- the two meanings share a constant and no longer coincide. A node
+		// actually in bridge mode has no WitnessTap at all ([V3b.26c]), so this branch is
+		// reached only under macvtap.
 		args = append(args,
 			"-netdev", netdevArg("net3", s.WitnessTap, NetBridge, 0),
 			"-device", "virtio-net-pci,netdev=net3"+macArg(s.WitnessMAC))

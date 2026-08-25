@@ -99,6 +99,7 @@ func ConfigFromEnv() Config {
 		SystemTap:  os.Getenv("SYSTEM_TAP"),
 		WitnessTap: os.Getenv("WITNESS_TAP"),  // eth3 private witness link; "" -> no witness NIC
 		NetMode:    os.Getenv("NET_MODE"),     // "" (bridge, default) | "macvtap"
+		VIPParent:  os.Getenv("VIP_PARENT"),   // bridge substrate only: the NIC the guest builds VIP_DEV on
 		NetWrapBin: os.Getenv("NET_WRAP_BIN"), // the fd-passing launch wrapper; required for NET_MODE=macvtap
 		SerialLog:  os.Getenv("GUEST_SERIAL"),
 		// Host-side witness-forwarder identity. Bin + the anchor cert/key/ca; a managed
