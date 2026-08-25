@@ -311,8 +311,10 @@ mkdir -p /etc/modules-load.d && printf 'tun\n' > /etc/modules-load.d/briard.conf
 # candidate, and none of that should exist twice in two languages.
 SUBNET_FILE="$STATE/subnets"
 if [ ! -s "$SUBNET_FILE" ] && { [ -z "$SYSTEM_SUBNET" ] || [ -z "$PRIV_SUBNET" ]; }; then
-	"$AGENT" --draw-subnets >"$SUBNET_FILE.new" ||
+	if ! "$AGENT" --draw-subnets >"$SUBNET_FILE.new"; then
+		rm -f "$SUBNET_FILE.new" # never leave a half-drawn file where the next run could read it
 		die "could not draw this node's subnets; set BRIARD_SYSTEM_SUBNET and BRIARD_PRIV_SUBNET to ranges this network has free"
+	fi
 	mv -f "$SUBNET_FILE.new" "$SUBNET_FILE"
 fi
 # Parsed with sed rather than sourced. The file is ours and root-owned, but a `.` makes every line

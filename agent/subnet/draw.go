@@ -175,7 +175,7 @@ var occupied = []struct {
 	{netip.MustParsePrefix("10.147.0.0/16"), "ZeroTier's default managed ranges"},
 	{netip.MustParsePrefix("10.1.0.0/16"), "a round number operators pick by hand"},
 	{netip.MustParsePrefix("10.10.0.0/16"), "a round number operators pick by hand"},
-	{netip.MustParsePrefix("10.100.0.0/16"), "a round number operators pick by hand"},
+	{netip.MustParsePrefix("10.100.0.0/16"), "a round number operators pick by hand"}, // already inside the k8s /12; kept for the day that moves
 	{netip.MustParsePrefix("10.200.0.0/16"), "a round number operators pick by hand"},
 	// OURS, and the entry that does the structural work: excluding the whole link pool from the
 	// flock pool is what keeps the two disjoint without either draw knowing about the other.
