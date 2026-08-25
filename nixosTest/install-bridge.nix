@@ -11,8 +11,13 @@
 #   3. an OFF-BOX LAN client reaches Briard at the VIP *through the enslaved bridge*.
 #
 # The shared install chain lives in install-macvtap.nix, on the default substrate; this file is
-# only the bridge delta. The point of that split: when the bridge fallback is dropped, deleting
-# this file is a clean delete -- it proves nothing that outlives bridge.
+# only the bridge delta.
+#
+# ⚠️ THIS FILE IS NOT A DELETION CANDIDATE, and its header said it was until [V3b.26]. Bridge mode
+# stopped being a fallback on its way out and became Windows' ONLY possible L2 shape, plus its
+# Linux clone -- so this converts into the bridge-mode test rather than being deleted ([V3b.26d]).
+# What it asserts below still describes the OLD meaning (an enslaved bridge carrying two taps);
+# the new one is one tap plus a guest-made macvlan, and rewriting these assertions is (d)'s work.
 #
 # Heavy (a nested guest boot on the bundled qemu), rides the `install` nightly tag.
 # Run: nix build .#tests.install-bridge -L
