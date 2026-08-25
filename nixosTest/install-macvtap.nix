@@ -846,38 +846,23 @@ pkgs.testers.runNixOSTest {
     host.succeed("rm -f /opt/briard/agent/briard-agent.next")
     print("the shipped unit commits a good agent update and reverts a broken one")
 
-    # --- THE STANDBY DISCIPLINE, observed off-box ([V3b.26d], the demote half of the HA pair the
-    # test doctrine names; its twin is DELTA 5 in install-bridge.nix).
+    # --- A ROLE CYCLE, observed off-box ([V3b.26d]; its twin is DELTA 5 in install-bridge.nix,
+    # where the ⚠️ explains what an earlier, VACUOUS version of this block wrongly claimed).
     #
-    # The class is [B.100]/[B.101] and it is SILENT: a Secondary that keeps the flock MAC up
-    # teaches the switch the wrong port for the VIP the moment it emits any frame -- an IPv6 RS, an
-    # mDNS query -- and traffic for the service goes to the machine that is not serving. Nothing is
-    # down, the address is correctly gone, and the packets vanish anyway.
-    #
-    # Here this is a REGRESSION GUARD rather than a new catch, and the difference is worth stating:
-    # this rig runs the DHCP path, which always brought the NIC down. Its twin runs the static-VIP
-    # path, which did not -- that is where [V3b.26d] found the live defect. Both are asserted
-    # because the doctrine's HA pair is one pass on EACH substrate, and because the fix now turns on
-    # the DEVICE rather than on where the address came from: a rule that must hold on both paths
-    # deserves an assertion on both.
-    #
-    # Off-box for the usual reason: from inside the node a down NIC and an up one with no address
-    # look nearly the same, and it is the SWITCH's opinion that decides where traffic goes.
+    # It does NOT prove the [B.100]/[B.101] standby discipline. That hazard is a Secondary teaching
+    # the switch the wrong port for the flock MAC, and on a lone node there is no wrong port --
+    # it is two-node by nature and belongs to [B.113]. What is proven here: a demote really stops
+    # service seen from off-box, and re-promotion brings the VIP back on the SAME MAC.
     serving_mac = client.succeed(f"ip -4 neigh show {moved} dev eth1").split()
     serving_mac = serving_mac[serving_mac.index("lladdr") + 1]
     host.succeed("/opt/briard/agent/briard-agent handover -keep-masked")
     client.wait_until_fails(f"curl -fsS --max-time 3 http://{moved}/healthz", timeout=120)
-    client.succeed("ip neigh flush dev eth1")
-    client.execute(f"ping -c1 -W2 {moved}")
-    standby = client.succeed(f"ip -4 neigh show {moved} dev eth1 || true")
-    print(f"off-box view of a STANDBY node: {standby.strip()!r}")
-    assert "lladdr" not in standby or "FAILED" in standby or "INCOMPLETE" in standby, (
-        f"a demoted node still answers for the VIP ({standby.strip()!r}) -- the flock MAC is up on "
-        f"a Secondary, which is the silent blackhole [B.100]/[B.101] came from"
-    )
+    print("a demoted node stops serving, seen from off-box")
 
     host.succeed("/opt/briard/agent/briard-agent handover -unmask")
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    client.succeed("ip neigh flush dev eth1")
+    client.wait_until_succeeds(f"ping -c1 -W2 {moved}")
     back = client.succeed(f"ip -4 neigh show {moved} dev eth1").split()
     print(f"off-box after re-promotion: {' '.join(back)}")
     assert "lladdr" in back and back[back.index("lladdr") + 1] == serving_mac, (

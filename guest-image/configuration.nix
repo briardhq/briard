@@ -529,6 +529,15 @@ let
     # flock MAC up. The hazard the old comment described was live on the very configuration it
     # exempted.
     #
+    # ⚠️ ARGUED, NOT MEASURED, and the distinction is not a formality. The reasoning above stands on
+    # reading -- the proxy is false, and this makes the static path behave like the DHCP path on a
+    # hazard the file already treats as real. What is NOT demonstrated is the hazard biting: a
+    # Secondary teaching the switch a wrong port needs a RIGHT port to exist, so it takes two nodes,
+    # and no test in the tree moves work between two installed nodes ([B.113]). [V3b.26d] tried to
+    # catch it with one and produced an assertion that passed identically against fixed and unfixed
+    # guests -- because a standby deletes the VIP address either way, and nobody answers ARP for an
+    # address they do not hold. Do not read the install rigs' green as cover for this line.
+    #
     # So: ask whether this NIC is the system/DRBD NIC. SYSTEM_DEV is written beside VIP_DEV by
     # net.configure, so a real node always knows; an agent-less harness never sets it and falls
     # through to the old DHCP-only rule, which is exactly the conservative answer for a NIC we

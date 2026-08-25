@@ -197,47 +197,41 @@ pkgs.testers.runNixOSTest {
         timeout=60,
     )
 
-    # --- DELTA 5: THE STANDBY DISCIPLINE, observed off-box ([V3b.26d], the demote half of the
-    # HA pair the test doctrine names).
+    # --- DELTA 5: A ROLE CYCLE, observed off-box ([V3b.26d]).
     #
-    # What this catches is the [B.100]/[B.101] class, and it is SILENT: a Secondary that keeps the
-    # flock MAC up teaches the switch the wrong port for the VIP the moment it emits any frame at
-    # all -- an IPv6 RS, an mDNS query -- and traffic for the service goes to the machine that is
-    # not serving. Nothing is down. The address is correctly gone. The packets vanish anyway.
+    # ⚠️ READ WHAT THIS DOES NOT PROVE FIRST, because an earlier version of this block claimed more
+    # and was VACUOUS. It asserted that a demoted node's flock MAC "goes quiet" by flushing the
+    # client's neighbour table and re-ARPing for the VIP. That passes identically against the fixed
+    # and the UNFIXED guest -- measured, both runs word for word -- because a standby deletes the
+    # VIP ADDRESS whatever it does with the link, and a node does not answer ARP for an address it
+    # does not hold. The probe measured "the address is gone", which was never in doubt.
     #
-    # ⚠️ This rig is the one that had to catch it, because it runs the STATIC-address path
-    # (BRIARD_VIP above). The demote used to bring the NIC down only under DHCP, on the reasoning
-    # "static address => the NIC is shared => leave it up" -- true of the agent-less harnesses,
-    # false of every shipped node, where a static VIP still gets a NIC of its own. So this assertion
-    # is written against the fix and fails against the code as it stood.
+    # The [B.100]/[B.101] hazard is that a Secondary keeping the flock MAC UP teaches the switch
+    # the wrong port by EMITTING (an IPv6 RS, an mDNS query) -- and on a lone node there is no wrong
+    # port, because there is only one port that could serve. That hazard is two-node by nature and
+    # is [B.113]'s to catch. Nothing here can stand in for it.
     #
-    # Off-box for the usual reason: from inside the node a down NIC and an up one with no address
-    # look nearly the same, and it is the SWITCH's opinion that decides where the traffic goes.
-    # `briard handover -keep-masked` is the shipped verb for "stop serving and stay stopped" -- a
-    # lone node has no peer to hand to, which is exactly the standby state we want to hold still.
+    # What IS provable with one node, and is asserted below:
+    #   1. a demote really stops service, seen from off-box rather than from the node's own opinion;
+    #   2. re-promotion brings the VIP back on the SAME MAC -- the service identity survives a role
+    #      change unchanged. That one is failable and worth having in bridge mode especially: eth2
+    #      is a device the GUEST creates, so a re-promotion that rebuilt it without re-applying the
+    #      flock MAC would come back on a kernel-random one and this line is what would say so.
+
     host.succeed("/opt/briard/agent/briard-agent handover -keep-masked")
     client.wait_until_fails("curl -fsS --max-time 3 http://192.168.1.100/healthz", timeout=120)
+    print("a demoted node stops serving, seen from off-box")
 
-    # The MAC must go QUIET on the wire. Flush what the client learned while the node was serving,
-    # then ask again: an ARP that goes unanswered is the switch never being told a new port.
-    client.succeed("ip neigh flush dev eth1")
-    client.execute("ping -c1 -W2 192.168.1.100")
-    standby = client.succeed("ip -4 neigh show 192.168.1.100 dev eth1 || true")
-    print(f"off-box view of a STANDBY node: {standby.strip()!r}")
-    assert "lladdr" not in standby or "FAILED" in standby or "INCOMPLETE" in standby, (
-        f"a demoted node still answers for the VIP ({standby.strip()!r}) -- the flock MAC is up on "
-        f"a Secondary, which is the silent blackhole [B.100]/[B.101] came from"
-    )
-
-    # ...and coming back is the other half. `-unmask` releases the node; it must reclaim the VIP at
-    # the SAME address, and the client must reach it again without anyone touching the client.
     host.succeed("/opt/briard/agent/briard-agent handover -unmask")
     client.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=180)
+    client.succeed("ip neigh flush dev eth1")
+    client.wait_until_succeeds("ping -c1 -W2 192.168.1.100")
     back = client.succeed("ip -4 neigh show 192.168.1.100 dev eth1").split()
     print(f"off-box after re-promotion: {' '.join(back)}")
     assert "lladdr" in back and back[back.index("lladdr") + 1] == vip_mac, (
         f"the VIP came back on a different MAC ({' '.join(back)}, was {vip_mac}) -- the service "
-        f"identity is supposed to be the one thing that survives a role change unchanged"
+        f"identity is supposed to be the one thing a role change leaves unchanged, and in this "
+        f"mode it is a device the guest rebuilt"
     )
   '';
 }
