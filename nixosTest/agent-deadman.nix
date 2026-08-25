@@ -36,7 +36,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.diskSize = 10240;
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ]; # nested KVM
-      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.tcpdump ];
+      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl ];
 
       systemd.services.briard-agent = {
         description = "Briard host agent (deadman proof)";
@@ -107,29 +107,19 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl start briard-agent")
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
 
-    # TEMPORARY INSTRUMENTATION ([V3b.26b] spike -- remove before the item closes). A netns model
-    # of this exact shape passes, node IP and VIP alike, under the shipped arp discipline. The rig
-    # disagrees, so print what the rig actually BUILT rather than reasoning about what it should
-    # have ([[verification-assertions-must-fail]]: instrument before theorising).
-    print("=== host addrs on the private link ===\n" + host.succeed("ip -o addr show dev briard-priv0"))
-    print("=== host neigh ===\n" + host.execute("ip neigh show dev briard-priv0")[1])
-    print("=== host routes over the link ===\n" + host.execute("ip route show dev briard-priv0")[1])
-    print("=== route to the node IP ===\n" + host.execute("ip route get 10.0.0.1")[1])
-    print("=== route to the VIP ===\n" + host.execute("ip route get 192.168.1.100")[1])
-    # WATCH THE WIRE. Host-side state is provably right (route + a permanent neigh whose lladdr is
-    # exactly deriveMAC(node,"wit")), so the question is whether frames leave, whether the guest
-    # answers, and which of the two is missing. A capture answers that; nothing on the host can.
-    host.succeed("(tcpdump -n -i briard-priv0 -c 20 -w /tmp/priv.pcap >/dev/null 2>&1 &) ; sleep 1")
-    print("=== can the host reach the node IP at all? ===\n" + host.execute("ping -c3 -W2 10.0.0.1")[1])
-    host.execute("sleep 2; pkill tcpdump")
-    print("=== what actually crossed the private link ===\n"
-          + host.execute("tcpdump -n -r /tmp/priv.pcap 2>/dev/null")[1])
-    # ...and the guest's own account. GUEST_SERIAL forwards the guest journal here, which is the
-    # only window into the inside of the VM when the channel is the thing under suspicion.
-    print("=== guest journal: networking ===\n"
-          + host.execute("grep -iE 'eth[0-9]|addr|route|link|dhcp|briard-vip' /tmp/guest-serial.log | tail -40")[1])
-    print("=== the agent's own words ===\n"
-          + host.execute("journalctl -u briard-agent | grep -iE 'route|neigh|configure|vip' | tail -20")[1])
+    # THE HOST REACHES ITS GUEST AT THE NODE IP -- asserted before the VIP curl below, because it
+    # is the hop the curl depends on and a failure here says WHICH half broke. This rig had no such
+    # assertion when [V3b.26b] moved the reboot gate onto this address, and its absence cost a
+    # debugging round: the curl failed and nothing said whether the private link or the VIP route
+    # was at fault.
+    #
+    # What it catches, concretely: the link is UNNUMBERED, so both ends pin a permanent neighbour
+    # instead of ARPing. Drop either pin and this fails -- with no address on its outgoing NIC the
+    # guest's ARP borrows a source from another one (arp_announce=2), and what it borrows is eth0's
+    # slirp address, which on this rig is the outer host's own, so nothing ever answers. Measured
+    # on the wire, not reasoned about.
+    host.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
+    print("the host reaches its guest at the node IP over the unnumbered private link")
 
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
 
