@@ -103,6 +103,13 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
+        # ⚠️ SPIKE ([V3b.26b]): IPv6 OFF on the install host. The private link is unnumbered, and
+        # the only mDNS observed crossing it was IPv6 (fe80::...5353 > ff02::fb) -- avahi joins the
+        # IPv4 group on an interface only when that interface HAS a v4 address. So the host's
+        # ability to resolve its own guest's name may rest on the host having v6 link-local on the
+        # tap, which is a stranger's setting and not ours to assume. This makes the rig answer that.
+        boot.kernel.sysctl."net.ipv6.conf.all.disable_ipv6" = 1;
+        boot.kernel.sysctl."net.ipv6.conf.default.disable_ipv6" = 1;
         environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi ];
         # An mDNS resolver ON THE INSTALL HOST, which is what a desktop install actually is
         # ([V3b.19] was measured on one). It is here to make a dependency VISIBLE rather than to
