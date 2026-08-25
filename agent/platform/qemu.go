@@ -218,7 +218,7 @@ func qemuArgs(s QEMUSpec) []string {
 	// ([V3b.16a] deleted the last one).
 	//
 	// ⚠️ Omitting SystemTap slides the service NIC down to eth1 AND the witness NIC to
-	// eth2 -- where the guest's baked 10.9.9.2 is not, so the private link silently
+	// eth2 -- where the guest's baked 10.11.9.2 is not, so the private link silently
 	// fails to exist and with it the reboot gate and the host's route to the VIP
 	// ([V3b.19]). A caller that wants any of those must set all three.
 	if s.ServiceTap != "" || s.SystemTap != "" || s.WitnessTap != "" {

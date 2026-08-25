@@ -31,7 +31,7 @@ func newTestRouter(dev, vipDev string) (*vipRouter, *routeRecorder) {
 	rr := &routeRecorder{}
 	// The two ends in system-subnet terms: the guest's node IP and the host's own address on the
 	// same subnet. Written out here rather than defaulted, so the test states the topology it is
-	// asserting about ([V3b.26b] -- these used to be package constants on a private 10.9.9.0/24).
+	// asserting about ([V3b.26b] -- these used to be package constants on a private 10.11.9.0/24).
 	v := &vipRouter{dev: dev, vipDev: vipDev, via: "10.0.0.1", src: "10.0.0.129", set: rr.set, clear: rr.clear}
 	return v, rr
 }

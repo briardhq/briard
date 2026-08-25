@@ -152,14 +152,14 @@ func forwardedWitnessSpec(self string, join bool, cidr string) api.MeshSpec {
 	peers := []api.MeshPeer{
 		{Name: "anchorA", NodeID: 0, Address: "10.7.0.1:7789", Disk: "/dev/vdb"},
 		{Name: "anchorB", NodeID: 1, Address: "10.7.0.2:7789", Disk: "/dev/vdb"},
-		{Name: "cloud-witness", NodeID: 2, Address: "10.9.9.1:7789"}, // the host forwarder, not the LAN
+		{Name: "cloud-witness", NodeID: 2, Address: "10.11.9.1:7789"}, // the host forwarder, not the LAN
 	}
 	_ = self
 	return api.MeshSpec{
 		Resource: "r0", Device: "/dev/drbd0", Peers: peers,
 		Join: join, SystemDev: "eth1", SystemCIDR: cidr,
 		Witness: &api.MeshWitness{
-			Dev: "eth3", CIDR: "10.9.9.2/24", LocalAddr: "10.9.9.2:7789",
+			Dev: "eth3", CIDR: "10.11.9.2/24", LocalAddr: "10.11.9.2:7789",
 			Target: "witness.briard.example:7788", ServerName: "witness.briard.example",
 		},
 	}
@@ -198,7 +198,7 @@ func TestReconcileMeshForwardedWitnessStartsForwarder(t *testing.T) {
 	if eth1 == nil || eth1.cidr != "10.7.0.1/24" {
 		t.Errorf("eth1 configure-net = %+v, want the DRBD CIDR", eth1)
 	}
-	if eth3 == nil || eth3.cidr != "10.9.9.2/24" || eth3.vipDev != "" {
+	if eth3 == nil || eth3.cidr != "10.11.9.2/24" || eth3.vipDev != "" {
 		t.Errorf("eth3 configure-net = %+v, want the private witness CIDR + no VIP dev", eth3)
 	}
 	// The forwarder was started at the witness peer's mesh address, tunnelling to the cloud proxy
@@ -206,14 +206,14 @@ func TestReconcileMeshForwardedWitnessStartsForwarder(t *testing.T) {
 	if w.started == nil {
 		t.Fatal("the host witness-forwarder was not started")
 	}
-	if w.started.Listen != "10.9.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
-		t.Errorf("forwarder = %+v, want listen 10.9.9.1:7789 -> the cloud proxy", w.started)
+	if w.started.Listen != "10.11.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
+		t.Errorf("forwarder = %+v, want listen 10.11.9.1:7789 -> the cloud proxy", w.started)
 	}
 	if w.started.Cert != cfg.WitnessCert || w.started.ServerName != "witness.briard.example" {
 		t.Errorf("forwarder identity = %+v, want the host-held anchor cert + proxy SAN", w.started)
 	}
 	// The .res is the explicit-connection form: each anchor carries its witness-side local address.
-	if !strings.Contains(f.adjusted.ResConfig, "10.9.9.2:7789") ||
+	if !strings.Contains(f.adjusted.ResConfig, "10.11.9.2:7789") ||
 		strings.Contains(f.adjusted.ResConfig, "connection-mesh") {
 		t.Errorf("forwarded-witness .res should be explicit-connection with the witness local:\n%s", f.adjusted.ResConfig)
 	}
@@ -240,7 +240,7 @@ func TestReconcileMeshForwardedWitnessFailsWithoutIdentity(t *testing.T) {
 // forwarder even when the mesh carries a MeshWitness block.
 func TestReconcileMeshForwardedWitnessNodeStartsNoForwarder(t *testing.T) {
 	cfg := Config{Node: "cloud-witness"}
-	spec := forwardedWitnessSpec("cloud-witness", true, "10.9.9.9/24")
+	spec := forwardedWitnessSpec("cloud-witness", true, "10.11.9.9/24")
 	f, w := &fakeMesher{}, &fakeWitness{}
 	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
@@ -410,7 +410,7 @@ func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 			"is gone and nothing else ever starts one")
 	}
 	// The SAME hop the pairing established -- listening where the .res says the witness peer is.
-	if w.started.Listen != "10.9.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
+	if w.started.Listen != "10.11.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
 		t.Errorf("restored forwarder = %+v, want the witness peer's mesh address -> the cloud proxy", w.started)
 	}
 	if w.started.Cert != fresh.WitnessCert || w.started.ServerName != "witness.briard.example" {
@@ -419,7 +419,7 @@ func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 	// The guest's private witness NIC is re-asserted too (idempotent over a baked address).
 	var eth3 bool
 	for _, c := range f.netCalls {
-		if c.dev == "eth3" && c.cidr == "10.9.9.2/24" {
+		if c.dev == "eth3" && c.cidr == "10.11.9.2/24" {
 			eth3 = true
 		}
 	}

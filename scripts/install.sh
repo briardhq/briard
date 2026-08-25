@@ -85,8 +85,8 @@ DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's system NIC (eth1) -- i
 # ([V3b.26b]), which is why SYSTEM_HOST_CIDR sits beside it below -- when the forwarder follows,
 # this line and the subnet behind it go, and the link keeps only its /32s.
 PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
-PRIV_HOST_CIDR="10.9.9.1/24"
-PRIV_GUEST_CIDR="10.9.9.2/24"
+PRIV_HOST_CIDR="10.11.9.1/24"
+PRIV_GUEST_CIDR="10.11.9.2/24"
 # The private link's bring-up, shared VERBATIM by both substrates' net-up.sh. All three commands
 # are idempotent, so a reboot or a re-run is a no-op. It lives in a variable rather than being
 # written into each heredoc because the two copies must not be able to drift: a private link that

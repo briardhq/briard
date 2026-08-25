@@ -31,9 +31,9 @@ pkgs.testers.runNixOSTest {
     # ([V3b.19a]). A carrier-bearing parent (a veth whose peer is up -- a dummy has no carrier and
     # macvlan bridge-mode won't forward), then the guest's two LAN NICs as macvtap CHILDREN of it in
     # install.sh's order -- sys0 -> the guest's eth1 (the DRBD NIC, idle on one node), svc0 -> eth2
-    # (the VIP) -- and the private host<->guest link as a plain tap holding 10.9.9.1/24, exactly as
+    # (the VIP) -- and the private host<->guest link as a plain tap holding 10.11.9.1/24, exactly as
     # install.sh lays it down. qemu.go assigns NICs positionally, so all three or none: omit sys0 and
-    # the witness NIC lands on eth2, where the guest's baked 10.9.9.2 is not, and the private link
+    # the witness NIC lands on eth2, where the guest's baked 10.11.9.2 is not, and the private link
     # silently fails to exist.
     #
     # ⚠️ THIS USED TO BUILD A HOST-SIDE MACVLAN SHIM INSTEAD (shim0, 192.168.1.1/24), because macvtap
@@ -46,7 +46,7 @@ pkgs.testers.runNixOSTest {
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
         "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
-        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
     # Writable overlay of the read-only store qcow2 + a blank DRBD backing disk.
@@ -72,7 +72,7 @@ pkgs.testers.runNixOSTest {
         # one address anything uses to reach it, and the gate below answers there ([V3b.26b]).
         # SYSTEM_HOST_CIDR is the host's own end of that subnet, on the tap -- the rig states all
         # three because it is standing in for install.sh, which sets them together or not at all.
-        "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.9.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
+        "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
         "--setenv=STATUS_EVERY=2s "
         # The test DECLARES the service address it is about to curl. The guest image bakes none
         # (V3.19c step 3) and unset means DHCP, which nothing answers on a nixosTest's L2.

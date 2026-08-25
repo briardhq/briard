@@ -448,7 +448,7 @@ pkgs.testers.runNixOSTest {
     # address and a name that worked everywhere except on the machine reading them.
     #
     # The user-facing addresses are UNCHANGED -- the VIP and the flock name, the same two strings
-    # the client just used. The private link is transport and is never published: 10.9.9.2 appears
+    # the client just used. The private link is transport and is never published: 10.11.9.2 appears
     # in the ROUTE below and nowhere a household would look.
     host.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=180)
     print(f"the install host reached its own guest at http://{vip}/")
@@ -529,9 +529,9 @@ pkgs.testers.runNixOSTest {
         f"{vip} -- the household's own machine still cannot find the household's own node"
     )
     # And it must resolve to the VIP, NOT to the private address. The name is flock-scoped and
-    # survives a failover; 10.9.9.2 is node-scoped and does not, so a name pointing at it would be
+    # survives a failover; 10.11.9.2 is node-scoped and does not, so a name pointing at it would be
     # the V3.20 incoherence restored in a place nobody would look for it.
-    assert "10.9.9.2" not in host_resolved, (
+    assert "10.11.9.2" not in host_resolved, (
         f"the name resolved to the private link address ({host_resolved!r}) -- transport must "
         f"never become identity"
     )

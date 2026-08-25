@@ -19,16 +19,16 @@ func witnessResource() Resource {
 }
 
 // forwardedWitnessResource is the 2-anchor + cloud-witness mesh: each anchor reaches the
-// diskless witness through its OWN host forwarder (WitnessLocal 10.9.9.2 → forwarder 10.9.9.1),
+// diskless witness through its OWN host forwarder (WitnessLocal 10.11.9.2 → forwarder 10.11.9.1),
 // while the anchors interconnect directly on the LAN (10.7.0.1/.2).
 func forwardedWitnessResource() Resource {
 	return Resource{
 		Name:   "r0",
 		Device: "/dev/drbd0",
 		Peers: []Peer{
-			{Name: "n1", NodeID: 0, Address: "10.7.0.1:7789", Disk: "/dev/vdb", WitnessLocal: "10.9.9.2:7789"},
-			{Name: "n2", NodeID: 1, Address: "10.7.0.2:7789", Disk: "/dev/vdb", WitnessLocal: "10.9.9.2:7789"},
-			{Name: "cloud-witness", NodeID: 2, Address: "10.9.9.1:7789"},
+			{Name: "n1", NodeID: 0, Address: "10.7.0.1:7789", Disk: "/dev/vdb", WitnessLocal: "10.11.9.2:7789"},
+			{Name: "n2", NodeID: 1, Address: "10.7.0.2:7789", Disk: "/dev/vdb", WitnessLocal: "10.11.9.2:7789"},
+			{Name: "cloud-witness", NodeID: 2, Address: "10.11.9.1:7789"},
 		},
 	}
 }
@@ -75,12 +75,12 @@ func TestResourceConfigForwardedWitness(t *testing.T) {
 		host n2 address 10.7.0.2:7789;
 	}
 	connection {
-		host n1 address 10.9.9.2:7789;
-		host cloud-witness address 10.9.9.1:7789;
+		host n1 address 10.11.9.2:7789;
+		host cloud-witness address 10.11.9.1:7789;
 	}
 	connection {
-		host n2 address 10.9.9.2:7789;
-		host cloud-witness address 10.9.9.1:7789;
+		host n2 address 10.11.9.2:7789;
+		host cloud-witness address 10.11.9.1:7789;
 	}
 }
 `
@@ -101,7 +101,7 @@ func TestForwardedWitnessAvoidsMeshForm(t *testing.T) {
 		t.Error("explicit form must keep addresses in connections, not in `on` blocks")
 	}
 	// The witness is reached through the per-anchor host forwarder, once per anchor.
-	if n := strings.Count(got, "host cloud-witness address 10.9.9.1:7789;"); n != 2 {
+	if n := strings.Count(got, "host cloud-witness address 10.11.9.1:7789;"); n != 2 {
 		t.Errorf("want the witness forwarder addressed once per anchor (2), got %d", n)
 	}
 }

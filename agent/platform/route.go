@@ -24,7 +24,7 @@ import (
 // machine that was missing it.
 //
 // WHAT THIS DELIBERATELY IS NOT: a way to publish the private address. The user is never given
-// 10.9.9.2. That address is node-scoped -- it is TRANSPORT -- while the VIP and the name are
+// 10.11.9.2. That address is node-scoped -- it is TRANSPORT -- while the VIP and the name are
 // flock-scoped and survive a failover it does not. A household that bookmarked the private
 // address would have bookmarked a machine instead of a service, which is the same incoherence
 // [V3.20] took out of the mDNS name.
@@ -99,7 +99,7 @@ type NodeRoute struct {
 // what the agent already hands qemu for that NIC, so there is no second source to disagree.
 //
 // This is also why the link needs no addressing of its own. The older shape gave both ends
-// addresses on a private 10.9.9.0/24 purely so the host could `via` a resolvable address; pinning
+// addresses on a private 10.11.9.0/24 purely so the host could `via` a resolvable address; pinning
 // the neighbour removes the reason for the subnet, and with it an invented range that could
 // collide with a household's LAN just as 10.0.0.0/24 can ([V3b.26f]).
 func nodeRouteArgs(r NodeRoute) []string {

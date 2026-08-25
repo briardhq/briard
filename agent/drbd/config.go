@@ -10,7 +10,7 @@ import (
 // for a diskless witness.
 //
 // WitnessLocal, when set on a disk anchor, is that anchor's own "ip:port" on the
-// private guest↔host witness link (e.g. "10.9.9.2:7789"). Its presence — together
+// private guest↔host witness link (e.g. "10.11.9.2:7789"). Its presence — together
 // with a diskless witness peer whose Address is the host forwarder — switches
 // Config to explicit `connection` stanzas: the anchor reaches the
 // cloud witness through its OWN host's forwarder, so the witness path needs a

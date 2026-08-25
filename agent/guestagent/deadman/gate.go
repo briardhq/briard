@@ -29,19 +29,15 @@ import (
 //
 // It READS NOTHING from the connection. There is no request to parse, so there is no parser to
 // get wrong: accept, write one line, close. That was cheap insurance when the link was private and
-// point-to-point; since [V3b.26b] moved the gate onto this node's own address it is what makes the
-// move safe, because the system subnet rides the LAN's L2 and the listener is no longer hidden by
-// addressing alone.
+// point-to-point. It answers on this node's own address, which rides the LAN's L2, so the listener
+// is not hidden by addressing -- reading nothing is what makes that safe ([V3b.26b]).
 
 // GatePort is where the gate answers. Adjacent to DRBD's 7789, and the only fixed number left on
 // this path: the ADDRESS is the node's own (DESIGN §4), agent-assigned and flock-scoped, so it
 // cannot be a constant here and must not be one anywhere else either.
 //
-// It used to be. The guest baked 10.9.9.2 on eth3, install.sh put 10.9.9.1 on the tap, and the
-// cloud's mesh composer handed both out -- the same numbers in four languages that cannot import
-// from each other, which is why gate_pairing_test.go existed to read the other files and fail on
-// drift. [V3b.26b] removed the duplication rather than the guard: nothing spells these addresses
-// twice any more, so there is nothing left to drift.
+// Nothing spells the gate's address twice, which is why no cross-language drift guard is needed
+// for it: the node IP is assigned once and travels over the channel ([V3b.26b]).
 const GatePort = 7790
 
 // GateAddr is the address the host dials to read a guest's reboot gate: that node's node IP, the

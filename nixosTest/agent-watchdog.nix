@@ -105,7 +105,7 @@ pkgs.testers.runNixOSTest {
           SYSTEM_DEV = "eth1";
           SYSTEM_CIDR = "10.0.0.1/24";
           SYSTEM_HOST_CIDR = "10.0.0.129/32";
-          WITNESS_CIDR = "10.9.9.2/24";
+          WITNESS_CIDR = "10.11.9.2/24";
           SERVICE_TAP = "svc0";
           WITNESS_TAP = "briard-priv0";
           VIP_DEV = "eth2";
@@ -138,7 +138,7 @@ pkgs.testers.runNixOSTest {
 
     # The shipped NIC contract (as agent-readopt): carrier-bearing parent, the guest's two LAN NICs
     # as macvtap children in install.sh's order (sys0 -> eth1, svc0 -> eth2), and the private
-    # host<->guest link as a plain tap at 10.9.9.1/24. The macvlan shim this used to build was the
+    # host<->guest link as a plain tap at 10.11.9.1/24. The macvlan shim this used to build was the
     # rig granting itself reachability the product lacked ([V3b.19a]); the VIP now answers here
     # because the agent routes it over that link.
     #
@@ -149,7 +149,7 @@ pkgs.testers.runNixOSTest {
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
         "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
-        "ip tuntap add briard-priv0 mode tap && ip addr add 10.9.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
+        "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")

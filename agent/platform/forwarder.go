@@ -11,7 +11,7 @@ import (
 // mTLS hop that tunnels the guest's DRBD cloud-witness connection to the cloud witness-proxy, so the
 // DRBD kernel socket speaks only plaintext over the trusted private guest↔host link and never the
 // internet ([[cloud-witness-v3-1d]], [[logic-on-host-by-default]]). Listen is the private address
-// the guest's DRBD dials (= the witness peer's mesh Address, e.g. "10.9.9.1:7789"); Target is the
+// the guest's DRBD dials (= the witness peer's mesh Address, e.g. "10.11.9.1:7789"); Target is the
 // cloud proxy; Cert/Key/CA are the host-held anchor identity (the cert path).
 type ForwarderSpec struct {
 	Binary     string // witness-forwarder binary path

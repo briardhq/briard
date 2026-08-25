@@ -13,9 +13,9 @@ import (
 // then black-holes. A regression to that form would pass every other test in the tree.
 func TestRouteReplaceArgs(t *testing.T) {
 	got := strings.Join(routeReplaceArgs(VIPRoute{
-		Addr: "192.168.9.225", Via: "10.9.9.2", Dev: "briard-priv0", Src: "10.9.9.1",
+		Addr: "192.168.9.225", Via: "10.11.9.2", Dev: "briard-priv0", Src: "10.11.9.1",
 	}), " ")
-	want := "route replace 192.168.9.225/32 via 10.9.9.2 dev briard-priv0 src 10.9.9.1"
+	want := "route replace 192.168.9.225/32 via 10.11.9.2 dev briard-priv0 src 10.11.9.1"
 	if got != want {
 		t.Errorf("ip %s\nwant ip %s", got, want)
 	}
@@ -23,7 +23,7 @@ func TestRouteReplaceArgs(t *testing.T) {
 
 // A /32 and nothing wider: the household's LAN prefix is not ours to route.
 func TestRouteReplaceArgs_HostRouteOnly(t *testing.T) {
-	for _, a := range routeReplaceArgs(VIPRoute{Addr: "10.0.0.5", Via: "10.9.9.2", Dev: "d", Src: "10.9.9.1"}) {
+	for _, a := range routeReplaceArgs(VIPRoute{Addr: "10.0.0.5", Via: "10.11.9.2", Dev: "d", Src: "10.11.9.1"}) {
 		if strings.Contains(a, "/") && a != "10.0.0.5/32" {
 			t.Errorf("route names %q, want only the single host address", a)
 		}
@@ -61,7 +61,7 @@ func TestRouteAbsent(t *testing.T) {
 // An incomplete spec is refused rather than handed to `ip`, which would otherwise be asked to
 // parse "/32" as an address.
 func TestSetVIPRoute_RejectsIncompleteSpec(t *testing.T) {
-	full := VIPRoute{Addr: "192.168.9.225", Via: "10.9.9.2", Dev: "briard-priv0", Src: "10.9.9.1"}
+	full := VIPRoute{Addr: "192.168.9.225", Via: "10.11.9.2", Dev: "briard-priv0", Src: "10.11.9.1"}
 	for _, blank := range []func(VIPRoute) VIPRoute{
 		func(r VIPRoute) VIPRoute { r.Addr = ""; return r },
 		func(r VIPRoute) VIPRoute { r.Via = ""; return r },
