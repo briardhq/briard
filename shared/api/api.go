@@ -373,8 +373,8 @@ type MeshSpec struct {
 // single-node, LAN-witness, and blank-join meshes — those render as a plain connection-mesh.
 type MeshWitness struct {
 	Dev        string `json:"dev"`         // guest witness NIC, e.g. "eth3"
-	CIDR       string `json:"cidr"`        // its address on the private link, e.g. "10.9.9.2/24"
-	LocalAddr  string `json:"local_addr"`  // the anchor's DRBD witness-side local "ip:port", e.g. "10.9.9.2:7789"
+	CIDR       string `json:"cidr"`        // its address on the private link, e.g. "10.11.9.2/24"
+	LocalAddr  string `json:"local_addr"`  // the anchor's DRBD witness-side local "ip:port", e.g. "10.11.9.2:7789"
 	Target     string `json:"target"`      // the cloud witness-proxy address the host forwarder tunnels to
 	ServerName string `json:"server_name"` // expected SAN on the witness-proxy server cert
 }

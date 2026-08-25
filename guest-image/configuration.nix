@@ -1292,13 +1292,13 @@ in
     # The auto-address fear above does not reach the name a household is GIVEN. briard-mdns
     # publishes an EXPLICIT address -- the VIP, stripped from the same VIP_ADDR the node claimed --
     # and an explicit `avahi-publish -a` record is interface-independent, so what eth3 carries is
-    # the VIP and never 10.9.9.2. That distinction is what makes allowing eth3 safe rather than
+    # the VIP and never 10.11.9.2. That distinction is what makes allowing eth3 safe rather than
     # merely useful: the private address is TRANSPORT and must never become identity. It is
     # node-scoped, while the VIP and the name are flock-scoped and survive a failover it does not.
     # Reaching that VIP from the host is the route the agent maintains (platform/route.go).
     #
     # What the daemon may auto-publish is `briard-node-<id>.local`, the node id -- on eth3 that
-    # resolves to 10.9.9.2, which is true, node-scoped, and a name no household is ever given, on a
+    # resolves to 10.11.9.2, which is true, node-scoped, and a name no household is ever given, on a
     # two-host point-to-point wire. The name they ARE given is published explicitly by briard-mdns,
     # is flock-scoped, and carries the VIP and nothing else.
     #

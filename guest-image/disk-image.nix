@@ -153,13 +153,19 @@ let
       };
       networking.nameservers = [ "10.0.2.3" ]; # SLIRP's resolver, forwarded to the host's
 
-      # eth3 -- the private host<->guest link -- carries NO ADDRESS. It is pure L2 plumbing: the
-      # host routes a /32 to this node's node IP over it and pins a permanent neighbour entry for
-      # it, and this side routes a /32 back (agent/platform/route.go, net.configure). Nothing on
-      # either end needs an address of its own, so the invented 10.9.9.0/24 that used to number it
-      # is gone -- one fewer private range to collide with a household's LAN ([V3b.26b]).
+      # eth3 -- the private host<->guest link -- is addressed by the AGENT, not baked here, and its
+      # address is pure SUBSTRATE: nothing dials it. The reboot gate answers at this node's node IP,
+      # the host routes the VIP `via` that node IP, and both ends pin a permanent neighbour entry so
+      # neither has to ARP across the link (agent/platform/route.go, net.configure).
       #
-      # THE OBJECTION THIS REPLACES, answered rather than dropped. The address used to be baked
+      # It carries an address at all for one measured reason: avahi joins the IPv4 mDNS group on an
+      # interface only if that interface HAS a v4 address. Without one this NIC answers mDNS over
+      # IPv6 alone, and the far end of that conversation is a stranger's host which may have v6
+      # off -- so [V3b.19]'s name half would break silently, the household's own machine unable to
+      # find its own node while everything else works ([V3b.26b]; install-macvtap runs with v6
+      # disabled precisely so nothing can pass for a reason we do not control).
+      #
+      # NOT BAKED, and the objection to that is answered rather than dropped. The address used to be baked
       # precisely because the host reads the reboot gate when the CONTROL CHANNEL IS DEAD, and an
       # agent-assigned address looked like it would be "reliably absent in the one failure it
       # exists to serve". It is not, and `-no-reboot` is why: the gate is consulted only on rung 3,
