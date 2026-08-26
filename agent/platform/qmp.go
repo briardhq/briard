@@ -251,9 +251,9 @@ func qmpReachable(ctx context.Context, path string) bool {
 	return true
 }
 
-// Accelerated reports whether the running VM is actually being accelerated by KVM, and
-// whether the host has KVM at all -- QEMU's own answer (`query-kvm`), not an inference from
-// the argv or from /dev/kvm.
+// Accelerator reports which accelerator the running VM actually got, by name
+// ("kvm", "whpx", "tcg", ...) -- QEMU's own answer (`query-accelerators`), not an inference
+// from the argv or from /dev/kvm.
 //
 // It has to be asked rather than assumed, because QEMUSpec.Accel is a fallback LIST
 // ("kvm:tcg"): the command line says what the host REQUESTED and only the VM knows what it
@@ -261,27 +261,42 @@ func qmpReachable(ctx context.Context, path string) bool {
 // costs roughly an order of magnitude of guest speed, so the one place it must not stay silent
 // is the log a future performance question starts from (host.bringUp logs it).
 //
-// `present` distinguishes the two ways to land in emulation, which have different fixes:
-// present=false is a host with no virtualisation extensions available at all (usually
-// firmware, or a VM without nested virt), while present=true with enabled=false means KVM is
-// there and something stopped us using it (permissions on /dev/kvm, a module not loaded).
-func (g *Guest) Accelerated(ctx context.Context) (enabled, present bool, err error) {
+// ⚠️ IT ASKS FOR A NAME, NOT FOR A YES/NO ABOUT KVM, and the difference is not cosmetic. The
+// older `query-kvm` answers `{"enabled": false, "present": false}` on a perfectly accelerated
+// WHPX guest, because it is asking whether the accelerator is KVM specifically -- measured on
+// Windows in [V3b.27](a). Its `present` field was no better: QEMU implements it as
+// `accel_find("kvm")`, i.e. *is KVM compiled into this binary*, so on every Linux build it is
+// true no matter what the host can do ([V3b.28]).
+//
+// `query-accelerators` needs QEMU 10.2+, which is what qemu-bundle.nix ships. An older qemu
+// errors here and the caller logs that it could not ask; there is deliberately no `query-kvm`
+// fallback, because a second code path maintained forever for a qemu we do not ship is the
+// wrong trade.
+func (g *Guest) Accelerator(ctx context.Context) (string, error) {
 	if g == nil {
-		return false, false, fmt.Errorf("platform: no guest to ask about acceleration")
+		return "", fmt.Errorf("platform: no guest to ask about acceleration")
 	}
-	raw, err := qmpExecute(ctx, g.QMPSock, "query-kvm", nil)
+	raw, err := qmpExecute(ctx, g.QMPSock, "query-accelerators", nil)
 	if err != nil {
-		return false, false, err
+		return "", err
 	}
 	var out struct {
-		Enabled bool `json:"enabled"`
-		Present bool `json:"present"`
+		Enabled string `json:"enabled"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return false, false, fmt.Errorf("platform: query-kvm: %w", err)
+		return "", fmt.Errorf("platform: query-accelerators: %w", err)
 	}
-	return out.Enabled, out.Present, nil
+	if out.Enabled == "" {
+		return "", fmt.Errorf("platform: query-accelerators named no accelerator")
+	}
+	return out.Enabled, nil
 }
+
+// AccelTCG is the one accelerator name that means the guest is being EMULATED rather than
+// accelerated. Every other name QEMU can return is some hypervisor doing the work, so callers
+// test for this one rather than enumerating the rest -- the list grows with QEMU, the
+// emulator does not.
+const AccelTCG = "tcg"
 
 // WaitStopped blocks until the VM is actually gone, which is the only honest confirmation
 // that a shutdown happened: every way of ASKING for one (the guest agent's os.poweroff, the

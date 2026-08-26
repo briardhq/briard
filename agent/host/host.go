@@ -597,9 +597,9 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 	}
 }
 
-// logAcceleration records, once per bring-up, whether this guest is being accelerated by KVM
-// or emulated by TCG -- asking QEMU (`query-kvm`) rather than trusting the argv, because
-// Accel is a fallback list and the fall back to emulation is silent.
+// logAcceleration records, once per bring-up, which accelerator this guest actually got --
+// asking QEMU (`query-accelerators`) rather than trusting the argv, because Accel is a fallback
+// list and the fall back to emulation is silent.
 //
 // It exists for a question that gets asked LATER: "why is this node slow?". Emulation is a
 // supported configuration, not a fault (a host with no virtualisation extensions still gets a
@@ -607,9 +607,18 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 // -- and that is exactly what makes it invisible. Without this line the first honest answer
 // costs someone a bisect; with it, the answer is in the journal from the first boot.
 //
-// The healthy case is logged too, deliberately. A check that only speaks up when something is
-// wrong leaves a reader unable to tell "accelerated" from "the check never ran", and this one
-// is a one-liner per bring-up.
+// The healthy case is logged too, deliberately, and it NAMES the accelerator rather than saying
+// "accelerated": a reader who cannot tell "accelerated" from "the check never ran" is no better
+// off than with silence, and on a host with more than one hypervisor available, which one won is
+// the interesting half.
+//
+// It used to ask `query-kvm` and infer the rest, which was wrong in two directions at once
+// ([V3b.28]): the question is KVM-shaped, so a WHPX guest reads as emulated; and its `present`
+// field is `accel_find("kvm")` -- whether KVM is compiled into the binary -- not a fact about
+// the host, so the branch that split "no virt extensions" from "/dev/kvm unreadable" was picking
+// between them on a value that is unconditionally true on Linux. QMP cannot tell those two
+// apart and never could, so the line now names both and leaves the prediction to the
+// install-time report card, which asks the host directly.
 //
 // Never fatal: a guest that boots and serves is not made worse by an unanswered question about
 // its accelerator. The install-time counterpart is the report card's virt-flags advisory --
@@ -622,24 +631,23 @@ func logAcceleration(ctx context.Context, g *platform.Guest, spec platform.QEMUS
 	if cpu == "" {
 		cpu = "qemu default"
 	}
-	enabled, present, err := g.Accelerated(ctx)
+	accel, err := g.Accelerator(ctx)
 	switch {
 	case err != nil:
-		logf("could not ask qemu whether KVM is in use (%v); accel was requested as %q", err, spec.Accel)
-	case enabled:
-		logf("guest accelerated by KVM (accel=%q cpu=%q)", spec.Accel, cpu)
+		logf("could not ask qemu which accelerator is in use (%v); accel was requested as %q", err, spec.Accel)
+	case accel != platform.AccelTCG:
+		logf("guest accelerated by %s (accel=%q cpu=%q)", accel, spec.Accel, cpu)
 	default:
 		// Spelled out at length because the reader of this line is, by construction, someone
-		// who did not know it applied to them -- and the two causes have different fixes.
-		why := "this host has no virtualisation extensions available (check the firmware, or nested virt if this host is itself a VM)"
-		if present {
-			why = "the host HAS KVM but qemu could not use it (check /dev/kvm permissions and that the kvm module is loaded)"
-		}
-		logf("WARNING: this guest is EMULATED, not accelerated — qemu fell back to TCG: %s. "+
+		// who did not know it applied to them.
+		logf("WARNING: this guest is EMULATED, not accelerated — qemu fell back to TCG. "+
+			"Either this host has no virtualisation extensions available (check the firmware, or "+
+			"nested virt if this host is itself a VM), or it has them and qemu could not use them "+
+			"(check /dev/kvm permissions and that the kvm module is loaded). "+
 			"It runs correctly but roughly an order of magnitude slower, and disk/crypto-heavy work "+
 			"(sha256, TLS, checksums) suffers most. Requested accel=%q cpu=%q. "+
 			"This is a supported configuration, so nothing else will report it: start any performance "+
-			"question here.", why, spec.Accel, cpu)
+			"question here.", spec.Accel, cpu)
 	}
 }
 

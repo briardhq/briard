@@ -223,8 +223,8 @@ func (e *recExec) ran(substr string) bool { return e.count(substr) > 0 }
 type fakeQMP struct {
 	mu   sync.Mutex
 	cmds []string
-	// replies overrides the default `{"return":{}}` for named commands -- query-kvm answers
-	// with a payload, and its two fields are the whole point of asking. Fixed at construction
+	// replies overrides the default `{"return":{}}` for named commands -- query-accelerators
+	// answers with a payload, and the name in it is the whole point of asking. Fixed at construction
 	// so the serving goroutine only ever reads it; a test that set it later would race its fake.
 	replies map[string]string
 }

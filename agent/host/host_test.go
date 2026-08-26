@@ -766,36 +766,51 @@ func TestServiceMACFallsBackToNodeWithoutFlockID(t *testing.T) {
 // declaration: a host with no virtualisation extensions gets a guest that boots, converges and
 // serves — correctly, and roughly an order of magnitude slower. Nothing fails, so nothing
 // reports it, and the cost lands on whoever asks "why is this node slow?" months later. This
-// asserts the line that answers them, and that it comes from ASKING qemu (query-kvm) rather
-// than from re-reading the argv we chose.
+// asserts the line that answers them, and that it comes from ASKING qemu
+// (`query-accelerators`) rather than from re-reading the argv we chose.
+//
+// The table asks for a NAME, which is what [V3b.28] changed. The case that decides it is the
+// third: an accelerated guest whose accelerator is not KVM must not log a warning — under the
+// old `query-kvm` it did, because the question was KVM-shaped and WHPX answers it "no".
 func TestLogAccelerationSaysWhatTheVMActuallyGot(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		kvm     string   // the query-kvm payload qemu returns
+		accel   string   // the query-accelerators payload qemu returns
 		want    []string // substrings the operator must be able to find
 		notWant string
 	}{
 		{
-			name: "emulated on a host with no virt at all",
-			kvm:  `{"return":{"enabled":false,"present":false}}`,
-			want: []string{"WARNING", "EMULATED", "firmware", "order of magnitude"},
-		},
-		{
-			// The same symptom with the opposite fix, so the hint has to discriminate between
-			// them or it is decoration: present=true means KVM is there and we failed to use it.
-			name: "emulated even though the host HAS KVM",
-			kvm:  `{"return":{"enabled":false,"present":true}}`,
-			want: []string{"WARNING", "EMULATED", "/dev/kvm"},
+			name:  "emulated: the fallback fired and says so",
+			accel: `{"return":{"enabled":"tcg","present":["qtest","tcg"]}}`,
+			want:  []string{"WARNING", "EMULATED", "firmware", "/dev/kvm", "order of magnitude"},
 		},
 		{
 			name:    "accelerated: said out loud, so silence never has to be interpreted",
-			kvm:     `{"return":{"enabled":true,"present":true}}`,
-			want:    []string{"accelerated by KVM", "cpu=\"max\""},
+			accel:   `{"return":{"enabled":"kvm","present":["kvm","qtest","tcg"]}}`,
+			want:    []string{"accelerated by kvm", "cpu=\"max\""},
+			notWant: "WARNING",
+		},
+		{
+			// The case the swap exists for: a hypervisor that is not KVM is still a
+			// hypervisor. Asking `query-kvm` here answered {"enabled":false} and this line
+			// called a correctly accelerated node emulated (measured on Windows, [V3b.27](a)).
+			name:    "accelerated by something that is not KVM",
+			accel:   `{"return":{"enabled":"whpx","present":["qtest","tcg","whpx"]}}`,
+			want:    []string{"accelerated by whpx"},
+			notWant: "WARNING",
+		},
+		{
+			// An accelerator we have never heard of must read as acceleration, not as a
+			// fault: the enum grows with QEMU and this code should not need editing when it
+			// does. Only tcg means emulation.
+			name:    "an accelerator this code has never heard of",
+			accel:   `{"return":{"enabled":"mshv","present":["kvm","mshv","qtest","tcg"]}}`,
+			want:    []string{"accelerated by mshv"},
 			notWant: "WARNING",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, sock := startQMPWith(t, map[string]string{"query-kvm": tc.kvm})
+			_, sock := startQMPWith(t, map[string]string{"query-accelerators": tc.accel})
 			spec := platform.QEMUSpec{QMPSock: sock, Accel: "kvm:tcg", CPUModel: "max"}
 			var log string
 			logAcceleration(context.Background(), platform.Adopt(spec), spec,
