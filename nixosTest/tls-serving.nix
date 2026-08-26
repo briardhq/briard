@@ -15,11 +15,21 @@ let
   h = import ./lib.nix { inherit pkgs guestModule; };
   # Two independent self-signed certs for the fixed VIP (each its own CA, so `curl
   # --cacert A` validates only what A signed) — cert A is the initial cert, cert B stands
-  # in for a renewal. Generated deterministically at build.
+  # in for a renewal.
+  #
+  # The validity has to outlive the STORE PATH, not the test run. This derivation's inputs
+  # never change, so nix builds it once and every later run is served the same cached cert:
+  # the clock starts at build time, and the test may run any number of days after that. The
+  # nightly's force-rerun does not help, by design — it invalidates the `vm-test-run-*`
+  # outputs, and these certs are a *dependency* of those rather than a referrer, so they
+  # stay warm with the guest image and are never rebuilt on their account. A short-dated
+  # fixture therefore expires *in the store* and fails a test that asserts nothing about
+  # expiry — and it takes the two `--cacert` negatives down with it, since those pass
+  # vacuously once every request fails. Same reason the other fixtures here are long-dated.
   mkCert = name: pkgs.runCommand name { nativeBuildInputs = [ pkgs.openssl ]; } ''
     mkdir -p $out
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-      -keyout $out/key.pem -out $out/fullchain.pem -days 30 \
+      -keyout $out/key.pem -out $out/fullchain.pem -days 36500 \
       -subj "/CN=briard.test" -addext "subjectAltName=DNS:briard.test,IP:192.168.1.100"
   '';
   testCert = mkCert "briard-test-cert-a";
