@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"briard.io/agent/drbd"
@@ -2525,5 +2524,5 @@ func (osExecutor) WriteFile(path string, data []byte) error {
 func (osExecutor) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
 
 func (osExecutor) Sethostname(name string) error {
-	return syscall.Sethostname([]byte(name))
+	return setHostname(name)
 }

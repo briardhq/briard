@@ -3,7 +3,6 @@ package platform
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -70,7 +69,7 @@ func SetVIPRoute(ctx context.Context, r VIPRoute) error {
 	if r.Addr == "" || r.Via == "" || r.Dev == "" || r.Src == "" {
 		return fmt.Errorf("platform: VIP route spec incomplete (%+v)", r)
 	}
-	if out, err := exec.CommandContext(ctx, "ip", routeReplaceArgs(r)...).CombinedOutput(); err != nil {
+	if out, err := runIP(ctx, routeReplaceArgs(r)...); err != nil {
 		return fmt.Errorf("platform: ip route replace %s: %w: %s", r.Addr, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -117,7 +116,7 @@ func SetNodeRoute(ctx context.Context, r NodeRoute) error {
 		return fmt.Errorf("platform: node route spec incomplete (%+v)", r)
 	}
 	for _, args := range [][]string{nodeNeighArgs(r), nodeRouteArgs(r)} {
-		if out, err := exec.CommandContext(ctx, "ip", args...).CombinedOutput(); err != nil {
+		if out, err := runIP(ctx, args...); err != nil {
 			return fmt.Errorf("platform: ip %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 		}
 	}
@@ -132,7 +131,7 @@ func SetNodeRoute(ctx context.Context, r NodeRoute) error {
 // The guest's end is the opposite -- deriveMAC makes it a function of the node name -- which is
 // why only this direction needs carrying over the channel.
 func LinkMAC(ctx context.Context, dev string) (string, error) {
-	out, err := exec.CommandContext(ctx, "ip", "-o", "link", "show", "dev", dev).CombinedOutput()
+	out, err := runIP(ctx, "-o", "link", "show", "dev", dev)
 	if err != nil {
 		return "", fmt.Errorf("platform: ip link show %s: %w: %s", dev, err, strings.TrimSpace(string(out)))
 	}
@@ -161,7 +160,7 @@ func linkMACFrom(out string) string {
 // anticipate leaves the host pointing at a guest that may no longer serve, which is the one
 // failure mode this whole path can cause.
 func ClearVIPRoute(ctx context.Context, addr, dev string) error {
-	out, err := exec.CommandContext(ctx, "ip", routeDelArgs(addr, dev)...).CombinedOutput()
+	out, err := runIP(ctx, routeDelArgs(addr, dev)...)
 	if err == nil || routeAbsent(string(out)) {
 		return nil
 	}

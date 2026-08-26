@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -66,7 +65,7 @@ func TestWriteTelemetryPublishesTheSample(t *testing.T) {
 // error there and always did.
 func TestWriteTelemetryDoesNotBlockOnAHungPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.json")
-	if err := syscall.Mkfifo(path+".tmp", 0o644); err != nil {
+	if err := mkFifo(path + ".tmp"); err != nil {
 		t.Skipf("cannot create a FIFO here: %v", err)
 	}
 	cfg := Config{TelemetryPath: path}

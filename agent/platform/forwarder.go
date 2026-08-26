@@ -3,8 +3,6 @@ package platform
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strings"
 )
 
 // ForwarderSpec configures the anchor-side witness-forwarder: the host-held
@@ -61,8 +59,8 @@ func StartForwarder(ctx context.Context, s ForwarderSpec) error {
 		"-ca", s.CA,
 		"-servername", s.ServerName,
 	}
-	if out, err := exec.CommandContext(ctx, "systemd-run", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("platform: systemd-run witness-forwarder: %w: %s", err, out)
+	if out, err := startTransient(ctx, args); err != nil {
+		return fmt.Errorf("platform: start witness-forwarder unit: %w: %s", err, out)
 	}
 	return nil
 }
@@ -70,6 +68,5 @@ func StartForwarder(ctx context.Context, s ForwarderSpec) error {
 // forwarderRunning reports whether the forwarder's transient service is currently active -- the
 // idempotency probe (any non-"active" state reads as false, so the caller starts fresh).
 func forwarderRunning(ctx context.Context, unit string) bool {
-	out, _ := exec.CommandContext(ctx, "systemctl", "is-active", unit).Output()
-	return strings.TrimSpace(string(out)) == "active"
+	return unitIsActive(ctx, unit)
 }

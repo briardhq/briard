@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"briard.io/agent/guestagent"
@@ -410,8 +408,8 @@ func Launch(ctx context.Context, s QEMUSpec) (*Guest, error) {
 	if err := waitUnitFree(ctx, unit, unitFreeGrace); err != nil {
 		return nil, err
 	}
-	if out, err := exec.CommandContext(ctx, "systemd-run", args...).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("platform: systemd-run guest: %w: %s", err, out)
+	if out, err := startTransient(ctx, args); err != nil {
+		return nil, fmt.Errorf("platform: start guest unit: %w: %s", err, out)
 	}
 	if err := waitForSocket(ctx, s.ControlSock); err != nil {
 		// FORCE, not the graceful stop: this is a guest that never even produced its control
@@ -455,20 +453,14 @@ func Adopt(s QEMUSpec) *Guest {
 // re-adopt probe. Any non-"active" state (inactive/failed/absent) reads as false,
 // so the caller launches fresh.
 func Running(ctx context.Context, s QEMUSpec) bool {
-	return unitActive(s.unit())
+	return unitIsActive(ctx, s.unit())
 }
 
-func unitActive(unit string) bool {
-	out, _ := exec.Command("systemctl", "is-active", unit).Output()
-	return strings.TrimSpace(string(out)) == "active"
-}
-
-// unitState reads a unit's ActiveState. systemctl answers for units that do not exist too
-// (an absent unit is "inactive", exit 0), so the error return means systemctl itself failed
+// unitState reads a unit's ActiveState. The service manager answers for units that do not exist
+// too (an absent unit is "inactive", exit 0), so the error return means the query itself failed
 // -- which is not an answer about the unit and must not be read as one.
 func unitState(unit string) (string, error) {
-	out, err := exec.Command("systemctl", "show", "-p", "ActiveState", "--value", unit).Output()
-	return strings.TrimSpace(string(out)), err
+	return unitShow(unit, "ActiveState")
 }
 
 // unitAtRest reports whether an ActiveState reading means the unit is FINISHED -- gone or
@@ -539,7 +531,7 @@ func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
 				"part of that unit's own invocation, so the name cannot be released until we return", unit)
 		}
 		if unitStopped(unit) {
-			_ = exec.Command("systemctl", "reset-failed", unit).Run()
+			unitResetFailed(unit)
 		}
 		if time.Now().After(deadline) {
 			// Name what it still looks like: a unit that is stopping and a corpse that will not
@@ -572,7 +564,7 @@ func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
 // ActiveState=deactivating -- i.e. exactly the readings waitUnitFree treats as "keep waiting".
 //
 // Every uncertain answer is NOT-inside: an empty environment (nothing started us as a unit), a
-// systemctl that failed, an id that does not match. The guard only ever converts a
+// query that failed, an id that does not match. The guard only ever converts a
 // guaranteed-hopeless wait into an immediate error, so being wrong about it costs the bounded
 // wait we would have done anyway -- never a launch that would otherwise have succeeded.
 func insideUnit(unit string) bool {
@@ -580,18 +572,17 @@ func insideUnit(unit string) bool {
 	if id == "" {
 		return false
 	}
-	out, err := exec.Command("systemctl", "show", "-p", "InvocationID", "--value", unit).Output()
+	cur, err := unitShow(unit, "InvocationID")
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == id
+	return cur == id
 }
 
 // unitLoadState reads a unit's LoadState ("loaded" / "not-found"). As with unitState, an error
-// means systemctl itself failed and is not an answer about the unit.
+// means the query itself failed and is not an answer about the unit.
 func unitLoadState(unit string) (string, error) {
-	out, err := exec.Command("systemctl", "show", "-p", "LoadState", "--value", unit).Output()
-	return strings.TrimSpace(string(out)), err
+	return unitShow(unit, "LoadState")
 }
 
 // Stop terminates the guest VM by stopping its transient service (the self-fence
@@ -618,12 +609,12 @@ func (g *Guest) Stop() error {
 func forceStopUnit(unit string) error {
 	// Best-effort: a unit that is already gone makes this fail, which is not worth reporting --
 	// stopUnit below is what decides whether the guest is really down.
-	_ = exec.Command("systemctl", "kill", "--signal=SIGKILL", unit).Run()
+	unitKill(unit)
 	return stopUnit(unit)
 }
 
 func stopUnit(unit string) error {
-	if out, err := exec.Command("systemctl", "stop", unit).CombinedOutput(); err != nil {
+	if out, err := unitStop(unit); err != nil {
 		return fmt.Errorf("platform: stop %s: %w: %s", unit, err, out)
 	}
 	return nil
