@@ -141,6 +141,27 @@ stage)
 	"$DIR/briard-agent" --stage-manifest "$DIR" || die "writing the manifest failed"
 	jq -e . "$DIR/manifest.json" >/dev/null || die "the manifest we just wrote is not valid JSON"
 
+	# THE WINDOWS ARM, IN ITS OWN SUBDIRECTORY AND UNDER ITS OWN MANIFEST -- and the subdirectory
+	# IS the mechanism, not an organising whim. `FetchVerified` downloads EVERY artifact the
+	# manifest names, so putting a Windows-only bundle in the Linux manifest would make every
+	# Linux install download tens of MB it can never run. `WriteManifest` skips directories, so a
+	# subdir is invisible to the set above it, and a Windows installer will later point
+	# BRIARD_CHANNEL_URL at $CHANNEL/windows and get the identical shape: a signed manifest, its
+	# detached signature, and the artifacts it names. One path, run twice -- no second protocol,
+	# no platform field on the wire, and no client change on either side.
+	#
+	# There is no consumer yet: the Windows host agent is v5. It is published anyway so the path
+	# is exercised rather than assumed, which is the whole reason [V3b.27](b) exists.
+	mkdir -p "$DIR/windows"
+	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+	    -cf "$DIR/windows/qemu-bundle-windows.tar" -C "$(out_of .#artifacts.qemu-bundle-windows)" .
+	chmod 0644 "$DIR/windows/qemu-bundle-windows.tar"
+	nix run nixpkgs#zstd -- -19 -T0 -q --rm "$DIR/windows/qemu-bundle-windows.tar" \
+		-o "$DIR/windows/qemu-bundle-windows.tar.zst" || die "compressing the windows bundle failed"
+	chmod 0644 "$DIR/windows/qemu-bundle-windows.tar.zst"
+	"$DIR/briard-agent" --stage-manifest "$DIR/windows" || die "writing the windows manifest failed"
+	jq -e . "$DIR/windows/manifest.json" >/dev/null || die "the windows manifest is not valid JSON"
+
 	# install.sh, WITH THE RELEASE PUBKEY EMBEDDED. The source tree carries a placeholder, and
 	# the script dies on it by design ("the embedded key is a build placeholder") — so shipping
 	# the file unsubstituted would publish an installer that refuses to install. It is the one
@@ -178,11 +199,18 @@ sign)
 	[ -e "$RELEASE_SIGN_KEY" ] || die "no signing key at $RELEASE_SIGN_KEY"
 	# -rawin is what makes this PureEdDSA over the whole file, which is what Verify does. Without
 	# it openssl would pre-hash and every signature would be rejected.
-	ossl pkeyutl -sign -inkey "$RELEASE_SIGN_KEY" -rawin \
-	     -in "$DIR/manifest.json" -out "$DIR/manifest.json.sig"
-	n=$(stat -c%s "$DIR/manifest.json.sig")
-	[ "$n" = 64 ] || die "signature is $n bytes, want a raw 64 — the verifier rejects anything else"
-	say "signed $DIR/manifest.json (64-byte detached Ed25519)"
+	#
+	# EVERY manifest in the staged set, not just the top one: the windows/ subdirectory carries a
+	# manifest of its own (see `stage`), and an unsigned one is not merely useless -- the verifier
+	# refuses it, so it would publish a channel arm that cannot install. Looping is what keeps a
+	# future third arm from needing anyone to remember this.
+	for m in "$DIR/manifest.json" "$DIR"/*/manifest.json; do
+		[ -f "$m" ] || continue
+		ossl pkeyutl -sign -inkey "$RELEASE_SIGN_KEY" -rawin -in "$m" -out "$m.sig"
+		n=$(stat -c%s "$m.sig")
+		[ "$n" = 64 ] || die "$m.sig is $n bytes, want a raw 64 — the verifier rejects anything else"
+		say "signed $m (64-byte detached Ed25519)"
+	done
 	;;
 
 publish)
@@ -225,10 +253,20 @@ publish)
 	nix run nixpkgs#awscli2 -- s3 sync "$DIR" "$bucket/release/" \
 		--endpoint-url "$endpoint" \
 		--delete --exclude VERSION --exclude install.sh \
-		--exclude manifest.json --exclude manifest.json.sig --no-progress
-	for f in manifest.json manifest.json.sig; do
-		nix run nixpkgs#awscli2 -- s3 cp "$DIR/$f" "$bucket/release/$f" \
-			--endpoint-url "$endpoint" --no-progress
+		--exclude manifest.json --exclude manifest.json.sig \
+		--exclude "*/manifest.json" --exclude "*/manifest.json.sig" --no-progress
+	# Every arm's manifest pair, uploaded after the bytes it names. The windows/ subdirectory
+	# needs the same treatment for the same reason, and its exclude patterns above need the `*/`
+	# form because an AWS CLI filter with no wildcard matches one exact relative key -- so a bare
+	# `--exclude manifest.json` would have left the windows manifest inside --delete's reach and
+	# inside the sync's ordering, which is the exact pair of properties this dance exists to avoid.
+	for m in "$DIR/manifest.json" "$DIR"/*/manifest.json; do
+		[ -f "$m" ] || continue
+		rel=${m#"$DIR/"}
+		for f in "$rel" "$rel.sig"; do
+			nix run nixpkgs#awscli2 -- s3 cp "$DIR/$f" "$bucket/release/$f" \
+				--endpoint-url "$endpoint" --no-progress
+		done
 	done
 
 	# ...and the installer itself, at the root the one-liner names.
@@ -246,10 +284,17 @@ publish)
 	# because the alternative is a silently stale channel.
 	if [ -n "${RELEASE_PURGE_URL:-}" ] && [ -n "${RELEASE_PURGE_TOKEN:-}" ]; then
 		need curl; need jq
-		jq --arg c "$CHANNEL" --arg s "$SITE" \
-			'{files: ([.artifacts[].name | $c+"/"+.]
-			          + [$c+"/manifest.json", $c+"/manifest.json.sig", $s+"/install.sh"])}' \
-			"$DIR/manifest.json" |
+		# Read off EVERY staged manifest, one arm per subdirectory, so a renamed artifact cannot
+		# drift out of the purge list and a new arm cannot be forgotten into staleness.
+		{
+			for m in "$DIR/manifest.json" "$DIR"/*/manifest.json; do
+				[ -f "$m" ] || continue
+				rel=${m#"$DIR/"}; base="$CHANNEL/${rel%manifest.json}"; base=${base%/}
+				jq -r --arg b "$base" '.artifacts[].name | $b+"/"+.' "$m"
+				echo "$base/manifest.json"; echo "$base/manifest.json.sig"
+			done
+			echo "$SITE/install.sh"
+		} | jq -R . | jq -s '{files: .}' |
 		curl -sf -X POST -H "Authorization: Bearer $RELEASE_PURGE_TOKEN" \
 			-H "Content-Type: application/json" "$RELEASE_PURGE_URL" --data @- |
 		jq -e '.success == true' >/dev/null ||
@@ -266,24 +311,30 @@ verify)
 	PUB="${RELEASE_PUBKEY:-${RELEASE_SIGN_KEY:-}}"
 	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-	curl -fsS "$CHANNEL/manifest.json"     -o "$tmp/manifest.json"     || die "no manifest at $CHANNEL"
-	curl -fsS "$CHANNEL/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $CHANNEL"
-	# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure here is the
-	# whole point of the check — an unsigned or re-signed channel must not read as green.
-	ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
-	        -in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
-		|| die "the live manifest does NOT verify against $PUB"
-	say "manifest signature verifies"
-	# ...and every artifact matches what the signed manifest claims. Checked by DOWNLOADING,
-	# not by trusting the manifest against itself.
-	jq -r '.artifacts[] | "\(.name) \(.sha256) \(.size)"' "$tmp/manifest.json" |
-	while read -r name sum size; do
-		curl -fsS "$CHANNEL/$name" -o "$tmp/$name" || die "$name is in the manifest but not served"
-		got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
-		gotsize=$(stat -c%s "$tmp/$name")
-		[ "$got" = "$sum" ] || die "$name: sha256 $got != manifest $sum"
-		[ "$gotsize" = "$size" ] || die "$name: size $gotsize != manifest $size"
-		echo "    ok  $name  ($gotsize bytes)"
+	# EVERY ARM, not just the Linux one. A channel arm is a base URL with a signed manifest under
+	# it (see `stage`), so verifying one is verifying all of them with the URL changed -- and an
+	# arm nobody verifies is an arm nobody knows is broken until a stranger runs into it.
+	for arm in "" "/windows"; do
+		base="$CHANNEL$arm"
+		curl -fsS "$base/manifest.json"     -o "$tmp/manifest.json"     || die "no manifest at $base"
+		curl -fsS "$base/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $base"
+		# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure here is the
+		# whole point of the check — an unsigned or re-signed channel must not read as green.
+		ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
+		        -in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
+			|| die "the live manifest at $base does NOT verify against $PUB"
+		say "manifest signature verifies: $base"
+		# ...and every artifact matches what the signed manifest claims. Checked by DOWNLOADING,
+		# not by trusting the manifest against itself.
+		jq -r '.artifacts[] | "\(.name) \(.sha256) \(.size)"' "$tmp/manifest.json" |
+		while read -r name sum size; do
+			curl -fsS "$base/$name" -o "$tmp/$name" || die "$name is in the $base manifest but not served"
+			got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
+			gotsize=$(stat -c%s "$tmp/$name")
+			[ "$got" = "$sum" ] || die "$name: sha256 $got != manifest $sum"
+			[ "$gotsize" = "$size" ] || die "$name: size $gotsize != manifest $size"
+			echo "    ok  $name  ($gotsize bytes)"
+		done
 	done
 	# install.sh at the SITE root, not under the artifact prefix -- that is the URL the advertised
 	# one-liner names, so it is the one this must assert.

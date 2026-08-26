@@ -201,6 +201,7 @@ let
 
   # The relocatable qemu bundle (runs on a host with no /nix/store) + its proof.
   qemuBundle = import ./qemu-bundle.nix { inherit pkgs; };
+  qemuBundleWindows = import ./qemu-bundle-windows.nix { inherit pkgs; };
 
   # The machine report card on a real host (the free-local install gate).
   reportCard = import ./report-card.nix { inherit pkgs; agent = agentPkg; };
@@ -348,6 +349,10 @@ in
     agent = agentPkg;
     driver = driverPkg;
     qemu-bundle = qemuBundle.bundle; # the relocatable qemu the free-local installer ships
+    # The Windows arm of the same thing, repackaged from pinned upstream bytes because building it
+    # ourselves is blocked upstream (qemu-bundle-windows.nix says where and why). Its proof is the
+    # tier-4 Windows rig, not CI -- a Linux runner cannot run it.
+    qemu-bundle-windows = qemuBundleWindows.bundle;
     net-wrap = netWrap; # macvtap launch wrapper; the fleet runs on it too
   };
 }
