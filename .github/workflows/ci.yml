@@ -56,6 +56,17 @@ jobs:
       - name: Go checks (fmt, vet, unit + architecture guards)
         run: nix develop --command bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test ./...'
 
+      # The GOOS seam is only a seam while something re-runs this ([V3b.27](d)). It is a
+      # CROSS-COMPILE, not a test run — a Windows test binary cannot execute on this runner, and
+      # does not need to: what decays is a shared file quietly growing a Linux-only symbol, and
+      # the compiler is what sees that. `vet` is the load-bearing half, because it type-checks
+      # _test.go files too; the plain build does not, and missed one of the three original errors.
+      #
+      # The OTHER half of the seam — exec.Command("systemctl", …), which compiles everywhere —
+      # is agent/platform/seam_test.go, and the step above already runs it.
+      - name: Go builds for Windows (the GOOS seam)
+        run: nix develop --command bash -c 'GOOS=windows go build ./... && GOOS=windows go build -tags guest ./... && GOOS=windows go vet ./...'
+
       # A genuine syntax check: parse every *.nix to its AST, no evaluation. NOT
       # `nix flake check` (see the header — it OOMs a hosted runner).
       - name: Nix syntax check (parse only)
