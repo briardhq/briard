@@ -11,7 +11,7 @@ import (
 // how long to wait for a name, when a corpse is worth clearing -- stays OS-neutral in qemu.go
 // and forwarder.go, so it reads and tests the same everywhere. What a port owes here is
 // re-adoption of a detached, named unit, not detachment; the analogues and the three gaps with
-// none are [V3b.27](c)'s to decide.
+// none are decided in DESIGN §9.9.1.
 
 // startTransient runs a command as a detached, named transient unit that outlives this process.
 // args is the whole command line, built purely by the caller so it stays testable off-platform.

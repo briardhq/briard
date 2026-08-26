@@ -18,5 +18,5 @@
 // not about this package.
 //
 // What a Windows backend owes -- including the three systemd features the SCM has no equivalent
-// for -- is [V3b.27](c)'s paper pass, so it is decided once rather than re-derived here.
+// for -- is decided in DESIGN §9.9.1, so it is settled once rather than re-derived here.
 package platform
