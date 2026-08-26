@@ -106,5 +106,5 @@ Found a security bug? Email **security@briard.io** rather than opening a public 
 
 Apache-2.0 — see [LICENSE](LICENSE); the third-party software the release carries, and where its
 source is, is in [THIRD-PARTY.md](THIRD-PARTY.md). Contributions are accepted under the DCO; there
-is no CLA, deliberately. This repository was extracted from our private monorepo at open-sourcing, so its
-history starts at that point; development continues here in the open.
+is no CLA, deliberately. This repository was extracted from our private monorepo at open-sourcing,
+so its history starts at that point; development continues here in the open.
