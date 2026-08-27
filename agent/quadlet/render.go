@@ -55,6 +55,12 @@ type Rendered struct {
 	// ImageUnits are the .image pre-warm units, which are NOT promoter members — they are
 	// boot-time and run on every node (see Render).
 	ImageUnits []string
+	// ImageRefs maps each of those warm units to the image REF it obtains. It exists because
+	// starting the unit is a `podman image pull` — measured, not assumed: quadlet generates
+	// `Wants=network-online.target` + `ExecStart=podman image pull <ref>`, with no
+	// already-present short-circuit. A caller that must not touch the network (bring-up, which
+	// runs after every guest reboot) needs the ref to ask whether the pull is needed at all.
+	ImageRefs map[string]string
 }
 
 // prefix keeps every generated unit in one obvious namespace, so a `systemctl list-units
@@ -131,6 +137,10 @@ func Render(m manifest.Manifest) (Rendered, error) {
 			"WantedBy=multi-user.target",
 		)
 		out.ImageUnits = append(out.ImageUnits, unit+"-image.service")
+		if out.ImageRefs == nil {
+			out.ImageRefs = map[string]string{}
+		}
+		out.ImageRefs[unit+"-image.service"] = c.Image
 	}
 	return out, nil
 }

@@ -470,6 +470,12 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 	}
 	all.Units = append(all.Units, r.Units...)
 	all.ImageUnits = append(all.ImageUnits, r.ImageUnits...)
+	for unit, ref := range r.ImageRefs {
+		if all.ImageRefs == nil {
+			all.ImageRefs = map[string]string{}
+		}
+		all.ImageRefs[unit] = ref
+	}
 	all.ContainerUnits = append(all.ContainerUnits, r.ContainerUnits...)
 }
 

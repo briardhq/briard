@@ -1389,7 +1389,7 @@ func TestBringUpRendersServiceUnitsBeforeStartingThePromoter(t *testing.T) {
 		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "10.0.0.1", NodeID: 0}}},
 		Promoter:      []string{"briard-app.service"},
 		ServiceUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
-		ServiceImages: []string{"briard-app-img.service"},
+		ServiceImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1417,13 +1417,54 @@ func TestBringUpRendersServiceUnitsBeforeStartingThePromoter(t *testing.T) {
 		return -1
 	}
 	reload := idx("systemctl", "daemon-reload")
-	warm := idx("systemctl", "start", "briard-app-img.service")
+	// The warm is an EXISTS CHECK, not a start: starting the .image unit is `podman image pull`,
+	// so an unconditional start makes every reboot need a registry. The pull path is asserted
+	// separately below.
+	warm := idx("podman", "image", "exists", "ghcr.io/x/y@sha256:abc")
 	reactor := idx("systemctl", "start", "drbd-reactor.service")
 	if reload < 0 || warm < 0 || reactor < 0 {
 		t.Fatalf("missing a step: daemon-reload=%d warm=%d reactor=%d (%v)", reload, warm, reactor, f.runs)
 	}
 	if !(reload < warm && warm < reactor) {
 		t.Errorf("wrong order: daemon-reload=%d, warm=%d, reactor=%d — units and images must both precede the promoter", reload, warm, reactor)
+	}
+	// A present image must NOT be pulled. This is the whole of [V3b.3](e1): bring-up runs after
+	// every guest reboot, and V3.17's doctrine is that running never needs network.
+	if got := idx("systemctl", "start", "briard-app-img.service"); got >= 0 {
+		t.Errorf("bring-up started the .image unit for an image already present (step %d) — that is a registry pull on the reboot path: %v", got, f.runs)
+	}
+}
+
+// ...and when the image is genuinely MISSING, bring-up pulls it rather than refusing. Absence
+// should not arise -- install warms, prewarm puts the image on every standby -- but if it does, a
+// short wait beats a node that will not come up. The two halves are asserted together because
+// either alone is satisfiable by a wrong implementation: skip-always passes the first, pull-always
+// passes the second.
+func TestBringUpPullsOnlyAnImageThatIsMissing(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name == "podman" && len(args) >= 2 && args[0] == "image" && args[1] == "exists" {
+			return nil, errors.New("no such image")
+		}
+		return nil, nil
+	}}
+	g := dial(t, f)
+	err := g.BringUp(context.Background(), BringUpSpec{
+		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "10.0.0.1", NodeID: 0}}},
+		Promoter:      []string{"briard-app.service"},
+		ServiceUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
+		ServiceImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pulled bool
+	for _, r := range f.runs {
+		if len(r) >= 3 && r[0] == "systemctl" && r[1] == "start" && r[2] == "briard-app-img.service" {
+			pulled = true
+		}
+	}
+	if !pulled {
+		t.Errorf("a MISSING image was not warmed; absence must be pulled, not refused: %v", f.runs)
 	}
 }
 

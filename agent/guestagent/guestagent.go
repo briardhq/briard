@@ -144,6 +144,7 @@ const (
 	verbServiceRender    = "service.render"    // write quadlet units to /run + daemon-reload (every node)
 	verbServiceProvision = "service.provision" // create the service subvolume + record the manifest (Primary only)
 	verbServiceManifest  = "service.manifest"  // read the manifest recorded on the volume, or ""
+	verbServiceWarm      = "service.warm"      // ensure an image is present, starting its .image unit ONLY if it is missing
 )
 
 // manifestPinPath is the installed service's identity on the replicated volume — the manifest's
@@ -217,7 +218,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
-	verbServiceRender, verbServiceProvision, verbServiceManifest, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceManifest, verbServiceWarm, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -370,6 +371,14 @@ type serviceProvisionRequest struct {
 	DataDir  string   `json:"data_dir"`
 	Subdirs  []string `json:"subdirs,omitempty"`
 	Manifest string   `json:"manifest"`
+}
+
+// serviceWarmRequest names one image to ensure is present (service.warm), and the .image unit
+// that would obtain it. Both halves are needed because the CHECK is on the ref and the ACTION is
+// on the unit -- and the host, which owns the manifest, is the only side that knows the pairing.
+type serviceWarmRequest struct {
+	Unit string `json:"unit"`
+	Ref  string `json:"ref"`
 }
 
 // certWriteRequest carries a renewed cert + key to land on the DRBD volume (cert.write).
@@ -892,6 +901,29 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, err
 			}
 			return nil, provisionService(ctx, x, run, req)
+		case verbServiceWarm:
+			var req serviceWarmRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Ref == "" || req.Unit == "" {
+				return nil, fmt.Errorf("service.warm: need a unit and an image ref")
+			}
+			// PRESENT => DONE, without touching the network. Starting the unit is a
+			// `podman image pull`: quadlet generates `Wants=network-online.target` +
+			// `ExecStart=podman image pull <ref>` with no already-present short-circuit, so an
+			// unconditional start made every guest reboot depend on reaching a registry —
+			// the running half of the doctrine that running never needs network ([V3b.3](e1)).
+			if err := run("podman", "image", "exists", req.Ref); err == nil {
+				return nil, nil
+			}
+			// MISSING => pull, and wait for it. Absence is not something to fail on: the image
+			// SHOULD already be here (install warms it, prewarm puts it on every standby, and
+			// service-install.nix asserts exactly that), so reaching this line means the design
+			// was not upheld and a short wait beats refusing to run. Deliberately NOT conditioned
+			// on whether some other node could promote instead: that is cluster-wide reasoning to
+			// handle a case that should not arise, and the complexity would outlive the edge case.
+			return nil, run("systemctl", "start", req.Unit)
 		case verbServiceManifest:
 			// "" when nothing is installed -- the zero-service node is a legitimate
 			// state, not an error, so an absent file must not read as a failure.
@@ -2148,6 +2180,13 @@ func (g *Client) ServiceProvision(ctx context.Context, dataDir string, subdirs [
 	return g.c.call(ctx, verbServiceProvision, req, nil)
 }
 
+// ServiceWarm ensures `ref` is present in the guest's image store, starting `unit` (its .image
+// warm unit) ONLY if it is missing. The distinction is the whole point: starting the unit is a
+// registry pull, so an unconditional warm makes every path that calls it require WAN.
+func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
+	return g.c.call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
+}
+
 // ServiceManifest reads the manifest recorded on the replicated volume, or "" when no service is
 // installed. "" is a legitimate answer (the shipped zero-service node), never an error.
 func (g *Client) ServiceManifest(ctx context.Context) (string, error) {
@@ -2381,11 +2420,20 @@ type BringUpSpec struct {
 	// channel back the promoter is already trying to start the chain. Units must exist before
 	// anything can be asked to start them.
 	ServiceUnits map[string]string
-	// ServiceImages are the .image warm units to start after rendering. Their
-	// WantedBy=multi-user.target already fired during boot, so units written now would never run
-	// otherwise, and the containers' Pull=never would fail the chain at promotion instead of
-	// fetching. On a reboot the images are still in local storage, so this is a no-op, not a pull.
-	ServiceImages []string
+	// ServiceImages maps each .image warm unit to the image REF it obtains, for every installed
+	// service. Their WantedBy=multi-user.target already fired during boot, so units written now
+	// would never run otherwise, and the containers' Pull=never would fail the chain at promotion
+	// instead of fetching.
+	//
+	// A MAP, not a unit list, because bring-up must not pull. This comment used to claim "on a
+	// reboot the images are still in local storage, so this is a no-op, not a pull" -- and that was
+	// simply false: quadlet generates `Wants=network-online.target` +
+	// `ExecStart=podman image pull <ref>` with no already-present short-circuit (measured with
+	// podman's own generator), so every guest reboot re-pulled from a registry and a node without
+	// WAN failed bring-up outright. That is the RUNNING half of [V3.17]'s doctrine -- installing
+	// needs network, running and failover never do -- broken on the path that runs after every
+	// reboot. The ref is what lets the guest answer "is it already here?" before pulling.
+	ServiceImages map[string]string
 }
 
 // BringUp performs the agent-owned bring-up: render + drop the DRBD
@@ -2437,8 +2485,15 @@ func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 		if err := g.ServiceRender(ctx, spec.ServiceUnits, nil); err != nil {
 			return fmt.Errorf("re-render installed service units: %w", err)
 		}
-		for _, u := range spec.ServiceImages {
-			if err := g.PayloadStart(ctx, u); err != nil {
+		// Sorted so the log reads the same on every boot; the images are independent, so the
+		// order is presentation, not semantics.
+		units := make([]string, 0, len(spec.ServiceImages))
+		for u := range spec.ServiceImages {
+			units = append(units, u)
+		}
+		sort.Strings(units)
+		for _, u := range units {
+			if err := g.ServiceWarm(ctx, u, spec.ServiceImages[u]); err != nil {
 				return fmt.Errorf("warm image unit %s: %w", u, err)
 			}
 		}

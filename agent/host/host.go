@@ -734,7 +734,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		// the manifest. Re-rendered here, before ReactorStart, or the promoter starts a chain
 		// whose units are gone.
 		ServiceUnits:  cfg.ServiceRendered.Files,
-		ServiceImages: cfg.ServiceRendered.ImageUnits,
+		ServiceImages: cfg.ServiceRendered.ImageRefs,
 	}
 	// Establish the control channel. On a fresh launch, wait patiently for qemu to bind the
 	// socket rather than exiting on the first "connection refused": exiting crash-loops
