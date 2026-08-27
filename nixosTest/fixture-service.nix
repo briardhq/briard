@@ -58,7 +58,9 @@ pkgs.runCommand "briard-fixture-${name}"
   {
     nativeBuildInputs = [ pkgs.skopeo (pkgs.callPackage ./catalog-sign/package.nix { }) ];
     # Surfaced as passthru so a caller can stage the tarball without reaching into $out.
-    passthru = { inherit image name container mount port healthPath; };
+    # serviceName is the manifest slug a caller passes to `service install`; `name` is the same
+    # string, exposed under both spellings because callers read as one or the other.
+    passthru = { inherit image container mount port healthPath; name = name; serviceName = name; };
   }
   ''
     mkdir -p $out
