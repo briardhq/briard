@@ -158,6 +158,25 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 			logf("directive kind=upgrade ignored (no payload/upgrader/target on this node)")
 			return failed("no payload/upgrader/target on this node")
 		}
+		// REFUSE against a runtime-installed service, because succeeding would be a lie. This
+		// directive is the BAKED SLOT's mechanism: UpgradePayload re-pins `.payload-image` and
+		// retags briard-payload:serve, and a quadlet-rendered service reads NEITHER -- its
+		// .container names the image by digest with Pull=never, and briard-converge (the pin's
+		// only consumer) is required solely by podman-briard-payload, so on such a node it never
+		// runs. Driven anyway, it stopped the service, wrote a pin nothing reads, restarted the
+		// unit on its OLD digest, found the old version healthy and returned done -- after which
+		// currentImage reported the new pin, so the cloud confirmed a rollout that had not
+		// happened. Silent exactly when the target image was already staged, which is what
+		// prewarm does.
+		//
+		// Unit != "" is the discriminator ServingUnit already uses: a runtime-installed service
+		// names its unit explicitly (from the renderer), the baked slot leaves it derived.
+		// A runtime service's identity is its MANIFEST, so its upgrade is a service-install
+		// directive carrying a new one, not an image re-pin. [V3b.3](b)/(e).
+		if spec.Unit != "" {
+			logf("directive kind=upgrade refused: %s is a runtime-installed service; upgrade it with a new manifest", spec.Name)
+			return failed("refusing an image re-pin against the runtime-installed service " + spec.Name + ": its identity is its manifest, so upgrade it with a service-install directive")
+		}
 		uctx, cancel := wd.budget(ctx, 10*time.Minute)
 		defer cancel()
 		logf("directive kind=upgrade: payload %s -> %s", current, d.Payload)

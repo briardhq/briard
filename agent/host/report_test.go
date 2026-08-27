@@ -526,3 +526,39 @@ func TestApplyDirectiveRescueSurfacesTheReason(t *testing.T) {
 		t.Errorf("outcome = %+v, want failed carrying the node's reason", o)
 	}
 }
+
+// An image re-pin against a RUNTIME-INSTALLED service must be refused, not confirmed. This is the
+// baked slot's mechanism: it writes `.payload-image` and retags briard-payload:serve, and a
+// quadlet-rendered service reads neither -- so the old code kept running while the pin, and
+// therefore NodeStatus.Image, moved to the new ref and the cloud confirmed the rollout.
+//
+// Two-sided, because a one-sided version would pass on a build that refuses everything: the BAKED
+// slot (Unit empty, unit derived from Name) must still upgrade.
+func TestUpgradeRefusesARuntimeInstalledService(t *testing.T) {
+	runtime := model.ServiceSpec{Name: "home-assistant", Unit: "briard-home-assistant-app.service"}
+	up := &fakeUpgrader{}
+	o := applyDirective(context.Background(), api.Directive{ID: "d1", Kind: api.DirectiveUpgrade, Payload: "ghcr.io/x/y@sha256:deadbeef"},
+		up, runtime, "old", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed -- an image re-pin cannot upgrade a quadlet service", o)
+	}
+	if !strings.Contains(o.Detail, "manifest") {
+		t.Errorf("Detail = %q, want it to point at the manifest path", o.Detail)
+	}
+	if up.called {
+		t.Error("UpgradePayload was driven against a runtime-installed service")
+	}
+
+	// The baked slot still upgrades: Unit empty means the derived podman-<name>.service, which is
+	// exactly what the pin + serve-tag mechanism drives.
+	baked := model.ServiceSpec{Name: "briard-payload"}
+	up2 := &fakeUpgrader{}
+	o2 := applyDirective(context.Background(), api.Directive{ID: "d2", Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"},
+		up2, baked, "briard-dummy:v0", nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
+	if o2.State != api.OutcomeDone {
+		t.Fatalf("baked slot outcome = %+v, want done", o2)
+	}
+	if !up2.called {
+		t.Error("the baked slot's upgrade was not driven")
+	}
+}
