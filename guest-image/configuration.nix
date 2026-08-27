@@ -1014,13 +1014,25 @@ in
       };
     };
 
-    # Pre-stage upgrade-target images: a rolling update pins an image the
-    # data was written by, and converge/UpgradePayload only ever *select* (retag) —
-    # never build/pull — on the failover path. So the target must already be resident.
-    # This oneshot warms every briard.payload.stagedImages tarball into local podman
-    # storage at boot, the warm-standby that (in prod) a `podman pull` of the published
-    # digest does before the rollout. Idempotent; independent of which image serves.
-    systemd.services.briard-payload-stage = lib.mkIf (havePayload && cfg.stagedImages != [ ]) {
+    # Pre-stage image tarballs into local podman storage at boot: images that must already be
+    # RESIDENT because nothing on the failover path may pull. Two callers want that, and they are
+    # different facts:
+    #   - a rolling update pins an image the data was written by, and converge/UpgradePayload only
+    #     ever *select* (retag) — never build/pull — so the target has to be here already;
+    #   - a runtime-installed service renders `Pull=never` against a digest, so its image has to be
+    #     here too, on a node that may have no baked payload at all.
+    # Idempotent; independent of which image serves.
+    #
+    # NOT gated on havePayload, and that is the point ([V3b.3](e1)). It was, which made staging an
+    # image and HAVING a baked payload the same statement — so a shipped zero-service guest could
+    # not carry an image for a service to be installed against, which is exactly the node every
+    # user runs. The `after=` below names a unit that does not exist on such a node; systemd
+    # ignores an ordering dependency on an absent unit, so the oneshot simply runs on its own.
+    #
+    # ⚠️ The OPTION still lives at `briard.payload.stagedImages`, which is now a misnomer: staging
+    # is a node fact, not a payload-slot one. It moves when the slot is deleted ([V3b.3](e2));
+    # renaming it here would churn every caller twice.
+    systemd.services.briard-payload-stage = lib.mkIf (cfg.stagedImages != [ ]) {
       description = "Pre-stage upgrade-target payload images into local podman storage";
       wantedBy = [ "multi-user.target" ];
       after = [ "briard-payload-warm.service" ];
