@@ -169,14 +169,14 @@ func ConfigFromEnv() Config {
 		// identical slot), so guest.unitOf(Name) must resolve to that unit or an upgrade drives
 		// a non-existent podman-<Name>.service. Image is the currently-serving ref
 		// (UpgradePayload's rollback target); DataDir is the service subvolume on the volume.
-		Service: disklessOrSpec(role, serviceSpec()),
+		Services: disklessOrSpecs(role, bakedServices()),
 		// The catalog is published signed static content (OSS §10.1: an apt-mirror, not an API),
 		// which is exactly what the release channel already is -- so it lives in the same bucket,
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; a service catalog is not a web page.
 		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/service.json"),
+		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/services"),
 		MeshCache:         env("MESH_CACHE", "/var/lib/briard/mesh.json"),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		SnapshotRetention: atoi(os.Getenv("SNAPSHOT_RETENTION"), 0),
@@ -198,7 +198,7 @@ func ConfigFromEnv() Config {
 		//, which is why installing needs the maintenance bracket: this list is already
 		// Live on a promoted resource by then.
 		var members []string
-		if cfg.Service.Image != "" {
+		if len(cfg.Services) > 0 {
 			members = bakedSlot()
 		}
 		cfg.Promoter = promoterUnits(members)
@@ -206,19 +206,29 @@ func ConfigFromEnv() Config {
 	return cfg
 }
 
-// serviceSpec reads the installed service from the environment. An unset SERVICE_IMAGE is the
-// shipped state — no service — and yields the zero spec rather than a half-filled one, so
-// every "is anything installed?" check downstream is the single test Image != "".
-func serviceSpec() model.ServiceSpec {
+// bakedServices reads the BUILD-TIME payload slot from the environment. An unset SERVICE_IMAGE is
+// the shipped state — no service — and yields an empty set rather than a half-filled spec.
+//
+// A set of at most ONE, deliberately, and it is the last singular thing here. The baked slot is a
+// build-time fixture now: nothing `install.sh` writes sets SERVICE_IMAGE, and the only setters left
+// are the container fleet rig and the nixosTest payload module. Pluralising it would be work spent
+// on a mechanism that is scheduled to be deleted outright ([V3b.3](e)); carrying it as one entry in
+// the set costs a slice literal and lets everything downstream read the plural shape.
+func bakedServices() []model.ServiceSpec {
 	image := os.Getenv("SERVICE_IMAGE")
 	if image == "" {
-		return model.ServiceSpec{}
+		return nil
 	}
-	return model.ServiceSpec{
+	// Name is the guest's fixed payload unit slug (podman-briard-payload.service):
+	// configuration.nix keeps the unit name service-agnostic (the fixture or HA ride the
+	// identical slot), so guest.unitOf(Name) must resolve to that unit or an upgrade drives
+	// a non-existent podman-<Name>.service. Image is the currently-serving ref
+	// (UpgradePayload's rollback target); DataDir is the service subvolume on the volume.
+	return []model.ServiceSpec{{
 		Name:    env("SERVICE_NAME", "briard-payload"),
 		Image:   image,
 		DataDir: env("SERVICE_DATADIR", "/var/lib/briard/payload"),
-	}
+	}}
 }
 
 // parsePeers parses the PEERS env into the full DRBD connection mesh. It is the
@@ -257,10 +267,10 @@ func disklessOr(role model.Role, w, d string) string {
 	return d
 }
 
-// disklessOrSpec zeroes the payload spec on a diskless node (no payload to upgrade).
-func disklessOrSpec(role model.Role, s model.ServiceSpec) model.ServiceSpec {
+// disklessOrSpecs empties the service set on a diskless node (no payload to upgrade).
+func disklessOrSpecs(role model.Role, s []model.ServiceSpec) []model.ServiceSpec {
 	if role == model.RoleDiskless {
-		return model.ServiceSpec{}
+		return nil
 	}
 	return s
 }

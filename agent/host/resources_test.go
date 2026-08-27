@@ -13,7 +13,7 @@ import (
 // footprint measured in-process. The agent fields are always present (this process really
 // has an RSS); the appliance fields come from the guest read.
 func TestResourcesComposesAgentAndAppliance(t *testing.T) {
-	cfg := Config{Service: model.ServiceSpec{Name: "ha", DataDir: "/d"}}
+	cfg := Config{Services: []model.ServiceSpec{{Name: "ha", DataDir: "/d"}}}
 	r := fakeStatus{res: telemetry.NodeResources{PayloadRSSKB: 88000, SnapshotCount: 3, VolumeUsedKB: 4200}}
 
 	got := cfg.resources(context.Background(), r)
@@ -34,7 +34,7 @@ func TestResourcesComposesAgentAndAppliance(t *testing.T) {
 // A guest read error degrades to agent-only telemetry rather than blanking the report or
 // breaking the observe loop -- the appliance fields stay zero, the agent footprint is kept.
 func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
-	cfg := Config{Service: model.ServiceSpec{Name: "ha", DataDir: "/d"}}
+	cfg := Config{Services: []model.ServiceSpec{{Name: "ha", DataDir: "/d"}}}
 	r := fakeStatus{resErr: errors.New("control channel hiccup")}
 
 	got := cfg.resources(context.Background(), r)
@@ -52,7 +52,7 @@ func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
 // A witness (no payload) skips the guest read entirely but still reports its own agent
 // footprint -- an agent leak on a witness is still a soak signal.
 func TestResourcesWitnessReportsAgentOnly(t *testing.T) {
-	cfg := Config{Service: model.ServiceSpec{}} // no Service.Name
+	cfg := Config{} // the empty set: nothing installed
 	called := false
 	r := witnessReader{onResources: func() { called = true }}
 
@@ -95,11 +95,11 @@ func (r *recordingReader) Resources(_ context.Context, unit, dataDir string) (te
 // install. The baked slot keeps its derived name.
 func TestResourcesProbesTheServingUnit(t *testing.T) {
 	t.Run("runtime-installed service", func(t *testing.T) {
-		cfg := Config{Service: model.ServiceSpec{
+		cfg := Config{Services: []model.ServiceSpec{{
 			Name:    "home-assistant",
 			DataDir: "/var/lib/briard/services/home-assistant",
 			Unit:    "briard-home-assistant-app.service",
-		}}
+		}}}
 		r := &recordingReader{}
 		cfg.resources(context.Background(), r)
 		if r.gotUnit != "briard-home-assistant-app.service" {
@@ -110,7 +110,7 @@ func TestResourcesProbesTheServingUnit(t *testing.T) {
 		}
 	})
 	t.Run("baked slot keeps its derived name", func(t *testing.T) {
-		cfg := Config{Service: model.ServiceSpec{Name: "briard-payload", DataDir: "/d"}}
+		cfg := Config{Services: []model.ServiceSpec{{Name: "briard-payload", DataDir: "/d"}}}
 		r := &recordingReader{}
 		cfg.resources(context.Background(), r)
 		if r.gotUnit != "podman-briard-payload.service" {

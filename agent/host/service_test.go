@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -491,29 +493,30 @@ func TestPrewarmFailsWhenTheImageCannotBeWarmed(t *testing.T) {
 
 // cacheService must never damage the manifest it already holds. The bare WriteFile it used to be
 // truncated the target first, so a crash inside the write left half a manifest -- which
-// installedService reads as "bringing up with no service", silently, on a node whose replicated
-// .service-manifest still names what it is meant to be running.
+// installedServices reads as "this service is not installed", silently, on a node whose replicated
+// manifest still names what it is meant to be running.
 //
 // Blocking the temp path with a directory forces the failure after the caller has committed to
 // the write. The assertion is deliberately two-sided: the old implementation returns nil AND
 // overwrites, so it fails on the first check, not merely on the second.
 func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
-	cache := filepath.Join(t.TempDir(), "service.json")
-	cfg := Config{ServiceCache: cache}
+	dir := t.TempDir()
+	cfg := Config{ServiceCache: dir}
+	path := cfg.manifestPath("home-assistant")
 	prior := []byte(`{"name":"home-assistant"}`)
-	if err := cfg.cacheService(prior); err != nil {
+	if err := cfg.cacheService("home-assistant", prior); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(cache + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("temp file lingered after a good write: %v", err)
 	}
-	if err := os.Mkdir(cache+".tmp", 0o755); err != nil { // the staging path is now unusable
+	if err := os.Mkdir(path+".tmp", 0o755); err != nil { // the staging path is now unusable
 		t.Fatal(err)
 	}
-	if err := cfg.cacheService([]byte(`{"name":"immich"}`)); err == nil {
+	if err := cfg.cacheService("home-assistant", []byte(`{"name":"home-assistant","v":2}`)); err == nil {
 		t.Fatal("cacheService onto a blocked temp path returned nil, want an error")
 	}
-	got, err := os.ReadFile(cache)
+	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("prior manifest unreadable after a failed cache write: %v", err)
 	}
@@ -523,17 +526,16 @@ func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
 }
 
 // A service installed at RUNTIME must land in the live config immediately, not at the next agent
-// restart. The gap was invisible in the log and total in effect: cfg.resources() is gated on
-// cfg.Service.Name, so between installing a service and restarting, the node reported no appliance
+// restart. The gap was invisible in the log and total in effect: cfg.resources() is gated on there
+// being a service, so between installing one and restarting, the node reported no appliance
 // telemetry at all -- payload footprint, volume usage, snapshots, load, journal and store sizes.
 func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	dir := t.TempDir()
-	cache := filepath.Join(dir, "service.json")
 	raw := []byte(`{"name":"home-assistant","version":"2026.7.1","containers":[` +
 		`{"name":"app","image":"ghcr.io/home-assistant/home-assistant@sha256:` +
 		`f73512ba4fe06bb4d57636fe3578d0820cdec46f81e8f837ab59e451662ff3cb",` +
 		`"mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}`)
-	if err := os.WriteFile(cache, raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "home-assistant.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logf := func(string, ...any) {}
@@ -541,12 +543,15 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	install := api.Directive{Kind: api.DirectiveServiceInstall}
 
 	t.Run("adopts on a completed install", func(t *testing.T) {
-		cfg := Config{ServiceCache: cache}
-		cfg.adoptInstalledService(install, done, logf)
-		if cfg.Service.Name != "home-assistant" {
-			t.Fatalf("Service.Name = %q, want the installed service", cfg.Service.Name)
+		cfg := Config{ServiceCache: dir}
+		cfg.adoptInstalledServices(install, done, logf)
+		if len(cfg.Services) != 1 {
+			t.Fatalf("Services = %+v, want the one installed service", cfg.Services)
 		}
-		if got := cfg.Service.ServingUnit(); got != "briard-home-assistant-app.service" {
+		if cfg.Services[0].Name != "home-assistant" {
+			t.Fatalf("Services[0].Name = %q, want the installed service", cfg.Services[0].Name)
+		}
+		if got := cfg.Services[0].ServingUnit(); got != "briard-home-assistant-app.service" {
 			t.Errorf("ServingUnit() = %q, want the rendered container unit", got)
 		}
 		if len(cfg.Promoter) == 0 || len(cfg.ServiceRendered.Units) == 0 {
@@ -566,21 +571,21 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 			{"another kind", api.Directive{Kind: api.DirectiveUpgrade}, done},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				cfg := Config{ServiceCache: cache}
-				cfg.adoptInstalledService(tc.d, tc.o, logf)
-				if cfg.Service.Name != "" {
-					t.Errorf("live config changed on %s: %+v", tc.name, cfg.Service)
+				cfg := Config{ServiceCache: dir}
+				cfg.adoptInstalledServices(tc.d, tc.o, logf)
+				if len(cfg.Services) != 0 {
+					t.Errorf("live config changed on %s: %+v", tc.name, cfg.Services)
 				}
 			})
 		}
 	})
 	// A cache that cannot be read is not evidence of an uninstall: keep what we had.
 	t.Run("unreadable cache leaves the previous view", func(t *testing.T) {
-		cfg := Config{ServiceCache: filepath.Join(dir, "absent.json"),
-			Service: model.ServiceSpec{Name: "already-installed"}}
-		cfg.adoptInstalledService(install, done, logf)
-		if cfg.Service.Name != "already-installed" {
-			t.Errorf("Service was cleared by an unreadable cache: %+v", cfg.Service)
+		cfg := Config{ServiceCache: filepath.Join(dir, "absent"),
+			Services: []model.ServiceSpec{{Name: "already-installed"}}}
+		cfg.adoptInstalledServices(install, done, logf)
+		if len(cfg.Services) != 1 || cfg.Services[0].Name != "already-installed" {
+			t.Errorf("Services was cleared by an unreadable cache: %+v", cfg.Services)
 		}
 	})
 }
@@ -617,5 +622,155 @@ func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 	}
 	if strings.Contains(o.Detail, "://") {
 		t.Fatalf("promised a URL on a node that publishes no name: %q", o.Detail)
+	}
+}
+
+// manifestJSON is a minimal valid manifest for `name`, used to populate the cache directory
+// directly. Written by hand rather than through the install path on purpose: these tests are about
+// what the node does with a SET, and the install path cannot currently produce one (see the
+// one-at-a-time gate in applyServiceInstall).
+func manifestJSON(name, digest string) []byte {
+	return []byte(`{"name":"` + name + `","version":"1","containers":[` +
+		`{"name":"app","image":"ghcr.io/x/` + name + `@sha256:` + digest + `",` +
+		`"mount":"/data","primary":true,"port":8123,"healthPath":"/healthz"}]}`)
+}
+
+const (
+	digestA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	digestB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+// THE PLURAL CUT ITSELF ([V3b.3](a)): a node holding TWO services must assemble one promoter chain
+// containing both, between the data mount and the VIP, and must carry both renderings so a guest
+// reboot can be replayed. Everything under this used to be singular by construction -- one cache
+// file, one spec, one chain -- so nothing could have failed this test; it could only have been
+// unwritten.
+//
+// Order is by service name and nothing more. It is asserted because "deterministic across
+// restarts" is a real property the chain needs (a promoter rewritten into a different order on
+// every boot is a promoter nobody can reason about), NOT because alphabetical is meaningful --
+// making it a dependency order is [V3b.3](c).
+func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
+	dir := t.TempDir()
+	// Written b-then-a so a pass cannot come from the write order.
+	for _, s := range []struct{ name, digest string }{{"mosquitto", digestB}, {"home-assistant", digestA}} {
+		if err := os.WriteFile(filepath.Join(dir, s.name+".json"), manifestJSON(s.name, s.digest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{ServiceCache: dir}
+	specs, chain, rendered, ok := cfg.installedServices(func(string, ...any) {})
+	if !ok {
+		t.Fatal("installedServices reported nothing installed, want two services")
+	}
+	if len(specs) != 2 {
+		t.Fatalf("specs = %+v, want two", specs)
+	}
+	if specs[0].Name != "home-assistant" || specs[1].Name != "mosquitto" {
+		t.Errorf("order = %q,%q, want home-assistant,mosquitto (by name, deterministic)", specs[0].Name, specs[1].Name)
+	}
+	// Each spec keeps its OWN paths -- the per-service derivation that already existed and was
+	// only ever called once.
+	for _, s := range specs {
+		if want := "/var/lib/briard/" + s.Name; s.DataDir != want {
+			t.Errorf("%s DataDir = %q, want %q", s.Name, s.DataDir, want)
+		}
+		if want := "briard-" + s.Name + "-app.service"; s.ServingUnit() != want {
+			t.Errorf("%s ServingUnit = %q, want %q", s.Name, s.ServingUnit(), want)
+		}
+	}
+	// The chain: data first, VIP last, BOTH services' units in between.
+	if chain[0] != "briard-data.service" || chain[len(chain)-1] != "briard-vip.service" {
+		t.Fatalf("chain = %v, want briard-data first and briard-vip last", chain)
+	}
+	for _, name := range []string{"home-assistant", "mosquitto"} {
+		if !slices.ContainsFunc(chain, func(u string) bool { return strings.Contains(u, name) }) {
+			t.Errorf("chain = %v, missing %s -- a service outside the chain is a service the promoter never starts", chain, name)
+		}
+	}
+	// And the union carries both renderings, which is what restoreService replays after a guest
+	// reboot empties /run. One service's files surviving is not enough.
+	for _, name := range []string{"home-assistant", "mosquitto"} {
+		found := false
+		for file := range rendered.Files {
+			if strings.Contains(file, name) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("rendered union has no files for %s: %v", name, slices.Sorted(maps.Keys(rendered.Files)))
+		}
+	}
+}
+
+// One bad file must cost exactly one service. The cache is read at BRING-UP, so failing the whole
+// read on an unparseable file would take a healthy service out of the promoter chain because an
+// unrelated one was corrupt -- and a node that comes back serving nothing is the outcome this
+// path exists to prevent.
+func TestInstalledServicesSkipsOnlyTheBadFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "home-assistant.json"), manifestJSON("home-assistant", digestA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mosquitto.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{ServiceCache: dir}
+	specs, chain, _, ok := cfg.installedServices(func(string, ...any) {})
+	if !ok || len(specs) != 1 || specs[0].Name != "home-assistant" {
+		t.Fatalf("specs = %+v (ok=%v), want just home-assistant", specs, ok)
+	}
+	if slices.ContainsFunc(chain, func(u string) bool { return strings.Contains(u, "mosquitto") }) {
+		t.Errorf("chain = %v, must not name units from a manifest that does not parse", chain)
+	}
+}
+
+// The node can HOLD a set; the install path may not yet CREATE one. Everything that describes a
+// service through the seam is still a scalar ([V3b.3](b)), so a second distinct service must be
+// refused loudly rather than run-and-under-reported.
+//
+// Two-sided on purpose: the same-name case must still pass, because install and UPGRADE are one
+// path and refusing an upgrade would break the shipped verb.
+func TestInstallRefusesASecondDistinctService(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mosquitto.json"), manifestJSON("mosquitto", digestB), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := catalogFor(t, testManifest()) // testManifest is home-assistant
+	cfg.ServiceCache = dir
+	o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed: a second distinct service must be refused", o)
+	}
+	if !strings.Contains(o.Detail, "mosquitto") || !strings.Contains(o.Detail, "one service at a time") {
+		t.Errorf("Detail = %q, want it to name mosquitto and say why", o.Detail)
+	}
+
+	// ...and an UPGRADE of the service already installed is not a second service.
+	up := t.TempDir()
+	if err := os.WriteFile(filepath.Join(up, "home-assistant.json"), manifestJSON("home-assistant", digestA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg2 := catalogFor(t, testManifest())
+	cfg2.ServiceCache = up
+	if o := install(cfg2, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done: re-installing the same service is an upgrade, not a second service", o)
+	}
+}
+
+// A cache directory that cannot be read must not be spelled the same way as an empty one. On the
+// path whose whole job is to refuse a second service, "I could not tell" reading as "nothing is
+// installed" is what would let the second one through.
+func TestOtherInstalledDistinguishesUnreadableFromEmpty(t *testing.T) {
+	if got, err := (Config{ServiceCache: filepath.Join(t.TempDir(), "absent")}).otherInstalled("x"); got != "" || err != nil {
+		t.Errorf("absent cache: got %q, %v -- want the shipped state, no error", got, err)
+	}
+	// A file where the directory should be: readable path, unusable as a directory.
+	blocked := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Config{ServiceCache: blocked}).otherInstalled("x"); err == nil {
+		t.Error("unreadable cache returned nil error, want the failure surfaced")
 	}
 }

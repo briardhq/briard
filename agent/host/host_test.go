@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -178,9 +177,13 @@ func TestConfigFromEnv_ServiceTargetsPayloadUnit(t *testing.T) {
 	}
 	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
 	t.Setenv("ROLE", string(model.RoleAnchor))
-	got := ConfigFromEnv().Service
+	services := ConfigFromEnv().Services
+	if len(services) != 1 {
+		t.Fatalf("Services = %+v, want exactly the one baked entry", services)
+	}
+	got := services[0]
 	if got.Name != "briard-payload" {
-		t.Errorf("Service.Name = %q, want briard-payload (the guest's fixed payload unit slug)", got.Name)
+		t.Errorf("Services[0].Name = %q, want briard-payload (the guest's fixed payload unit slug)", got.Name)
 	}
 	if unit := "podman-" + got.Name + ".service"; unit != "podman-briard-payload.service" {
 		t.Errorf("derived unit = %q, want podman-briard-payload.service", unit)
@@ -198,10 +201,8 @@ func TestConfigFromEnv_NoServiceLeavesPayloadOutOfTheChain(t *testing.T) {
 	}
 	t.Setenv("ROLE", string(model.RoleAnchor))
 	cfg := ConfigFromEnv()
-	// Reflect, not ==: ServiceSpec gained a []string (Units) , so it is no longer a
-	// comparable struct. This was the only call site relying on equality.
-	if !reflect.DeepEqual(cfg.Service, model.ServiceSpec{}) {
-		t.Errorf("Service = %+v with nothing installed, want the zero spec", cfg.Service)
+	if len(cfg.Services) != 0 {
+		t.Errorf("Services = %+v with nothing installed, want the empty set", cfg.Services)
 	}
 	want := []string{"briard-data.service", "briard-vip.service"}
 	if !slices.Equal(cfg.Promoter, want) {
@@ -451,7 +452,7 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 // runs -- and reporting "" for it made the cloud's systemTargets skip the node forever ([V3b.3](d)).
 // A witness is diskless; that is now what the code and this test both say.
 func TestCurrentSystem(t *testing.T) {
-	cfg := Config{Service: model.ServiceSpec{Name: "dummy"}}
+	cfg := Config{Services: []model.ServiceSpec{{Name: "dummy"}}}
 	if got := cfg.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "/nix/store/v1" {
 		t.Errorf("currentSystem = %q, want the running /nix/store/v1", got)
 	}
@@ -475,7 +476,7 @@ func TestCurrentSystem(t *testing.T) {
 // pin is empty or the read errors, and "" for a witness (no payload) -- so the reported
 // image is ground truth across a failover (a converged survivor reports the pin).
 func TestCurrentImage(t *testing.T) {
-	cfg := Config{Service: model.ServiceSpec{Name: "dummy", Image: "briard-dummy:v0"}}
+	cfg := Config{Services: []model.ServiceSpec{{Name: "dummy", Image: "briard-dummy:v0"}}}
 	if got := cfg.currentImage(context.Background(), fakeStatus{image: "briard-dummy:v1"}); got != "briard-dummy:v1" {
 		t.Errorf("with a pin set, currentImage = %q, want the pinned briard-dummy:v1", got)
 	}
@@ -485,7 +486,7 @@ func TestCurrentImage(t *testing.T) {
 	if got := cfg.currentImage(context.Background(), fakeStatus{imgErr: errors.New("channel down")}); got != "briard-dummy:v0" {
 		t.Errorf("read error: currentImage = %q, want the default fallback briard-dummy:v0", got)
 	}
-	witness := Config{Service: model.ServiceSpec{}} // no payload
+	witness := Config{} // the empty set: nothing installed
 	if got := witness.currentImage(context.Background(), fakeStatus{image: "x"}); got != "" {
 		t.Errorf("witness currentImage = %q, want empty", got)
 	}

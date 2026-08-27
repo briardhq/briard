@@ -2,9 +2,13 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"briard.io/agent/drbd"
@@ -160,6 +164,23 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		return failed("the promoter is already paused — another maintenance operation is in progress")
 	}
 
+	// ONE RUNTIME SERVICE AT A TIME, until [V3b.3](b). The node can now HOLD a set — the cache is
+	// per-service, bring-up assembles the chain from all of it — but everything that DESCRIBES a
+	// service through the seam is still a scalar: NodeStatus.{Image,Healthy,System} and telemetry's
+	// Payload* fields. Letting a second service in before those are widened would not fail, which is
+	// the problem: the node would run both and report one, so the cloud would confirm a rollout
+	// against an arbitrary member and a crash-loop in the other would be invisible. A loud refusal
+	// here is the honest half of "wire it, don't open it"; (b) deletes this check as part of making
+	// the contract able to name WHICH service it means.
+	//
+	// Scoped to RUNTIME-installed services (the cache), not the build-time baked slot, which an
+	// install still replaces exactly as it did before.
+	if other, err := cfg.otherInstalled(m.Name); err != nil {
+		return failed(fmt.Sprintf("could not read the installed-service cache: %v", err))
+	} else if other != "" {
+		return failed(fmt.Sprintf("%s is already installed and this node runs one service at a time; uninstall it first", other))
+	}
+
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-service node) or an idempotent re-install of the same manifest. Read BEFORE
 	// ServiceProvision overwrites the volume's manifest, so a failed upgrade can put the prior back.
@@ -250,7 +271,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// when the volume is not yet mounted and the replicated copy is therefore unreadable. Without
 	// it, an agent restart would re-derive the chain from the environment, silently dropping the
 	// installed service back out of it. Same pattern, and the same reason, as AssignmentCache.
-	if err := cfg.cacheService(raw); err != nil {
+	if err := cfg.cacheService(m.Name, raw); err != nil {
 		// Not fatal: the service IS installed and serving. Say so loudly though — the node will
 		// lose it from the chain on the next agent restart.
 		logf("service install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
@@ -274,35 +295,80 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
 
-// CacheService writes the manifest to the node-local cache. Written only after the health gate
-// passes, so a failed install is never the thing a restart converges to.
+// CacheService writes one service's manifest into the node-local cache directory, named for the
+// service. Written only after the health gate passes, so a failed install is never the thing a
+// restart converges to.
+//
+// One file per service, holding the manifest's bytes VERBATIM ([V3b.3](a)). The alternative --
+// one file holding the set -- cannot work: a manifest's content hash IS the service identity
+// (shared/manifest), so re-encoding a set would give every member a new identity on every write.
+// Writing per file also makes install and uninstall a file operation instead of a read-modify-write
+// of a shared document, which is what keeps two installs from losing each other's service.
 //
 // Atomic and durable (shared/atomicfile), which it was not: a bare WriteFile over an existing file
 // truncates first, so a crash inside the write left half a manifest, and an unflushed one left no
 // manifest at all for a commit interval after the install returned. Neither is loud.
-// installedService reads an unparseable cache as "bringing up with no service" and says so once to
-// the log, while the volume's .service-manifest still names the service the node is meant to be
-// running -- bring-up never consults it (only the install path does, via priorService), so the node
-// just quietly comes back empty. Same defect as [V3.23], node-local instead of replicated.
+// installedServices reads an unparseable file as "this service is not installed" and says so once
+// to the log, while the volume's manifests still name the services the node is meant to be
+// running -- bring-up never consults those (only the install path does, via priorService), so the
+// node just quietly comes back without it. Same defect as [V3.23], node-local instead of replicated.
 //
-// The service spec used to be described here as "the one input to BringUp that comes from a file
-// instead of being re-derived by the host". It was not: the MESH is the other one, and it had no
+// The service specs used to be described here as "the one input to BringUp that comes from a file
+// instead of being re-derived by the host". They were not: the MESH is the other one, and it had no
 // cache at all, so a runtime-paired node's guest reboot rewrote its .res from the stale PEERS env
 // ([V3b.16b]). Two node-scoped facts, two caches, one rule -- see cacheMesh.
-func (cfg Config) cacheService(raw []byte) error {
+func (cfg Config) cacheService(name string, raw []byte) error {
 	if cfg.ServiceCache == "" {
 		return nil
 	}
-	return atomicfile.Write(cfg.ServiceCache, raw, 0o600, 0o700)
+	return atomicfile.Write(cfg.manifestPath(name), raw, 0o600, 0o700)
 }
 
-// adoptInstalledService refreshes the LIVE config from the node-local manifest cache after a
+// otherInstalled names a runtime-installed service on this node that is NOT `name`, or "" if
+// there is none. It reads the cache DIRECTORY rather than cfg.Services because the directives that
+// changed it may not have been adopted into this cfg copy yet — the file is the authority on what
+// is installed, which is the same reason installedServices reads it at bring-up.
+//
+// An absent directory is the shipped state and not an error. A directory that cannot be read IS
+// one, and is reported rather than swallowed: "I could not tell" must not be spelled the same way
+// as "nothing is installed" on the path whose whole job is to refuse a second service.
+func (cfg Config) otherInstalled(name string) (string, error) {
+	if cfg.ServiceCache == "" {
+		return "", nil
+	}
+	entries, err := os.ReadDir(cfg.ServiceCache)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil // nothing installed yet, the shipped state
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		if got := strings.TrimSuffix(e.Name(), ".json"); got != name {
+			return got, nil
+		}
+	}
+	return "", nil
+}
+
+// manifestPath is one service's file in the cache directory. The name is a manifest slug --
+// shared/manifest's Validate refuses anything else, and refuses it precisely because these become
+// path elements -- so there is no traversal to strip here; the check upstream is the one that
+// matters and this would only duplicate it badly.
+func (cfg Config) manifestPath(name string) string {
+	return filepath.Join(cfg.ServiceCache, name+".json")
+}
+
+// adoptInstalledServices refreshes the LIVE config from the node-local manifest cache after a
 // directive that changed what is installed. Run() does this once at startup; without it here, the
-// very process that performed the install kept its old (usually empty) view of cfg.Service until
+// very process that performed the install kept its old (usually empty) view of cfg.Services until
 // something restarted it.
 //
-// That is not cosmetic: cfg.resources() is gated on cfg.Service.Name, so a node that had just
-// installed a service stopped reporting the guest's telemetry ENTIRELY -- not merely the payload
+// That is not cosmetic: cfg.resources() is gated on there being a service, so a node that had just
+// installed one stopped reporting the guest's telemetry ENTIRELY -- not merely the payload
 // footprint but volume usage, snapshot count, load average, journal size and podman-store size,
 // every one of them a soak trend input or a growth surface. The node ran perfectly and described
 // itself as empty.
@@ -310,21 +376,24 @@ func (cfg Config) cacheService(raw []byte) error {
 // Pointer receiver on purpose: it mutates the observe loop's own cfg, the copy every later cycle
 // reads. A failed re-read leaves the previous view in place -- the cache is the authority on what
 // is installed, and a transient read error is not evidence of an uninstall.
-func (cfg *Config) adoptInstalledService(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
+func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
 	if d.Kind != api.DirectiveServiceInstall || o.State != api.OutcomeDone {
 		return
 	}
-	spec, chain, rendered, ok := cfg.installedService(logf)
+	specs, chain, rendered, ok := cfg.installedServices(logf)
 	if !ok {
 		return
 	}
-	cfg.Service, cfg.Promoter, cfg.ServiceRendered = spec, chain, rendered
-	logf("installed service %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
+	cfg.Services, cfg.Promoter, cfg.ServiceRendered = specs, chain, rendered
+	for _, spec := range specs {
+		logf("installed service %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
+	}
 }
 
-// InstalledService reads the node-local manifest cache and returns the service spec + promoter
-// chain it implies, and the RENDERED UNITS themselves. Called at bring-up so a restarted agent
-// rebuilds the chain it had, rather than reverting to whatever the environment describes.
+// InstalledServices reads the node-local manifest DIRECTORY and returns the service specs, the
+// promoter chain they imply, and the UNION of their RENDERED UNITS. Called at bring-up so a
+// restarted agent rebuilds the chain it had, rather than reverting to whatever the environment
+// describes.
 //
 // The rendered output is returned rather than discarded because the chain alone is not enough
 // . The units it names live under /run/containers/systemd — tmpfs — so a guest reboot
@@ -332,36 +401,76 @@ func (cfg *Config) adoptInstalledService(d api.Directive, o api.DirectiveOutcome
 // not exist. restoreService puts them back; see there for why re-rendering is the canonical
 // answer rather than persisting them somewhere durable.
 //
-// Every failure is a soft "nothing installed": a cache that is absent (the shipped zero-service
-// node), unreadable, or no longer valid must leave the node bringing up empty rather than
-// refusing to start. A node that will not boot is worse than a node that lost its service.
-func (cfg Config) installedService(logf func(string, ...any)) (model.ServiceSpec, []string, quadlet.Rendered, bool) {
+// ORDER IS BY FILENAME, which is by service name, which makes it deterministic and nothing more.
+// The chain is a start ORDER and a set of services has a real one — [V3b.3](c) turns it into a
+// dependency order once there is a second real service to decide against. Until then, "stable
+// across restarts" is the only property this owes, and alphabetical is the cheapest way to owe it.
+//
+// Every failure is a soft "not installed", per service and for the set: a cache directory that is
+// absent (the shipped zero-service node), unreadable, or holding a file that no longer parses must
+// leave the node bringing up with what remains rather than refusing to start. A node that will not
+// boot is worse than a node that lost a service — and losing ONE service must not cost the others,
+// which is why a bad file is skipped rather than failing the read.
+func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceSpec, []string, quadlet.Rendered, bool) {
 	if cfg.ServiceCache == "" {
-		return model.ServiceSpec{}, nil, quadlet.Rendered{}, false
+		return nil, nil, quadlet.Rendered{}, false
 	}
-	raw, err := os.ReadFile(cfg.ServiceCache)
+	entries, err := os.ReadDir(cfg.ServiceCache)
 	if err != nil {
-		return model.ServiceSpec{}, nil, quadlet.Rendered{}, false // absent = nothing installed, the shipped state
+		return nil, nil, quadlet.Rendered{}, false // absent = nothing installed, the shipped state
 	}
-	m, _, err := manifest.Parse(raw)
-	if err != nil {
-		logf("installed-service cache at %s is unusable (%v); bringing up with no service", cfg.ServiceCache, err)
-		return model.ServiceSpec{}, nil, quadlet.Rendered{}, false
+	var (
+		specs []model.ServiceSpec
+		units []string
+		all   = quadlet.Rendered{Files: map[string]string{}}
+	)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(cfg.ServiceCache, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			logf("installed-service cache %s is unreadable (%v); bringing up without it", path, err)
+			continue
+		}
+		m, _, err := manifest.Parse(raw)
+		if err != nil {
+			logf("installed-service cache %s is unusable (%v); bringing up without it", path, err)
+			continue
+		}
+		rendered, err := quadlet.Render(m)
+		if err != nil {
+			logf("installed-service cache %s does not render (%v); bringing up without it", path, err)
+			continue
+		}
+		primary := m.Primary()
+		specs = append(specs, model.ServiceSpec{
+			Name:    m.Name,
+			Image:   primary.Image,
+			DataDir: quadlet.DataRoot(m.Name),
+			Units:   rendered.Units,
+			Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",
+		})
+		units = append(units, rendered.Units...)
+		mergeRendered(&all, rendered)
 	}
-	rendered, err := quadlet.Render(m)
-	if err != nil {
-		logf("installed-service cache at %s does not render (%v); bringing up with no service", cfg.ServiceCache, err)
-		return model.ServiceSpec{}, nil, quadlet.Rendered{}, false
+	if len(specs) == 0 {
+		return nil, nil, quadlet.Rendered{}, false
 	}
-	primary := m.Primary()
-	spec := model.ServiceSpec{
-		Name:    m.Name,
-		Image:   primary.Image,
-		DataDir: quadlet.DataRoot(m.Name),
-		Units:   rendered.Units,
-		Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",
+	return specs, promoterUnits(units), all, true
+}
+
+// mergeRendered folds one service's rendering into the union restoreService replays. Unit
+// filenames are service-prefixed by the renderer (briard-<service>-…), so the Files merge cannot
+// collide; the unit lists concatenate in the order their services were read.
+func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
+	for name, body := range r.Files {
+		all.Files[name] = body
 	}
-	return spec, promoterUnits(rendered.Units), rendered, true
+	all.Units = append(all.Units, r.Units...)
+	all.ImageUnits = append(all.ImageUnits, r.ImageUnits...)
+	all.ContainerUnits = append(all.ContainerUnits, r.ContainerUnits...)
 }
 
 // PriorService reads the manifest currently on the volume and renders it — the rollback target for

@@ -960,18 +960,24 @@ if command -v systemctl >/dev/null 2>&1; then
 	# never risk the address. So the wording says "a briard- client", which is true of both.
 	# The service line, and the reason it is a branch rather than a constant. "no service is
 	# installed on it yet" is true of a FIRST install and false of a cattle reinstall: the service
-	# manifest is PET ($STATE/service.json, beside the identity), so the agent rebuilds the promoter
-	# chain from it at bring-up and the service comes back on its own. Measured 2026-08-10 --
+	# manifests are PET ($STATE/services/, beside the identity), so the agent rebuilds the promoter
+	# chain from them at bring-up and the services come back on their own. Measured 2026-08-10 --
 	# a reinstall printed "no service is installed" while Home Assistant was already on its way back
 	# up, which is the same false claim [V3.28] just took out of the front door, in a third place.
 	#
-	# Unlike the front door, this script CAN see the inventory: the file is right there, and it is
-	# the very file the agent reads. Best-effort on the name (a manifest whose shape we cannot parse
-	# still gets a true sentence, just a vaguer one).
-	if [ -f "$STATE/service.json" ]; then
-		svc=$(grep -o '"name":"[^"]*"' "$STATE/service.json" 2>/dev/null | head -1 | cut -d'"' -f4)
-		[ -n "$svc" ] && SERVICE_NOTE="$svc is already installed on it and is coming back up" \
-		              || SERVICE_NOTE="the service already installed on it is coming back up"
+	# Unlike the front door, this script CAN see the inventory: the files are right there, and they
+	# are the very files the agent reads. Best-effort on the names (a manifest whose shape we cannot
+	# parse still gets a true sentence, just a vaguer one). A DIRECTORY since [V3b.3](a) -- one
+	# manifest per service, verbatim, because a manifest's content hash is the service identity.
+	svcs=""
+	for f in "$STATE"/services/*.json; do
+		[ -f "$f" ] || continue
+		name=$(grep -o '"name":"[^"]*"' "$f" 2>/dev/null | head -1 | cut -d'"' -f4)
+		[ -n "$name" ] || name="a service"
+		svcs="${svcs:+$svcs, }$name"
+	done
+	if [ -n "$svcs" ]; then
+		SERVICE_NOTE="$svcs is already installed on it and is coming back up"
 	else
 		SERVICE_NOTE="no service is installed on it yet"
 	fi

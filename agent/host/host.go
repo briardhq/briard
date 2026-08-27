@@ -182,10 +182,15 @@ type Config struct {
 	Role      model.Role    // anchor / diskless ("" reserved for plain machines)
 	Resource  drbd.Resource // the DRBD resource this node serves
 	Promoter  []string      // drbd-reactor units in start order; nil on a witness
-	// ServiceRendered is the runtime-installed service's units, re-derived from the node-local
-	// manifest cache at start-up and handed to bring-up so they exist before the promoter looks
-	// for them. Set alongside Promoter by installedService, for the same reason and from
-	// the same source; zero when no service is installed.
+	// ServiceRendered is the UNION of every runtime-installed service's units, re-derived from
+	// the node-local manifest cache at start-up and handed to bring-up so they exist before the
+	// promoter looks for them. Set alongside Promoter by installedService, for the same reason and
+	// from the same source; zero when no service is installed.
+	//
+	// A union rather than a per-service value because its single consumer (restoreService) wants
+	// exactly that: every unit file to write back, every image unit to re-warm, after a guest
+	// reboot emptied /run. Unit filenames are service-prefixed by the renderer, so the merge
+	// cannot collide.
 	ServiceRendered quadlet.Rendered
 	Diskless        bool // this node is a diskless witness
 	FreshInit       bool // seed a fresh cluster (skip initial sync); exactly one node
@@ -250,18 +255,31 @@ type Config struct {
 	// turns a broken-generation test into a timeout test that passes for the wrong reason.
 	UpgradeBudget time.Duration
 
-	// Payload upgrade: what an `upgrade` directive acts on. Service names the
-	// payload + its data subvolume; ReactorSnippet enables promoter-coordinated quiesce
-	//; SnapshotRetention bounds pre-upgrade snapshots. Empty Service.Name
-	// -> the node doesn't drive upgrades (witness / no payload).
-	Service           model.ServiceSpec
+	// Payload upgrade: what an `upgrade` directive acts on. Services is the ordered set
+	// this node runs — each naming its payload, its data subvolume and the units the promoter
+	// starts for it; ReactorSnippet enables promoter-coordinated quiesce; SnapshotRetention
+	// bounds pre-upgrade snapshots. An EMPTY set is the shipped state (a witness, or a node with
+	// nothing installed yet) and means the node doesn't drive payload upgrades.
+	//
+	// A SET rather than the single spec it was ([V3b.3](a)): the per-service primitives were
+	// already plural — snapshot/upgrade/rollback take a spec and derive per-service paths, the
+	// quadlet renderer names everything from the manifest — and only the node's own bookkeeping
+	// was singular. Ordering is by name and therefore deterministic, which is all this cut owes:
+	// making the order a DEPENDENCY order is [V3b.3](c), and needs a second real service to be
+	// decided against.
+	Services          []model.ServiceSpec
 	ReactorSnippet    string
 	SnapshotRetention int
 
 	// Runtime service install. CatalogURL is the signed catalog root;
-	// ServiceCache is where the installed manifest is kept NODE-LOCALLY so the agent can rebuild
-	// the promoter chain at bring-up, before promotion, when the replicated copy on the volume is
-	// not yet mountable. "" disables either.
+	// ServiceCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
+	// per service, so the agent can rebuild the promoter chain at bring-up — before promotion,
+	// when the replicated copies on the volume are not yet mountable. "" disables either.
+	//
+	// A directory rather than the single `service.json` it was ([V3b.3](a)), and the manifests are
+	// stored VERBATIM: a manifest's content hash IS the service identity (shared/manifest), so
+	// re-encoding a set into one array file would destroy the identity of every member. One file
+	// of untouched bytes per service keeps the hash true and makes install/uninstall a file op.
 	CatalogURL   string
 	ServiceCache string
 
@@ -383,9 +401,13 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// from the node-local manifest cache before anything derives from cfg. Without this an agent
 	// restart would re-derive the chain from env alone and silently drop the installed service
 	// out of the promoter — the node would come back serving nothing.
-	if spec, chain, rendered, ok := cfg.installedService(logf); ok {
-		logf("installed service %q restored from cache; promoter chain %v", spec.Name, chain)
-		cfg.Service, cfg.Promoter, cfg.ServiceRendered = spec, chain, rendered
+	if specs, chain, rendered, ok := cfg.installedServices(logf); ok {
+		names := make([]string, 0, len(specs))
+		for _, s := range specs {
+			names = append(names, s.Name)
+		}
+		logf("installed services %v restored from cache; promoter chain %v", names, chain)
+		cfg.Services, cfg.Promoter, cfg.ServiceRendered = specs, chain, rendered
 	}
 	// A mesh joined at RUNTIME is not described by the environment either, and it is the more
 	// dangerous of the two to forget: bring-up REWRITES the guest's .res from cfg.Resource every
@@ -457,7 +479,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		Logf: logf,
 	}
 	// EVERY node with a guest gets this, not only one running a service. Gating construction on
-	// `cfg.Service.Name != ""` would leave `up == nil` on a zero-service node, and applyDirective
+	// `cfg.hasService()` would leave `up == nil` on a zero-service node, and applyDirective
 	// would then refuse every OS upgrade with "no target/upgrader on this node" — i.e. the shipped
 	// state, and the whole free tier, could not take an OS update. A system closure is a
 	// property of the NODE; what happens to run on top of it cannot decide whether the node can
@@ -502,7 +524,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// aggregator stays nil and observe skips the upload. Built once here so it survives the
 	// reconnect loop (like the alerter).
 	var agg *metricsAggregator
-	if rep != nil && cfg.Service.Name != "" {
+	if rep != nil && cfg.hasService() {
 		agg = newMetricsAggregator(cfg.MetricsWindow, logf)
 	}
 
@@ -978,7 +1000,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 					// (the upgrade path, the recovery ladder) take their own lease.
 					cfg.beat.Beat()
 					o := cfg.dispatch(ctx, d, r, up, img, n, cr, su, logf)
-					cfg.adoptInstalledService(d, o, logf)
+					cfg.adoptInstalledServices(d, o, logf)
 					if o.ID != "" {
 						*pending = append(*pending, o)
 					}
@@ -1012,7 +1034,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			cfg.beat.Beat()
 			o := cfg.dispatch(ctx, rq.d, r, up, img, n, cr, su, logf)
 			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
-			cfg.adoptInstalledService(rq.d, o, logf)
+			cfg.adoptInstalledServices(rq.d, o, logf)
 		case <-t.C:
 		}
 	}
@@ -1059,7 +1081,11 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applyPair(ctx, m, platformWitness{}, d, logf)
 	}
-	return applyDirective(ctx, d, up, cfg.Service, img, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
+	// The payload directives (upgrade/rollback) name an IMAGE, not a service, so they can only be
+	// aimed while there is exactly one. A zero spec is what makes applyDirective refuse them with
+	// "no target"; naming which service a payload directive means is [V3b.3](b)'s widening.
+	spec, _ := cfg.soleService()
+	return applyDirective(ctx, d, up, spec, img, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
 }
 
 // OverlayStatus reads the overlay's health for the status snapshot. Nil when no
@@ -1099,14 +1125,17 @@ func resourceLog(r *telemetry.NodeResources) string {
 // always measures), so the trend oracle always has a numeric sample.
 func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeResources {
 	var res telemetry.NodeResources
-	if cfg.Service.Name != "" {
+	// The sole service's footprint, because telemetry's Payload* fields are SCALARS. Summing N
+	// services into one number would be a different measurement wearing the same field name, and
+	// picking one of N silently would be worse; both are [V3b.3](b)'s to settle. See soleService.
+	if spec, ok := cfg.soleService(); ok {
 		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		// ServingUnit, not a name rebuilt here: a runtime-installed service's units come from the
 		// quadlet renderer (briard-<service>-<container>.service), so "podman-<name>.service" named
 		// nothing, systemd answered with no MainPID, and PayloadRSS/PayloadFDs/PayloadRestarts sat
 		// at zero for every catalog-installed service. Restarts is the crash-loop signal, so a
 		// service that crash-looped read exactly like one that never restarted.
-		if app, err := r.Resources(rctx, cfg.Service.ServingUnit(), cfg.Service.DataDir); err == nil {
+		if app, err := r.Resources(rctx, spec.ServingUnit(), spec.DataDir); err == nil {
 			res = app // appliance fields; agent fields (zero here) filled below
 		}
 		cancel()
@@ -1329,19 +1358,50 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 	return st, cl, probe, nil
 }
 
+// hasService reports whether this node runs anything at all. The shipped state is FALSE — a node
+// is installed before it is given something to run — so this is the "is there a payload" test the
+// singular `cfg.Service.Name != ""` used to be, with the trap that reading removed: it says
+// nothing about whether the node has a GUEST. A witness is Diskless; a zero-service anchor has a
+// guest, a closure and an OS the cloud may roll, and conflating the two is [V3b.3](d).
+func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
+
+// soleService returns the one installed service, and false when there is none — or when there is
+// more than one, which nothing can currently reach: applyServiceInstall refuses a second distinct
+// service until [V3b.3](b) widens the scalars that describe one (`NodeStatus.{Image,Healthy,
+// System}`, telemetry's `Payload*` fields) to carry N answers.
+//
+// Returning false rather than an arbitrary member is the point. Every caller here feeds a SCALAR
+// — the image the cloud confirms a rollout against, the unit a footprint is measured from, the
+// spec an upgrade directive acts on — and a scalar that silently describes one of two services is
+// a wrong answer wearing a right answer's clothes. The refusal upstream is the gate; this is the
+// belt to those braces, and it is what lets (a) make the node hold N before (b) makes the contract
+// able to NAME which.
+func (cfg Config) soleService() (model.ServiceSpec, bool) {
+	if len(cfg.Services) != 1 {
+		return model.ServiceSpec{}, false
+	}
+	return cfg.Services[0], true
+}
+
 // CurrentImage reports the payload image this node actually serves: the replicated pin
 // read from the guest (ground truth across a failover), falling back to the configured
-// baked default when no pin is set. Empty for a witness (no payload). A read error falls
-// back to the default rather than blanking the report; the loop re-reads next cycle.
+// baked default when no pin is set. Empty when the node runs nothing (the shipped state, or a
+// witness). A read error falls back to the default rather than blanking the report; the loop
+// re-reads next cycle.
+//
+// SCALAR, and therefore the sole service's — see soleService. Reporting one of several images
+// through a field the cloud confirms a rollout against is [V3b.3](b)'s to fix, not this cut's to
+// fudge.
 func (cfg Config) currentImage(ctx context.Context, r guestReader) string {
-	if cfg.Service.Name == "" {
-		return "" // witness / no payload
+	spec, ok := cfg.soleService()
+	if !ok {
+		return "" // nothing installed (or more than one: (b) widens the field)
 	}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	pin, err := r.PayloadImage(rctx)
 	if err != nil || pin == "" {
-		return cfg.Service.Image // no pin set (yet), or a transient read hiccup
+		return spec.Image // no pin set (yet), or a transient read hiccup
 	}
 	return pin
 }
