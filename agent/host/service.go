@@ -42,8 +42,11 @@ import (
 type serviceInstaller interface {
 	Status(ctx context.Context, resource string) (model.QuorumState, error)
 	ServiceRender(ctx context.Context, files map[string]string, stale []string) error
-	ServiceProvision(ctx context.Context, dataDir string, subdirs []string, manifest string) error
-	ServiceManifest(ctx context.Context) (string, error)
+	ServiceProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error
+	ServiceInstalled(ctx context.Context, name string) (string, error)
+	// SupportsServiceInstalled gates the whole install: a guest that cannot NAME a service when
+	// recording its identity would overwrite whatever it already runs. See applyServiceInstall.
+	SupportsServiceInstalled() bool
 	ReactorActive(ctx context.Context) (bool, error)
 	ReactorPause(ctx context.Context, snippet string) error
 	ReactorResume(ctx context.Context, snippet string) error
@@ -149,6 +152,15 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if d.Payload == "" {
 		return failed("no service named")
 	}
+	// FIRST, before the fetch, so a refusal costs nothing and leaves the node untouched. A guest
+	// that does not advertise service.installed keeps the services' identities in ONE file on the
+	// volume, so it cannot say which service a manifest belongs to — installing here would record
+	// this service's identity over whatever that node already runs, and a survivor would then
+	// promote against the wrong manifest. Refusing loudly is the answer rather than a compat path
+	// ([[alpha-reinstall-only-policy]]); the guest OS rolls and the verb appears.
+	if !g.SupportsServiceInstalled() {
+		return failed("this guest is too old to name a service's identity on the volume (no service.installed); update the guest OS before installing")
+	}
 	ctx, cancel := cfg.beat.budget(ctx, installBudget)
 	defer cancel()
 
@@ -191,7 +203,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-service node) or an idempotent re-install of the same manifest. Read BEFORE
 	// ServiceProvision overwrites the volume's manifest, so a failed upgrade can put the prior back.
-	prior, priorSubdirs, priorRaw := cfg.priorService(ctx, g, raw, logf)
+	prior, priorSubdirs, priorRaw := cfg.priorService(ctx, g, m.Name, raw, logf)
 
 	// Units are node-local (/run), so this node renders its own. A multi-node home has the
 	// directive delivered to EVERY node, and each renders locally — that is what lets a survivor
@@ -252,7 +264,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 
 	// Provision writes the NEW manifest to the volume + ensures the subvolume/subdirs. On an
 	// upgrade this overwrites the prior manifest on the volume; the rollback re-writes the prior.
-	if err := g.ServiceProvision(ctx, dataDir, quadlet.Subdirs(m), string(raw)); err != nil {
+	if err := g.ServiceProvision(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw)); err != nil {
 		return failed(fmt.Sprintf("provision storage: %v", err))
 	}
 
@@ -261,7 +273,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	previous := cfg.Promoter
 	next := promoterUnits(rendered.Units)
 	revert := func(cause error) api.DirectiveOutcome {
-		return cfg.revert(ctx, g, d, dataDir, rendered, prior, priorSubdirs, priorRaw, snap, previous, logf, cause)
+		return cfg.revert(ctx, g, d, m.Name, dataDir, rendered, prior, priorSubdirs, priorRaw, snap, previous, logf, cause)
 	}
 	if err := cfg.switchService(ctx, g, next, rendered.ContainerUnits, logf); err != nil {
 		return revert(fmt.Errorf("install %s: %w", m.Name, err))
@@ -493,14 +505,19 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 	all.ContainerUnits = append(all.ContainerUnits, r.ContainerUnits...)
 }
 
-// PriorService reads the manifest currently on the volume and renders it — the rollback target for
-// an upgrade. Returns (nil, nil, "") for a fresh install, an idempotent re-install of the same
+// PriorService reads the manifest currently on the volume FOR THIS SERVICE and renders it — the
+// rollback target for an upgrade. Naming the service is what makes it correct at N>1: reading the
+// volume's single unnamed manifest meant installing a second service found the FIRST one's
+// manifest, called it this install's prior, and then had filesToRemove delete that service's
+// rendered units as a renamed prior's orphans ([V3b.3](b)).
+//
+// Returns (nil, nil, "") for a fresh install, an idempotent re-install of the same
 // manifest, or a prior that no longer parses/renders (no usable rollback target → treated as
 // fresh; the gate still guards the new service, so the worst case is a rollback to empty rather
 // than to the broken new one, never to it). The raw bytes and subdirs come back too, because the
 // rollback re-provisions them as the volume's identity.
-func (cfg Config) priorService(ctx context.Context, g serviceInstaller, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string) {
-	raw, err := g.ServiceManifest(ctx)
+func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string) {
+	raw, err := g.ServiceInstalled(ctx, name)
 	if err != nil {
 		logf("service install: could not read the installed manifest (%v); treating as a fresh install", err)
 		return nil, nil, ""
@@ -605,7 +622,7 @@ func (cfg Config) adjustChain(ctx context.Context, g serviceInstaller, chain []s
 // chain at the prior → resume, which starts the prior service fresh. Data is restored BEFORE code,
 // the order the guest manager's rollback uses — and if the data cannot be rolled back the
 // promoter is deliberately left PAUSED rather than resumed onto poisoned data.
-func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, dataDir string, next quadlet.Rendered, prior *quadlet.Rendered, priorSubdirs []string, priorRaw, snap string, previous []string, logf func(string, ...any), cause error) api.DirectiveOutcome {
+func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, name, dataDir string, next quadlet.Rendered, prior *quadlet.Rendered, priorSubdirs []string, priorRaw, snap string, previous []string, logf func(string, ...any), cause error) api.DirectiveOutcome {
 	rctx, rcancel := cfg.beat.budget(context.WithoutCancel(ctx), revertBudget)
 	defer rcancel()
 
@@ -634,7 +651,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		if err := g.ServiceRender(rctx, prior.Files, filesToRemove(next.Files, prior.Files)); err != nil {
 			return bothFailed("re-render the prior units", err)
 		}
-		if err := g.ServiceProvision(rctx, dataDir, priorSubdirs, priorRaw); err != nil {
+		if err := g.ServiceProvision(rctx, name, dataDir, priorSubdirs, priorRaw); err != nil {
 			return bothFailed("re-record the prior manifest", err)
 		}
 	}

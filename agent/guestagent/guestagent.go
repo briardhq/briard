@@ -143,16 +143,37 @@ const (
 const (
 	verbServiceRender    = "service.render"    // write quadlet units to /run + daemon-reload (every node)
 	verbServiceProvision = "service.provision" // create the service subvolume + record the manifest (Primary only)
-	verbServiceManifest  = "service.manifest"  // read the manifest recorded on the volume, or ""
+	// service.installed READS ONE NAMED SERVICE's manifest off the volume, or "". It REPLACES
+	// the unnamed service.manifest rather than widening it, because a verb whose meaning changes
+	// under an unchanged name is what a protocol bump exists to police -- and a bump is the
+	// expensive instrument here: the host agent self-updates independently of the guest OS closure
+	// ([V3.4]), so raising MinGuestProtocol makes every host refuse every not-yet-rolled guest
+	// fleet-wide, and its own health gate then reverts the self-update. A NEW verb is refused by
+	// exactly the one path that needs it (Supports), which is the instrument service.warm already
+	// set the precedent for ([V3b.3](e1), no api.go change).
+	verbServiceInstalled = "service.installed" // read one named service's manifest from the volume, or ""
 	verbServiceWarm      = "service.warm"      // ensure an image is present, starting its .image unit ONLY if it is missing
 )
 
-// manifestPinPath is the installed service's identity on the replicated volume — the manifest's
-// own bytes, whose content hash IS that identity. It supersedes payloadPinPath's single
-// OCI digest for runtime-installed services: one manifest transitively pins the whole container
-// set. The VOLUME holds the manifest, never the rendered units — a survivor re-renders rather
-// than replaying units that a different podman version may have produced.
-const manifestPinPath = "/var/lib/briard/.service-manifest"
+// manifestDir holds the installed services' identities on the replicated volume — one file per
+// service, `<name>.json`, holding the manifest's own bytes, whose content hash IS that identity.
+// It supersedes payloadPinPath's single OCI digest for runtime-installed services: one manifest
+// transitively pins the whole container set. The VOLUME holds the manifests, never the rendered
+// units — a survivor re-renders rather than replaying units that a different podman version may
+// have produced.
+//
+// A DIRECTORY rather than one file, mirroring the host's node-local cache and for the same reason
+// ([V3b.3](b)): the volume must be able to say which service it means. With one file, installing
+// a SECOND service read the first as its own "prior" — so it snapshotted against the wrong
+// service, and `filesToRemove` deleted the first service's rendered units as a renamed prior's
+// orphans. That is the concrete defect the one-service-at-a-time gate stood in for.
+//
+// A node that installed a service BEFORE this split has its manifest at the old single path and
+// nothing reads it: priorService then finds no prior, treats the next install as fresh, and skips
+// the rollback target. That is priorService's own documented fresh-install case, its worst outcome
+// is a rollback to empty rather than to a broken new service, and the first install after the
+// upgrade writes the new location — so this carries no migration step ([[alpha-reinstall-only-policy]]).
+const manifestDir = "/var/lib/briard/.services"
 
 // quadletDir is where podman's generator reads unit source from. Mirrors agent/quadlet.Dir; the
 // guest is told the filenames but not the directory, so this path is the guest's own.
@@ -196,7 +217,7 @@ const (
 )
 
 // dataMountRoot is where briard-data mounts the replicated volume — the guest image's
-// `btrfsRoot` (guest-image/configuration.nix), restated here the way manifestPinPath restates a
+// `btrfsRoot` (guest-image/configuration.nix), restated here the way manifestDir restates a
 // path under it. fs.sync carries no path on the wire on purpose: the verb has exactly one
 // meaning ("flush the replicated volume"), and the node that mounts the volume is the one that
 // knows where it lives.
@@ -218,7 +239,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
-	verbServiceRender, verbServiceProvision, verbServiceManifest, verbServiceWarm, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceWarm, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -368,10 +389,27 @@ type serviceRenderRequest struct {
 // subvolume containing them, which would break data.restore outright), and records Manifest as
 // the service identity on the replicated volume.
 type serviceProvisionRequest struct {
+	// Name is which service this is, and therefore which identity file on the volume the
+	// manifest lands in. The host owns the naming because it owns the manifest; deriving it
+	// from DataDir here would make the guest re-implement a layout it is only ever told.
+	Name     string   `json:"name"`
 	DataDir  string   `json:"data_dir"`
 	Subdirs  []string `json:"subdirs,omitempty"`
 	Manifest string   `json:"manifest"`
 }
+
+// serviceInstalledRequest names the service whose recorded manifest to read (service.installed).
+// The NAME is the whole request, and it is what makes the volume able to say which service it
+// means: with an unnamed read, installing a second service saw the first as its own prior.
+type serviceInstalledRequest struct {
+	Name string `json:"name"`
+}
+
+// manifestPath is one service's identity file on the replicated volume. The name is a manifest
+// slug — shared/manifest's Validate refuses anything else, precisely because these become path
+// elements — and the dispatch re-checks it with safeUnitName before it gets here, because the
+// guest must not depend on the host having validated its input.
+func manifestPath(name string) string { return manifestDir + "/" + name + ".json" }
 
 // serviceWarmRequest names one image to ensure is present (service.warm), and the .image unit
 // that would obtain it. Both halves are needed because the CHECK is on the ref and the ACTION is
@@ -924,10 +962,18 @@ func dispatch(x Executor) dispatchFunc {
 			// on whether some other node could promote instead: that is cluster-wide reasoning to
 			// handle a case that should not arise, and the complexity would outlive the edge case.
 			return nil, run("systemctl", "start", req.Unit)
-		case verbServiceManifest:
-			// "" when nothing is installed -- the zero-service node is a legitimate
-			// state, not an error, so an absent file must not read as a failure.
-			out, err := x.Run(ctx, "cat", manifestPinPath)
+		case verbServiceInstalled:
+			var req serviceInstalledRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if err := safeUnitName(req.Name); err != nil { // the name becomes a path element
+				return nil, err
+			}
+			// "" when THIS service is not installed -- the zero-service node and a node running
+			// only other services are both legitimate states, not errors, so an absent file must
+			// not read as a failure.
+			out, err := x.Run(ctx, "cat", manifestPath(req.Name))
 			if err != nil {
 				return "", nil
 			}
@@ -1691,8 +1737,11 @@ func renderService(ctx context.Context, x Executor, run func(string, ...string) 
 // Idempotent — a re-install onto an existing service must keep its data, so an existing subvolume
 // is reused rather than re-created (re-creating it would silently delete the user's state).
 func provisionService(ctx context.Context, x Executor, run func(string, ...string) error, req serviceProvisionRequest) error {
-	if req.DataDir == "" || req.Manifest == "" {
-		return fmt.Errorf("service.provision: need a data dir and a manifest")
+	if req.Name == "" || req.DataDir == "" || req.Manifest == "" {
+		return fmt.Errorf("service.provision: need a name, a data dir and a manifest")
+	}
+	if err := safeUnitName(req.Name); err != nil { // the name becomes a path element
+		return err
 	}
 	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", req.DataDir); err != nil || len(out) == 0 {
 		if err := run("btrfs", "subvolume", "create", req.DataDir); err != nil {
@@ -1707,14 +1756,18 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 			return err
 		}
 	}
-	if err := x.WriteFile(manifestPinPath, []byte(req.Manifest)); err != nil {
+	if err := run("mkdir", "-p", manifestDir); err != nil {
+		return err
+	}
+	pin := manifestPath(req.Name)
+	if err := x.WriteFile(pin, []byte(req.Manifest)); err != nil {
 		return err
 	}
 	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
 	// it — protocol C acks a device write only once the peer holds it. Without this, a crash
 	// inside the btrfs writeback window loses the manifest and a survivor promotes with no idea
 	// what it is meant to be running. Same reasoning as payload.pin's sync.
-	_, err := x.Run(ctx, "sync", "-f", manifestPinPath)
+	_, err := x.Run(ctx, "sync", "-f", pin)
 	return err
 }
 
@@ -2175,8 +2228,8 @@ func (g *Client) ServiceRender(ctx context.Context, files map[string]string, sta
 // ServiceProvision creates the service's data subvolume + per-container subdirectories and
 // records the manifest as its identity. PRIMARY ONLY — it all lives on the replicated volume.
 // Idempotent: an existing subvolume is reused, never re-created, so a re-install keeps the data.
-func (g *Client) ServiceProvision(ctx context.Context, dataDir string, subdirs []string, manifest string) error {
-	req := serviceProvisionRequest{DataDir: dataDir, Subdirs: subdirs, Manifest: manifest}
+func (g *Client) ServiceProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error {
+	req := serviceProvisionRequest{Name: name, DataDir: dataDir, Subdirs: subdirs, Manifest: manifest}
 	return g.c.call(ctx, verbServiceProvision, req, nil)
 }
 
@@ -2187,13 +2240,22 @@ func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
 	return g.c.call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
 }
 
-// ServiceManifest reads the manifest recorded on the replicated volume, or "" when no service is
-// installed. "" is a legitimate answer (the shipped zero-service node), never an error.
-func (g *Client) ServiceManifest(ctx context.Context) (string, error) {
+// ServiceInstalled reads the manifest recorded on the replicated volume for ONE service, or ""
+// when that service is not installed there. "" is a legitimate answer — the shipped zero-service
+// node, and equally a node running other services — never an error.
+//
+// SupportsServiceInstalled is the gate the install path checks first: a guest too old to
+// advertise this verb cannot tell one service's identity from another's, so it must be refused
+// rather than driven into overwriting the manifest of whatever it already runs.
+func (g *Client) ServiceInstalled(ctx context.Context, name string) (string, error) {
 	var s string
-	err := g.c.call(ctx, verbServiceManifest, struct{}{}, &s)
+	err := g.c.call(ctx, verbServiceInstalled, serviceInstalledRequest{Name: name}, &s)
 	return s, err
 }
+
+// SupportsServiceInstalled reports whether the guest can name a service when reading or recording
+// its identity on the volume — the per-service split of what used to be one file ([V3b.3](b)).
+func (g *Client) SupportsServiceInstalled() bool { return g.Supports(verbServiceInstalled) }
 
 // PayloadImage reports the payload image this node currently serves -- the replicated pin
 // , or "" when none is set (the node serves the baked default). Read from the guest

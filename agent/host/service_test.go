@@ -37,15 +37,19 @@ type fakeInstaller struct {
 	active     bool
 	healthy    bool
 	chains     [][]string
-	prior      string // the manifest already on the volume; "" = fresh install
-	manifests  []string
-	healthURL  string
-	renderEr   error
-	provEr     error
-	adjustEr   error
-	resumeEr   error
-	warmEr     error
-	restoreEr  error
+	// prior is the volume's recorded manifests, KEYED BY SERVICE NAME — absent = fresh install.
+	// A map rather than one string because that is the shape the volume now has: a fake holding
+	// another service's manifest must not satisfy a read for this one ([V3b.3](b)).
+	prior     map[string]string
+	oldGuest  bool // does not advertise service.installed -- an install must refuse it outright
+	manifests []string
+	healthURL string
+	renderEr  error
+	provEr    error
+	adjustEr  error
+	resumeEr  error
+	warmEr    error
+	restoreEr error
 }
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
@@ -62,15 +66,19 @@ func (f *fakeInstaller) ServiceRender(context.Context, map[string]string, []stri
 	f.steps = append(f.steps, "render")
 	return f.renderEr
 }
-func (f *fakeInstaller) ServiceProvision(_ context.Context, _ string, _ []string, manifest string) error {
-	f.steps = append(f.steps, "provision")
-	f.manifests = append(f.manifests, manifest) // records what identity the volume ends up holding
+func (f *fakeInstaller) ServiceProvision(_ context.Context, name, _ string, _ []string, manifest string) error {
+	f.steps = append(f.steps, "provision:"+name) // the NAME decides which identity file is written
+	f.manifests = append(f.manifests, manifest)  // records what identity the volume ends up holding
 	return f.provEr
 }
-func (f *fakeInstaller) ServiceManifest(context.Context) (string, error) {
-	f.steps = append(f.steps, "manifest?")
-	return f.prior, nil
+
+// ServiceInstalled answers for the service it is ASKED about, which is the whole property the
+// per-service split adds: another service's manifest can no longer stand in for this one's.
+func (f *fakeInstaller) ServiceInstalled(_ context.Context, name string) (string, error) {
+	f.steps = append(f.steps, "installed?:"+name)
+	return f.prior[name], nil
 }
+func (f *fakeInstaller) SupportsServiceInstalled() bool { return !f.oldGuest }
 func (f *fakeInstaller) PayloadStop(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "stop:"+unit)
 	return nil
@@ -210,7 +218,7 @@ func TestInstallOrdersTheBracket(t *testing.T) {
 	// volume; here a no-op anyway, nothing is running), rewrite, resume, gate. No snapshot:
 	// nothing is installed yet, so there is no rollback point to take.
 	want := []string{
-		"active?", "manifest?", "render", "warm:briard-home-assistant-ha-image.service", "status", "provision",
+		"active?", "installed?:home-assistant", "render", "warm:briard-home-assistant-ha-image.service", "status", "provision:home-assistant",
 		"pause", "stop:briard-home-assistant-ha.service", "adjust", "resume", "health",
 	}
 	if strings.Join(f.steps, ",") != strings.Join(want, ",") {
@@ -260,7 +268,7 @@ func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a failure naming the open bracket", o)
 	}
 	for _, s := range f.steps {
-		if s == "render" || s == "provision" || s == "pause" || s == "adjust" {
+		if s == "render" || strings.HasPrefix(s, "provision") || s == "pause" || s == "adjust" {
 			t.Fatalf("refusal still touched the node: %v", f.steps)
 		}
 	}
@@ -299,7 +307,10 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 
 // priorManifest is the same service at an earlier version — a real UPGRADE target (same name ⇒
 // same unit names + DataRoot, different bytes so priorService treats it as a rollback point).
-func priorManifest(t *testing.T) string {
+// priorManifest is the volume's recorded state before an upgrade, in the shape the volume now
+// has: keyed by service name. The raw bytes come back too, because the assertions compare against
+// exactly what the rollback must re-record.
+func priorManifest(t *testing.T) (map[string]string, string) {
 	t.Helper()
 	m := testManifest()
 	m.Version = "2026.6.0"
@@ -307,7 +318,7 @@ func priorManifest(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(body)
+	return map[string]string{m.Name: string(body)}, string(body)
 }
 
 // TestUpgradeRollsBackDataAndManifest is the (i) contract at the orchestration layer: a broken
@@ -317,7 +328,7 @@ func priorManifest(t *testing.T) string {
 // rollback. (The real btrfs/quadlet/front-door mechanics are the job of service-install-broken.nix;
 // this asserts the host drives them in the right order.)
 func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
-	prior := priorManifest(t)
+	prior, priorRaw := priorManifest(t)
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: prior}
 	o := func() api.DirectiveOutcome {
@@ -342,7 +353,7 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	}
 	// The volume ends up holding the PRIOR manifest again — the identity is reverted, not just the
 	// chain. provision is called with the new manifest, then again with the prior on rollback.
-	if n := len(f.manifests); n < 2 || f.manifests[n-1] != prior {
+	if n := len(f.manifests); n < 2 || f.manifests[n-1] != priorRaw {
 		t.Fatalf("volume manifest not reverted to the prior: got %v", f.manifests)
 	}
 	// The promoter is resumed on both brackets (switch + revert) — a paused promoter cannot fail over.
@@ -366,7 +377,7 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 // failures, and leaves the bracket open for a human.
 func TestUpgradeLeavesPromoterPausedIfDataCannotRestore(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
-	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: priorManifest(t), restoreEr: errors.New("btrfs: cannot delete subvolume")}
+	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: mustPrior(t), restoreEr: errors.New("btrfs: cannot delete subvolume")}
 	o := func() api.DirectiveOutcome {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -898,4 +909,46 @@ func indentJSON(t *testing.T, raw []byte) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// mustPrior is priorManifest for callers that only need the volume's state, not its bytes.
+func mustPrior(t *testing.T) map[string]string {
+	t.Helper()
+	p, _ := priorManifest(t)
+	return p
+}
+
+// The install asks the volume about THIS service, and a manifest belonging to a DIFFERENT one
+// must not answer for it. That is the whole of the per-service split at the host layer
+// ([V3b.3](b)): reading the volume's single unnamed manifest made an install of mosquitto see
+// home-assistant's manifest as its own prior -- so it snapshotted the wrong rollback point, and
+// filesToRemove then deleted home-assistant's rendered units as a renamed prior's orphans.
+func TestPriorServiceReadsOnlyItsOwnService(t *testing.T) {
+	other, _ := priorManifest(t) // home-assistant's manifest, on the volume
+	cfg := catalogFor(t, testManifest())
+	f := &fakeInstaller{primary: true, active: true, healthy: true, prior: other}
+	// Install a DIFFERENT service; the volume holds only home-assistant's manifest.
+	prior, subdirs, raw := cfg.priorService(context.Background(), f, "mosquitto", []byte(`{}`), func(string, ...any) {})
+	if prior != nil || subdirs != nil || raw != "" {
+		t.Fatalf("prior = %v/%v/%q for mosquitto, want none -- another service's manifest answered for it", prior, subdirs, raw)
+	}
+	// And the read named the service it was asked about, rather than asking for "the" manifest.
+	if !slices.Contains(f.steps, "installed?:mosquitto") {
+		t.Errorf("steps = %v, want the volume read to NAME mosquitto", f.steps)
+	}
+}
+
+// A guest that cannot name a service's identity on the volume must be refused BEFORE anything is
+// written, not driven into recording this service's manifest over whatever it already runs. Alpha
+// is reinstall-only, so "refuse loudly" is the whole answer -- there is no compat path to build.
+func TestInstallRefusesAGuestThatCannotNameAService(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	f := &fakeInstaller{primary: true, active: true, healthy: true, oldGuest: true}
+	o := install(cfg, f)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "service.installed") {
+		t.Fatalf("outcome = %+v, want a failure naming the missing verb", o)
+	}
+	if len(f.steps) != 0 {
+		t.Fatalf("the refusal still touched the guest: %v", f.steps)
+	}
 }

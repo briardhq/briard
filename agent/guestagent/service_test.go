@@ -3,6 +3,8 @@ package guestagent
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -104,7 +106,7 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 		return nil, nil
 	}}
 	g := dial(t, f)
-	err := g.ServiceProvision(context.Background(), "/var/lib/briard/home-assistant", []string{"ha", "cache"}, `{"name":"home-assistant"}`)
+	err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/home-assistant", []string{"ha", "cache"}, `{"name":"home-assistant"}`)
 	if err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
@@ -116,12 +118,12 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 			t.Fatalf("subdir %s not created; runs=%v", d, f.runs)
 		}
 	}
-	if got := f.files[manifestPinPath]; !strings.Contains(got, "home-assistant") {
+	if got := f.files[manifestPath("home-assistant")]; !strings.Contains(got, "home-assistant") {
 		t.Fatalf("manifest recorded as %q", got)
 	}
 	// Protocol C acks a device write only once the peer holds it; without the flush a crash in
 	// the writeback window loses the identity and a survivor promotes not knowing what to run.
-	if !ran(f, "sync", "-f", manifestPinPath) {
+	if !ran(f, "sync", "-f", manifestPath("home-assistant")) {
 		t.Fatalf("manifest not flushed to the DRBD backing; runs=%v", f.runs)
 	}
 }
@@ -132,7 +134,7 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 func TestServiceProvisionKeepsExistingData(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\thome-assistant\n")} // `subvolume show` succeeds
 	g := dial(t, f)
-	if err := g.ServiceProvision(context.Background(), "/var/lib/briard/home-assistant", []string{"ha"}, `{}`); err != nil {
+	if err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/home-assistant", []string{"ha"}, `{}`); err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
 	if ran(f, "btrfs", "subvolume", "create", "/var/lib/briard/home-assistant") {
@@ -142,32 +144,32 @@ func TestServiceProvisionKeepsExistingData(t *testing.T) {
 
 func TestServiceProvisionRefusesIncomplete(t *testing.T) {
 	g := dial(t, &fakeExec{})
-	if err := g.ServiceProvision(context.Background(), "", nil, `{}`); err == nil {
+	if err := g.ServiceProvision(context.Background(), "x", "", nil, `{}`); err == nil {
 		t.Fatal("accepted an empty data dir")
 	}
-	if err := g.ServiceProvision(context.Background(), "/var/lib/briard/x", nil, ""); err == nil {
+	if err := g.ServiceProvision(context.Background(), "x", "/var/lib/briard/x", nil, ""); err == nil {
 		t.Fatal("accepted an empty manifest")
 	}
 }
 
-// TestServiceManifestAbsentIsEmptyNotError: the shipped zero-service node has no manifest, and
+// TestServiceInstalledAbsentIsEmptyNotError: the shipped zero-service node has no manifest, and
 // that is a legitimate state. Reading it as an error would make every empty node look broken.
-func TestServiceManifestAbsentIsEmptyNotError(t *testing.T) {
+func TestServiceInstalledAbsentIsEmptyNotError(t *testing.T) {
 	f := &fakeExec{err: errors.New("cat: no such file")}
 	g := dial(t, f)
-	got, err := g.ServiceManifest(context.Background())
+	got, err := g.ServiceInstalled(context.Background(), "home-assistant")
 	if err != nil {
-		t.Fatalf("ServiceManifest on an empty node errored: %v", err)
+		t.Fatalf("ServiceInstalled on an empty node errored: %v", err)
 	}
 	if got != "" {
 		t.Fatalf("got %q, want empty", got)
 	}
 }
 
-func TestServiceManifestReadsBack(t *testing.T) {
+func TestServiceInstalledReadsBack(t *testing.T) {
 	f := &fakeExec{output: []byte(`{"name":"home-assistant"}`)}
 	g := dial(t, f)
-	got, err := g.ServiceManifest(context.Background())
+	got, err := g.ServiceInstalled(context.Background(), "home-assistant")
 	if err != nil || !strings.Contains(got, "home-assistant") {
 		t.Fatalf("got %q, %v", got, err)
 	}
@@ -213,5 +215,49 @@ func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 	}
 	if ran(f, "sync", "-f", dataMountRoot) {
 		t.Fatal("synced a volume that is not mounted -- that flushes the ROOT fs for nothing")
+	}
+}
+
+// THE PER-SERVICE SPLIT ([V3b.3](b)): the volume must be able to say WHICH service a manifest
+// belongs to. With one unnamed file, installing a second service recorded its identity over the
+// first's -- so the first's prior became unreadable, and on the host side filesToRemove then
+// deleted that service's rendered units as a renamed prior's orphans.
+//
+// Asserted on the PATHS, because that is where the property lives: two provisions must write two
+// files, and each must be named for its own service.
+func TestServiceProvisionRecordsPerService(t *testing.T) {
+	f := &fakeExec{output: []byte("Name: \t\tx\n")} // an existing subvolume; this is about the manifest
+	g := dial(t, f)
+	for _, s := range []struct{ name, body string }{
+		{"home-assistant", `{"name":"home-assistant"}`},
+		{"mosquitto", `{"name":"mosquitto"}`},
+	} {
+		if err := g.ServiceProvision(context.Background(), s.name, "/var/lib/briard/"+s.name, nil, s.body); err != nil {
+			t.Fatalf("ServiceProvision(%s): %v", s.name, err)
+		}
+	}
+	for _, s := range []struct{ name, want string }{
+		{"home-assistant", "home-assistant"},
+		{"mosquitto", "mosquitto"},
+	} {
+		got, ok := f.files[manifestPath(s.name)]
+		if !ok {
+			t.Fatalf("no manifest recorded at %s; files=%v", manifestPath(s.name), slices.Sorted(maps.Keys(f.files)))
+		}
+		if !strings.Contains(got, s.want) {
+			t.Errorf("%s recorded %q, want it to name %s -- one service's identity landed on another's file", s.name, got, s.want)
+		}
+	}
+}
+
+// A service name becomes a PATH ELEMENT on both verbs, so both re-check it here rather than
+// trusting the host to have validated its own input.
+func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
+	g := dial(t, &fakeExec{})
+	if err := g.ServiceProvision(context.Background(), "../../etc/x", "/var/lib/briard/x", nil, `{}`); err == nil {
+		t.Error("service.provision accepted a name that escapes the manifest directory")
+	}
+	if _, err := g.ServiceInstalled(context.Background(), "../../etc/passwd"); err == nil {
+		t.Error("service.installed accepted a name that escapes the manifest directory")
 	}
 }
