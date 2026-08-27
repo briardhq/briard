@@ -8,12 +8,13 @@ import (
 )
 
 // DashboardMetrics is the privacy allowlist: only the product-health subset crosses, never
-// the soak's leak instruments (agent RSS/FDs, log/store sizes, kernel errors).
+// the soak's leak instruments (agent RSS/FDs, per-service footprints, log/store sizes, kernel errors).
 func TestDashboardMetricsAllowlist(t *testing.T) {
 	r := &telemetry.NodeResources{
 		VolumeUsedKB: 5000, Load1: 0.75,
-		AgentRSSKB: 123, AgentFDs: 9, PayloadRSSKB: 456, PayloadFDs: 7,
-		LogSizeKB: 999, PodmanStoreKB: 888, SnapshotCount: 3, PayloadRestarts: 2,
+		AgentRSSKB: 123, AgentFDs: 9,
+		Payloads:  []telemetry.ServiceResources{{Name: "ha", RSSKB: 456, FDs: 7, Restarts: 2}},
+		LogSizeKB: 999, PodmanStoreKB: 888, SnapshotCount: 3,
 		KernelErrors: []string{"oops"},
 	}
 	m := dashboardMetrics(r)

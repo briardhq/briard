@@ -587,12 +587,22 @@ type hostnameRequest struct {
 	Name string `json:"name"`
 }
 
-// resourcesRequest is what the host must tell the guest to measure the appliance:
-// the payload's systemd unit (for its pid -> RSS/fds) and the data volume (for used space +
-// snapshot count). Both empty on a witness -> only the volume-independent metrics come back.
+// resourcesRequest is what the host must tell the guest to measure the appliance: each service's
+// systemd unit (for its cgroup -> RSS/fds/restarts) and the data volume (for used space +
+// snapshot count). Both empty on a witness -> only the volume-independent metrics come back, which
+// is exactly why the host asks REGARDLESS of whether anything is installed.
 type resourcesRequest struct {
-	Unit    string `json:"unit,omitempty"`     // payload unit, e.g. podman-home-assistant.service
-	DataDir string `json:"data_dir,omitempty"` // the DRBD data volume mount
+	// Services pairs each service's name with the unit whose footprint IS that service's. The
+	// host owns the pairing because it owns the manifest; the guest measures what it is handed
+	// and names nothing itself ([[logic-on-host-by-default]]).
+	Services []resourceService `json:"services,omitempty"`
+	DataDir  string            `json:"data_dir,omitempty"` // the DRBD data volume mount
+}
+
+// resourceService is one service to measure: its name, and its serving unit.
+type resourceService struct {
+	Name string `json:"name"`
+	Unit string `json:"unit"`
 }
 
 // Executor runs commands and writes files inside the guest. The real impl shells
@@ -1779,30 +1789,38 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 // metrics.
 func gatherResources(ctx context.Context, x Executor, req resourcesRequest) telemetry.NodeResources {
 	var r telemetry.NodeResources
-	if req.Unit != "" {
-		// The payload's memory is the UNIT'S CGROUP, not its main process. A service runs as a
+	// One entry per service, in the order the host sent them -- so the oracle can name WHICH
+	// service leaked or crash-looped. A service whose unit is unnamed is skipped rather than
+	// measured as zero: an unmeasured service and an idle one must not read the same.
+	for _, s := range req.Services {
+		if s.Unit == "" {
+			continue
+		}
+		sr := telemetry.ServiceResources{Name: s.Name}
+		// The service's memory is the UNIT'S CGROUP, not its main process. A service runs as a
 		// container, so the unit's MainPID is podman's supervisor and the workload lives in a child
 		// cgroup: /proc/<MainPID>/status reported ~2.5 MB for a Home Assistant, a number that is
 		// stable, believable-looking and about a hundredfold wrong. cgroup v2 accounts
 		// hierarchically, so reading the unit's cgroup catches the container's processes too.
-		r.PayloadRSSKB = cgroupAnonKB(ctx, x, req.Unit)
+		sr.RSSKB = cgroupAnonKB(ctx, x, s.Unit)
 		// MainPID=0 means the unit isn't running; skip rather than read /proc/0.
-		if out, err := x.Run(ctx, "systemctl", "show", "-p", "MainPID", "--value", req.Unit); err == nil {
+		if out, err := x.Run(ctx, "systemctl", "show", "-p", "MainPID", "--value", s.Unit); err == nil {
 			if pid := strings.TrimSpace(string(out)); pid != "" && pid != "0" {
 				// NOTE: this is the SUPERVISING process's fd count, not the workload's -- there is
 				// no cgroup fd counter to read, and walking every pid in the cgroup each cycle is
 				// a lot of exec for a signal that mostly catches conmon/podman leaks. An fd leak
 				// INSIDE the container is not visible here.
 				if fds, err := x.Run(ctx, "ls", "/proc/"+pid+"/fd"); err == nil {
-					r.PayloadFDs = countLines(fds)
+					sr.FDs = countLines(fds)
 				}
 			}
 		}
 		// NRestarts is the crash-loop signal (no-silent-restarts): it climbs each time the
 		// unit died and was restarted, even though a between-restarts is-active reads green.
-		if out, err := x.Run(ctx, "systemctl", "show", "-p", "NRestarts", "--value", req.Unit); err == nil {
-			r.PayloadRestarts = parseUint(out)
+		if out, err := x.Run(ctx, "systemctl", "show", "-p", "NRestarts", "--value", s.Unit); err == nil {
+			sr.Restarts = parseUint(out)
 		}
+		r.Payloads = append(r.Payloads, sr)
 	}
 	if out, err := x.Run(ctx, "cat", "/proc/loadavg"); err == nil {
 		r.Load1 = parseLoad1(out)
@@ -2267,13 +2285,25 @@ func (g *Client) PayloadImage(ctx context.Context) (string, error) {
 	return image, err
 }
 
-// Resources reads the appliance's resource telemetry -- payload RSS/fds, load, and
-// the disk sub-series -- for the soak's trend oracle. unit is the payload's systemd unit
-// (for its pid) and dataDir the DRBD volume; both empty on a witness. Best-effort on the
-// guest, so a partial read comes back as a struct with the unread fields zero, not an error.
-func (g *Client) Resources(ctx context.Context, unit, dataDir string) (telemetry.NodeResources, error) {
+// Resources reads the appliance's resource telemetry -- per-service RSS/fds/restarts, load, and
+// the disk sub-series -- for the soak's trend oracle. services pairs each service's name with the
+// unit whose footprint is its own, and dataDir is the DRBD volume; both empty on a witness and on
+// a zero-service node, which still get every node-scoped series. Best-effort on the guest, so a
+// partial read comes back as a struct with the unread fields zero, not an error.
+func (g *Client) Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error) {
 	var r telemetry.NodeResources
-	err := g.c.call(ctx, verbResources, resourcesRequest{Unit: unit, DataDir: dataDir}, &r)
+	req := resourcesRequest{DataDir: dataDir}
+	// Sorted, so a run's forensics read in the same order every cycle -- map order would shuffle
+	// the series between samples for no reason.
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		req.Services = append(req.Services, resourceService{Name: name, Unit: services[name]})
+	}
+	err := g.c.call(ctx, verbResources, req, &r)
 	return r, err
 }
 

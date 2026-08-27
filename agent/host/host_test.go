@@ -110,7 +110,7 @@ func (f fakeStatus) SystemPath(context.Context) (string, error) {
 	return f.system, f.sysErr
 }
 
-func (f fakeStatus) Resources(context.Context, string, string) (telemetry.NodeResources, error) {
+func (f fakeStatus) Resources(context.Context, map[string]string, string) (telemetry.NodeResources, error) {
 	return f.res, f.resErr
 }
 

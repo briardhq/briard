@@ -99,15 +99,19 @@ func TestResourcesVerbGathers(t *testing.T) {
 		}
 	}}
 	g := dial(t, x)
-	r, err := g.Resources(context.Background(), "podman-ha.service", "/var/lib/briard/data")
+	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "/var/lib/briard/data")
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
-	if r.PayloadRSSKB != 88000 { // 90112000 bytes of anon; the 4 GB of page cache is excluded
-		t.Errorf("PayloadRSSKB = %d, want 88000 (cgroup anon, not memory.current)", r.PayloadRSSKB)
+	if len(r.Payloads) != 1 || r.Payloads[0].Name != "ha" {
+		t.Fatalf("Payloads = %+v, want one entry NAMED for the service asked about", r.Payloads)
 	}
-	if r.PayloadFDs != 5 {
-		t.Errorf("PayloadFDs = %d, want 5", r.PayloadFDs)
+	p := r.Payloads[0]
+	if p.RSSKB != 88000 { // 90112000 bytes of anon; the 4 GB of page cache is excluded
+		t.Errorf("RSSKB = %d, want 88000 (cgroup anon, not memory.current)", p.RSSKB)
+	}
+	if p.FDs != 5 {
+		t.Errorf("FDs = %d, want 5", p.FDs)
 	}
 	if r.Load1 != 1.50 {
 		t.Errorf("Load1 = %v, want 1.50", r.Load1)
@@ -124,8 +128,8 @@ func TestResourcesVerbGathers(t *testing.T) {
 	if r.PodmanStoreKB != 500000 {
 		t.Errorf("PodmanStoreKB = %d, want 500000", r.PodmanStoreKB)
 	}
-	if r.PayloadRestarts != 3 {
-		t.Errorf("PayloadRestarts = %d, want 3", r.PayloadRestarts)
+	if p.Restarts != 3 {
+		t.Errorf("Restarts = %d, want 3", p.Restarts)
 	}
 	if len(r.KernelErrors) != 2 { // both non-empty guest kernel lines reported (oracle scans them)
 		t.Errorf("KernelErrors = %v, want 2 lines", r.KernelErrors)
@@ -154,12 +158,12 @@ func TestResourcesVerbSkipsStoppedPayload(t *testing.T) {
 		}
 	}}
 	g := dial(t, x)
-	r, err := g.Resources(context.Background(), "podman-ha.service", "")
+	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "")
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
-	if r.PayloadRSSKB != 0 || r.PayloadFDs != 0 {
-		t.Errorf("stopped payload should report zero footprint, got RSS=%d FDs=%d", r.PayloadRSSKB, r.PayloadFDs)
+	if len(r.Payloads) != 1 || r.Payloads[0].RSSKB != 0 || r.Payloads[0].FDs != 0 {
+		t.Errorf("a stopped service should report zero footprint, got %+v", r.Payloads)
 	}
 	if r.Load1 != 0.10 {
 		t.Errorf("Load1 = %v, want 0.10 (other metrics still gathered)", r.Load1)
@@ -198,4 +202,60 @@ func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 			t.Errorf("cursor = %q", cursor)
 		}
 	})
+}
+
+// N SERVICES, EACH MEASURED AND EACH NAMED ([V3b.3](b)). The alternative was summing them into
+// the three scalars this replaced, and summing is what loses the signal: NRestarts exists to make
+// a crash-loop loud, and one service flapping inside a total reads as a small climb. So the
+// assertion is that a crash-looping service is attributable BY NAME while its quiet neighbour
+// stays at zero -- a sum could not tell those apart.
+func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
+	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		cmd := strings.Join(append([]string{name}, args...), " ")
+		switch {
+		case strings.HasPrefix(cmd, "systemctl show -p NRestarts --value briard-mosquitto"):
+			return []byte("7\n"), nil // the flapping one
+		case strings.HasPrefix(cmd, "systemctl show -p NRestarts"):
+			return []byte("0\n"), nil // the quiet one
+		case strings.HasPrefix(cmd, "systemctl show -p MainPID"):
+			return []byte("0\n"), nil
+		default:
+			return nil, nil
+		}
+	}}
+	g := dial(t, x)
+	r, err := g.Resources(context.Background(), map[string]string{
+		"home-assistant": "briard-home-assistant-app.service",
+		"mosquitto":      "briard-mosquitto-broker.service",
+	}, "")
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if len(r.Payloads) != 2 {
+		t.Fatalf("Payloads = %+v, want one entry per service", r.Payloads)
+	}
+	// Sorted by name, so a run's forensics read the same order every cycle.
+	if r.Payloads[0].Name != "home-assistant" || r.Payloads[1].Name != "mosquitto" {
+		t.Errorf("order = %q,%q, want sorted by name", r.Payloads[0].Name, r.Payloads[1].Name)
+	}
+	if r.Payloads[0].Restarts != 0 {
+		t.Errorf("home-assistant restarts = %d, want 0 -- its neighbour's flapping is not its own", r.Payloads[0].Restarts)
+	}
+	if r.Payloads[1].Restarts != 7 {
+		t.Errorf("mosquitto restarts = %d, want 7 -- the crash-loop must be attributable by name", r.Payloads[1].Restarts)
+	}
+}
+
+// A service whose unit is unnamed is SKIPPED, not measured as zero. An unmeasured service and an
+// idle one must not read the same: a zero row would enter the oracle's series as a real sample and
+// flatten a trend that nobody is actually watching.
+func TestResourcesVerbSkipsAServiceWithNoUnit(t *testing.T) {
+	g := dial(t, &fakeExec{})
+	r, err := g.Resources(context.Background(), map[string]string{"ha": ""}, "")
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if len(r.Payloads) != 0 {
+		t.Errorf("Payloads = %+v, want none: an unmeasurable service must not report a zero row", r.Payloads)
+	}
 }

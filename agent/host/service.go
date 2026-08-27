@@ -2,9 +2,7 @@ package host
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -183,22 +181,19 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		return failed("the promoter is already paused — another maintenance operation is in progress")
 	}
 
-	// ONE RUNTIME SERVICE AT A TIME, until [V3b.3](b). The node can now HOLD a set — the cache is
-	// per-service, bring-up assembles the chain from all of it — but everything that DESCRIBES a
-	// service through the seam is still a scalar: NodeStatus.{Image,Healthy,System} and telemetry's
-	// Payload* fields. Letting a second service in before those are widened would not fail, which is
-	// the problem: the node would run both and report one, so the cloud would confirm a rollout
-	// against an arbitrary member and a crash-loop in the other would be invisible. A loud refusal
-	// here is the honest half of "wire it, don't open it"; (b) deletes this check as part of making
-	// the contract able to name WHICH service it means.
+	// N SERVICES, and everything below is per-service by construction: the node-local cache is a
+	// directory ([V3b.3](a)), the volume's identity file is one per name, `priorService` asks
+	// about THIS service, `filesToRemove` compares THIS service's renderings, and the chain is
+	// assembled from all of them. What used to stand here was a refusal of a second distinct
+	// service, and it was load-bearing for exactly as long as nothing could NAME a service through
+	// a seam: a node running two and describing one would have had the cloud confirm a rollout
+	// against whichever came first and a crash-loop in the other go unseen ([V3b.3](b)).
 	//
-	// Scoped to RUNTIME-installed services (the cache), not the build-time baked slot, which an
-	// install still replaces exactly as it did before.
-	if other, err := cfg.otherInstalled(m.Name); err != nil {
-		return failed(fmt.Sprintf("could not read the installed-service cache: %v", err))
-	} else if other != "" {
-		return failed(fmt.Sprintf("%s is already installed and this node runs one service at a time; uninstall it first", other))
-	}
+	// It is gone because all three of those are now plural: `NodeStatus.Services` carries one
+	// manifest identity per service, the volume's `.services/<name>.json` says which service a
+	// manifest belongs to, and `telemetry.NodeResources.Payloads` measures each service's own
+	// footprint and restart count. `Healthy` and `System` deliberately stayed node-scoped — a
+	// closure is a property of the node, and the front door is what "is this node serving" means.
 
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-service node) or an idempotent re-install of the same manifest. Read BEFORE
@@ -345,36 +340,6 @@ func (cfg Config) cacheService(name string, raw []byte) error {
 		return nil
 	}
 	return atomicfile.Write(cfg.manifestPath(name), raw, 0o600, 0o700)
-}
-
-// otherInstalled names a runtime-installed service on this node that is NOT `name`, or "" if
-// there is none. It reads the cache DIRECTORY rather than cfg.Services because the directives that
-// changed it may not have been adopted into this cfg copy yet — the file is the authority on what
-// is installed, which is the same reason installedServices reads it at bring-up.
-//
-// An absent directory is the shipped state and not an error. A directory that cannot be read IS
-// one, and is reported rather than swallowed: "I could not tell" must not be spelled the same way
-// as "nothing is installed" on the path whose whole job is to refuse a second service.
-func (cfg Config) otherInstalled(name string) (string, error) {
-	if cfg.ServiceCache == "" {
-		return "", nil
-	}
-	entries, err := os.ReadDir(cfg.ServiceCache)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil // nothing installed yet, the shipped state
-	}
-	if err != nil {
-		return "", err
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		if got := strings.TrimSuffix(e.Name(), ".json"); got != name {
-			return got, nil
-		}
-	}
-	return "", nil
 }
 
 // manifestPath is one service's file in the cache directory. The name is a manifest slug --

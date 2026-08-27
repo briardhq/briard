@@ -40,16 +40,17 @@ type fakeInstaller struct {
 	// prior is the volume's recorded manifests, KEYED BY SERVICE NAME — absent = fresh install.
 	// A map rather than one string because that is the shape the volume now has: a fake holding
 	// another service's manifest must not satisfy a read for this one ([V3b.3](b)).
-	prior     map[string]string
-	oldGuest  bool // does not advertise service.installed -- an install must refuse it outright
-	manifests []string
-	healthURL string
-	renderEr  error
-	provEr    error
-	adjustEr  error
-	resumeEr  error
-	warmEr    error
-	restoreEr error
+	prior        map[string]string
+	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
+	staleRemoved []string // unit files a render was told to remove: the collateral surface
+	manifests    []string
+	healthURL    string
+	renderEr     error
+	provEr       error
+	adjustEr     error
+	resumeEr     error
+	warmEr       error
+	restoreEr    error
 }
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
@@ -57,13 +58,14 @@ func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, erro
 	return model.QuorumState{Primary: f.primary, Quorate: true}, nil
 }
 
-func (f *fakeInstaller) ServiceRender(context.Context, map[string]string, []string) error {
+func (f *fakeInstaller) ServiceRender(_ context.Context, _ map[string]string, stale []string) error {
 	if f.hold != nil {
 		if err := f.hold(); err != nil {
 			return err
 		}
 	}
 	f.steps = append(f.steps, "render")
+	f.staleRemoved = append(f.staleRemoved, stale...)
 	return f.renderEr
 }
 func (f *fakeInstaller) ServiceProvision(_ context.Context, name, _ string, _ []string, manifest string) error {
@@ -749,55 +751,70 @@ func TestInstalledServicesSkipsOnlyTheBadFile(t *testing.T) {
 	}
 }
 
-// The node can HOLD a set; the install path may not yet CREATE one. Everything that describes a
-// service through the seam is still a scalar ([V3b.3](b)), so a second distinct service must be
-// refused loudly rather than run-and-under-reported.
+// A SECOND SERVICE IS NOW ALLOWED, and it must not disturb the first. This test used to assert
+// the opposite: the install path refused a second distinct service, because nothing on any seam
+// could name WHICH service it meant, so a node running two and describing one would have had the
+// cloud confirm a rollout against whichever came first and a crash-loop in the other go unseen.
+// All three of those now name a service -- NodeStatus.Services (per-service manifest identity),
+// the volume's .services/<name>.json, and telemetry's per-service Payloads -- so the refusal is
+// gone ([V3b.3](b)).
 //
-// Two-sided on purpose: the same-name case must still pass, because install and UPGRADE are one
-// path and refusing an upgrade would break the shipped verb.
-func TestInstallRefusesASecondDistinctService(t *testing.T) {
+// What matters is not that it succeeds but that the FIRST service survives it, which is the
+// failure the refusal was standing in for: the install must ask the volume about ITS OWN service,
+// and must not remove the other's rendered units as a renamed prior's orphans.
+func TestInstallAcceptsASecondServiceAndLeavesTheFirstAlone(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "mosquitto.json"), manifestJSON("mosquitto", digestB), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := catalogFor(t, testManifest()) // testManifest is home-assistant
 	cfg.ServiceCache = dir
-	o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
-	if o.State != api.OutcomeFailed {
-		t.Fatalf("outcome = %+v, want failed: a second distinct service must be refused", o)
+	// The volume holds mosquitto's manifest; home-assistant's install must not read it as its own
+	// prior, which is what made the second install destructive.
+	f := &fakeInstaller{primary: true, active: true, healthy: true,
+		prior: map[string]string{"mosquitto": string(manifestJSON("mosquitto", digestB))}}
+	o := install(cfg, f)
+	if o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done: a node may now run more than one service", o)
 	}
-	if !strings.Contains(o.Detail, "mosquitto") || !strings.Contains(o.Detail, "one service at a time") {
-		t.Errorf("Detail = %q, want it to name mosquitto and say why", o.Detail)
+	if !slices.Contains(f.steps, "installed?:home-assistant") {
+		t.Errorf("steps = %v, want the volume read to NAME home-assistant", f.steps)
 	}
+	// No stale list: mosquitto's units are not home-assistant's prior, so nothing of its is removed.
+	for _, s := range f.staleRemoved {
+		if strings.Contains(s, "mosquitto") {
+			t.Errorf("installing home-assistant removed mosquitto's unit %q -- the first service was collateral", s)
+		}
+	}
+	// Both services end up in the cache, so bring-up assembles a chain containing both.
+	specs, chain, _, ok := cfg.installedServices(func(string, ...any) {})
+	if !ok || len(specs) != 2 {
+		t.Fatalf("cache holds %+v (ok=%v), want both services", specs, ok)
+	}
+	for _, name := range []string{"home-assistant", "mosquitto"} {
+		if !slices.ContainsFunc(chain, func(u string) bool { return strings.Contains(u, name) }) {
+			t.Errorf("chain = %v, missing %s", chain, name)
+		}
+	}
+}
 
-	// ...and an UPGRADE of the service already installed is not a second service.
+// ...and an UPGRADE of a service already installed is still one path with install, which is why
+// the same-name case was always the other half of this assertion.
+func TestInstallOfTheSameServiceIsAnUpgrade(t *testing.T) {
 	up := t.TempDir()
 	if err := os.WriteFile(filepath.Join(up, "home-assistant.json"), manifestJSON("home-assistant", digestA), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg2 := catalogFor(t, testManifest())
-	cfg2.ServiceCache = up
-	if o := install(cfg2, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
-		t.Fatalf("outcome = %+v, want done: re-installing the same service is an upgrade, not a second service", o)
+	cfg := catalogFor(t, testManifest())
+	cfg.ServiceCache = up
+	if o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done: re-installing the same service is an upgrade", o)
 	}
 }
 
 // A cache directory that cannot be read must not be spelled the same way as an empty one. On the
 // path whose whole job is to refuse a second service, "I could not tell" reading as "nothing is
 // installed" is what would let the second one through.
-func TestOtherInstalledDistinguishesUnreadableFromEmpty(t *testing.T) {
-	if got, err := (Config{ServiceCache: filepath.Join(t.TempDir(), "absent")}).otherInstalled("x"); got != "" || err != nil {
-		t.Errorf("absent cache: got %q, %v -- want the shipped state, no error", got, err)
-	}
-	// A file where the directory should be: readable path, unusable as a directory.
-	blocked := filepath.Join(t.TempDir(), "notadir")
-	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := (Config{ServiceCache: blocked}).otherInstalled("x"); err == nil {
-		t.Error("unreadable cache returned nil error, want the failure surfaced")
-	}
-}
 
 // The install path ENSURES the image is present rather than starting its .image unit blindly.
 // Starting one is a `podman image pull`, so an unconditional start cannot install a service whose

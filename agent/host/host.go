@@ -382,7 +382,7 @@ type guestReader interface {
 	statusReader
 	PayloadImage(ctx context.Context) (string, error)
 	SystemPath(ctx context.Context) (string, error)
-	Resources(ctx context.Context, unit, dataDir string) (telemetry.NodeResources, error)
+	Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error)
 }
 
 // Run boots the guest, drives bring-up to quorate primary (a witness just comes
@@ -1111,9 +1111,15 @@ func resourceLog(r *telemetry.NodeResources) string {
 	if r == nil {
 		return ""
 	}
-	return fmt.Sprintf(" agentRSS=%dk payloadRSS=%dk fds=%d/%d vol=%dk snaps=%d load1=%.2f restarts=%d kerr=%d",
-		r.AgentRSSKB, r.PayloadRSSKB, r.AgentFDs, r.PayloadFDs, r.VolumeUsedKB, r.SnapshotCount, r.Load1,
-		r.PayloadRestarts, len(r.KernelErrors))
+	// The node-scoped series first, then one clause per service -- NAMED, because the status line
+	// is where a human looks first, and "something on this node is restarting" stops being an
+	// actionable sentence the moment a node runs more than one thing.
+	line := fmt.Sprintf(" agentRSS=%dk agentFDs=%d vol=%dk snaps=%d load1=%.2f kerr=%d",
+		r.AgentRSSKB, r.AgentFDs, r.VolumeUsedKB, r.SnapshotCount, r.Load1, len(r.KernelErrors))
+	for _, p := range r.Payloads {
+		line += fmt.Sprintf(" %s[rss=%dk fds=%d restarts=%d]", p.Name, p.RSSKB, p.FDs, p.Restarts)
+	}
+	return line
 }
 
 // Resources gathers the node's resource telemetry for the soak trend oracle: the
@@ -1125,21 +1131,35 @@ func resourceLog(r *telemetry.NodeResources) string {
 // always measures), so the trend oracle always has a numeric sample.
 func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeResources {
 	var res telemetry.NodeResources
-	// The sole service's footprint, because telemetry's Payload* fields are SCALARS. Summing N
-	// services into one number would be a different measurement wearing the same field name, and
-	// picking one of N silently would be worse; both are [V3b.3](b)'s to settle. See soleService.
-	if spec, ok := cfg.soleService(); ok {
-		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		// ServingUnit, not a name rebuilt here: a runtime-installed service's units come from the
-		// quadlet renderer (briard-<service>-<container>.service), so "podman-<name>.service" named
-		// nothing, systemd answered with no MainPID, and PayloadRSS/PayloadFDs/PayloadRestarts sat
-		// at zero for every catalog-installed service. Restarts is the crash-loop signal, so a
-		// service that crash-looped read exactly like one that never restarted.
-		if app, err := r.Resources(rctx, spec.ServingUnit(), spec.DataDir); err == nil {
-			res = app // appliance fields; agent fields (zero here) filled below
-		}
-		cancel()
+	// EVERY service's footprint, and the guest is asked REGARDLESS of whether there are any.
+	//
+	// Both halves of that were wrong, in the same way and for the same reason. The read used to be
+	// wrapped in "is there exactly one service?", so a node with N reported no footprint at all —
+	// and so did a node with NONE, which is the shipped zero-service anchor and the whole free
+	// tier. What that lost was not merely the per-service numbers: load average, journal size,
+	// podman-store size and the guest's KERNEL ERRORS are node-scoped, need neither a unit nor a
+	// data dir, and went dark with them. A node-scoped fact gated on "has a service" is
+	// [V3b.3](d)'s bug one layer out.
+	//
+	// The guest already handles the empty case correctly (gatherResources guards each sub-read),
+	// so asking always is both the fix and the simpler code.
+	//
+	// ServingUnit, not a name rebuilt here: a runtime-installed service's units come from the
+	// quadlet renderer (briard-<service>-<container>.service), so "podman-<name>.service" named
+	// nothing, systemd answered with no MainPID, and the whole footprint sat at zero for every
+	// catalog-installed service. Restarts is the crash-loop signal, so a service that crash-looped
+	// read exactly like one that never restarted.
+	units := make(map[string]string, len(cfg.Services))
+	var dataDir string
+	for _, spec := range cfg.Services {
+		units[spec.Name] = spec.ServingUnit()
+		dataDir = spec.DataDir // any service's data dir names the same volume; df/btrfs measure it
 	}
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if app, err := r.Resources(rctx, units, dataDir); err == nil {
+		res = app // appliance fields; agent fields (zero here) filled below
+	}
+	cancel()
 	res.AgentRSSKB, res.AgentFDs = selfResources()
 	return &res
 }
@@ -1367,16 +1387,15 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 
 // soleService returns the one installed service, and false when there is none — or when there is
-// more than one, which nothing can currently reach: applyServiceInstall refuses a second distinct
-// service until [V3b.3](b) widens the scalars that describe one (`NodeStatus.{Image,Healthy,
-// System}`, telemetry's `Payload*` fields) to carry N answers.
+// more than one.
 //
-// Returning false rather than an arbitrary member is the point. Every caller here feeds a SCALAR
-// — the image the cloud confirms a rollout against, the unit a footprint is measured from, the
-// spec an upgrade directive acts on — and a scalar that silently describes one of two services is
-// a wrong answer wearing a right answer's clothes. The refusal upstream is the gate; this is the
-// belt to those braces, and it is what lets (a) make the node hold N before (b) makes the contract
-// able to NAME which.
+// Returning false rather than an arbitrary member is the point, and the two callers left are
+// exactly the ones for which false is the honest answer. Both belong to the BAKED SLOT's cluster
+// — the spec a payload `upgrade` directive acts on, and the image the cloud confirms that
+// directive against — and both name a single OCI ref, which is not what identifies a
+// runtime-installed service. At N>1 they refuse and report nothing, which is correct; what a node
+// runs is reported by `NodeStatus.Services`, per service, keyed by manifest identity. The pair
+// dies with the slot ([V3b.3](e1)) and takes this helper with it.
 func (cfg Config) soleService() (model.ServiceSpec, bool) {
 	if len(cfg.Services) != 1 {
 		return model.ServiceSpec{}, false
