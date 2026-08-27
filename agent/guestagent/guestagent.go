@@ -971,6 +971,15 @@ func dispatch(x Executor) dispatchFunc {
 			// was not upheld and a short wait beats refusing to run. Deliberately NOT conditioned
 			// on whether some other node could promote instead: that is cluster-wide reasoning to
 			// handle a case that should not arise, and the complexity would outlive the edge case.
+			//
+			// PULLING IS SAFE HERE BECAUSE THE REF IS DIGEST-PINNED, and that is the whole
+			// difference from the baked slot, which faces the same question and answers it the
+			// other way. `briard-converge` REFUSES to promote when its pinned image is not staged,
+			// and is right to: its pin is a tag plus a pin-file, so a fetch could not guarantee the
+			// same bytes. A manifest names `repo@sha256:…` (shared/manifest refuses anything else),
+			// so a pull returns exactly those bytes or fails -- identity survives either outcome.
+			// One rule, two answers: refuse when you cannot verify what you would get, fetch when
+			// the digest pins it.
 			return nil, run("systemctl", "start", req.Unit)
 		case verbServiceInstalled:
 			var req serviceInstalledRequest
