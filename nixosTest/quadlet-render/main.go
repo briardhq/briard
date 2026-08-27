@@ -13,7 +13,8 @@
 //	quadlet-render <manifest.json> <outdir>
 //
 // writes the rendered unit files into outdir, plus two sidecars the test reads:
-// `chain` (the promoter start-list, one unit per line) and `images` (the .image warm units).
+// `chain` (the promoter start-list, one unit per line), `images` (the .image warm units),
+// `identity`, `dataroot` and `subdirs` (what the install path's provision step creates).
 package main
 
 import (
@@ -62,6 +63,10 @@ func main() {
 	write("images", r.ImageUnits)
 	write("identity", []string{string(id)})
 	write("dataroot", []string{quadlet.DataRoot(m.Name)})
+	// The per-container subdirectories the install path's provision step creates inside that
+	// subvolume. A harness that has to stand in for `service.provision` needs the same list, and
+	// deriving it a second time in a test is how the two drift.
+	write("subdirs", quadlet.Subdirs(m))
 	fmt.Printf("rendered %s (%s): %d files\n", m.Name, id, len(r.Files))
 }
 

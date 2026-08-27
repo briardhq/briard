@@ -26,6 +26,10 @@ let
   # checkable data.
   shippedGuestModule = ../guest-image/configuration.nix;
   guestModule = ./dummy-guest.nix; # configuration.nix + the dummy fixture in the slot
+  # The dummy fixture as a CATALOGUED service: a digest-pinned manifest plus the tarball it names.
+  # This is what a test uses instead of the build-time payload slot ([V3b.3](e)) — same fixture,
+  # delivered the way a shipped node actually gets a service.
+  fixture = import ./fixture-service.nix { inherit pkgs; };
   hassGuestModule = ../guest-image/hass-guest.nix; # same guest, HA in the payload slot
   hassUpgradeGuestModule = ../guest-image/hass-upgrade-guest.nix; # HA on the from-image, to warm-staged
 
@@ -236,7 +240,7 @@ in
     drbd = {
       guest-drbd9 = import ./guest-drbd9.nix { inherit pkgs guestModule; };
       drbd-replicate = import ./drbd-replicate.nix { inherit pkgs guestModule; };
-      drbd-promote = import ./drbd-promote.nix { inherit pkgs guestModule; };
+      drbd-promote = import ./drbd-promote.nix { inherit pkgs fixture; guestModule = shippedGuestModule; };
       drbd-failover = import ./drbd-failover.nix { inherit pkgs guestModule; };
       reactor-evict = import ./reactor-evict.nix { inherit pkgs guestModule; }; # V3.17c2-iv-6: a PLANNED handover
       drbd-fence = import ./drbd-fence.nix { inherit pkgs guestModule; };
