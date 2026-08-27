@@ -56,7 +56,7 @@ let
 in
 pkgs.runCommand "briard-fixture-${name}"
   {
-    nativeBuildInputs = [ pkgs.skopeo ];
+    nativeBuildInputs = [ pkgs.skopeo (pkgs.callPackage ./catalog-sign/package.nix { }) ];
     # Surfaced as passthru so a caller can stage the tarball without reaching into $out.
     passthru = { inherit image name container mount port healthPath; };
   }
@@ -79,4 +79,11 @@ pkgs.runCommand "briard-fixture-${name}"
     # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
     # strip the indentation rather than shipping it into the content hash.
     sed -i 's/^    //' $out/manifest.json
+
+    # A minimal SIGNED CATALOG beside it, so a harness can install this the way a user does
+    # rather than seeding the node-local cache -- which reproduces what an install records but
+    # not what it does (no data subvolume, so the container cannot start; measured on a fleet run
+    # 2026-08-27). `fetchManifest` fails closed with no keyring and verifies before parsing, both
+    # deliberately, so the honest answer is a real catalog and not a weakened path.
+    catalog-sign $out/manifest.json $out/catalog
   ''
