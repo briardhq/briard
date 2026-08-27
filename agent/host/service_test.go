@@ -27,21 +27,22 @@ import (
 // fakeInstaller records the ORDER of everything the install does — the bracket's correctness is
 // an ordering property, so order is what the tests assert.
 type fakeInstaller struct {
-	hold      func() error // blocks inside the budget (see beat_test.go)
-	steps     []string
-	primary   bool
-	active    bool
-	healthy   bool
-	chains    [][]string
-	prior     string // the manifest already on the volume; "" = fresh install
-	manifests []string
-	healthURL string
-	renderEr  error
-	provEr    error
-	adjustEr  error
-	resumeEr  error
-	warmEr    error
-	restoreEr error
+	warmedRefs []string     // refs handed to ServiceWarm, in order
+	hold       func() error // blocks inside the budget (see beat_test.go)
+	steps      []string
+	primary    bool
+	active     bool
+	healthy    bool
+	chains     [][]string
+	prior      string // the manifest already on the volume; "" = fresh install
+	manifests  []string
+	healthURL  string
+	renderEr   error
+	provEr     error
+	adjustEr   error
+	resumeEr   error
+	warmEr     error
+	restoreEr  error
 }
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
@@ -103,6 +104,15 @@ func (f *fakeInstaller) Adjust(_ context.Context, req guestagent.ProvisionReques
 }
 func (f *fakeInstaller) PayloadStart(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "warm:"+unit)
+	return f.warmEr
+}
+
+// ServiceWarm records the REF alongside the unit, because the whole point of the verb is that the
+// two are checked and acted on separately -- a fake that dropped the ref could not tell an
+// ensure-present apart from an unconditional start.
+func (f *fakeInstaller) ServiceWarm(_ context.Context, unit, ref string) error {
+	f.steps = append(f.steps, "warm:"+unit)
+	f.warmedRefs = append(f.warmedRefs, ref)
 	return f.warmEr
 }
 func (f *fakeInstaller) PayloadHealth(_ context.Context, url string) (bool, error) {
@@ -772,5 +782,33 @@ func TestOtherInstalledDistinguishesUnreadableFromEmpty(t *testing.T) {
 	}
 	if _, err := (Config{ServiceCache: blocked}).otherInstalled("x"); err == nil {
 		t.Error("unreadable cache returned nil error, want the failure surfaced")
+	}
+}
+
+// The install path ENSURES the image is present rather than starting its .image unit blindly.
+// Starting one is a `podman image pull`, so an unconditional start cannot install a service whose
+// image was staged locally (there is no registry to pull from) and needlessly re-fetches one a
+// prewarm already placed. The ref must reach the guest, because the check is on the ref and the
+// action is on the unit -- a call that passed only the unit could not tell the two apart.
+//
+// Measured, not hypothesised: the fleet's first catalog install died on
+// `warm image (briard-dummy-app-image.service): ... Job for briard-dummy-app-image.service failed`
+// for exactly this reason ([V3b.3](e1)).
+func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
+	f := &fakeInstaller{primary: true, active: true, healthy: true}
+	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if len(f.warmedRefs) == 0 {
+		t.Fatal("no image was warmed at all")
+	}
+	for _, ref := range f.warmedRefs {
+		if ref == "" {
+			t.Errorf("ServiceWarm got an empty ref (%v) — the guest cannot check presence without it", f.warmedRefs)
+		}
+	}
+	want := testManifest().Primary().Image
+	if f.warmedRefs[0] != want {
+		t.Errorf("warmed ref = %q, want the manifest's image %q", f.warmedRefs[0], want)
 	}
 }

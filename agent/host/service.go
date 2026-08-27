@@ -48,6 +48,9 @@ type serviceInstaller interface {
 	ReactorPause(ctx context.Context, snippet string) error
 	ReactorResume(ctx context.Context, snippet string) error
 	PayloadStart(ctx context.Context, unit string) error
+	// ServiceWarm ensures an image is present, pulling only if it is missing -- see BringUp for
+	// why "start the .image unit" is not the same operation.
+	ServiceWarm(ctx context.Context, unit, ref string) error
 	PayloadStop(ctx context.Context, unit string) error
 	Adjust(ctx context.Context, req guestagent.ProvisionRequest) error
 	PayloadHealth(ctx context.Context, url string) (bool, error)
@@ -117,7 +120,11 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("render units: %v", err))
 	}
 	for _, u := range rendered.ImageUnits {
-		if err := g.PayloadStart(ctx, u); err != nil {
+		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
+		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
+		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
+		// same reason, as bring-up ([V3b.3](e1)).
+		if err := g.ServiceWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
 	}
@@ -208,7 +215,11 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// This is also the one point where an offline node legitimately fails: `briard service
 	// install` needs the network, while running an installed service never does.
 	for _, u := range rendered.ImageUnits {
-		if err := g.PayloadStart(ctx, u); err != nil {
+		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
+		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
+		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
+		// same reason, as bring-up ([V3b.3](e1)).
+		if err := g.ServiceWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
 	}
