@@ -32,3 +32,11 @@
 *.pem
 cache-priv-key
 cache-pub-key
+
+# The release staging directory `/publish-release` builds into: signed binaries, the guest
+# qcow2, the qemu bundles. ~430 MB of build output that is republished from source every time,
+# so it has no business in history — and in a PUBLIC repo it would be cloned by every user
+# forever. Ignored for exactly the reason the key above is: an unguarded `git add -A` in a
+# session that did not create it sweeps it in silently, which is how it got committed once
+# already ([V3b.3](b), caught before any push). Stage named paths, not `-A`.
+.release/
