@@ -92,6 +92,35 @@ type NodeStatus struct {
 	// rollout -- the controller confirms the serving node switched to the target closure.
 	// Empty on a witness (or when unread).
 	System string `json:"system,omitempty"`
+	// Services is what this node has INSTALLED at runtime, one entry per service, ordered by
+	// name. It is the plural answer to the question Image only ever answered for one thing, and
+	// widening the closed allowlist by a repeated field is a deliberate act, so here is the
+	// argument.
+	//
+	// WHY A FIELD AT ALL: the cloud must be able to confirm a service rollout, and today it
+	// cannot. Image carries an OCI ref, which is the BAKED SLOT's notion of identity -- a
+	// runtime-installed service's identity is its MANIFEST, and its upgrade is a service-install
+	// directive carrying a new one ([V3b.3](b)/(e)). With nothing else on the wire, a node was
+	// held to ONE runtime service by an explicit refusal in applyServiceInstall, because a node
+	// running two and describing one would have the cloud confirm a rollout against whichever
+	// came first and a crash-loop in the other go entirely unseen. This field is what lets that
+	// refusal come out.
+	//
+	// WHY THE MANIFEST HASH AND NOT THE NAME: a catalog name is stable ACROSS versions -- the
+	// real upgrade case is home-assistant 2026.8 -> 2026.9 under one name -- so a report of
+	// names alone is blind to precisely the change a rollout is trying to observe. The hash is
+	// taken over the exact signed bytes (shared/manifest.Identity), so it is the same value the
+	// catalog can state in advance and the node can be held to afterwards.
+	//
+	// WHAT IT DELIBERATELY DOES NOT CARRY: the manifest's Version string (a human label the
+	// cloud can look up from the identity it already has), per-service health (a service's own
+	// endpoint is not probed from here -- see Healthy, and [B.48] for the fix), and the image
+	// refs (derivable from the manifest, and naming them here would re-create Image N times).
+	//
+	// Empty on a witness, on the shipped zero-service node, and on a node running only the
+	// build-time baked slot -- that slot has no manifest, so it has no identity to report, which
+	// is the same discriminator ServiceSpec.Unit uses. It dies with the slot ([V3b.3](e1)).
+	Services []ServiceStatus `json:"services,omitempty"`
 	// AgentVersion is the release id of the host-agent binary now running. It makes a
 	// host-agent self-update observable through the seam the same way Image does for the
 	// payload: the cloud confirms a canary committed the offered version (its trial went
@@ -120,6 +149,19 @@ type NodeStatus struct {
 	// shared/api is the closed cloud allowlist -- a product-health subset re-enters via the
 	// separate MetricsReport (volume used, load -- rolled up, never raw), NOT on this
 	// per-report current-state. Expanding that set is a deliberate, visible act.
+}
+
+// ServiceStatus is one runtime-installed service as the node reports it: what it is, and which
+// version of what it is. See NodeStatus.Services for why the pair is the whole of it.
+type ServiceStatus struct {
+	// Name is the catalog slug the service was installed under ("home-assistant"). Stable
+	// across upgrades, which is exactly why it cannot be the identity on its own.
+	Name string `json:"name"`
+	// Manifest is the sha256 of the signed manifest bytes this node is running for that name,
+	// spelled "sha256:<64 hex>" (shared/manifest.Identity). The cloud confirms a service rollout
+	// by comparing it against the identity the catalog published -- ground truth read back from
+	// the node, never echoed from the directive it was sent.
+	Manifest string `json:"manifest"`
 }
 
 // MetricAggregate is one field's hourly rollup a node uploads: min/max/avg over the

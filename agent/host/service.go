@@ -445,7 +445,7 @@ func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceS
 			logf("installed-service cache %s is unreadable (%v); bringing up without it", path, err)
 			continue
 		}
-		m, _, err := manifest.Parse(raw)
+		m, id, err := manifest.Parse(raw)
 		if err != nil {
 			logf("installed-service cache %s is unusable (%v); bringing up without it", path, err)
 			continue
@@ -462,6 +462,9 @@ func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceS
 			DataDir: quadlet.DataRoot(m.Name),
 			Units:   rendered.Units,
 			Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",
+			// The identity of the bytes on disk, not of a re-marshalling of them -- Parse
+			// returns it here for free, which is why the report reads it from the spec.
+			Manifest: string(id),
 		})
 		units = append(units, rendered.Units...)
 		mergeRendered(&all, rendered)

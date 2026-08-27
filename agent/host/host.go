@@ -1303,6 +1303,7 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // not in any config file either, so the log is the only place a human can find it.
 func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, model.Cluster, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, Image: served, System: system, AgentVersion: cfg.Version}
+	st.Services = cfg.serviceStatuses()
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cl, err := r.Cluster(rctx, cfg.Resource.Name)
@@ -1381,6 +1382,30 @@ func (cfg Config) soleService() (model.ServiceSpec, bool) {
 		return model.ServiceSpec{}, false
 	}
 	return cfg.Services[0], true
+}
+
+// serviceStatuses is what the node reports for the services it has INSTALLED at runtime: one
+// entry per service, name plus manifest identity, in cfg.Services' order (by name, per
+// installedServices).
+//
+// A spec with no Manifest is SKIPPED, and that is the whole of the filter: the build-time baked
+// slot was never installed from a manifest, so it has no identity to state, and inventing one --
+// its image ref, say -- would put an OCI ref in a field the cloud compares against a catalog
+// hash. The slot reports through Image, as it always has, until [V3b.3](e1) deletes both.
+//
+// Unlike currentImage this asks the guest NOTHING. The identity is a property of what was
+// installed, not of what the guest happens to answer this second, so it comes off the spec the
+// cache was read into -- which also means it stays correct on a node whose guest is briefly
+// unreachable, where a read-through would have blanked the whole set.
+func (cfg Config) serviceStatuses() []api.ServiceStatus {
+	var out []api.ServiceStatus
+	for _, s := range cfg.Services {
+		if s.Manifest == "" {
+			continue
+		}
+		out = append(out, api.ServiceStatus{Name: s.Name, Manifest: s.Manifest})
+	}
+	return out
 }
 
 // CurrentImage reports the payload image this node actually serves: the replicated pin

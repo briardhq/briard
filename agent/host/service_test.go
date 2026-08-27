@@ -1,9 +1,12 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -811,4 +814,88 @@ func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 	if f.warmedRefs[0] != want {
 		t.Errorf("warmed ref = %q, want the manifest's image %q", f.warmedRefs[0], want)
 	}
+}
+
+// THE WIRE-CONTRACT WIDENING'S GROUND TRUTH ([V3b.3](b)): a spec must carry the identity of the
+// manifest it was installed from, and that identity must be the hash of the BYTES ON DISK.
+//
+// The distinction is the whole test. shared/manifest.Parse hashes the exact signed document
+// precisely because re-encoding a parsed struct can reorder or reformat and would mint a
+// different identity for the same signed bytes -- so an implementation that re-marshalled the
+// Manifest and hashed that would look entirely reasonable, produce a stable-looking value, and
+// disagree with every identity the catalog ever published. The expectation here is therefore
+// computed from the file, never from the struct.
+func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
+	dir := t.TempDir()
+	want := map[string]string{}
+	for _, s := range []struct{ name, digest string }{{"home-assistant", digestA}, {"mosquitto", digestB}} {
+		// INDENTED, which is what makes this test bite. A catalog document is a signed FILE, and
+		// a file is formatted; compact fixture bytes that happen to equal json.Marshal's output
+		// cannot distinguish hashing them from hashing a re-marshalling, so the sabotage that
+		// proves this assertion would pass against a compact one.
+		raw := indentJSON(t, manifestJSON(s.name, s.digest))
+		if err := os.WriteFile(filepath.Join(dir, s.name+".json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		want[s.name] = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	cfg := Config{ServiceCache: dir}
+	specs, _, _, ok := cfg.installedServices(func(string, ...any) {})
+	if !ok || len(specs) != 2 {
+		t.Fatalf("specs = %+v (ok=%v), want two", specs, ok)
+	}
+	for _, s := range specs {
+		if s.Manifest != want[s.Name] {
+			t.Errorf("%s Manifest = %q, want %q (the hash of the bytes on disk)", s.Name, s.Manifest, want[s.Name])
+		}
+	}
+	// Two different manifests must not share an identity -- a constant would satisfy every
+	// assertion above and confirm any rollout against any other.
+	if specs[0].Manifest == specs[1].Manifest {
+		t.Errorf("both services report identity %q; a shared identity confirms one rollout with another's evidence", specs[0].Manifest)
+	}
+}
+
+// What the node PUTS ON THE WIRE for its services, and the one thing it must leave off.
+//
+// The baked slot has no manifest, so it has no identity, and NodeStatus.Services is compared by
+// the cloud against a catalog hash -- putting the slot's OCI ref there (the obvious "well, it has
+// an image") would be an ref masquerading as a manifest identity in the field a rollout is
+// confirmed from. It reports through Image, as it always has, until [V3b.3](e1) deletes both.
+func TestServiceStatusesReportTheInstalledSetAndSkipTheBakedSlot(t *testing.T) {
+	cfg := Config{Services: []model.ServiceSpec{
+		{Name: "home-assistant", Manifest: "sha256:aa", Image: "ghcr.io/x/ha@sha256:1"},
+		{Name: "briard-payload", Image: "briard-dummy:v0"}, // the baked slot: no manifest
+		{Name: "mosquitto", Manifest: "sha256:bb", Image: "ghcr.io/x/mq@sha256:2"},
+	}}
+	got := cfg.serviceStatuses()
+	want := []api.ServiceStatus{
+		{Name: "home-assistant", Manifest: "sha256:aa"},
+		{Name: "mosquitto", Manifest: "sha256:bb"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
+	}
+}
+
+// A witness and the shipped zero-service node report NOTHING here, and they must report it as an
+// absent field rather than an empty list: `services: []` on the wire says "I looked and there are
+// none", which is a claim a node with no service cache is in no position to make.
+func TestServiceStatusesAreAbsentWithNoServices(t *testing.T) {
+	if got := (Config{}).serviceStatuses(); got != nil {
+		t.Errorf("serviceStatuses() = %+v, want nil so the field is omitted entirely", got)
+	}
+}
+
+// indentJSON re-formats a manifest fixture the way a published catalog document is: whitespace a
+// re-marshalling does not reproduce. Its only job is to make the identity assertion above able to
+// fail; see there.
+func indentJSON(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

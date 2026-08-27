@@ -102,6 +102,18 @@ type ServiceSpec struct {
 	// "is the service up?" keeps one answer even when the pod has several members. Empty falls
 	// back to the baked slot's derived name.
 	Unit string
+
+	// Manifest is the identity of the signed manifest this service was installed from --
+	// sha256 over the exact bytes (shared/manifest.Identity). Empty means the BAKED slot, which
+	// was never installed from a manifest and so has no identity: the same discriminator Unit
+	// uses, and it dies with the slot ([V3b.3](e1)).
+	//
+	// It rides the spec rather than being re-read at report time because the bytes it hashes are
+	// already in hand wherever a spec is built -- installedServices parses them at bring-up and
+	// the install path holds them -- and re-reading the cache once per report cycle to recompute
+	// a value that cannot change without an install would be a file read per node per cycle for
+	// nothing.
+	Manifest string
 }
 
 // ServingUnit is the systemd unit that answers "is this service up?", and therefore the one to
