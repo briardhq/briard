@@ -444,6 +444,12 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 
 // CurrentSystem reports the guest's running closure, and "" for a witness or a read
 // error -- ground truth for the whole-OS rollout across a failover.
+//
+// The zero-service case is the one that matters and the one this test used to get wrong: it
+// asserted an anchor with no service reports "", calling that config "witness". It is not a
+// witness, it is the SHIPPED state -- what install.sh leaves behind and what the whole free tier
+// runs -- and reporting "" for it made the cloud's systemTargets skip the node forever ([V3b.3](d)).
+// A witness is diskless; that is now what the code and this test both say.
 func TestCurrentSystem(t *testing.T) {
 	cfg := Config{Service: model.ServiceSpec{Name: "dummy"}}
 	if got := cfg.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "/nix/store/v1" {
@@ -452,7 +458,14 @@ func TestCurrentSystem(t *testing.T) {
 	if got := cfg.currentSystem(context.Background(), fakeStatus{sysErr: errors.New("down")}); got != "" {
 		t.Errorf("read error: currentSystem = %q, want empty", got)
 	}
-	witness := Config{Service: model.ServiceSpec{}}
+	// The shipped zero-service anchor. It runs a closure like any other node, so it must SAY so
+	// -- a node the rollout cannot see is a node the rollout cannot update.
+	shipped := Config{}
+	if got := shipped.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "/nix/store/v1" {
+		t.Errorf("zero-service anchor: currentSystem = %q, want /nix/store/v1 -- the shipped node must be visible to an OS roll", got)
+	}
+	// A real witness: diskless, no guest of its own to read a closure from.
+	witness := Config{Diskless: true}
 	if got := witness.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "" {
 		t.Errorf("witness currentSystem = %q, want empty", got)
 	}

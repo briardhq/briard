@@ -1349,10 +1349,19 @@ func (cfg Config) currentImage(ctx context.Context, r guestReader) string {
 // CurrentSystem reports the NixOS system closure this node is running (readlink -f
 // /run/current-system, via the guest) -- ground truth for the whole-OS rollout, correct
 // across a failover (a converged survivor reports the switched-to closure). Empty for a
-// witness (no payload/upgrade) or on a read hiccup; the rollout just re-reads next cycle.
+// witness (no guest to read) or on a read hiccup; the rollout just re-reads next cycle.
+//
+// The gate is DISKLESS, not "has a service", and the difference is the whole of [V3b.3](d).
+// A system closure is a property of the NODE; what happens to run on top of it cannot decide
+// whether the node can describe itself. Gating on the service name meant every shipped
+// zero-service anchor -- the free tier, the state install.sh leaves behind -- reported System
+// "", and the cloud reads that as "has never reported a system" and SKIPS the node in
+// systemTargets: never offered the closure, never seen as behind. Exactly the trap the
+// upgrader's own construction hit and fixed (see newOSUpgrade's comment above), on the
+// reporting side instead of the constructing side.
 func (cfg Config) currentSystem(ctx context.Context, r guestReader) string {
-	if cfg.Service.Name == "" {
-		return "" // witness / no payload
+	if cfg.Diskless {
+		return "" // witness: no guest of its own to read a closure from
 	}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
