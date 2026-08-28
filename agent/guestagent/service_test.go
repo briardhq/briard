@@ -261,3 +261,29 @@ func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
 		t.Error("service.installed accepted a name that escapes the manifest directory")
 	}
 }
+
+// service.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
+// it is how a node that promoted into somebody else's install can say what it runs at all
+// ([V3b.3](e1) — measured: a survivor served the fixture while reporting no services).
+func TestServiceListNamesTheVolumesServices(t *testing.T) {
+	f := &fakeExec{output: []byte("dummy.json\nhome-assistant.json\nnot-a-manifest\n")}
+	g := dial(t, f)
+	got, err := g.ServiceList(context.Background())
+	if err != nil {
+		t.Fatalf("ServiceList: %v", err)
+	}
+	if len(got) != 2 || got[0] != "dummy" || got[1] != "home-assistant" {
+		t.Fatalf("got %v, want [dummy home-assistant]", got)
+	}
+}
+
+// An absent manifest directory is the shipped zero-service node, not a failure -- the same rule
+// service.installed follows, and for the same reason: a node that refuses to answer because a
+// directory it never had is missing is worse than one that says "nothing".
+func TestServiceListEmptyOnAZeroServiceNode(t *testing.T) {
+	g := dial(t, &fakeExec{err: errors.New("ls: no such directory")})
+	got, err := g.ServiceList(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("got (%v, %v), want no services and no error", got, err)
+	}
+}

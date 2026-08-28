@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,11 @@ type fakeStatus struct {
 	// silent conflict-rename can make differ from the one we asked for. "" = nothing published.
 	mdns    string
 	mdnsErr error
+	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
+	// node that promoted into somebody else.s install is the only place that truth exists.
+	volume        map[string]string
+	volumeErr     error
+	noServiceList bool // a guest too old to list: the host must fall back, not fail
 }
 
 // The fake answers the whole-cluster read the snapshot makes. Its peer list stays empty: these
@@ -122,6 +128,23 @@ func (f fakeStatus) SystemPath(context.Context) (string, error) {
 func (f fakeStatus) Resources(context.Context, map[string]string, string) (telemetry.NodeResources, error) {
 	return f.res, f.resErr
 }
+
+// What the VOLUME carries: `volume` maps a service name to its manifest bytes, so a test can put
+// this node in the state a converged survivor is in -- running what somebody else installed.
+func (f fakeStatus) ServiceList(context.Context) ([]string, error) {
+	names := make([]string, 0, len(f.volume))
+	for n := range f.volume {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, f.volumeErr
+}
+
+func (f fakeStatus) ServiceInstalled(_ context.Context, name string) (string, error) {
+	return f.volume[name], nil
+}
+
+func (f fakeStatus) SupportsServiceList() bool { return !f.noServiceList }
 
 func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	// Clear the knobs so we exercise defaults deterministically.

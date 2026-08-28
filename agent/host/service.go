@@ -451,27 +451,12 @@ func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceS
 			logf("installed-service cache %s is unreadable (%v); bringing up without it", path, err)
 			continue
 		}
-		m, id, err := manifest.Parse(raw)
+		spec, rendered, err := specOf(raw)
 		if err != nil {
 			logf("installed-service cache %s is unusable (%v); bringing up without it", path, err)
 			continue
 		}
-		rendered, err := quadlet.Render(m)
-		if err != nil {
-			logf("installed-service cache %s does not render (%v); bringing up without it", path, err)
-			continue
-		}
-		primary := m.Primary()
-		specs = append(specs, model.ServiceSpec{
-			Name:    m.Name,
-			Image:   primary.Image,
-			DataDir: quadlet.DataRoot(m.Name),
-			Units:   rendered.Units,
-			Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",
-			// The identity of the bytes on disk, not of a re-marshalling of them -- Parse
-			// returns it here for free, which is why the report reads it from the spec.
-			Manifest: string(id),
-		})
+		specs = append(specs, spec)
 		units = append(units, rendered.Units...)
 		mergeRendered(&all, rendered)
 	}
@@ -479,6 +464,117 @@ func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceS
 		return nil, nil, quadlet.Rendered{}, false
 	}
 	return specs, promoterUnits(units), all, true
+}
+
+// specOf turns one manifest's bytes into the spec the node reports and the units it runs. ONE
+// implementation, because the two readers must agree about what a manifest means: the node-local
+// cache (installedServices, what this host was told) and the replicated volume
+// (volumeServices, what this node actually promoted into).
+func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
+	m, id, err := manifest.Parse(raw)
+	if err != nil {
+		return model.ServiceSpec{}, quadlet.Rendered{}, err
+	}
+	rendered, err := quadlet.Render(m)
+	if err != nil {
+		return model.ServiceSpec{}, quadlet.Rendered{}, err
+	}
+	primary := m.Primary()
+	return model.ServiceSpec{
+		Name:    m.Name,
+		Image:   primary.Image,
+		DataDir: quadlet.DataRoot(m.Name),
+		Units:   rendered.Units,
+		Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",
+		// The identity of the bytes as read, not of a re-marshalling of them -- Parse returns it
+		// here for free, which is why the report reads it from the spec.
+		Manifest: string(id),
+	}, rendered, nil
+}
+
+// volumeReader is the slice of the guest adoptVolumeServices needs: what the replicated volume
+// says this node runs. Narrow interface for DI, not a seam.
+type volumeReader interface {
+	ServiceList(ctx context.Context) ([]string, error)
+	ServiceInstalled(ctx context.Context, name string) (string, error)
+	SupportsServiceList() bool
+}
+
+// adoptVolumeServices makes this host's view of what it runs match the VOLUME, and caches it.
+//
+// WHY IT EXISTS, measured rather than reasoned (a fleet run, 2026-08-28): converge-at-promotion
+// ([V3b.3](f)) renders and starts from the volume, so a survivor that never installed anything
+// runs services this host was never told about. The report is built from the node-local cache,
+// which only a completed install ON A PRIMARY writes -- so the survivor served the upgraded
+// fixture at the VIP, with its tick counter moving, while telling the cloud it ran no services at
+// all. The cloud could not have confirmed any rollout on it, and a household degraded to "no
+// services" in every view while being perfectly healthy. Converge made the volume the truth about
+// what runs; this makes the host READ that truth instead of remembering what it was told.
+//
+// ON THE PROMOTION EDGE, not every cycle: the volume is only readable by whoever holds it, and
+// what it says changes only when someone installs. Polling it would add a verb round-trip per
+// status cycle to answer a question whose answer just changed exactly once.
+//
+// It CACHES what it finds, which is what keeps the node's own restart correct: bring-up reads the
+// node-local cache, and a node that promoted into somebody else's install would otherwise come
+// back empty. The cache becomes a projection of the volume rather than a record of what this host
+// did -- which is what converge already made true of the units themselves.
+//
+// Every failure is soft. A guest too old to list (no service.list) leaves the previous view
+// standing, as does a read error or a manifest that will not parse: this is a REPORT, and a
+// wrong-but-quiet report is worse than a stale one only if it is silently wrong, which the log
+// prevents. The node keeps serving either way -- what runs is the guest's business.
+func (cfg *Config) adoptVolumeServices(ctx context.Context, g volumeReader, logf func(string, ...any)) {
+	if !g.SupportsServiceList() {
+		return // an older guest; the node-local cache is all this host can honestly report
+	}
+	names, err := g.ServiceList(ctx)
+	if err != nil {
+		logf("could not read the volume's services (%v); still reporting what this node installed", err)
+		return
+	}
+	var (
+		specs []model.ServiceSpec
+		all   = quadlet.Rendered{Files: map[string]string{}}
+	)
+	for _, name := range names {
+		raw, err := g.ServiceInstalled(ctx, name)
+		if err != nil || raw == "" {
+			logf("the volume names %q but its manifest could not be read (%v); reporting without it", name, err)
+			continue
+		}
+		spec, rendered, err := specOf([]byte(raw))
+		if err != nil {
+			logf("the volume's manifest for %q is unusable (%v); reporting without it", name, err)
+			continue
+		}
+		specs = append(specs, spec)
+		mergeRendered(&all, rendered)
+		// Durable, so this node's own restart brings up what it is actually running rather than
+		// what it once installed. A cache write that fails is not fatal to the report.
+		if err := cfg.cacheService(name, []byte(raw)); err != nil {
+			logf("could not cache the volume's manifest for %q (%v); this node's next bring-up will not know about it", name, err)
+		}
+	}
+	if same(cfg.Services, specs) {
+		return
+	}
+	cfg.Services, cfg.ServiceRendered = specs, all
+	logf("adopted %d service(s) from the volume: %s", len(specs), names)
+}
+
+// same reports whether two service sets name the same services at the same identities -- the
+// question "did anything change?", not deep equality of the rendered units, which are derived.
+func same(a, b []model.ServiceSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Manifest != b[i].Manifest {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeRendered folds one service's rendering into the union restoreService replays. Unit

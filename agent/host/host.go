@@ -384,6 +384,9 @@ type statusReader interface {
 // applying the upgrade directive.
 type guestReader interface {
 	statusReader
+	// What the VOLUME says this node runs -- the truth on a node that promoted into somebody
+	// else's install, where the node-local cache is empty by construction (adoptVolumeServices).
+	volumeReader
 	PayloadImage(ctx context.Context) (string, error)
 	SystemPath(ctx context.Context) (string, error)
 	Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error)
@@ -925,6 +928,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// macvtap hides from the machine running the guest and from nobody else ([V3b.19]). Lives for
 	// the observe loop because it remembers what it installed; see viproute.go.
 	vr := newVIPRouter(cfg.WitnessTap, cfg.VIPDev, cfg.guestNodeIP(), cfg.hostNodeIP())
+	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
+	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
+	// false, so a node that comes up already Primary reads the volume on its first cycle.
+	wasPrimary := false
 	// EVERY cfg.beat.Beat() below sits in front of one ctx-BOUNDED call, and that is the whole
 	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever
 	// a gap would otherwise open. It is not one ping per cycle -- these calls carry 5s deadlines
@@ -955,6 +962,20 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		vr.reconcile(ctx, r, logf)
 		if errors.Is(err, guestagent.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
+		}
+		// A node that has just PROMOTED may be running services it was never told about: converge
+		// renders from the volume ([V3b.3](f)), so the volume -- not this host's memory -- is what
+		// it is actually running. Read it once per promotion and re-derive this cycle's report, so
+		// the first status the cloud sees from a new primary already names what it serves.
+		if primary := cl.QuorumState.Primary; primary != wasPrimary {
+			if primary {
+				cfg.beat.Beat()
+				cfg.adoptVolumeServices(ctx, r, logf)
+				sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				st.Services = cfg.serviceStatuses(sctx, r, true)
+				cancel()
+			}
+			wasPrimary = primary
 		}
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)

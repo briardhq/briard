@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1024,5 +1025,105 @@ func TestInstallRefusesAGuestThatCannotNameAService(t *testing.T) {
 	}
 	if len(f.steps) != 0 {
 		t.Fatalf("the refusal still touched the guest: %v", f.steps)
+	}
+}
+
+// volumeGuest is the slice of the guest adoptVolumeServices reads: what the replicated volume
+// says this node runs, keyed by service name.
+type volumeGuest struct {
+	manifests map[string]string
+	listErr   error
+	tooOld    bool
+}
+
+func (v volumeGuest) ServiceList(context.Context) ([]string, error) {
+	names := make([]string, 0, len(v.manifests))
+	for n := range v.manifests {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, v.listErr
+}
+
+func (v volumeGuest) ServiceInstalled(_ context.Context, name string) (string, error) {
+	return v.manifests[name], nil
+}
+
+func (v volumeGuest) SupportsServiceList() bool { return !v.tooOld }
+
+// THE CONVERGED SURVIVOR ([V3b.3](e1), measured on a fleet run 2026-08-28). A node that promoted
+// into somebody else's install has an EMPTY node-local cache -- only a completed install on a
+// Primary writes one -- while converge-at-promotion has it running what the volume names. Reading
+// the volume is what lets it say so; without this it served the fixture at the VIP while
+// reporting no services at all, which is a household degraded to nothing in every view.
+func TestAdoptVolumeServicesOnANodeThatInstalledNothing(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{ServiceCache: dir}
+	g := volumeGuest{manifests: map[string]string{
+		"home-assistant": string(manifestJSON("home-assistant", digestA)),
+		"mosquitto":      string(manifestJSON("mosquitto", digestB)),
+	}}
+	cfg.adoptVolumeServices(context.Background(), g, func(string, ...any) {})
+
+	if len(cfg.Services) != 2 {
+		t.Fatalf("services = %+v, want the two the volume names", cfg.Services)
+	}
+	if cfg.Services[0].Name != "home-assistant" || cfg.Services[1].Name != "mosquitto" {
+		t.Errorf("names = %q,%q, want home-assistant,mosquitto", cfg.Services[0].Name, cfg.Services[1].Name)
+	}
+	// The IDENTITY is what the cloud confirms a rollout against, so it must be the hash of the
+	// volume's own bytes rather than anything re-derived.
+	_, want, err := manifest.Parse(manifestJSON("home-assistant", digestA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Services[0].Manifest != string(want) {
+		t.Errorf("manifest = %q, want the volume's identity %q", cfg.Services[0].Manifest, want)
+	}
+	if len(cfg.ServiceRendered.Units) == 0 {
+		t.Error("the rendered units must come with the specs -- a standby replays them after a guest reboot")
+	}
+	// CACHED, so this node's own restart brings up what it is running rather than what it once
+	// installed (which here is nothing at all).
+	for _, name := range []string{"home-assistant", "mosquitto"} {
+		if _, err := os.ReadFile(filepath.Join(dir, name+".json")); err != nil {
+			t.Errorf("the volume's manifest for %s was not cached: %v", name, err)
+		}
+	}
+}
+
+// Every failure is SOFT, because this is a report and not a decision: a guest too old to list, or
+// a read that fails, leaves the previous view standing rather than blanking what the node says it
+// runs. A stale answer beats an invented one.
+func TestAdoptVolumeServicesKeepsTheOldViewOnFailure(t *testing.T) {
+	prior := []model.ServiceSpec{{Name: "home-assistant", Manifest: "sha256:prior"}}
+	for _, tc := range []struct {
+		name string
+		g    volumeGuest
+	}{
+		{"a guest too old to list", volumeGuest{tooOld: true, manifests: map[string]string{"mosquitto": string(manifestJSON("mosquitto", digestB))}}},
+		{"a failed read", volumeGuest{listErr: errors.New("channel down")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{ServiceCache: t.TempDir(), Services: prior}
+			cfg.adoptVolumeServices(context.Background(), tc.g, func(string, ...any) {})
+			if len(cfg.Services) != 1 || cfg.Services[0].Manifest != "sha256:prior" {
+				t.Fatalf("services = %+v, want the prior view untouched", cfg.Services)
+			}
+		})
+	}
+}
+
+// A manifest the volume carries but this build cannot parse costs THAT service and no other: one
+// unusable file must not blank a node's whole report.
+func TestAdoptVolumeServicesSkipsOnlyTheBadManifest(t *testing.T) {
+	cfg := &Config{ServiceCache: t.TempDir()}
+	g := volumeGuest{manifests: map[string]string{
+		"home-assistant": string(manifestJSON("home-assistant", digestA)),
+		"mosquitto":      `{"name":"mosquitto","containers":[]}`, // no primary container
+	}}
+	cfg.adoptVolumeServices(context.Background(), g, func(string, ...any) {})
+	if len(cfg.Services) != 1 || cfg.Services[0].Name != "home-assistant" {
+		t.Fatalf("services = %+v, want only the one that parses", cfg.Services)
 	}
 }

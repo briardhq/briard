@@ -152,7 +152,16 @@ const (
 	// exactly the one path that needs it (Supports), which is the instrument service.warm already
 	// set the precedent for ([V3b.3](e1), no api.go change).
 	verbServiceInstalled = "service.installed" // read one named service's manifest from the volume, or ""
-	verbServiceWarm      = "service.warm"      // ensure an image is present, starting its .image unit ONLY if it is missing
+	// service.list NAMES the services the volume carries. It is what makes a converged node able
+	// to say what it runs: converge-at-promotion renders from the volume, so a survivor that never
+	// installed anything runs services the HOST was never told about -- and the host reports from
+	// its node-local cache, which only an install on a Primary writes. Measured on a fleet run
+	// 2026-08-28: the survivor served the upgraded fixture at the VIP (its tick counter moved)
+	// while reporting no services at all, so the cloud saw a node running nothing and could not
+	// have confirmed any rollout on it. Names only, because the manifest for each is what
+	// service.installed already returns; a verb that returned both would duplicate that one.
+	verbServiceList = "service.list" // list the services recorded on the volume
+	verbServiceWarm = "service.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start ([V3b.3](f), converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -253,7 +262,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceWarm, verbServiceConverge, verbServiceForget, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -993,6 +1002,19 @@ func dispatch(x Executor) dispatchFunc {
 			}
 			_, err := x.Run(ctx, "sync", "-f", manifestDir)
 			return nil, err
+		case verbServiceList:
+			// The same listing converge itself renders from, so what the host learns a node runs
+			// and what the node actually renders cannot drift: one reader, one directory. Names
+			// carry the `.json` suffix on disk; the caller wants service names.
+			names, err := manifestNames(ctx, x)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]string, 0, len(names))
+			for _, n := range names {
+				out = append(out, strings.TrimSuffix(n, ".json"))
+			}
+			return out, nil
 		case verbServiceInstalled:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2320,6 +2342,22 @@ func (g *Client) ServiceInstalled(ctx context.Context, name string) (string, err
 // SupportsServiceInstalled reports whether the guest can name a service when reading or recording
 // its identity on the volume — the per-service split of what used to be one file ([V3b.3](b)).
 func (g *Client) SupportsServiceInstalled() bool { return g.Supports(verbServiceInstalled) }
+
+// ServiceList names the services recorded on the replicated volume. Empty is a legitimate answer
+// (the shipped zero-service node), never an error.
+//
+// It is how a node that never installed anything can still say what it runs: converge renders from
+// the volume at promotion, so on a survivor the volume is the only place the truth exists.
+func (g *Client) ServiceList(ctx context.Context) ([]string, error) {
+	var names []string
+	err := g.c.call(ctx, verbServiceList, nil, &names)
+	return names, err
+}
+
+// SupportsServiceList reports whether the guest can name what the volume carries. A guest without
+// it leaves a converged survivor reporting only what this host installed itself -- which is
+// nothing, on a node that promoted into a service someone else installed.
+func (g *Client) SupportsServiceList() bool { return g.Supports(verbServiceList) }
 
 // PayloadImage reports the payload image this node currently serves -- the replicated pin
 // , or "" when none is set (the node serves the baked default). Read from the guest
