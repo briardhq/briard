@@ -153,6 +153,13 @@ const (
 	// set the precedent for ([V3b.3](e1), no api.go change).
 	verbServiceInstalled = "service.installed" // read one named service's manifest from the volume, or ""
 	verbServiceWarm      = "service.warm"      // ensure an image is present, starting its .image unit ONLY if it is missing
+	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
+	// -- render every manifest on the volume, warm, start ([V3b.3](f), converge.go). It is what an
+	// install calls once it has written the new manifest, and it exists as a VERB rather than a
+	// `systemctl restart briard-services` because briard-services is a promoter CHAIN MEMBER:
+	// stopping one deactivates drbd-reactor's target, which unmounts the volume and demotes the
+	// node. Same code, same unit, no unit lifecycle touched.
+	verbServiceConverge = "service.converge"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -239,7 +246,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceWarm, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceWarm, verbServiceConverge, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -954,33 +961,15 @@ func dispatch(x Executor) dispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if req.Ref == "" || req.Unit == "" {
-				return nil, fmt.Errorf("service.warm: need a unit and an image ref")
-			}
-			// PRESENT => DONE, without touching the network. Starting the unit is a
-			// `podman image pull`: quadlet generates `Wants=network-online.target` +
-			// `ExecStart=podman image pull <ref>` with no already-present short-circuit, so an
-			// unconditional start made every guest reboot depend on reaching a registry —
-			// the running half of the doctrine that running never needs network ([V3b.3](e1)).
-			if err := run("podman", "image", "exists", req.Ref); err == nil {
-				return nil, nil
-			}
-			// MISSING => pull, and wait for it. Absence is not something to fail on: the image
-			// SHOULD already be here (install warms it, prewarm puts it on every standby, and
-			// service-install.nix asserts exactly that), so reaching this line means the design
-			// was not upheld and a short wait beats refusing to run. Deliberately NOT conditioned
-			// on whether some other node could promote instead: that is cluster-wide reasoning to
-			// handle a case that should not arise, and the complexity would outlive the edge case.
-			//
-			// PULLING IS SAFE HERE BECAUSE THE REF IS DIGEST-PINNED, and that is the whole
-			// difference from the baked slot, which faces the same question and answers it the
-			// other way. `briard-converge` REFUSES to promote when its pinned image is not staged,
-			// and is right to: its pin is a tag plus a pin-file, so a fetch could not guarantee the
-			// same bytes. A manifest names `repo@sha256:…` (shared/manifest refuses anything else),
-			// so a pull returns exactly those bytes or fails -- identity survives either outcome.
-			// One rule, two answers: refuse when you cannot verify what you would get, fetch when
-			// the digest pins it.
-			return nil, run("systemctl", "start", req.Unit)
+			// One implementation, shared with converge (converge.go): an installing Primary and a
+			// converging survivor must not disagree about what "the image is already here" means.
+			// The exists-or-pull rule and why it is safe are argued there.
+			return nil, warmImage(ctx, x, req.Unit, req.Ref)
+		case verbServiceConverge:
+			// No request body: converge takes its whole input from the volume, which is the point
+			// -- a caller that could name what to converge TO would be the node-was-told model
+			// this replaces.
+			return nil, Converge(ctx, x)
 		case verbServiceInstalled:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2035,7 +2024,7 @@ func parseDuKB(du []byte) int64 {
 func nonEmptyLines(b []byte) []string {
 	var out []string
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.TrimSpace(l) != "" {
+		if l = strings.TrimSpace(l); l != "" {
 			out = append(out, l)
 		}
 	}
@@ -2266,6 +2255,24 @@ func (g *Client) ServiceProvision(ctx context.Context, name, dataDir string, sub
 func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
 	return g.c.call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
 }
+
+// ServiceConverge makes the guest match the volume, in place: every manifest under the replicated
+// `.services/` rendered, warmed and started ([V3b.3](f), converge.go). PRIMARY ONLY in effect --
+// the volume is mounted nowhere else, and a Secondary converges when it promotes, which is the
+// whole design.
+//
+// It takes no arguments deliberately. A caller that could name what to converge TO would be the
+// node-was-told model this replaces; the volume is the only input, and the install path's job is
+// to have written it first.
+//
+// SupportsServiceConverge gates it: an older guest has no briard-services unit to converge, so a
+// host must refuse rather than call a verb that guest cannot honour.
+func (g *Client) ServiceConverge(ctx context.Context) error {
+	return g.c.call(ctx, verbServiceConverge, struct{}{}, nil)
+}
+
+// SupportsServiceConverge reports whether the guest can converge itself to the volume.
+func (g *Client) SupportsServiceConverge() bool { return g.Supports(verbServiceConverge) }
 
 // ServiceInstalled reads the manifest recorded on the replicated volume for ONE service, or ""
 // when that service is not installed there. "" is a legitimate answer — the shipped zero-service

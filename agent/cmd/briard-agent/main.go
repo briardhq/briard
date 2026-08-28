@@ -108,6 +108,8 @@ func runInternal(args []string) {
 	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	drawSubnets := fs.Bool("draw-subnets", false, "draw this node's two private subnets, checked against this machine's own network, and print them as SYSTEM_SUBNET=/PRIV_SUBNET= -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
+	converge := fs.Bool("converge", false, "IN-GUEST: render, warm and start every service the replicated volume names, then exit -- briard-services.service's ExecStart, not an operator command")
+	convergeStop := fs.Bool("converge-stop", false, "IN-GUEST: stop the service units this node converged to -- briard-services.service's ExecStop")
 	_ = fs.Parse(args)
 
 	// Mint the household-visible name. An installer-internal helper rather than a `briard`
@@ -211,6 +213,27 @@ func runInternal(args []string) {
 			return
 		}
 		log.Printf("guest-shutdown: the guest powered off cleanly")
+		return
+	}
+
+	// Converge-at-promotion, in the guest ([V3b.3](f)). briard-services.service runs these as a
+	// promoter CHAIN MEMBER between the data mount and the VIP, so the exit code is load-bearing:
+	// a non-zero ExecStart fails the whole promotion, the node never claims the VIP, and a primary
+	// with no address is already reported unhealthy. That is the design -- converge failing is a
+	// node that cannot serve, and it must say so rather than promote into a broken state. (A
+	// SERVICE that fails to start is a different thing and never reaches here; Converge logs it
+	// and returns nil.)
+	//
+	// Flags rather than `briard` verbs for the same reason as --guest-shutdown: nobody types them.
+	// They are plumbing between the agent and a unit file, and drbd-reactor is the only caller.
+	if *converge || *convergeStop {
+		run, what := guestagent.Converge, "converge"
+		if *convergeStop {
+			run, what = guestagent.ConvergeStop, "converge-stop"
+		}
+		if err := run(ctx, guestagent.NewOSExecutor()); err != nil {
+			log.Fatalf("%s: %v", what, err)
+		}
 		return
 	}
 
