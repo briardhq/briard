@@ -340,9 +340,13 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // MISSING => pull, and wait for it. Absence is not something to fail on: the image SHOULD already
 // be here (install warms it, prewarm puts it on every standby, and service-install.nix asserts
 // exactly that), so reaching this line means the design was not upheld and a short wait beats
-// refusing to run. Deliberately NOT conditioned on whether some other node could promote instead:
-// that is cluster-wide reasoning to handle a case that should not arise, and the complexity would
-// outlive the edge case.
+// refusing to run. Under converge that is not even an unlikely case any more -- a node that was
+// down when the install ran, or joined afterwards, promotes into a service it was never told
+// about and legitimately has no image for. Still deliberately NOT conditioned on whether some
+// other node could promote instead: two nodes that both lack the image would refuse in turn with
+// no flap bound (ReactorConfig emits only `start` + `adjust-resource-on-start`), and on the free
+// tier there is no cloud to stop them. A node that fetches what it can name beats a cluster-wide
+// negotiation nothing arbitrates.
 //
 // PULLING IS SAFE BECAUSE THE REF IS DIGEST-PINNED, and that is the whole difference from the
 // baked slot, which faces the same question and answers it the other way. `briard-converge`
