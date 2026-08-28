@@ -10,9 +10,10 @@
 # ⚠️ WHAT THIS NO LONGER PROVES, and where it went. It used to assert HA was reachable THROUGH the
 # front door, and that /healthz forwarded the question to HA. Both came from the build-time payload
 # slot, which fed the reverse proxy its `-backend` at guest-build time; the slot is deleted
-# ([V3b.3](e2)) and routing the front door to a runtime-installed service is deferred with the
-# routing work ([V3.16]). So the door answers for itself here, exactly as it does on every shipped
-# node, and the proxying assertion comes back when routing does.
+# ([V3b.3](e2)) and routing the front door to a runtime-installed service is [B.48]'s -- the sole
+# owner of the routes table. So the door answers for itself here, exactly as it does on every
+# shipped node, and the proxying assertion comes back when routing does: [B.48] carries the
+# obligation to restore it, because this coverage was deleted rather than superseded.
 { pkgs, guestModule, fixture }:
 
 let
