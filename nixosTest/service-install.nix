@@ -185,7 +185,7 @@ pkgs.testers.runNixOSTest {
     # the side would put this harness back in the business of standing in for the product.
     for m in disk_nodes:
         m.succeed("mkdir -p /run/containers/systemd")
-        m.succeed(f"cp /tmp/rendered/briard-fixture-app.image /run/containers/systemd/ && systemctl daemon-reload")
+        m.succeed("cp /tmp/rendered/briard-fixture-app.image /run/containers/systemd/ && systemctl daemon-reload")
         for unit in m.succeed("cat /tmp/rendered/images").split():
             m.succeed(f"systemctl start {unit}")
         # The pull really happened, and the image is addressable by the digest the manifest pins.
@@ -302,15 +302,26 @@ pkgs.testers.runNixOSTest {
     primary.fail("systemctl cat briard-fixture-app.service")
     print("the reboot really erased the rendered units")
 
-    # Re-arm the promoter (in the product the agent does this at bring-up; here the harness does,
-    # as it did the first time) and let the node converge itself back.
+    # Re-arm the promoter on the returning node (in the product the agent does this at bring-up;
+    # here the harness does, as it did the first time). DRBD does not auto-promote, so the reactor
+    # has to be running before any node can take the role — starting it is what re-enters the race.
     primary.succeed("modprobe drbd")
     primary.succeed("systemctl start drbd@r0.target")
-    primary.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=120)
     primary.succeed("systemctl start drbd-reactor.service")
-    primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=180)
-    primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
-    print("the node re-rendered from the volume and served again — converge, with no host involved")
+
+    # WHICHEVER node holds the volume must be serving the fixture again, and it does not matter
+    # which — that indifference IS the property ([V3b.3](f)). The peer very likely took over while
+    # this node was down, in which case it is serving a service it never installed, having read
+    # the manifest off the volume and rendered for itself. If the returning node takes its role
+    # back instead, it re-rendered from the same volume after a reboot wiped its tmpfs. Both are
+    # converge, which is why the assertion refuses to name a node.
+    for m in disk_nodes:
+        m.wait_until_succeeds("drbdadm role r0 | grep -qE 'Primary|Secondary'", timeout=120)
+    now = next(m for m in disk_nodes if role(m) == "Primary")
+    print(f"after the reboot the volume is held by {now.name} (it was {primary.name})")
+    now.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=180)
+    now.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
+    print("the node holding the volume rendered from it and served — converge, with no host involved")
     ''}
     ${pkgs.lib.optionalString broken ''
 
