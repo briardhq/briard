@@ -39,12 +39,37 @@
   healthPath ? "/healthz",
   env ? { },
   version ? "0.0.0",
+  # FURTHER VERSIONS OF THE SAME SERVICE, one per attribute, for a harness whose subject is a
+  # version CHANGE rather than an install: `{ v1 = { version = "1.0.0"; }; bad = { version =
+  # "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; }; }`. Each is emitted under
+  # `$out/variants/<label>/`, complete with its own signed catalog, and every one of them is
+  # published under the SAME service name — an upgrade is one name moving versions, so a variant
+  # that renamed itself would be a different service and prove nothing.
+  #
+  # ONE KEYRING ACROSS ALL OF THEM (catalog-sign signs every catalog with one key): the node is
+  # given its trust root once, out of band, before any of these exist.
+  #
+  # A variant's image carries a `briard.version` label, so the CODE differs too and not just the
+  # document naming it — a rotation whose two versions share a digest would render the identical
+  # units and could pass while doing nothing. `env` rides the MANIFEST rather than the image,
+  # which is where a catalogued service says what its container gets.
+  variants ? { },
 }:
 let
-  image = pkgs.dockerTools.buildImage {
-    name = "briard-${name}";
+  inherit (pkgs) lib;
+  mkImage =
+    { tag, labels }:
+    pkgs.dockerTools.buildImage {
+      name = "briard-${name}";
+      inherit tag;
+      config = {
+        Cmd = [ "${pkgs.dummy-service}/bin/dummy-service" ];
+        Labels = labels;
+      };
+    };
+  image = mkImage {
     tag = "v0";
-    config.Cmd = [ "${pkgs.dummy-service}/bin/dummy-service" ];
+    labels = { };
   };
   # An explicit permissive policy rather than `--insecure-policy`: the flag's NAME reads like a TLS
   # bypass, and this call has no TLS in it at all — it inspects a local file. Spelling it out keeps
@@ -52,40 +77,83 @@ let
   policy = pkgs.writeText "policy.json" (builtins.toJSON {
     default = [ { type = "insecureAcceptAnything"; } ];
   });
-  envJSON = if env == { } then "" else '',"env":${builtins.toJSON env}'';
-in
-pkgs.runCommand "briard-fixture-${name}"
-  {
-    nativeBuildInputs = [ pkgs.skopeo (pkgs.callPackage ./catalog-sign/package.nix { }) ];
-    # Surfaced as passthru so a caller can stage the tarball without reaching into $out.
-    # serviceName is the manifest slug a caller passes to `service install`; `name` is the same
-    # string, exposed under both spellings because callers read as one or the other.
-    passthru = { inherit image container mount port healthPath; name = name; serviceName = name; };
-  }
-  ''
-    mkdir -p $out
-    ln -s ${image} $out/image.tar
-
-    # The digest the manifest pins IS the digest podman will record for the loaded archive — that
-    # equality is the whole mechanism, so compute it from the very bytes that get staged.
-    # --tmpdir because containers/image stages the archive through a hardcoded /var/tmp, which the
-    # build sandbox does not have and cannot create (its root is read-only). Measured: without it
-    # the build dies on "creating temporary file: open /var/tmp/container_images_docker-tar…".
-    digest=$(skopeo --policy ${policy} --tmpdir "$TMPDIR" inspect docker-archive:${image} --format '{{.Digest}}')
+  envJSON = e: if e == { } then "" else '',"env":${builtins.toJSON e}'';
+  variantImages = lib.mapAttrs (
+    label: v:
+    mkImage {
+      tag = label;
+      labels = { "briard.version" = v.version; };
+    }
+  ) variants;
+  # The base fixture and every variant, in the one shape the builder loops over. The base lives at
+  # $out; a variant lives under $out/variants/<label>, so a caller reaches either through the same
+  # relative layout (image.tar, ref, manifest.json, catalog/).
+  published = [
+    {
+      dir = ".";
+      inherit image version;
+      env = env;
+    }
+  ]
+  ++ lib.mapAttrsToList (label: v: {
+    dir = "variants/${label}";
+    image = variantImages.${label};
+    inherit (v) version;
+    env = v.env or { };
+  }) variants;
+  # One publishable version's tarball, pinned manifest and staged catalog directory. The digest is
+  # computed from the very bytes that get staged (see (3) above), per version.
+  emit = p: ''
+    mkdir -p $out/${p.dir}
+    ln -s ${p.image} $out/${p.dir}/image.tar
+    digest=$(skopeo --policy ${policy} --tmpdir "$TMPDIR" inspect docker-archive:${p.image} --format '{{.Digest}}')
     ref="localhost/briard-${name}@$digest"
-    printf '%s' "$ref" > $out/ref
-
-    cat > $out/manifest.json <<EOF
-    {"name":"${name}","version":"${version}","containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON}}]}
+    printf '%s' "$ref" > $out/${p.dir}/ref
+    cat > $out/${p.dir}/manifest.json <<EOF
+    {"name":"${name}","version":"${p.version}","containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]}
     EOF
     # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
     # strip the indentation rather than shipping it into the content hash.
-    sed -i 's/^    //' $out/manifest.json
+    sed -i 's/^    //' $out/${p.dir}/manifest.json
+  '';
+in
+pkgs.runCommand "briard-fixture-${name}"
+  {
+    nativeBuildInputs = [
+      pkgs.skopeo
+      (pkgs.callPackage ./catalog-sign/package.nix { })
+    ];
+    # Surfaced as passthru so a caller can stage the tarball without reaching into $out.
+    # serviceName is the manifest slug a caller passes to `service install`; `name` is the same
+    # string, exposed under both spellings because callers read as one or the other. `variants`
+    # carries each extra version's IMAGE, which a guest disk has to stage before the node can be
+    # rolled onto it (nothing pulls: `service.warm` starts an .image unit only when the image is
+    # missing).
+    passthru = {
+      inherit
+        image
+        container
+        mount
+        port
+        healthPath
+        ;
+      name = name;
+      serviceName = name;
+      variants = lib.mapAttrs (label: img: { image = img; }) variantImages;
+    };
+  }
+  ''
+    mkdir -p $out
+    ${lib.concatMapStrings emit published}
 
-    # A minimal SIGNED CATALOG beside it, so a harness can install this the way a user does
-    # rather than seeding the node-local cache -- which reproduces what an install records but
-    # not what it does (no data subvolume, so the container cannot start; measured on a fleet run
-    # 2026-08-27). `fetchManifest` fails closed with no keyring and verifies before parsing, both
-    # deliberately, so the honest answer is a real catalog and not a weakened path.
-    catalog-sign $out/manifest.json $out/catalog
+    # A minimal SIGNED CATALOG beside each version, so a harness can install (and then roll) this
+    # the way a user does rather than seeding the node-local cache -- which reproduces what an
+    # install records but not what it does (no data subvolume, so the container cannot start;
+    # measured on a fleet run 2026-08-27). `fetchManifest` fails closed with no keyring and
+    # verifies before parsing, both deliberately, so the honest answer is a real catalog and not a
+    # weakened path. Every catalog here is signed by ONE key, because a node holds one keyring:
+    # publishing a new version must not need the node re-trusted.
+    catalog-sign ${
+      lib.concatMapStringsSep " " (p: "$out/${p.dir}/manifest.json $out/${p.dir}/catalog") published
+    }
   ''

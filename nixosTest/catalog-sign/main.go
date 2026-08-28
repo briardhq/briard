@@ -19,7 +19,18 @@
 // expire, so this carries none of the build-time-artifact staleness that bit a cert minted in a
 // derivation.
 //
-//	catalog-sign <manifest.json> <outdir>
+// SEVERAL CATALOGS, ONE KEY, and that is what the pair form is for. A version ROTATION publishes
+// a second manifest for the SAME service name over the first, and the node that fetches it holds
+// exactly one keyring -- given to it, out of band, before any of this ([V3b.3](e1)'s fleet and
+// soak rotate). So each catalog gets its own directory (the files collide: both are `<name>.json`)
+// and they all verify against the same trust root. The private key never leaves this process.
+//
+//	catalog-sign <manifest.json> <outdir> [<manifest.json> <outdir>]...
+//
+// Each outdir also gets `<name>.identity` -- the manifest's content hash, which is what the cloud
+// confirms a service rollout against (shared/manifest.Identity). It is written here because it is
+// a property of the exact bytes signed here, and re-deriving it in a shell script is how the two
+// drift.
 package main
 
 import (
@@ -35,19 +46,9 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		fatal("usage: catalog-sign <manifest.json> <outdir>")
-	}
-	raw, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		fatal("read manifest: %v", err)
-	}
-	// Parse to learn the NAME the catalog serves it under -- and, incidentally, to refuse here
-	// what the node would refuse later. A catalog that publishes an invalid manifest is a slower
-	// way to discover the same thing.
-	m, _, err := manifest.Parse(raw)
-	if err != nil {
-		fatal("parse manifest: %v", err)
+	args := os.Args[1:]
+	if len(args) == 0 || len(args)%2 != 0 {
+		fatal("usage: catalog-sign <manifest.json> <outdir> [<manifest.json> <outdir>]...")
 	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -57,7 +58,26 @@ func main() {
 	if err != nil {
 		fatal("marshal public key: %v", err)
 	}
-	out := os.Args[2]
+	keyring := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	for i := 0; i < len(args); i += 2 {
+		sign(args[i], args[i+1], priv, keyring)
+	}
+}
+
+// sign writes one published catalog: the manifest as read, its signature, its identity, and the
+// keyring that verifies it.
+func sign(src, out string, priv ed25519.PrivateKey, keyring []byte) {
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		fatal("read manifest: %v", err)
+	}
+	// Parse to learn the NAME the catalog serves it under -- and, incidentally, to refuse here
+	// what the node would refuse later. A catalog that publishes an invalid manifest is a slower
+	// way to discover the same thing.
+	m, id, err := manifest.Parse(raw)
+	if err != nil {
+		fatal("parse manifest: %v", err)
+	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		fatal("mkdir: %v", err)
 	}
@@ -71,8 +91,9 @@ func main() {
 	// service than the one served.
 	write(m.Name+".json", raw)
 	write(m.Name+".json.sig", ed25519.Sign(priv, raw))
-	write("keyring.pem", pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-	fmt.Printf("signed catalog for %s in %s\n", m.Name, out)
+	write(m.Name+".identity", []byte(id))
+	write("keyring.pem", keyring)
+	fmt.Printf("signed catalog for %s (%s) in %s\n", m.Name, id, out)
 }
 
 func fatal(format string, a ...any) {
