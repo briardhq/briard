@@ -39,6 +39,21 @@
   healthPath ? "/healthz",
   env ? { },
   version ? "0.0.0",
+  # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
+  # pinned upstream image instead, which is what lets a REAL service be catalogued rather than only
+  # the fixture ([V3b.3](e2) -- the baked slot was how HA reached a guest before).
+  #
+  # `imageFile` is a docker-archive derivation and `imageName` is the repo the manifest names.
+  # MEASURED 2026-08-28 (podman 5.8.2, skopeo 1.22.2), because the digest question is not obvious
+  # for a PULLED image: `podman load` of a `dockerTools.pullImage` archive records
+  # `<repo>@<archive digest>` -- the digest of the archive's own manifest, NOT the registry digest
+  # the image was pulled by -- and `podman image exists <repo>@<archive digest>` resolves against
+  # it, which is what `Pull=never` needs. So the manifest written here pins the archive's digest,
+  # and that ref is resolvable on any node the tarball was staged onto. It is deliberately NOT the
+  # ref a registry would serve: nothing here pulls, and a catalogue published to real nodes would
+  # pin the registry digest instead.
+  imageFile ? null,
+  imageName ? null,
   # FURTHER VERSIONS OF THE SAME SERVICE, one per attribute, for a harness whose subject is a
   # version CHANGE rather than an install: `{ v1 = { version = "1.0.0"; }; bad = { version =
   # "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; }; }`. Each is emitted under
@@ -67,7 +82,17 @@ let
         Labels = labels;
       };
     };
-  image = mkImage {
+  # One published version's tarball and the repo its ref names: the caller's image if it supplied
+  # one, else the dummy built here.
+  imageOf =
+    { file, repo, tag, labels }:
+    {
+      tarball = if file != null then file else mkImage { inherit tag labels; };
+      repo = if repo != null then repo else "localhost/briard-${name}";
+    };
+  base = imageOf {
+    file = imageFile;
+    repo = imageName;
     tag = "v0";
     labels = { };
   };
@@ -80,7 +105,9 @@ let
   envJSON = e: if e == { } then "" else '',"env":${builtins.toJSON e}'';
   variantImages = lib.mapAttrs (
     label: v:
-    mkImage {
+    imageOf {
+      file = v.imageFile or null;
+      repo = v.imageName or null;
       tag = label;
       labels = { "briard.version" = v.version; };
     }
@@ -91,7 +118,8 @@ let
   published = [
     {
       dir = ".";
-      inherit image version;
+      image = base;
+      inherit version;
       env = env;
     }
   ]
@@ -105,9 +133,9 @@ let
   # computed from the very bytes that get staged (see (3) above), per version.
   emit = p: ''
     mkdir -p $out/${p.dir}
-    ln -s ${p.image} $out/${p.dir}/image.tar
-    digest=$(skopeo --policy ${policy} --tmpdir "$TMPDIR" inspect docker-archive:${p.image} --format '{{.Digest}}')
-    ref="localhost/briard-${name}@$digest"
+    ln -s ${p.image.tarball} $out/${p.dir}/image.tar
+    digest=$(skopeo --policy ${policy} --tmpdir "$TMPDIR" inspect docker-archive:${p.image.tarball} --format '{{.Digest}}')
+    ref="${p.image.repo}@$digest"
     printf '%s' "$ref" > $out/${p.dir}/ref
     cat > $out/${p.dir}/manifest.json <<EOF
     {"name":"${name}","version":"${p.version}","containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]}
@@ -131,7 +159,6 @@ pkgs.runCommand "briard-fixture-${name}"
     # missing).
     passthru = {
       inherit
-        image
         container
         mount
         port
@@ -139,7 +166,12 @@ pkgs.runCommand "briard-fixture-${name}"
         ;
       name = name;
       serviceName = name;
-      variants = lib.mapAttrs (label: img: { image = img; }) variantImages;
+      image = base.tarball;
+      # Each extra version's IMAGE and the label it is published under. A guest disk stages these
+      # so a node can be rolled onto one without a pull, and a hermetic test stages them the same
+      # way through lib.nix's fixture wiring.
+      variants = lib.mapAttrs (label: img: { image = img.tarball; }) variantImages;
+      variantLabels = lib.attrNames variants;
     };
   }
   ''

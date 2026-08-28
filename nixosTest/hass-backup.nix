@@ -13,14 +13,18 @@
 # makes the promoter demote+unmount (the maintenance-bracket hazard, host-orchestrated
 # in the product) — so, as in hass-upgrade-rollback.nix, this restores into a clean tree and
 # asserts byte-fidelity + content, the two things that need REAL HA `.storage`.
-{ pkgs, guestModule, briardBackup }:
+{ pkgs, guestModule, briardBackup, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
-  haDir = "/var/lib/briard/ha"; # the HA data subvolume (== /config in the container)
+  # HA's data, where the RENDERER puts it: the service's subvolume plus its container's
+  # subdirectory, bind-mounted to /config inside ([V3b.3](e2) -- the old build-time slot chose
+  # this path itself, and a test that restated it would drift from the product).
+  haDir = "/var/lib/briard/${fixture.name}/${fixture.container}";
   storage = "${haDir}/.storage";
   db = "${haDir}/home-assistant_v2.db";
   # The off-box target: a tmpfs OUTSIDE the DRBD volume, standing in for a mounted NAS /
@@ -48,8 +52,10 @@ pkgs.testers.runNixOSTest {
   skipTypeCheck = true;
 
   testScript = ''
+    ${h.fixtureHelpers}
     node1.start()
     node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service", timeout=900) # the 2.4 GB image
     node1.succeed("modprobe drbd")
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
@@ -58,6 +64,10 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("systemctl is-active briard-data.service", timeout=120)
     node1.succeed("mountpoint -q /var/lib/briard")
+
+    # HA is INSTALLED onto the volume the node now holds -- the only order there is, since the
+    # volume is where a service lives.
+    install_fixture(node1)
 
     # HA boots and serves; the recorder DB + the sacred .storage are created.
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)

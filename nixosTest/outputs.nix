@@ -31,19 +31,52 @@ let
   # This is how a test gets a workload onto a node ([V3b.3](e2) deleted the build-time slot that
   # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
   fixture = import ./fixture-service.nix { inherit pkgs; };
-  hassGuestModule = ../guest-image/hass-guest.nix; # same guest, HA in the payload slot
-  hassUpgradeGuestModule = ../guest-image/hass-upgrade-guest.nix; # HA on the from-image, to warm-staged
+  # HOME ASSISTANT AS A CATALOGUED SERVICE ([V3b.3](e2)). HA used to reach a guest through the
+  # build-time payload slot, which is how nothing else could: the slot is gone, and HA is now
+  # exactly what a user's service is -- a signed manifest naming a digest-pinned image, installed
+  # onto the volume after promotion. Only the manifest's fields differ from the dummy's: /config,
+  # :8123, and /manifest.json as the readiness path (HA has no /healthz, and `/` redirects into
+  # onboarding).
+  hassFixture = import ./fixture-service.nix {
+    inherit pkgs;
+    name = "home-assistant";
+    mount = "/config";
+    port = 8123;
+    healthPath = "/manifest.json";
+    version = "2026.7.1";
+    imageFile = pkgs.home-assistant-image;
+    imageName = "ghcr.io/home-assistant/home-assistant";
+  };
+  # The upgrade PAIR, as two published versions of one service: 2025.11.0 (recorder schema 51)
+  # with 2025.12.0 (schema 53) as a variant. Installing the variant IS the upgrade -- same name,
+  # new manifest, converge bounces the container onto it -- which is the shape a household's HA
+  # update has, where the old test drove an image re-pin no user could produce.
+  hassPairFixture = import ./fixture-service.nix {
+    inherit pkgs;
+    name = "home-assistant";
+    mount = "/config";
+    port = 8123;
+    healthPath = "/manifest.json";
+    version = "2025.11.0";
+    imageFile = pkgs.home-assistant-upgrade-pair.from;
+    imageName = "ghcr.io/home-assistant/home-assistant";
+    variants.to = {
+      version = "2025.12.0";
+      imageFile = pkgs.home-assistant-upgrade-pair.to;
+      imageName = "ghcr.io/home-assistant/home-assistant";
+    };
+  };
 
-  # HA in the slot: real Home Assistant boots and serves at the VIP, its recorder
+  # HA installed as a service: real Home Assistant boots and serves, its recorder
   # SQLite + .storage landing on the DRBD subvolume.
-  hassPayload = import ./hass-payload.nix { inherit pkgs; guestModule = hassGuestModule; };
+  hassPayload = import ./hass-payload.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
   # Kill the primary → HA fails over with config intact at the same VIP.
-  hassFailover = import ./hass-failover.nix { inherit pkgs; guestModule = hassGuestModule; };
+  hassFailover = import ./hass-failover.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
   # A real HA upgrade (2025.11.0 → 2025.12.0) carrying a real recorder schema
   # migration (v52 unit_class) through the pipeline, its data intact.
-  hassUpgrade = import ./hass-upgrade.nix { inherit pkgs; guestModule = hassUpgradeGuestModule; };
+  hassUpgrade = import ./hass-upgrade.nix { inherit pkgs guestModule; fixture = hassPairFixture; };
 
   # The forced-failure half — a real regressed migration (briard_canary) trips
   # the S1 health-gate (entrygate-eval judges HA's real config-entry states) and the
@@ -51,7 +84,8 @@ let
   entrygateEval = pkgs.callPackage ./entrygate-eval-pkg.nix { };
   hassUpgradeRollback = import ./hass-upgrade-rollback.nix {
     inherit pkgs entrygateEval;
-    guestModule = hassUpgradeGuestModule;
+    inherit guestModule;
+    fixture = hassPairFixture;
   };
 
   # Off-site encrypted `.storage` backup — the sacred config sealed client-side
@@ -59,7 +93,8 @@ let
   briardBackup = pkgs.callPackage ./briard-backup-pkg.nix { };
   hassBackup = import ./hass-backup.nix {
     inherit pkgs briardBackup;
-    guestModule = hassGuestModule;
+    inherit guestModule;
+    fixture = hassFixture;
   };
 
   # THE SHIPPED ARTIFACT: the bootable disk `install.sh` lays down, running no service. This
@@ -259,7 +294,7 @@ in
       tls-serving = tlsServing;
     };
 
-    # Real Home Assistant in the payload slot (2.4 GB image boot).
+    # Real Home Assistant as an INSTALLED SERVICE (2.4 GB image boot).
     ha = {
       hass-payload = hassPayload;
       hass-failover = hassFailover;

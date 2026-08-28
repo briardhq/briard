@@ -10,11 +10,12 @@
 # config HA durably wrote replicated under protocol C and HA re-adopted it.
 #
 # Heavy (two HA cold starts + the 2.4 GB image), so it lives in the `heavy` tier.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   baseNode = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [
       { name = "node1"; id = 0; }
       { name = "node2"; id = 1; }
@@ -44,6 +45,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     USER = "briard-test"
     VIP = "http://192.168.1.100:8123"
 
@@ -51,6 +53,9 @@ pkgs.testers.runNixOSTest {
     start_all()
     for m in machines:
         m.wait_for_unit("multi-user.target")
+        # The 2.4 GB image is loaded on EVERY node before anything promotes -- warm standby is
+        # what makes an offline failover possible, and it is asserted again below the kill.
+        m.wait_for_unit("briard-test-fixture-install.service", timeout=900)
         m.succeed("modprobe drbd")
         m.succeed("drbdadm create-md --force r0")
         m.succeed("systemctl start drbd@r0.target")
@@ -78,10 +83,14 @@ pkgs.testers.runNixOSTest {
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
-    # HA converges on the elected primary and serves at the VIP (slow cold start).
-    node1.wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}/manifest.json", timeout=300)
+    # The front door comes up on the elected primary with nothing installed, then HA is installed
+    # onto the volume that node holds. The SURVIVOR never runs an install: it renders HA from the
+    # same volume when it promotes ([V3b.3](f)), which is the half this test is about.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     primary = next(m for m in machines if role(m) == "Primary")
     print(f"primary={primary.name}")
+    dataroot = install_fixture(primary)
+    node1.wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}/manifest.json", timeout=300)
 
     # Write real, durable HA config: the owner user, via the no-auth onboarding
     # step (first step, available as soon as the onboarding API is up). This lands
@@ -95,7 +104,7 @@ pkgs.testers.runNixOSTest {
     )
     # HA persisted it; flush the guest page cache so the bytes are on the DRBD
     # device (→ replicated under protocol C) before the abrupt kill.
-    primary.wait_until_succeeds(f"grep -rq {USER} /var/lib/briard/ha/.storage")
+    primary.wait_until_succeeds(f"grep -rq {USER} {dataroot}/app/.storage")
     primary.succeed("sync")
 
     # Warm standby is what makes offline failover possible: every node — the
@@ -103,7 +112,9 @@ pkgs.testers.runNixOSTest {
     # promotion never pulls. Prove it before the kill (the load runs at boot). This
     # is the real positive proof, replacing the vacuous "can't reach the internet".
     for m in machines:
-        m.wait_until_succeeds("podman image exists ghcr.io/home-assistant/home-assistant:2026.7.1")
+        # By the DIGEST the manifest pins, not a tag: that is the ref `Pull=never` resolves, and a
+        # tag could match an image the manifest does not name.
+        m.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
 
     # Kill the primary abruptly (power-loss shape).
     primary.crash()
@@ -116,14 +127,14 @@ pkgs.testers.runNixOSTest {
     # Config intact: the owner user crossed the DRBD link and the new primary's HA
     # re-adopted the replicated `.storage`. Assert on whichever survivor is now primary.
     new_primary = next(m for m in survivors if role(m) == "Primary")
-    new_primary.succeed(f"grep -rq {USER} /var/lib/briard/ha/.storage")
+    new_primary.succeed(f"grep -rq {USER} {dataroot}/app/.storage")
 
     # The recorder SQLite rode the same volume and HA re-opened it intact on
     # the survivor — not quarantined as `.corrupt.<ts>` (the silent-history-loss
     # symptom warns of, which an abrupt crash on a torn DB would trigger). This
     # is the specific SQLite-on-DRBD risk the spike exists to retire.
-    new_primary.succeed("test -f /var/lib/briard/ha/home-assistant_v2.db")
-    new_primary.fail("ls /var/lib/briard/ha/home-assistant_v2.db.corrupt.*")
+    new_primary.succeed(f"test -f {dataroot}/app/home-assistant_v2.db")
+    new_primary.fail(f"ls {dataroot}/app/home-assistant_v2.db.corrupt.*")
 
     # Single-primary preserved: exactly one survivor holds the DRBD primary role.
     primaries = [m.name for m in survivors if role(m) == "Primary"]

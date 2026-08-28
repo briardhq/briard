@@ -118,6 +118,21 @@ let
       mkdir -p /run/briard/fixture
       quadlet-render ${fixture}/manifest.json /run/briard/fixture
       cp ${fixture}/manifest.json /run/briard/fixture/manifest.json
+      # The image ref the manifest pins, exposed so a test can assert WARMTH by digest
+      # rather than by a tag (a tag can match an image the manifest does not name).
+      cp ${fixture}/ref /run/briard/fixture/ref
+
+      # EVERY OTHER PUBLISHED VERSION is warmed here too, and only its manifest is kept aside:
+      # a test that upgrades installs a different manifest under the SAME name, which is what a
+      # version change is. Warming them all up front is also what the product does -- an upgrade
+      # must not pull on the promotion path -- so the ordering a test exercises is the real one.
+      ${lib.concatMapStrings (label: ''
+        podman load -i ${fixture}/variants/${label}/image.tar
+        podman image exists "$(cat ${fixture}/variants/${label}/ref)"
+        mkdir -p /run/briard/fixture/variants/${label}
+        cp ${fixture}/variants/${label}/manifest.json /run/briard/fixture/variants/${label}/manifest.json
+        cp ${fixture}/variants/${label}/ref /run/briard/fixture/variants/${label}/ref
+      '') (fixture.variantLabels or [ ])}
     '';
   };
 
@@ -140,7 +155,9 @@ let
   # Both the subvolume path and the subdirectory list come from the RENDERER's sidecars, so a
   # test never restates the layout the product decides.
   fixtureHelpers = ''
-    def install_fixture(m):
+    def install_fixture(m, variant=None):
+        """Install the fixture -- or, with `variant`, a DIFFERENT VERSION of it under the same
+        name, which is what an upgrade is. Both go through the product's own converge."""
         dataroot = m.succeed("cat /run/briard/fixture/dataroot").strip()
         m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
         for sub in m.succeed("cat /run/briard/fixture/subdirs").split():
@@ -148,10 +165,14 @@ let
         # The service's name IS the last element of its data root -- taken from the renderer
         # rather than restated, like everything else here.
         name = dataroot.rstrip("/").split("/")[-1]
+        src = "/run/briard/fixture/manifest.json" if variant is None \
+            else f"/run/briard/fixture/variants/{variant}/manifest.json"
         m.succeed("mkdir -p /var/lib/briard/.services")
-        m.succeed(f"cp /run/briard/fixture/manifest.json /var/lib/briard/.services/{name}.json")
+        m.succeed(f"cp {src} /var/lib/briard/.services/{name}.json")
         m.succeed("sync")
-        # The product's own converge, by the same entry point briard-services.service uses.
+        # The product's own converge, by the same entry point briard-services.service uses. On a
+        # version change it is also what BOUNCES the container: converge restarts what it has not
+        # started with exactly these bytes ([V3b.3](e1)).
         m.succeed("briard-agent --converge")
         return dataroot
 

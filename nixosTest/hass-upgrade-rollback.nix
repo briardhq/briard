@@ -26,21 +26,24 @@
 # agent/guest — the guest agent is virtio-serial-only, so the real Manager can't run in a
 # lib.nix node). What is NEW here: the gate trips on a real HA entry regression, and a
 # real recorder rollback preserves named history.
-{ pkgs, guestModule, entrygateEval }:
+{ pkgs, guestModule, entrygateEval, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
   canary = ./fixtures/briard_canary;
-  haDir = "/var/lib/briard/ha"; # the HA data subvolume (== /config in the container)
+  # The RENDERER's layout, never restated here: the SUBVOLUME is the service's (what a rollback
+  # point snapshots), and HA writes into its container's subdirectory inside it, bind-mounted as
+  # /config ([V3b.3](e2) -- the build-time slot used to choose both).
+  subvol = "/var/lib/briard/${fixture.name}";
+  haDir = "${subvol}/${fixture.container}";
   db = "${haDir}/home-assistant_v2.db";
   cfg = "${haDir}/configuration.yaml";
   entriesFile = "${haDir}/briard_entry_states.json";
-  snap = "/var/lib/briard/.snapshots/home-assistant-preupgrade";
-  fromRef = "ghcr.io/home-assistant/home-assistant:2025.11.0";
-  toRef = "ghcr.io/home-assistant/home-assistant:2025.12.0";
+  snap = "/var/lib/briard/.snapshots/${fixture.name}-preupgrade";
   schemaQ = "SELECT COALESCE(MAX(schema_version),0) FROM schema_changes;";
   # A specific named recorder row that must survive into the rollback point (non-vacuous —
   # we assert the exact row content by id, not just a count; see
@@ -67,8 +70,10 @@ pkgs.testers.runNixOSTest {
   skipTypeCheck = true;
 
   testScript = ''
+    ${h.fixtureHelpers}
     node1.start()
     node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service", timeout=1200) # both 2.4 GB images
     node1.succeed("modprobe drbd")
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
@@ -78,8 +83,10 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("systemctl is-active briard-data.service", timeout=120)
     node1.succeed("mountpoint -q /var/lib/briard")
 
-    node1.succeed("podman image exists ${fromRef}")
-    node1.succeed("podman image exists ${toRef}")
+    node1.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
+    node1.succeed('podman image exists "$(cat /run/briard/fixture/variants/to/ref)"')
+    # The install: HA `from`, onto the volume this node holds.
+    install_fixture(node1)
 
     # HA (`from`) boots and serves; the recorder initializes + commits real history, and
     # HA writes its default configuration.yaml.
@@ -94,7 +101,16 @@ pkgs.testers.runNixOSTest {
     node1.succeed("chmod -R u+w ${haDir}/custom_components/briard_canary")
     node1.succeed("grep -q '^briard_canary:' ${cfg} || echo 'briard_canary:' >> ${cfg}")
     node1.succeed("sync")
-    node1.succeed("systemctl restart podman-briard-payload.service")
+    # Bounce HA onto the new config the way CONVERGE does, and not with `systemctl restart`:
+    # a quadlet container is BoundTo its pod, and stopping the last member makes podman stop the
+    # pod -- so a single restart job races its own dependency down and the start half dies with
+    # "Bound to unit …-pod.service, but unit isn't active" (measured). Stop the container, then
+    # start the units in the renderer's order (pod first), each its own transaction. That IS
+    # agent/guestagent/converge.go's stopService + start loop, by hand.
+    units = fixture_units(node1)
+    node1.succeed(f"systemctl stop {units[-1]}")
+    for u in units:
+        node1.succeed(f"systemctl start {u}")
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
 
     # ---- Baseline: canary loaded, schema 51, named history present (while `from` LIVE) ----
@@ -119,12 +135,11 @@ pkgs.testers.runNixOSTest {
     # ---- Snapshot the rollback point, then pin `to` + cycle onto it IN PLACE ----
     node1.succeed("findmnt /var/lib/briard")
     node1.succeed("mkdir -p /var/lib/briard/.snapshots")
-    node1.succeed("btrfs subvolume snapshot -r ${haDir} ${snap}")
+    node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
 
-    node1.succeed("podman tag ${toRef} briard-payload:serve")
-    node1.succeed("echo ${toRef} > /var/lib/briard/.payload-image")
-    node1.succeed("sync")
-    node1.succeed("systemctl restart podman-briard-payload.service")
+    # THE UPGRADE: the `to` manifest under the same service name, applied by the product's own
+    # converge, which bounces the container onto the new digest ([V3b.3](e2)).
+    install_fixture(node1, variant="to")
 
     # ---- Post-upgrade: HA serves, the recorder migrates, the canary regresses ----
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
@@ -155,7 +170,7 @@ pkgs.testers.runNixOSTest {
     # WAL-replay copy: the snapshot was taken while HA-from was live, so recent commits sit in the
     # -wal, not the main file — copy the set + open normally (sqlite replays it), exactly as HA-from
     # would when it reopens this snapshot on a rollback. This also proves it's a recoverable point.
-    node1.succeed("mkdir -p /tmp/rb && cp -a ${snap}/home-assistant_v2.db* /tmp/rb/")
+    node1.succeed("mkdir -p /tmp/rb && cp -a ${snap}/${fixture.container}/home-assistant_v2.db* /tmp/rb/")
     rbdb = "/tmp/rb/home-assistant_v2.db"
     rb_schema = node1.succeed(f"sqlite3 {rbdb} '${schemaQ}'").strip()
     rb_states = int(node1.succeed(f"sqlite3 {rbdb} 'SELECT COUNT(*) FROM states'").strip())

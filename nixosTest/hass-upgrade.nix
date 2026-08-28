@@ -28,17 +28,22 @@
 # a product change. What is NEW and untested until now — a real recorder schema migration
 # surviving the upgrade with its data intact — is exactly what this proves. The
 # forced-failure → rollback half is hass-upgrade-rollback.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
-  db = "/var/lib/briard/ha/home-assistant_v2.db";
-  fromRef = "ghcr.io/home-assistant/home-assistant:2025.11.0";
-  toRef = "ghcr.io/home-assistant/home-assistant:2025.12.0";
-  snap = "/var/lib/briard/.snapshots/home-assistant-preupgrade";
+  # Where the RENDERER puts HA's data, never restated: the service's subvolume plus its
+  # container's subdirectory, bind-mounted to /config inside.
+  # The SUBVOLUME is the service's (what a rollback point snapshots); haDir is the container's
+  # subdirectory inside it (what HA writes to, bind-mounted as /config).
+  subvol = "/var/lib/briard/${fixture.name}";
+  haDir = "${subvol}/${fixture.container}";
+  db = "${haDir}/home-assistant_v2.db";
+  snap = "/var/lib/briard/.snapshots/${fixture.name}-preupgrade";
   # Current recorder schema = max(schema_version) in HA's schema_changes ledger. This
   # is the migration signal: HA-to must detect the older schema, run migrators 52+53,
   # and record the advance. (Column-shape deltas are NOT a usable signal — HA creates a
@@ -69,8 +74,10 @@ pkgs.testers.runNixOSTest {
   skipTypeCheck = true;
 
   testScript = ''
+    ${h.fixtureHelpers}
     node1.start()
     node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service", timeout=1200) # both 2.4 GB images
     node1.succeed("modprobe drbd")
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
@@ -81,10 +88,13 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("systemctl is-active briard-data.service", timeout=120)
     node1.succeed("mountpoint -q /var/lib/briard")
 
-    # Both ends warm-staged: `from` serves now, `to` is resident and ready to
-    # pin — never a pull on the upgrade path.
-    node1.succeed("podman image exists ${fromRef}")
-    node1.succeed("podman image exists ${toRef}")
+    # Both ends warm: `from` is what gets installed, `to` is resident and ready to be installed
+    # over it — never a pull on the upgrade path. By DIGEST, which is what the manifests pin.
+    node1.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
+    node1.succeed('podman image exists "$(cat /run/briard/fixture/variants/to/ref)"')
+
+    # The install: HA `from` onto the volume this node holds.
+    install_fixture(node1)
 
     # HA (`from`) boots and serves. Generous: first boot initializes the recorder DB.
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
@@ -113,20 +123,19 @@ pkgs.testers.runNixOSTest {
     # migration. A payload restart is not a DRBD event, so the running promoter doesn't react;
     # the volume stays mounted throughout (the rolling-update.nix in-place idiom).
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
-    node1.succeed("btrfs subvolume show /var/lib/briard/ha")  # data dir is a real subvolume
+    node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume
     node1.succeed("mkdir -p /var/lib/briard/.snapshots")
     # -r read-only, the exact form the guest agent's data.snapshot verb runs. Taken
     # live: btrfs snapshots atomically (crash-consistent; HA recovers its WAL on open), so it
     # is a valid rollback point without quiescing — Manager quiesces first, tested elsewhere.
-    node1.succeed("btrfs subvolume snapshot -r /var/lib/briard/ha ${snap}") # the {code,data} rollback point
+    node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
-    # Pin `to` (Manager: PayloadPin) — retag :serve + record the replicated pin — then restart
-    # the payload onto it. The restart cleanly stops HA-from (flushing its DB) before HA-to
-    # opens the schema-51 DB and migrates it.
-    node1.succeed("podman tag ${toRef} briard-payload:serve")
-    node1.succeed("echo ${toRef} > /var/lib/briard/.payload-image")
-    node1.succeed("sync")
-    node1.succeed("systemctl restart podman-briard-payload.service")
+    # THE UPGRADE: install the `to` manifest under the SAME service name. That is what a version
+    # change is now ([V3b.3](e2)) -- the volume's manifest moves, and converge re-renders and
+    # BOUNCES the container onto the new digest ([V3b.3](e1): starting an already-running unit
+    # would have left HA-from serving while every file said otherwise). The bounce cleanly stops
+    # HA-from, flushing its DB, before HA-to opens the schema-51 database and migrates it.
+    install_fixture(node1, variant="to")
 
     # ---- Health-gate + migration completion ----
     # HA may answer HTTP while the recorder migrates live in the background, so the real
@@ -150,7 +159,7 @@ pkgs.testers.runNixOSTest {
     # read (which ignores the WAL) misses them. Copy the DB set to a writable dir and open it
     # normally: sqlite replays the WAL, exactly as HA-from would when it reopens this snapshot
     # on a rollback — so this also proves the snapshot is a recoverable rollback point.
-    node1.succeed("mkdir -p /tmp/snapchk && cp -a ${snap}/home-assistant_v2.db* /tmp/snapchk/")
+    node1.succeed("mkdir -p /tmp/snapchk && cp -a ${snap}/${fixture.container}/home-assistant_v2.db* /tmp/snapchk/")
     snap_schema = node1.succeed("sqlite3 /tmp/snapchk/home-assistant_v2.db '${schemaQ}'").strip()
     assert snap_schema == "51", f"pre-upgrade snapshot schema = {snap_schema}, want 51 — not a valid rollback point"
     print("pre-upgrade snapshot kept and still schema 51 — a valid rollback point")
