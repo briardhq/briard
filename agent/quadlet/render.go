@@ -230,14 +230,6 @@ func sortedKeys(m map[string]string) []string {
 // remaining way a legal value can mean something other than itself.
 func escape(v string) string { return strings.ReplaceAll(v, "%", "%%") }
 
-// Chain returns the promoter start-list for a node running this service: the data mount, then
-// the pod, then its members, then the VIP. Naming the members explicitly is what the quadlet
-// spike proved is required — starting the pod service does not start its containers.
-func Chain(r Rendered) []string {
-	units := append([]string{"briard-data.service"}, r.Units...)
-	return append(units, "briard-vip.service")
-}
-
 // String renders the file set in a stable order, for logs and test diffing.
 func (r Rendered) String() string {
 	names := make([]string, 0, len(r.Files))

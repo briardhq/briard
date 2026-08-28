@@ -9,27 +9,30 @@
 # WHAT IS REAL HERE, because the value of this test is entirely in what it does NOT stub:
 #   - a real OCI registry over TLS, and a real DIGEST-PINNED `podman pull` from it (decided registries; a plain-HTTP registry is not an option — containers/image refuses HTTP for every
 #     address including localhost, which a probe confirmed, so the test runs a real CA);
-#   - the REAL renderer (agent/quadlet via the quadlet-render helper) — the spike deliberately
-#     hand-wrote its quadlet files and so tested the mechanism but not our output; this closes that;
+#   - the REAL renderer — and since [V3b.3](f) it runs where the product runs it, inside
+#     `briard-agent --converge`, off the manifest this test puts on the replicated volume. Nothing
+#     copies rendered units in from the side any more;
 #   - real quadlet generation (files under /run/containers/systemd becoming units at daemon-reload),
-#     real podman, real drbd-reactor driving the rewritten promoter chain, and the real front door.
+#     real podman, real drbd-reactor driving the static promoter chain, and the real front door;
+#   - the node promoting with ZERO services first, then with one — the shipped state, then the
+#     installed one, so the install's effect is a change and not a coincidence.
 #
 # WHAT IS NOT COVERED, named so a green run is not read as more than it is:
-#   - the host agent's ORCHESTRATION (fetch/verify/warm/bracket/health-gate/revert) cannot run in
-#     this harness: it drives the guest over virtio-serial, and here the node IS the guest with no
-#     host on the other end. That sequence is unit-tested in agent/host/service_test.go, which is
-#     where its bugs have actually surfaced.
-#   - the maintenance BRACKET itself. This test writes the chain and starts drbd-reactor after, the
-#     way every other lib.nix test does; it does not rewrite a chain under a live reactor.
+#   - the host agent's ORCHESTRATION (fetch/verify/warm/health-gate/revert) cannot run in this
+#     harness: it drives the guest over virtio-serial, and here the node IS the guest with no host
+#     on the other end. That sequence is unit-tested in agent/host/service_test.go, which is where
+#     its bugs have actually surfaced. What the test does by hand is the Primary-only half an
+#     install performs on the volume, and then it hands over to converge.
 #
 # WITH broken = true, it runs the happy path and then keeps going: it UPGRADES the service
 # to a manifest whose container never becomes healthy (the dummy's BRIARD_BROKEN mode), proves the
-# health gate WOULD trip (the container stays active but the front door stays 503, and the data is
-# poisoned), and then ROLLS BACK to the prior service with its data intact — the service-level twin
-# of the {code+data} OS rollback. The host agent's orchestration of that sequence is unit-tested
-# in agent/host/service_test.go (it drives the guest over virtio-serial, absent here); this proves
-# the REAL mechanisms it relies on — a real broken container, a real btrfs snapshot/restore, a real
-# quadlet re-render, and the real front door recovering.
+# health gate WOULD trip (the container stays active but its own endpoint stays 503, and the data
+# is poisoned), proves the node STAYS PROMOTED through it (a service failure alerts, it does not
+# demote — [V3b.3](f)'s failure rule), and then ROLLS BACK to the prior service with its data
+# intact — the service-level twin of the {code+data} OS rollback. The host agent's orchestration of
+# that sequence is unit-tested in agent/host/service_test.go (it drives the guest over
+# virtio-serial, absent here); this proves the REAL mechanisms it relies on — a real broken
+# container, a real btrfs snapshot/restore, a real converge re-render, and a real recovery.
 { pkgs, guestModule, quadletRender, broken ? false }:
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
@@ -74,16 +77,21 @@ let
     { name = "node2"; id = 1; }
     { name = "witness"; id = 2; diskless = true; }
   ];
-  # Promoter = false: the chain is written by the test from the RENDERER's output, which is the
-  # point — the agent writes it in production, and a static snippet here would test nothing.
+  # Promoter = false: the test writes the snippet itself, at the moment it chooses, so that the
+  # node is seen promoting with ZERO services before the install and with one after. The chain it
+  # writes is the STATIC production one ([V3b.3](f)) — it is no longer derived from a rendering,
+  # by anyone.
   node =
-    { ... }:
+    { config, ... }:
     {
       imports = [ (h.mkNode { inherit resource; promoter = false; payload = false; }) ];
       # The guest trusts the test CA. Free in this harness — the node is a module composition, not
       # a prebuilt disk — which is exactly why this test is hermetic rather than nested.
       security.pki.certificateFiles = [ "${certs}/ca.crt" ];
-      environment.systemPackages = [ quadletRender pkgs.btrfs-progs ]; # test-only: the product path runs btrfs from the guest agent unit's own PATH
+      # test-only: in the product these run from unit PATHs, not a shell -- btrfs from the guest
+      # agent unit's, converge from briard-services'. This test drives the install path by hand,
+      # so it needs all three where a test command can reach them.
+      environment.systemPackages = [ quadletRender pkgs.btrfs-progs config.briard.agentPackage ];
     };
   witnessNode = h.mkNode {
     inherit resource;
@@ -167,26 +175,27 @@ pkgs.testers.runNixOSTest {
     # is the artifact a human debugs when an install misbehaves.
     print(node1.succeed("cat /tmp/rendered/briard-fixture.pod /tmp/rendered/briard-fixture-app.container /tmp/rendered/briard-fixture-app.image"))
 
-    # === 3. install: warm the image, render the units, provision the data ===
-    # Warming is a REAL pull over TLS from the registry, digest-pinned, on EVERY node — the shape
-    # the install path uses.
+    # === 3. warm the image on EVERY node ===
+    # A REAL pull over TLS from the registry, digest-pinned — the shape the install path uses, and
+    # the half of an install that legitimately needs the network. Running it on every node is what
+    # makes the failover path able to promise it never will.
+    #
+    # The rendered units are NOT copied anywhere here any more ([V3b.3](f)): converge writes them
+    # itself, from the manifest on the volume, on whichever node promotes. Copying them in from
+    # the side would put this harness back in the business of standing in for the product.
     for m in disk_nodes:
-        m.succeed("mkdir -p /run/containers/systemd && cp /tmp/rendered/*.pod /tmp/rendered/*.container /tmp/rendered/*.image /run/containers/systemd/")
-        m.succeed("systemctl daemon-reload")
+        m.succeed("mkdir -p /run/containers/systemd")
+        m.succeed(f"cp /tmp/rendered/briard-fixture-app.image /run/containers/systemd/ && systemctl daemon-reload")
         for unit in m.succeed("cat /tmp/rendered/images").split():
             m.succeed(f"systemctl start {unit}")
         # The pull really happened, and the image is addressable by the digest the manifest pins.
         m.succeed(f"podman image exists ${registryHost}/briard-fixture@{digest}")
     print("images warmed on every node by a real digest-pinned TLS pull")
 
-    # Quadlet turned the rendered files into real units at daemon-reload — the whole point of the
-    # mechanism, and the thing that makes unit generation a RUNTIME act.
-    for unit in node1.succeed("cat /tmp/rendered/chain").split():
-        if unit.startswith("briard-fixture"):
-            node1.succeed(f"systemctl cat {unit} >/dev/null")
-    # ...and nothing auto-started: the promoter decides, so a secondary must not run the pod.
-    node1.succeed("test $(systemctl is-active briard-fixture-app.service) != active")
-    print("quadlet generated the units at runtime, and none of them auto-started")
+    # NOTHING IS RUNNING YET, and nothing generated itself: the .image units are boot-time, the
+    # pod and container are not, and no node has been given the manifest.
+    node1.fail("systemctl cat briard-fixture-app.service")
+    print("the image is resident and the service does not exist — the state before an install")
 
     # === 4. bring DRBD up, and give the promoter the RENDERED chain ===
     for m in [node1, node2, witness]:
@@ -198,10 +207,12 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
 
-    # The chain comes from the RENDERER, not from a hand-written snippet — in production the agent
-    # writes exactly this, so a static list here would prove nothing about our output.
-    chain = node1.succeed("cat /tmp/rendered/chain").split()
-    print(f"promoter chain from the renderer: {chain}")
+    # THE CHAIN IS STATIC, and no longer derived from the rendering at all ([V3b.3](f)). The chain
+    # is what drbd-reactor promotes WITH, but the volume it must converge to is only readable
+    # AFTER promotion — so the start-list cannot name the services, and briard-services is what
+    # renders and starts them once the mount exists. This is exactly what host.promoterUnits
+    # writes in production.
+    chain = ["briard-data.service", "briard-services.service", "briard-vip.service"]
     quoted = ", ".join(f'"{u}"' for u in chain)
     snippet = f'[[promoter]]\n[promoter.resources.r0]\nstart = [ {quoted} ]\n'
     for m in disk_nodes:
@@ -217,16 +228,32 @@ pkgs.testers.runNixOSTest {
     primary = next(m for m in disk_nodes if role(m) == "Primary")
     print(f"primary={primary.name}")
 
-    # The service's data subvolume lives on the replicated volume, so only the primary can make
-    # it — this is what the install path's Primary-only provision step does. ONE subvolume with
-    # plain per-container subdirectories: `btrfs subvolume delete` refuses on a subvolume that
-    # contains nested subvolumes, so data.restore would break outright on any other shape.
+    # IT PROMOTED WITH ZERO SERVICES FIRST, which is the shipped state of every node a stranger
+    # installs ([V3.15]): briard-services converged to nothing, the VIP came up, and the front
+    # door answers. Asserted before the install so the install's effect is a change and not a
+    # coincidence.
+    primary.wait_until_succeeds("test $(systemctl is-active briard-services.service) = active", timeout=120)
+    primary.fail("systemctl cat briard-fixture-app.service")
+
+    # === 5b. the install's Primary-only half, by hand ===
+    # The service's data subvolume AND its manifest live on the replicated volume, so only the
+    # primary can write them — this is what the install path's Primary-only provision step does.
+    # ONE subvolume with plain per-container subdirectories: `btrfs subvolume delete` refuses on a
+    # subvolume that contains nested subvolumes, so data.restore would break outright.
     dataroot = node1.succeed("cat /tmp/rendered/dataroot").strip()
     primary.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
     primary.succeed(f"mkdir -p {dataroot}/app")
-    # Re-run the chain now that the storage exists (the promoter's earlier attempt had nothing to
-    # mount into the container).
-    primary.succeed("systemctl restart drbd-reactor.service")
+    # The MANIFEST is the service's identity, and putting it on the volume is what an install
+    # actually does. Everything after this point is the product's own code.
+    primary.succeed("mkdir -p /var/lib/briard/.services")
+    primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
+    primary.succeed("briard-agent --converge")
+
+    # CONVERGE rendered the units and quadlet generated them — at RUNTIME, from the volume, with
+    # nothing copied in from the side. That is the whole mechanism, asserted after the fact rather
+    # than arranged beforehand.
+    primary.succeed("systemctl cat briard-fixture-app.service >/dev/null")
+    primary.succeed("systemctl cat briard-fixture-pod.service >/dev/null")
 
     primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-pod.service) = active", timeout=120)
     primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=120)
@@ -247,33 +274,43 @@ pkgs.testers.runNixOSTest {
     print("service state is on the DRBD subvolume — install -> promote -> serve, on the shipped node")
 
     ${pkgs.lib.optionalString (!broken) ''
-    # --- THE RENDERED UNITS ARE VOLATILE, AND SOMETHING MUST PUT THEM BACK.
+    # --- THE RENDERED UNITS ARE VOLATILE, AND CONVERGE PUTS THEM BACK BY ITSELF.
     #
     #     Happy-path run only: this reboots the node, so it cannot precede the broken-upgrade half,
     #     which carries on from here against a live service.
     #
     #     /run/containers/systemd is tmpfs, chosen deliberately: the volume holds the MANIFEST and
     #     each node renders its own units from it, so there is one identity and no second durable
-    #     copy to drift from it. The consequence is that a reboot erases every rendered unit, and
-    #     this asserts it plainly instead of leaving it a property people assume.
+    #     copy to drift from it. The consequence is that a reboot erases every rendered unit.
     #
-    #     Nothing in THIS harness can put them back: the node here IS the guest, with no host on
-    #     the other end of the channel (see the header). Restoring them at bring-up is the HOST
-    #     agent's job, from its node-local manifest cache. So the honest claim here is the
-    #     premise, not the cure — after a reboot the service is gone and stays gone until
-    #     something re-renders, which is why the host must.
-    #     Asserted as a PAIR on the same command, so the "after" cannot pass against a node that
-    #     never had the unit in the first place — the non-vacuity discipline this suite applies to
-    #     every before/after claim.
+    #     ⚠️ THIS TEST'S CONCLUSION REVERSED WITH [V3b.3](f). It used to assert the premise and
+    #     stop there — "after a reboot the service is gone and stays gone until something
+    #     re-renders, which is why the HOST must, from its node-local cache at bring-up". Converge
+    #     makes that cure unnecessary and the claim false: briard-services is a promoter chain
+    #     member, so the node re-renders from the VOLUME the moment it promotes, with no host in
+    #     the loop at all. That is the same mechanism that fixes the survivor case, seen from the
+    #     reboot side.
+    #
+    #     Asserted as a sequence, so no step can pass vacuously: the unit exists, the reboot
+    #     really erased it, and it comes back on its own.
     primary.succeed("systemctl cat briard-fixture-app.service")
     primary.shutdown()
     primary.start()
     primary.wait_for_unit("multi-user.target")
     left = primary.succeed("ls -A /run/containers/systemd 2>/dev/null || true").strip()
     assert left == "", f"expected the rendered units to be gone after a reboot, found: {left!r}"
-    # ...and systemd has no unit left to start, which is exactly what a promoter would hit.
     primary.fail("systemctl cat briard-fixture-app.service")
-    print("after a reboot the rendered units are gone — the host must re-render them at bring-up")
+    print("the reboot really erased the rendered units")
+
+    # Re-arm the promoter (in the product the agent does this at bring-up; here the harness does,
+    # as it did the first time) and let the node converge itself back.
+    primary.succeed("modprobe drbd")
+    primary.succeed("systemctl start drbd@r0.target")
+    primary.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=120)
+    primary.succeed("systemctl start drbd-reactor.service")
+    primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=180)
+    primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
+    print("the node re-rendered from the volume and served again — converge, with no host involved")
     ''}
     ${pkgs.lib.optionalString broken ''
 
@@ -296,81 +333,76 @@ pkgs.testers.runNixOSTest {
     primary.succeed("test -d /var/lib/briard/.snapshots")
     primary.succeed(f"btrfs subvolume snapshot -r {dataroot} {snap}")
 
-    # --- The BROKEN manifest: same image digest and same service/container names (so same units and
-    #     same promoter chain — this is an UPGRADE, not a rename), the ONLY change being env
+    # --- The BROKEN manifest: same image digest and same service/container names (so same units,
+    #     which is what makes this an UPGRADE and not a rename), the ONLY change being env
     #     BRIARD_BROKEN=1. The dummy then poisons its state and holds /healthz at 503 forever while
-    #     staying a live process — the exact shape a runtime service breaks in. Render it on EVERY
-    #     node (units are node-local) so a survivor would have it too. ---
+    #     staying a live process — the exact shape a runtime service breaks in. ---
     broken_manifest = (
         '{"name":"fixture","version":"v1-broken","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
         '"mount":"${fixtureMount}","primary":true,"port":8080,"healthPath":"/healthz",'
         '"env":{"BRIARD_BROKEN":"1"}}]}'
     )
-    for m in disk_nodes:
-        m.succeed(f"cat > /tmp/broken.json <<'EOF'\n{broken_manifest}\nEOF")
-        print(m.succeed("quadlet-render /tmp/broken.json /tmp/broken"))
-        m.succeed("cp /tmp/broken/*.pod /tmp/broken/*.container /tmp/broken/*.image /run/containers/systemd/")
-        m.succeed("systemctl daemon-reload")
 
-    # --- The maintenance bracket, mirrored (reactor.pause/resume). reactor.pause STOPS drbd-reactor
-    #     with the promote-vs-stop override removed; stop-services-on-exit defaults false, so the
-    #     promoted services + DRBD Primary stay UP (the volume stays mounted). Bracket BOTH disk nodes
-    #     — both run a promoter, so pausing only the primary would let the peer promote and pull the
-    #     volume out from under the maintenance. ---
-    def pause(m):
-        m.succeed("rm -f /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf")
-        m.succeed("systemctl daemon-reload")
-        m.succeed("systemctl stop drbd-reactor.service")
-    def resume(m):
-        m.succeed("systemctl start drbd-reactor.service")
+    # --- THE SWITCH, and it no longer takes a maintenance bracket ([V3b.3](f)). It used to:
+    #     pause both nodes' promoters, quiesce the container, re-render on every node, resume. All
+    #     of that existed because the service units WERE promoter chain members, so touching them
+    #     under a live reactor meant stopping the reactor first. They are not members now, so an
+    #     upgrade is: write the new manifest to the volume, converge.
+    #
+    #     Converge does the quiesce itself, and only for the service whose rendered bytes actually
+    #     changed — systemd does not restart an already-active unit on daemon-reload, so without
+    #     that the old container would keep serving while every file on disk described the new one.
+    primary.succeed(f"cat > /tmp/broken.json <<'EOF'\n{broken_manifest}\nEOF")
+    primary.succeed("cp /tmp/broken.json /var/lib/briard/.services/fixture.json && sync")
+    primary.succeed("briard-agent --converge")
+    primary.succeed("mountpoint -q /var/lib/briard")  # nothing in the switch unmounted the volume
 
-    # Switch to the broken version: pause, quiesce the CONTAINER (only — see the rollback for why
-    # never the pod) so resume restarts it with the new content (systemd does not restart an
-    # already-active unit on daemon-reload alone), resume.
-    for m in disk_nodes:
-        pause(m)
-    primary.succeed("mountpoint -q /var/lib/briard")  # the bracket kept the volume mounted
-    primary.succeed("systemctl stop briard-fixture-app.service")
-    for m in disk_nodes:
-        resume(m)
-
-    # --- THE GATE. The broken container comes up ACTIVE — a live process — so drbd-reactor's promoter
-    #     is satisfied and nothing at the DRBD layer knows anything is wrong. The signal is the
-    #     SERVICE's own /healthz, which stays 503 (probed directly, the way the host health gate does
-    #     — NOT via the front door, which reports node readiness and would mask this). Prove it is
-    #     real, and prove the upgrade actually did damage (poisoned the data), so a green run can't
-    #     pass vacuously. ---
+    # --- THE GATE. The broken container comes up ACTIVE — a live process — so nothing at the DRBD
+    #     layer knows anything is wrong, and under the new shape nothing at the promoter layer ever
+    #     will: the container is not a chain member, so a crash could not demote the node either.
+    #     The signal is the SERVICE's own /healthz, which stays 503 (probed directly, the way the
+    #     host health gate does — NOT via the front door, which reports node readiness and would
+    #     mask this). Prove it is real, and prove the upgrade actually did damage (poisoned the
+    #     data), so a green run can't pass vacuously. ---
     primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=120)
     primary.wait_until_fails("curl -fsS http://127.0.0.1:8080/healthz", timeout=90)
     poisoned = _json.loads(primary.succeed(f"cat {dataroot}/app/state.json"))["ticks"]
     assert poisoned > good_tick, f"broken upgrade did not poison the data (tick={poisoned}); the rollback proof would be vacuous"
-    print(f"health gate would TRIP: container active, front door 503, data poisoned to tick {poisoned}")
+    print(f"health gate would TRIP: container active, its own endpoint 503, data poisoned to tick {poisoned}")
 
-    # --- ROLLBACK to the prior service (applyServiceInstall.revert): under one pause, stop the broken
-    #     CONTAINER, restore the data subvolume from the snapshot (delete + rw-snapshot, the guest's
-    #     data.restore), re-render the prior (v0) units, then resume so v0 starts fresh on the
-    #     restored data.
+    # --- AND THE NODE IS STILL PROMOTED, which is the failure rule ([V3b.3](f)): converge's own
+    #     failure demotes, a SERVICE's failure alerts and promotes. A code fault is deterministic,
+    #     so a peer running the identical closure would hit it identically and the failover would
+    #     only flap; and one broken service must not take the other N-1 down with it. Asserted
+    #     here because this is the one place in the suite where a service is genuinely broken. ---
+    primary.succeed("drbdadm role r0 | grep -q Primary")
+    primary.succeed("mountpoint -q /var/lib/briard")
+    primary.succeed("systemctl is-active briard-vip.service")
+    print("the node stayed Primary with the VIP up — a broken service alerts, it does not demote")
+
+    # --- ROLLBACK to the prior service (applyServiceInstall.revert): stop the broken CONTAINER,
+    #     restore the data subvolume from the snapshot (delete + rw-snapshot, the guest's
+    #     data.restore), put the PRIOR manifest back on the volume, and converge — which re-renders
+    #     v0 and starts it fresh on the restored data.
     #
-    #     Stop the CONTAINER, NEVER the pod: the container
-    #     holds the data Volume bind, so stopping it releases the bind AND leaves the drbd-reactor
-    #     target up — while stopping the pod tears the target down and unmounts the SHARED /var/lib/briard
-    #     (which would take every other service on a multi-service node with it). ---
-    for m in disk_nodes:
-        pause(m)
+    #     Stop the CONTAINER, NEVER the pod: the container holds the data Volume bind, so stopping
+    #     it releases the bind (which the restore needs) and is a clean stop, while stopping the
+    #     pod makes podman kill its members out from under their units and each lands in `failed`.
+    #
+    #     No pause anywhere, and the failed-restore posture improved with it: the revert's refusal
+    #     to serve poisoned data is now simply "do not converge", instead of leaving the promoter
+    #     stopped and the node unable to fail over at all. ---
     primary.succeed("systemctl stop briard-fixture-app.service")
     primary.succeed("mountpoint -q /var/lib/briard")  # the shared mount survives a CLEAN container stop
     primary.succeed(f"btrfs subvolume delete {dataroot}")
     primary.succeed(f"btrfs subvolume snapshot {snap} {dataroot}")
-    for m in disk_nodes:
-        m.succeed("cp /tmp/rendered/*.pod /tmp/rendered/*.container /tmp/rendered/*.image /run/containers/systemd/")
-        m.succeed("systemctl daemon-reload")
-    for m in disk_nodes:
-        resume(m)
+    primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
+    primary.succeed("briard-agent --converge")
 
-    # --- RECOVERY. The front door is healthy again, the good (v0) service serves, and the poison is
-    #     GONE — the tick is back at the pre-upgrade point and climbing again. {code+data} both rolled
-    #     back: a failed upgrade left a working node, not a broken one. ---
+    # --- RECOVERY. The good (v0) service serves again and the poison is GONE — the tick is back at
+    #     the pre-upgrade point and climbing. {code+data} both rolled back: a failed upgrade left a
+    #     working node, not a broken one. ---
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
     primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=120)
     recovered = _json.loads(primary.succeed(f"cat {dataroot}/app/state.json"))["ticks"]
@@ -378,7 +410,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("sleep 2")
     climbing = _json.loads(primary.succeed(f"cat {dataroot}/app/state.json"))["ticks"]
     assert climbing > recovered, f"restored service is not making progress: {recovered} -> {climbing}"
-    print(f"ROLLED BACK: front door healthy, data restored (tick {recovered} < poison {poisoned}) and ticking again")
+    print(f"ROLLED BACK: v0 serving, data restored (tick {recovered} < poison {poisoned}) and ticking again")
     ''}
   '';
 }

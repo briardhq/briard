@@ -120,25 +120,28 @@ func TestOnlyImageUnitsAutoStart(t *testing.T) {
 	}
 }
 
-// TestChainOrder: data -> pod -> members -> VIP. Naming the members explicitly is required —
-// the quadlet spike proved that starting the pod service does not start its containers.
-func TestChainOrder(t *testing.T) {
+// TestUnitOrder: the pod, then its members. Naming the members explicitly is required — the
+// quadlet spike proved that starting the pod service does not start its containers.
+//
+// This used to assert a promoter start-list (data -> pod -> members -> VIP), which [V3b.3](f)
+// retired along with the function that built it: the chain is static and these units are not
+// members of it. What survives is the property that actually mattered — the order converge starts
+// them in.
+func TestUnitOrder(t *testing.T) {
 	m := ha()
 	m.Containers = append(m.Containers, manifest.Container{Name: "cache", Image: digestB, Mount: "/data"})
-	got := Chain(mustRender(t, m))
+	got := mustRender(t, m).Units
 	want := []string{
-		"briard-data.service",
 		"briard-home-assistant-pod.service",
 		"briard-home-assistant-ha.service",
 		"briard-home-assistant-cache.service",
-		"briard-vip.service",
 	}
 	if len(got) != len(want) {
-		t.Fatalf("chain = %v, want %v", got, want)
+		t.Fatalf("units = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("chain[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+			t.Fatalf("units[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
 		}
 	}
 }

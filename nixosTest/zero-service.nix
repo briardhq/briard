@@ -72,6 +72,14 @@ pkgs.testers.runNixOSTest {
     survivor = next(m for m in disk_nodes if m != primary)
     print(f"primary={primary.name} survivor={survivor.name}")
 
+    # CONVERGE RAN AND CONVERGED TO NOTHING ([V3b.3](f)). briard-services is a chain member on
+    # every data node now, so a failure there would take the VIP down on the one node shape every
+    # stranger installs — precisely the failure this test exists to guard, arriving via a new unit.
+    # Succeeding against an empty volume is the shipped state, not a degraded one.
+    primary.succeed("systemctl is-active briard-services.service")
+    left = primary.succeed("ls -A /run/containers/systemd 2>/dev/null || true").strip()
+    assert left == "", f"converge wrote service units on a node with nothing installed: {left!r}"
+
     # The node reports itself READY, not sick. A fresh install used to sit unhealthy forever
     # because the health probe pointed at a payload port nobody was listening on.
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")

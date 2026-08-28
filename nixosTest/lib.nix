@@ -15,17 +15,22 @@ let
   # by the harness is rendered by the same code the agent runs.
   quadletRender = pkgs.callPackage ./quadlet-render-pkg.nix { };
 
-  # The promoter's ordered unit, identical everywhere it's used. The payload is a member only
-  # where one is installed: with an empty slot the unit does not exist, and naming a
-  # non-existent unit fails the whole chain — taking the VIP down with it. The front door is
-  # not listed here at all; it rides briard-vip (wantedBy + partOf), so it tracks the primary
-  # either way. This mirrors what the host agent writes in production (host.promoterUnits).
+  # The promoter's ordered unit, identical everywhere it's used, and STATIC ([V3b.3](f)):
+  # data -> [baked payload] -> services -> vip. `briard-services` is what converges this node to
+  # the manifests on the volume once the mount exists, which is why the runtime-installed services
+  # are not members and a fixture no longer changes this list at all. The front door is not listed
+  # either; it rides briard-vip (wantedBy + partOf), so it tracks the primary regardless. This
+  # mirrors what the host agent writes in production (host.promoterUnits).
+  #
+  # `payload` is the BUILD-TIME slot, the one remaining conditional member and a fixture mechanism
+  # on its way out ([V3b.3](e1)). It is conditional because the guest does not define that unit
+  # with an empty slot, and naming a unit that does not exist fails the whole ordered chain.
   promoterSnippet =
     payload:
     let
       units = [ "briard-data.service" ]
         ++ lib.optional payload "podman-briard-payload.service"
-        ++ [ "briard-vip.service" ];
+        ++ [ "briard-services.service" "briard-vip.service" ];
     in
     ''
       [[promoter]]
@@ -64,38 +69,39 @@ let
       }
     '';
 
-  # A test-only unit that installs a CATALOGUED fixture the way the agent installs a service:
-  # stage the image from its tarball, run the REAL renderer over its manifest, let quadlet turn
-  # the output into units, and give the promoter the chain the renderer produced.
+  # A test-only unit that PREWARMS a catalogued fixture: load its image tarball into local podman
+  # storage and lay down the manifest the harness will later install from.
+  #
+  # It used to do far more — run the renderer, copy the units into the quadlet directory and write
+  # the promoter chain from the renderer's output. [V3b.3](f) takes all of that away from the
+  # harness and gives it to the PRODUCT: `briard-services` renders from the volume at promotion,
+  # from a static chain the harness no longer writes. So what is left here is exactly the part a
+  # test legitimately stands in for — the bytes a host agent would have fetched from the catalog
+  # and warmed onto the node before anything promoted.
   #
   # This is what replaces the baked payload slot ([V3b.3](e)). The slot put a container in the
   # guest image at BUILD time through `oci-containers` — a mechanism no user has, since a shipped
   # node installs at runtime from a manifest. Tests riding the slot therefore proved a path nobody
   # ships; tests riding this one prove the path everyone does.
   #
-  # It stands in for the host agent's ORCHESTRATION, which cannot run in a hermetic harness (the
-  # node IS the guest, with no host on the other end) — the same standing-in `quadlet-render`
-  # already does for service-install.nix, and orchestration is unit-tested in
-  # agent/host/service_test.go. Everything below the agent is real: real podman, the real
-  # renderer, real quadlet generation, a real promoter driving the result.
+  # What still cannot run in a hermetic harness is the host agent's ORCHESTRATION — the node IS
+  # the guest, with no host on the other end — so `install_fixture` below performs the Primary-only
+  # half by hand (fetch, verify and health-gate are unit-tested in agent/host/service_test.go).
+  # Everything under it is now the real thing: the real renderer, in the product's own binary,
+  # reading the product's own volume layout.
   #
   # NO REGISTRY, and that is measured rather than assumed — see fixture-service.nix for the three
   # facts. The image arrives as a tarball whose digest the manifest already pins.
-  #
-  # NO PROVISIONING STEP either: the renderer emits `Volume=<hostdir>:<mount>` and podman creates
-  # a missing bind-mount source, so the data directory appears under the DRBD mount when the
-  # container starts. The product provisions a btrfs SUBVOLUME instead (snapshots need one), which
-  # is `service.provision`'s job and belongs to the tests that exercise rollback.
   fixtureInstall = fixture: config: {
-    description = "Install the ${fixture.name} fixture as a catalogued service (test harness)";
+    description = "Prewarm the ${fixture.name} fixture onto this node (test harness)";
     wantedBy = [ "multi-user.target" ];
-    # Before the promoter can be started by hand: the chain it reads is written here.
+    # Before the promoter can be started by hand: a converge that runs before the image is
+    # resident would have to pull it, and there is no registry on a hermetic node.
     before = [ "drbd-reactor.service" ];
     path = [
       config.virtualisation.podman.package # the guest's podman, never a second copy
       quadletRender
       pkgs.coreutils
-      pkgs.systemd
     ];
     serviceConfig = {
       Type = "oneshot";
@@ -108,55 +114,56 @@ let
       podman load -i ${fixture}/image.tar
       podman image exists "$(cat ${fixture}/ref)"
 
+      # The manifest, plus the RENDERER's sidecars (`dataroot`, `subdirs`, `units`, `identity`)
+      # that install_fixture reads. The sidecars exist so a test never restates the layout the
+      # product decides; no unit file is copied anywhere, because converge writes those itself.
       rm -rf /run/briard/fixture
-      mkdir -p /run/briard/fixture /run/containers/systemd /run/briard/drbd-reactor.d
+      mkdir -p /run/briard/fixture
       quadlet-render ${fixture}/manifest.json /run/briard/fixture
-      # Only the UNIT files go where quadlet reads; `chain`/`images`/`identity`/`dataroot` are
-      # sidecars for the harness and have no business in a generator directory.
-      cp /run/briard/fixture/*.pod /run/briard/fixture/*.container /run/briard/fixture/*.image \
-         /run/containers/systemd/
-      systemctl daemon-reload
-
-      # The chain comes from the RENDERER. A hand-written list here would prove nothing about our
-      # output — the same reason service-install.nix reads this file rather than restating it.
-      units=$(sed 's/.*/"&"/' /run/briard/fixture/chain | paste -sd, - | sed 's/,/, /g')
-      cat > /run/briard/drbd-reactor.d/briard.toml <<EOF
-      [[promoter]]
-      [promoter.resources.r0]
-      adjust-resource-on-start = false
-      start = [ $units ]
-      EOF
-      sed -i 's/^      //' /run/briard/drbd-reactor.d/briard.toml
+      cp ${fixture}/manifest.json /run/briard/fixture/manifest.json
     '';
   };
 
   # testScript helpers for a node built with `fixture`. Prepend to a test's script.
   #
-  # provision_fixture stands in for the install path's Primary-only `service.provision` step: the
-  # data subvolume lives on the REPLICATED volume, so it cannot exist until a node has promoted
-  # and mounted it — which in a hermetic test is the promoter's own first pass. That pass
-  # therefore fails (podman does NOT create a missing bind-mount source; measured — the container
-  # dies with `statfs …/app: no such file or directory`), the storage is made, and the chain is
-  # re-run. Exactly the sequence service-install.nix performs by hand, in one place.
+  # install_fixture stands in for the ONE half of the install path a hermetic harness cannot run:
+  # the host agent's Primary-only orchestration. It writes the manifest to the REPLICATED volume
+  # (what `service.provision` records as the service's identity), creates its storage, and then
+  # hands over to the PRODUCT — `briard-agent --converge` is the same code drbd-reactor runs at
+  # every promotion, not a harness re-implementation of it ([V3b.3](f)).
+  #
+  # It must run AFTER a node has promoted, because everything it touches is on the replicated
+  # volume and only a Primary has it mounted. That is not a harness quirk; it is the exact
+  # constraint the product's install path lives under, and the reason converge exists.
   #
   # ONE subvolume with plain per-container SUBDIRECTORIES, never nested subvolumes: `btrfs
   # subvolume delete` refuses on a subvolume containing them, so data.restore would break.
+  # Podman does NOT create a missing bind-mount source (measured — the container dies with
+  # `statfs …/app: no such file or directory`), so the provision step is required, not defensive.
   # Both the subvolume path and the subdirectory list come from the RENDERER's sidecars, so a
   # test never restates the layout the product decides.
   fixtureHelpers = ''
-    def provision_fixture(m):
+    def install_fixture(m):
         dataroot = m.succeed("cat /run/briard/fixture/dataroot").strip()
         m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
         for sub in m.succeed("cat /run/briard/fixture/subdirs").split():
             m.succeed(f"mkdir -p {dataroot}/{sub}")
-        m.succeed("systemctl restart drbd-reactor.service")
+        # The service's name IS the last element of its data root -- taken from the renderer
+        # rather than restated, like everything else here.
+        name = dataroot.rstrip("/").split("/")[-1]
+        m.succeed("mkdir -p /var/lib/briard/.services")
+        m.succeed(f"cp /run/briard/fixture/manifest.json /var/lib/briard/.services/{name}.json")
+        m.succeed("sync")
+        # The product's own converge, by the same entry point briard-services.service uses.
+        m.succeed("briard-agent --converge")
         return dataroot
 
     def fixture_units(m):
-        """The service units the RENDERER put in the promoter chain -- never a list restated here."""
-        chain = m.succeed("cat /run/briard/fixture/chain").split()
-        units = [u for u in chain if u.startswith("briard-dummy")]
-        assert units, f"the renderer put no service units in the chain: {chain}"
+        """The service units the RENDERER produced -- never a list restated here. They are NOT
+        promoter chain members ([V3b.3](f)): briard-services starts them, which is what keeps a
+        crashed container from demoting the node."""
+        units = m.succeed("cat /run/briard/fixture/units").split()
+        assert units, f"the renderer produced no service units: {units}"
         return units
   '';
 
@@ -172,10 +179,11 @@ let
       diskless ? false,
       promoter ? true,
       payload ? true,
-      # A catalogued fixture (nixosTest/fixture-service.nix) installed at boot the way the agent
-      # installs a service, INSTEAD of the build-time payload slot. When set, the promoter chain
-      # comes from the renderer rather than from `payload`, so the two are mutually exclusive by
-      # construction.
+      # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot,
+      # INSTEAD of the build-time payload slot. The test then installs it onto the volume with
+      # install_fixture once something has promoted. It no longer changes the promoter chain --
+      # the chain is static ([V3b.3](f)) -- so `payload` and `fixture` differ only in which
+      # mechanism puts a workload on the node.
       fixture ? null,
     }:
     { config, ... }:
@@ -189,8 +197,11 @@ let
         }
       ];
       # test-only: probing the VIP, and -- with a fixture -- standing in for the install path's
-      # provision step, which in the product runs btrfs from the guest agent unit's own PATH.
-      environment.systemPackages = [ pkgs.curl ] ++ lib.optional (fixture != null) pkgs.btrfs-progs;
+      # Primary-only half, which in the product runs btrfs from the guest agent unit's own PATH
+      # and converge from briard-services'. install_fixture runs both from a test shell, so both
+      # have to be reachable there.
+      environment.systemPackages = [ pkgs.curl ]
+        ++ lib.optionals (fixture != null) [ pkgs.btrfs-progs config.briard.agentPackage ];
       # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes
       # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
       # L2. So the harness states the address it is going to curl, rather than inheriting one
@@ -227,11 +238,12 @@ let
         "d /run/briard/drbd.d 0755 root root -"
         "L+ /run/briard/drbd.d/r0.res - - - - ${pkgs.writeText "r0.res" resource}"
       ]
-      # With a fixture the snippet is written by fixtureInstall, from the RENDERER's chain, so the
-      # static one must not also claim the path.
-      ++ lib.optionals (promoter && fixture == null) [
+      # The snippet is STATIC now ([V3b.3](f)), so a fixture no longer writes its own: the chain
+      # names briard-services, and what the node runs comes from the VOLUME at promotion. Only the
+      # build-time payload slot is still conditional, and a fixture node has no slot occupied.
+      ++ lib.optionals promoter [
         "d /run/briard/drbd-reactor.d 0755 root root -"
-        "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" (promoterSnippet payload)}"
+        "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" (promoterSnippet (payload && fixture == null))}"
       ];
       systemd.services.briard-test-fixture-install =
         mkIf (fixture != null) (fixtureInstall fixture config);

@@ -12,9 +12,9 @@
 //
 //	quadlet-render <manifest.json> <outdir>
 //
-// writes the rendered unit files into outdir, plus two sidecars the test reads:
-// `chain` (the promoter start-list, one unit per line), `images` (the .image warm units),
-// `identity`, `dataroot` and `subdirs` (what the install path's provision step creates).
+// writes the rendered unit files into outdir, plus the sidecars a test reads: `units` (the
+// service units in start order), `images` (the .image warm units), `identity`, `dataroot` and
+// `subdirs` (what the install path's provision step creates).
 package main
 
 import (
@@ -59,7 +59,10 @@ func main() {
 			fatal("write %s: %v", name, err)
 		}
 	}
-	write("chain", quadlet.Chain(r))
+	// The service units, in start order. NOT a promoter chain: since [V3b.3](f) the chain is
+	// static (data -> services -> vip) and these are not members of it -- briard-services starts
+	// them, which is what keeps a crashed container from demoting the node.
+	write("units", r.Units)
 	write("images", r.ImageUnits)
 	write("identity", []string{string(id)})
 	write("dataroot", []string{quadlet.DataRoot(m.Name)})
