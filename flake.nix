@@ -120,22 +120,16 @@
         postgresql = pkgs.postgresql;
       });
 
-      # The guest VM image: NixOS + DRBD 9 + drbd-reactor + payload slot.
-      # `guest` runs the default (dummy) payload; `guest-ha` selects HA. The lab's
-      # `fleet-demo*` / `runner-host` hosts join these when `lab/` is present.
+      # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- a service is
+      # installed at runtime from a signed manifest, so there is nothing to select here and no
+      # `guest-ha` variant any more ([V3b.3](e2)). The lab's `fleet-demo*` / `runner-host`
+      # hosts join these when `lab/` is present.
       nixosConfigurations = {
         guest = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
             { nixpkgs.overlays = [ self.overlays.default ]; }
             ./guest-image/configuration.nix
-          ];
-        };
-        guest-ha = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            { nixpkgs.overlays = [ self.overlays.default ]; }
-            ./guest-image/hass-guest.nix
           ];
         };
       } // (labOutputs.nixosConfigurations or { });

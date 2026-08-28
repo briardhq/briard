@@ -10,10 +10,10 @@
 # at all, and the lab rollback demo's broken generation breaks the FRONT DOOR instead — an ordinary delta on
 # the shipped disk, fetched over the cache like any other target, needing no argument here.
 #
-# stageImages (default none) bakes extra payload image tarballs into the disk and warms
-# them into podman at boot (briard.payload.stagedImages) — warm-standby upgrade targets a
-# rolling update can pin without a pull on the failover path. Used by the
-# fleet upgrade demo to pre-stage a v1 payload.
+# stageImages (default none) bakes extra service image tarballs into the disk and loads them
+# into podman at boot (briard.stagedImages) — an image has to be resident before a manifest is
+# installed against it, since nothing on the failover path may pull. Used by the fleet upgrade
+# demo to pre-stage the target of a manifest rotation.
 #
 # stageSystemModule (default null) bakes a *second, distinct* guest system generation into
 # the disk (the running system + this delta module) — a warm-standby whole-OS upgrade
@@ -199,7 +199,7 @@ let
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
           # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
           # differently-wrapped copy of the runtime (configuration.nix explains; [B.5]).
-          config.virtualisation.podman.package # podman, for payload.pin (retag the serve image —)
+          config.virtualisation.podman.package # podman, for the renderer + service.* verbs
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
         # then Serve() returns nil on the clean EOF when the host disconnects (wire.go)
@@ -299,7 +299,7 @@ let
       system.extraDependencies = lib.optionals bakeTargets (
         lib.optional (v1System != null) v1System
         ++ lib.optional (rebootSystem != null) rebootSystem);
-      briard.payload.stagedImages = stageImages;
+      briard.stagedImages = stageImages;
       # One agent derivation for all three units that need it (briard-guest-agent,
       # briard-deadman, and briard-services' converge). configuration.nix defaults this to an
       # UNVERSIONED guest build for the nixosTests; letting that default stand here would put a

@@ -89,10 +89,6 @@ pkgs.testers.runNixOSTest {
         # briard-vip, and with nothing baked (V3.19c step 3) an unset address means DHCP -- which
         # would sit waiting for a server that does not exist on this L2.
         "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
-        # NO_PAYLOAD: the zero-service promoter chain (the shipped shape). This test boots
-        # the SHIPPED disk, which runs no service -- naming a unit that does not exist
-        # fails the whole chain and takes the VIP down with it.
-        "--setenv=NO_PAYLOAD=1 "
         "--setenv=STAGE_SYSTEM=${stagedSystem} "
         f"--setenv=STAGE_FROM={cache_url} "
         f"--setenv=STAGE_FROM_KEY={cache_pubkey} "

@@ -376,9 +376,10 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // negotiation nothing arbitrates.
 //
 // PULLING IS SAFE BECAUSE THE REF IS DIGEST-PINNED, and that is the whole difference from the
-// baked slot, which faces the same question and answers it the other way. `briard-converge`
-// REFUSES to promote when its pinned image is not staged, and is right to: its pin is a tag plus
-// a pin-file, so a fetch could not guarantee the same bytes. A manifest names `repo@sha256:…`
+// baked slot this replaced, which faced the same question and answered it the other way. Its
+// `briard-converge` REFUSED to promote when the pinned image was not staged, and was right to:
+// that pin was a tag plus a pin-file, so a fetch could not guarantee the same bytes ([V3b.3](e2)
+// deleted it). A manifest names `repo@sha256:…`
 // (shared/manifest refuses anything else), so a pull returns exactly those bytes or fails —
 // identity survives either outcome. One rule, two answers: refuse when you cannot verify what you
 // would get, fetch when the digest pins it.

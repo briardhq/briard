@@ -1,8 +1,8 @@
 # Briard VM unit image.
 #
 # The workload + DRBD 9 + drbd-reactor run *inside* this VM; the host agent runs
-# outside it (the host/payload boundary, V0). drbd-reactor's promoter
-# drives the ordered failover unit {DRBD-primary → data mount → payload → VIP}
+# outside it (the host/guest boundary, V0). drbd-reactor's promoter
+# drives the ordered failover unit {DRBD-primary → data mount → services → VIP}
 # on whichever node holds the DRBD primary role. The per-resource
 # promoter rules are supplied per-deployment as a snippet the agent drops into /run/briard/drbd-reactor.d
 # (the agent writes them in prod, V0; the harness writes them in tests),
@@ -12,28 +12,6 @@ let
   btrfsRoot = "/var/lib/briard"; # the DRBD btrfs volume mount
   snapDir = "${btrfsRoot}/.snapshots"; # pre-upgrade snapshots, siblings of the data subvolume
   tlsDir = "${btrfsRoot}/tls"; # cert/key on the DRBD volume (replicated, survive failover)
-  # The code identity the data was written by, stored on the replicated volume so it travels
-  # with the data, and read by a promoting node before it serves: imagePinFile, the
-  # *payload* OCI image ref. The payload is what writes the service data, so its image is the
-  # data-format identity —'s "per-service OCI digest". Converging it is re-creating the
-  # container from the pinned image, no OS switch; content-addressed, so node-independent.
-  # Empty/absent => no pin (the older path is unchanged).
-  #
-  # There is deliberately no second form naming a whole *system* closure: that is a property of
-  # the NODE, while this file is per service volume — so the multi-service shape (N volumes, one running OS) would have
-  # meant N assertions about a single system. What the data actually demands is per-service
-  # and lives beside this: the payload image, and the service manifest.
-  #
-  # THESE TWO ARE NOW GUEST-ONLY. They used to pair with the host agent's Go consts
-  # payloadPinPath/payloadServeTag, checked by a cross-language test; the host half is deleted
-  # ([V3b.3](e1)) and nothing off this node writes the pin any more, so what is left here is the
-  # payload slot's own plumbing and it goes with the slot in (e2). The pairing test survives,
-  # pointed at tlsDir, which is paired the same way.
-  imagePinFile = "${btrfsRoot}/.payload-image";
-  # The local tag the payload container actually runs. Warm-load points it at the baked
-  # default; converge re-points it at the data's pinned image (or refuses). So "which
-  # image serves" is a promotion-time decision, not baked into the unit.
-  serveImage = "briard-payload:serve";
   # The VIP's address AND device are both agent-determined: net.configure writes VIP_ADDR +
   # VIP_DEV here, and briard-vip.service reads this file and NOTHING ELSE. Nothing is baked, so
   # there is nothing to fall back to and no address or NIC anyone has to attribute after the fact.
@@ -60,8 +38,8 @@ let
   # names this file back.
   reactorSnippetDir = "/run/briard/drbd-reactor.d";
   # The FLOCK's service address, replicated with the data. Same shape, same place and same
-  # write-authority as imagePinFile: a small flock-scoped fact at the btrfs root, written only by
-  # the node that holds the volume (only a Primary can mount it), read by whoever promotes next.
+  # write-authority as the TLS material: a small flock-scoped fact at the btrfs root, written only
+  # by the node that holds the volume (only a Primary can mount it), read by whoever promotes next.
   #
   # It exists so a failover never has to ASK for the address. The MAC is *derived* -- every node
   # computes it from the flock id -- but an address is *acquired*, known only to whoever asked the
@@ -550,14 +528,6 @@ let
     exit 0
   '';
 
-  cfg = config.briard.payload;
-
-  # Whether this guest carries a service at all. Zero is the SHIPPED state: a node is
-  # installed first and given something to run afterwards, so the image a stranger downloads
-  # must not arrive with a workload they never chose. Everything payload-shaped below is
-  # conditional on this, and what remains at zero — the volume, the promoter, the VIP, the
-  # front door — is the substrate the node is actually promising.
-  havePayload = cfg.image != null;
 in
 {
   # What this appliance does not carry ([B.5]). Imported here rather than folded into the callers so
@@ -566,16 +536,6 @@ in
   # about the one strangers install.
   imports = [ ./slim.nix ];
 
-  # The payload slot as a NixOS option so the same guest image serves nothing, the test
-  # fixture, or HA, without forking the DRBD/promoter/VIP scaffolding around it. Only the
-  # container image + where its data subvolume lands and mounts differ; the unit name
-  # (briard-payload) stays fixed so the promoter snippet and the host agent's ServiceSpec are
-  # payload-agnostic.
-  #
-  # Selecting a payload is a build-time act here — image identity is already
-  # runtime (the unit runs the local `:serve` tag, which converge/pin re-point), so what
-  # actually bakes here is the data mount mapping. Moving that onto the DRBD volume beside
-  # `.payload-image` is what lets a service be installed at runtime with no OS switch.
   # The agent binary this guest runs. It is an option rather than a callPackage here because
   # disk-image.nix already builds a VERSIONED one for briard-guest-agent + briard-deadman, and a
   # second instantiation with different arguments would put TWO agent derivations in the shipped
@@ -594,58 +554,14 @@ in
     description = "The briard-agent build this guest's units invoke (guest-tagged).";
   };
 
-  options.briard.payload = {
-    image = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      # "no payload baked", not "no service installed": this is a BUILD-time slot, and a service
-      # installed at RUNTIME never sets it. Conflating the two is what let the front door announce
-      # an empty node while one was serving beside it.
-      description = "OCI image ref the payload container runs (name:tag); null = no payload baked into this image.";
-    };
-    imageFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "The image tarball loaded for `image` (a dockerTools derivation).";
-    };
-    dataDir = lib.mkOption {
-      type = lib.types.str;
-      default = "${btrfsRoot}/payload";
-      description = "The payload's data as a btrfs subvolume under the DRBD mount; snapshot/restore target.";
-    };
-    mountPath = lib.mkOption {
-      type = lib.types.str;
-      default = cfg.dataDir;
-      description = "Where dataDir is bind-mounted inside the container (dummy: same path; HA: /config).";
-    };
-    port = lib.mkOption {
-      type = lib.types.port;
-      default = 8080;
-      description = ''
-        The port the payload listens on (host-networked), i.e. what the front door proxies to.
-        The proxy reads this rather than assuming a port, so a payload on any port is served.
-      '';
-    };
-    healthPath = lib.mkOption {
-      type = lib.types.str;
-      default = "/healthz";
-      description = ''
-        The path the front door probes on the payload to answer its own /healthz. The dummy
-        serves /healthz; HA has none, so it uses / (its frontend answering IS its liveness).
-      '';
-    };
-    stagedImages = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = [ ];
-      description = ''
-        Extra payload image tarballs pre-staged into local podman storage at boot
-       : warm-standby *upgrade targets* a rolling update can pin without a
-        pull on the failover path. Each is a dockerTools image derivation; being
-        referenced here bakes it into the disk closure. The serving image is unchanged
-        (converge/warm still decide what :serve points at) — these are just resident and
-        ready for `payload.pin`. Empty by default (the base image ships no upgrade target).
-      '';
-    };
+  # Image tarballs baked into this disk's closure and loaded into podman at boot. A NODE fact,
+  # not a service one: an image has to be RESIDENT before anything renders against it, because
+  # nothing on the failover path may pull. Used by the fleet's upgrade demo to pre-stage the
+  # target of a rotation. Empty by default — the shipped image carries no workload.
+  options.briard.stagedImages = lib.mkOption {
+    type = lib.types.listOf lib.types.package;
+    default = [ ];
+    description = "Image tarballs pre-staged into local podman storage at boot.";
   };
 
   config = {
@@ -962,179 +878,43 @@ in
             mkfs.btrfs -f /dev/drbd0
           fi
           mount /dev/drbd0 ${btrfsRoot}
-          # First use: the payload's data as a real subvolume (so a pre-upgrade snapshot
-          # can delete+re-create it data.restore) + a sibling snapshots dir. Both
-          # replicate with the volume, so they survive failover. Idempotent. With no service
-          # installed there is no data subvolume to create — the volume is mounted and empty,
-          # which is the honest state of a node nobody has given a workload to yet.
-          ${lib.optionalString havePayload
-            "btrfs subvolume show ${cfg.dataDir} >/dev/null 2>&1 || btrfs subvolume create ${cfg.dataDir}"}
+          # First use: the snapshots dir, sibling of whatever service subvolumes get created
+          # later. It replicates with the volume, so it survives failover. Idempotent. A
+          # service's own data subvolume is created when that service is INSTALLED (the guest's
+          # renderer makes it), so a node nobody has given a workload to mounts an empty volume
+          # — which is the honest state of one.
           mkdir -p ${snapDir}
         '';
         ExecStop = "${pkgs.util-linux}/bin/umount ${btrfsRoot}";
       };
     };
 
-    # 2. payload — the workload as a pinned OCI container, Podman-managed,
-    #    its data dir bind-mounted from the DRBD mount and host-networked so it
-    #    answers at the VIP. Promoter-driven (podman-briard-payload.service) → runs
-    #    only on the primary. The dummy and HA share this slot; only briard.payload
-    #    differs. No `cmd` override — each image carries its own entrypoint (the
-    #    dummy's baked Cmd; HA's /init s6 supervisor).
-    virtualisation.oci-containers = {
-      backend = "podman";
-      containers = lib.mkIf havePayload {
-        briard-payload = {
-          image = serveImage; # not cfg.image: converge/warm decide which image :serve points at
-          imageFile = cfg.imageFile;
-          volumes = [ "${cfg.dataDir}:${cfg.mountPath}" ];
-          extraOptions = [ "--network=host" ];
-        };
-      };
-    };
-
     # Podman belongs to the guest OS, not to any service: it is the runtime a service will be
-    # installed INTO. oci-containers only enables it when a container is declared, so with the
-    # slot empty we ask for it directly — otherwise a zero-service node would have no runtime,
-    # and briard-converge (which retags the serve image) would have nothing to talk to.
+    # installed INTO, by the renderer, at runtime ([V3b.3](f)). There is no declared container
+    # here and there is no `virtualisation.oci-containers` — a workload is not a build-time fact
+    # about this image any more ([V3b.3](e2)).
     virtualisation.podman.enable = true;
 
-    # Warm standby: keep the pinned payload image resident in *every* node's
-    # local podman storage, not just wherever the primary currently runs. A standby
-    # is cold by default — the primary can hold the role for months — so without
-    # this, promotion pays a cold multi-GB `podman load` *on the failover-critical
-    # path*, defeating the point of synchronous HA (a fast takeover). This oneshot
-    # runs at boot on all nodes (not promoter-gated), is idempotent, and re-fires
-    # when a new generation pins a different image (restartTriggers). The image is
-    # per-node *code*, so it lives in node-local storage, never on the DRBD
-    # volume. (v0 loads it from the closure-baked tar; the registry-pull model
-    # warms the same way — `podman pull` the digest on every node.)
-    systemd.services.briard-payload-warm = lib.mkIf havePayload {
-      description = "Warm the pinned payload image into local podman storage (standby readiness)";
-      wantedBy = [ "multi-user.target" ];
-      restartTriggers = [ cfg.imageFile ];
-      # `config.virtualisation.podman.package`, NEVER `pkgs.podman`, here and at every other podman
-      # call site in this image. They are not the same derivation: the NixOS module wraps podman
-      # with its own helper/binary paths (`/run/wrappers` for the setuid shadow, systemd for
-      # container healthchecks), so naming `pkgs.podman` in a unit does not reuse the podman that
-      # is on the node's PATH -- it ships a SECOND, differently-wrapped copy. Measured at 57 MB of
-      # pure duplication ([B.5]), and worse than the size: two runtimes on one node, of which the
-      # unit-local one is the one missing the wrappers.
-      path = [ config.virtualisation.podman.package ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "briard-payload-warm" ''
-          set -eu
-          podman image exists ${cfg.image} || podman load -i ${cfg.imageFile}
-          # Point the serve tag at the baked default; converge may re-point it.
-          podman tag ${cfg.image} ${serveImage}
-        '';
-      };
-    };
-
     # Pre-stage image tarballs into local podman storage at boot: images that must already be
-    # RESIDENT because nothing on the failover path may pull. Two callers want that, and they are
-    # different facts:
-    #   - a rolling update pins an image the data was written by, and converge/UpgradePayload only
-    #     ever *select* (retag) — never build/pull — so the target has to be here already;
-    #   - a runtime-installed service renders `Pull=never` against a digest, so its image has to be
-    #     here too, on a node that may have no baked payload at all.
-    # Idempotent; independent of which image serves.
-    #
-    # NOT gated on havePayload, and that is the point ([V3b.3](e1)). It was, which made staging an
-    # image and HAVING a baked payload the same statement — so a shipped zero-service guest could
-    # not carry an image for a service to be installed against, which is exactly the node every
-    # user runs. The `after=` below names a unit that does not exist on such a node; systemd
-    # ignores an ordering dependency on an absent unit, so the oneshot simply runs on its own.
-    #
-    # ⚠️ The OPTION still lives at `briard.payload.stagedImages`, which is now a misnomer: staging
-    # is a node fact, not a payload-slot one. It moves when the slot is deleted ([V3b.3](e2));
-    # renaming it here would churn every caller twice.
-    systemd.services.briard-payload-stage = lib.mkIf (cfg.stagedImages != [ ]) {
-      description = "Pre-stage upgrade-target payload images into local podman storage";
+    # RESIDENT because nothing on the failover path may pull. A runtime-installed service renders
+    # `Pull=never` against a digest, so its image has to be here before it is installed.
+    # Idempotent, runs on EVERY node (a standby is where a cold pull would hurt), and independent
+    # of what is installed.
+    systemd.services.briard-stage = lib.mkIf (config.briard.stagedImages != [ ]) {
+      description = "Pre-stage service images into local podman storage";
       wantedBy = [ "multi-user.target" ];
-      after = [ "briard-payload-warm.service" ];
       path = [ config.virtualisation.podman.package ]; # the module's podman, not a second copy
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "briard-payload-stage" ''
+        ExecStart = pkgs.writeShellScript "briard-stage" ''
           set -eu
-          ${lib.concatMapStringsSep "\n" (img: "podman load -i ${img}") cfg.stagedImages}
+          ${lib.concatMapStringsSep "\n" (img: "podman load -i ${img}") config.briard.stagedImages}
         '';
       };
     };
 
-    # Converge-at-promotion: before the payload serves, reconcile this node's running
-    # code to the code identity the data carries (imagePinFile, replicated). The data is
-    # ground truth for "what code should run here" — same reconcile-from-DRBD pattern as the
-    # reactor reading role. Ordered after the volume mount (must read the file) and required
-    # by the payload, so on a mismatch the payload can't serve.
-    #
-    # It selects rather than switches: a local `podman tag`, same-version-safe and off the nix
-    # lock. A node that cannot satisfy the pin — the image is not staged here — defers instead
-    # of serving old code against new-format data. Empty/absent pin => proceed (no-op).
-    #
-    # It gates on the SERVICE identity only, never on the OS closure. A system closure is a
-    # property of the node, not of the data, so refusing to serve over an OS mismatch would
-    # defer a node for no data-safety reason — and would do it at promotion, i.e. during a
-    # failover, which is the worst possible moment to withhold service.
-    systemd.services.briard-converge = {
-      description = "Gate the payload on code↔data identity";
-      wantedBy = [ ];
-      after = [ "briard-data.service" "briard-payload-warm.service" ];
-      requires = [ "briard-data.service" ];
-      path = [ pkgs.coreutils config.virtualisation.podman.package ]; # not a second podman
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "briard-converge" ''
-          set -eu
-
-          # This gate never switches the OS generation: the host agent is the single owner
-          # of os.switch, so there is no autonomous nix-profile action here to race a
-          # host-managed op on the profile lock (the class, impossible by
-          # construction). There is no /run/briard-maintenance defer marker
-          # — with nothing autonomous to coordinate, there is nothing to hold off.
-
-          # Payload image — the data-format identity: the
-          # payload writes the service data, so a promoting node must run the image the data
-          # was written by. Content-addressed, pre-staged on every node by the warm-load, so
-          # this is a select (a local retag), never a build/pull on the failover path.
-          # Re-point the serve tag, or refuse.
-          #
-          # This is the whole gate now. The whole-OS check that used to follow it went with
-          # the .code-system pin: a system closure is a property of the node, not of
-          # the data, so refusing to serve over it deferred a node for no data-safety reason
-          # — at promotion, which is the worst possible moment to withhold service.
-          pin=$(cat ${imagePinFile} 2>/dev/null || true)
-          if [ -n "$pin" ]; then
-            if podman image exists "$pin"; then
-              podman tag "$pin" ${serveImage}
-            else
-              echo "briard-converge: pinned payload image $pin not staged; refusing to promote" >&2
-              exit 1 # fail-safe: defer rather than serve stale code against new-format data
-            fi
-          fi
-          exit 0 # the image matches the data (or nothing pinned) -> serve
-        '';
-      };
-    };
-
-    # Promoter-driven (runs only on the primary), but ordered after the warm-load so
-    # a promotion can't race it into a cold load — on an already-warm survivor this
-    # is instant, so it costs nothing at failover; on a node's first-ever boot it
-    # waits for the one load that has to happen sometime anyway. Also gated on
-    # briard-converge: the payload must not serve until the code matches the data.
-    systemd.services.podman-briard-payload = lib.mkIf havePayload {
-      wantedBy = lib.mkForce [ ];
-      after = [ "briard-payload-warm.service" "briard-converge.service" ];
-      wants = [ "briard-payload-warm.service" ];
-      requires = [ "briard-converge.service" ];
-    };
-
-    # 3. services — CONVERGE-AT-PROMOTION ([V3b.3](f)). Once the volume is mounted, read every
+    # 2. services — CONVERGE-AT-PROMOTION ([V3b.3](f)). Once the volume is mounted, read every
     #    manifest under its `.services/`, render, warm and start them. This node makes itself
     #    match the VOLUME, so what a node was told — or whether it was even up when the install
     #    ran — stops deciding what the household gets after a failover.
@@ -1152,7 +932,8 @@ in
     #    service address, and a primary with no address is already reported unhealthy. That is
     #    deliberate: built as a side-effect that shrugs, converge would put fallible work (render,
     #    possibly a pull) on the promotion path and leave the silent-healthy hole exactly as
-    #    dangerous. Same shape, and the same reason, as briard-converge's own refusal.
+    #    dangerous. Same shape, and the same reason, as the deleted `briard-converge`'s refusal:
+    #    a gate that shrugs is not a gate.
     #
     #    THE SERVICE UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "a service error
     #    alerts but never demotes" mechanically true — drbd-reactor never sees them, so a crashed
@@ -1180,7 +961,7 @@ in
       };
     };
 
-    # 4. vip — claim the service address and gratuitous-ARP it so the L2 segment
+    # 3. vip — claim the service address and gratuitous-ARP it so the L2 segment
     #    learns its (new) home. BOTH the address and the device are agent-determined
     #    (net.configure writes VIP_ADDR + VIP_DEV to ${vipEnvPath}). Under the
     #    unified NIC layout eth1 is always the DRBD NIC and the VIP lives on
@@ -1267,12 +1048,11 @@ in
       unitConfig.ConditionPathExists = mdnsEnvPath;
     };
 
-    # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443, forwarding to
-    #    the payload. Woven into the
+    # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443. Woven into the
     #    promoter chain via briard-vip (wantedBy + partOf), NOT the drbd-reactor start-list —
     #    so it tracks the primary role (up on promote, down on demote) without touching the
-    #    reactor snippet, leaving the six DRBD mechanism tests untouched (same trick as
-    #    briard-converge). Cert/key live on the DRBD volume (${tlsDir}) so they replicate +
+    #    reactor snippet, leaving the six DRBD mechanism tests untouched. Cert/key live on the
+    #    DRBD volume (${tlsDir}) so they replicate +
     #    survive failover; the proxy hot-reloads them, so a renewal is gap-free.
     #    wantedBy (not requires) => a missing cert never fails the VIP: :443 just doesn't
     #    answer until a cert exists, while :80 keeps serving — which is the *shipped* state of
@@ -1281,15 +1061,17 @@ in
       description = "Briard front door (serves the VIP on :80/:443)";
       wantedBy = [ "briard-vip.service" ];
       partOf = [ "briard-vip.service" ];
-      after = [ "briard-vip.service" "podman-briard-payload.service" ];
+      after = [ "briard-vip.service" "briard-services.service" ];
       serviceConfig = {
-        # No payload => no -backend: the front door then serves Briard's own page and answers
-        # its own /healthz, which is what makes a node with nothing installed *ready* rather
-        # than permanently unhealthy (the zombie state).
+        # NO -backend, ever, as of [V3b.3](e2): the front door serves Briard's own page and
+        # answers its own /healthz. That is right for a node with nothing installed (ready, not
+        # permanently unhealthy — the zombie state), and it is a KNOWN LOSS for a node that has a
+        # service installed: the backend it used to proxy to came from the build-time slot, and
+        # the slot is gone. Nothing reads a runtime manifest's port/healthPath here yet, so an
+        # installed service answers on its own port and the VIP's :80/:443 does not reach it.
+        # Recorded rather than fixed, because wiring it belongs to the front door's own item.
         ExecStart = "${pkgs.reverse-proxy}/bin/reverse-proxy"
           + " -http :80 -listen :443"
-          + lib.optionalString havePayload
-            " -backend http://127.0.0.1:${toString cfg.port} -backend-health ${cfg.healthPath}"
           + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem";
         Restart = "on-failure";
         RestartSec = 2;

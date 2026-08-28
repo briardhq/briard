@@ -363,11 +363,10 @@ func managerWithAssessor(ctl control, healthURL string, a ReadinessAssessor) *Ma
 	})
 }
 
-// The S1 gate's verdicts, driven on the pair the upgrade paths actually call. Both OS methods
-// and the payload upgrade consult it identically -- capture a baseline while the old code still
-// serves, then assess once the floor has passed -- so the semantics are asserted once, here,
-// and each sequence is left to prove only that it consults them (agent/host/osupgrade_test.go,
-// TestUpgradePayloadReadinessRollback below).
+// The S1 gate's verdicts, driven on the pair the upgrade paths actually call. Every upgrade
+// path consults it identically -- capture a baseline while the old code still serves, then
+// assess once the floor has passed -- so the semantics are asserted once, here, and each
+// sequence is left to prove only that it consults them (agent/host/osupgrade_test.go).
 //
 // A non-nil error means "roll back"; everything else keeps the upgrade. The degrade cases are
 // the load-bearing ones: S1 must never revert a node because its own telemetry broke.

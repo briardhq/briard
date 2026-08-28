@@ -1254,8 +1254,8 @@ func dispatch(x Executor) dispatchFunc {
 			return nil, run("systemctl", "stop", "drbd-reactor.service")
 		case verbReactorResume:
 			// Restart the daemon; it re-reads config and adopts the already-Primary services,
-			// with no restart/demote. (No maintenance marker to clear -- briard-converge is a switch-free gate, so
-			// nothing autonomous races a managed op.)
+			// with no restart/demote. (No maintenance marker to clear -- nothing in the guest
+			// switches the OS on its own, so nothing autonomous races a managed op.)
 			return nil, run("systemctl", "start", "drbd-reactor.service")
 		case verbNetConfigure:
 			var req netConfigureRequest

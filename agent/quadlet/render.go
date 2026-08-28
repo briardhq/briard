@@ -92,15 +92,16 @@ const prefix = "briard-"
 //     container an AUTOMATIC dependency on the pull unit, which turns PROMOTION INTO A PULL —
 //     the multi-GB cold load on the failover-critical path that warm-standby exists to prevent
 //     . The container names the digest directly and sets Pull=never, so a cold node
-//     FAILS FAST instead of fetching, exactly as briard-converge already refuses rather than
-//     pulling. Defer, don't pull, on the failover path.
+//     FAILS FAST instead of fetching. Defer, don't pull, on the failover path: what a promoting
+//     node may do about a missing image is converge's decision (it pulls, by digest), never a
+//     side-effect of starting a unit.
 //
 //  2. AutoUpdate is never set. Podman would change image identity behind our back, breaking
 //     announce-before-act and the health gate. Our upgrade path owns image identity.
 //
 // The .image units carry [Install] WantedBy=multi-user.target: boot-time, on every node, NOT
-// promoter-gated — structurally identical to today's briard-payload-warm. Nothing else gets an
-// [Install] section, because the promoter decides what runs.
+// promoter-gated — warm standby is a node fact, and a standby is exactly where a cold pull would
+// hurt. Nothing else gets an [Install] section, because the promoter decides what runs.
 func Render(m manifest.Manifest) (Rendered, error) {
 	if err := m.Validate(); err != nil {
 		// Rendering an unvalidated manifest is how an injected line reaches a unit file. The
@@ -111,8 +112,8 @@ func Render(m manifest.Manifest) (Rendered, error) {
 	out := Rendered{Files: map[string]string{}}
 
 	// The pod. Host networking is OUR uniform substrate decision, not a per-service capability —
-	// which is why the manifest cannot ask for it (or refuse it). It matches what the baked
-	// payload slot already does (--network=host) and what service discovery on a home LAN needs.
+	// which is why the manifest cannot ask for it (or refuse it). It matches what the deleted baked
+	// slot did (--network=host) and what service discovery on a home LAN needs.
 	out.Files[base+".pod"] = join(
 		"[Pod]",
 		"PodName="+base,

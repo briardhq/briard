@@ -19,11 +19,11 @@ import (
 // system closure) — the {code+data} rollback unit. ("unit" here is
 // the systemd/rollback sense, not the guest.)
 //
-// Scope is asymmetric on purpose: payload lifecycle, health and data
+// Scope is asymmetric on purpose: service lifecycle, health and data
 // snapshot/restore are per-service (contain the data blast radius); the code half
-// (SystemPath/Switch) is whole-VM. So Snapshot/Restore move only data, and it is
-// the payload upgrade sequence (Manager.UpgradePayload) that moves image and data
-// back together on a failed health-gate. The OS upgrade moves neither: it is a
+// (SystemPath/Switch) is whole-VM. So Snapshot/Restore move only data, and it is the
+// SERVICE-install sequence (agent/host/service.go) that moves manifest and data back
+// together on a failed health-gate. The OS upgrade moves neither: it is a
 // property of the node, and it leaves the workload alone.
 type GuestManager interface {
 	Start(ctx context.Context, spec model.ServiceSpec) error
@@ -156,7 +156,7 @@ type Config struct {
 	// coordination (unit tests / non-promoter payloads).
 	ReactorSnippet string
 	// ReadinessAssessor, if set, layers the differential S1 health-gate above the
-	// HTTP-200 floor: Upgrade/UpgradePayload capture its Baseline before quiesce
+	// HTTP-200 floor: the upgrade paths capture its Baseline before quiesce
 	// and consult its verdict after the floor passes. nil = floor-only (the default).
 	ReadinessAssessor ReadinessAssessor
 	// Logf, if set, receives one line per upgrade step (progress/observability).
@@ -492,9 +492,10 @@ func (m *Manager) Restore(ctx context.Context, ref SnapshotRef) error {
 //
 // What is left here is what the guest genuinely owns -- Switch, StageBoot, AwaitReady,
 // CaptureBaseline/Assess, EnterMaintenance/ExitMaintenance -- called by the host in order, on
-// both paths, rather than composed into a second sequence. UpgradePayload below is unmoved and
-// unchanged: that one IS a service operation, and {image + data} rolling back together is the
-// whole point of it.
+// both paths, rather than composed into a second sequence. The service half went the other way
+// entirely: {manifest + data} rolling back together is still the whole point, but a service is
+// installed from a runtime manifest now, so that sequence lives host-side with the manifest
+// ([V3b.3](e1)/(e2)) and this package's payload upgrade is gone.
 
 // CollectStore drops the generation this upgrade displaced, at commit.
 // Best-effort and deliberately last: the node is healthy on the new code either way, and a

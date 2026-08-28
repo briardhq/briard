@@ -110,13 +110,10 @@ func main() {
 			Peers: []drbd.Peer{{Name: env("NODE", "guest"), NodeID: 0, Address: "127.0.0.1:7789", Disk: "/dev/vdb"}},
 		},
 		FreshInit: true, // the test always starts from a blank data disk
-		// The ordered unit: data mount -> payload container -> VIP claim. NO_PAYLOAD drops the
-		// middle member, which is the SHIPPED shape (the payload slot is optional, and
-		// naming a unit that does not exist fails the whole chain and takes the VIP with it).
-		// It mirrors what the host agent derives from whether a service is installed, and it is
-		// what lets a test that has no interest in a workload boot the artifact a stranger
-		// installs rather than a fixture variant of it.
-		Promoter: promoterUnits(os.Getenv("NO_PAYLOAD") == ""),
+		// The ordered unit: data mount -> converge -> VIP claim. The same three units on every
+		// node whatever is installed ([V3b.3](e2)) -- what a node runs comes off the VOLUME at
+		// promotion, so the chain has nothing to vary with.
+		Promoter: promoterUnits(),
 	}
 
 	// One persistent control connection for the whole guest session -- bring-up AND the
@@ -318,18 +315,11 @@ func bounded(ctx context.Context) func(time.Duration, func(context.Context) erro
 	}
 }
 
-// payloadUnit is the payload's promoter-managed systemd unit inside the guest (the
-// oci-container service). Matches the Promoter target in the bring-up spec.
-const payloadUnit = "podman-briard-payload.service"
-
-// promoterUnits is the ordered promoter chain, with or without a payload. It mirrors
-// nixosTest/lib.nix's promoterSnippet and the host agent's promoterUnits: the front door is
-// not a member either way -- it rides briard-vip (wantedBy + partOf), so it tracks the
-// primary regardless.
-func promoterUnits(payload bool) []string {
-	units := []string{"briard-data.service"}
-	if payload {
-		units = append(units, payloadUnit)
-	}
-	return append(units, "briard-vip.service")
+// promoterUnits is the ordered promoter chain. It mirrors nixosTest/lib.nix's promoterSnippet
+// and the host agent's promoterUnits, both of which are the same constant: the services a node
+// runs are read off the volume by briard-services AFTER promotion, so no member varies with
+// them. The front door is not a member -- it rides briard-vip (wantedBy + partOf), so it tracks
+// the primary regardless.
+func promoterUnits() []string {
+	return []string{"briard-data.service", "briard-services.service", "briard-vip.service"}
 }

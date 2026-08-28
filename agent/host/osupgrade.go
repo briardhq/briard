@@ -42,8 +42,8 @@ import (
 // line: reading a service to decide whether to revert the OS is not touching it.
 //
 // WHAT THE ROLLBACK POINT COVERS: the qcow2 snapshot, and deliberately no btrfs data snapshot.
-// An OS upgrade cannot change payload code -- the payload's identity is a runtime pin on the
-// replicated volume, re-pointed only by UpgradePayload -- so there is no data migration to
+// An OS upgrade cannot change service code -- a service's identity is the manifest on the
+// replicated volume, re-pointed only by a service install -- so there is no data migration to
 // undo, and reverting the subvolume would delete real user data written during the gate
 // window. What an OS upgrade *can* disturb (/var/lib/nixos, /var/lib/containers, systemd
 // state) all lives on the qcow2, which is exactly what the snapshot holds.
