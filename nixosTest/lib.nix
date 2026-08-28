@@ -15,22 +15,19 @@ let
   # by the harness is rendered by the same code the agent runs.
   quadletRender = pkgs.callPackage ./quadlet-render-pkg.nix { };
 
-  # The promoter's ordered unit, identical everywhere it's used, and STATIC ([V3b.3](f)):
-  # data -> [baked payload] -> services -> vip. `briard-services` is what converges this node to
-  # the manifests on the volume once the mount exists, which is why the runtime-installed services
-  # are not members and a fixture no longer changes this list at all. The front door is not listed
-  # either; it rides briard-vip (wantedBy + partOf), so it tracks the primary regardless. This
-  # mirrors what the host agent writes in production (host.promoterUnits).
-  #
-  # `payload` is the BUILD-TIME slot, the one remaining conditional member and a fixture mechanism
-  # on its way out ([V3b.3](e1)). It is conditional because the guest does not define that unit
-  # with an empty slot, and naming a unit that does not exist fails the whole ordered chain.
+  # The promoter's ordered unit: the same three units everywhere, on every node, whatever is
+  # installed ([V3b.3](f)/(e1)). `briard-services` is what converges this node to the manifests on
+  # the volume once the mount exists, which is why the services themselves are not members. The
+  # front door is not listed either; it rides briard-vip (wantedBy + partOf), so it tracks the
+  # primary regardless. This mirrors what the host agent writes in production
+  # (host.promoterUnits), which also takes no arguments any more.
   promoterSnippet =
-    payload:
     let
-      units = [ "briard-data.service" ]
-        ++ lib.optional payload "podman-briard-payload.service"
-        ++ [ "briard-services.service" "briard-vip.service" ];
+      units = [
+        "briard-data.service"
+        "briard-services.service"
+        "briard-vip.service"
+      ];
     in
     ''
       [[promoter]]
@@ -79,7 +76,7 @@ let
   # test legitimately stands in for — the bytes a host agent would have fetched from the catalog
   # and warmed onto the node before anything promoted.
   #
-  # This is what replaces the baked payload slot ([V3b.3](e)). The slot put a container in the
+  # This is what replaced the baked payload slot ([V3b.3](e2)). The slot put a container in the
   # guest image at BUILD time through `oci-containers` — a mechanism no user has, since a shipped
   # node installs at runtime from a manifest. Tests riding the slot therefore proved a path nobody
   # ships; tests riding this one prove the path everyone does.
@@ -178,12 +175,11 @@ let
       resource,
       diskless ? false,
       promoter ? true,
-      payload ? true,
-      # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot,
-      # INSTEAD of the build-time payload slot. The test then installs it onto the volume with
-      # install_fixture once something has promoted. It no longer changes the promoter chain --
-      # the chain is static ([V3b.3](f)) -- so `payload` and `fixture` differ only in which
-      # mechanism puts a workload on the node.
+      # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
+      # test then installs it onto the volume with install_fixture once something has promoted.
+      # This is the ONLY way a test node gets a workload ([V3b.3](e2) deleted the build-time payload
+      # slot), and it is the way a shipped node gets one, which is the point: a test that put a
+      # container on a node by a mechanism no user has proves a path nobody runs.
       fixture ? null,
     }:
     { config, ... }:
@@ -238,17 +234,21 @@ let
         "d /run/briard/drbd.d 0755 root root -"
         "L+ /run/briard/drbd.d/r0.res - - - - ${pkgs.writeText "r0.res" resource}"
       ]
-      # The snippet is STATIC now ([V3b.3](f)), so a fixture no longer writes its own: the chain
-      # names briard-services, and what the node runs comes from the VOLUME at promotion. Only the
-      # build-time payload slot is still conditional, and a fixture node has no slot occupied.
+      # The snippet is STATIC ([V3b.3](f)): the chain names briard-services, and what the node runs
+      # comes from the VOLUME at promotion, so no test's workload choice can change it.
       ++ lib.optionals promoter [
         "d /run/briard/drbd-reactor.d 0755 root root -"
-        "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" (promoterSnippet (payload && fixture == null))}"
+        "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" promoterSnippet}"
       ];
       systemd.services.briard-test-fixture-install =
         mkIf (fixture != null) (fixtureInstall fixture config);
     };
 in
 {
-  inherit mkResource mkNode fixtureHelpers;
+  inherit
+    mkResource
+    mkNode
+    fixtureInstall
+    fixtureHelpers
+    ;
 }

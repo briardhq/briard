@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
         # would sit waiting for a server that does not exist on this L2.
         "--setenv=VIP_DEV=eth1 --setenv=VIP_ADDR=192.168.1.100/24 "
         # NO_PAYLOAD: the zero-service promoter chain (the shipped shape). This test boots
-        # the SHIPPED disk, whose payload slot is empty -- naming a unit that does not exist
+        # the SHIPPED disk, which runs no service -- naming a unit that does not exist
         # fails the whole chain and takes the VIP down with it.
         "--setenv=NO_PAYLOAD=1 "
         "--setenv=STAGE_SYSTEM=${stagedSystem} "

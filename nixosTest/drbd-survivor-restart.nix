@@ -23,7 +23,7 @@
 # The test ASSERTS the outcome we want in act 2 (the node comes back and serves). If DRBD really
 # cannot do that, this test fails — and that failure is the finding, stated in the one place that
 # cannot be blamed on our own plumbing.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
@@ -32,7 +32,7 @@ let
     { name = "node2"; id = 1; }
     { name = "witness"; id = 2; diskless = true; }
   ];
-  diskNode = h.mkNode { inherit resource; };
+  diskNode = h.mkNode { inherit resource fixture; };
   witnessNode = h.mkNode {
     inherit resource;
     diskless = true;
@@ -52,6 +52,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     disk_nodes = [node1, node2]
     machines = [node1, node2, witness]
     start_all()
@@ -59,6 +60,9 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
     for m in disk_nodes:
+        # The image is warmed on both disk nodes before anything promotes: the survivor renders
+        # from the volume when it takes over and must not need a pull to do it.
+        m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("drbdadm create-md --force r0")
     for m in machines:
         m.succeed("systemctl start drbd@r0.target")
@@ -67,7 +71,11 @@ pkgs.testers.runNixOSTest {
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
-    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
+    # Nothing is installed yet, so the front door answers for itself; then the promoted node puts
+    # the service on the volume, which is what the restarted survivor later converges from.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
+    install_fixture(next(m for m in disk_nodes if m.execute("drbdadm role r0")[1].strip() == "Primary"))
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()

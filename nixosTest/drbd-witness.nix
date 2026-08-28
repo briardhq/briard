@@ -6,7 +6,7 @@
 # disk node and the lone survivor still fails over, because survivor + witness =
 # 2 of 3 = quorum; a bare 2-node cluster (1 of 2) could not. That is the whole
 # point of the diskless tiebreaker, and what makes 2-node homes genuinely HA.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
@@ -15,7 +15,7 @@ let
     { name = "node2"; id = 1; }
     { name = "witness"; id = 2; diskless = true; }
   ];
-  diskNode = h.mkNode { inherit resource; };
+  diskNode = h.mkNode { inherit resource fixture; };
   # The witness: no backing disk, no promoter — a pure diskless quorum voter.
   witnessNode = h.mkNode {
     inherit resource;
@@ -36,6 +36,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     import json
 
     disk_nodes = [node1, node2]
@@ -46,6 +47,9 @@ pkgs.testers.runNixOSTest {
         m.succeed("modprobe drbd")
     # Only the disk nodes have metadata to create; the witness is diskless.
     for m in disk_nodes:
+        # The image is warmed on both disk nodes before anything promotes: the survivor renders
+        # from the volume when it takes over and must not need a pull to do it.
+        m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("drbdadm create-md --force r0")
     for m in machines:
         m.succeed("systemctl start drbd@r0.target")
@@ -59,13 +63,17 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 
-    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
+    # The front door answers first with nothing installed -- the shipped state -- and the service
+    # is put on the volume by whoever promoted.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
     primary = next(m for m in disk_nodes if role(m) == "Primary")
-    primary.wait_until_succeeds("[ $(grep -oE '[0-9]+' /var/lib/briard/dummy/state.json) -ge 3 ]")
+    dataroot = install_fixture(primary)
+    primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
+    primary.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' {dataroot}/app/state.json) -ge 3 ]")
     t1 = int(json.loads(primary.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"primary={primary.name} tick={t1}")
 

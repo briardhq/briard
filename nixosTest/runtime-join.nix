@@ -14,18 +14,21 @@
 # test writes its own .res straight into the product path the agent uses (/run/briard/drbd.d) --
 # exactly what the guest's drbd.provision/drbd.adjust verbs do. No nested KVM (the L1 node
 # runs DRBD directly), so it rides the fast `drbd` tag.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   inherit (pkgs.lib) concatMapStringsSep mkForce mkIf;
   inherit (pkgs) lib;
+  # Only for the fixture wiring: the node itself is rolled here (see mkNode below).
+  h = import ./lib.nix { inherit pkgs guestModule; };
 
-  # The promoter's ordered chain (identical to lib.nix): workload -> VIP on the primary.
+  # The promoter's ordered chain (identical to lib.nix), and STATIC ([V3b.3](f)): the services are
+  # not members -- briard-services starts them from the volume once the mount exists.
   promoterSnippet = ''
     [[promoter]]
     [promoter.resources.r0]
     adjust-resource-on-start = false
-    start = [ "briard-data.service", "podman-briard-payload.service", "briard-vip.service" ]
+    start = [ "briard-data.service", "briard-services.service", "briard-vip.service" ]
   '';
 
   # A node like lib.nix's mkNode, but with no baked r0.res so the testScript can write and rewrite
@@ -39,7 +42,17 @@ let
       networking.interfaces.eth1.ipv4.addresses = [
         { address = "10.0.0.${toString config.virtualisation.test.nodeNumber}"; prefixLength = 24; }
       ];
-      environment.systemPackages = [ pkgs.curl ];
+      # curl for the VIP probe; btrfs + the agent for install_fixture, which stands in for the
+      # Primary-only half of the install path (lib.nix says why those two are what it needs).
+      environment.systemPackages = [
+        pkgs.curl
+        pkgs.btrfs-progs
+        config.briard.agentPackage
+      ];
+      # The fixture's image, warmed at boot on every node -- the same unit lib.nix's mkNode wires,
+      # reused rather than re-written, because this file only rolls its own node for the r0.res
+      # part.
+      systemd.services.briard-test-fixture-install = mkIf (!diskless) (h.fixtureInstall fixture config);
       # The service address, NAMED -- exactly as lib.nix's mkNode does, and for the reason that
       # node exists. This file builds its own node instead of using mkNode, so it does not inherit
       # that mkForce. [V3.19] removed the guest's baked VIP (`vipFallback = ""`) because no address
@@ -117,11 +130,14 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     start_all()
     for m in [anchor1, anchor2, witness]:
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
         m.succeed("mkdir -p /run/briard/drbd.d")
+    for m in [anchor1, anchor2]:
+        m.wait_for_unit("briard-test-fixture-install.service") # the image, warm on both anchors
 
     # --- Phase 1: anchor1 comes up single-node (mesh-of-one) green, serving the VIP ---
     anchor1.succeed("cp ${singleRes} /run/briard/drbd.d/r0.res")
@@ -130,9 +146,14 @@ pkgs.testers.runNixOSTest {
     anchor1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")  # peer-less -> UpToDate
     anchor1.succeed("systemctl start drbd-reactor.service")
     anchor1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
+    # The front door first, with nothing installed: that is what a node coming up single-handed
+    # actually looks like. Then the service is installed onto the volume it now holds, which is
+    # what the joining anchor later replicates and converges from.
+    anchor1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
+    install_fixture(anchor1)
     anchor1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
-    # Let the payload persist a margin of ticks on the single node, then snapshot the counter --
+    # Let the service persist a margin of ticks on the single node, then snapshot the counter --
     # our data-survival handle across the pairing and the later failover.
     anchor1.wait_until_succeeds(
         "test $(curl -fsS http://192.168.1.100:8080/state | tr -cd 0-9) -ge 10", timeout=60

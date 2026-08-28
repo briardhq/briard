@@ -13,7 +13,7 @@
 # neither covers is a *minority* survivor correctly refusing to become primary. Uses
 # the same diskless witness VM — the DRBD quorum mechanism is identical whether the
 # witness runs locally or in our cloud (only the deployment location is a v2 concern).
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
@@ -22,7 +22,7 @@ let
     { name = "node2"; id = 1; }
     { name = "witness"; id = 2; diskless = true; }
   ];
-  diskNode = h.mkNode { inherit resource; };
+  diskNode = h.mkNode { inherit resource fixture; };
   witnessNode = h.mkNode {
     inherit resource;
     diskless = true;
@@ -42,6 +42,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     import time
 
     disk_nodes = [node1, node2]
@@ -51,6 +52,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
     for m in disk_nodes:
+        m.wait_for_unit("briard-test-fixture-install.service") # the image, warm before any promotion
         m.succeed("drbdadm create-md --force r0")
     for m in machines:
         m.succeed("systemctl start drbd@r0.target")
@@ -61,7 +63,9 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 
-    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
+    # The front door first, with nothing installed -- the shipped state -- then the service goes
+    # onto the volume from whichever node promoted.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
@@ -69,6 +73,9 @@ pkgs.testers.runNixOSTest {
     primary = next(m for m in disk_nodes if role(m) == "Primary")
     secondary = next(m for m in disk_nodes if m != primary)
     print(f"primary={primary.name}")
+    install_fixture(primary)
+    service_units = fixture_units(primary)
+    primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
     # WAN outage: the cloud witness becomes unreachable. Both disk nodes are still
     # up = 2-of-3 = majority, so the cluster stays quorate and keeps serving.
@@ -89,7 +96,8 @@ pkgs.testers.runNixOSTest {
     time.sleep(20)
     secondary.succeed("drbdadm role r0 | grep -q Secondary")
     secondary.fail("ip -4 addr show dev eth1 | grep -q 192.168.1.100")
-    secondary.fail("systemctl is-active podman-briard-payload.service")
+    for unit in service_units:
+        secondary.fail(f"systemctl is-active {unit}")
     secondary.fail("curl -fsS --max-time 3 http://192.168.1.100:8080/healthz")
   '';
 }

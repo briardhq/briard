@@ -24,13 +24,14 @@
 # a stopwatch. Moving it onto lib.nix — the scaffolding single-node-promoter and reactor-evict
 # already use — is one of the two steps that let the fixture guest disk be deleted, which is
 # (e4)'s whole point. What it costs is stated at the pause below.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   # A single node: mesh-of-one, the shape single-node-promoter proves. The deadlock is a property
   # of one node's promoter stopping, so a peer would only add a variable.
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
   # The drop-in drbd-reactor writes over its own promoter target, and the thing whose removal
@@ -44,10 +45,12 @@ pkgs.testers.runNixOSTest {
   nodes.node1 = node;
 
   testScript = ''
+    ${h.fixtureHelpers}
     import time
 
     node1.start()
     node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service") # the image, warmed before anything promotes
     node1.succeed("modprobe drbd")
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
@@ -59,6 +62,11 @@ pkgs.testers.runNixOSTest {
     # pausing before the chain finished would be timing something else.
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
+    # The services have to be RUNNING for the deadlock to be the thing under test, and only a
+    # promoted node can install them -- so the fixture goes on after the chain converges, which
+    # is the same order the product's install path lives under.
+    install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     node1.succeed("systemctl is-active drbd-services@r0.target")
 
@@ -97,7 +105,9 @@ pkgs.testers.runNixOSTest {
     # promoted services and the DRBD Primary stay up while the daemon is down. Without this, a
     # deadlock "fixed" by tearing everything down would time in milliseconds and pass.
     node1.succeed("drbdadm role r0 | grep -q Primary")
-    node1.succeed("systemctl is-active briard-data.service podman-briard-payload.service briard-vip.service")
+    node1.succeed("systemctl is-active briard-data.service briard-services.service briard-vip.service")
+    for unit in fixture_units(node1):
+        node1.succeed(f"systemctl is-active {unit}")
     print(f"OK: reactor.pause completed in {ms}ms (no deadlock), services still up")
   '';
 }

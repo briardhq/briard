@@ -32,12 +32,6 @@
 # guestAgentEnv (default none) sets extra environment on the briard-guest-agent unit — used by
 # the deadman test to bake a short BRIARD_DEADMAN so the reflex fires in seconds.
 #
-# payloadModule (default null) selects a service into the payload slot. The DEFAULT — none — is
-# the shipped artifact: `install.sh` lays this disk down and the node comes up running no
-# workload at all. Tests that need a payload to write checkable data pass the fixture
-# (nixosTest/dummy-payload.nix), which is why there is a second disk build at all; a runtime install's
-# runtime service install removes the need for it, and this argument with it.
-#
 # bakeTargets (default true) decides whether the upgrade-target generations above are also
 # BAKED into the image. False means they are built and exposed as passthrus but the guest must
 # FETCH them — which is what a field node does, and the only way to prove a fetched closure is
@@ -52,7 +46,7 @@
 # parameter. (Distinct from mkGuest's own `extraModules`, which is per-generation and is what
 # MAKES each target differ.)
 { nixpkgs, pkgs, overlay, stageImages ? [ ], stageSystemModule ? null
-, rebootSystemModule ? null, guestAgentEnv ? { }, payloadModule ? null
+, rebootSystemModule ? null, guestAgentEnv ? { }
 , bakeTargets ? true, commonModules ? [ ]
   # The release id stamped into the guest's agent. Defaulted so every existing caller (the
   # lab fleet disks, the test variants) keeps building unchanged; flake.nix passes the real one.
@@ -276,7 +270,7 @@ let
         { nixpkgs.overlays = [ overlay ]; }
         ./configuration.nix
         bootModule
-      ] ++ lib.optional (payloadModule != null) payloadModule ++ commonModules ++ extraModules;
+      ] ++ commonModules ++ extraModules;
     };
 
   # An optional distinct upgrade-target generation (the running system + a delta), staged

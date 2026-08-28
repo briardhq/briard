@@ -3,15 +3,15 @@
 # with nothing installed is a working node: the volume mounts, the promoter chain completes,
 # the VIP comes up, and the front door answers there.
 #
-# It is the counterpart to every other test in this directory, which select the dummy fixture
-# into the payload slot. That fixture is never the default, so the shipped disk
-# carried a tick counter and nothing anywhere booted the shape a stranger actually installs —
-# the gap this test closes and then keeps closed.
+# It is the counterpart to every other test in this directory, which INSTALL the dummy fixture as
+# a catalogued service after promoting. Nothing bakes a workload into a guest any more
+# ([V3b.3](e2)), so this shape is no longer one test's careful arrangement — it is what every node
+# boots as, and what the others then add something to.
 #
-# The failure it guards against is specific and was real: with the payload unit unconditionally
-# in the promoter chain, an empty slot means the chain names a unit that does not exist, drbd-
-# reactor fails the whole ordered unit, and the VIP never comes up. A node that installs
-# cleanly and then serves nothing at all.
+# The failure it guards against is specific and was real: with a workload unit unconditionally in
+# the promoter chain, a node with nothing installed named a unit that does not exist, drbd-reactor
+# failed the whole ordered unit, and the VIP never came up. A node that installs cleanly and then
+# serves nothing at all.
 { pkgs, guestModule }:
 
 let
@@ -23,10 +23,7 @@ let
     { name = "node2"; id = 1; }
     { name = "witness"; id = 2; diskless = true; }
   ];
-  node = h.mkNode {
-    inherit resource;
-    payload = false; # the shipped chain: data -> vip, with the front door riding the VIP
-  };
+  node = h.mkNode { inherit resource; }; # no fixture: the shipped shape, running nothing
   witnessNode = h.mkNode { inherit resource; diskless = true; promoter = false; };
 in
 pkgs.testers.runNixOSTest {
@@ -53,11 +50,13 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
 
-    # No service is installed, so the unit that would run one must not exist at all — not
-    # merely be stopped. This is what makes the shipped closure free of a workload rather
-    # than carrying a dormant one.
+    # No service is installed, so no service unit exists at all — not merely stopped. The units
+    # are RENDERED (into /run) by an install, so a shipped node has nothing to render from and
+    # the directory quadlet reads is empty. That is what makes the shipped closure free of a
+    # workload rather than carrying a dormant one.
     for m in disk_nodes:
-        m.fail("systemctl cat podman-briard-payload.service")
+        m.fail("ls /run/containers/systemd/briard-* >/dev/null 2>&1")
+        m.fail("systemctl list-units --all 'briard-*-app.service' | grep -q briard-")
 
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
@@ -92,7 +91,7 @@ pkgs.testers.runNixOSTest {
     # The data volume is mounted and genuinely empty of service data — the substrate is up,
     # waiting for something to run. (.snapshots is the ladder's own directory, not a payload.)
     primary.succeed("mountpoint -q /var/lib/briard")
-    primary.fail("test -e /var/lib/briard/payload")
+    primary.fail("ls -d /var/lib/briard/.services/*.json >/dev/null 2>&1")
 
     # Failover still works with nothing installed: the whole point is that the node is
     # replicating and able to take over BEFORE it has a workload, so that installing one

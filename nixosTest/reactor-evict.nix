@@ -16,11 +16,12 @@
 # It also produces the number (c2-iv-6) is missing: how long a clean eviction takes to move the
 # VIP. The post-*failure* timing is unmeasured; this is the planned case, which ought
 # to be faster and more deterministic, and "ought to" is not a measurement.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [
       { name = "node1"; id = 0; }
       { name = "node2"; id = 1; }
@@ -42,6 +43,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     import json
     import time
 
@@ -49,6 +51,7 @@ pkgs.testers.runNixOSTest {
     start_all()
     for m in machines:
         m.wait_for_unit("multi-user.target")
+        m.wait_for_unit("briard-test-fixture-install.service") # warm everywhere: a handover must not pull
         m.succeed("modprobe drbd")
         m.succeed("drbdadm create-md --force r0")
         m.succeed("systemctl start drbd@r0.target")
@@ -58,7 +61,10 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
+    # The front door answers before anything is installed -- the shipped state -- and the service
+    # then goes onto the volume from whichever node promoted. Every later handover renders it
+    # again from there ([V3b.3](f)), which is what an eviction is really moving.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
@@ -68,9 +74,11 @@ pkgs.testers.runNixOSTest {
 
     first = primary_of(machines)
     assert first is not None, "no primary was elected"
+    dataroot = install_fixture(first)
+    first.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     # Let the dummy's counter climb so "the data came with it" is decisive rather than
     # coincidental — a re-formatted volume restarts near zero, far below this.
-    first.wait_until_succeeds("[ $(grep -oE '[0-9]+' /var/lib/briard/dummy/state.json) -ge 3 ]")
+    first.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' {dataroot}/app/state.json) -ge 3 ]")
     t1 = int(json.loads(first.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"### primary before the eviction: {first.name} (tick {t1})")
 

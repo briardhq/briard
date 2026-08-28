@@ -25,16 +25,19 @@
 # Every check above is a read of DRBD or systemd state INSIDE the node, so none of it needed a
 # host on the far side of a channel; moving it onto lib.nix is what lets the fixture guest disk
 # be deleted, which is (e4)'s point. What it costs is stated at the pause below.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   # A single node: the contract is about one node's promoter being paused, so a peer would add a
   # failover path the test then has to rule out rather than a property worth proving.
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
-  payloadUnit = "podman-briard-payload.service";
+  # The service's own unit, named by the RENDERER rather than restated here -- it is the fixture's
+  # container unit, and what the contract is about is that a pause does not touch it.
+  serviceUnit = "briard-${fixture.name}-${fixture.container}.service";
   # Mirrors `reactorBeforeOverride` in agent/guestagent/guestagent.go — see the pause below.
   beforeOverride = "/run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf";
 in
@@ -43,6 +46,7 @@ pkgs.testers.runNixOSTest {
   nodes.node1 = node;
 
   testScript = ''
+    ${h.fixtureHelpers}
     import json
     import time
 
@@ -61,13 +65,13 @@ pkgs.testers.runNixOSTest {
         assert r == "Primary" and q, f"CONTRACT VIOLATED ({when}): not Primary+quorate (role={r} quorum={q})"
 
     def active():
-        return node1.execute("systemctl is-active ${payloadUnit}")[0] == 0
+        return node1.execute("systemctl is-active ${serviceUnit}")[0] == 0
 
     def since():
         # The payload's process identity. A pause or a resume that BOUNCED it would move this;
         # comparing it is how "the same process is still running" becomes checkable.
         return node1.succeed(
-            "systemctl show -p ActiveEnterTimestampMonotonic --value ${payloadUnit}"
+            "systemctl show -p ActiveEnterTimestampMonotonic --value ${serviceUnit}"
         ).strip()
 
     def ticks():
@@ -75,6 +79,7 @@ pkgs.testers.runNixOSTest {
 
     node1.start()
     node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service") # the image, warm before promotion
     node1.succeed("modprobe drbd")
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
@@ -86,6 +91,11 @@ pkgs.testers.runNixOSTest {
     # chain and mount → payload → VIP all follow it. A bare read here once lost that race and
     # failed the precondition 19ms after promotion (nightly 2026-07-27).
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
+    # Nothing is installed until the node has promoted -- the volume is where a service lives, so
+    # that ordering is the product's, not the harness's. The front door answers meanwhile.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
+    install_fixture(node1)
+    assert "${serviceUnit}" in fixture_units(node1), "the renderer stopped producing the unit this test names"
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     require_primary("baseline")
     assert active(), "CONTRACT PRECOND: payload not active at baseline"
@@ -134,7 +144,7 @@ pkgs.testers.runNixOSTest {
     # "a planned payload quiesce can't cascade to the promoter target / data mount / VIP"), so a
     # mirror that drops it is not testing the product's quiesce at all. `payload.start` needs no
     # counterpart — it is a plain start.
-    node1.succeed("systemctl --job-mode=ignore-dependencies stop ${payloadUnit}")
+    node1.succeed("systemctl --job-mode=ignore-dependencies stop ${serviceUnit}")
     time.sleep(8)  # long enough for a promoter reaction to manifest, if any
     assert not active(), "CONTRACT PRECOND: payload still active after a deliberate stop"
     require_primary("after-stop-while-paused")  # the core guarantee: the stop drew no failover
@@ -142,7 +152,7 @@ pkgs.testers.runNixOSTest {
 
     # ...and the mount survived. /healthz recovers and the tick counter is continuous with the
     # pre-stop value; a torn-down /var/lib/briard would reload from tick 0.
-    node1.succeed("systemctl start ${payloadUnit}")
+    node1.succeed("systemctl start ${serviceUnit}")
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=60)
     time.sleep(2)  # let at least one post-ready tick land before comparing
     post = ticks()
@@ -161,7 +171,7 @@ pkgs.testers.runNixOSTest {
 
     # Belt-and-suspenders: green here ⇒ the promoter resumed onto a live, mounted node.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=30)
-    node1.succeed("systemctl is-active briard-data.service ${payloadUnit} briard-vip.service")
+    node1.succeed("systemctl is-active briard-data.service ${serviceUnit} briard-vip.service")
     print(f"MAINTENANCE_CONTRACT_OK: ticks {pre} -> {post}, payload serving")
   '';
 }

@@ -84,7 +84,7 @@ let
   node =
     { config, ... }:
     {
-      imports = [ (h.mkNode { inherit resource; promoter = false; payload = false; }) ];
+      imports = [ (h.mkNode { inherit resource; promoter = false; }) ];
       # The guest trusts the test CA. Free in this harness — the node is a module composition, not
       # a prebuilt disk — which is exactly why this test is hermetic rather than nested.
       security.pki.certificateFiles = [ "${certs}/ca.crt" ];

@@ -10,11 +10,12 @@
 # The on-no-quorum decision is io-error, not suspend-io: the
 # self-fence is drbd-reactor *stopping* the unit and suspend-io would wedge that
 # stop in D-state. Both bar minority writes, so safety (Principle 3) holds.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [
       { name = "node1"; id = 0; }
       { name = "node2"; id = 1; }
@@ -35,12 +36,14 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     import json
 
     machines = [node1, node2, node3]
     start_all()
     for m in machines:
         m.wait_for_unit("multi-user.target")
+        m.wait_for_unit("briard-test-fixture-install.service") # warm on every node: a survivor must not pull
         m.succeed("modprobe drbd")
         m.succeed("drbdadm create-md --force r0")
         m.succeed("systemctl start drbd@r0.target")
@@ -59,13 +62,17 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
+    # Nothing is installed yet, so the front door answers for itself -- the shipped state.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
     primary = next(m for m in machines if role(m) == "Primary")
-    primary.wait_until_succeeds("[ $(grep -oE '[0-9]+' /var/lib/briard/dummy/state.json) -ge 3 ]")
+    dataroot = install_fixture(primary)
+    service_units = fixture_units(primary)
+    primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
+    primary.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' {dataroot}/app/state.json) -ge 3 ]")
     t1 = int(json.loads(primary.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"primary={primary.name} tick={t1}")
 
@@ -76,7 +83,11 @@ pkgs.testers.runNixOSTest {
     # Self-fence on the isolated node: drbd-reactor stops the ordered unit (VIP
     # first) and demotes. VIP gone, payload stopped, DRBD no longer Primary.
     primary.wait_until_fails("ip -4 addr show dev eth1 | grep -q 192.168.1.100")
-    primary.wait_until_fails("systemctl is-active podman-briard-payload.service")
+    # The services stop with the fence too, and by a different route than the VIP: they are not
+    # chain members ([V3b.3](f)), so what stops them is briard-services' own ExecStop unwinding
+    # converge. A fenced node that kept serving would be exactly the split the fence exists for.
+    for unit in service_units:
+        primary.wait_until_fails(f"systemctl is-active {unit}")
     primary.wait_until_succeeds("drbdadm role r0 | grep -q Secondary")
 
     # The majority keeps quorum, promotes a survivor, and serves the VIP intact.
@@ -95,7 +106,7 @@ pkgs.testers.runNixOSTest {
     # *equality* after the heal, not just that the link came back).
 
     # The survivor kept serving + writing through the partition: capture its advanced tick.
-    surv_primary.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' /var/lib/briard/dummy/state.json) -ge {t2 + 2} ]")
+    surv_primary.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' {dataroot}/app/state.json) -ge {t2 + 2} ]")
     t3 = int(json.loads(surv_primary.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     assert t3 > t2, f"survivor did not keep writing during the partition: t2={t2} t3={t3}"
 

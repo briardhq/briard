@@ -21,14 +21,15 @@
   # import (no flake) still evaluates; flake.nix passes the real one, derived from `self`.
 , agentVersion ? "0.0.0-dev" }:
 let
-  # The guest as SHIPPED: an empty payload slot. Only zero-service.nix boots this —
-  # every other framework test selects the fixture, because it needs a payload that writes
-  # checkable data.
-  shippedGuestModule = ../guest-image/configuration.nix;
-  guestModule = ./dummy-guest.nix; # configuration.nix + the dummy fixture in the slot
+  # THE GUEST AS SHIPPED, and now the only one the framework tests boot ([V3b.3](e2)). There used
+  # to be two: this one, which zero-service alone used, and a `dummy-guest` that baked the fixture
+  # into a build-time payload slot for everything else. The slot is deleted, so a test that needs a
+  # workload INSTALLS one -- the same way a shipped node gets one -- and the guest under test is
+  # the guest that ships.
+  guestModule = ../guest-image/configuration.nix;
   # The dummy fixture as a CATALOGUED service: a digest-pinned manifest plus the tarball it names.
-  # This is what a test uses instead of the build-time payload slot ([V3b.3](e)) — same fixture,
-  # delivered the way a shipped node actually gets a service.
+  # This is how a test gets a workload onto a node ([V3b.3](e2) deleted the build-time slot that
+  # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
   fixture = import ./fixture-service.nix { inherit pkgs; };
   hassGuestModule = ../guest-image/hass-guest.nix; # same guest, HA in the payload slot
   hassUpgradeGuestModule = ../guest-image/hass-upgrade-guest.nix; # HA on the from-image, to warm-staged
@@ -66,11 +67,7 @@ let
   # so the shape a stranger installs is the shape CI exercises.
   guestDisk = import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay agentVersion; };
 
-  # There is no fixture-payload disk image. Tests that need a payload run on `guestModule`
-  # (configuration.nix + dummy-payload.nix), which supplies it as a module — only a test booting
-  # a prebuilt qcow2 would need one baked into an image, and none do.
-
-  # Boot-select's disk: shipped + one extra baked generation, no payload. `.v1System`'s delta from
+  # Boot-select's disk: shipped + one extra baked generation. `.v1System`'s delta from
   # the running system is a single /etc file, so both grub entries boot the identical kernel and
   # the only thing that can distinguish them is which menu entry was chosen — which is the whole
   # proof. Rides `debug`, so this image is not a nightly cost.
@@ -154,14 +151,14 @@ let
   # (non-destructive, promoter-inert-while-paused, mount survives, clean resume). Nightly.
   # HERMETIC since V3.17e4: it drives the lifecycle from the test shell on a lib.nix node
   # instead of through the agent's verbs on a nested guest — see the file's header.
-  maintenanceContract = import ./maintenance-contract.nix { inherit pkgs guestModule; };
+  maintenanceContract = import ./maintenance-contract.nix { inherit pkgs fixture guestModule; };
 
   # The isolated, deterministic promote-vs-stop deadlock gate (promote, then
   # time a BARE maintenance pause -- no upgrade / snapshot / btrfs race). Reds at ~90s on the
   # deadlock (drbd-services@r0.target Before=drbd-reactor.service serializes the dying reactor's
   # own promote behind its stop), greens in ms once the drop-in is removed first. Debug tag; NOT
   # nightly. Hermetic same reason as the contract suite above.
-  reactorPauseDeadlock = import ./reactor-pause-deadlock.nix { inherit pkgs guestModule; };
+  reactorPauseDeadlock = import ./reactor-pause-deadlock.nix { inherit pkgs fixture guestModule; };
 
   # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing [B.85]:
   # a lib.nix node converged the same way — DRBD Primary, volume mounted, payload serving, VIP up,
@@ -172,13 +169,11 @@ let
   # and that no unit held the guest's shutdown), and reactor-pause-deadlock stays the isolated
   # red/green for the deadlock itself.
 
-  # Upgrade + TLS-serving mechanism tests. Hermetic nixosTests on the
-  # dummy guest (like the DRBD net), but each boots a multi-node cluster with
-  # pre-staged images — converge-payload alone runs ~6 min.
-  # the SHIPPED shape — an empty payload slot. The only test that boots the guest as
-  # the downloadable artifact is built, and so the one that would catch the slot's optionality
-  # regressing back into a baked-in workload.
-  zeroService = import ./zero-service.nix { inherit pkgs; guestModule = shippedGuestModule; };
+  # A whole cluster running NOTHING -- the state every node is in until something is installed.
+  # Every other test here now boots the same guest, so what this one still owns is the assertion
+  # that a node with no services is a WORKING node: volume mounted, chain complete, VIP up, front
+  # door answering for itself.
+  zeroService = import ./zero-service.nix { inherit pkgs guestModule; };
 
   # Put a service ONTO the shipped (zero-service) node at runtime — a real digest-pinned
   # TLS pull from a registry the test runs, our real renderer's quadlet output, and the promoter
@@ -186,21 +181,18 @@ let
   quadletRenderPkg = pkgs.callPackage ./quadlet-render-pkg.nix { };
   serviceInstall = import ./service-install.nix {
     inherit pkgs;
-    guestModule = shippedGuestModule;
+    inherit guestModule;
     quadletRender = quadletRenderPkg;
   };
   # The failure half — upgrade to a broken manifest, gate trips, {code+data} rollback to the
   # prior service. Reuses the whole hermetic scaffolding above (registry, CA, renderer, DRBD).
   serviceInstallBroken = import ./service-install.nix {
     inherit pkgs;
-    guestModule = shippedGuestModule;
+    inherit guestModule;
     quadletRender = quadletRenderPkg;
     broken = true;
   };
 
-  convergeAtPromotion = import ./converge-at-promotion.nix { inherit pkgs guestModule; };
-  convergePayload = import ./converge-payload.nix { inherit pkgs guestModule; };
-  rollingUpdate = import ./rolling-update.nix { inherit pkgs guestModule; };
   tlsServing = import ./tls-serving.nix { inherit pkgs guestModule; };
 
   # The relocatable qemu bundle (runs on a host with no /nix/store) + its proof.
@@ -240,14 +232,14 @@ in
     drbd = {
       guest-drbd9 = import ./guest-drbd9.nix { inherit pkgs guestModule; };
       drbd-replicate = import ./drbd-replicate.nix { inherit pkgs guestModule; };
-      drbd-promote = import ./drbd-promote.nix { inherit pkgs fixture; guestModule = shippedGuestModule; };
-      drbd-failover = import ./drbd-failover.nix { inherit pkgs guestModule; };
-      reactor-evict = import ./reactor-evict.nix { inherit pkgs guestModule; }; # V3.17c2-iv-6: a PLANNED handover
-      drbd-fence = import ./drbd-fence.nix { inherit pkgs guestModule; };
-      drbd-witness = import ./drbd-witness.nix { inherit pkgs guestModule; };
-      drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs guestModule; };
-      single-node-promoter = import ./single-node-promoter.nix { inherit pkgs guestModule; }; # peer-less mode
-      runtime-join = import ./runtime-join.nix { inherit pkgs guestModule; }; # grow single-node -> 3-node mesh at runtime
+      drbd-promote = import ./drbd-promote.nix { inherit pkgs fixture guestModule; };
+      drbd-failover = import ./drbd-failover.nix { inherit pkgs fixture guestModule; };
+      reactor-evict = import ./reactor-evict.nix { inherit pkgs fixture guestModule; }; # V3.17c2-iv-6: a PLANNED handover
+      drbd-fence = import ./drbd-fence.nix { inherit pkgs fixture guestModule; };
+      drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
+      drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
+      single-node-promoter = import ./single-node-promoter.nix { inherit pkgs fixture guestModule; }; # peer-less mode
+      runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # grow single-node -> 3-node mesh at runtime
       drbd-loopback-path = import ./drbd-loopback-path.nix { inherit pkgs guestModule; }; # loopback-path gating experiment
       # The maintenance-mode contract (pause → poke → resume). It sat in `integration`
       # while it drove the agent's verbs over a nested guest's channel; V3.17e4 made it
@@ -257,11 +249,13 @@ in
       # both build the cloud witness. The three tests above mention the cloud only in prose.
     };
 
-    # OS/payload rolling upgrade + TLS-serving (multi-node, staged images).
+    # Version-change + TLS-serving mechanisms. `service-install` is the version change now
+    # ([V3b.3](e2)): the three tests that used to live here drove the baked slot's image re-pin,
+    # which no longer exists. Their subjects did not go with them — `service-install`'s upgrade
+    # half is the in-place version change, its broken half is the health-gated rollback, and its
+    # reboot half is converge-at-promotion (a node that renders from the volume, having been told
+    # nothing).
     upgrade = {
-      converge-at-promotion = convergeAtPromotion;
-      converge-payload = convergePayload;
-      rolling-update = rollingUpdate;
       tls-serving = tlsServing;
     };
 
@@ -323,7 +317,7 @@ in
       # Spike: can a service be installed at runtime as a podman pod (quadlet), and does
       # that pod work as a promoter chain member? Answers a design question; promoted or deleted
       # once the design settles.
-      quadlet-spike = import ./quadlet-spike.nix { inherit pkgs; guestModule = shippedGuestModule; };
+      quadlet-spike = import ./quadlet-spike.nix { inherit pkgs guestModule; };
       # — **THIS TEST FAILS TODAY, AND THAT IS ITS JOB.** Act 1 (crash the primary, the
       # survivor promotes) passes and is the control; act 2 (the survivor then restarts while its
       # peer is still absent) does not, because a diskless witness can KEEP quorum but never GRANT
@@ -331,7 +325,7 @@ in
       # stay a statement about what works. Run it by hand to see the gap in VANILLA DRBD — no
       # agent, no nesting, config baked into the image — and when is decided, this is its
       # acceptance test.
-      drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs guestModule; };
+      drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs fixture guestModule; };
       # — **ALSO RED BY DESIGN** ([B.100]), and the mirror image of the one above. That is the GAIN
       # side of the tiebreaker guard: a restarted survivor has no runtime `quorum[NOW]`, so it can
       # never gain quorum from a diskless node. This is the KEEP side: a broken link BETWEEN the

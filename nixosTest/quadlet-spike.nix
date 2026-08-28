@@ -100,7 +100,7 @@ let
   # Promoter = false: the test writes the snippet itself, which is what the agent does in
   # production and what makes "the chain names a unit quadlet generated" a real assertion.
   diskNode = { config, ... }: {
-    imports = [ (h.mkNode { inherit resource; promoter = false; payload = false; }) ];
+    imports = [ (h.mkNode { inherit resource; promoter = false; }) ];
     # R1 needs NO integration, which the spike found the hard way (an explicit
     # systemd.generators entry collided with an existing one): the podman package ships
     # lib/systemd/system-generators/podman-system-generator, and `virtualisation.podman.enable`

@@ -151,7 +151,7 @@ let
   # promoter snippet would configure a daemon that never runs, and `payload` would drag the dummy
   # OCI image into a build for a test that never launches a container.
   diskNode = {
-    imports = [ (h.mkNode { inherit resource; promoter = false; payload = false; }) ];
+    imports = [ (h.mkNode { inherit resource; promoter = false; }) ];
     environment.systemPackages = [ pkgs.iptables ];
   };
   witnessNode = h.mkNode {

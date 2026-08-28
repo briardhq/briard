@@ -31,7 +31,7 @@
 # existing replica rather than re-seeding it in place. A re-seed rewrites metadata in the same
 # file, keeping both inode and size, and byte-comparing will not separate the two either because
 # DRBD legitimately rewrites its metadata on attach. Proving adoption needs real payload data in
-# the volume (the dummy-payload fixture the data tests use); that is worth building and is
+# the volume (the catalogued fixture the data tests install); that is worth building and is
 # deliberately not smuggled in here as an assertion that would look stronger than it is.
 #
 # Heavy (a nested VM + the shipped guest disk) -> the `integration` tag. Run on the L0:
@@ -201,8 +201,8 @@ pkgs.testers.runNixOSTest {
     # replica rather than re-seeding it in place. A re-seed writes fresh metadata to the same file,
     # so it would keep the inode and the size. Byte-comparing the tail cannot separate the two
     # either, because DRBD legitimately rewrites its metadata on attach. Proving adoption needs
-    # real payload data in the volume (nixosTest/dummy-payload.nix, the fixture the other data
-    # tests use) -- worth doing, and deliberately not smuggled in here as an assertion that looks
+    # real service data in the volume (the catalogued fixture the other data tests install) -- worth
+    # doing, and deliberately not smuggled in here as an assertion that looks
     # stronger than it is.
     assert data_inode == host.succeed("stat -c %i /tmp/data.img").strip(), \
         "the data disk is a different file -- the rescue recreated the replicated volume"

@@ -6,8 +6,8 @@
 #
 # The service in that chain is a RUNTIME-INSTALLED one ([V3b.3](e)): the fixture arrives as a
 # catalogued manifest, is rendered by the real renderer at boot, and its units are what the
-# promoter starts. It used to be the build-time payload slot — a mechanism no shipped node has —
-# so the chain this test drove was one no user could produce.
+# promoter starts. It used to be a build-time payload slot -- a mechanism no shipped node had --
+# so the chain this test drove was one no user could produce ([V3b.3](e2) deleted it).
 { pkgs, guestModule, fixture }:
 
 let

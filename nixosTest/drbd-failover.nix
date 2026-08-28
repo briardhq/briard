@@ -5,11 +5,12 @@
 # survivors — which still hold quorum (2 of 3) — promote one of their own,
 # reclaim the VIP, and serve the dummy's last persisted tick (replicated under
 # protocol C). The minority self-fence is the separate drbd-fence test.
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [
       { name = "node1"; id = 0; }
       { name = "node2"; id = 1; }
@@ -31,12 +32,14 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${h.fixtureHelpers}
     import json
 
     machines = [node1, node2, node3]
     start_all()
     for m in machines:
         m.wait_for_unit("multi-user.target")
+        m.wait_for_unit("briard-test-fixture-install.service") # image warm on EVERY node, before any promotion
         m.succeed("modprobe drbd")
         m.succeed("drbdadm create-md --force r0")
         m.succeed("systemctl start drbd@r0.target")
@@ -57,16 +60,22 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # drbd-reactor elects a primary and the VIP comes up there.
-    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
+    # drbd-reactor elects a primary and the VIP comes up there -- with nothing installed yet,
+    # which is the shipped state and answers its own /healthz at the front door.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
     primary = next(m for m in machines if role(m) == "Primary")
+    # The service is installed onto the VOLUME by whoever holds it. The survivor never runs an
+    # install: it renders from that same volume when it promotes ([V3b.3](f)), which is the half
+    # this test is really about.
+    dataroot = install_fixture(primary)
+    primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     # Let the counter climb past a clear threshold so "data survived" is decisive:
     # a lost volume would be re-formatted blank and restart near 0, far below this.
-    primary.wait_until_succeeds("[ $(grep -oE '[0-9]+' /var/lib/briard/dummy/state.json) -ge 3 ]")
+    primary.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' {dataroot}/app/state.json) -ge 3 ]")
     t1 = int(json.loads(primary.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"primary={primary.name} tick={t1}")
 

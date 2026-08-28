@@ -11,13 +11,14 @@
 #
 # Asserts a lone node promotes, the split-brain check parses cleanly (no IGNORING, policy
 # detected), and the state survives the maintenance stop/restart (enter/exitMaintenance).
-{ pkgs, guestModule }:
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
   # A single node: mesh-of-one — exactly what agent/drbd/config.go emits for empty PEERS
   # (connection-mesh { hosts node1; } -> zero DRBD connections).
   node = h.mkNode {
+    inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
 in
@@ -26,6 +27,7 @@ pkgs.testers.runNixOSTest {
   nodes.node1 = node;
 
   testScript = ''
+    ${h.fixtureHelpers}
     def assert_healthy_promoter(m, label):
         # The regression guard: the split-brain-avoidance detector must parse the
         # peer-less `drbdsetup show --json` — no IGNORING, and the success path ran.
@@ -36,6 +38,7 @@ pkgs.testers.runNixOSTest {
 
     node1.start()
     node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service") # the image, warmed before anything promotes
     node1.succeed("modprobe drbd")
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
@@ -46,8 +49,12 @@ pkgs.testers.runNixOSTest {
     # live — the bug left it adopted-but-unreactive (IGNORING every event).
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
-    # The whole ordered chain converged on the (sole) primary: promote -> mount -> payload
-    # -> VIP, reachable at the VIP's /healthz.
+    # The whole ordered chain converged on the (sole) primary: promote -> mount -> services
+    # -> VIP. The front door answers first, with zero services, because that is the shipped
+    # state of a lone node; the fixture is installed onto the volume afterwards, which is the
+    # only order a real single node can do it in.
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
+    install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     assert_healthy_promoter(node1, "first start")
 
@@ -60,6 +67,8 @@ pkgs.testers.runNixOSTest {
     node1.sleep(10)
     node1.succeed("drbdadm role r0 | grep -q Primary")
     assert_healthy_promoter(node1, "after maintenance restart")
-    node1.succeed("systemctl is-active briard-data.service podman-briard-payload.service briard-vip.service")
+    node1.succeed("systemctl is-active briard-data.service briard-services.service briard-vip.service")
+    for unit in fixture_units(node1):
+        node1.succeed(f"systemctl is-active {unit}")
   '';
 }

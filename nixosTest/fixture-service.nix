@@ -2,7 +2,7 @@
 # names — so a test can install it the way a user installs one, with no registry.
 #
 # WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's payload
-# slot (dummy-payload.nix), which is a mechanism no user has: a shipped node installs services at
+# slot, which was a mechanism no user had: a shipped node installs services at
 # runtime from a manifest ([V3.16]). Every test riding the baked slot therefore proves a path
 # nobody ships. This module is the other half of retiring it ([V3b.3](e)) — the same fixture,
 # delivered the shipped way.
