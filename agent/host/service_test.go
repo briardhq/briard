@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
-	"briard.io/agent/guestagent"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -36,7 +35,6 @@ type fakeInstaller struct {
 	primary    bool
 	active     bool
 	healthy    bool
-	chains     [][]string
 	// prior is the volume's recorded manifests, KEYED BY SERVICE NAME — absent = fresh install.
 	// A map rather than one string because that is the shape the volume now has: a fake holding
 	// another service's manifest must not satisfy a read for this one ([V3b.3](b)).
@@ -47,8 +45,8 @@ type fakeInstaller struct {
 	healthURL    string
 	renderEr     error
 	provEr       error
-	adjustEr     error
-	resumeEr     error
+	convergeEr   error
+	forgetEr     error
 	warmEr       error
 	restoreEr    error
 }
@@ -97,23 +95,17 @@ func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
 	f.steps = append(f.steps, "active?")
 	return f.active, nil
 }
-func (f *fakeInstaller) ReactorPause(context.Context, string) error {
-	f.steps = append(f.steps, "pause")
-	return nil
+
+// ServiceConverge is what an install does instead of rewriting the promoter chain: the volume
+// is written first, and this tells the node to re-read it ([V3b.3](f)).
+func (f *fakeInstaller) ServiceConverge(context.Context) error {
+	f.steps = append(f.steps, "converge")
+	return f.convergeEr
 }
-func (f *fakeInstaller) ReactorResume(context.Context, string) error {
-	f.steps = append(f.steps, "resume")
-	return f.resumeEr
-}
-func (f *fakeInstaller) Adjust(_ context.Context, req guestagent.ProvisionRequest) error {
-	f.steps = append(f.steps, "adjust")
-	f.chains = append(f.chains, parseChain(req.ReactorConfig))
-	if req.ResConfig == "" {
-		// Adjust writes the .res file unconditionally, so an empty ResConfig TRUNCATES the
-		// resource definition. Catching it here is cheaper than catching it on a real node.
-		f.steps = append(f.steps, "TRUNCATED-RES")
-	}
-	return f.adjustEr
+func (f *fakeInstaller) SupportsServiceConverge() bool { return !f.oldGuest }
+func (f *fakeInstaller) ServiceForget(_ context.Context, name string) error {
+	f.steps = append(f.steps, "forget:"+name)
+	return f.forgetEr
 }
 func (f *fakeInstaller) PayloadStart(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "warm:"+unit)
@@ -140,20 +132,6 @@ func (f *fakeInstaller) PayloadHealth(_ context.Context, url string) (bool, erro
 // The service-install path has no opinion about names. "" -- this node publishes none -- is the
 // honest answer here; a fixture name could be mistaken for an assertion that one was published.
 func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return "", nil }
-
-// parseChain pulls the unit list back out of a rendered promoter snippet.
-func parseChain(snippet string) []string {
-	_, rest, ok := strings.Cut(snippet, "start = [ ")
-	if !ok {
-		return nil
-	}
-	list, _, _ := strings.Cut(rest, " ]")
-	var out []string
-	for _, u := range strings.Split(list, ", ") {
-		out = append(out, strings.Trim(u, `"`))
-	}
-	return out
-}
 
 // catalogFor stands up a signed one-service catalog and returns a Config wired to it.
 func catalogFor(t *testing.T, m manifest.Manifest) Config {
@@ -207,21 +185,24 @@ func install(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 	return cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {})
 }
 
-// TestInstallOrdersTheBracket is the core contract: nothing touches the promoter until the units
-// and storage exist, and the chain rewrite happens strictly BETWEEN a pause and a resume. A
-// rewrite outside the bracket is drbd-reactor reading a half-written start-list on a live node.
-func TestInstallOrdersTheBracket(t *testing.T) {
+// TestInstallOrdersTheSteps is the core contract, and what it asserts CHANGED with [V3b.3](f):
+// there is no maintenance bracket. An install writes the volume and then tells the node to
+// re-read it, so the ordering that matters is that nothing reaches the volume until the units and
+// the image exist, and that converge comes after the manifest it is meant to find.
+func TestInstallOrdersTheSteps(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
-	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	cfg := catalogFor(t, testManifest())
+	if o := install(cfg, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	// A fresh install: read the (empty) installed manifest, render+warm, provision, then the
-	// bracket — pause, quiesce the CONTAINER (never the pod — stopping the pod unmounts the shared
-	// volume; here a no-op anyway, nothing is running), rewrite, resume, gate. No snapshot:
-	// nothing is installed yet, so there is no rollback point to take.
+	// A fresh install: read the (empty) installed manifest, render+warm (which is also the
+	// PREWARM every node does), provision the volume, converge, gate. No snapshot: nothing is
+	// installed yet, so there is no rollback point to take. No pause/quiesce/rewrite: the chain is
+	// static, and stopping the running containers is converge's job on the services whose
+	// rendering actually changed.
 	want := []string{
 		"active?", "installed?:home-assistant", "render", "warm:briard-home-assistant-ha-image.service", "status", "provision:home-assistant",
-		"pause", "stop:briard-home-assistant-ha.service", "adjust", "resume", "health",
+		"converge", "health",
 	}
 	if strings.Join(f.steps, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v\nwant   %v", f.steps, want)
@@ -231,11 +212,11 @@ func TestInstallOrdersTheBracket(t *testing.T) {
 	if f.healthURL != "http://127.0.0.1:8123/manifest.json" {
 		t.Fatalf("health probe = %q, want the service endpoint (not the VIP front door)", f.healthURL)
 	}
-	// The new chain names the pod and its member, between the data mount and the VIP.
-	got := f.chains[0]
-	want = []string{"briard-data.service", "briard-home-assistant-pod.service", "briard-home-assistant-ha.service", "briard-vip.service"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("chain = %v, want %v", got, want)
+	// THE CHAIN IS NOT TOUCHED, and that is the whole shape change. It is static
+	// (data -> services -> vip) and the installed service is not a member of it, which is what
+	// makes a service crash unable to demote the node.
+	if !slices.Equal(cfg.Promoter, []string{"briard-data.service", "briard-services.service", "briard-vip.service"}) {
+		t.Fatalf("install changed the promoter chain to %v — it must be static", cfg.Promoter)
 	}
 }
 
@@ -243,26 +224,33 @@ func TestInstallOrdersTheBracket(t *testing.T) {
 // at all: the .image units are WantedBy=multi-user.target, so a service installed AFTER boot never
 // has them run, and the containers' Pull=never would then fail the chain at promotion.
 //
-// Warming at install time is also where it belongs — a human is watching and the CLI can report it
-// — and the assertion here is that an unreachable image aborts BEFORE the bracket. A node whose
-// install failed for want of a network must be exactly as it was, not left with a chain naming a
-// service whose image it does not have.
-func TestInstallWarmsBeforeTouchingThePromoter(t *testing.T) {
+// Warming at install time is also where it belongs — a human is watching and the CLI can report
+// it — and the assertion here is that an unreachable image aborts BEFORE the volume is written. A
+// node whose install failed for want of a network must be exactly as it was, not left with the
+// volume naming a service whose image nobody has ([V3b.3](f) makes that worse than it was: the
+// volume is what every future promotion, on every node, renders from).
+func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, warmEr: errors.New("no route to host")}
 	o := install(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "warm image") {
 		t.Fatalf("outcome = %+v, want a failure naming the image warm", o)
 	}
 	joined := strings.Join(f.steps, ",")
-	for _, forbidden := range []string{"pause", "adjust", "provision"} {
+	for _, forbidden := range []string{"converge", "provision"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("a failed warm still ran %q — the node was changed by a failed install: %v", forbidden, f.steps)
 		}
 	}
 }
 
-// TestInstallRefusesWhenTheBracketIsOpen is the interim guard, and the assertion that it
-// refuses BEFORE writing anything — a refusal must leave the node exactly as it was.
+// TestInstallRefusesWhenTheBracketIsOpen is the interim guard, and the assertion that it refuses
+// BEFORE writing anything — a refusal must leave the node exactly as it was.
+//
+// It SURVIVES the bracket's deletion ([V3b.3](f)) even though an install no longer pauses the
+// promoter itself, and deliberately: a paused promoter means an OS or payload upgrade is in
+// flight, and starting a second operation on that node is the overlap [V3b.5](b) exists to
+// serialise. Dropping this check because we no longer take the bracket would quietly WIDEN
+// concurrency at the moment the item narrowed it.
 func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: false, healthy: true}
 	o := install(catalogFor(t, testManifest()), f)
@@ -270,7 +258,7 @@ func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a failure naming the open bracket", o)
 	}
 	for _, s := range f.steps {
-		if s == "render" || strings.HasPrefix(s, "provision") || s == "pause" || s == "adjust" {
+		if s == "render" || strings.HasPrefix(s, "provision") || s == "converge" {
 			t.Fatalf("refusal still touched the node: %v", f.steps)
 		}
 	}
@@ -295,15 +283,17 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
-	if len(f.chains) != 2 {
-		t.Fatalf("chain written %d times, want 2 (install then revert)", len(f.chains))
+	// The revert converges a SECOND time — that is what puts the node back, now that there is no
+	// chain to rewrite: the volume is corrected first (here, by forgetting a fresh install's
+	// manifest) and then re-read.
+	joined := strings.Join(f.steps, ",")
+	if n := strings.Count(joined, "converge"); n != 2 {
+		t.Fatalf("converged %d times, want 2 (install then revert): %v", n, f.steps)
 	}
-	reverted := strings.Join(f.chains[1], ",")
-	if reverted != "briard-data.service,briard-vip.service" {
-		t.Fatalf("reverted chain = %q, want the original zero-service chain", reverted)
-	}
-	if n := strings.Count(strings.Join(f.steps, ","), "resume"); n != 2 {
-		t.Fatalf("resumed %d times, want 2 — a paused promoter is a node that cannot fail over: %v", n, f.steps)
+	// The correction reaches the VOLUME before the re-converge, not after it. Reversed, the node
+	// would re-render the broken service it was meant to be dropping.
+	if fi, ci := strings.Index(joined, "forget:"), strings.LastIndex(joined, "converge"); fi < 0 || fi > ci {
+		t.Fatalf("the volume was not corrected before the re-converge: %v", f.steps)
 	}
 }
 
@@ -358,13 +348,14 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	if n := len(f.manifests); n < 2 || f.manifests[n-1] != priorRaw {
 		t.Fatalf("volume manifest not reverted to the prior: got %v", f.manifests)
 	}
-	// The promoter is resumed on both brackets (switch + revert) — a paused promoter cannot fail over.
-	if n := strings.Count(joined, "resume"); n != 2 {
-		t.Fatalf("resumed %d times, want 2 (switch then revert): %v", n, f.steps)
+	// Converged twice: forward (onto the new manifest) and again on the revert (onto the prior
+	// one, re-recorded above). No pause/resume pair, because there is no bracket left to hold.
+	if n := strings.Count(joined, "converge"); n != 2 {
+		t.Fatalf("converged %d times, want 2 (install then revert): %v", n, f.steps)
 	}
-	// The POD is NEVER stopped — only its container. Stopping the pod unmounts the shared DRBD
-	// volume and takes every other service on the node down. This is the invariant the
-	// whole quiesce design turns on, so assert it directly.
+	// The POD is NEVER stopped — only its container. Stopping the pod makes podman kill its
+	// members out from under their units, so each lands in `failed` rather than stopping cleanly,
+	// and the container is what holds the data bind the restore needs released.
 	if strings.Contains(joined, "stop:briard-home-assistant-pod.service") {
 		t.Fatalf("quiesce stopped the POD — that unmounts the shared volume: %v", f.steps)
 	}
@@ -373,11 +364,16 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	}
 }
 
-// TestUpgradeLeavesPromoterPausedIfDataCannotRestore: if the data rollback itself fails, the revert
-// must NOT resume the promoter onto the prior units — they would run on the poisoned data. A node
-// that will not fail over is recoverable; silent data corruption is not. So it stops, reports both
-// failures, and leaves the bracket open for a human.
-func TestUpgradeLeavesPromoterPausedIfDataCannotRestore(t *testing.T) {
+// TestUpgradeDoesNotConvergeIfDataCannotRestore: if the data rollback itself fails, the revert
+// must NOT put the prior service back — it would run on the poisoned data. So it stops and
+// reports both failures, leaving the service down for a human.
+//
+// The blast radius SHRANK with the bracket's deletion ([V3b.3](f)). This used to leave the
+// promoter PAUSED — a node that could not fail over at all — because that was the only lever
+// available for "do not start the service again". Now the lever is simply not converging: the one
+// service stays stopped, and the node keeps serving everything else and keeps its ability to fail
+// over. Same refusal, a fraction of the cost.
+func TestUpgradeDoesNotConvergeIfDataCannotRestore(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: mustPrior(t), restoreEr: errors.New("btrfs: cannot delete subvolume")}
 	o := func() api.DirectiveOutcome {
@@ -389,33 +385,32 @@ func TestUpgradeLeavesPromoterPausedIfDataCannotRestore(t *testing.T) {
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "restore the data subvolume") {
 		t.Fatalf("outcome = %+v, want a failure naming the data restore", o)
 	}
-	// Only the forward switch resumed; the revert deliberately did not — the promoter is left paused.
-	if n := strings.Count(strings.Join(f.steps, ","), "resume"); n != 1 {
-		t.Fatalf("resumed %d times, want 1 — revert must NOT resume onto un-restored data: %v", n, f.steps)
+	// Only the forward converge ran; the revert deliberately did not converge back.
+	if n := strings.Count(strings.Join(f.steps, ","), "converge"); n != 1 {
+		t.Fatalf("converged %d times, want 1 — the revert must NOT restart the service onto un-restored data: %v", n, f.steps)
 	}
 }
 
-// TestInstallAlwaysResumes: even when the chain rewrite itself fails, the promoter must come back.
-// Leaving it down is strictly worse than a failed install.
-func TestInstallAlwaysResumes(t *testing.T) {
-	f := &fakeInstaller{primary: true, active: true, healthy: true, adjustEr: errors.New("write failed")}
-	o := install(catalogFor(t, testManifest()), f)
-	if o.State != api.OutcomeFailed {
-		t.Fatalf("outcome = %+v, want failed", o)
+// TestAFailedFreshInstallLeavesNothingOnTheVolume is a requirement [V3b.3](f) CREATED. Reverting
+// used to mean putting the node-local promoter chain back, and that chain simply did not name the
+// new service -- so the manifest the install had written to the volume could be left behind
+// harmlessly. Under converge the volume is the truth, so a manifest nobody removed is a service
+// every future promotion, on every node in the flock, renders and tries to start. A failed FRESH
+// install must therefore remove the identity, not merely stop the units.
+func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	f := &fakeInstaller{primary: true, active: true, healthy: false} // no prior => a fresh install
+	o := func() api.DirectiveOutcome {
+		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+	}()
+	if o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
-	if !strings.Contains(strings.Join(f.steps, ","), "resume") {
-		t.Fatalf("promoter left paused after a failed rewrite: %v", f.steps)
-	}
-}
-
-// TestInstallNeverTruncatesTheResourceConfig: Adjust writes the .res file unconditionally, so the
-// full resource config must ride along with the reactor snippet. Omitting it would erase the DRBD
-// resource definition on a live node.
-func TestInstallNeverTruncatesTheResourceConfig(t *testing.T) {
-	f := &fakeInstaller{primary: true, active: true, healthy: true}
-	install(catalogFor(t, testManifest()), f)
-	if strings.Contains(strings.Join(f.steps, ","), "TRUNCATED-RES") {
-		t.Fatalf("Adjust was called with an empty ResConfig: %v", f.steps)
+	if !strings.Contains(strings.Join(f.steps, ","), "forget:home-assistant") {
+		t.Fatalf("the failed service is still recorded on the volume: %v", f.steps)
 	}
 }
 
@@ -478,8 +473,8 @@ func TestPrewarmRendersAndWarmsAndNothingElse(t *testing.T) {
 	if strings.Join(f.steps, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v\nwant   %v", f.steps, want)
 	}
-	if len(f.chains) != 0 {
-		t.Errorf("prewarm rewrote the promoter chain: %v", f.chains)
+	if strings.Contains(strings.Join(f.steps, ","), "converge") {
+		t.Errorf("prewarm converged the node — it must change nothing this node is serving: %v", f.steps)
 	}
 	if len(f.manifests) != 0 {
 		t.Errorf("prewarm wrote a manifest to the volume: %v", f.manifests)
@@ -569,7 +564,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	install := api.Directive{Kind: api.DirectiveServiceInstall}
 
 	t.Run("adopts on a completed install", func(t *testing.T) {
-		cfg := Config{ServiceCache: dir}
+		cfg := Config{ServiceCache: dir, Promoter: promoterUnits(nil)}
 		cfg.adoptInstalledServices(install, done, logf)
 		if len(cfg.Services) != 1 {
 			t.Fatalf("Services = %+v, want the one installed service", cfg.Services)
@@ -580,8 +575,14 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 		if got := cfg.Services[0].ServingUnit(); got != "briard-home-assistant-app.service" {
 			t.Errorf("ServingUnit() = %q, want the rendered container unit", got)
 		}
-		if len(cfg.Promoter) == 0 || len(cfg.ServiceRendered.Units) == 0 {
-			t.Errorf("promoter chain / rendered units not adopted: %v %v", cfg.Promoter, cfg.ServiceRendered.Units)
+		if len(cfg.ServiceRendered.Units) == 0 {
+			t.Errorf("rendered units not adopted: %v", cfg.ServiceRendered.Units)
+		}
+		// The chain is NOT adopted — it is static ([V3b.3](f)). An install that moved it would be
+		// the node-was-told model converge exists to remove, and it is what let a survivor promote
+		// onto whatever it happened to have rendered.
+		if !slices.Equal(cfg.Promoter, promoterUnits(nil)) {
+			t.Errorf("an install moved the promoter chain to %v — it must stay static", cfg.Promoter)
 		}
 	})
 	// The failable half: adopting on anything other than a completed install would let a failed

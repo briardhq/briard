@@ -160,6 +160,13 @@ const (
 	// stopping one deactivates drbd-reactor's target, which unmounts the volume and demotes the
 	// node. Same code, same unit, no unit lifecycle touched.
 	verbServiceConverge = "service.converge"
+	// service.forget REMOVES one service's manifest from the volume. It exists because converge
+	// made the volume the truth ([V3b.3](f)): a FRESH install that fails its health gate used to
+	// be undone by putting the node-local promoter chain back, which simply did not mention the
+	// new service -- but the manifest it wrote to the volume stayed, and under converge every
+	// future promotion anywhere in the flock would render and start it again. Reverting a fresh
+	// install therefore has to remove the identity, not just stop the units.
+	verbServiceForget = "service.forget"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -246,7 +253,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
 	verbDataSnapshot, verbDataRestore, verbDataGC,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceWarm, verbServiceConverge, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceWarm, verbServiceConverge, verbServiceForget, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -970,6 +977,22 @@ func dispatch(x Executor) dispatchFunc {
 			// -- a caller that could name what to converge TO would be the node-was-told model
 			// this replaces.
 			return nil, Converge(ctx, x)
+		case verbServiceForget:
+			var req serviceInstalledRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if err := safeUnitName(req.Name); err != nil { // the name is a path element
+				return nil, err
+			}
+			// `rm -f`: an absent manifest is the desired end state, not an error. Then flush the
+			// DIRECTORY, because the durable fact here is the entry's REMOVAL -- the same reason
+			// provisionService syncs after writing one.
+			if err := run("rm", "-f", manifestPath(req.Name)); err != nil {
+				return nil, err
+			}
+			_, err := x.Run(ctx, "sync", "-f", manifestDir)
+			return nil, err
 		case verbServiceInstalled:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2273,6 +2296,13 @@ func (g *Client) ServiceConverge(ctx context.Context) error {
 
 // SupportsServiceConverge reports whether the guest can converge itself to the volume.
 func (g *Client) SupportsServiceConverge() bool { return g.Supports(verbServiceConverge) }
+
+// ServiceForget removes one service's manifest from the replicated volume -- what a failed FRESH
+// install must do, because under converge the volume is what every future promotion renders from.
+// Idempotent: an absent manifest is the end state this asks for.
+func (g *Client) ServiceForget(ctx context.Context, name string) error {
+	return g.c.call(ctx, verbServiceForget, serviceInstalledRequest{Name: name}, nil)
+}
 
 // ServiceInstalled reads the manifest recorded on the replicated volume for ONE service, or ""
 // when that service is not installed there. "" is a legitimate answer — the shipped zero-service

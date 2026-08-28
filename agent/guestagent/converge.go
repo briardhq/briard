@@ -72,11 +72,13 @@ const unitPrefix = "briard-"
 // A node with nothing installed converges successfully to nothing. That is the shipped state, not
 // an error.
 func Converge(ctx context.Context, x Executor) error {
-	rendered, units, err := renderVolume(ctx, x)
+	svcs, err := renderVolume(ctx, x)
 	if err != nil {
 		return err
 	}
-	if err := writeUnits(ctx, x, rendered); err != nil {
+	all := merged(svcs)
+	changed, err := writeUnits(ctx, x, all)
+	if err != nil {
 		return err
 	}
 	// Warm before starting, not during: the containers are Pull=never, so an image that is not
@@ -85,33 +87,73 @@ func Converge(ctx context.Context, x Executor) error {
 	// recovery — the digest in the manifest pins the bytes, so a fetch returns exactly those or
 	// fails. A pull that CANNOT happen fails converge, which takes the VIP down and says so,
 	// rather than promoting into a half-started chain ([V3.17]'s doctrine, upheld by failing).
-	warm := make([]string, 0, len(rendered.ImageRefs))
-	for u := range rendered.ImageRefs {
+	warm := make([]string, 0, len(all.ImageRefs))
+	for u := range all.ImageRefs {
 		warm = append(warm, u)
 	}
 	sort.Strings(warm) // the images are independent; the order is for a log a human reads
 	for _, u := range warm {
-		if err := warmImage(ctx, x, u, rendered.ImageRefs[u]); err != nil {
+		if err := warmImage(ctx, x, u, all.ImageRefs[u]); err != nil {
 			return fmt.Errorf("converge: %w", err)
 		}
 	}
 	// Record BEFORE starting: a start that fails part-way still leaves units running, and a stop
 	// that does not know about them would leave containers on an unmounted volume.
-	if err := x.WriteFile(unitsFile, []byte(strings.Join(units, "\n")+"\n")); err != nil {
+	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {
 		return fmt.Errorf("converge: record started units: %w", err)
 	}
-	for _, u := range units {
-		if _, err := x.Run(ctx, "systemctl", "start", u); err != nil {
-			// Alert, do not demote. See the failure rule above.
-			log.Printf("converge: %s did not start (%v); the node is serving what it can", u, err)
+	for _, s := range svcs {
+		// A CHANGED RENDERING MUST BE MADE TO TAKE EFFECT, and a start alone will not do it:
+		// systemd does not restart an already-active unit on daemon-reload, so an upgrade
+		// (same service name => same unit names) would leave the OLD container serving while
+		// every file on disk described the new one. That is what the install path's `quiesce`
+		// used to do inside the maintenance bracket, and it belongs here now that converge is
+		// the only thing that starts these units.
+		//
+		// Only the services whose bytes actually changed are bounced. Converge runs on every
+		// promotion and on every install, so restarting unconditionally would take an untouched
+		// service down because a DIFFERENT one was upgraded — the "one service must not cost the
+		// others" rule, in its quietest form.
+		if s.touched(changed) {
+			stopService(ctx, x, s.r)
+		}
+		for _, u := range s.r.Units {
+			if _, err := x.Run(ctx, "systemctl", "start", u); err != nil {
+				// Alert, do not demote. See the failure rule above.
+				log.Printf("converge: %s did not start (%v); the node is serving what it can", u, err)
+			}
 		}
 	}
-	if len(units) == 0 {
+	if len(svcs) == 0 {
 		log.Printf("converge: no services installed on the volume; nothing to start")
 	} else {
-		log.Printf("converge: %d unit(s) started from the volume: %s", len(units), strings.Join(units, " "))
+		log.Printf("converge: %d unit(s) started from the volume: %s", len(all.Units), strings.Join(all.Units, " "))
 	}
 	return nil
+}
+
+// stopService quiesces one service so a re-render takes effect: its CONTAINER units in reverse,
+// then the pod. Best-effort — a unit that was not running is not a failure worth aborting for.
+//
+// Containers before the pod, never the pod alone: `systemctl stop <pod>` makes podman `pod stop`,
+// which kills the member containers out from under their systemd units so each lands in `failed`
+// rather than stopping cleanly. Stopping them directly is a graceful stop, which is what releases
+// the data subvolume's bind and what keeps a failed-unit state out of the journal for an
+// operation nobody asked to fail. By the time the pod is stopped it has no containers left to
+// kill, so its own stop is clean too.
+func stopService(ctx context.Context, x Executor, r quadlet.Rendered) {
+	for i := len(r.ContainerUnits) - 1; i >= 0; i-- {
+		if _, err := x.Run(ctx, "systemctl", "stop", r.ContainerUnits[i]); err != nil {
+			log.Printf("converge: stop %s: %v (continuing)", r.ContainerUnits[i], err)
+		}
+	}
+	for i := len(r.Units) - 1; i >= 0; i-- {
+		if strings.HasSuffix(r.Units[i], "-pod.service") {
+			if _, err := x.Run(ctx, "systemctl", "stop", r.Units[i]); err != nil {
+				log.Printf("converge: stop %s: %v (continuing)", r.Units[i], err)
+			}
+		}
+	}
 }
 
 // ConvergeStop stops the service units this node started, newest-dependency first. Run as
@@ -140,8 +182,8 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 	return nil
 }
 
-// renderVolume reads every manifest on the volume and renders them, returning the merged file set
-// and the ordered units to start.
+// renderVolume reads every manifest on the volume and renders them, returning them
+// as a per-service list.
 //
 // ORDER IS BY SERVICE NAME, and it owes nothing more than determinism today. A set of services
 // has a real dependency order, which [V3b.3](c) settles once there is a second real service to
@@ -151,30 +193,58 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 // is present and unusable IS a failure, and the difference is deliberate: absence is a state we
 // ship, while a corrupt manifest means this node cannot honour what the volume says it runs, and
 // promoting anyway is how a household silently loses a service.
-func renderVolume(ctx context.Context, x Executor) (quadlet.Rendered, []string, error) {
-	all := quadlet.Rendered{Files: map[string]string{}}
+func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
 	names, err := manifestNames(ctx, x)
 	if err != nil {
-		return all, nil, err
+		return nil, err
 	}
-	var units []string
+	var svcs []convergedService
 	for _, n := range names {
 		raw, err := x.ReadFile(manifestDir + "/" + n)
 		if err != nil {
-			return all, nil, fmt.Errorf("converge: read %s: %w", n, err)
+			return nil, fmt.Errorf("converge: read %s: %w", n, err)
 		}
 		m, _, err := manifest.Parse(raw)
 		if err != nil {
-			return all, nil, fmt.Errorf("converge: %s does not parse: %w", n, err)
+			return nil, fmt.Errorf("converge: %s does not parse: %w", n, err)
 		}
 		r, err := quadlet.Render(m)
 		if err != nil {
-			return all, nil, fmt.Errorf("converge: %s does not render: %w", n, err)
+			return nil, fmt.Errorf("converge: %s does not render: %w", n, err)
 		}
-		mergeInto(&all, r)
-		units = append(units, r.Units...)
+		svcs = append(svcs, convergedService{name: m.Name, r: r})
 	}
-	return all, units, nil
+	return svcs, nil
+}
+
+// convergedService is one service the volume names, with its rendering. Kept PER SERVICE rather
+// than merged, because the two decisions converge makes are per service: whether this one's
+// rendering changed (and so must be bounced), and whether this one failed to start (which must
+// not stop the others).
+type convergedService struct {
+	name string
+	r    quadlet.Rendered
+}
+
+// touched reports whether any of this service's unit source was written differently this pass.
+func (s convergedService) touched(changed map[string]bool) bool {
+	for f := range s.r.Files {
+		if changed[f] {
+			return true
+		}
+	}
+	return false
+}
+
+// merged folds every service's rendering into one set — what gets written to the quadlet
+// directory, warmed, and recorded as the units to stop on demote. Unit filenames are
+// service-prefixed by the renderer (briard-<service>-…), so the Files merge cannot collide.
+func merged(svcs []convergedService) quadlet.Rendered {
+	all := quadlet.Rendered{Files: map[string]string{}}
+	for _, s := range svcs {
+		mergeInto(&all, s.r)
+	}
+	return all
 }
 
 // manifestNames lists the volume's manifest files, sorted. Shelling out to `ls` rather than
@@ -200,20 +270,26 @@ func manifestNames(ctx context.Context, x Executor) ([]string, error) {
 }
 
 // writeUnits materialises the rendered set into quadletDir and reloads systemd, removing any
-// briard- unit source that this converge did NOT render.
+// briard- unit source that this converge did NOT render, and reports which files it actually
+// CHANGED.
 //
 // The removal is what makes converge the whole truth rather than an addition to it: a service
 // uninstalled on another node, or renamed, leaves orphan unit source behind, and an orphan
 // .container is a unit a future converge could start against data that no longer exists. Only
 // files carrying the renderer's own prefix are candidates — a quadlet file a user dropped there
 // is theirs.
-func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) error {
+//
+// The changed set is what tells an UPGRADE apart from a promotion. Converge runs on both, and on
+// a promotion nothing is running so a start is enough; on an upgrade the units are already
+// active, and systemd does not restart an active unit on daemon-reload. Comparing the bytes is
+// how the caller learns which services must be bounced and, just as importantly, which must not.
+func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string]bool, error) {
 	if _, err := x.Run(ctx, "mkdir", "-p", quadletDir); err != nil {
-		return fmt.Errorf("converge: %s: %w", quadletDir, err)
+		return nil, fmt.Errorf("converge: %s: %w", quadletDir, err)
 	}
 	out, err := x.Run(ctx, "ls", "-1", quadletDir)
 	if err != nil {
-		return fmt.Errorf("converge: list %s: %w", quadletDir, err)
+		return nil, fmt.Errorf("converge: list %s: %w", quadletDir, err)
 	}
 	for _, n := range nonEmptyLines(out) {
 		if !strings.HasPrefix(n, unitPrefix) {
@@ -223,7 +299,7 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) error {
 			continue
 		}
 		if _, err := x.Run(ctx, "rm", "-f", quadletDir+"/"+n); err != nil {
-			return fmt.Errorf("converge: remove orphan %s: %w", n, err)
+			return nil, fmt.Errorf("converge: remove orphan %s: %w", n, err)
 		}
 	}
 	names := make([]string, 0, len(r.Files))
@@ -231,18 +307,26 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) error {
 		names = append(names, n)
 	}
 	sort.Strings(names) // deterministic write order, so a part-way failure is reproducible
+	changed := map[string]bool{}
 	for _, n := range names {
 		if err := safeUnitName(n); err != nil {
-			return err
+			return nil, err
 		}
-		if err := x.WriteFile(quadletDir+"/"+n, []byte(r.Files[n])); err != nil {
-			return fmt.Errorf("converge: write %s: %w", n, err)
+		path := quadletDir + "/" + n
+		// An unreadable or absent file counts as changed: /run is tmpfs, so after a guest reboot
+		// nothing is there and everything is new. Reading before writing is what keeps an
+		// unchanged service from being bounced by a neighbour's upgrade.
+		if prev, err := x.ReadFile(path); err != nil || string(prev) != r.Files[n] {
+			changed[n] = true
+		}
+		if err := x.WriteFile(path, []byte(r.Files[n])); err != nil {
+			return nil, fmt.Errorf("converge: write %s: %w", n, err)
 		}
 	}
 	if _, err := x.Run(ctx, "systemctl", "daemon-reload"); err != nil {
-		return fmt.Errorf("converge: daemon-reload: %w", err)
+		return nil, fmt.Errorf("converge: daemon-reload: %w", err)
 	}
-	return nil
+	return changed, nil
 }
 
 // warmImage ensures one image is present, starting its .image unit ONLY when it is missing.

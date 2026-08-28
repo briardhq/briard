@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"briard.io/agent/drbd"
-	"briard.io/agent/guestagent"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/api"
@@ -45,15 +43,24 @@ type serviceInstaller interface {
 	// SupportsServiceInstalled gates the whole install: a guest that cannot NAME a service when
 	// recording its identity would overwrite whatever it already runs. See applyServiceInstall.
 	SupportsServiceInstalled() bool
+	// ServiceConverge makes the node match the VOLUME -- render, warm and start every manifest
+	// recorded there ([V3b.3](f)). It is what an install does instead of rewriting the promoter
+	// chain, and SupportsServiceConverge gates it the same way.
+	ServiceConverge(ctx context.Context) error
+	SupportsServiceConverge() bool
+	// ServiceForget removes one service's manifest from the volume -- what reverting a FRESH
+	// install requires, now that the volume is what every future promotion renders from.
+	ServiceForget(ctx context.Context, name string) error
+	// ReactorActive is the interim overlap guard, and the ONLY promoter verb left here: an
+	// install no longer takes the maintenance bracket ([V3b.3](f)), it only refuses to start
+	// while somebody else holds it. Pausing and resuming belong to the OS/payload upgrade path
+	// (agent/guest), which still changes what a live promoted resource runs.
 	ReactorActive(ctx context.Context) (bool, error)
-	ReactorPause(ctx context.Context, snippet string) error
-	ReactorResume(ctx context.Context, snippet string) error
 	PayloadStart(ctx context.Context, unit string) error
 	// ServiceWarm ensures an image is present, pulling only if it is missing -- see BringUp for
 	// why "start the .image unit" is not the same operation.
 	ServiceWarm(ctx context.Context, unit, ref string) error
 	PayloadStop(ctx context.Context, unit string) error
-	Adjust(ctx context.Context, req guestagent.ProvisionRequest) error
 	PayloadHealth(ctx context.Context, url string) (bool, error)
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
@@ -159,6 +166,14 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if !g.SupportsServiceInstalled() {
 		return failed("this guest is too old to name a service's identity on the volume (no service.installed); update the guest OS before installing")
 	}
+	// Same instrument, same reason, for converge ([V3b.3](f)). A guest without service.converge
+	// has no briard-services unit either, so nothing there ever reads the volume — this would
+	// write the manifest, report success, and leave the node serving exactly what it served
+	// before. No compat path ([[alpha-reinstall-only-policy]]); the guest OS rolls and the verb
+	// appears.
+	if !g.SupportsServiceConverge() {
+		return failed("this guest is too old to converge itself to the volume (no service.converge); update the guest OS before installing")
+	}
 	ctx, cancel := cfg.beat.budget(ctx, installBudget)
 	defer cancel()
 
@@ -263,17 +278,29 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("provision storage: %v", err))
 	}
 
-	// The bracket. Everything past here must return the node to the prior service, hence the
-	// explicit revert on each failure path rather than a defer that would also fire on success.
-	previous := cfg.Promoter
-	next := promoterUnits(rendered.Units)
+	// CONVERGE, in place. Everything past here must return the node to the prior service, hence
+	// the explicit revert on each failure path rather than a defer that would also fire on
+	// success.
+	//
+	// THERE IS NO MAINTENANCE BRACKET ANY MORE, and its absence is the point ([V3b.3](f)). This
+	// used to pause the promoter, quiesce the containers, rewrite the start-list and resume —
+	// because the services WERE chain members and changing what a live promoted resource runs
+	// meant editing the list it was promoted with. With a static chain there is nothing to
+	// rewrite: an install is provision + tell the node to re-read the volume. So installing a
+	// service no longer stops the promoter for every OTHER service on the node, and a failure
+	// here can no longer demote it.
+	//
+	// A VERB, not a `systemctl restart briard-services`: briard-services is itself a chain
+	// member, so stopping it would deactivate drbd-reactor's target, unmount the volume and
+	// demote the node — the exact accident the bracket existed to prevent, re-created by the
+	// obvious way of triggering a re-converge. Same code, same unit, no unit lifecycle touched.
 	revert := func(cause error) api.DirectiveOutcome {
-		return cfg.revert(ctx, g, d, m.Name, dataDir, rendered, prior, priorSubdirs, priorRaw, snap, previous, logf, cause)
+		return cfg.revert(ctx, g, d, m.Name, dataDir, rendered, prior, priorSubdirs, priorRaw, snap, logf, cause)
 	}
-	if err := cfg.switchService(ctx, g, next, rendered.ContainerUnits, logf); err != nil {
+	if err := g.ServiceConverge(ctx); err != nil {
 		return revert(fmt.Errorf("install %s: %w", m.Name, err))
 	}
-	logf("service install %s: promoter chain now %v; waiting for health", m.Name, next)
+	logf("service install %s: converged from the volume; waiting for health", m.Name)
 
 	// Gate on the SERVICE's own endpoint (in-guest), not the front door — see awaitHealthy. The
 	// primary container's port + healthPath are manifest-guaranteed (Validate requires both).
@@ -368,11 +395,13 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 	if d.Kind != api.DirectiveServiceInstall || o.State != api.OutcomeDone {
 		return
 	}
-	specs, chain, rendered, ok := cfg.installedServices(logf)
+	specs, _, rendered, ok := cfg.installedServices(logf)
 	if !ok {
 		return
 	}
-	cfg.Services, cfg.Promoter, cfg.ServiceRendered = specs, chain, rendered
+	// Not cfg.Promoter: the chain is static ([V3b.3](f)), and an install that changed it would be
+	// the node-was-told model this item removed.
+	cfg.Services, cfg.ServiceRendered = specs, rendered
 	for _, spec := range specs {
 		logf("installed service %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
 	}
@@ -518,31 +547,6 @@ func filesToRemove(have, want map[string]string) []string {
 	return out
 }
 
-// SwitchService rewrites the promoter start-list to `chain` inside the bracket, quiescing the
-// service's CONTAINER units first so the ones drbd-reactor restarts on resume pick up the freshly
-// rendered /run content. On a fresh install the containers are not running and the stop is a
-// harmless no-op; on an upgrade (same service name ⇒ same unit names) it is what makes the new
-// version actually take effect, since systemd does not restart an already-active unit on
-// daemon-reload alone. containerUnits, NEVER the pod — see quiesce.
-func (cfg Config) switchService(ctx context.Context, g serviceInstaller, chain, containerUnits []string, logf func(string, ...any)) error {
-	if err := g.ReactorPause(ctx, cfg.ReactorSnippet); err != nil {
-		return fmt.Errorf("pause promoter: %w", err)
-	}
-	cfg.quiesce(ctx, g, containerUnits, logf)
-	if err := cfg.adjustChain(ctx, g, chain); err != nil {
-		// Resume regardless: a paused promoter is a node that will not fail over, worse than a
-		// failed rewrite.
-		if rerr := g.ReactorResume(ctx, cfg.ReactorSnippet); rerr != nil {
-			logf("service install: promoter left PAUSED after a failed rewrite: %v", rerr)
-		}
-		return err
-	}
-	if err := g.ReactorResume(ctx, cfg.ReactorSnippet); err != nil {
-		return fmt.Errorf("resume promoter: %w", err)
-	}
-	return nil
-}
-
 // Quiesce stops the given CONTAINER units, best-effort — a unit that is not running is not a
 // failure worth aborting for. Called with the promoter PAUSED, so the stop is not read as a fault.
 //
@@ -561,33 +565,24 @@ func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnit
 	}
 }
 
-// AdjustChain writes the reactor start-list. Adjust writes the .res file UNCONDITIONALLY, so the
-// full resource config must ride along or the definition is truncated; `drbdadm adjust` against an
-// unchanged .res is a no-op, so passing it costs nothing and omitting it would be catastrophic.
-func (cfg Config) adjustChain(ctx context.Context, g serviceInstaller, chain []string) error {
-	req := guestagent.ProvisionRequest{
-		Resource:      cfg.Resource.Name,
-		ResConfig:     cfg.Resource.Config(),
-		ReactorConfig: drbd.ReactorConfig(cfg.Resource.Name, chain),
-	}
-	if err := g.Adjust(ctx, req); err != nil {
-		return fmt.Errorf("rewrite promoter chain: %w", err)
-	}
-	return nil
-}
-
 // Revert returns the node to the service it ran before this install — the prior manifest and its
-// data (an upgrade), or the empty zero-service chain (a fresh install) — and reports the terminal
-// outcome. It runs on a DETACHED, freshly-budgeted context (revertBudget): the most likely trigger
-// is the health gate's deadline expiring, and a revert inheriting that dead deadline could restore
+// data (an upgrade), or nothing at all (a fresh install) — and reports the terminal outcome. It
+// runs on a DETACHED, freshly-budgeted context (revertBudget): the most likely trigger is the
+// health gate's deadline expiring, and a revert inheriting that dead deadline could restore
 // nothing.
 //
-// The whole rollback runs under ONE pause so the promoter cannot restart the broken service between
-// steps: stop the broken units → restore the data → put the prior units + manifest back → point the
-// chain at the prior → resume, which starts the prior service fresh. Data is restored BEFORE code,
-// the order the guest manager's rollback uses — and if the data cannot be rolled back the
-// promoter is deliberately left PAUSED rather than resumed onto poisoned data.
-func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, name, dataDir string, next quadlet.Rendered, prior *quadlet.Rendered, priorSubdirs []string, priorRaw, snap string, previous []string, logf func(string, ...any), cause error) api.DirectiveOutcome {
+// Stop the broken service -> restore the data -> put the prior manifest back on the volume ->
+// converge, which re-renders from that manifest and starts the prior version fresh. Data is
+// restored BEFORE code, the order the guest manager's rollback uses.
+//
+// NO PROMOTER PAUSE, and the safety it used to buy is bought more cheaply now ([V3b.3](f)). The
+// old rollback ran under one pause so the promoter could not restart the broken service between
+// steps; with the services out of the chain the promoter has no opinion about them at all, and
+// the units are stopped here by name. The failed-restore case improves outright: it used to
+// leave the promoter PAUSED — a node that will not fail over — rather than resume onto poisoned
+// data. Now it simply does not converge, so the one service stays stopped and the node keeps
+// serving everything else and keeps its ability to fail over. Smaller blast radius, same refusal.
+func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, name, dataDir string, next quadlet.Rendered, prior *quadlet.Rendered, priorSubdirs []string, priorRaw, snap string, logf func(string, ...any), cause error) api.DirectiveOutcome {
 	rctx, rcancel := cfg.beat.budget(context.WithoutCancel(ctx), revertBudget)
 	defer rcancel()
 
@@ -597,37 +592,29 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 			Detail: fmt.Sprintf("%v; AND the revert failed to %s: %v", cause, what, err)}
 	}
 
-	if err := g.ReactorPause(rctx, cfg.ReactorSnippet); err != nil {
-		return bothFailed("pause the promoter", err)
-	}
-	// Stop the just-installed CONTAINERS (not the pod — that would unmount the shared volume): releases the data subvolume's bind (restore needs it) and lets them start fresh on
-	// resume.
+	// Stop the just-installed CONTAINERS (not the pod — that would make podman kill them out
+	// from under their units): releases the data subvolume's bind, which restore needs.
 	cfg.quiesce(rctx, g, next.ContainerUnits, logf)
-
 	if snap != "" {
 		if err := g.Restore(rctx, dataDir, snap); err != nil {
-			// Data could not be rolled back. Do NOT resume onto the prior units — they would run on
-			// the poisoned data. Leave the promoter paused for a human: a node that will not fail
-			// over is recoverable, silent data corruption is not.
-			return bothFailed("restore the data subvolume (promoter left PAUSED)", err)
+			// Data could not be rolled back. Do NOT converge — that would start the prior units
+			// on the poisoned data. Leaving this one service stopped is the safe end state:
+			// silent data corruption is not recoverable, a stopped service is.
+			return bothFailed("restore the data subvolume (the service is left stopped)", err)
 		}
 	}
 	if prior != nil {
-		if err := g.ServiceRender(rctx, prior.Files, filesToRemove(next.Files, prior.Files)); err != nil {
-			return bothFailed("re-render the prior units", err)
-		}
 		if err := g.ServiceProvision(rctx, name, dataDir, priorSubdirs, priorRaw); err != nil {
 			return bothFailed("re-record the prior manifest", err)
 		}
+	} else if err := g.ServiceForget(rctx, name); err != nil {
+		// A FRESH install that failed: the volume must not keep naming a service this node could
+		// not bring up, or the next promotion anywhere in the flock converges to it and fails the
+		// same way. There is no prior manifest to put back, so the identity is removed instead.
+		return bothFailed("remove the failed service's manifest from the volume", err)
 	}
-	if err := cfg.adjustChain(rctx, g, previous); err != nil {
-		if rerr := g.ReactorResume(rctx, cfg.ReactorSnippet); rerr != nil {
-			logf("service install: promoter left PAUSED after a failed revert rewrite: %v", rerr)
-		}
-		return bothFailed("rewrite the promoter chain", err)
-	}
-	if err := g.ReactorResume(rctx, cfg.ReactorSnippet); err != nil {
-		return bothFailed("resume the promoter", err)
+	if err := g.ServiceConverge(rctx); err != nil {
+		return bothFailed("converge back to the prior service", err)
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: cause.Error()}
 }

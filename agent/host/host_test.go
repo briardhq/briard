@@ -190,12 +190,19 @@ func TestConfigFromEnv_ServiceTargetsPayloadUnit(t *testing.T) {
 	}
 }
 
-// Zero services is the SHIPPED state: an unset SERVICE_IMAGE means nothing is
-// installed, and the promoter chain must then NOT name the payload unit. The guest does not
-// define that unit with an empty slot, and drbd-reactor fails the whole ordered chain on a
-// unit it cannot find — so getting this wrong takes the VIP down on every fresh install,
-// which is precisely the state `curl | sh` lands in.
-func TestConfigFromEnv_NoServiceLeavesPayloadOutOfTheChain(t *testing.T) {
+// The chain is STATIC — data -> services -> vip — on every data node, whatever is installed
+// ([V3b.3](f)). That is what makes converge-at-promotion possible: the chain is what drbd-reactor
+// promotes WITH, but the volume it must converge to is only readable AFTER promotion, so the
+// start-list cannot name the services themselves.
+//
+// The old assertion here was the opposite, and its reason was real: naming a unit the guest does
+// not define fails the whole ordered chain and takes the VIP down on every fresh install, which is
+// precisely the state `curl | sh` lands in. briard-services is why it can now be unconditional —
+// the guest image defines it always, exactly as it defines briard-data and briard-vip.
+//
+// The build-time payload slot is the one remaining conditional member, and only because it is a
+// fixture mechanism on its way out ([V3b.3](e1)); nothing install.sh writes sets SERVICE_IMAGE.
+func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
 		t.Setenv(k, "")
 	}
@@ -204,15 +211,16 @@ func TestConfigFromEnv_NoServiceLeavesPayloadOutOfTheChain(t *testing.T) {
 	if len(cfg.Services) != 0 {
 		t.Errorf("Services = %+v with nothing installed, want the empty set", cfg.Services)
 	}
-	want := []string{"briard-data.service", "briard-vip.service"}
+	want := []string{"briard-data.service", "briard-services.service", "briard-vip.service"}
 	if !slices.Equal(cfg.Promoter, want) {
-		t.Errorf("promoter chain = %v, want %v (no payload unit)", cfg.Promoter, want)
+		t.Errorf("promoter chain = %v, want %v", cfg.Promoter, want)
 	}
-	// ...and the payload rejoins the chain the moment something is installed.
+	// A runtime-installed service does NOT join it — converge starts those, which is what keeps a
+	// crashed container from deactivating the promoter's target and demoting the node.
 	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
-	withService := []string{"briard-data.service", "podman-briard-payload.service", "briard-vip.service"}
-	if got := ConfigFromEnv().Promoter; !slices.Equal(got, withService) {
-		t.Errorf("promoter chain with a service = %v, want %v", got, withService)
+	withBaked := []string{"briard-data.service", "podman-briard-payload.service", "briard-services.service", "briard-vip.service"}
+	if got := ConfigFromEnv().Promoter; !slices.Equal(got, withBaked) {
+		t.Errorf("promoter chain with the baked slot = %v, want %v", got, withBaked)
 	}
 }
 

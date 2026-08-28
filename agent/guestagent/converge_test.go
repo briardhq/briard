@@ -255,3 +255,111 @@ func keys(m map[string]string) []string {
 	}
 	return out
 }
+
+// dummyManifestV2 is the same service at a new version: same name, therefore the same unit names,
+// and a different image digest. This is the real upgrade shape (home-assistant 2026.8 -> 2026.9),
+// and the one a start alone cannot deliver.
+const dummyManifestV2 = `{"name":"dummy","version":"2","containers":[{"name":"app",` +
+	`"image":"localhost/briard-dummy@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
+	`"mount":"/data","primary":true,"port":8080,"healthPath":"/healthz"}]}`
+
+// TestConvergeBouncesAServiceWhoseRenderingChanged is the upgrade case. systemd does not restart
+// an already-active unit on daemon-reload, so a converge that only ever STARTS would leave the
+// old container serving while every file on disk described the new one — green, and wrong. This
+// is what the install path's quiesce did inside the maintenance bracket, and it moved here with
+// the bracket's deletion.
+func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
+	x := dummyNode(t)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("first Converge: %v", err)
+	}
+	// The upgrade: a new manifest lands on the volume and the node re-converges in place.
+	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2
+	x.quadlet = []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"}
+	before := len(x.fakeExec.runs)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("re-Converge: %v", err)
+	}
+	var stopped []string
+	for _, r := range x.fakeExec.runs[before:] {
+		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" {
+			stopped = append(stopped, r[2])
+		}
+	}
+	// The container before the pod: stopping the pod first makes podman kill its members out
+	// from under their units, so each lands in `failed` rather than stopping cleanly.
+	want := []string{"briard-dummy-app.service", "briard-dummy-pod.service"}
+	if fmt.Sprint(stopped) != fmt.Sprint(want) {
+		t.Fatalf("an upgraded service was not bounced: stopped %v, want %v", stopped, want)
+	}
+}
+
+// TestConvergeLeavesAnUnchangedServiceAlone is the half that keeps the one above honest: bouncing
+// unconditionally would also pass it. Converge runs on every promotion AND every install, so a
+// service nobody touched must not be taken down because a DIFFERENT one was upgraded.
+func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
+	x := &convergeExec{services: []string{"dummy.json", "other.json"}, haveImage: true}
+	x.fakeExec.files = map[string]string{
+		manifestDir + "/dummy.json": dummyManifest,
+		manifestDir + "/other.json": otherManifest,
+	}
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("first Converge: %v", err)
+	}
+	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2 // only `dummy` is upgraded
+	x.quadlet = []string{
+		"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image",
+		"briard-other.pod", "briard-other-app.container", "briard-other-app.image",
+	}
+	before := len(x.fakeExec.runs)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("re-Converge: %v", err)
+	}
+	for _, r := range x.fakeExec.runs[before:] {
+		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" && strings.HasPrefix(r[2], "briard-other") {
+			t.Fatalf("upgrading `dummy` took `other` down: stopped %s", r[2])
+		}
+	}
+}
+
+// TestServiceForgetRemovesTheManifestAndFlushes: reverting a FRESH install has to remove the
+// service's identity from the volume, not just stop its units — under converge the volume is what
+// every future promotion, on every node, renders from ([V3b.3](f)).
+//
+// The `sync -f` is the durable half and is asserted rather than assumed: the fact that has to
+// survive a power cut here is the directory ENTRY's removal, the same reason provisionService
+// syncs after writing one. Without it a crash inside the writeback window resurrects a service
+// the install had already given up on.
+func TestServiceForgetRemovesTheManifestAndFlushes(t *testing.T) {
+	x := dummyNode(t)
+	g := dial(t, x)
+	if err := g.ServiceForget(context.Background(), "dummy"); err != nil {
+		t.Fatalf("ServiceForget: %v", err)
+	}
+	if !x.ran("rm", "-f", manifestDir+"/dummy.json") {
+		t.Fatalf("the manifest was not removed; ran %v", x.fakeExec.runs)
+	}
+	if !x.ran("sync", "-f", manifestDir) {
+		t.Fatalf("the removal was not flushed to the replicated volume; ran %v", x.fakeExec.runs)
+	}
+}
+
+// TestConvergeVerbsAreAdvertised: the host gates the whole install on the handshake
+// (SupportsServiceConverge), so a verb the dispatch switch handles but the capability list omits
+// is invisible — an install would refuse a guest that could in fact do the work.
+//
+// THE HANDSHAKE IS THE POINT, not scenery: Supports returns true when caps is nil (a guest too old
+// to advertise anything), so asserting on an un-handshaken client passes whatever the capability
+// list says. That is exactly how this test was wrong the first time it was written.
+func TestConvergeVerbsAreAdvertised(t *testing.T) {
+	g := dial(t, dummyNode(t))
+	if _, err := g.Handshake(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !g.SupportsServiceConverge() {
+		t.Fatal("service.converge is handled but not advertised — every install would refuse this guest")
+	}
+	if !g.Supports(verbServiceForget) {
+		t.Fatal("service.forget is handled but not advertised")
+	}
+}

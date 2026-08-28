@@ -575,6 +575,24 @@ in
   # runtime (the unit runs the local `:serve` tag, which converge/pin re-point), so what
   # actually bakes here is the data mount mapping. Moving that onto the DRBD volume beside
   # `.payload-image` is what lets a service be installed at runtime with no OS switch.
+  # The agent binary this guest runs. It is an option rather than a callPackage here because
+  # disk-image.nix already builds a VERSIONED one for briard-guest-agent + briard-deadman, and a
+  # second instantiation with different arguments would put TWO agent derivations in the shipped
+  # image's closure. Setting it there means the same store path serves all three units.
+  #
+  # It exists at all because briard-services (converge-at-promotion, [V3b.3](f)) is defined HERE:
+  # it is a promoter chain member, so it has to live in the same module as briard-data and
+  # briard-vip — naming a unit the guest does not define fails the whole ordered chain. The
+  # default is what makes the nixosTests work unchanged: a test node gets a guest-tagged agent
+  # without every test having to hand one in, and converges with the product's own code rather
+  # than a harness stand-in.
+  options.briard.agentPackage = lib.mkOption {
+    type = lib.types.package;
+    default = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; };
+    defaultText = lib.literalExpression "the guest-tagged briard-agent";
+    description = "The briard-agent build this guest's units invoke (guest-tagged).";
+  };
+
   options.briard.payload = {
     image = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -1115,7 +1133,53 @@ in
       requires = [ "briard-converge.service" ];
     };
 
-    # 3. vip — claim the service address and gratuitous-ARP it so the L2 segment
+    # 3. services — CONVERGE-AT-PROMOTION ([V3b.3](f)). Once the volume is mounted, read every
+    #    manifest under its `.services/`, render, warm and start them. This node makes itself
+    #    match the VOLUME, so what a node was told — or whether it was even up when the install
+    #    ran — stops deciding what the household gets after a failover.
+    #
+    #    IT IS A CHAIN MEMBER, AND STATICALLY SO. The chain is what drbd-reactor promotes WITH,
+    #    but the volume is only readable AFTER promotion — so the start-list cannot name the
+    #    services themselves, and goes back to being constant: `data -> services -> vip` on every
+    #    data node. A constant chain is what made converge-at-promotion possible for the baked
+    #    payload slot; this generalises the trick to N runtime-installed services. The unit is
+    #    defined unconditionally for the same reason briard-data is: naming a unit the guest does
+    #    not define fails the WHOLE ordered chain.
+    #
+    #    ITS FAILURE IS LOUD, BY POSITION. A promoter fails the whole promotion if a member
+    #    fails, and the VIP comes after this — so a node that cannot converge never takes the
+    #    service address, and a primary with no address is already reported unhealthy. That is
+    #    deliberate: built as a side-effect that shrugs, converge would put fallible work (render,
+    #    possibly a pull) on the promotion path and leave the silent-healthy hole exactly as
+    #    dangerous. Same shape, and the same reason, as briard-converge's own refusal.
+    #
+    #    THE SERVICE UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "a service error
+    #    alerts but never demotes" mechanically true — drbd-reactor never sees them, so a crashed
+    #    container cannot deactivate the target. The consequences are handled where they land: a
+    #    crash is the container unit's own Restart= (agent/quadlet), and the STOP is ExecStop
+    #    below, because reverse-order chain unwinding would otherwise leave containers running on
+    #    a volume about to be unmounted.
+    systemd.services.briard-services = {
+      description = "Briard services, converged from the replicated volume at promotion";
+      wantedBy = [ ];
+      after = [ "briard-data.service" ];
+      requires = [ "briard-data.service" ];
+      path = [
+        pkgs.coreutils # ls/mkdir/rm, for reading the volume and owning the quadlet dir
+        pkgs.systemd # systemctl daemon-reload + start/stop of the rendered units
+        # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
+        # differently-wrapped copy of the runtime ([B.5]).
+        config.virtualisation.podman.package
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${config.briard.agentPackage}/bin/briard-agent --converge";
+        ExecStop = "${config.briard.agentPackage}/bin/briard-agent --converge-stop";
+      };
+    };
+
+    # 4. vip — claim the service address and gratuitous-ARP it so the L2 segment
     #    learns its (new) home. BOTH the address and the device are agent-determined
     #    (net.configure writes VIP_ADDR + VIP_DEV to ${vipEnvPath}). Under the
     #    unified NIC layout eth1 is always the DRBD NIC and the VIP lives on

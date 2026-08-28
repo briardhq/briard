@@ -397,17 +397,20 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// any single observe() call, since the re-dial loop below runs many of them and a second
 	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.
 	cfg.telemetry = cfg.newTelemetryWriter(ctx, logf)
-	// A service installed at RUNTIME is not described by the environment, so rebuild it
-	// from the node-local manifest cache before anything derives from cfg. Without this an agent
-	// restart would re-derive the chain from env alone and silently drop the installed service
-	// out of the promoter — the node would come back serving nothing.
-	if specs, chain, rendered, ok := cfg.installedServices(logf); ok {
+	// A service installed at RUNTIME is not described by the environment, so rebuild what this
+	// node knows about it from the node-local manifest cache before anything derives from cfg.
+	//
+	// NOT THE PROMOTER CHAIN ANY MORE ([V3b.3](f)): the chain is static, and what a node runs
+	// comes from the VOLUME at promotion, not from this cache. What the cache is still for is
+	// everything the HOST needs before (or without) promotion -- which services to measure and
+	// report, and the units to re-render so a standby is warm.
+	if specs, _, rendered, ok := cfg.installedServices(logf); ok {
 		names := make([]string, 0, len(specs))
 		for _, s := range specs {
 			names = append(names, s.Name)
 		}
-		logf("installed services %v restored from cache; promoter chain %v", names, chain)
-		cfg.Services, cfg.Promoter, cfg.ServiceRendered = specs, chain, rendered
+		logf("installed services %v restored from cache", names)
+		cfg.Services, cfg.ServiceRendered = specs, rendered
 	}
 	// A mesh joined at RUNTIME is not described by the environment either, and it is the more
 	// dangerous of the two to forget: bring-up REWRITES the guest's .res from cfg.Resource every

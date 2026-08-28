@@ -11,25 +11,35 @@ import (
 )
 
 // promoterUnits is the ordered drbd-reactor promoter chain for a data node: mount the DRBD
-// volume -> start the service container, if one is installed -> claim the VIP (the same unit
-// order the driver drives). The front door is not a member: it rides briard-vip
-// (wantedBy + partOf) inside the guest, so it tracks the primary role without the host
-// needing to name it.
+// volume -> converge this node to what the volume says it runs -> claim the VIP. The front door
+// is not a member: it rides briard-vip (wantedBy + partOf) inside the guest, so it tracks the
+// primary role without the host needing to name it.
 //
-// The payload's membership is conditional because zero services is the shipped state.
-// Naming a unit the guest does not define fails the WHOLE ordered chain, taking the VIP down
-// with it — so a static list would mean a node that installs cleanly and then serves nothing.
-// the members are a LIST rather than a yes/no, because a runtime-installed service is a
-// pod plus its containers — several units, named by the quadlet renderer — where the baked slot
-// was always the single podman-briard-payload.service. Empty = zero services, the shipped state.
-func promoterUnits(service []string) []string {
-	units := append([]string{"briard-data.service"}, service...)
-	return append(units, "briard-vip.service")
+// IT IS STATIC, and that is what makes converge-at-promotion possible ([V3b.3](f)). The chain is
+// what drbd-reactor promotes WITH, but the volume is only readable AFTER promotion — so the
+// start-list cannot name the services themselves. briard-services is the unit that, once the
+// mount exists, reads the manifests, renders and starts them. The runtime-installed services are
+// therefore NOT members, which is also what makes "a service error alerts but never demotes"
+// mechanically true: drbd-reactor never sees them, so a crashed container cannot deactivate the
+// target. A constant chain is what the baked slot's always was; restoring it generalises the
+// trick to N services.
+//
+// Nothing here is conditional on a service existing any more. The old conditional membership
+// existed because naming a unit the guest does not define fails the WHOLE ordered chain, and a
+// zero-service node has no service unit to name — but briard-services is defined
+// unconditionally by the guest image, exactly as briard-data and briard-vip are, so there is
+// nothing left to make conditional.
+//
+// `baked` is the build-time payload slot, the last conditional member and a fixture mechanism on
+// its way out ([V3b.3](e1)); nothing install.sh writes sets it.
+func promoterUnits(baked []string) []string {
+	units := append([]string{"briard-data.service"}, baked...)
+	return append(units, "briard-services.service", "briard-vip.service")
 }
 
 // bakedSlot is the one-unit chain member of the build-time payload slot. Kept as its own name so
 // the difference between "baked" and "installed at runtime" is visible where it matters, and so
-// deleting the baked slot (f) is a search for one identifier.
+// deleting the baked slot ([V3b.3](e1)) is a search for one identifier.
 func bakedSlot() []string { return []string{"podman-briard-payload.service"} }
 
 // buildVersion is the agent's release id, stamped at build time:

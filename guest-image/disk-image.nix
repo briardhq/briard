@@ -306,6 +306,11 @@ let
         lib.optional (v1System != null) v1System
         ++ lib.optional (rebootSystem != null) rebootSystem);
       briard.payload.stagedImages = stageImages;
+      # One agent derivation for all three units that need it (briard-guest-agent,
+      # briard-deadman, and briard-services' converge). configuration.nix defaults this to an
+      # UNVERSIONED guest build for the nixosTests; letting that default stand here would put a
+      # second agent in the shipped image's closure.
+      briard.agentPackage = briardAgent;
     }
   ];
 
