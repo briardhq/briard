@@ -366,6 +366,10 @@ type statusReader interface {
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
 	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
 	guest.VIPReader
+	// PayloadActive answers "is this unit up?" for ONE service, which is what per-service health
+	// rides on ([V3b.3](f)). It is here rather than derived from Healthy because Healthy is the
+	// front door at the VIP -- which answers 200 on a node running no services at all.
+	PayloadActive(ctx context.Context, unit string) (bool, error)
 	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
 	// address off the interface: the value we asked for is not evidence of the value in force.
 	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
@@ -1326,14 +1330,20 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // not in any config file either, so the log is the only place a human can find it.
 func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, model.Cluster, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, Image: served, System: system, AgentVersion: cfg.Version}
-	st.Services = cfg.serviceStatuses()
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cl, err := r.Cluster(rctx, cfg.Resource.Name)
 	if err != nil {
+		// The identity half still reports: what is installed is known without the guest, and a
+		// dead channel must not read as an uninstall. The STATE half is left empty, which is the
+		// honest answer when nothing could be asked.
+		st.Services = cfg.serviceStatuses(rctx, r, false)
 		return st, cl, "", err // zero QuorumState, Healthy=false
 	}
 	st.Quorum = cl.QuorumState
+	// AFTER the cluster read, because the state is only meaningful on the node that holds the
+	// volume -- the services run on whoever is Primary and nowhere else.
+	st.Services = cfg.serviceStatuses(rctx, r, cl.QuorumState.Primary)
 	// The name this node is REALLY publishing, not the one it was configured with. A read error
 	// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
 	// make a silent conflict-rename permanently invisible, which is the whole failure being
@@ -1415,19 +1425,45 @@ func (cfg Config) soleService() (model.ServiceSpec, bool) {
 // its image ref, say -- would put an OCI ref in a field the cloud compares against a catalog
 // hash. The slot reports through Image, as it always has, until [V3b.3](e1) deletes both.
 //
-// Unlike currentImage this asks the guest NOTHING. The identity is a property of what was
+// The IDENTITY asks the guest nothing, unlike currentImage: it is a property of what was
 // installed, not of what the guest happens to answer this second, so it comes off the spec the
 // cache was read into -- which also means it stays correct on a node whose guest is briefly
 // unreachable, where a read-through would have blanked the whole set.
-func (cfg Config) serviceStatuses() []api.ServiceStatus {
+//
+// The STATE has to ask, because it is the opposite kind of fact -- what the units are doing right
+// now ([V3b.3](f)). It is read ONLY on a Primary and only from a live channel; everywhere else
+// the field is left empty, which api.ServiceStatus.State defines as "does not apply / not known"
+// and explicitly not as "stopped". A Secondary is not supposed to be running anything, and a node
+// whose read failed knows nothing -- reporting either as stopped would make an ordinary standby
+// indistinguishable from a broken primary, which is the same conflation this field exists to
+// undo.
+//
+// A per-service read error leaves that ONE service empty and lets the others report. Losing the
+// whole set because one verb hiccuped is how a real outage gets hidden behind a transient.
+func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, primary bool) []api.ServiceStatus {
 	var out []api.ServiceStatus
 	for _, s := range cfg.Services {
 		if s.Manifest == "" {
 			continue
 		}
-		out = append(out, api.ServiceStatus{Name: s.Name, Manifest: s.Manifest})
+		st := api.ServiceStatus{Name: s.Name, Manifest: s.Manifest}
+		if primary {
+			if active, err := r.PayloadActive(ctx, s.ServingUnit()); err == nil {
+				st.State = api.StateStopped
+				if active {
+					st.State = api.StateRunning
+				}
+			}
+		}
+		out = append(out, st)
 	}
 	return out
+}
+
+// serviceStateReader is the one verb serviceStatuses needs: is this unit up? Narrow interface for
+// DI, not a seam.
+type serviceStateReader interface {
+	PayloadActive(ctx context.Context, unit string) (bool, error)
 }
 
 // CurrentImage reports the payload image this node actually serves: the replicated pin

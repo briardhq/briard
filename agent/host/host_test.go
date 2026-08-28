@@ -78,6 +78,11 @@ type fakeStatus struct {
 	vip    string
 	vipErr error
 	probed *string
+	// active is what payload.active answers per unit, and activeErr makes it fail -- the two
+	// halves per-service state needs, since "the unit is down" and "we could not ask" must not
+	// report the same thing (api.ServiceStatus.State).
+	active    map[string]bool
+	activeErr error
 	// mdns is what net.mdnspublished answers: the name avahi ACTUALLY established, which a
 	// silent conflict-rename can make differ from the one we asked for. "" = nothing published.
 	mdns    string
@@ -92,6 +97,10 @@ func (f fakeStatus) Cluster(context.Context, string) (model.Cluster, error) {
 }
 
 func (f fakeStatus) MDNSPublished(context.Context) (string, error) { return f.mdns, f.mdnsErr }
+
+func (f fakeStatus) PayloadActive(_ context.Context, unit string) (bool, error) {
+	return f.active[unit], f.activeErr
+}
 
 func (f fakeStatus) PayloadHealth(_ context.Context, url string) (bool, error) {
 	if f.probed != nil {

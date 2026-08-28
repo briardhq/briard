@@ -151,8 +151,9 @@ type NodeStatus struct {
 	// per-report current-state. Expanding that set is a deliberate, visible act.
 }
 
-// ServiceStatus is one runtime-installed service as the node reports it: what it is, and which
-// version of what it is. See NodeStatus.Services for why the pair is the whole of it.
+// ServiceStatus is one runtime-installed service as the node reports it: what it is, which
+// version of what it is, and whether it is actually running. See NodeStatus.Services for why the
+// first two are what they are, and State below for why the third had to join them.
 type ServiceStatus struct {
 	// Name is the catalog slug the service was installed under ("home-assistant"). Stable
 	// across upgrades, which is exactly why it cannot be the identity on its own.
@@ -162,7 +163,43 @@ type ServiceStatus struct {
 	// by comparing it against the identity the catalog published -- ground truth read back from
 	// the node, never echoed from the directive it was sent.
 	Manifest string `json:"manifest"`
+	// State is what this node observes the service's own serving unit doing: StateRunning,
+	// StateStopped, or EMPTY when the question does not apply or could not be answered.
+	//
+	// Widening the closed allowlist is a deliberate act, so here is the argument, and it is a
+	// MEASURED one. NodeStatus.Services deliberately carried no health, on the grounds that a
+	// service's own endpoint is not probed from here and Healthy covers the node. A fleet run on
+	// 2026-08-27 showed what that costs: a survivor promoted, ran no service at all, and reported
+	// `healthy=true` -- because Healthy is the FRONT DOOR at the VIP, and the front door answers
+	// its own /healthz on a zero-service node. A home degraded to zero services and every signal
+	// said fine. Healthy is not wrong about its own subject; it is pointed at a different one.
+	//
+	// [V3b.3](f) makes this load-bearing rather than merely nice. Converge-at-promotion takes the
+	// service units OUT of the promoter chain, so that a crashed container alerts instead of
+	// demoting the node -- which also means drbd-reactor no longer notices one at all. This field
+	// is then the ONLY thing that does.
+	//
+	// It REPORTS AND NEVER GATES, which is the same distinction: promotion gate and health signal
+	// need separate carriers, and conflating them is what produced both the flap this avoids and
+	// the silence it fixes.
+	//
+	// WHAT IT DELIBERATELY IS NOT: a health probe. It answers "is the unit up", not "is the
+	// application well" -- a service that is running but broken stays invisible here, because the
+	// front door does not route to it. That is [B.48]'s, and this does not pretend to it.
+	//
+	// EMPTY IS A REAL ANSWER and must not be read as "stopped": a Secondary is not supposed to be
+	// running anything (the services run on whoever holds the volume), and a node whose control
+	// channel hiccuped this cycle knows nothing. Reporting either as stopped would make an
+	// ordinary standby indistinguishable from a broken primary.
+	State string `json:"state,omitempty"`
 }
+
+// The values ServiceStatus.State takes. A closed set, spelled here rather than at each end, so
+// the node and the cloud cannot disagree about what a node meant.
+const (
+	StateRunning = "running"
+	StateStopped = "stopped"
+)
 
 // MetricAggregate is one field's hourly rollup a node uploads: min/max/avg over the
 // raw samples it measured in the hour beginning at PeriodStart, plus Samples (the count behind

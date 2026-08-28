@@ -898,7 +898,7 @@ func TestServiceStatusesReportTheInstalledSetAndSkipTheBakedSlot(t *testing.T) {
 		{Name: "briard-payload", Image: "briard-dummy:v0"}, // the baked slot: no manifest
 		{Name: "mosquitto", Manifest: "sha256:bb", Image: "ghcr.io/x/mq@sha256:2"},
 	}}
-	got := cfg.serviceStatuses()
+	got := cfg.serviceStatuses(context.Background(), fakeStatus{}, false)
 	want := []api.ServiceStatus{
 		{Name: "home-assistant", Manifest: "sha256:aa"},
 		{Name: "mosquitto", Manifest: "sha256:bb"},
@@ -908,11 +908,67 @@ func TestServiceStatusesReportTheInstalledSetAndSkipTheBakedSlot(t *testing.T) {
 	}
 }
 
+// PER-SERVICE STATE, the [V3b.3](f) half. It exists because the promoter no longer watches these
+// units -- taking them out of the chain is what stops a crashed container from demoting the node,
+// and it also means nothing else notices one has died.
+//
+// The three answers are asserted together because they are only meaningful against each other: a
+// running service, a dead one, and the BAKED SLOT which reports no state at all (it has no
+// manifest, so it is not on this wire).
+func TestServiceStatusesReportPerServiceState(t *testing.T) {
+	cfg := Config{Services: []model.ServiceSpec{
+		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
+		{Name: "mosquitto", Manifest: "sha256:bb", Unit: "briard-mosquitto-mq.service"},
+	}}
+	r := fakeStatus{active: map[string]bool{"briard-home-assistant-ha.service": true}}
+	got := cfg.serviceStatuses(context.Background(), r, true)
+	want := []api.ServiceStatus{
+		{Name: "home-assistant", Manifest: "sha256:aa", State: api.StateRunning},
+		{Name: "mosquitto", Manifest: "sha256:bb", State: api.StateStopped},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
+	}
+}
+
+// A SECONDARY REPORTS NO STATE, and that is not a detail. The services run on whoever holds the
+// volume, so a standby is SUPPOSED to be running nothing -- reporting `stopped` there would make
+// an ordinary secondary indistinguishable from a primary whose service died, which is exactly the
+// confusion this field exists to end.
+func TestServiceStatusesLeaveStateEmptyOnASecondary(t *testing.T) {
+	cfg := Config{Services: []model.ServiceSpec{
+		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
+	}}
+	got := cfg.serviceStatuses(context.Background(), fakeStatus{}, false)
+	if len(got) != 1 || got[0].State != "" {
+		t.Errorf("serviceStatuses() on a secondary = %+v, want the state left empty", got)
+	}
+}
+
+// "We could not ask" is not "it is down" either, and a read error must cost only the ONE service
+// it happened to. Losing the whole set to a transient verb error is how a real outage hides.
+func TestServiceStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
+	cfg := Config{Services: []model.ServiceSpec{
+		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
+	}}
+	r := fakeStatus{activeErr: errors.New("channel down")}
+	got := cfg.serviceStatuses(context.Background(), r, true)
+	if len(got) != 1 {
+		t.Fatalf("a failed state read dropped the service entirely: %+v", got)
+	}
+	if got[0].State != "" {
+		t.Errorf("State = %q after a failed read, want empty — an unanswerable question is not a `stopped` answer", got[0].State)
+	}
+	if got[0].Manifest != "sha256:aa" {
+		t.Errorf("the identity was lost with the state: %+v", got[0])
+	}
+}
+
 // A witness and the shipped zero-service node report NOTHING here, and they must report it as an
 // absent field rather than an empty list: `services: []` on the wire says "I looked and there are
 // none", which is a claim a node with no service cache is in no position to make.
 func TestServiceStatusesAreAbsentWithNoServices(t *testing.T) {
-	if got := (Config{}).serviceStatuses(); got != nil {
+	if got := (Config{}).serviceStatuses(context.Background(), fakeStatus{}, true); got != nil {
 		t.Errorf("serviceStatuses() = %+v, want nil so the field is omitted entirely", got)
 	}
 }
