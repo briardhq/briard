@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"briard.io/shared/api"
-	"briard.io/shared/model"
 	"context"
 	"os"
 	"strconv"
@@ -188,19 +187,17 @@ func heldUntilPinged(pinged <-chan struct{}) func() error {
 }
 
 func TestLongDirectivesKeepTheWatchdogFed(t *testing.T) {
-	spec := model.ServiceSpec{Name: "briard-payload"}
 	for _, tc := range []struct {
 		name string
 		d    api.Directive
 	}{
 		{"rescue", api.Directive{Kind: api.DirectiveRescue}},
-		{"payload upgrade", api.Directive{Kind: api.DirectiveUpgrade, Payload: "briard-dummy:v1"}},
 		{"os upgrade", api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, pinged := pingingBeat()
 			up := &fakeUpgrader{hold: heldUntilPinged(pinged)}
-			o := applyDirective(context.Background(), tc.d, up, spec, "briard-dummy:v0",
+			o := applyDirective(context.Background(), tc.d, up,
 				&fakeNotifier{}, nil, nil, quietf, testUpgradeBudget, b)
 			if o.State != api.OutcomeDone {
 				t.Fatalf("%s did not complete: %s", tc.name, o.Detail)

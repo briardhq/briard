@@ -198,27 +198,18 @@ func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
 	}
 }
 
-// An installed service must resolve to the guest's fixed unit
-// (podman-briard-payload.service). guest.unitOf derives the unit from Service.Name,
-// and configuration.nix bakes that one unit regardless of which service occupies the slot,
-// so a wrong default (e.g. "dummy") makes an upgrade directive drive a non-existent
-// podman-dummy.service.
-func TestConfigFromEnv_ServiceTargetsPayloadUnit(t *testing.T) {
-	for _, k := range []string{"SERVICE_NAME", "SERVICE_DATADIR"} {
-		t.Setenv(k, "")
+// THE ENVIRONMENT CANNOT INSTALL A SERVICE, which is the end state [V3b.3](e1) was after: there
+// is no SERVICE_IMAGE (or any sibling) left to read, so an anchor comes up with the empty set and
+// fills it from what it was actually installed with -- the node-local cache, or the volume once it
+// promotes. Setting the old variables must therefore do NOTHING, which is what this asserts: a
+// re-introduced env path would give a node a service nobody installed.
+func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
+	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
+		t.Setenv(k, "briard-dummy:v0")
 	}
-	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
 	t.Setenv("ROLE", string(model.RoleAnchor))
-	services := ConfigFromEnv().Services
-	if len(services) != 1 {
-		t.Fatalf("Services = %+v, want exactly the one baked entry", services)
-	}
-	got := services[0]
-	if got.Name != "briard-payload" {
-		t.Errorf("Services[0].Name = %q, want briard-payload (the guest's fixed payload unit slug)", got.Name)
-	}
-	if unit := "podman-" + got.Name + ".service"; unit != "podman-briard-payload.service" {
-		t.Errorf("derived unit = %q, want podman-briard-payload.service", unit)
+	if services := ConfigFromEnv().Services; len(services) != 0 {
+		t.Fatalf("Services = %+v, want none: a service is installed at runtime, never configured", services)
 	}
 }
 
@@ -232,12 +223,9 @@ func TestConfigFromEnv_ServiceTargetsPayloadUnit(t *testing.T) {
 // precisely the state `curl | sh` lands in. briard-services is why it can now be unconditional —
 // the guest image defines it always, exactly as it defines briard-data and briard-vip.
 //
-// The build-time payload slot is the one remaining conditional member, and only because it is a
-// fixture mechanism on its way out ([V3b.3](e1)); nothing install.sh writes sets SERVICE_IMAGE.
+// Nothing is conditional any more ([V3b.3](e1) took the last member out): the chain is these three
+// units on every anchor, whatever the node is running and whatever the environment says.
 func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
-	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
-		t.Setenv(k, "")
-	}
 	t.Setenv("ROLE", string(model.RoleAnchor))
 	cfg := ConfigFromEnv()
 	if len(cfg.Services) != 0 {
@@ -250,9 +238,8 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	// A runtime-installed service does NOT join it — converge starts those, which is what keeps a
 	// crashed container from deactivating the promoter's target and demoting the node.
 	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
-	withBaked := []string{"briard-data.service", "podman-briard-payload.service", "briard-services.service", "briard-vip.service"}
-	if got := ConfigFromEnv().Promoter; !slices.Equal(got, withBaked) {
-		t.Errorf("promoter chain with the baked slot = %v, want %v", got, withBaked)
+	if got := ConfigFromEnv().Promoter; !slices.Equal(got, want) {
+		t.Errorf("promoter chain = %v, want the same static %v whatever the environment carries", got, want)
 	}
 }
 
@@ -417,7 +404,7 @@ func TestSnapshot_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
 
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
 	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf-2"}
-	st, _, _, err := cfg.snapshot(context.Background(), r, "briard-dummy:v1", "/nix/store/sys")
+	st, _, _, err := cfg.snapshot(context.Background(), r, "/nix/store/sys")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +432,7 @@ func TestSnapshot_UnknownPublishedNameIsEmptyNotTheConfiguredOne(t *testing.T) {
 		{"a Secondary publishes no name", fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true}},
 		{"the read failed", fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdnsErr: errors.New("channel hiccup")}},
 	} {
-		st, _, _, err := cfg.snapshot(context.Background(), c.r, "briard-dummy:v1", "/nix/store/sys")
+		st, _, _, err := cfg.snapshot(context.Background(), c.r, "/nix/store/sys")
 		if err != nil {
 			t.Fatalf("%s: %v", c.what, err)
 		}
@@ -465,7 +452,7 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	cfg.Resource.Name = "r0"
 
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
-	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "briard-dummy:v1", "/nix/store/sys")
+	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "/nix/store/sys")
 	if st.NodeName != "n1" || st.Role != model.RoleDiskless {
 		t.Errorf("identity not preserved: %+v", st)
 	}
@@ -475,8 +462,8 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	if !st.Healthy {
 		t.Error("a quorate witness should read healthy: it has nothing to probe")
 	}
-	if st.Image != "briard-dummy:v1" {
-		t.Errorf("Image = %q, want the served image reported through the seam", st.Image)
+	if len(st.Services) != 0 {
+		t.Errorf("Services = %+v, want none: a witness runs nothing", st.Services)
 	}
 	if st.System != "/nix/store/sys" {
 		t.Errorf("System = %q, want the running system reported through the seam", st.System)
@@ -509,26 +496,6 @@ func TestCurrentSystem(t *testing.T) {
 	witness := Config{Diskless: true}
 	if got := witness.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "" {
 		t.Errorf("witness currentSystem = %q, want empty", got)
-	}
-}
-
-// CurrentImage reports the guest's pin when set, the configured baked default when the
-// pin is empty or the read errors, and "" for a witness (no payload) -- so the reported
-// image is ground truth across a failover (a converged survivor reports the pin).
-func TestCurrentImage(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{{Name: "dummy", Image: "briard-dummy:v0"}}}
-	if got := cfg.currentImage(context.Background(), fakeStatus{image: "briard-dummy:v1"}); got != "briard-dummy:v1" {
-		t.Errorf("with a pin set, currentImage = %q, want the pinned briard-dummy:v1", got)
-	}
-	if got := cfg.currentImage(context.Background(), fakeStatus{image: ""}); got != "briard-dummy:v0" {
-		t.Errorf("no pin: currentImage = %q, want the baked default briard-dummy:v0", got)
-	}
-	if got := cfg.currentImage(context.Background(), fakeStatus{imgErr: errors.New("channel down")}); got != "briard-dummy:v0" {
-		t.Errorf("read error: currentImage = %q, want the default fallback briard-dummy:v0", got)
-	}
-	witness := Config{} // the empty set: nothing installed
-	if got := witness.currentImage(context.Background(), fakeStatus{image: "x"}); got != "" {
-		t.Errorf("witness currentImage = %q, want empty", got)
 	}
 }
 
@@ -603,11 +570,11 @@ func TestObserveNoCloudNoPlannedOp(t *testing.T) {
 	cfg.Resource.Name = "r0"
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
 	defer cancel()
-	// Rep=nil (no cloud) + Service.Name unset (converge no-ops): several cycles, then ctx ends.
+	// Rep=nil (no cloud): several cycles, then ctx ends.
 	if err := cfg.observe(ctx, fakeStatus{}, up, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
-	if up.called || up.sysCalled {
+	if up.sysCalled {
 		t.Errorf("no cloud reachable -> no planned op, but the upgrader ran: %+v", up)
 	}
 }
@@ -615,7 +582,7 @@ func TestObserveNoCloudNoPlannedOp(t *testing.T) {
 func TestSnapshot_StatusErrorIsUnhealthy(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor}
 	sentinel := errors.New("channel down")
-	st, _, _, err := cfg.snapshot(context.Background(), fakeStatus{err: sentinel}, "", "")
+	st, _, _, err := cfg.snapshot(context.Background(), fakeStatus{err: sentinel}, "")
 	if !errors.Is(err, sentinel) {
 		t.Errorf("snapshot must return the read error (for the reconnect gate), got %v", err)
 	}
@@ -633,7 +600,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://unused.invalid/healthz"}
 
 	// Quorate but the in-guest probe says sick -> unhealthy (health != quorum).
-	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "", "")
+	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "")
 	if !st.Quorum.Quorate {
 		t.Fatal("precondition: node is quorate")
 	}
@@ -641,7 +608,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 		t.Error("in-guest probe false must read unhealthy despite quorum")
 	}
 	// Non-quorate but the in-guest probe says healthy -> healthy (health != quorum).
-	st, _, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "", "")
+	st, _, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "")
 	if !st.Healthy {
 		t.Error("in-guest probe true must read healthy")
 	}
@@ -655,7 +622,7 @@ func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
 
-	st, _, _, _ := cfg.snapshot(context.Background(), r, "", "")
+	st, _, _, _ := cfg.snapshot(context.Background(), r, "")
 	if want := "http://192.168.9.50/healthz"; probed != want {
 		t.Errorf("probed %q, want the front door at the REPORTED lease %q", probed, want)
 	}
@@ -673,7 +640,7 @@ func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://192.168.9.7/healthz", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
 
-	if _, _, _, _ = cfg.snapshot(context.Background(), r, "", ""); probed != "http://192.168.9.7/healthz" {
+	if _, _, _, _ = cfg.snapshot(context.Background(), r, ""); probed != "http://192.168.9.7/healthz" {
 		t.Errorf("probed %q, want the CONFIGURED address", probed)
 	}
 }
@@ -693,7 +660,7 @@ func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 		health: true, vip: "", probed: &probed,
 	}
 
-	st, _, _, _ := cfg.snapshot(context.Background(), r, "", "")
+	st, _, _, _ := cfg.snapshot(context.Background(), r, "")
 	if st.Healthy {
 		t.Error("a quorate primary holding no service address must NOT read healthy")
 	}
@@ -710,7 +677,7 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	cfg := Config{Node: "n2", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	participating := model.QuorumState{Primary: false, Quorate: true, Diskful: true, UpToDate: true}
 
-	st, _, probe, _ := cfg.snapshot(context.Background(), fakeStatus{qs: participating, vip: ""}, "", "")
+	st, _, probe, _ := cfg.snapshot(context.Background(), fakeStatus{qs: participating, vip: ""}, "")
 	if !st.Healthy {
 		t.Error("a quorate, up-to-date secondary is doing its whole job and must read healthy")
 	}
@@ -723,14 +690,14 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	// to ask a Secondary); health must not be softer than the gate.
 	syncing := participating
 	syncing.UpToDate = false
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: syncing, vip: ""}, "", ""); st.Healthy {
+	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: syncing, vip: ""}, ""); st.Healthy {
 		t.Error("a secondary still syncing must not read healthy")
 	}
 
 	// Non-quorate is the partitioned survivor: participating in nothing.
 	isolated := participating
 	isolated.Quorate = false
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: isolated, vip: ""}, "", ""); st.Healthy {
+	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: isolated, vip: ""}, ""); st.Healthy {
 		t.Error("a non-quorate secondary must not read healthy")
 	}
 }
@@ -750,12 +717,12 @@ func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	verbErr := errors.New("guestagent: unknown verb \"payload.health\"")
 
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ok.URL}
-	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
+	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")
 	if !st.Healthy {
 		t.Error("verb error must fall back to the host probe (200 -> healthy)")
 	}
 	cfg.HealthURL = sick.URL
-	st, _, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "", "")
+	st, _, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")
 	if st.Healthy {
 		t.Error("verb error + host probe 500 -> unhealthy")
 	}

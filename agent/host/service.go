@@ -395,7 +395,7 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 	if d.Kind != api.DirectiveServiceInstall || o.State != api.OutcomeDone {
 		return
 	}
-	specs, _, rendered, ok := cfg.installedServices(logf)
+	specs, rendered, ok := cfg.installedServices(logf)
 	if !ok {
 		return
 	}
@@ -407,10 +407,14 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 	}
 }
 
-// InstalledServices reads the node-local manifest DIRECTORY and returns the service specs, the
-// promoter chain they imply, and the UNION of their RENDERED UNITS. Called at bring-up so a
-// restarted agent rebuilds the chain it had, rather than reverting to whatever the environment
-// describes.
+// InstalledServices reads the node-local manifest DIRECTORY and returns the service specs plus the
+// UNION of their RENDERED UNITS. Called at bring-up so a restarted agent knows what it runs,
+// rather than reverting to whatever the environment describes.
+//
+// NO CHAIN COMES BACK, because a service is not a chain member: the promoter chain is the same
+// three units everywhere and `briard-services` starts the services from the volume once the mount
+// exists ([V3b.3](f)). It used to return one, assembled from the services' units, and nothing had
+// read it since that landed.
 //
 // The rendered output is returned rather than discarded because the chain alone is not enough
 // . The units it names live under /run/containers/systemd — tmpfs — so a guest reboot
@@ -428,17 +432,16 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 // leave the node bringing up with what remains rather than refusing to start. A node that will not
 // boot is worse than a node that lost a service — and losing ONE service must not cost the others,
 // which is why a bad file is skipped rather than failing the read.
-func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceSpec, []string, quadlet.Rendered, bool) {
+func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceSpec, quadlet.Rendered, bool) {
 	if cfg.ServiceCache == "" {
-		return nil, nil, quadlet.Rendered{}, false
+		return nil, quadlet.Rendered{}, false
 	}
 	entries, err := os.ReadDir(cfg.ServiceCache)
 	if err != nil {
-		return nil, nil, quadlet.Rendered{}, false // absent = nothing installed, the shipped state
+		return nil, quadlet.Rendered{}, false // absent = nothing installed, the shipped state
 	}
 	var (
 		specs []model.ServiceSpec
-		units []string
 		all   = quadlet.Rendered{Files: map[string]string{}}
 	)
 	for _, e := range entries {
@@ -457,13 +460,12 @@ func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceS
 			continue
 		}
 		specs = append(specs, spec)
-		units = append(units, rendered.Units...)
 		mergeRendered(&all, rendered)
 	}
 	if len(specs) == 0 {
-		return nil, nil, quadlet.Rendered{}, false
+		return nil, quadlet.Rendered{}, false
 	}
-	return specs, promoterUnits(units), all, true
+	return specs, all, true
 }
 
 // specOf turns one manifest's bytes into the spec the node reports and the units it runs. ONE

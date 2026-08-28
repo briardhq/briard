@@ -155,7 +155,7 @@ func catalogFor(t *testing.T, m manifest.Manifest) Config {
 		CatalogURL:    srv.URL,
 		UpdateKeyring: pemKey(t, pub),
 		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "127.0.0.1:7789", Disk: "/dev/vdb"}}},
-		Promoter:      promoterUnits(nil),
+		Promoter:      promoterUnits(),
 		HealthURL:     "http://192.168.1.100/healthz",
 		ServiceCache:  "", // off: these tests assert orchestration, not persistence
 	}
@@ -565,7 +565,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	install := api.Directive{Kind: api.DirectiveServiceInstall}
 
 	t.Run("adopts on a completed install", func(t *testing.T) {
-		cfg := Config{ServiceCache: dir, Promoter: promoterUnits(nil)}
+		cfg := Config{ServiceCache: dir, Promoter: promoterUnits()}
 		cfg.adoptInstalledServices(install, done, logf)
 		if len(cfg.Services) != 1 {
 			t.Fatalf("Services = %+v, want the one installed service", cfg.Services)
@@ -582,7 +582,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 		// The chain is NOT adopted — it is static ([V3b.3](f)). An install that moved it would be
 		// the node-was-told model converge exists to remove, and it is what let a survivor promote
 		// onto whatever it happened to have rendered.
-		if !slices.Equal(cfg.Promoter, promoterUnits(nil)) {
+		if !slices.Equal(cfg.Promoter, promoterUnits()) {
 			t.Errorf("an install moved the promoter chain to %v — it must stay static", cfg.Promoter)
 		}
 	})
@@ -596,7 +596,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 		}{
 			{"rolled back", install, api.DirectiveOutcome{State: api.OutcomeRolledBack}},
 			{"failed", install, api.DirectiveOutcome{State: api.OutcomeFailed}},
-			{"another kind", api.Directive{Kind: api.DirectiveUpgrade}, done},
+			{"another kind", api.Directive{Kind: api.DirectiveUpgradeSystem}, done},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				cfg := Config{ServiceCache: dir}
@@ -687,7 +687,7 @@ func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
 		}
 	}
 	cfg := Config{ServiceCache: dir}
-	specs, chain, rendered, ok := cfg.installedServices(func(string, ...any) {})
+	specs, rendered, ok := cfg.installedServices(func(string, ...any) {})
 	if !ok {
 		t.Fatal("installedServices reported nothing installed, want two services")
 	}
@@ -705,15 +705,6 @@ func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
 		}
 		if want := "briard-" + s.Name + "-app.service"; s.ServingUnit() != want {
 			t.Errorf("%s ServingUnit = %q, want %q", s.Name, s.ServingUnit(), want)
-		}
-	}
-	// The chain: data first, VIP last, BOTH services' units in between.
-	if chain[0] != "briard-data.service" || chain[len(chain)-1] != "briard-vip.service" {
-		t.Fatalf("chain = %v, want briard-data first and briard-vip last", chain)
-	}
-	for _, name := range []string{"home-assistant", "mosquitto"} {
-		if !slices.ContainsFunc(chain, func(u string) bool { return strings.Contains(u, name) }) {
-			t.Errorf("chain = %v, missing %s -- a service outside the chain is a service the promoter never starts", chain, name)
 		}
 	}
 	// And the union carries both renderings, which is what restoreService replays after a guest
@@ -744,12 +735,14 @@ func TestInstalledServicesSkipsOnlyTheBadFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{ServiceCache: dir}
-	specs, chain, _, ok := cfg.installedServices(func(string, ...any) {})
+	specs, rendered, ok := cfg.installedServices(func(string, ...any) {})
 	if !ok || len(specs) != 1 || specs[0].Name != "home-assistant" {
 		t.Fatalf("specs = %+v (ok=%v), want just home-assistant", specs, ok)
 	}
-	if slices.ContainsFunc(chain, func(u string) bool { return strings.Contains(u, "mosquitto") }) {
-		t.Errorf("chain = %v, must not name units from a manifest that does not parse", chain)
+	for file := range rendered.Files {
+		if strings.Contains(file, "mosquitto") {
+			t.Errorf("rendered %q from a manifest that does not parse", file)
+		}
 	}
 }
 
@@ -788,15 +781,10 @@ func TestInstallAcceptsASecondServiceAndLeavesTheFirstAlone(t *testing.T) {
 			t.Errorf("installing home-assistant removed mosquitto's unit %q -- the first service was collateral", s)
 		}
 	}
-	// Both services end up in the cache, so bring-up assembles a chain containing both.
-	specs, chain, _, ok := cfg.installedServices(func(string, ...any) {})
+	// Both services end up in the cache, so bring-up knows about both.
+	specs, _, ok := cfg.installedServices(func(string, ...any) {})
 	if !ok || len(specs) != 2 {
 		t.Fatalf("cache holds %+v (ok=%v), want both services", specs, ok)
-	}
-	for _, name := range []string{"home-assistant", "mosquitto"} {
-		if !slices.ContainsFunc(chain, func(u string) bool { return strings.Contains(u, name) }) {
-			t.Errorf("chain = %v, missing %s", chain, name)
-		}
 	}
 }
 
@@ -871,7 +859,7 @@ func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
 		want[s.name] = "sha256:" + hex.EncodeToString(sum[:])
 	}
 	cfg := Config{ServiceCache: dir}
-	specs, _, _, ok := cfg.installedServices(func(string, ...any) {})
+	specs, _, ok := cfg.installedServices(func(string, ...any) {})
 	if !ok || len(specs) != 2 {
 		t.Fatalf("specs = %+v (ok=%v), want two", specs, ok)
 	}

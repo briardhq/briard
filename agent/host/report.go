@@ -17,7 +17,6 @@ import (
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
 	"briard.io/shared/api"
-	"briard.io/shared/model"
 	"briard.io/shared/notify"
 )
 
@@ -66,8 +65,7 @@ func (cr *certRequester) keyFor(name string) string {
 }
 
 // upgrader is the slice of the guest binding the upgrade directives drive -- narrow so the
-// dispatch is unit-testable without a live control channel. UpgradePayload is the payload
-// re-pin, and it pins so a failover converges.
+// dispatch is unit-testable without a live control channel.
 //
 // Upgrade and RebootUpgrade are the two methods of a whole-OS upgrade (decides which),
 // and neither is guest.Manager's: both roll back to a snapshot of the OS disk, which only the
@@ -80,7 +78,6 @@ func (cr *certRequester) keyFor(name string) string {
 // not touch services, and a signature with nothing to name a service with is a
 // separation the compiler keeps rather than one a reader has to.
 type upgrader interface {
-	UpgradePayload(ctx context.Context, spec model.ServiceSpec, oldImage, newImage string) (guest.SnapshotRef, error)
 	Upgrade(ctx context.Context, target string) (rolledBack bool, err error)
 	RebootUpgrade(ctx context.Context, target string) (rolledBack bool, err error)
 	Stage(ctx context.Context, closure string, src guestagent.StageSource) error             //b: pull the closure in BEFORE anything switches to it
@@ -107,20 +104,19 @@ type selfUpdater interface {
 	Current() string
 }
 
-// applyDirective acts on a directive from the controller (down-channel). The
-// `upgrade` directive drives guest.Manager.UpgradePayload -- health-gated with
-// auto-rollback, pinning the image so a failover mid-window converges. `current` is the
-// image the node serves right now (read from the guest by the caller): it's the upgrade
-// baseline, i.e. UpgradePayload's rollback target. The new version isn't tracked
-// in-memory -- the next observe cycle reads it back from the guest's pin -- so a chained
-// v0->v1->v2 and a converged survivor both report ground truth. Runs synchronously in the
-// observe loop: an upgrading node is legitimately "busy" and its status stalls until it
+// applyDirective acts on a directive from the controller (down-channel). Runs synchronously in
+// the observe loop: an upgrading node is legitimately "busy" and its status stalls until it
 // finishes (the controller then reads it degraded, which it is). Unknown kinds: logged.
 // applyDirective returns the op's terminal outcome: done, rolled-back (an upgrade the
 // health-gate reverted), or failed (couldn't apply / no clean revert). The caller reports it
 // back so the cloud moves the intent terminal -- the durable answer a post-outage reconcile
 // polls. Re-delivery of an already-applied directive is an idempotent no-op that re-reports done.
-func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec model.ServiceSpec, current string, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
+//
+// IT TAKES NO SERVICE, and that is the shape [V3b.3](e1) left behind: nothing here acts on one.
+// A version change is a service-install directive carrying a catalog name (applyServiceInstall),
+// an OS upgrade must not touch services at all, and the image re-pin that needed a single named
+// service died with the build-time payload slot.
+func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
 	done := api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -153,40 +149,6 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		}
 		logf("directive rescue applied: the guest was rebuilt and re-converged")
 		return done
-	case api.DirectiveUpgrade:
-		if up == nil || spec.Name == "" || d.Payload == "" {
-			logf("directive kind=upgrade ignored (no payload/upgrader/target on this node)")
-			return failed("no payload/upgrader/target on this node")
-		}
-		// REFUSE against a runtime-installed service, because succeeding would be a lie. This
-		// directive is the BAKED SLOT's mechanism: UpgradePayload re-pins `.payload-image` and
-		// retags briard-payload:serve, and a quadlet-rendered service reads NEITHER -- its
-		// .container names the image by digest with Pull=never, and briard-converge (the pin's
-		// only consumer) is required solely by podman-briard-payload, so on such a node it never
-		// runs. Driven anyway, it stopped the service, wrote a pin nothing reads, restarted the
-		// unit on its OLD digest, found the old version healthy and returned done -- after which
-		// currentImage reported the new pin, so the cloud confirmed a rollout that had not
-		// happened. Silent exactly when the target image was already staged, which is what
-		// prewarm does.
-		//
-		// Unit != "" is the discriminator ServingUnit already uses: a runtime-installed service
-		// names its unit explicitly (from the renderer), the baked slot leaves it derived.
-		// A runtime service's identity is its MANIFEST, so its upgrade is a service-install
-		// directive carrying a new one, not an image re-pin. [V3b.3](b)/(e).
-		if spec.Unit != "" {
-			logf("directive kind=upgrade refused: %s is a runtime-installed service; upgrade it with a new manifest", spec.Name)
-			return failed("refusing an image re-pin against the runtime-installed service " + spec.Name + ": its identity is its manifest, so upgrade it with a service-install directive")
-		}
-		uctx, cancel := wd.budget(ctx, 10*time.Minute)
-		defer cancel()
-		logf("directive kind=upgrade: payload %s -> %s", current, d.Payload)
-		if _, err := up.UpgradePayload(uctx, spec, current, d.Payload); err != nil {
-			logf("directive upgrade failed (rolled back): %v", err)
-			escalate(ctx, n, logf, spec.Name, "payload upgrade", current+" -> "+d.Payload, err)
-			return rolledBack(err.Error())
-		}
-		logf("directive upgrade applied: now serving %s", d.Payload)
-		return done
 	case api.DirectiveUpgradeSystem:
 		// An OS upgrade needs a TARGET and an UPGRADER -- not a service. The old guard also
 		// required spec.Name, which silently made the SHIPPED node un-upgradable: a fresh
@@ -218,7 +180,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		logf("directive kind=upgrade-system: staging %s", d.Payload)
 		if err := up.Stage(uctx, d.Payload, guestagent.StageSource{}); err != nil {
 			logf("directive upgrade-system: staging failed, not switching (node unchanged): %v", err)
-			escalate(ctx, n, logf, spec.Name, "OS stage", d.Payload, err)
+			escalate(ctx, n, logf, "this node", "OS stage", d.Payload, err)
 			return failed(err.Error())
 		}
 		// Decide HOW to activate before touching anything. Committing
@@ -228,7 +190,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		method, reasons, err := up.ActivationMethod(uctx, d.Payload)
 		if err != nil {
 			logf("directive upgrade-system: could not determine activation method, not switching: %v", err)
-			escalate(ctx, n, logf, spec.Name, "OS activation check", d.Payload, err)
+			escalate(ctx, n, logf, "this node", "OS activation check", d.Payload, err)
 			return failed(err.Error())
 		}
 		if method != guest.ActivateSwitch {
@@ -254,14 +216,14 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 				return rolledBack(err.Error())
 			case err != nil && back:
 				logf("directive upgrade-system rolled back: %v", err)
-				escalate(ctx, n, logf, spec.Name, "OS upgrade (reboot)", d.Payload, err)
+				escalate(ctx, n, logf, "this node", "OS upgrade (reboot)", d.Payload, err)
 				return rolledBack(err.Error())
 			case err != nil:
 				// The node did NOT come back on the target and was not returned to where it
 				// started -- the one outcome that needs a human, so do not dress it up as a
 				// rollback the way a switch failure is allowed to.
 				logf("directive upgrade-system FAILED without a clean rollback: %v", err)
-				escalate(ctx, n, logf, spec.Name, "OS upgrade (reboot)", d.Payload, err)
+				escalate(ctx, n, logf, "this node", "OS upgrade (reboot)", d.Payload, err)
 				return failed(err.Error())
 			}
 			logf("directive upgrade-system applied: rebooted into %s", d.Payload)
@@ -276,11 +238,11 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 		switch {
 		case err != nil && back:
 			logf("directive upgrade-system rolled back: %v", err)
-			escalate(ctx, n, logf, spec.Name, "OS upgrade", d.Payload, err)
+			escalate(ctx, n, logf, "this node", "OS upgrade", d.Payload, err)
 			return rolledBack(err.Error())
 		case err != nil:
 			logf("directive upgrade-system FAILED without a clean rollback: %v", err)
-			escalate(ctx, n, logf, spec.Name, "OS upgrade", d.Payload, err)
+			escalate(ctx, n, logf, "this node", "OS upgrade", d.Payload, err)
 			return failed(err.Error())
 		}
 		logf("directive upgrade-system applied: now running %s", d.Payload)
@@ -354,9 +316,9 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 	}
 }
 
-// escalate pushes an alert when an upgrade fails: upgrades are rare, so this
-// isn't fatigue -- and a failure includes a *wedged* rollback (the RollbackTimeout expired
-// mid-recovery), the case the rollback bound exists to surface instead of hanging silently.
+// escalate pushes an alert when an upgrade fails: upgrades are rare, so this is not fatigue --
+// and a failure includes a revert that could not finish, which is exactly the case a bound exists
+// to surface instead of hanging silently.
 //
 // IT WRITES THE LOCAL TRAIL FIRST, and that ordering is the point rather than a detail. This
 // function used to do nothing BUT hand the alert to the notifier -- which on the free tier is
@@ -370,11 +332,11 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, spec mode
 // an alert nobody needed to receive.
 //
 // A nil notifier (a witness) still logs: it has no owner to push to, but it has a journal.
-func escalate(ctx context.Context, n notify.Notifier, logf func(string, ...any), service, kind, target string, cause error) {
+func escalate(ctx context.Context, n notify.Notifier, logf func(string, ...any), subject, kind, target string, cause error) {
 	al := notify.Alert{
 		Level: notify.Warning,
 		Title: "Briard: " + kind + " failed",
-		Body:  fmt.Sprintf("service %s: %s to %s failed and rolled back — %v", service, kind, target, cause),
+		Body:  fmt.Sprintf("%s: %s to %s failed and rolled back — %v", subject, kind, target, cause),
 	}
 	logf("%s", notify.LogLine(al))
 	if n == nil {

@@ -27,10 +27,7 @@ type fakeControl struct {
 	snapErr                 error
 	restoreFrom, restoreDir string
 	restored                bool
-	pins                    []string // image refs passed to PayloadPin, in order
-	pinErr                  error
 	startErr                error                                  // PayloadStart returns this (to trigger a rollback)
-	restoreHangs            bool                                   // Restore blocks until ctx expires (a wedged guest)
 	components              map[string]guestagent.SystemComponents // keyed by closure ("" = booted), V3.17c1
 	componentsFor           []string                               // closures Components was asked about, in order
 	componentsErr           error
@@ -40,8 +37,6 @@ type fakeControl struct {
 	stagedFrom              []guestagent.StageSource
 	stageErr                error
 	certs                   []string // cert|key pairs passed to WriteCert, in order
-	gcDir, gcPrefix         string
-	gcKeep                  int
 	ops                     []string // ordered log of maintenance/lifecycle ops (for sequencing)
 	paused, resumed         int
 	cluster                 model.Cluster // what OSReady reads about this node
@@ -100,18 +95,6 @@ func (f *fakeControl) StageBoot(_ context.Context, closure string) error {
 	return f.stageBootErr
 }
 
-// "storegc", not "gc" -- GCSnapshots already owns "gc" in this log, and the two are
-// different operations on different things (btrfs snapshots vs the nix store).
-func (f *fakeControl) CollectGarbage(context.Context) error {
-	f.collected++
-	f.ops = append(f.ops, "storegc")
-	return f.collectErr
-}
-func (f *fakeControl) PayloadPin(_ context.Context, ref string) error {
-	f.pins = append(f.pins, ref)
-	f.ops = append(f.ops, "pin")
-	return f.pinErr
-}
 func (f *fakeControl) WriteCert(_ context.Context, cert, key string) error {
 	f.certs = append(f.certs, cert+"|"+key)
 	f.ops = append(f.ops, "cert")
@@ -122,18 +105,9 @@ func (f *fakeControl) Snapshot(_ context.Context, dataDir, dest string) error {
 	f.ops = append(f.ops, "snapshot")
 	return f.snapErr
 }
-func (f *fakeControl) Restore(ctx context.Context, dataDir, src string) error {
+func (f *fakeControl) Restore(_ context.Context, dataDir, src string) error {
 	f.restoreDir, f.restoreFrom, f.restored = dataDir, src, true
 	f.ops = append(f.ops, "restore")
-	if f.restoreHangs { // simulate a wedged guest: block until the (bounded) rollback ctx expires
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	return nil
-}
-func (f *fakeControl) GCSnapshots(_ context.Context, dir, prefix string, keep int) error {
-	f.gcDir, f.gcPrefix, f.gcKeep = dir, prefix, keep
-	f.ops = append(f.ops, "gc")
 	return nil
 }
 func (f *fakeControl) ReactorPause(context.Context, string) error {
@@ -145,6 +119,14 @@ func (f *fakeControl) ReactorResume(context.Context, string) error {
 	f.resumed++
 	f.ops = append(f.ops, "resume")
 	return nil
+}
+
+// "storegc", not "gc": the nix store and a btrfs snapshot are different things, and this log
+// is read by eye.
+func (f *fakeControl) CollectGarbage(context.Context) error {
+	f.collected++
+	f.ops = append(f.ops, "storegc")
+	return f.collectErr
 }
 
 // Cluster is what OSReady asks about this node. Every pre-existing test leaves
@@ -420,138 +402,6 @@ func TestAssessVerdicts(t *testing.T) {
 				t.Errorf("Assess got baseline %v, want the token Baseline returned", tc.a.baseline)
 			}
 		})
-	}
-}
-
-// UpgradePayload consults the same gate.
-func TestUpgradePayloadReadinessRollback(t *testing.T) {
-	srv := codeServer(t, http.StatusOK)
-	f := &fakeControl{active: true, system: "/nix/store/old"}
-	a := &fakeAssessor{verdict: VerdictRollback}
-	m := managerWithAssessor(f, srv.URL, a)
-	if _, err := m.UpgradePayload(context.Background(), haSpec, "img:old", "img:new"); err == nil {
-		t.Fatal("expected a rollback error from the readiness gate")
-	}
-	if a.assessCalls != 1 {
-		t.Errorf("assess calls = %d, want 1", a.assessCalls)
-	}
-	if !f.restored {
-		t.Error("payload readiness rollback must restore data")
-	}
-}
-
-// A successful payload upgrade prunes old snapshots to the retention bound, passing
-// the service's snapshot dir/prefix and keep count. It is asserted on UpgradePayload because
-// that is now the only path that takes a data snapshot at all: pruning them was one of the
-// things the OS path stopped doing.
-func TestUpgradePayloadGCsSnapshotsWhenRetentionSet(t *testing.T) {
-	srv := codeServer(t, http.StatusOK)
-	f := &fakeControl{active: true, system: "/nix/store/old"}
-	m := NewManager(f, Config{HealthURL: srv.URL, gateInterval: time.Millisecond, SnapshotRetention: 3, idFn: func() string { return "ID" }})
-	if _, err := m.UpgradePayload(context.Background(), haSpec, "img:old", "img:new"); err != nil {
-		t.Fatal(err)
-	}
-	if f.gcDir != "/data/.snapshots" || f.gcPrefix != "home-assistant-" || f.gcKeep != 3 {
-		t.Errorf("gc = dir=%q prefix=%q keep=%d, want /data/.snapshots home-assistant- 3", f.gcDir, f.gcPrefix, f.gcKeep)
-	}
-}
-
-// With retention 0 (default), no GC runs — the older unbounded behaviour.
-func TestUpgradePayloadNoGCWhenRetentionZero(t *testing.T) {
-	srv := codeServer(t, http.StatusOK)
-	f := &fakeControl{active: true, system: "/nix/store/old"}
-	m := newManager(f, srv.URL)
-	if _, err := m.UpgradePayload(context.Background(), haSpec, "img:old", "img:new"); err != nil {
-		t.Fatal(err)
-	}
-	for _, op := range f.ops {
-		if op == "gc" {
-			t.Fatalf("must not GC when retention is 0, ops = %v", f.ops)
-		}
-	}
-}
-
-// A healthy payload upgrade re-pins the new image and keeps it (no rollback). The pin
-// is the code half (no OS switch); the pre-upgrade image is the rollback point.
-func TestUpgradePayloadSuccessKeepsNewImage(t *testing.T) {
-	srv := codeServer(t, http.StatusOK)
-	f := &fakeControl{active: true}
-	m := newManager(f, srv.URL)
-	ref, err := m.UpgradePayload(context.Background(), haSpec, "img:v0", "img:v1")
-	if err != nil {
-		t.Fatalf("UpgradePayload: %v", err)
-	}
-	if !reflect.DeepEqual(f.pins, []string{"img:v1"}) {
-		t.Errorf("pins = %v, want [img:v1] (no rollback)", f.pins)
-	}
-	if f.restored {
-		t.Error("success must not restore data")
-	}
-	if len(f.switches) != 0 {
-		t.Errorf("a payload upgrade must not switch the system, got %v", f.switches)
-	}
-	if ref.Image != "img:v0" {
-		t.Errorf("ref.Image = %q, want the pre-upgrade image", ref.Image)
-	}
-}
-
-// A broken payload upgrade trips the health-gate: re-pin the new image, never ready,
-// then revert {image + data} together — re-pin the old image AND restore the snapshot.
-func TestUpgradePayloadRollsBackOnHealthGate(t *testing.T) {
-	srv := codeServer(t, http.StatusServiceUnavailable) // never ready
-	f := &fakeControl{active: true}
-	m := newManager(f, srv.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	ref, err := m.UpgradePayload(ctx, haSpec, "img:v0", "img:v1")
-	if err == nil {
-		t.Fatal("expected a rollback error")
-	}
-	if !reflect.DeepEqual(f.pins, []string{"img:v1", "img:v0"}) {
-		t.Errorf("pins = %v, want [v1, v0] (forward then revert)", f.pins)
-	}
-	if !f.restored || f.restoreFrom != ref.Subvolume {
-		t.Errorf("data not restored to ref subvolume (restored=%v from=%q)", f.restored, f.restoreFrom)
-	}
-}
-
-// Under promoter coordination, a broken payload upgrade rolls back {image + data} AND
-// still resumes the promoter — recovery must never leave the resource unmanaged.
-func TestUpgradePayloadPromoterRollbackAlwaysResumes(t *testing.T) {
-	srv := codeServer(t, http.StatusServiceUnavailable)
-	f := &fakeControl{active: true}
-	m := newPromoterManager(f, srv.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if _, err := m.UpgradePayload(ctx, haSpec, "img:v0", "img:v1"); err == nil {
-		t.Fatal("expected a rollback error")
-	}
-	want := []string{"pause", "stop", "snapshot", "pin", "start", "pin", "stop", "restore", "start", "resume"}
-	if !reflect.DeepEqual(f.ops, want) {
-		t.Errorf("ops = %v, want %v", f.ops, want)
-	}
-	if f.resumed != 1 {
-		t.Errorf("promoter must resume exactly once even on rollback, got %d", f.resumed)
-	}
-}
-
-// A wedged guest (restore never completes) must not hang recovery forever: RollbackTimeout
-// caps the detached rollback context, so UpgradePayload returns instead of blocking.
-func TestRollbackBoundedByTimeout(t *testing.T) {
-	f := &fakeControl{active: true, system: "/nix/store/old", startErr: errors.New("boom"), restoreHangs: true}
-	m := NewManager(f, Config{RollbackTimeout: 50 * time.Millisecond, idFn: func() string { return "ID" }})
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.UpgradePayload(context.Background(), haSpec, "img:v0", "img:v1")
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected a rollback error from the wedged restore")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("UpgradePayload hung — the rollback is not bounded")
 	}
 }
 

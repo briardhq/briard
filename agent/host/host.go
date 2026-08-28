@@ -255,21 +255,22 @@ type Config struct {
 	// turns a broken-generation test into a timeout test that passes for the wrong reason.
 	UpgradeBudget time.Duration
 
-	// Payload upgrade: what an `upgrade` directive acts on. Services is the ordered set
-	// this node runs — each naming its payload, its data subvolume and the units the promoter
-	// starts for it; ReactorSnippet enables promoter-coordinated quiesce; SnapshotRetention
-	// bounds pre-upgrade snapshots. An EMPTY set is the shipped state (a witness, or a node with
-	// nothing installed yet) and means the node doesn't drive payload upgrades.
+	// What this node RUNS: the ordered set of installed services, each naming its image, its data
+	// subvolume and the units that serve it. An EMPTY set is the shipped state — a witness, or a
+	// node nothing has been installed on yet. ReactorSnippet enables promoter-coordinated quiesce.
+	//
+	// It is never read from the environment: services are installed at runtime, so this is filled
+	// from the node-local manifest cache at bring-up and from the VOLUME when this node promotes
+	// ([V3b.3](e1) deleted the build-time slot that used to seed it).
 	//
 	// A SET rather than the single spec it was ([V3b.3](a)): the per-service primitives were
-	// already plural — snapshot/upgrade/rollback take a spec and derive per-service paths, the
-	// quadlet renderer names everything from the manifest — and only the node's own bookkeeping
-	// was singular. Ordering is by name and therefore deterministic, which is all this cut owes:
+	// already plural — snapshot/restore take a spec and derive per-service paths, the quadlet
+	// renderer names everything from the manifest — and only the node's own bookkeeping was
+	// singular. Ordering is by name and therefore deterministic, which is all that cut owed:
 	// making the order a DEPENDENCY order is [V3b.3](c), and needs a second real service to be
 	// decided against.
-	Services          []model.ServiceSpec
-	ReactorSnippet    string
-	SnapshotRetention int
+	Services       []model.ServiceSpec
+	ReactorSnippet string
 
 	// Runtime service install. CatalogURL is the signed catalog root;
 	// ServiceCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
@@ -387,7 +388,6 @@ type guestReader interface {
 	// What the VOLUME says this node runs -- the truth on a node that promoted into somebody
 	// else's install, where the node-local cache is empty by construction (adoptVolumeServices).
 	volumeReader
-	PayloadImage(ctx context.Context) (string, error)
 	SystemPath(ctx context.Context) (string, error)
 	Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error)
 }
@@ -411,7 +411,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// comes from the VOLUME at promotion, not from this cache. What the cache is still for is
 	// everything the HOST needs before (or without) promotion -- which services to measure and
 	// report, and the units to re-render so a standby is warm.
-	if specs, _, rendered, ok := cfg.installedServices(logf); ok {
+	if specs, rendered, ok := cfg.installedServices(logf); ok {
 		names := make([]string, 0, len(specs))
 		for _, s := range specs {
 			names = append(names, s.Name)
@@ -476,11 +476,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		// loop does: under DHCP the address is acquired inside the guest, and this gate is a
 		// ROLLBACK TRIGGER — probing a stale address does not fail loudly, it reverts a
 		// healthy node.
-		VIPDev:            cfg.VIPDev,
-		Diskless:          cfg.Diskless,
-		Resource:          cfg.Resource.Name, // what OSReady asks about this node
-		ReactorSnippet:    cfg.ReactorSnippet,
-		SnapshotRetention: cfg.SnapshotRetention,
+		VIPDev:         cfg.VIPDev,
+		Diskless:       cfg.Diskless,
+		Resource:       cfg.Resource.Name, // what OSReady asks about this node
+		ReactorSnippet: cfg.ReactorSnippet,
 		// The Manager's own step-by-step lines went NOWHERE until now: with no Logf, NewManager
 		// installs a no-op, so every "enter maintenance / quiesce / pin image / health-gate
 		// tripped" line has been discarded in the field while looking, in the source,
@@ -939,15 +938,12 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// four times larger than it needs to be. A datagram costs nothing; a gap costs detection
 	// latency. See beat.go.
 	for {
-		// The served image + running system are read from the guest each cycle (the
-		// replicated pin / current-system), so they're correct even on a survivor that
-		// converged-at-promotion. The image is also the payload-upgrade baseline.
-		cfg.beat.Beat()
-		img := cfg.currentImage(ctx, r)
+		// The running system is read from the guest each cycle, so it is correct even on a node
+		// that switched closure without this loop driving it.
 		cfg.beat.Beat()
 		sys := cfg.currentSystem(ctx, r)
 		cfg.beat.Beat()
-		st, cl, probe, err := cfg.snapshot(ctx, r, img, sys)
+		st, cl, probe, err := cfg.snapshot(ctx, r, sys)
 		// AHEAD of the channel-down return, and that placement is the load-bearing part. A dead
 		// channel is precisely when the local guest may have stopped serving and a PEER may have
 		// taken the VIP over -- the case where a route left pointing at our own guest replaces a
@@ -1005,9 +1001,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			}
 			cancel()
 		}
-		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s image=%s%s",
+		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s%s",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
-			orDash(probe), st.Image, resourceLog(res))
+			orDash(probe), orDash(serviceLog(st.Services)), resourceLog(res))
 		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		if rep != nil {
 			cfg.beat.Beat()
@@ -1027,7 +1023,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 					// exactly the gap this rule exists to close. The legs that block for minutes
 					// (the upgrade path, the recovery ladder) take their own lease.
 					cfg.beat.Beat()
-					o := cfg.dispatch(ctx, d, r, up, img, n, cr, su, logf)
+					o := cfg.dispatch(ctx, d, r, up, n, cr, su, logf)
 					cfg.adoptInstalledServices(d, o, logf)
 					if o.ID != "" {
 						*pending = append(*pending, o)
@@ -1060,7 +1056,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
 			cfg.beat.Beat()
-			o := cfg.dispatch(ctx, rq.d, r, up, img, n, cr, su, logf)
+			o := cfg.dispatch(ctx, rq.d, r, up, n, cr, su, logf)
 			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
 			cfg.adoptInstalledServices(rq.d, o, logf)
 		case <-t.C:
@@ -1071,7 +1067,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
 // that decision is made — the local door and the cloud's down-channel both come
 // through here, so "what does this node do with a directive" cannot drift between them.
-func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, up upgrader, img string, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any)) api.DirectiveOutcome {
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm {
 		// A service install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
 		i, ok := r.(serviceInstaller)
@@ -1109,11 +1105,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applyPair(ctx, m, platformWitness{}, d, logf)
 	}
-	// The payload directives (upgrade/rollback) name an IMAGE, not a service, so they can only be
-	// aimed while there is exactly one. A zero spec is what makes applyDirective refuse them with
-	// "no target"; naming which service a payload directive means is [V3b.3](b)'s widening.
-	spec, _ := cfg.soleService()
-	return applyDirective(ctx, d, up, spec, img, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
+	return applyDirective(ctx, d, up, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
 }
 
 // OverlayStatus reads the overlay's health for the status snapshot. Nil when no
@@ -1349,8 +1341,8 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // address all along and never printed it, which made "the node reports healthy and nobody can
 // reach it" -- the exact shape of V3.19 -- undiagnosable from a journal. Under DHCP the address is
 // not in any config file either, so the log is the only place a human can find it.
-func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system string) (api.NodeStatus, model.Cluster, string, error) {
-	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, Image: served, System: system, AgentVersion: cfg.Version}
+func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (api.NodeStatus, model.Cluster, string, error) {
+	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, System: system, AgentVersion: cfg.Version}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cl, err := r.Cluster(rctx, cfg.Resource.Name)
@@ -1420,36 +1412,19 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, served, system s
 // guest, a closure and an OS the cloud may roll, and conflating the two is [V3b.3](d).
 func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 
-// soleService returns the one installed service, and false when there is none — or when there is
-// more than one.
-//
-// Returning false rather than an arbitrary member is the point, and the two callers left are
-// exactly the ones for which false is the honest answer. Both belong to the BAKED SLOT's cluster
-// — the spec a payload `upgrade` directive acts on, and the image the cloud confirms that
-// directive against — and both name a single OCI ref, which is not what identifies a
-// runtime-installed service. At N>1 they refuse and report nothing, which is correct; what a node
-// runs is reported by `NodeStatus.Services`, per service, keyed by manifest identity. The pair
-// dies with the slot ([V3b.3](e1)) and takes this helper with it.
-func (cfg Config) soleService() (model.ServiceSpec, bool) {
-	if len(cfg.Services) != 1 {
-		return model.ServiceSpec{}, false
-	}
-	return cfg.Services[0], true
-}
-
 // serviceStatuses is what the node reports for the services it has INSTALLED at runtime: one
 // entry per service, name plus manifest identity, in cfg.Services' order (by name, per
 // installedServices).
 //
-// A spec with no Manifest is SKIPPED, and that is the whole of the filter: the build-time baked
-// slot was never installed from a manifest, so it has no identity to state, and inventing one --
-// its image ref, say -- would put an OCI ref in a field the cloud compares against a catalog
-// hash. The slot reports through Image, as it always has, until [V3b.3](e1) deletes both.
+// A spec with no Manifest is SKIPPED. Every service now has one -- it is the hash of the signed
+// bytes it was installed from -- so this filter only ever drops a half-built spec, and dropping it
+// is right: the cloud compares this field against a catalog hash, and there is nothing else
+// honest to put in it.
 //
-// The IDENTITY asks the guest nothing, unlike currentImage: it is a property of what was
-// installed, not of what the guest happens to answer this second, so it comes off the spec the
-// cache was read into -- which also means it stays correct on a node whose guest is briefly
-// unreachable, where a read-through would have blanked the whole set.
+// The IDENTITY asks the guest nothing: it is a property of what was installed (or of what the
+// volume said at promotion, see adoptVolumeServices), not of what the guest happens to answer
+// this second, so it comes off the spec -- which also means it stays correct on a node whose
+// guest is briefly unreachable, where a read-through would have blanked the whole set.
 //
 // The STATE has to ask, because it is the opposite kind of fact -- what the units are doing right
 // now ([V3b.3](f)). It is read ONLY on a Primary and only from a live channel; everywhere else
@@ -1487,27 +1462,15 @@ type serviceStateReader interface {
 	PayloadActive(ctx context.Context, unit string) (bool, error)
 }
 
-// CurrentImage reports the payload image this node actually serves: the replicated pin
-// read from the guest (ground truth across a failover), falling back to the configured
-// baked default when no pin is set. Empty when the node runs nothing (the shipped state, or a
-// witness). A read error falls back to the default rather than blanking the report; the loop
-// re-reads next cycle.
-//
-// SCALAR, and therefore the sole service's — see soleService. Reporting one of several images
-// through a field the cloud confirms a rollout against is [V3b.3](b)'s to fix, not this cut's to
-// fudge.
-func (cfg Config) currentImage(ctx context.Context, r guestReader) string {
-	spec, ok := cfg.soleService()
-	if !ok {
-		return "" // nothing installed (or more than one: (b) widens the field)
+// serviceLog renders the reported services for the status line -- "name@identity" per service,
+// which is what a version change looks like from outside. Empty on a node that runs nothing,
+// which the caller prints as a dash.
+func serviceLog(svcs []api.ServiceStatus) string {
+	parts := make([]string, 0, len(svcs))
+	for _, s := range svcs {
+		parts = append(parts, s.Name+"@"+s.Manifest)
 	}
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	pin, err := r.PayloadImage(rctx)
-	if err != nil || pin == "" {
-		return spec.Image // no pin set (yet), or a transient read hiccup
-	}
-	return pin
+	return strings.Join(parts, ",")
 }
 
 // CurrentSystem reports the NixOS system closure this node is running (readlink -f

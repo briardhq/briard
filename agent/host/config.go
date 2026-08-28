@@ -30,17 +30,11 @@ import (
 // unconditionally by the guest image, exactly as briard-data and briard-vip are, so there is
 // nothing left to make conditional.
 //
-// `baked` is the build-time payload slot, the last conditional member and a fixture mechanism on
-// its way out ([V3b.3](e1)); nothing install.sh writes sets it.
-func promoterUnits(baked []string) []string {
-	units := append([]string{"briard-data.service"}, baked...)
-	return append(units, "briard-services.service", "briard-vip.service")
+// It takes no arguments, and that is the end state [V3b.3](e1) was after: the chain is the same
+// three units on every anchor in the fleet, so there is nothing to decide and nothing to pass.
+func promoterUnits() []string {
+	return []string{"briard-data.service", "briard-services.service", "briard-vip.service"}
 }
-
-// bakedSlot is the one-unit chain member of the build-time payload slot. Kept as its own name so
-// the difference between "baked" and "installed at runtime" is visible where it matters, and so
-// deleting the baked slot ([V3b.3](e1)) is a search for one identifier.
-func bakedSlot() []string { return []string{"podman-briard-payload.service"} }
 
 // buildVersion is the agent's release id, stamped at build time:
 //
@@ -170,26 +164,20 @@ func ConfigFromEnv() Config {
 		// loop. agent-watchdog.nix sets it to wedge that goroutine on purpose; nothing else does,
 		// install.sh writes no such variable, and unset is a no-op. See wedgeForTest.
 		WedgeFIFO: os.Getenv("BRIARD_WEDGE_FIFO"),
-		// The installed service (the upgrade target); empty on a diskless node, and empty
-		// BY DEFAULT — a node is installed before it is given anything to run, so
-		// SERVICE_IMAGE unset means "no service". That default is the whole of what makes
-		// `install.sh` ship an empty node.
-		// Name is the guest's fixed payload unit slug (podman-briard-payload.service):
-		// configuration.nix keeps the unit name service-agnostic (the fixture or HA ride the
-		// identical slot), so guest.unitOf(Name) must resolve to that unit or an upgrade drives
-		// a non-existent podman-<Name>.service. Image is the currently-serving ref
-		// (UpgradePayload's rollback target); DataDir is the service subvolume on the volume.
-		Services: disklessOrSpecs(role, bakedServices()),
+		// Services is NOT read from the environment, and there is nothing here to read it from:
+		// what a node runs is installed at runtime and rebuilt from the node-local manifest cache
+		// at bring-up (Run -> installedServices), or read off the volume when this node promotes
+		// (adoptVolumeServices). The environment described the build-time payload slot, which is
+		// gone ([V3b.3](e1)); the empty set is the shipped state and every node starts there.
 		// The catalog is published signed static content (OSS §10.1: an apt-mirror, not an API),
 		// which is exactly what the release channel already is -- so it lives in the same bucket,
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; a service catalog is not a web page.
-		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/services"),
-		MeshCache:         env("MESH_CACHE", "/var/lib/briard/mesh.json"),
-		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
-		SnapshotRetention: atoi(os.Getenv("SNAPSHOT_RETENTION"), 0),
+		CatalogURL:     env("CATALOG_URL", "https://get.briard.io/catalog"),
+		ServiceCache:   env("SERVICE_CACHE", "/var/lib/briard/services"),
+		MeshCache:      env("MESH_CACHE", "/var/lib/briard/mesh.json"),
+		ReactorSnippet: os.Getenv("REACTOR_SNIPPET"),
 		// Host-agent self-update. UPDATE_KEYRING points at a PEM file of trusted
 		// Ed25519 release public keys; unset (or unreadable) -> self-update is OFF (an
 		// agent-update directive refuses, fail-closed). Base/RunDir/Unit default in
@@ -204,41 +192,9 @@ func ConfigFromEnv() Config {
 	if role == model.RoleDiskless {
 		cfg.Diskless = true // no metadata, no promoter
 	} else {
-		// The chain at BRING-UP reflects what is baked in. A runtime install rewrites it
-		//, which is why installing needs the maintenance bracket: this list is already
-		// Live on a promoted resource by then.
-		var members []string
-		if len(cfg.Services) > 0 {
-			members = bakedSlot()
-		}
-		cfg.Promoter = promoterUnits(members)
+		cfg.Promoter = promoterUnits()
 	}
 	return cfg
-}
-
-// bakedServices reads the BUILD-TIME payload slot from the environment. An unset SERVICE_IMAGE is
-// the shipped state — no service — and yields an empty set rather than a half-filled spec.
-//
-// A set of at most ONE, deliberately, and it is the last singular thing here. The baked slot is a
-// build-time fixture now: nothing `install.sh` writes sets SERVICE_IMAGE, and the only setters left
-// are the container fleet rig and the nixosTest payload module. Pluralising it would be work spent
-// on a mechanism that is scheduled to be deleted outright ([V3b.3](e)); carrying it as one entry in
-// the set costs a slice literal and lets everything downstream read the plural shape.
-func bakedServices() []model.ServiceSpec {
-	image := os.Getenv("SERVICE_IMAGE")
-	if image == "" {
-		return nil
-	}
-	// Name is the guest's fixed payload unit slug (podman-briard-payload.service):
-	// configuration.nix keeps the unit name service-agnostic (the fixture or HA ride the
-	// identical slot), so guest.unitOf(Name) must resolve to that unit or an upgrade drives
-	// a non-existent podman-<Name>.service. Image is the currently-serving ref
-	// (UpgradePayload's rollback target); DataDir is the service subvolume on the volume.
-	return []model.ServiceSpec{{
-		Name:    env("SERVICE_NAME", "briard-payload"),
-		Image:   image,
-		DataDir: env("SERVICE_DATADIR", "/var/lib/briard/payload"),
-	}}
 }
 
 // parsePeers parses the PEERS env into the full DRBD connection mesh. It is the

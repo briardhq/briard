@@ -2,7 +2,6 @@ package guest
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -101,14 +100,12 @@ type control interface {
 	VIP(ctx context.Context, dev string) (string, error)
 	Snapshot(ctx context.Context, dataDir, dest string) error
 	Restore(ctx context.Context, dataDir, src string) error
-	GCSnapshots(ctx context.Context, dir, prefix string, keep int) error
 	SystemPath(ctx context.Context) (string, error)
 	Stage(ctx context.Context, closure string, src guestagent.StageSource) error
 	Components(ctx context.Context, closure string) (guestagent.SystemComponents, error)
 	Switch(ctx context.Context, closure string) error
 	StageBoot(ctx context.Context, closure string) error
 	CollectGarbage(ctx context.Context) error
-	PayloadPin(ctx context.Context, ref string) error
 	WriteCert(ctx context.Context, cert, key string) error
 	ReactorPause(ctx context.Context, snippet string) error
 	ReactorResume(ctx context.Context, snippet string) error
@@ -164,17 +161,6 @@ type Config struct {
 	ReadinessAssessor ReadinessAssessor
 	// Logf, if set, receives one line per upgrade step (progress/observability).
 	Logf func(format string, args ...any)
-	// SnapshotRetention bounds accumulating pre-upgrade snapshots: after a
-	// successful upgrade, keep this many most-recent snapshots per service and prune the
-	// rest. 0 = no GC (unbounded, the older behaviour).
-	SnapshotRetention int
-	// RollbackTimeout bounds recovery. Rollback runs on a detached context (a
-	// tripped upgrade deadline must not cancel recovery), so it was unbounded: a
-	// wedged guest hung recovery forever, silently. This caps it, so a stuck rollback
-	// returns a deadline error the caller can escalate (the notifier) instead of
-	// hanging. Zero defaults; the detached context still means the upgrade deadline
-	// itself never shortens recovery.
-	RollbackTimeout time.Duration
 	// IdFn generates the per-snapshot id; nil defaults to a timestamp.
 	idFn func() string
 }
@@ -202,9 +188,6 @@ func NewManager(ctl control, cfg Config) *Manager {
 	}
 	if cfg.idFn == nil {
 		cfg.idFn = func() string { return strconv.FormatInt(time.Now().UnixNano(), 10) }
-	}
-	if cfg.RollbackTimeout == 0 {
-		cfg.RollbackTimeout = 5 * time.Minute // bound recovery so a wedged guest can't hang it forever
 	}
 	return &Manager{ctl: ctl, cfg: cfg}
 }
@@ -497,19 +480,6 @@ func (m *Manager) Restore(ctx context.Context, ref SnapshotRef) error {
 	return m.ctl.Restore(ctx, ref.DataDir, ref.Subvolume)
 }
 
-// GcSnapshots prunes old pre-upgrade snapshots after a kept upgrade, to Config's
-// SnapshotRetention. No-op when retention is 0. Best-effort: a GC failure is
-// logged, not fatal -- the upgrade already succeeded, snapshots are only disk hygiene.
-func (m *Manager) gcSnapshots(ctx context.Context, spec model.ServiceSpec) {
-	if m.cfg.SnapshotRetention <= 0 || !hasService(spec) {
-		return // no retention configured, or no service ever wrote a snapshot to prune
-	}
-	dir := path.Join(path.Dir(spec.DataDir), ".snapshots")
-	if err := m.ctl.GCSnapshots(ctx, dir, spec.Name+"-", m.cfg.SnapshotRetention); err != nil {
-		m.cfg.Logf("gc snapshots %s: %v (non-fatal)", spec.Name, err)
-	}
-}
-
 // THE OS UPGRADE USED TO LIVE HERE, and where it went is worth a sentence.
 //
 // Manager.Upgrade ran the whole switch-only sequence in the guest: quiesce the payload,
@@ -536,80 +506,6 @@ func (m *Manager) CollectStore(ctx context.Context) {
 	if err := m.ctl.CollectGarbage(ctx); err != nil {
 		m.cfg.Logf("store gc after commit failed (harmless, retried next upgrade): %v", err)
 	}
-}
-
-// UpgradePayload runs the single-node *payload* upgrade: the payload writes the
-// service data, so a payload version change is an OCI image re-pin, not an OS switch.
-// Same bracketing as Upgrade (maintenance → quiesce → snapshot → apply → start →
-// health-gate → auto-rollback), but the code half is `pin(newImage)` instead of
-// `switch(closure)`. Crucially the pin lands on the replicated volume, so a failover
-// mid-window safely converges to the same image (converge-at-promotion). newImage /
-// oldImage must be pre-staged on this node (warm-standby); the pin is a selector.
-func (m *Manager) UpgradePayload(ctx context.Context, spec model.ServiceSpec, oldImage, newImage string) (ref SnapshotRef, err error) {
-	rd := m.CaptureBaseline(ctx) // pre-upgrade readiness signal, old payload still serving
-	m.cfg.Logf("upgrade %s -> %s: enter maintenance", spec.Name, newImage)
-	if e := m.EnterMaintenance(ctx); e != nil {
-		return SnapshotRef{}, fmt.Errorf("enter maintenance: %w", e)
-	}
-	defer func() {
-		if e := m.ExitMaintenance(ctx); e != nil {
-			err = errors.Join(err, fmt.Errorf("exit maintenance: %w", e))
-		}
-	}()
-
-	m.cfg.Logf("upgrade %s: quiesce", spec.Name)
-	if e := m.Stop(ctx, spec); e != nil {
-		return SnapshotRef{}, fmt.Errorf("quiesce: %w", e)
-	}
-	ref, e := m.Snapshot(ctx, spec)
-	if e != nil {
-		return SnapshotRef{}, fmt.Errorf("snapshot: %w", e)
-	}
-	ref.Image = oldImage // the rollback pin
-	m.cfg.Logf("upgrade %s: pin image %s (from %s)", spec.Name, newImage, oldImage)
-	if e := m.ctl.PayloadPin(ctx, newImage); e != nil {
-		return ref, m.rollbackPayload(ctx, spec, ref, fmt.Errorf("pin %s: %w", newImage, e))
-	}
-	m.cfg.Logf("upgrade %s: start + health-gate", spec.Name)
-	if e := m.Start(ctx, spec); e != nil {
-		return ref, m.rollbackPayload(ctx, spec, ref, fmt.Errorf("start: %w", e))
-	}
-	if e := m.AwaitReady(ctx, spec); e != nil {
-		m.cfg.Logf("upgrade %s: health-gate tripped (%v) -> rollback", spec.Name, e)
-		return ref, m.rollbackPayload(ctx, spec, ref, e)
-	}
-	if e := m.Assess(ctx, rd); e != nil { // differential S1 gate above the floor
-		m.cfg.Logf("upgrade %s: readiness gate tripped (%v) -> rollback", spec.Name, e)
-		return ref, m.rollbackPayload(ctx, spec, ref, e)
-	}
-	m.cfg.Logf("upgrade %s: healthy, kept", spec.Name)
-	m.gcSnapshots(ctx, spec) // bound accumulated snapshots (best-effort)
-	return ref, nil
-}
-
-// RollbackPayload reverts {image + data} together to ref, detached-context like
-// rollback: re-pin the old image, restore the data snapshot, re-raise the payload.
-func (m *Manager) rollbackPayload(ctx context.Context, spec model.ServiceSpec, ref SnapshotRef, cause error) error {
-	// Detached from the upgrade deadline (recovery must outlive it) but bounded by its
-	// own RollbackTimeout, so a wedged guest returns a deadline error to escalate
-	// rather than hanging recovery forever.
-	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.RollbackTimeout)
-	defer cancel()
-	m.cfg.Logf("rollback %s: re-pin %s + restore %s", spec.Name, ref.Image, ref.Subvolume)
-	errs := []error{cause}
-	if err := m.ctl.PayloadPin(rb, ref.Image); err != nil { // revert code (image)
-		errs = append(errs, fmt.Errorf("rollback pin: %w", err))
-	}
-	if err := m.Stop(rb, spec); err != nil {
-		errs = append(errs, fmt.Errorf("rollback stop: %w", err))
-	}
-	if err := m.Restore(rb, ref); err != nil { // revert data (per-subvolume)
-		errs = append(errs, fmt.Errorf("rollback restore: %w", err))
-	}
-	if err := m.Start(rb, spec); err != nil {
-		errs = append(errs, fmt.Errorf("rollback start: %w", err))
-	}
-	return fmt.Errorf("payload upgrade rolled back: %w", errors.Join(errs...))
 }
 
 // EnterMaintenance holds the promoter for the payload's resource, if configured.

@@ -235,76 +235,6 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 	}
 }
 
-// GCSnapshots keeps the newest N snapshots and btrfs-deletes the rest (oldest first).
-func TestDataGC(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "ls" {
-			return []byte("dummy-3\ndummy-1\n.snapshots\ndummy-5\ndummy-2\ndummy-4\n"), nil
-		}
-		return nil, nil
-	}}
-	g := dial(t, f)
-	if err := g.GCSnapshots(context.Background(), "/s", "dummy-", 2); err != nil {
-		t.Fatal(err)
-	}
-	var deletes []string
-	for _, r := range f.runs {
-		if len(r) >= 3 && r[0] == "btrfs" && r[1] == "subvolume" && r[2] == "delete" {
-			deletes = append(deletes, r[3])
-		}
-	}
-	want := []string{"/s/dummy-1", "/s/dummy-2", "/s/dummy-3"} // keep newest 2 (dummy-4,5)
-	if !reflect.DeepEqual(deletes, want) {
-		t.Errorf("deleted %v, want %v (oldest three)", deletes, want)
-	}
-}
-
-// PayloadPin retags the serve image to the pinned ref (image must be staged) and
-// records the ref on the volume so a failover converges to it.
-func TestPayloadPin(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	if err := g.PayloadPin(context.Background(), "briard-dummy:v1"); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"podman", "image", "exists", "briard-dummy:v1"},
-		{"podman", "tag", "briard-dummy:v1", "briard-payload:serve"},
-		{"sync", "-f", "/var/lib/briard/.payload-image"}, // flush so the pin replicates before a failover
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want %v", f.runs, want)
-	}
-	if got := f.files["/var/lib/briard/.payload-image"]; got != "briard-dummy:v1\n" {
-		t.Errorf("pin file = %q, want briard-dummy:v1", got)
-	}
-}
-
-// PayloadImage reads the pin file (the served identity across a failover); a cat error
-// (no pin set) reports "" so the host falls back to the baked default.
-func TestPayloadImage(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "cat" && len(args) == 1 && args[0] == "/var/lib/briard/.payload-image" {
-			return []byte("briard-dummy:v1\n"), nil
-		}
-		return nil, nil
-	}}
-	g := dial(t, f)
-	got, err := g.PayloadImage(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "briard-dummy:v1" {
-		t.Errorf("PayloadImage = %q, want briard-dummy:v1 (trimmed pin)", got)
-	}
-
-	// No pin: cat errors -> "".
-	f2 := &fakeExec{runFn: func(string, []string) ([]byte, error) { return nil, errors.New("No such file") }}
-	if got, err := dial(t, f2).PayloadImage(context.Background()); err != nil || got != "" {
-		t.Errorf("absent pin: got (%q,%v), want (\"\",nil)", got, err)
-	}
-}
-
 // PayloadActiveSince reads the unit's ActiveEnterTimestampMonotonic (usec) as the
 // adopt-not-bounce proof for the maintenance contract: unchanged across a pause/resume
 // means the promoter re-adopted the running payload. An inactive unit ("") parses to 0.
@@ -497,30 +427,6 @@ func TestCompatibleGuest(t *testing.T) {
 	}
 	if compatibleGuest(api.MinGuestProtocol - 1) {
 		t.Error("a guest older than the host's minimum must be refused")
-	}
-}
-
-// The pin is ref-agnostic: an immutable content digest works exactly like a
-// name:tag -- the verb passes it through to podman verbatim, so the registry-pull future
-// (pin by @sha256:digest) drops in with no agent change. v0's warm-standby uses local
-// image IDs; both are content-addressed identities.
-func TestPayloadPinAcceptsDigest(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	digest := "briard-dummy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if err := g.PayloadPin(context.Background(), digest); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"podman", "image", "exists", digest},
-		{"podman", "tag", digest, "briard-payload:serve"},
-		{"sync", "-f", "/var/lib/briard/.payload-image"},
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want the digest passed through verbatim %v", f.runs, want)
-	}
-	if got := f.files["/var/lib/briard/.payload-image"]; got != digest+"\n" {
-		t.Errorf("pin file = %q, want the digest %q", got, digest)
 	}
 }
 
@@ -920,14 +826,44 @@ func TestPayloadActiveReadsState(t *testing.T) {
 }
 
 func TestDataSnapshotCommand(t *testing.T) {
-	f := &fakeExec{}
+	// Nothing at the destination: `show` fails, so there is nothing to replace.
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if len(args) > 1 && args[1] == "show" {
+			return nil, errors.New("ERROR: not a subvolume")
+		}
+		return nil, nil
+	}}
 	g := dial(t, f)
 	if err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1"); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-1"}}
+	want := [][]string{
+		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-1"},
+	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
+	}
+}
+
+// THE SECOND UPGRADE OF A SERVICE, which is where this broke: the rollback point has a fixed
+// path, so the previous upgrade left a READ-ONLY snapshot sitting at it, and `btrfs subvolume
+// snapshot` given an existing directory writes INSIDE it -- failing with "Read-only file system"
+// and taking the whole upgrade with it (measured on a soak run, 2026-08-28). A stale rollback
+// point is superseded, so it is deleted first.
+func TestDataSnapshotReplacesAStaleRollbackPoint(t *testing.T) {
+	f := &fakeExec{} // `show` succeeds => the destination already holds a subvolume
+	g := dial(t, f)
+	if err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1"); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "delete", "/data/ha/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-1"},
+	}
+	if !reflect.DeepEqual(f.runs, want) {
+		t.Errorf("runs = %v, want the stale point deleted before the new one is taken %v", f.runs, want)
 	}
 }
 

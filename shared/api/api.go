@@ -83,28 +83,23 @@ type NodeStatus struct {
 	// tenant to the node's identity is the cloud's job, so the controller keys storage on its own
 	// tenant, not this self-asserted value. Empty on a node that hasn't registered.
 	Tenant string `json:"tenant,omitempty"`
-	// Image is the payload OCI ref this node is currently serving. It makes a
-	// rolling update observable through the seam: the controller confirms convergence
-	// to the new image, not just a health blip. Empty on a witness (no payload).
-	Image string `json:"image,omitempty"`
 	// System is the NixOS system closure this node is currently running (whole-OS
 	// rolling update): the store path of /run/current-system. Ground truth for the OS
 	// rollout -- the controller confirms the serving node switched to the target closure.
 	// Empty on a witness (or when unread).
 	System string `json:"system,omitempty"`
 	// Services is what this node has INSTALLED at runtime, one entry per service, ordered by
-	// name. It is the plural answer to the question Image only ever answered for one thing, and
-	// widening the closed allowlist by a repeated field is a deliberate act, so here is the
-	// argument.
+	// name. It is the whole answer to "what is this node running", and widening the closed
+	// allowlist by a repeated field is a deliberate act, so here is the argument.
 	//
-	// WHY A FIELD AT ALL: the cloud must be able to confirm a service rollout, and today it
-	// cannot. Image carries an OCI ref, which is the BAKED SLOT's notion of identity -- a
-	// runtime-installed service's identity is its MANIFEST, and its upgrade is a service-install
-	// directive carrying a new one ([V3b.3](b)/(e)). With nothing else on the wire, a node was
-	// held to ONE runtime service by an explicit refusal in applyServiceInstall, because a node
-	// running two and describing one would have the cloud confirm a rollout against whichever
-	// came first and a crash-loop in the other go entirely unseen. This field is what lets that
-	// refusal come out.
+	// WHY A FIELD AT ALL: the cloud must be able to confirm a service rollout. It used to read an
+	// `Image` OCI ref, which was the BAKED SLOT's notion of identity -- a runtime-installed
+	// service's identity is its MANIFEST, and its upgrade is a service-install directive carrying
+	// a new one ([V3b.3](b)/(e1), which deleted the slot and the field with it). With nothing else
+	// on the wire, a node was held to ONE runtime service by an explicit refusal in
+	// applyServiceInstall, because a node running two and describing one would have the cloud
+	// confirm a rollout against whichever came first and a crash-loop in the other go entirely
+	// unseen. This field is what let that refusal come out.
 	//
 	// WHY THE MANIFEST HASH AND NOT THE NAME: a catalog name is stable ACROSS versions -- the
 	// real upgrade case is home-assistant 2026.8 -> 2026.9 under one name -- so a report of
@@ -115,15 +110,16 @@ type NodeStatus struct {
 	// WHAT IT DELIBERATELY DOES NOT CARRY: the manifest's Version string (a human label the
 	// cloud can look up from the identity it already has), per-service health (a service's own
 	// endpoint is not probed from here -- see Healthy, and [B.48] for the fix), and the image
-	// refs (derivable from the manifest, and naming them here would re-create Image N times).
+	// refs (derivable from the manifest, and one OCI ref per service is exactly the shape this
+	// replaced).
 	//
-	// Empty on a witness, on the shipped zero-service node, and on a node running only the
-	// build-time baked slot -- that slot has no manifest, so it has no identity to report, which
-	// is the same discriminator ServiceSpec.Unit uses. It dies with the slot ([V3b.3](e1)).
+	// Empty on a witness and on the shipped zero-service node, which is the state `install.sh`
+	// leaves behind. A node that has PROMOTED reports what the volume says it runs, not merely
+	// what it was itself told to install ([V3b.3](e1), adoptVolumeServices).
 	Services []ServiceStatus `json:"services,omitempty"`
 	// AgentVersion is the release id of the host-agent binary now running. It makes a
-	// host-agent self-update observable through the seam the same way Image does for the
-	// payload: the cloud confirms a canary committed the offered version (its trial went
+	// host-agent self-update observable through the seam the same way Services does for what the
+	// node runs: the cloud confirms a canary committed the offered version (its trial went
 	// healthy) before it offers the fleet -- a reverted trial keeps the old version, so a bad
 	// build never advances past the canary. Empty when the binary is built without a version.
 	AgentVersion string `json:"agent_version,omitempty"`
@@ -287,14 +283,16 @@ const (
 	OutcomeFailed     = "failed"      // the op failed with no clean revert (e.g. a wedged rollback)
 )
 
-// Directive kinds the agent understands. The down-channel carries cheap,
-// safe directives plus "upgrade" (routed to guest.Manager).
+// Directive kinds the agent understands. The down-channel carries cheap, safe directives plus the
+// two that change what a node runs: a whole-OS upgrade, and a service install.
+//
+// There is no payload `upgrade` kind. It named an OCI image ref and re-pinned the build-time
+// payload slot, which is deleted ([V3b.3](e1)); a runtime-installed service is identified by its
+// MANIFEST, so moving one to a new version is a service-install directive carrying the catalog
+// name whose published manifest changed.
 const (
-	DirectiveNoop    = "noop"    // acknowledge only -- proves the round-trip
-	DirectiveLog     = "log"     // agent logs Payload -- push a marker/instruction to a node
-	DirectiveUpgrade = "upgrade" // Payload = the new payload OCI image ref; the agent runs
-	//                              Guest.Manager.UpgradePayload (health-gated, auto-rollback),
-	//                              which pins it so a failover converges (rolling update).
+	DirectiveNoop          = "noop"           // acknowledge only -- proves the round-trip
+	DirectiveLog           = "log"            // agent logs Payload -- push a marker/instruction to a node
 	DirectiveUpgradeSystem = "upgrade-system" // Payload = target system closure store path; the
 	//                              Agent runs guest.Manager.Upgrade (whole-OS switch, health-gated,
 	//                              auto-rollback), pinning it so a failover converges.

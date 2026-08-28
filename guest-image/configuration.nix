@@ -24,10 +24,11 @@ let
   # meant N assertions about a single system. What the data actually demands is per-service
   # and lives beside this: the payload image, and the service manifest.
   #
-  # imagePinFile/serveImage PAIR with the host agent's Go consts payloadPinPath/
-  # payloadServeTag (agent/guestagent/guestagent.go). Different languages, so no shared
-  # import; TestPayloadConstantsMatchGuestImage fails the build if either side is renamed
-  #.
+  # THESE TWO ARE NOW GUEST-ONLY. They used to pair with the host agent's Go consts
+  # payloadPinPath/payloadServeTag, checked by a cross-language test; the host half is deleted
+  # ([V3b.3](e1)) and nothing off this node writes the pin any more, so what is left here is the
+  # payload slot's own plumbing and it goes with the slot in (e2). The pairing test survives,
+  # pointed at tlsDir, which is paired the same way.
   imagePinFile = "${btrfsRoot}/.payload-image";
   # The local tag the payload container actually runs. Warm-load points it at the baked
   # default; converge re-points it at the data's pinned image (or refuses). So "which

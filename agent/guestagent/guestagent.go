@@ -106,7 +106,6 @@ const (
 	verbPayloadSince  = "payload.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
 	verbDataSnapshot  = "data.snapshot"  // btrfs subvolume snapshot -r <DataDir> <dest>
 	verbDataRestore   = "data.restore"   // replace the live subvolume with a snapshot
-	verbDataGC        = "data.gc"        // prune old pre-upgrade snapshots (retention)
 	verbOSSystem      = "os.system"      // readlink -f /run/current-system -> closure store path
 	verbOSStage       = "os.stage"       // nix-store --realise: pull a closure INTO the store
 	verbOSComponents  = "os.components"  // read a closure's boot-critical parts, for the reboot decision
@@ -114,8 +113,6 @@ const (
 	verbOSStageBoot   = "os.stageboot"   // make a closure BOOTABLE without making it the default
 	verbOSPowerOff    = "os.poweroff"    // ask the guest OS to shut itself down cleanly
 	verbOSGC          = "os.gc"          // drop old profile generations, then collect the store
-	verbPayloadPin    = "payload.pin"    // pin the payload OCI image the data was written by
-	verbPayloadImage  = "payload.image"  // read the served image ref (the replicated pin, or "")
 )
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
@@ -180,8 +177,8 @@ const (
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
 // service, `<name>.json`, holding the manifest's own bytes, whose content hash IS that identity.
-// It supersedes payloadPinPath's single OCI digest for runtime-installed services: one manifest
-// transitively pins the whole container set. The VOLUME holds the manifests, never the rendered
+// It superseded the payload slot's single OCI digest, which is now deleted ([V3b.3](e1)): one
+// manifest transitively pins the whole container set. The VOLUME holds the manifests, never the rendered
 // units — a survivor re-renders rather than replaying units that a different podman version may
 // have produced.
 //
@@ -202,17 +199,7 @@ const manifestDir = "/var/lib/briard/.services"
 // guest is told the filenames but not the directory, so this path is the guest's own.
 const quadletDir = "/run/containers/systemd"
 
-// Payload-image identity, the primary code↔data pin: the
-// payload writes the service data, so its image is the data-format identity. payload.pin
-// records the image on the replicated volume (so a failover converges to it) AND points
-// the serve tag at it (so this node runs it). Content-addressed => node-independent; the
-// image must be pre-staged (select, never pull on the hot path). These two consts PAIR with
-// the guest image's `serveImage`/`imagePinFile` (guest-image/configuration.nix) —
-// different languages, so no shared import; TestPayloadConstantsMatchGuestImage fails the build
-// if either side drifts.
 const (
-	payloadServeTag = "briard-payload:serve"
-	payloadPinPath  = "/var/lib/briard/.payload-image"
 	// TLS cert/key on the DRBD volume: replicated, so a failover serves the same
 	// cert; the terminator hot-reloads them. Pairs with the guest image's tlsDir.
 	tlsDir      = "/var/lib/briard/tls"
@@ -260,8 +247,8 @@ const bootIDPath = "/proc/sys/kernel/random/boot_id"
 var guestCapabilities = []string{
 	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
-	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince, verbPayloadPin, verbPayloadImage,
-	verbDataSnapshot, verbDataRestore, verbDataGC,
+	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince,
+	verbDataSnapshot, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
@@ -394,11 +381,6 @@ type StageSource struct {
 	Key string
 }
 
-// payloadPinRequest names the payload OCI image ref to pin (payload.pin).
-type payloadPinRequest struct {
-	Ref string `json:"ref"`
-}
-
 // serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
 // written under quadletDir. Stale is the set of filenames to remove first, so swapping which
 // service occupies the slot leaves nothing of the previous one behind.
@@ -466,13 +448,6 @@ type backupRestoreRequest struct {
 	Base     string `json:"base"`
 	Src      string `json:"src"`
 	Identity string `json:"identity"`
-}
-
-// gcRequest prunes old snapshots: keep the newest Keep matching Dir/Prefix* (data.gc).
-type gcRequest struct {
-	Dir    string `json:"dir"`
-	Prefix string `json:"prefix"`
-	Keep   int    `json:"keep"`
 }
 
 // reactorRequest names a drbd-reactor promoter snippet to pause/resume.
@@ -785,43 +760,6 @@ func dispatch(x Executor) dispatchFunc {
 			// The fuller view. QuorumState is embedded, so a host that only knows
 			// the three summary fields reads this response unchanged.
 			return drbd.ParseCluster(out, req.Resource)
-		case verbPayloadPin:
-			var req payloadPinRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			if req.Ref == "" {
-				return nil, fmt.Errorf("payload.pin: empty image ref")
-			}
-			// The image must already be staged (warm-standby / pre-pull); pinning is a
-			// selector, never a pull on the failover path.
-			if err := run("podman", "image", "exists", req.Ref); err != nil {
-				return nil, fmt.Errorf("payload.pin: image %s not staged: %w", req.Ref, err)
-			}
-			if err := run("podman", "tag", req.Ref, payloadServeTag); err != nil {
-				return nil, err
-			}
-			// Record it on the replicated volume so a failover converges to the same image.
-			if err := x.WriteFile(payloadPinPath, []byte(req.Ref+"\n")); err != nil {
-				return nil, err
-			}
-			// Flush to the DRBD backing so the pin actually replicates to peers *before* a
-			// failover relies on it (protocol C acks a device write only once the peer has
-			// it). Without this, a crash within the btrfs writeback window loses the pin and
-			// a survivor converges to the stale/default image -- the durability the
-			// hermetic tests only got by an explicit `sync`. sync -f targets just this fs.
-			_, err := x.Run(ctx, "sync", "-f", payloadPinPath)
-			return nil, err
-		case verbPayloadImage:
-			// The served identity is the replicated pin, read from the guest so it's
-			// ground truth across a failover: a survivor that converged-at-promotion reports
-			// the pinned image though it never applied the upgrade itself. Absent pin => "";
-			// the host falls back to the baked default. `cat` errors (no file) => "".
-			out, err := x.Run(ctx, "cat", payloadPinPath)
-			if err != nil {
-				return "", nil
-			}
-			return strings.TrimSpace(string(out)), nil
 		case verbCertWrite:
 			var req certWriteRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -942,6 +880,23 @@ func dispatch(x Executor) dispatchFunc {
 			if err != nil {
 				return nil, err
 			}
+			// REPLACE an existing rollback point rather than snapshotting into it. The path is
+			// fixed per service (quadlet.SnapshotPath), so the second upgrade of a service finds
+			// the first one's snapshot already sitting there -- and `btrfs subvolume snapshot`
+			// given an existing directory creates the new snapshot INSIDE it, which on a
+			// read-only snapshot fails with "Read-only file system". Measured on a soak run
+			// 2026-08-28: every upgrade after the first failed, the fleet stopped converging, and
+			// the error named the filesystem rather than the collision it actually was.
+			//
+			// A rollback point is one replaceable fact, not a series: the host asks for "the
+			// pre-upgrade state of this service", and the previous upgrade's copy is exactly what
+			// that supersedes. Deleting it here is what makes this verb idempotent, which is what
+			// its caller assumes.
+			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err == nil {
+				if err := run("btrfs", "subvolume", "delete", req.Path); err != nil {
+					return nil, err
+				}
+			}
 			return nil, run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path)
 		case verbDataRestore:
 			req, err := snapshotReq(payload)
@@ -954,12 +909,6 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, err
 			}
 			return nil, run("btrfs", "subvolume", "snapshot", req.Path, req.DataDir)
-		case verbDataGC:
-			var req gcRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			return nil, gcSnapshots(ctx, x, req)
 		case verbServiceRender:
 			var req serviceRenderRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -1707,32 +1656,6 @@ func durationEnv(k string, def time.Duration) time.Duration {
 	return def
 }
 
-// gcSnapshots deletes all but the newest Keep snapshots matching Dir/Prefix* -- the
-// retention bound for accumulating pre-upgrade data snapshots. Names are
-// <prefix><unixnano> (fixed width in this era), so a lexicographic sort is chronological.
-func gcSnapshots(ctx context.Context, x Executor, req gcRequest) error {
-	out, err := x.Run(ctx, "ls", "-1", req.Dir) // coreutils; entries as names
-	if err != nil {
-		return fmt.Errorf("data.gc list %s: %w: %s", req.Dir, err, bytes.TrimSpace(out))
-	}
-	var paths []string
-	for _, name := range strings.Fields(string(out)) {
-		if strings.HasPrefix(name, req.Prefix) {
-			paths = append(paths, req.Dir+"/"+name)
-		}
-	}
-	sort.Strings(paths)
-	if req.Keep < 0 || len(paths) <= req.Keep {
-		return nil
-	}
-	for _, victim := range paths[:len(paths)-req.Keep] { // oldest first
-		if o, e := x.Run(ctx, "btrfs", "subvolume", "delete", victim); e != nil {
-			return fmt.Errorf("data.gc delete %s: %w: %s", victim, e, bytes.TrimSpace(o))
-		}
-	}
-	return nil
-}
-
 // safeUnitName rejects any filename that could escape quadletDir. The host renders these from a
 // validated manifest, so this is defence in depth rather than the primary boundary — but the
 // guest writes them as root into a directory systemd reads, and a second cheap check beats
@@ -2272,13 +2195,6 @@ func (g *Client) PayloadStart(ctx context.Context, unit string) error {
 	return g.c.call(ctx, verbPayloadStart, unitRequest{Unit: unit}, nil)
 }
 
-// PayloadPin pins the payload OCI image ref: records it on the replicated volume
-// and points the serve tag at it, so a subsequent (re)start of the payload runs it and
-// a failover converges to it. The image must be pre-staged.
-func (g *Client) PayloadPin(ctx context.Context, ref string) error {
-	return g.c.call(ctx, verbPayloadPin, payloadPinRequest{Ref: ref}, nil)
-}
-
 // ServiceRender writes the host-rendered quadlet source into the guest's /run and reloads
 // systemd, so the generated units exist. Node-local: run this on EVERY node, or a
 // survivor has nothing to start. Stale names the outgoing service's files, removed first.
@@ -2359,16 +2275,6 @@ func (g *Client) ServiceList(ctx context.Context) ([]string, error) {
 // nothing, on a node that promoted into a service someone else installed.
 func (g *Client) SupportsServiceList() bool { return g.Supports(verbServiceList) }
 
-// PayloadImage reports the payload image this node currently serves -- the replicated pin
-// , or "" when none is set (the node serves the baked default). Read from the guest
-// so it's ground truth across a failover: a survivor that converged to the pin reports it
-// even though it never applied the upgrade directive itself.
-func (g *Client) PayloadImage(ctx context.Context) (string, error) {
-	var image string
-	err := g.c.call(ctx, verbPayloadImage, nil, &image)
-	return image, err
-}
-
 // Resources reads the appliance's resource telemetry -- per-service RSS/fds/restarts, load, and
 // the disk sub-series -- for the soak's trend oracle. services pairs each service's name with the
 // unit whose footprint is its own, and dataDir is the DRBD volume; both empty on a witness and on
@@ -2409,12 +2315,6 @@ func (g *Client) BackupSave(ctx context.Context, base string, includes []string,
 // extract it into base. A recovery op; the caller supplies the private key.
 func (g *Client) BackupRestore(ctx context.Context, base, src, identity string) error {
 	return g.c.call(ctx, verbBackupRestore, backupRestoreRequest{Base: base, Src: src, Identity: identity}, nil)
-}
-
-// GCSnapshots prunes old pre-upgrade snapshots under dir matching prefix*, keeping the
-// newest keep (retention).
-func (g *Client) GCSnapshots(ctx context.Context, dir, prefix string, keep int) error {
-	return g.c.call(ctx, verbDataGC, gcRequest{Dir: dir, Prefix: prefix, Keep: keep}, nil)
 }
 
 // PayloadStop stops the payload's unit -- the quiesce step before a snapshot.
