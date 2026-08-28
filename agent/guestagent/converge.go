@@ -2,6 +2,8 @@ package guestagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -43,6 +45,24 @@ import (
 // mounted TODAY (drbd-reactor unwinds the chain in reverse, so briard-data goes last), but a stop
 // that depends on reading the volume would fail exactly when the volume is what went wrong.
 const unitsFile = "/run/briard/services.units"
+
+// startedFile records what converge last STARTED, one `<unit source> <sha256>` line per file.
+//
+// WHY NOT COMPARE THE FILES ON DISK, which is what this replaced and what looked obviously right:
+// the unit sources are in /run and converge writes them, so "differs from disk" reads like
+// "differs from what is running". It is not, because converge is not the only writer -- an
+// INSTALL renders the new units through service.render before asking the node to converge. By the
+// time converge looked, disk already held the new bytes, every file compared equal, nothing was
+// bounced, and `systemctl start` on an already-active unit is a no-op. The upgrade therefore left
+// the OLD container serving while the volume, the node-local cache and the report all named the
+// new version -- and the install's health gate passed, because the old container was answering.
+// Measured on a soak run 2026-08-28: a deliberately-broken version installed "healthy" in three
+// seconds.
+//
+// So converge remembers what IT started, rather than inferring it from bytes anyone may have
+// written. /run is tmpfs, so a guest reboot loses the record and everything counts as changed --
+// which is correct: nothing is running either.
+const startedFile = "/run/briard/services.started"
 
 // unitPrefix namespaces everything the renderer writes into quadletDir. Converge owns the files
 // carrying it and no others: a file a user put there is theirs, and must survive.
@@ -123,6 +143,12 @@ func Converge(ctx context.Context, x Executor) error {
 				log.Printf("converge: %s did not start (%v); the node is serving what it can", u, err)
 			}
 		}
+	}
+	// Remember what is now running, so the NEXT converge can tell an upgrade from a promotion.
+	// A failure here is not worth aborting a converge that has already started the services: the
+	// cost is a needless bounce next time, not a wrong one.
+	if err := writeStarted(x, all); err != nil {
+		log.Printf("converge: could not record what was started (%v); the next converge will bounce everything", err)
 	}
 	if len(svcs) == 0 {
 		log.Printf("converge: no services installed on the volume; nothing to start")
@@ -306,17 +332,18 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 	for n := range r.Files {
 		names = append(names, n)
 	}
-	sort.Strings(names) // deterministic write order, so a part-way failure is reproducible
+	sort.Strings(names)       // deterministic write order, so a part-way failure is reproducible
+	started := readStarted(x) // what THIS node last started, empty after a guest reboot
 	changed := map[string]bool{}
 	for _, n := range names {
 		if err := safeUnitName(n); err != nil {
 			return nil, err
 		}
 		path := quadletDir + "/" + n
-		// An unreadable or absent file counts as changed: /run is tmpfs, so after a guest reboot
-		// nothing is there and everything is new. Reading before writing is what keeps an
-		// unchanged service from being bounced by a neighbour's upgrade.
-		if prev, err := x.ReadFile(path); err != nil || string(prev) != r.Files[n] {
+		// Changed against what converge last STARTED, never against what is on disk -- see
+		// startedFile. A unit converge has not started with exactly these bytes counts as changed,
+		// which after a guest reboot is all of them, correctly: nothing is running.
+		if started[n] != sum(r.Files[n]) {
 			changed[n] = true
 		}
 		if err := x.WriteFile(path, []byte(r.Files[n])); err != nil {
@@ -386,4 +413,45 @@ func mergeInto(all *quadlet.Rendered, r quadlet.Rendered) {
 		}
 		all.ImageRefs[unit] = ref
 	}
+}
+
+// sum is the fingerprint a unit source is remembered by. sha256 over the exact bytes, because
+// what matters is "are these the bytes that are running", not what changed inside them.
+func sum(body string) string {
+	h := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(h[:])
+}
+
+// readStarted loads the unit → fingerprint record converge last wrote. An absent or unreadable
+// file is an EMPTY record, which makes every unit count as changed: after a guest reboot /run is
+// empty and nothing is running, so bouncing everything is exactly right, and on a corrupt read an
+// unnecessary restart beats leaving the old container serving new-format data.
+func readStarted(x Executor) map[string]string {
+	out := map[string]string{}
+	raw, err := x.ReadFile(startedFile)
+	if err != nil {
+		return out
+	}
+	for _, line := range nonEmptyLines(raw) {
+		if name, digest, ok := strings.Cut(line, " "); ok {
+			out[name] = digest
+		}
+	}
+	return out
+}
+
+// writeStarted records what is now running, so the next converge can tell an upgrade from a
+// promotion. Written AFTER the units are started: a record written first would make a failed
+// start look, to the next converge, like something already running.
+func writeStarted(x Executor, r quadlet.Rendered) error {
+	names := make([]string, 0, len(r.Files))
+	for n := range r.Files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(n + " " + sum(r.Files[n]) + "\n")
+	}
+	return x.WriteFile(startedFile, []byte(b.String()))
 }

@@ -294,6 +294,48 @@ func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
 	}
 }
 
+// THE INSTALL PATH IS ANOTHER WRITER, and forgetting that made every upgrade a no-op. An install
+// renders the new units through service.render BEFORE asking the node to converge, so by the time
+// converge looked, the files on disk already held the new bytes: nothing compared as changed,
+// nothing was bounced, `systemctl start` on an already-active unit did nothing, and the OLD
+// container kept serving while the volume and the report named the new version. The install's
+// health gate then passed on the old container -- a deliberately-broken version installed
+// "healthy" in three seconds on a soak run, 2026-08-28.
+//
+// So converge compares against what IT started, not against what is on disk. This test writes the
+// new bytes to disk first, exactly as the install path does.
+func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
+	x := dummyNode(t)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("first Converge: %v", err)
+	}
+	// The install: the new manifest lands on the volume AND the new units are rendered to /run by
+	// the host, before converge is asked to make the node match.
+	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2
+	x.quadlet = []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"}
+	svcs, err := renderVolume(context.Background(), x)
+	if err != nil {
+		t.Fatalf("render the upgrade: %v", err)
+	}
+	for name, body := range merged(svcs).Files {
+		x.fakeExec.files[quadletDir+"/"+name] = body
+	}
+	before := len(x.fakeExec.runs)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("re-Converge: %v", err)
+	}
+	var stopped []string
+	for _, r := range x.fakeExec.runs[before:] {
+		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" {
+			stopped = append(stopped, r[2])
+		}
+	}
+	want := []string{"briard-dummy-app.service", "briard-dummy-pod.service"}
+	if fmt.Sprint(stopped) != fmt.Sprint(want) {
+		t.Fatalf("an upgrade whose units were pre-rendered was not bounced: stopped %v, want %v", stopped, want)
+	}
+}
+
 // TestConvergeLeavesAnUnchangedServiceAlone is the half that keeps the one above honest: bouncing
 // unconditionally would also pass it. Converge runs on every promotion AND every install, so a
 // service nobody touched must not be taken down because a DIFFERENT one was upgraded.
