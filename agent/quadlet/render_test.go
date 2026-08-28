@@ -68,6 +68,31 @@ func TestPromotionNeverPulls(t *testing.T) {
 	}
 }
 
+// TestContainerSupervisesItself: the service units are NOT promoter chain members ([V3b.3](f)),
+// so drbd-reactor neither restarts nor watches them. A container that dies must be brought back
+// by its own unit or it stays dead with nothing noticing — the recovery the promoter used to
+// provide, in the only place left to put it.
+//
+// `always`, not `on-failure`: a service container has no legitimate exit, so exiting 0 is exactly
+// as dead as exiting 1. Asserting the exact value rather than mere presence is the point — the
+// weaker policy is the plausible-looking wrong answer here, and it is also the one quadlet
+// generates for the pod, so it could arrive by imitation.
+func TestContainerSupervisesItself(t *testing.T) {
+	r := mustRender(t, ha())
+	c := r.Files["briard-home-assistant-ha.container"]
+	if !strings.Contains(c, "\n[Service]\n") {
+		t.Fatalf("container unit has no [Service] section — quadlet has nothing to pass through:\n%s", c)
+	}
+	if !strings.Contains(c, "Restart=always") {
+		t.Fatalf("container unit does not set Restart=always — a crashed service would stay dead:\n%s", c)
+	}
+	// Past systemd's default start-rate limit (5 per 10s), so a crash-loop keeps retrying
+	// instead of latching to `failed` on a transient cause.
+	if !strings.Contains(c, "RestartSec=5") {
+		t.Fatalf("container unit does not space its restarts — a crash-loop would latch to failed:\n%s", c)
+	}
+}
+
 // TestNoAutoUpdate: podman must never change image identity behind our back — it would break
 // announce-before-act and the health gate. Our upgrade path owns image identity.
 func TestNoAutoUpdate(t *testing.T) {

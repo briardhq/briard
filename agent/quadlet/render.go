@@ -6,9 +6,21 @@
 // in this package, so replacing the container runtime is replacing this file rather than
 // re-cutting the published catalog.
 //
-// It runs on the HOST, not in the guest ([[logic-on-host-by-default]]): the guest verb that
-// consumes this output only writes bytes to disk and reloads systemd. That keeps the logic
-// unit-testable without a VM and the guest dumb-handed.
+// IT RUNS IN THE GUEST, and the host/guest line runs through the MANIFEST rather than through
+// this package ([V3b.3](f)). The host owns identity: it fetches the manifest from the catalog,
+// verifies its signature against the release keyring, and writes those exact bytes to the
+// replicated volume. The guest never chooses what to run — it renders what the volume already
+// says, at promotion, from a manifest whose content hash IS the service identity.
+//
+// Rendering has to happen there because a promoting node is alone: the volume is only readable
+// once mounted, i.e. after drbd-reactor has promoted, and drbd-reactor promotes on a quorum event
+// with nothing asking the host. It is also the better place on its own terms — the renderer
+// belongs next to the podman it renders for, which is the same reason Dir gives for re-rendering
+// rather than replicating the rendered units.
+//
+// This does not soften [[logic-on-host-by-default]]: Render is a pure total function of the
+// manifest bytes, holding no state, no identity and no decision. What moved is which binary
+// executes it, not who decides.
 //
 // Quadlet is podman's own systemd generator: files under /run/containers/systemd become real
 // units at daemon-reload, which is what moves unit generation from BUILD time to RUN time. The
@@ -41,16 +53,21 @@ type Rendered struct {
 	// ContainerUnits are the per-container .service units WITHOUT the pod. They are what holds the
 	// data Volume bind, and the ONLY units a maintenance op may stop to release it — never the pod.
 	//
-	// Why never the pod: `systemctl stop <pod>` makes podman `pod stop`,
-	// which kills the member CONTAINERS out from under their systemd units, so each container unit
-	// exits non-zero and lands in `failed` — NOT a clean stop. drbd-reactor's promoter has the
-	// target `Requires=` each member, and `Requires=` propagates a FAILURE (though not a clean
-	// stop). So a pod stop => container `failed` => the target deactivates => `briard-data` (which
-	// is `PartOf` the target) stops => the shared DRBD volume UNMOUNTS, taking every other service
-	// on the node with it. Stopping a container directly is a graceful stop (systemd → `podman
-	// stop` → clean exit), so `Requires=` stays quiet and the target — and the mount — stay up.
-	// (That Requires-propagates-failure edge is not a bug to route around: it IS the failover
-	// trigger — a container that crashes SHOULD demote the node. Maintenance just must not fire it.)
+	// Why never the pod: `systemctl stop <pod>` makes podman `pod stop`, which kills the member
+	// CONTAINERS out from under their systemd units, so each container unit exits non-zero and
+	// lands in `failed` — NOT a clean stop. Stopping a container directly is a graceful stop
+	// (systemd → `podman stop` → clean exit), which is what leaves the data bind released and
+	// everything else undisturbed.
+	//
+	// A CRASHED CONTAINER NO LONGER DEMOTES THE NODE, and this comment used to say the opposite —
+	// that `Requires=`-propagates-failure "IS the failover trigger; a container that crashes
+	// SHOULD demote the node". [V3b.3](f) reverses that, for two reasons a pod stop's blast
+	// radius had obscured: a code fault is DETERMINISTIC, so the peer running the identical
+	// closure hits it identically and the failover only flaps; and one broken service must not
+	// take the other N-1 down with it. The mechanism is non-membership — these units are started
+	// by briard-services, not by the promoter, so `Requires=` never sees them and there is no
+	// propagation left to fire. Recovery is the unit's own Restart= (see Render); the household
+	// hears about it through per-service health, which reports but never gates.
 	ContainerUnits []string
 	// ImageUnits are the .image pre-warm units, which are NOT promoter members — they are
 	// boot-time and run on every node (see Render).
@@ -122,6 +139,28 @@ func Render(m manifest.Manifest) (Rendered, error) {
 		for _, k := range sortedKeys(c.Env) {
 			lines = append(lines, "Environment="+k+"="+escape(c.Env[k]))
 		}
+		// THE CONTAINER SUPERVISES ITSELF. Quadlet passes a [Service] section through verbatim
+		// into the generated unit (measured against podman 5.8.2's own generator), and it emits
+		// no Restart= of its own for a container — only for the pod.
+		//
+		// It is required because the service units are NOT promoter chain members ([V3b.3](f)):
+		// drbd-reactor neither starts, restarts nor watches them, so without a restart policy a
+		// container that dies stays dead with nothing to bring it back. That non-membership is
+		// what makes "a service error alerts but never demotes" mechanically true, and this line
+		// is the other half of it — the recovery the promoter used to provide, put where it
+		// belongs.
+		//
+		// `always` rather than `on-failure`: a service container has no legitimate exit. Its job
+		// is to keep serving, so exiting 0 is exactly as dead as exiting 1, and the pod unit's
+		// generated `on-failure` would silently accept the first. Restarts systemd itself asked
+		// for are unaffected — a `systemctl stop` (quiesce, demote) is never restarted whatever
+		// the policy says.
+		//
+		// RestartSec spaces the retries past systemd's default start-rate limit
+		// (StartLimitBurst=5 per StartLimitIntervalSec=10s), so a crash-loop retries indefinitely
+		// instead of latching to `failed` and giving up on a transient cause. The loop stays
+		// VISIBLE either way: NRestarts climbs, and the resource telemetry reads it per service.
+		lines = append(lines, "", "[Service]", "Restart=always", "RestartSec=5")
 		out.Files[unit+".container"] = join(lines...)
 		out.Units = append(out.Units, unit+".service")
 		out.ContainerUnits = append(out.ContainerUnits, unit+".service")
