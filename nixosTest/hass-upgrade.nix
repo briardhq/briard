@@ -16,18 +16,15 @@
 # schema_changes ledger is what a real migration moves; the column set is printed only
 # as a diagnostic.
 #
-# Harness scope (matches rolling-update.nix's in-place idiom): this drives the core
-# service-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — under the
-# running promoter. It deliberately does NOT exercise Manager's maintenance bracket
-# (reactor.pause/quiesce): in a single-node lib.nix rig, stopping drbd-reactor tears down
-# drbd-services@r0.target and unmounts the data volume, whereas the product pauses the
-# guest agent's live promoter. That bracket + the health-gated auto-rollback are Manager
-# orchestration — unit-tested (agent/guest/guest_test.go) and proven end-to-end on the
-# dummy under nested KVM; the maintenance-contract test covers the bracket. The guest
-# agent is virtio-serial-only, so running the Manager in-node here isn't possible without
-# a product change. What is NEW and untested until now — a real recorder schema migration
-# surviving the upgrade with its data intact — is exactly what this proves. The
-# forced-failure → rollback half is hass-upgrade-rollback.
+# Harness scope (in-place, under the running promoter): this drives the core
+# service-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — with
+# drbd-reactor live throughout, which is also the product's shape: a service install
+# never pauses the promoter ([V3b.3](f)); the maintenance bracket belongs to the
+# OS-upgrade path (covered by the maintenance-contract test), and the health-gated
+# auto-rollback is host-side orchestration (agent/host/service.go, unit-tested there).
+# What is NEW and untested until now — a real recorder schema migration surviving the
+# upgrade with its data intact — is exactly what this proves. The forced-failure →
+# rollback half is hass-upgrade-rollback.
 { pkgs, guestModule, fixture }:
 
 let
@@ -115,19 +112,18 @@ pkgs.testers.runNixOSTest {
     print(f"baseline: schema={pre_schema} states={pre_states} statistics_meta_cols=[{pre_cols}]")
 
     # ---- Snapshot the rollback point, then pin `to` + cycle onto it IN PLACE ----
-    # We do NOT touch drbd-reactor here. In this single-node lib.nix rig, stopping the daemon
-    # tears down drbd-services@r0.target and unmounts the data volume; the product's
-    # reactor.pause avoids that by pausing the guest agent's live promoter (proven
-    # non-destructive by the maintenance contract). That
-    # maintenance bracket is Manager orchestration, tested there — this test's job is the
-    # migration. A service restart is not a DRBD event, so the running promoter doesn't react;
-    # the volume stays mounted throughout (the rolling-update.nix in-place idiom).
+    # We do NOT touch drbd-reactor here, and neither does the product: a service upgrade
+    # never pauses the promoter ([V3b.3](f)) — the maintenance bracket belongs to the
+    # OS-upgrade path (proven non-destructive by the maintenance contract). This test's
+    # job is the migration. A service restart is not a DRBD event, so the running promoter
+    # doesn't react; the volume stays mounted throughout.
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
     node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume
     node1.succeed("mkdir -p /var/lib/briard/.snapshots")
     # -r read-only, the exact form the guest agent's data.snapshot verb runs. Taken
     # live: btrfs snapshots atomically (crash-consistent; HA recovers its WAL on open), so it
-    # is a valid rollback point without quiescing — Manager quiesces first, tested elsewhere.
+    # is a valid rollback point without quiescing — the product's install path takes its
+    # snapshot live the same way (agent/host/service.go).
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
     # THE UPGRADE: install the `to` manifest under the SAME service name. That is what a version

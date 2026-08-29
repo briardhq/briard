@@ -31,7 +31,7 @@ type guestEvictor interface {
 	FsSync(ctx context.Context) (string, error)
 }
 
-// fsSyncTimeout bounds the pre-eviction flush. Generous — a write-heavy payload can owe the
+// fsSyncTimeout bounds the pre-eviction flush. Generous — a write-heavy service can owe the
 // volume real data — but finite, and the timeout path CONTINUES into the eviction rather than
 // aborting it: a device on which sync hangs is a device to evict away from, and the unmount
 // will retry the same writeback with the same result either way.
@@ -41,7 +41,7 @@ const fsSyncTimeout = 60 * time.Second
 // arbitrary: the evict stops the services and unmounts, and an unmount SYNCS. The pre-eviction
 // flush above usually means that writeback owes little -- the sequencer sends a `sync` directive
 // ahead of the handover ([B.100a]) and this function's own FsSync catches the settle window --
-// but "usually" is not a bound, and a write-heavy payload on a slow device is exactly when a
+// but "usually" is not a bound, and a write-heavy service on a slow device is exactly when a
 // handover matters most.
 //
 // It exists at all because it was MISSING, and that is the point worth keeping: this call ran on

@@ -442,7 +442,7 @@ type certWriteRequest struct {
 	Key  string `json:"key"`
 }
 
-// backupSaveRequest seals the home's sacred config to an off-site path (backup.save). Base is the payload's data-dir mount (== /config in the container); Includes are
+// backupSaveRequest seals the home's sacred config to an off-site path (backup.save). Base is the service's data-dir mount (== /config in the container); Includes are
 // paths under it (".storage", "configuration.yaml", …); Recipient is the household's age
 // public key (seal only — the private key never reaches the guest); Dest is where the
 // encrypted blob lands (a mounted off-site target).

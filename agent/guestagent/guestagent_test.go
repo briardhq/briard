@@ -257,7 +257,7 @@ func TestServiceActiveSince(t *testing.T) {
 	}
 }
 
-// ServiceHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the payload's
+// ServiceHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the service's
 // health URL itself and reports 200. Exercises the real raw-net.Dial HTTP/1.0 path end to end
 // (Client -> dispatch -> probeHTTPOK), since it deliberately avoids net/http in the guest binary.
 func TestServiceHealth(t *testing.T) {

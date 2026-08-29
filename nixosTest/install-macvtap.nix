@@ -15,9 +15,11 @@
 #      is the one machine macvtap would otherwise hide the household's own service from ([V3b.19]).
 #
 # It also proves assertion (d) -- cattle/pet reinstall: after green, `rm -rf /opt/briard`
-# (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the service's persisted
-# tick counter, on the pet /var/lib/briard data volume, does not reset). The failable control is
-# sharp -- a wiped/reformatted volume would restart the counter at ~0.
+# (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the pet
+# /var/lib/briard data volume's btrfs filesystem UUID, read off the backing file, survives).
+# The failable control is sharp -- a wiped/reformatted volume would mint a new UUID; the
+# cattle/pet block below records how a runtime service install wins back the stronger
+# tick-counter comparison.
 #
 # It carries the mode-independent half (install-bridge.nix, cut down
 # to the bridge deltas). It had accumulated on the FALLBACK's test purely because bridge was the

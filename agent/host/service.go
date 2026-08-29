@@ -19,18 +19,19 @@ import (
 
 // Runtime service install. The host orchestrates; the guest is dumb hands.
 //
-// THE SHAPE, and why it is a maintenance bracket: a shipped node mounts, PROMOTES and
-// serves the landing page with zero services, so by the time anyone installs one the resource is
-// already Primary with drbd-reactor actively driving it. Installing means rewriting the promoter's
-// start-list on a live promoted resource — which is an upgrade, from "empty service" to the
-// current version, and belongs on the same rails as one rather than getting its own.
+// THE SHAPE: a shipped node mounts, PROMOTES and serves the landing page with zero services, so
+// by the time anyone installs one the resource is already Primary with drbd-reactor actively
+// driving it. Installing means changing what the VOLUME says this node runs — which is an
+// upgrade, from "empty service" to the current version, and belongs on the same rails as one
+// rather than getting its own.
 //
-//	fetch+verify manifest -> render -> render units (this node) -> provision (Primary only)
-//	  -> [ pause -> rewrite chain -> resume ] -> health-gate -> revert the chain on failure
+//	fetch+verify manifest -> render units (this node) -> provision (Primary only)
+//	  -> converge -> health-gate -> revert on failure (the {code+data} rollback)
 //
-// The bracket has more than one caller and no interlock. The interim guard is an
-// assertion: refuse to start if the promoter is already paused, so an overlap fails loudly at the
-// beginning instead of corrupting someone else's bracket from the middle. It cannot PREVENT the
+// The chain is static and service units are not members of it ([V3b.3](f)), so none of this
+// pauses the promoter. The one promoter contact left is a guard: refuse to start while the
+// OS-upgrade path holds the maintenance bracket, so an overlap fails loudly at the beginning
+// instead of mutating a resource mid-bracket. It cannot PREVENT the
 // race — a pause can still land between the check and ours — and is not claimed to.
 
 // serviceInstaller is the slice of the guest client an install drives. *guestagent.Client
@@ -70,8 +71,8 @@ type serviceInstaller interface {
 }
 
 // installBudget bounds the whole operation. Generous, because a first install legitimately pulls
-// images; bounded, because a wedged install must not hold the bracket open forever — an
-// unresumed promoter is a node that will not fail over.
+// images; bounded, because a wedged install must reach its revert rather than hang forever with
+// the service half-installed.
 const installBudget = 15 * time.Minute
 
 // healthGate is how long the service gets to come up before the install is judged failed and the
@@ -80,8 +81,8 @@ const healthGate = 5 * time.Minute
 
 // revertBudget bounds the rollback, on its own DETACHED deadline. The health gate's most likely
 // failure is the install budget expiring, and a revert inheriting that dead context could neither
-// restore data nor resume the promoter — leaving the node mid-bracket exactly when the install
-// went wrong. So the undo path never shares a deadline with the thing it undoes.
+// restore data nor put the prior manifest back — leaving the node half-reverted exactly when the
+// install went wrong. So the undo path never shares a deadline with the thing it undoes.
 const revertBudget = 3 * time.Minute
 
 // ApplyServicePrewarm renders a catalogued service's units and pulls its images, and stops there
