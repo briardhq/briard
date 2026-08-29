@@ -263,8 +263,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 
 	// Snapshot the rollback point BEFORE the switch, whenever a service is already installed — its
 	// data is what a broken upgrade can poison, and the read-only snapshot on the replicated
-	// volume is what a failed gate restores. The snapshot is taken live; the data is quiesced on the
-	// rollback path, where `data.restore` needs the subvolume's bind released.
+	// volume is what a failed gate restores. The snapshot is taken live, which [B.121] rules
+	// wrong — the service is to be stopped first, so the rollback point is application-consistent
+	// and a revert loses no healthy writes; the data is quiesced on the rollback path, where
+	// `data.restore` needs the subvolume's bind released.
 	var snap string
 	if prior != nil {
 		snap = quadlet.SnapshotPath(m.Name)
