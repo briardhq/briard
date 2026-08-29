@@ -84,7 +84,7 @@ writing the patch.
 
 Two further rules are not machine-checked but are equally load-bearing:
 
-- **The host/payload boundary is real.** The agent runs on the host and is privileged; the workload
+- **The host/workload boundary is real.** The agent runs on the host and is privileged; the workload
   runs inside the guest; they communicate only over the defined channel. Never run workload logic in
   the agent or agent logic in the guest.
 - **What leaves the house is a closed, audited allowlist.** Everything that can ever be sent upward
@@ -155,7 +155,7 @@ laptop, and they are the honest version of "see for yourself":
 ```sh
 nix build .#tests.drbd-failover -L   # kill the primary → survivor takes over, data intact
 nix build .#tests.drbd-fence -L      # partition the minority → it self-fences
-nix build .#tests.hass-payload -L    # real Home Assistant serving in the payload slot
+nix build .#tests.hass-payload -L    # real Home Assistant, installed as a catalogued service
 nix build .#drbd                     # the whole failover net — a whole tag
 nix log .#tests.drbd-fence           # what a run printed
 ```

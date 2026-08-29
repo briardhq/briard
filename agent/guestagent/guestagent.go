@@ -99,20 +99,23 @@ const verbSetHostname = "sys.hostname"
 // whole volume). os.system reads the code identity (the closure store path, node-
 // independent -- NOT a generation number); os.switch is the whole-VM code half.
 //
-// ⚠️ THE FIVE `payload.*` VERBS BELOW KEEP THEIR WIRE SPELLING ON PURPOSE, and it is the only
-// place the deleted build-time payload slot's name survives. They act on whichever unit the host
-// names, which since [V3b.3] is always a runtime-installed service's — so the Go identifiers say
-// service and the strings do not. Renaming the strings is a PROTOCOL break, not a rename: the
-// guest advertises its verb set in the handshake, so a rolled host talking to an un-rolled guest
-// would find none of them, and holding that line means raising MinGuestProtocol, which makes
-// every host refuse every not-yet-rolled guest. That is a real blast radius bought for a nicer
-// word. If a bump is ever needed for its own reasons, these ride along with it.
+// The five service.* verbs below were spelled `payload.*` until the build-time payload slot was
+// deleted ([V3b.3](e2)) and they were left naming a mechanism no node has. They act on whichever
+// unit the host names, which is always a runtime-installed service's.
+//
+// ⚠️ RENAMING THEM WAS A PROTOCOL BREAK, and it is why api.MinGuestProtocol is 2. The guest
+// advertises its verb set in the handshake, so a rolled host meeting an un-rolled guest finds
+// none of them; without the bump that is five silent verb failures, with it the handshake refuses
+// up front and the node defers safely. Taken on the owner's call under the alpha reinstall-only
+// policy ([[alpha-reinstall-only-policy]]) — every node re-runs the installer, so there is no
+// fleet to strand and no compat path to build. This is the expensive instrument the
+// service.installed note below describes; it is affordable exactly while that policy holds.
 const (
-	verbServiceStart  = "payload.start"  // systemctl start <unit>
-	verbServiceStop   = "payload.stop"   // systemctl stop <unit> (quiesce before snapshot)
-	verbServiceActive = "payload.active" // systemctl is-active <unit> -> bool
-	verbServiceHealth = "payload.health" // in-guest GET of the service's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
-	verbServiceSince  = "payload.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
+	verbServiceStart  = "service.start"  // systemctl start <unit>
+	verbServiceStop   = "service.stop"   // systemctl stop <unit> (quiesce before snapshot)
+	verbServiceActive = "service.active" // systemctl is-active <unit> -> bool
+	verbServiceHealth = "service.health" // in-guest GET of the service's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
+	verbServiceSince  = "service.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
 	verbDataSnapshot  = "data.snapshot"  // btrfs subvolume snapshot -r <DataDir> <dest>
 	verbDataRestore   = "data.restore"   // replace the live subvolume with a snapshot
 	verbOSSystem      = "os.system"      // readlink -f /run/current-system -> closure store path
@@ -126,7 +129,7 @@ const (
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
 // whole-OS closure was never a property of the data. The data's identity is per-service — the
-// payload image and the service manifest, both here on the replicated volume — while a system
+// service manifest, here on the replicated volume — while a system
 // closure is a property of the NODE. Storing one per service volume did not survive the
 // multi-service shape (N volumes, one running OS => N assertions about one system), and the
 // compatibility case for keeping it does not hold either: a newer kernel makes btrfs features
@@ -217,10 +220,10 @@ const (
 )
 
 // Maintenance-mode verbs: a planned upgrade must hold drbd-reactor's promoter
-// so it doesn't treat a deliberate payload stop as a failure (demote/re-promote). Pause
+// so it doesn't treat a deliberate service stop as a failure (demote/re-promote). Pause
 // stops the drbd-reactor daemon (stop-services-on-exit defaults false -> DRBD Primary +
-// services stay up); Resume restarts it (re-adopts, no restart/demote). The payload is
-// then cycled surgically (payload.stop is ignore-dependencies, so the VIP/data/target
+// services stay up); Resume restarts it (re-adopts, no restart/demote). The service is
+// then cycled surgically (service.stop is ignore-dependencies, so the VIP/data/target
 // stay up), so no target re-raise is needed.
 const (
 	verbReactorPause  = "reactor.pause"  // systemctl stop drbd-reactor.service
@@ -326,7 +329,7 @@ type unitRequest struct {
 }
 
 // healthRequest carries the service health URL the guest GETs from inside itself
-// (payload.health). The host owns the URL (its HealthURL config); the guest just probes it.
+// (service.health). The host owns the URL (its HealthURL config); the guest just probes it.
 type healthRequest struct {
 	URL string `json:"url"`
 }
@@ -786,7 +789,7 @@ func dispatch(x Executor) dispatchFunc {
 			if err := x.WriteFile(tlsCertPath, []byte(req.Cert)); err != nil {
 				return nil, err
 			}
-			// Flush so the cert replicates before a failover relies on it (as payload.pin).
+			// Flush so the cert replicates before a failover relies on it, the way service.provision does.
 			_, err := x.Run(ctx, "sync", "-f", tlsCertPath)
 			return nil, err
 		case verbBackupSave:
@@ -875,7 +878,7 @@ func dispatch(x Executor) dispatchFunc {
 			}
 			// ActiveEnterTimestampMonotonic (usec since boot) changes ONLY when the unit
 			// re-enters the active state -- i.e. on a (re)start. It is stable across a
-			// promoter pause/resume that merely re-adopts the already-running payload, so an
+			// promoter pause/resume that merely re-adopts the already-running service, so an
 			// unchanged value is ground truth for "adopt, don't bounce" (the maintenance
 			// contract; reused by the per-snippet disable). `--value` prints the raw usec;
 			// 0 when the unit is inactive (never entered active), which parseUint yields for "".
@@ -912,7 +915,7 @@ func dispatch(x Executor) dispatchFunc {
 			if err != nil {
 				return nil, err
 			}
-			// Precondition: the host has stopped the payload (bind released). Swap the
+			// Precondition: the host has stopped the service (bind released). Swap the
 			// live rw subvolume for a fresh rw snapshot of the RO restore point.
 			if err := run("btrfs", "subvolume", "delete", req.DataDir); err != nil {
 				return nil, err
@@ -1751,7 +1754,7 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
 	// it — protocol C acks a device write only once the peer holds it. Without this, a crash
 	// inside the btrfs writeback window loses the manifest and a survivor promotes with no idea
-	// what it is meant to be running. Same reasoning as payload.pin's sync.
+	// what it is meant to be running. Same reasoning as service.provision's sync.
 	_, err := x.Run(ctx, "sync", "-f", pin)
 	return err
 }

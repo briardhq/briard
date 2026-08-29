@@ -98,7 +98,7 @@
         drbd-reactor = final.callPackage ./guest-image/pkgs/drbd-reactor { };
         dummy-service = final.callPackage ./nixosTest/dummy-service/package.nix { };
         reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # front door at the VIP
-        # HA as a digest-pinned upstream OCI image — the real payload.
+        # HA as a digest-pinned upstream OCI image — the real service.
         home-assistant-image = final.callPackage ./guest-image/pkgs/home-assistant-image { };
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =
         # 2025.12.0 (schema 53)}, straddling the recorder v52 `unit_class` migration.

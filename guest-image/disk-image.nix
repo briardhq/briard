@@ -192,7 +192,7 @@ let
         path = [
           pkgs.drbd # drbdadm/drbdsetup, for the drbd.* verbs
           pkgs.drbd-reactor # drbd-reactorctl, for reactor.evict — the planned handover
-          pkgs.systemd # systemctl, for payload.* / reactor.* / os.switch
+          pkgs.systemd # systemctl, for service.* / reactor.* / os.switch
           pkgs.nix # nix-env, for os.switch
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs, for data.snapshot/restore

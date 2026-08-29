@@ -77,7 +77,7 @@ type fakeStatus struct {
 	vip    string
 	vipErr error
 	probed *string
-	// active is what payload.active answers per unit, and activeErr makes it fail -- the two
+	// active is what service.active answers per unit, and activeErr makes it fail -- the two
 	// halves per-service state needs, since "the unit is down" and "we could not ask" must not
 	// report the same thing (api.ServiceStatus.State).
 	active    map[string]bool
@@ -696,7 +696,7 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	}
 }
 
-// When the guest predates payload.health (the verb errors), snapshot falls back to the legacy
+// When the guest predates service.health (the verb errors), snapshot falls back to the legacy
 // host-side probe of the VIP -- so an old, tap-based guest keeps a correct health signal.
 func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -708,7 +708,7 @@ func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	}))
 	defer sick.Close()
 
-	verbErr := errors.New("guestagent: unknown verb \"payload.health\"")
+	verbErr := errors.New("guestagent: unknown verb \"service.health\"")
 
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ok.URL}
 	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")

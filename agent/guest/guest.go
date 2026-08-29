@@ -87,7 +87,6 @@ type SnapshotRef struct {
 	DataDir   string // the live subvolume this snapshot restores over
 	Subvolume string // the RO snapshot subvolume path in the guest
 	System    string // system closure store path at snapshot time (the code↔data pin)
-	Image     string // payload OCI image ref at snapshot time (the per-service pin)
 }
 
 // control is the guest-side surface Manager drives — satisfied by *guestagent.Client
@@ -418,7 +417,7 @@ func (m *Manager) healthURL(ctx context.Context) string {
 }
 
 // ProbeReady reports whether the health endpoint answers 200. It prefers the in-guest
-// probe (payload.health over the control channel) so the readiness gate survives a networking
+// probe (the service.health verb over the control channel) so the readiness gate survives a networking
 // substrate where the host can't reach the VIP (macvtap); it falls back to a direct host-side GET
 // only when that verb errors — an old guest built before it existed, which is always tap-based, so
 // the LAN GET still works there. Any error/non-200 is "not ready" — the health-gate treats a
@@ -439,7 +438,7 @@ func (m *Manager) probeReady(ctx context.Context) bool {
 }
 
 // HostProbeReady is the legacy host-side GET of the VIP, kept as the fallback for a guest that
-// predates the payload.health verb.
+// predates the service.health verb.
 func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -482,10 +481,10 @@ func (m *Manager) Restore(ctx context.Context, ref SnapshotRef) error {
 
 // THE OS UPGRADE USED TO LIVE HERE, and where it went is worth a sentence.
 //
-// Manager.Upgrade ran the whole switch-only sequence in the guest: quiesce the payload,
+// Manager.Upgrade ran the whole switch-only sequence in the guest: quiesce the service,
 // snapshot its data, switch, restart it, gate, and on failure switch back and restore the
 // data. Two things retired it.: an OS upgrade must not touch services, which removes
-// the payload stop/start and the data snapshot/restore -- everything that made the sequence
+// the service stop/start and the data snapshot/restore -- everything that made the sequence
 // service-shaped. And (c2)'s one-rollback-for-both-methods: the point an OS upgrade rolls
 // back to is the OS DISK, which only the host can snapshot or restore, so the sequence has to
 // be owned by the side that owns the disk (agent/host/osupgrade.go).
@@ -501,7 +500,7 @@ func (m *Manager) Restore(ctx context.Context, ref SnapshotRef) error {
 // Best-effort and deliberately last: the node is healthy on the new code either way, and a
 // store that is one generation fuller is not worth failing a good upgrade over.
 //
-// Only the OS path calls it. A payload upgrade re-pins an OCI image and adds nothing to the
+// Only the OS path calls it. A service upgrade adds nothing to the
 // nix store, so there is nothing there for it to collect.
 func (m *Manager) CollectStore(ctx context.Context) {
 	if err := m.ctl.CollectGarbage(ctx); err != nil {

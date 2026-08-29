@@ -21,7 +21,7 @@
 #                                                already-running service: no demote, no bounce.
 #
 # HERMETIC. Driving it through a nested guest and the agent's verbs would add nothing: drive the lifecycle
-# through the agent's reactor.*/payload.* verbs over virtio-serial (the driver's PAUSE_ONLY hook).
+# through the agent's reactor.*/service.* verbs over virtio-serial (the driver's PAUSE_ONLY hook).
 # Every check above is a read of DRBD or systemd state INSIDE the node, so none of it needed a
 # host on the far side of a channel; moving it onto lib.nix is what lets the fixture guest disk
 # be deleted, which is (e4)'s point. What it costs is stated at the pause below.
@@ -140,9 +140,9 @@ pkgs.testers.runNixOSTest {
     # `--job-mode=ignore-dependencies` is NOT decoration, and this test proved it the hard way:
     # written as a bare `systemctl stop` the job cascaded to drbd-services@r0.target, took the
     # promote unit with it, and the node was Secondary by the next check. That flag is the
-    # `payload.stop` verb's one real decision (agent/guestagent/guestagent.go, verbPayloadStop:
+    # `service.stop` verb's one real decision (agent/guestagent/guestagent.go, verbServiceStop:
     # "a planned service quiesce can't cascade to the promoter target / data mount / VIP"), so a
-    # mirror that drops it is not testing the product's quiesce at all. `payload.start` needs no
+    # mirror that drops it is not testing the product's quiesce at all. `service.start` needs no
     # counterpart — it is a plain start.
     node1.succeed("systemctl --job-mode=ignore-dependencies stop ${serviceUnit}")
     time.sleep(8)  # long enough for a promoter reaction to manifest, if any

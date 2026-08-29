@@ -23,12 +23,12 @@ import (
 )
 
 const (
-	dataDir      = "/var/lib/briard/dummy" // the payload's data subvolume on the DRBD volume
+	dataDir      = "/var/lib/briard/dummy" // the service's data subvolume on the DRBD volume
 	listenAddr   = ":8080"
 	startupDelay = 3 * time.Second // "slow start" — enough to exercise the health-gate; kept short for test speed
 	tickInterval = 1 * time.Second
 	// PoisonTicks marks a broken upgrade's write (BRIARD_BROKEN). It is far above
-	// any value the good payload reaches, so if it survives a rollback the data was NOT
+	// any value the good service reaches, so if it survives a rollback the data was NOT
 	// restored from the pre-upgrade snapshot.
 	poisonTicks = 999_999_999
 )

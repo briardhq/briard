@@ -343,7 +343,7 @@ const guestStopTimeout = 75 * time.Second
 // ExecStop is what makes a HOST SHUTDOWN survivable, and its absence was the defect. Stopping
 // this unit SIGTERMs QEMU, which is a power cut to the guest (see Guest.Shutdown); systemd stops
 // every unit when the host reboots; so before this, a user rebooting their own machine for their
-// own distro's updates power-cut the appliance every time, losing whatever the payload had not
+// own distro's updates power-cut the appliance every time, losing whatever the services had not
 // itself flushed. The OS-upgrade path had already been fixed for exactly this and only for
 // itself.
 //

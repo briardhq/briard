@@ -237,9 +237,9 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 
 // ServiceActiveSince reads the unit's ActiveEnterTimestampMonotonic (usec) as the
 // adopt-not-bounce proof for the maintenance contract: unchanged across a pause/resume
-// means the promoter re-adopted the running payload. An inactive unit ("") parses to 0.
+// means the promoter re-adopted the running service. An inactive unit ("") parses to 0.
 func TestServiceActiveSince(t *testing.T) {
-	const unit = "podman-briard-payload.service"
+	const unit = "briard-dummy-app.service"
 	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if name == "systemctl" && reflect.DeepEqual(args, []string{"show", "-p", "ActiveEnterTimestampMonotonic", "--value", unit}) {
 			return []byte("123456789\n"), nil
@@ -706,7 +706,7 @@ func TestBringUpDataNode(t *testing.T) {
 	g := dial(t, f)
 	spec := BringUpSpec{
 		Resource: demoResource(),
-		Promoter: []string{"briard-data.service", "podman-briard-payload.service", "briard-vip.service"},
+		Promoter: []string{"briard-data.service", "briard-services.service", "briard-vip.service"},
 	}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
@@ -786,15 +786,15 @@ func TestBringUpFreshInit(t *testing.T) {
 func TestServiceStartStopCommands(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ServiceStart(context.Background(), "podman-briard-payload.service"); err != nil {
+	if err := g.ServiceStart(context.Background(), "briard-dummy-app.service"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.ServiceStop(context.Background(), "podman-briard-payload.service"); err != nil {
+	if err := g.ServiceStop(context.Background(), "briard-dummy-app.service"); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"systemctl", "start", "podman-briard-payload.service"},
-		{"systemctl", "--job-mode=ignore-dependencies", "stop", "podman-briard-payload.service"},
+		{"systemctl", "start", "briard-dummy-app.service"},
+		{"systemctl", "--job-mode=ignore-dependencies", "stop", "briard-dummy-app.service"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
@@ -815,7 +815,7 @@ func TestServiceActiveReadsState(t *testing.T) {
 	} {
 		f := &fakeExec{output: []byte(tc.out), err: tc.err}
 		g := dial(t, f)
-		active, err := g.ServiceActive(context.Background(), "podman-briard-payload.service")
+		active, err := g.ServiceActive(context.Background(), "briard-dummy-app.service")
 		if err != nil {
 			t.Fatalf("ServiceActive(%q): %v", tc.out, err)
 		}

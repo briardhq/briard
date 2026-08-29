@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The payload's memory comes from the unit's CGROUP, and specifically from anon -- not
+// A service's memory comes from the unit's CGROUP, and specifically from anon -- not
 // memory.current, which counts page cache that a database-writing service grows indefinitely, and
 // not the main process, which for a container is podman's supervisor.
 func TestParseCgroupAnonKB(t *testing.T) {
@@ -74,7 +74,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 		case strings.HasPrefix(cmd, "systemctl show -p ControlGroup"):
 			return []byte("/system.slice/briard-ha-app.service\n"), nil
 		case cmd == "cat /sys/fs/cgroup/system.slice/briard-ha-app.service/memory.stat":
-			// anon is what the payload actually holds; file is page cache and must NOT count.
+			// anon is what the service actually holds; file is page cache and must NOT count.
 			return []byte("anon 90112000\nfile 4294967296\n"), nil
 		case cmd == "ls /proc/4242/fd":
 			return []byte("0\n1\n2\n3\n4\n"), nil
@@ -140,7 +140,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 	}
 }
 
-// A stopped payload (MainPID=0) skips the /proc read rather than reading /proc/0, and the
+// A stopped service (MainPID=0) skips the /proc read rather than reading /proc/0, and the
 // rest of the telemetry still comes back -- best-effort, never fatal.
 func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {

@@ -26,7 +26,7 @@ import (
 	"briard.io/agent/platform"
 )
 
-// vipHealth is where the payload answers on the harness L2 (guest-image bakes the VIP).
+// vipHealth is where the service answers on the harness L2 (guest-image bakes the VIP).
 const vipHealth = "http://192.168.1.100:8080/healthz"
 
 func env(k, def string) string {
@@ -131,7 +131,7 @@ func main() {
 
 	// The boot-selector harness. Deliberately BEFORE bring-up and returning early
 	// -- this proves one mechanism (which generation a launch comes up on) and nothing else,
-	// so it runs with no DRBD, no payload and no upgrade orchestration anywhere near it.
+	// so it runs with no DRBD, no service and no upgrade orchestration anywhere near it.
 	// Each invocation is one boot; the testScript stops the unit and starts another.
 	if os.Getenv("BOOT_SELECT") != "" {
 		runBootSelect(ctx, g, os.Getenv("STAGE_BOOT"))

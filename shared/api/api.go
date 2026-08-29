@@ -12,9 +12,20 @@ import (
 // generation (thus a newer guest agent) than the host was built against. The host
 // handshakes on connect and refuses a guest whose protocol it can't speak: a safe
 // deferral (bring-up/upgrade fails -> rollback / no promotion) beats silent misbehaviour.
+//
+// VERSION 2 (2026-08-29) renamed five verbs from `payload.*` to `service.*`
+// (agent/guestagent, and see the note at that const block). A rename is the one change a
+// capability handshake cannot absorb -- the guest advertises names, so a rolled host meeting a
+// v1 guest finds none of them -- which is precisely what MinGuestProtocol is for: refuse at the
+// handshake rather than fail five verbs in a row. Raising the FLOOR, not just the ceiling, is
+// deliberate and is affordable only under the alpha reinstall-only policy
+// ([[alpha-reinstall-only-policy]]): every node re-runs the installer, so there is no fleet to
+// strand. Note what it costs when that policy ends -- the host agent self-updates independently
+// of the guest OS closure ([V3.4]), so a floor raise makes every host refuse every not-yet-rolled
+// guest fleet-wide and its own health gate then reverts the self-update.
 const (
-	GuestProtocol    = 1 // the current host<->guest wire protocol version
-	MinGuestProtocol = 1 // the oldest guest protocol this host can still drive
+	GuestProtocol    = 2 // the current host<->guest wire protocol version
+	MinGuestProtocol = 2 // the oldest guest protocol this host can still drive
 )
 
 // GuestHello is the guest's handshake reply: its protocol version plus the verbs it
