@@ -37,7 +37,7 @@ type NodeResources struct {
 
 	Load1         float64 `json:"load1,omitempty"`           // 1-min load average = cpu-at-rest
 	VolumeUsedKB  int64   `json:"volume_used_kb,omitempty"`  // used space on the DRBD data volume
-	SnapshotCount int     `json:"snapshot_count,omitempty"`  // btrfs snapshots on the volume (GC bound)
+	SnapshotCount int     `json:"snapshot_count,omitempty"`  // btrfs snapshots on the volume (one per in-flight upgrade)
 	LogSizeKB     int64   `json:"log_size_kb,omitempty"`     // systemd journal on-disk size
 	PodmanStoreKB int64   `json:"podman_store_kb,omitempty"` // container/code store size
 

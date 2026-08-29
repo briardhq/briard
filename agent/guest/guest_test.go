@@ -135,7 +135,13 @@ func (f *fakeControl) Cluster(context.Context, string) (model.Cluster, error) {
 	return f.cluster, f.clusterErr
 }
 
-var haSpec = model.ServiceSpec{Name: "home-assistant", Image: "ghcr.io/home-assistant:pinned", DataDir: "/data/ha"}
+var haSpec = model.ServiceSpec{
+	Name:    "home-assistant",
+	DataDir: "/data/ha",
+	// The unit a real spec always carries: the quadlet-rendered serving container. specOf builds
+	// it from the manifest, so a spec without one names nothing at all.
+	Unit: "briard-home-assistant-app.service",
+}
 
 func newManager(ctl control, healthURL string) *Manager {
 	return NewManager(ctl, Config{
@@ -173,10 +179,10 @@ func TestStartStopDrivePayloadUnit(t *testing.T) {
 	if err := m.Stop(context.Background(), haSpec); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.started) != 1 || f.started[0] != "podman-home-assistant.service" {
+	if len(f.started) != 1 || f.started[0] != haSpec.Unit {
 		t.Errorf("started = %v", f.started)
 	}
-	if len(f.stopped) != 1 || f.stopped[0] != "podman-home-assistant.service" {
+	if len(f.stopped) != 1 || f.stopped[0] != haSpec.Unit {
 		t.Errorf("stopped = %v", f.stopped)
 	}
 }

@@ -206,8 +206,9 @@ func DataRoot(service string) string { return "/var/lib/briard/" + service }
 
 // SnapshotPath is the pre-upgrade rollback point for a service — a read-only sibling of its data
 // subvolume under the btrfs root's .snapshots dir (created by briard-data at mount), so it
-// replicates with the volume. One in-flight upgrade per service, so a fixed name; a leftover
-// from a crashed upgrade is pruned by the retention GC (data.gc).
+// replicates with the volume. One in-flight upgrade per service, so a fixed name — and a leftover
+// from a crashed upgrade needs no sweeper, because `data.snapshot` deletes an existing rollback
+// point before taking the new one. A rollback point is one replaceable fact, not a series.
 func SnapshotPath(service string) string {
 	return "/var/lib/briard/.snapshots/" + service + "-preupgrade"
 }

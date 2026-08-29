@@ -378,11 +378,10 @@ type statusReader interface {
 	MDNSPublished(ctx context.Context) (string, error)
 }
 
-// guestReader is what the observe loop reads each cycle: quorum state, the payload image
-// the guest actually serves (the replicated pin), and the running system closure. Reading
-// image + system from the guest -- not tracking them in-memory -- is what makes them
-// correct across a failover, where a survivor converges to the pinned code without ever
-// applying the upgrade directive.
+// guestReader is what the observe loop reads each cycle: quorum state, the running system
+// closure, and what the volume says this node runs. Reading them from the guest -- not tracking
+// them in-memory -- is what makes them correct across a failover, where a survivor converges to
+// what the volume names without ever applying a directive.
 type guestReader interface {
 	statusReader
 	// What the VOLUME says this node runs -- the truth on a node that promoted into somebody
@@ -1439,6 +1438,12 @@ func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, primary bool) []api.ServiceStatus {
 	var out []api.ServiceStatus
 	for _, s := range cfg.Services {
+		// A spec with no identity must not reach the wire. Every spec is built from signed
+		// manifest bytes (specOf), so this cannot happen — and if it ever did, the empty string
+		// would land in the field the cloud compares against a catalog hash to confirm a rollout.
+		// Dropping the entry says "this node runs something I cannot name"; publishing it says
+		// "this node runs the service whose identity is nothing", which a confirmation loop would
+		// read as a mismatch it can never resolve. Cheaper to keep than to argue about later.
 		if s.Manifest == "" {
 			continue
 		}

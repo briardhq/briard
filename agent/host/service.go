@@ -484,7 +484,6 @@ func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
 	primary := m.Primary()
 	return model.ServiceSpec{
 		Name:    m.Name,
-		Image:   primary.Image,
 		DataDir: quadlet.DataRoot(m.Name),
 		Units:   rendered.Units,
 		Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",

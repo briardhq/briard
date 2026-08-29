@@ -85,28 +85,23 @@ func (c Cluster) PeerCanTakeOver() bool {
 	return false
 }
 
-// ServiceSpec describes the payload the unit should run.
+// ServiceSpec describes one service the node runs. Every spec is built from a signed manifest
+// (agent/host.specOf is the only constructor), so each field below is always filled.
 type ServiceSpec struct {
 	Name    string // e.g. "home-assistant"
-	Image   string // pinned OCI image ref
 	DataDir string // path on the DRBD volume
 
 	// Units is the ordered set of systemd units the promoter starts for this service, between
-	// the data mount and the VIP. Empty means the BAKED slot, whose single unit is
-	// derived from Name — so a node that never had a service installed at runtime behaves
-	// exactly as before. A runtime install fills this from the quadlet renderer: the pod first,
-	// then its members, because starting a pod service does NOT start its containers (proven by
-	// the quadlet spike).
+	// the data mount and the VIP, as the quadlet renderer produced them: the pod first, then its
+	// members, because starting a pod service does NOT start its containers (proven by the
+	// quadlet spike).
 	Units []string
 	// Unit is the single unit Start/Stop/Health act on — the container that actually serves, so
-	// "is the service up?" keeps one answer even when the pod has several members. Empty falls
-	// back to the baked slot's derived name.
+	// "is the service up?" keeps one answer even when the pod has several members.
 	Unit string
 
 	// Manifest is the identity of the signed manifest this service was installed from --
-	// sha256 over the exact bytes (shared/manifest.Identity). Empty means the BAKED slot, which
-	// was never installed from a manifest and so has no identity: the same discriminator Unit
-	// uses, and it dies with the slot ([V3b.3](e1)).
+	// sha256 over the exact bytes (shared/manifest.Identity).
 	//
 	// It rides the spec rather than being re-read at report time because the bytes it hashes are
 	// already in hand wherever a spec is built -- installedServices parses them at bring-up and
@@ -119,22 +114,15 @@ type ServiceSpec struct {
 // ServingUnit is the systemd unit that answers "is this service up?", and therefore the one to
 // measure a service's footprint from.
 //
-// A runtime-installed service names it explicitly: its units come from the quadlet renderer
+// The service names it explicitly: its units come from the quadlet renderer
 // (briard-<service>-<container>.service, plus a pod unit) and the SERVING container is the one
-// whose state is the service's state. An empty Unit means the baked slot, whose unit has always
-// been derived from the name.
+// whose state is the service's state. The zero spec names nothing, which is the honest answer —
+// asking systemd about a unit assembled from an empty name is what once reported "inactive"
+// forever.
 //
-// It lives on the spec because the derivation was written twice: the guest manager resolved it
-// correctly while the host's resource telemetry rebuilt "podman-<name>.service" inline, which
-// names nothing on a runtime-installed service — so the payload footprint, and with it the
-// crash-loop counter, read zero for exactly the services users install. One definition, on the
-// type that carries the fact.
-func (s ServiceSpec) ServingUnit() string {
-	if s.Unit != "" {
-		return s.Unit
-	}
-	if s.Name == "" {
-		return "" // no service at all: naming podman-.service is what asked systemd about nothing
-	}
-	return "podman-" + s.Name + ".service"
-}
+// It stays a method rather than a bare field read because the derivation was written twice: the
+// guest manager resolved it correctly while the host's resource telemetry rebuilt
+// "podman-<name>.service" inline, which names nothing on a runtime-installed service — so the
+// footprint, and with it the crash-loop counter, read zero for exactly the services users install.
+// One definition, on the type that carries the fact.
+func (s ServiceSpec) ServingUnit() string { return s.Unit }

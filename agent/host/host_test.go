@@ -60,13 +60,11 @@ func TestOverlayStatus_downOnError(t *testing.T) {
 	}
 }
 
-// fakeStatus is a guestReader stand-in so snapshot()/currentImage() are testable without
+// fakeStatus is a guestReader stand-in so snapshot() is testable without
 // a live control channel.
 type fakeStatus struct {
 	qs      model.QuorumState
 	err     error
-	image   string // PayloadImage return (the guest's pin)
-	imgErr  error
 	system  string // SystemPath return (running system closure)
 	sysErr  error
 	res     telemetry.NodeResources // Resources return (appliance telemetry)
@@ -116,10 +114,6 @@ func (f fakeStatus) PayloadHealth(_ context.Context, url string) (bool, error) {
 }
 
 func (f fakeStatus) VIP(context.Context, string) (string, error) { return f.vip, f.vipErr }
-
-func (f fakeStatus) PayloadImage(context.Context) (string, error) {
-	return f.image, f.imgErr
-}
 
 func (f fakeStatus) SystemPath(context.Context) (string, error) {
 	return f.system, f.sysErr

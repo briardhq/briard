@@ -877,15 +877,17 @@ func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
 
 // What the node PUTS ON THE WIRE for its services, and the one thing it must leave off.
 //
-// The baked slot has no manifest, so it has no identity, and NodeStatus.Services is compared by
-// the cloud against a catalog hash -- putting the slot's OCI ref there (the obvious "well, it has
-// an image") would be an ref masquerading as a manifest identity in the field a rollout is
-// confirmed from. It reports through Image, as it always has, until [V3b.3](e1) deletes both.
-func TestServiceStatusesReportTheInstalledSetAndSkipTheBakedSlot(t *testing.T) {
+// NodeStatus.Services is compared by the cloud against a catalog hash, so an entry whose identity
+// is the empty string is worse than no entry at all: dropping it says "this node runs something I
+// cannot name", publishing it says "this node runs the service whose identity is nothing", and a
+// confirmation loop reads the second as a mismatch it can never resolve. specOf builds every spec
+// from signed manifest bytes so the case is unreachable -- asserted anyway, because it is the
+// guard that keeps it unreachable.
+func TestServiceStatusesReportOnlyServicesItCanName(t *testing.T) {
 	cfg := Config{Services: []model.ServiceSpec{
-		{Name: "home-assistant", Manifest: "sha256:aa", Image: "ghcr.io/x/ha@sha256:1"},
-		{Name: "briard-payload", Image: "briard-dummy:v0"}, // the baked slot: no manifest
-		{Name: "mosquitto", Manifest: "sha256:bb", Image: "ghcr.io/x/mq@sha256:2"},
+		{Name: "home-assistant", Manifest: "sha256:aa"},
+		{Name: "nameless"}, // no manifest identity: must never reach the wire
+		{Name: "mosquitto", Manifest: "sha256:bb"},
 	}}
 	got := cfg.serviceStatuses(context.Background(), fakeStatus{}, false)
 	want := []api.ServiceStatus{
@@ -901,9 +903,8 @@ func TestServiceStatusesReportTheInstalledSetAndSkipTheBakedSlot(t *testing.T) {
 // units -- taking them out of the chain is what stops a crashed container from demoting the node,
 // and it also means nothing else notices one has died.
 //
-// The three answers are asserted together because they are only meaningful against each other: a
-// running service, a dead one, and the BAKED SLOT which reports no state at all (it has no
-// manifest, so it is not on this wire).
+// The two answers are asserted together because they are only meaningful against each other: a
+// running service and a dead one, on the same node, in the same report.
 func TestServiceStatusesReportPerServiceState(t *testing.T) {
 	cfg := Config{Services: []model.ServiceSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},

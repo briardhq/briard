@@ -103,34 +103,23 @@ func (r *recordingReader) Resources(_ context.Context, services map[string]strin
 	return r.res, r.resErr
 }
 
-// The probe must ask about the unit that actually serves. A runtime-installed service's units come
-// from the quadlet renderer, so rebuilding "podman-<name>.service" here named nothing and every
-// payload metric -- including the crash-loop counter -- read zero for exactly the services users
-// install. The baked slot keeps its derived name.
+// The probe must ask about the unit that actually serves. A service's units come from the quadlet
+// renderer, so rebuilding "podman-<name>.service" here named nothing and every metric -- including
+// the crash-loop counter -- read zero for exactly the services users install.
 func TestResourcesProbesTheServingUnit(t *testing.T) {
-	t.Run("runtime-installed service", func(t *testing.T) {
-		cfg := Config{Services: []model.ServiceSpec{{
-			Name:    "home-assistant",
-			DataDir: "/var/lib/briard/services/home-assistant",
-			Unit:    "briard-home-assistant-app.service",
-		}}}
-		r := &recordingReader{}
-		cfg.resources(context.Background(), r)
-		if r.gotServices["home-assistant"] != "briard-home-assistant-app.service" {
-			t.Errorf("probed units = %v, want the quadlet-rendered serving unit", r.gotServices)
-		}
-		if r.gotDataDir != "/var/lib/briard/services/home-assistant" {
-			t.Errorf("probed data dir = %q", r.gotDataDir)
-		}
-	})
-	t.Run("baked slot keeps its derived name", func(t *testing.T) {
-		cfg := Config{Services: []model.ServiceSpec{{Name: "briard-payload", DataDir: "/d"}}}
-		r := &recordingReader{}
-		cfg.resources(context.Background(), r)
-		if r.gotServices["briard-payload"] != "podman-briard-payload.service" {
-			t.Errorf("probed units = %v, want the baked slot's derived name", r.gotServices)
-		}
-	})
+	cfg := Config{Services: []model.ServiceSpec{{
+		Name:    "home-assistant",
+		DataDir: "/var/lib/briard/services/home-assistant",
+		Unit:    "briard-home-assistant-app.service",
+	}}}
+	r := &recordingReader{}
+	cfg.resources(context.Background(), r)
+	if r.gotServices["home-assistant"] != "briard-home-assistant-app.service" {
+		t.Errorf("probed units = %v, want the quadlet-rendered serving unit", r.gotServices)
+	}
+	if r.gotDataDir != "/var/lib/briard/services/home-assistant" {
+		t.Errorf("probed data dir = %q", r.gotDataDir)
+	}
 }
 
 // N SERVICES, EACH MEASURED SEPARATELY ([V3b.3](b)). Summing them was the alternative and it is
