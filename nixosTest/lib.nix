@@ -198,7 +198,7 @@ let
       promoter ? true,
       # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
-      # This is the ONLY way a test node gets a workload ([V3b.3](e2) deleted the build-time payload
+      # This is the ONLY way a test node gets a workload ([V3b.3](e2) deleted the build-time service
       # slot), and it is the way a shipped node gets one, which is the point: a test that put a
       # container on a node by a mechanism no user has proves a path nobody runs.
       fixture ? null,

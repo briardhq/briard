@@ -109,7 +109,7 @@
 # the first write it cannot replicate; that bump IS the divergence. With an unmounted device and
 # no I/O it never happens, and the pair rejoins `no-sync by rule=reconnected` even after a wrong
 # promotion -- measured, twice. Live, the evictee was serving a mounted btrfs with a running
-# payload, so its writes did this for free. Here they have to be asked for.
+# service, so its writes did this for free. Here they have to be asked for.
 #
 # TWO DRBD KNOBS, BOTH DOCUMENTED TUNABLES INSIDE THEIR LEGAL RANGES, AND THE DECISION LOGIC
 # RUNS STOCK CODE ON STOCK INPUTS: the survivor's keepalive (`--ping-int=120 --ping-timeout=300`

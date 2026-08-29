@@ -55,7 +55,7 @@ pkgs.testers.runNixOSTest {
     # and L1 could not otherwise curl the VIP -- the rig handing itself a reachability the product
     # did not have. The curls below are unchanged and now pass because the agent routes the VIP over
     # the private link. Note the isolation itself is still real and still load-bearing HERE: it is
-    # precisely why the recovery ladder cannot probe the payload before deciding.
+    # precisely why the recovery ladder cannot probe the service before deciding.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "

@@ -4,7 +4,7 @@
 # and bake it into a disk with make-disk-image. This is the *bootstrap* artifact;
 # field updates are incremental NixOS generation switches, not re-imaging.
 #
-# The deliberately-broken generation that used to live here (`.brokenSystem`: the payload
+# The deliberately-broken generation that used to live here (`.brokenSystem`: the service
 # container run with BRIARD_BROKEN=1) went with managed-upgrade.nix (c2-v). It was
 # PAYLOAD-derived, which is what dated it: the OS upgrade it fed no longer touches the payload
 # at all, and the lab rollback demo's broken generation breaks the FRONT DOOR instead — an ordinary delta on
@@ -58,7 +58,7 @@ let
   briardAgent = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; version = agentVersion; };
 
   # Common bootable-guest modules, shared by the good and broken generations so the
-  # broken one is a minimal, honest delta (only the payload env differs).
+  # broken one is a minimal, honest delta (only the service env differs).
   bootModule =
     { config, lib, modulesPath, ... }:
     {
@@ -285,12 +285,12 @@ let
 
   # The good (running) generation, with any staged upgrade-target closures kept in its
   # closure so they're present on the disk for an offline `os.switch`, and any pre-staged
-  # upgrade-target payload images baked in + warmed at boot.
+  # upgrade-target service images baked in + warmed at boot.
   #
   # BAKING A TARGET IS THE OLD WAY, and it is being unwound. It existed because the
   # guest had no substituter, so the only way a closure could ever reach it was at image-build
   # time — the very gap the binary cache closes. Each baked target is a WHOLE SECOND OS CLOSURE in
-  # the image, so this list is what made the fixture disk expensive, not the ~8 MB payload.
+  # the image, so this list is what made the fixture disk expensive, not the ~8 MB service image.
   # A test target belongs on a real (in-test) binary cache instead — cheaper, and a truer
   # rehearsal of how a field node receives every generation. `v1System`/`rebootSystem` are the
   # last two still baked, and go the same way.
@@ -344,7 +344,7 @@ let
     # /var/lib/containers on this root (images are cattle, warmed on every node; only service
     # DATA lives on the replicated volume), so `briard service install home-assistant` filled
     # the disk and died with ENOSPC 2 GB into the pull. The tests never saw it because they BAKE
-    # the payload image into the image at build time, where "auto" grows to fit it -- so the
+    # the service image into the image at build time, where "auto" grows to fit it -- so the
     # tested disk has room for exactly the image the test bakes and the shipped one has room for
     # nothing.
     #

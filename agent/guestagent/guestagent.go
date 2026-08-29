@@ -95,15 +95,24 @@ const verbNetMDNSPublished = "net.mdnspublished"
 const verbSetHostname = "sys.hostname"
 
 // Upgrade/rollback verbs, driven by the host's guest.Manager. Data
-// snapshot/restore cut at the payload's btrfs subvolume (per-service scope, not the
+// snapshot/restore cut at the service's btrfs subvolume (per-service scope, not the
 // whole volume). os.system reads the code identity (the closure store path, node-
 // independent -- NOT a generation number); os.switch is the whole-VM code half.
+//
+// ⚠️ THE FIVE `payload.*` VERBS BELOW KEEP THEIR WIRE SPELLING ON PURPOSE, and it is the only
+// place the deleted build-time payload slot's name survives. They act on whichever unit the host
+// names, which since [V3b.3] is always a runtime-installed service's — so the Go identifiers say
+// service and the strings do not. Renaming the strings is a PROTOCOL break, not a rename: the
+// guest advertises its verb set in the handshake, so a rolled host talking to an un-rolled guest
+// would find none of them, and holding that line means raising MinGuestProtocol, which makes
+// every host refuse every not-yet-rolled guest. That is a real blast radius bought for a nicer
+// word. If a bump is ever needed for its own reasons, these ride along with it.
 const (
-	verbPayloadStart  = "payload.start"  // systemctl start <unit>
-	verbPayloadStop   = "payload.stop"   // systemctl stop <unit> (quiesce before snapshot)
-	verbPayloadActive = "payload.active" // systemctl is-active <unit> -> bool
-	verbPayloadHealth = "payload.health" // in-guest GET of the payload health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
-	verbPayloadSince  = "payload.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
+	verbServiceStart  = "payload.start"  // systemctl start <unit>
+	verbServiceStop   = "payload.stop"   // systemctl stop <unit> (quiesce before snapshot)
+	verbServiceActive = "payload.active" // systemctl is-active <unit> -> bool
+	verbServiceHealth = "payload.health" // in-guest GET of the service's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
+	verbServiceSince  = "payload.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
 	verbDataSnapshot  = "data.snapshot"  // btrfs subvolume snapshot -r <DataDir> <dest>
 	verbDataRestore   = "data.restore"   // replace the live subvolume with a snapshot
 	verbOSSystem      = "os.system"      // readlink -f /run/current-system -> closure store path
@@ -247,7 +256,7 @@ const bootIDPath = "/proc/sys/kernel/random/boot_id"
 var guestCapabilities = []string{
 	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
-	verbPayloadStart, verbPayloadStop, verbPayloadActive, verbPayloadHealth, verbPayloadSince,
+	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
@@ -311,12 +320,12 @@ type resourceRequest struct {
 	Resource string `json:"resource"`
 }
 
-// unitRequest names a systemd unit (payload start/stop/is-active).
+// unitRequest names a systemd unit (service start/stop/is-active).
 type unitRequest struct {
 	Unit string `json:"unit"`
 }
 
-// healthRequest carries the payload health URL the guest GETs from inside itself
+// healthRequest carries the service health URL the guest GETs from inside itself
 // (payload.health). The host owns the URL (its HealthURL config); the guest just probes it.
 type healthRequest struct {
 	URL string `json:"url"`
@@ -823,23 +832,23 @@ func dispatch(x Executor) dispatchFunc {
 			}
 			defer f.Close()
 			return nil, backup.Load(f, id, req.Base)
-		case verbPayloadStart:
+		case verbServiceStart:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
 			}
 			return nil, run("systemctl", "start", req.Unit)
-		case verbPayloadStop:
+		case verbServiceStop:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
 			}
 			// Surgical stop: --job-mode=ignore-dependencies stops ONLY this unit, so a
-			// planned payload quiesce can't cascade to the promoter target / data mount /
+			// planned service quiesce can't cascade to the promoter target / data mount /
 			// VIP (the promoter is separately paused). Correct by construction --
 			// no dependence on drbd-reactor's exact systemd dependency directives.
 			return nil, run("systemctl", "--job-mode=ignore-dependencies", "stop", req.Unit)
-		case verbPayloadActive:
+		case verbServiceActive:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
@@ -848,7 +857,7 @@ func dispatch(x Executor) dispatchFunc {
 			// word regardless -- so trust the word, not the exit code.
 			out, _ := x.Run(ctx, "systemctl", "is-active", req.Unit)
 			return strings.TrimSpace(string(out)) == "active", nil
-		case verbPayloadHealth:
+		case verbServiceHealth:
 			var req healthRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
@@ -859,7 +868,7 @@ func dispatch(x Executor) dispatchFunc {
 			// net.Dial HTTP/1.0 GET keeps the guest binary free of net/http + the TLS stack the
 			// -tags guest build deliberately trims. 200 == healthy; any error == not.
 			return probeHTTPOK(ctx, req.URL), nil
-		case verbPayloadSince:
+		case verbServiceSince:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
@@ -1751,7 +1760,7 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 // . Every sub-metric is best-effort: a failed read leaves its field zero (the host
 // reads 0 as "unread this cycle"), so a hiccup in one probe never sinks the whole report or
 // the observe loop. It fills only the appliance (guest) fields; the host adds its own
-// Agent* footprint on top. Zero DataDir/Unit (a witness) simply skips the volume/payload
+// Agent* footprint on top. Zero DataDir/Unit (a witness) simply skips the volume/service
 // metrics.
 func gatherResources(ctx context.Context, x Executor, req resourcesRequest) telemetry.NodeResources {
 	var r telemetry.NodeResources
@@ -1911,7 +1920,7 @@ func probeHTTPOK(ctx context.Context, rawURL string) bool {
 	return strings.HasPrefix(line, "HTTP/") && strings.Contains(line, " 200 ")
 }
 
-// cgroupAnonKB is the payload's resident memory: the ANON bytes of the unit's cgroup, in KB.
+// cgroupAnonKB is a service's resident memory: the ANON bytes of the unit's cgroup, in KB.
 //
 // Two deliberate choices. The CGROUP rather than the main process, because a containerised
 // service's workload is not the unit's MainPID (that is podman's supervisor) -- cgroup v2 accounts
@@ -2190,9 +2199,9 @@ func (g *Client) Cluster(ctx context.Context, resource string) (model.Cluster, e
 	return c, err
 }
 
-// PayloadStart starts the payload's systemd unit inside the guest.
-func (g *Client) PayloadStart(ctx context.Context, unit string) error {
-	return g.c.call(ctx, verbPayloadStart, unitRequest{Unit: unit}, nil)
+// ServiceStart starts the service's systemd unit inside the guest.
+func (g *Client) ServiceStart(ctx context.Context, unit string) error {
+	return g.c.call(ctx, verbServiceStart, unitRequest{Unit: unit}, nil)
 }
 
 // ServiceRender writes the host-rendered quadlet source into the guest's /run and reloads
@@ -2317,37 +2326,37 @@ func (g *Client) BackupRestore(ctx context.Context, base, src, identity string) 
 	return g.c.call(ctx, verbBackupRestore, backupRestoreRequest{Base: base, Src: src, Identity: identity}, nil)
 }
 
-// PayloadStop stops the payload's unit -- the quiesce step before a snapshot.
-func (g *Client) PayloadStop(ctx context.Context, unit string) error {
-	return g.c.call(ctx, verbPayloadStop, unitRequest{Unit: unit}, nil)
+// ServiceStop stops the service's unit -- the quiesce step before a snapshot.
+func (g *Client) ServiceStop(ctx context.Context, unit string) error {
+	return g.c.call(ctx, verbServiceStop, unitRequest{Unit: unit}, nil)
 }
 
-// PayloadActive reports whether the payload's unit is active (the Running half of the
-// health-gate; readiness is probed host-side against the payload's health endpoint).
-func (g *Client) PayloadActive(ctx context.Context, unit string) (bool, error) {
+// ServiceActive reports whether the service's unit is active (the Running half of the
+// health-gate; readiness is probed host-side against the service's health endpoint).
+func (g *Client) ServiceActive(ctx context.Context, unit string) (bool, error) {
 	var active bool
-	err := g.c.call(ctx, verbPayloadActive, unitRequest{Unit: unit}, &active)
+	err := g.c.call(ctx, verbServiceActive, unitRequest{Unit: unit}, &active)
 	return active, err
 }
 
-// PayloadHealth asks the guest to GET the payload health URL from inside itself and report 200
+// ServiceHealth asks the guest to GET the service's health URL from inside itself and report 200
 // (the Ready half of the health-gate). Probing in-guest — not host->VIP over the LAN — keeps the
 // readiness check working under a networking substrate where the host can't reach the guest's VIP
 // (macvtap). Callers that need the legacy host-side behaviour on an OLD guest fall back when this
 // returns an error (an unknown-verb error from a guest built before this verb existed).
-func (g *Client) PayloadHealth(ctx context.Context, url string) (bool, error) {
+func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 	var ok bool
-	err := g.c.call(ctx, verbPayloadHealth, healthRequest{URL: url}, &ok)
+	err := g.c.call(ctx, verbServiceHealth, healthRequest{URL: url}, &ok)
 	return ok, err
 }
 
-// PayloadActiveSince reports the unit's ActiveEnterTimestampMonotonic (usec since boot),
+// ServiceActiveSince reports the unit's ActiveEnterTimestampMonotonic (usec since boot),
 // which advances only when the unit (re)enters active -- 0 while inactive. Unchanged across
-// a maintenance pause/resume proves the promoter re-adopted the running payload rather than
+// a maintenance pause/resume proves the promoter re-adopted the running service rather than
 // bouncing it (the contract's no-restart check).
-func (g *Client) PayloadActiveSince(ctx context.Context, unit string) (uint64, error) {
+func (g *Client) ServiceActiveSince(ctx context.Context, unit string) (uint64, error) {
 	var usec uint64
-	err := g.c.call(ctx, verbPayloadSince, unitRequest{Unit: unit}, &usec)
+	err := g.c.call(ctx, verbServiceSince, unitRequest{Unit: unit}, &usec)
 	return usec, err
 }
 
@@ -2358,7 +2367,7 @@ func (g *Client) Snapshot(ctx context.Context, dataDir, dest string) error {
 }
 
 // Restore replaces the live dataDir subvolume with a fresh rw snapshot of src. The
-// caller must have stopped the payload first (bind released).
+// caller must have stopped the service first (bind released).
 func (g *Client) Restore(ctx context.Context, dataDir, src string) error {
 	return g.c.call(ctx, verbDataRestore, snapshotRequest{DataDir: dataDir, Path: src}, nil)
 }
@@ -2441,7 +2450,7 @@ func (g *Client) CollectGarbage(ctx context.Context) error {
 
 // ReactorPause suspends drbd-reactor's promoter for a snippet (maintenance mode):
 // the resource stays Primary and its services keep running, but the promoter stops
-// reacting -- so a planned payload stop isn't mistaken for a failure.
+// reacting -- so a planned service stop isn't mistaken for a failure.
 func (g *Client) ReactorPause(ctx context.Context, snippet string) error {
 	return g.c.call(ctx, verbReactorPause, reactorRequest{Snippet: snippet}, nil)
 }
@@ -2594,7 +2603,7 @@ func (g *Client) WaitPrimary(ctx context.Context, resource string, interval time
 // promoter-capable data node in a *multi-node* cluster, where drbd-reactor promotes
 // exactly one node and the others settle Secondary. Gating those on WaitPrimary would
 // hang the secondaries; quorate means "participating in a healthy cluster" regardless
-// of which node won the primary role (the VIP/payload run on whoever did).
+// of which node won the primary role (the VIP and the services run on whoever did).
 func (g *Client) WaitQuorate(ctx context.Context, resource string, interval time.Duration) error {
 	return g.waitStatus(ctx, resource, interval, func(qs model.QuorumState) bool {
 		return qs.Quorate

@@ -155,10 +155,10 @@ pkgs.testers.runNixOSTest {
     assert "VERDICT=rollback" in verdict, f"health-gate did not trip on the regression: {verdict!r}"
 
     # ---- Rollback-with-history-intact: the {code+data} snapshot is a valid rollback point ----
-    # The live swap-and-reserve (stop payload → restore subvolume → re-pin `from` → re-serve)
+    # The live swap-and-reserve (stop service → restore subvolume → re-pin `from` → re-serve)
     # is Manager orchestration under the maintenance bracket, and can't run in THIS rig: the
     # bracket (drbd-reactor pause-defused) lives in the guest agent's reactor.pause verb,
-    # which is virtio-serial-only — so a bare `systemctl stop <payload>` here makes the running
+    # which is virtio-serial-only — so a bare `systemctl stop <service>` here makes the running
     # promoter demote + unmount the volume (exactly the hazard the bracket exists to avoid).
     # The real Manager doing the full swap + re-serve is unit-tested in agent/guest; the nested
     # end-to-end proof (managed-upgrade.nix) was retired and is the lab demo's to rebuild

@@ -1,7 +1,7 @@
 # The dummy fixture as a CATALOGUED SERVICE — a digest-pinned manifest plus the image tarball it
 # names — so a test can install it the way a user installs one, with no registry.
 #
-# WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's payload
+# WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's service
 # slot, which was a mechanism no user had: a shipped node installs services at
 # runtime from a manifest ([V3.16]). Every test riding the baked slot therefore proves a path
 # nobody ships. This module is the other half of retiring it ([V3b.3](e)) — the same fixture,

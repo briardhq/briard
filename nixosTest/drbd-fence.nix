@@ -4,7 +4,7 @@
 # It becomes a minority of 1, loses DRBD quorum, and must self-fence: with
 # on-no-quorum=io-error its writes fail fast (no uninterruptible-I/O wedge), so
 # drbd-reactor stops the ordered unit — VIP first (ip addr del is instant and
-# doesn't wait on the payload), then payload, then mount — and demotes. The
+# doesn't wait on the service), then service, then mount — and demotes. The
 # majority (2 of 3) keeps quorum, promotes a survivor, and serves the VIP intact.
 #
 # The on-no-quorum decision is io-error, not suspend-io: the
@@ -81,7 +81,7 @@ pkgs.testers.runNixOSTest {
     survivors = [m for m in machines if m != primary]
 
     # Self-fence on the isolated node: drbd-reactor stops the ordered unit (VIP
-    # first) and demotes. VIP gone, payload stopped, DRBD no longer Primary.
+    # first) and demotes. VIP gone, service stopped, DRBD no longer Primary.
     primary.wait_until_fails("ip -4 addr show dev eth1 | grep -q 192.168.1.100")
     # The services stop with the fence too, and by a different route than the VIP: they are not
     # chain members ([V3b.3](f)), so what stops them is briard-services' own ExecStop unwinding

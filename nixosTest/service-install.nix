@@ -58,7 +58,7 @@ let
     chmod 0644 $out/server.key
   '';
 
-  # The service's payload: the existing dummy-service, which serves /healthz and ticks a counter
+  # The service's service: the existing dummy-service, which serves /healthz and ticks a counter
   # into its data dir. Reused rather than invented — it is already the fixture every other test
   # trusts, and its tick is what proves the mounted subvolume is really the service's.
   fixtureImage = pkgs.dockerTools.buildImage {

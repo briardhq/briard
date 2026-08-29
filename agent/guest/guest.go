@@ -14,7 +14,7 @@ import (
 )
 
 // GuestManager is the host↔guest boundary and the upgrade/rollback mechanism.
-// The guest is the VM that carries the payload; this seam starts/stops/
+// The guest is the VM that carries the services; this seam starts/stops/
 // health-checks it, snapshots/restores its data, and switches its code (the NixOS
 // system closure) — the {code+data} rollback unit. ("unit" here is
 // the systemd/rollback sense, not the guest.)
@@ -37,18 +37,18 @@ type GuestManager interface {
 
 // Health is the guest's health-gate signal.
 type Health struct {
-	Running bool // the payload unit is active
+	Running bool // the service's unit is active
 	Ready   bool // passed its /healthz
 }
 
 // ReadinessAssessor is an optional *differential* health signal layered above the
-// HTTP-200 liveness floor. The floor answers "is the payload
+// HTTP-200 liveness floor. The floor answers "is the service
 // answering?"; an assessor answers "did the upgrade break something that worked before?"
 // — service-specific (HA config-entry state), so it stays behind this seam and
 // the generic Manager keeps no service knowledge. nil = the floor alone (v0/dummy/
 // non-HA payloads are unaffected).
 //
-// The Manager captures a Baseline before quiesce (old payload still serving), then after
+// The Manager captures a Baseline before quiesce (old version still serving), then after
 // the floor reports ready calls Assess to settle and judge the post-upgrade signal. A
 // Rollback verdict trips the {code+data} rollback; Hold keeps the upgrade but surfaces
 // it (Hold leans on the rollback window +
@@ -57,7 +57,7 @@ type Health struct {
 // failed (the safe direction).
 type ReadinessAssessor interface {
 	// Baseline captures the pre-upgrade steady-state signal, returning an opaque token
-	// handed back to Assess. Called while the old payload still serves.
+	// handed back to Assess. Called while the old version still serves.
 	Baseline(ctx context.Context) (Baseline, error)
 	// Assess settles the post-upgrade signal and judges it against base. Called only
 	// after the liveness floor reports ready.
@@ -93,10 +93,10 @@ type SnapshotRef struct {
 // control is the guest-side surface Manager drives — satisfied by *guestagent.Client
 // (asserted below), faked in tests.
 type control interface {
-	PayloadStart(ctx context.Context, unit string) error
-	PayloadStop(ctx context.Context, unit string) error
-	PayloadActive(ctx context.Context, unit string) (bool, error)
-	PayloadHealth(ctx context.Context, url string) (bool, error)
+	ServiceStart(ctx context.Context, unit string) error
+	ServiceStop(ctx context.Context, unit string) error
+	ServiceActive(ctx context.Context, unit string) (bool, error)
+	ServiceHealth(ctx context.Context, url string) (bool, error)
 	VIP(ctx context.Context, dev string) (string, error)
 	Snapshot(ctx context.Context, dataDir, dest string) error
 	Restore(ctx context.Context, dataDir, src string) error
@@ -116,7 +116,7 @@ var _ control = (*guestagent.Client)(nil)
 
 // Config carries Manager policy not derivable from a ServiceSpec.
 type Config struct {
-	// HealthURL is the CONFIGURED probe target (the payload's /healthz at its VIP). It is no
+	// HealthURL is the CONFIGURED probe target (the front door's /healthz at the VIP). It is no
 	// longer the last word: when the VIP is acquired by DHCP inside the guest, only the guest
 	// knows the address, so ResolveHealthURL asks it every cycle and this demotes to the
 	// fallback for a node whose address we did set. "" is NOT "no probe" — see Diskless.
@@ -128,7 +128,7 @@ type Config struct {
 	// address: "the first address on eth1" was then the replication link rather than the VIP.
 	// [V3b.16a] deleted that fallback; [V3b.16] is what it cost in the field.)
 	VIPDev string
-	// Diskless marks a witness: no payload, no VIP, nothing to probe — its health follows
+	// Diskless marks a witness: no services, no VIP, nothing to probe — its health follows
 	// quorum. This is the ONLY thing that means "never probe". Emptiness cannot carry that
 	// meaning any more, because a data node acquiring its address by DHCP has no configured
 	// URL either, and the two must not answer alike: a witness with no probe is healthy when
@@ -149,7 +149,7 @@ type Config struct {
 	// break the rollback that reuses it. This caps the detached poll so a wedged guest
 	// can't stall it. Zero defaults.
 	healthPollTimeout time.Duration
-	// ReactorSnippet enables promoter-coordinated quiesce: the payload is
+	// ReactorSnippet enables promoter-coordinated quiesce: the service is
 	// drbd-reactor-managed, so Upgrade pauses the promoter for this snippet around the
 	// swap and resumes after. Quiesce is a surgical stop (ignore-dependencies), so the
 	// VIP/data stay up and no target re-raise is needed. Empty = no promoter
@@ -200,7 +200,7 @@ func unitOf(spec model.ServiceSpec) string { return spec.ServingUnit() }
 
 // hasService reports whether this node runs a workload at all. ZERO SERVICES IS THE SHIPPED
 // STATE -- a fresh node serves the front door's own landing page and nothing else --
-// so every payload-shaped step in an upgrade has to be a no-op there rather than an error.
+// so every service-shaped step in an upgrade has to be a no-op there rather than an error.
 //
 // It exists because the opposite assumption was left behind: unitOf on an empty spec
 // yields the nonexistent `podman-.service`, and asking systemd about it answered "inactive",
@@ -213,26 +213,26 @@ func (m *Manager) Start(ctx context.Context, spec model.ServiceSpec) error {
 	if !hasService(spec) {
 		return nil // nothing to raise; the front door rides briard-vip, not this call
 	}
-	return m.ctl.PayloadStart(ctx, unitOf(spec))
+	return m.ctl.ServiceStart(ctx, unitOf(spec))
 }
 
 func (m *Manager) Stop(ctx context.Context, spec model.ServiceSpec) error {
 	if !hasService(spec) {
 		return nil // nothing to quiesce
 	}
-	return m.ctl.PayloadStop(ctx, unitOf(spec))
+	return m.ctl.ServiceStop(ctx, unitOf(spec))
 }
 
-// Health is the upgrade gate's floor. With a service it means what it always did: the payload
+// Health is the upgrade gate's floor. With a service it means what it always did: the service
 // unit is active AND the probe passes. With NO service the probe alone decides, because the
 // front door answers /healthz itself in that state -- 200, "no backend configured" -- which is
 // exactly what reverse-proxy was widened to do so that "a node with nothing installed
-// is ready, not sick". Running is vacuously true there: there is no payload that could be down.
+// is ready, not sick". Running is vacuously true there: there is no service that could be down.
 func (m *Manager) Health(ctx context.Context, spec model.ServiceSpec) (Health, error) {
 	if !hasService(spec) {
 		return Health{Running: true, Ready: m.probeReady(ctx)}, nil
 	}
-	running, err := m.ctl.PayloadActive(ctx, unitOf(spec))
+	running, err := m.ctl.ServiceActive(ctx, unitOf(spec))
 	if err != nil {
 		return Health{}, err
 	}
@@ -417,14 +417,14 @@ func (m *Manager) healthURL(ctx context.Context) string {
 	return ResolveHealthURL(ctx, m.ctl, m.cfg.Diskless, m.cfg.VIPDev, m.cfg.HealthURL)
 }
 
-// ProbeReady reports whether the payload's health endpoint answers 200. It prefers the in-guest
+// ProbeReady reports whether the health endpoint answers 200. It prefers the in-guest
 // probe (payload.health over the control channel) so the readiness gate survives a networking
 // substrate where the host can't reach the VIP (macvtap); it falls back to a direct host-side GET
 // only when that verb errors — an old guest built before it existed, which is always tap-based, so
 // the LAN GET still works there. Any error/non-200 is "not ready" — the health-gate treats a
-// non-answering payload as a rollback trigger.
+// non-answering service as a rollback trigger.
 //
-// Nothing to probe is not ready either: a witness has no payload (its callers gate on role
+// Nothing to probe is not ready either: a witness has no services (its callers gate on role
 // before asking), and a data node with no address yet is exactly the node nobody in the house
 // can reach.
 func (m *Manager) probeReady(ctx context.Context) bool {
@@ -432,7 +432,7 @@ func (m *Manager) probeReady(ctx context.Context) bool {
 	if url == "" {
 		return false
 	}
-	if ready, err := m.ctl.PayloadHealth(ctx, url); err == nil {
+	if ready, err := m.ctl.ServiceHealth(ctx, url); err == nil {
 		return ready
 	}
 	return m.hostProbeReady(ctx, url)
@@ -509,7 +509,7 @@ func (m *Manager) CollectStore(ctx context.Context) {
 	}
 }
 
-// EnterMaintenance holds the promoter for the payload's resource, if configured.
+// EnterMaintenance holds the promoter for the service's resource, if configured.
 func (m *Manager) EnterMaintenance(ctx context.Context) error {
 	if m.cfg.ReactorSnippet == "" {
 		return nil
@@ -638,7 +638,7 @@ type Readiness struct {
 	on   bool
 }
 
-// CaptureBaseline samples the assessor's pre-upgrade signal while the old payload still
+// CaptureBaseline samples the assessor's pre-upgrade signal while the old version still
 // serves. A missing assessor or a capture failure degrades to the floor-only gate (S1
 // never blocks an upgrade because its own telemetry failed — the safe direction).
 func (m *Manager) CaptureBaseline(ctx context.Context) Readiness {

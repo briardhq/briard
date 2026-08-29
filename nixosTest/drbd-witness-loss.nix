@@ -92,7 +92,7 @@ pkgs.testers.runNixOSTest {
     secondary.wait_until_fails("curl -fsS --max-time 3 http://192.168.1.100:8080/healthz")
 
     # Give drbd-reactor ample time to (wrongly) promote, then assert it did not:
-    # the survivor stays Secondary, claims no VIP, runs no payload.
+    # the survivor stays Secondary, claims no VIP, runs no service.
     time.sleep(20)
     secondary.succeed("drbdadm role r0 | grep -q Secondary")
     secondary.fail("ip -4 addr show dev eth1 | grep -q 192.168.1.100")

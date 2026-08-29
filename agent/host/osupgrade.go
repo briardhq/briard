@@ -32,7 +32,7 @@ import (
 //
 // then, identically for both: health-gate -> commit (+ collect, drop the point) or restore.
 //
-// WHAT NEITHER OF THEM TOUCHES: the workload. No payload stop, no payload
+// WHAT NEITHER OF THEM TOUCHES: the workload. No service stop, no service
 // start, no data snapshot, no data restore. `switch-to-configuration switch` restarts a unit
 // only if that unit changed, which is what makes "the new OS runs the same containers on the
 // same data" a mechanism rather than an aspiration; the reboot method stops everything by
@@ -49,7 +49,7 @@ import (
 // state) all lives on the qcow2, which is exactly what the snapshot holds.
 
 // shutdownGrace bounds each clean-stop attempt. A guest that has not powered off in this long
-// is not going to: a converged guest -- DRBD Primary, volume mounted, payload serving, VIP up --
+// is not going to: a converged guest -- DRBD Primary, volume mounted, services serving, VIP up --
 // was MEASURED powering itself off in 1.5 s, so 30 s is twenty times the observed cost and still
 // well inside a stop worth waiting for.
 //
@@ -76,9 +76,9 @@ const reapGrace = 10 * time.Second
 // leaves everything exactly as it found it.
 //
 // Refusing is not conservatism, it is the only correct answer. Reboot here and a peer takes
-// over while the node is down, so it returns Secondary -- where the payload never runs, since
+// over while the node is down, so it returns Secondary -- where the services never run, since
 // drbd-reactor promotes exactly one node. The health-gate asks a Primary-shaped question
-// (PayloadActive && probe), which a Secondary can never satisfy, so every such upgrade would
+// (ServiceActive && probe), which a Secondary can never satisfy, so every such upgrade would
 // false-roll-back. Demoting deliberately first is the right operation but the wrong owner:
 // that is a handover, it must be scheduled so both anchors do not go at once, and only the
 // cloud sees the whole flock.
@@ -157,8 +157,8 @@ func (u *osUpgrade) Upgrade(ctx context.Context, target string) (rolledBack bool
 
 	// Hold the promoter across the switch. This is the whole quiesce now: it stops
 	// drbd-reactor from reading a unit that switch-to-configuration is restarting as a
-	// failure and promoting or demoting underneath it. It is NOT a payload stop -- the
-	// payload keeps serving, and if the switch does not change its unit, nothing interrupts
+	// failure and promoting or demoting underneath it. It is NOT a service stop -- the
+	// service keeps serving, and if the switch does not change its unit, nothing interrupts
 	// it at all.
 	if e := mgr.EnterMaintenance(ctx); e != nil {
 		return false, fmt.Errorf("enter maintenance: %w", e)
@@ -174,7 +174,7 @@ func (u *osUpgrade) Upgrade(ctx context.Context, target string) (rolledBack bool
 	// Switch this node, and only this node. There is no whole-OS pin on the replicated volume
 	// any more: a system closure is a property of the NODE, not of the data, so a peer
 	// that promotes mid-window is not wrong to serve on the generation it has. What the data
-	// does pin -- the payload image and the service manifest -- an OS upgrade never touches.
+	// does pin -- the service manifest -- an OS upgrade never touches.
 	if e := mgr.Switch(ctx, target); e != nil {
 		return u.restore(ctx, qspec, prev, fmt.Errorf("switch to %s: %w", target, e))
 	}
@@ -256,7 +256,7 @@ func (u *osUpgrade) RebootUpgrade(ctx context.Context, target string) (rolledBac
 	rd := mgr.CaptureBaseline(ctx)
 
 	// Hold the promoter for the shutdown. This is not the switch path's reason -- there the
-	// hold spans a payload stop -- but the shutdown's: drbd-reactor firing a promote into a
+	// hold spans a service stop -- but the shutdown's: drbd-reactor firing a promote into a
 	// system that is tearing down is the deadlock, and a deadlocked shutdown is a SIGKILL,
 	// i.e. the power cut this whole path exists to avoid. There is no matching resume, because
 	// the hold is `systemctl stop drbd-reactor` and the boot discharges it: the guest that
@@ -269,7 +269,7 @@ func (u *osUpgrade) RebootUpgrade(ctx context.Context, target string) (rolledBac
 	// and it is the step most likely to fail, so failing it while the node is still serving
 	// costs nothing but a resume.
 	//
-	// Nothing else is asked of the guest before it goes down. Stopping the payload here would be
+	// Nothing else is asked of the guest before it goes down. Stopping a service here would be
 	// both a service mutation the OS has no business making and redundant -- the machine is about
 	// to shut down, and systemd stops its units in order.
 	if e := mgr.StageBoot(ctx, target); e != nil {
@@ -321,7 +321,7 @@ func (u *osUpgrade) RebootUpgrade(ctx context.Context, target string) (rolledBac
 	u.logf("reboot-upgrade: booted %s, health-gating", target)
 
 	// Not the service's question, on either method ( deletion 5): a spec would AND in "the
-	// payload unit is active", reverting a perfectly good OS upgrade whenever a service is down
+	// service unit is active", reverting a perfectly good OS upgrade whenever a service is down
 	// for reasons of its own. It is not the FRONT DOOR's question either, which is what
 	// corrected — the front door lives at the VIP, and a node that comes back Secondary (as this
 	// one legitimately may,) would be asking its peer. AwaitOSReady asks this node about
@@ -376,7 +376,7 @@ func describePeers(cl model.Cluster) string {
 // Resume ends the maintenance bracket on a guest that is still up -- the commit leg of a
 // switch, and either path's failure BEFORE the guest went down. Nothing else needs undoing:
 // os.stageboot is inert (the disk still boots what it booted before), there is no longer a
-// whole-OS pin to restore, and there is no payload to raise because neither path ever
+// whole-OS pin to restore, and there is nothing to raise because neither path ever
 // stopped one.
 //
 // It runs on the CURRENT binding rather than a passed-in Manager, because a caller that has
@@ -414,8 +414,8 @@ func (u *osUpgrade) resume(ctx context.Context) error {
 // on a guest that is never going down.
 //
 // It says nothing to the workload on the way back, and does not need to. The restored disk
-// boots the generation it came from, and that boot raises the payload the way every boot does
-// -- through the promoter, which the shutdown discharged. What the data pins (the payload
+// boots the generation it came from, and that boot raises the services the way every boot does
+// -- through the promoter, which the shutdown discharged. What the data pins (the service
 // image, the service manifest) an OS upgrade never touched.
 func (u *osUpgrade) restore(ctx context.Context, qspec platform.QEMUSpec, prev string, cause error) (bool, error) {
 	// The budget is what it always was -- one shutdownGrace for the stop and the disk work,

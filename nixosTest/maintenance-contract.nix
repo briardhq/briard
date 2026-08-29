@@ -9,16 +9,16 @@
 #   #1 the pause completes promptly            — no promote-vs-stop deadlock. The DURATION is
 #                                                gated by reactor-pause-deadlock; here the pause
 #                                                is just the lifecycle's entry.
-#   #2 the pause is NON-DESTRUCTIVE            — still Primary+quorate, and the payload is the
+#   #2 the pause is NON-DESTRUCTIVE            — still Primary+quorate, and the service is the
 #                                                SAME process (active-since unchanged: a pause is
 #                                                not a restart).
-#   #3 the paused promoter is INERT            — stop the payload deliberately, give a (buggy)
+#   #3 the paused promoter is INERT            — stop the service deliberately, give a (buggy)
 #                                                promoter a settle window to wrongly react, and
 #                                                prove it does not: no demote, no failover. Then
-#                                                restart the payload and prove the MOUNT SURVIVED,
+#                                                restart the service and prove the MOUNT SURVIVED,
 #                                                via tick continuity.
 #   #4 the resume is CLEAN                     — the daemon re-ADOPTS the already-Primary,
-#                                                already-running payload: no demote, no bounce.
+#                                                already-running service: no demote, no bounce.
 #
 # HERMETIC. Driving it through a nested guest and the agent's verbs would add nothing: drive the lifecycle
 # through the agent's reactor.*/payload.* verbs over virtio-serial (the driver's PAUSE_ONLY hook).
@@ -68,7 +68,7 @@ pkgs.testers.runNixOSTest {
         return node1.execute("systemctl is-active ${serviceUnit}")[0] == 0
 
     def since():
-        # The payload's process identity. A pause or a resume that BOUNCED it would move this;
+        # The service's process identity. A pause or a resume that BOUNCED it would move this;
         # comparing it is how "the same process is still running" becomes checkable.
         return node1.succeed(
             "systemctl show -p ActiveEnterTimestampMonotonic --value ${serviceUnit}"
@@ -86,9 +86,9 @@ pkgs.testers.runNixOSTest {
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     node1.succeed("systemctl start drbd-reactor.service")
 
-    # === BASELINE: promoter running, payload serving ==========================================
-    # The payload needs WAITING for, not one read: Primary is the HEAD of the promoter's ordered
-    # chain and mount → payload → VIP all follow it. A bare read here once lost that race and
+    # === BASELINE: promoter running, service serving ==========================================
+    # The service needs WAITING for, not one read: Primary is the HEAD of the promoter's ordered
+    # chain and mount → service → VIP all follow it. A bare read here once lost that race and
     # failed the precondition 19ms after promotion (nightly 2026-07-27).
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     # Nothing is installed until the node has promoted -- the volume is where a service lives, so
@@ -98,7 +98,7 @@ pkgs.testers.runNixOSTest {
     assert "${serviceUnit}" in fixture_units(node1), "the renderer stopped producing the unit this test names"
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     require_primary("baseline")
-    assert active(), "CONTRACT PRECOND: payload not active at baseline"
+    assert active(), "CONTRACT PRECOND: the service is not active at baseline"
     born = since()
     # NON-VACUITY for the pause below: the drop-in must be armed, or the stop could not have
     # deadlocked and a clean pause would prove nothing. Its REMOVAL is now the unit's job
@@ -123,32 +123,32 @@ pkgs.testers.runNixOSTest {
 
     # === #2 NON-DESTRUCTIVE ===================================================================
     require_primary("after-pause")
-    assert since() == born, f"CONTRACT VIOLATED (#2): the pause bounced the payload ({born} -> {since()})"
-    assert active(), "CONTRACT VIOLATED (#2): payload not active after the pause"
+    assert since() == born, f"CONTRACT VIOLATED (#2): the pause bounced the service ({born} -> {since()})"
+    assert active(), "CONTRACT VIOLATED (#2): the service is not active after the pause"
     # Let the counter climb clear of a fresh-start value before capturing it, so the continuity
     # check below has real margin: the dummy ticks ~1/s after a 3s slow start, so a bare read can
     # still be 0 — against which a mount-loss reload-to-0 would be indistinguishable. 10 sits well
-    # above anything a reloaded-from-zero payload could reach during the stop+restart window.
+    # above anything a reloaded-from-zero service could reach during the stop+restart window.
     node1.wait_until_succeeds(
         "[ $(curl -fsS http://192.168.1.100:8080/state | grep -oE '[0-9]+' | head -1) -ge 10 ]",
         timeout=30,
     )
     pre = ticks()
-    print(f"### #2 pause non-destructive: still Primary, payload unbounced, ticks={pre}")
+    print(f"### #2 pause non-destructive: still Primary, service unbounced, ticks={pre}")
 
     # === #3 THE PAUSED PROMOTER IS INERT ======================================================
     # `--job-mode=ignore-dependencies` is NOT decoration, and this test proved it the hard way:
     # written as a bare `systemctl stop` the job cascaded to drbd-services@r0.target, took the
     # promote unit with it, and the node was Secondary by the next check. That flag is the
     # `payload.stop` verb's one real decision (agent/guestagent/guestagent.go, verbPayloadStop:
-    # "a planned payload quiesce can't cascade to the promoter target / data mount / VIP"), so a
+    # "a planned service quiesce can't cascade to the promoter target / data mount / VIP"), so a
     # mirror that drops it is not testing the product's quiesce at all. `payload.start` needs no
     # counterpart — it is a plain start.
     node1.succeed("systemctl --job-mode=ignore-dependencies stop ${serviceUnit}")
     time.sleep(8)  # long enough for a promoter reaction to manifest, if any
-    assert not active(), "CONTRACT PRECOND: payload still active after a deliberate stop"
+    assert not active(), "CONTRACT PRECOND: the service is still active after a deliberate stop"
     require_primary("after-stop-while-paused")  # the core guarantee: the stop drew no failover
-    print("### #3 promoter inert: a deliberate payload stop drew no demote or failover")
+    print("### #3 promoter inert: a deliberate service stop drew no demote or failover")
 
     # ...and the mount survived. /healthz recovers and the tick counter is continuous with the
     # pre-stop value; a torn-down /var/lib/briard would reload from tick 0.
@@ -158,7 +158,7 @@ pkgs.testers.runNixOSTest {
     post = ticks()
     assert post >= pre, f"CONTRACT VIOLATED (#3): data mount lost — ticks reset {pre} -> {post}"
     reborn = since()
-    print(f"### #3 payload restarted with its mount intact: ticks {pre} -> {post}")
+    print(f"### #3 service restarted with its mount intact: ticks {pre} -> {post}")
 
     # === #4 CLEAN RESUME ======================================================================
     # The daemon must re-ADOPT what is already running. A resume that demoted and re-promoted
@@ -166,12 +166,12 @@ pkgs.testers.runNixOSTest {
     node1.succeed("systemctl start drbd-reactor.service")
     time.sleep(8)
     require_primary("after-resume")
-    assert since() == reborn, f"CONTRACT VIOLATED (#4): the resume bounced the payload ({reborn} -> {since()})"
-    assert active(), "CONTRACT VIOLATED (#4): payload not active after the resume"
+    assert since() == reborn, f"CONTRACT VIOLATED (#4): the resume bounced the service ({reborn} -> {since()})"
+    assert active(), "CONTRACT VIOLATED (#4): the service is not active after the resume"
 
     # Belt-and-suspenders: green here ⇒ the promoter resumed onto a live, mounted node.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=30)
     node1.succeed("systemctl is-active briard-data.service ${serviceUnit} briard-vip.service")
-    print(f"MAINTENANCE_CONTRACT_OK: ticks {pre} -> {post}, payload serving")
+    print(f"MAINTENANCE_CONTRACT_OK: ticks {pre} -> {post}, service serving")
   '';
 }

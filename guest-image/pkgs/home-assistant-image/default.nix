@@ -1,6 +1,6 @@
 # Home Assistant as a hermetically-pinned OCI image.
 #
-# The payload is a *pinned* upstream container, not something we build: HA is
+# The service is a *pinned* upstream container, not something we build: HA is
 # Python + hundreds of integrations, out of scope to package ourselves. So we
 # pull the official image by content digest (never a mutable tag) and let Nix
 # reproduce it bit-for-bit — the same closure-pin discipline the dummy gets from

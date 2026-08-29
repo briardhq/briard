@@ -4,7 +4,7 @@
 // what leaves the house -- privacy-as-schema). It rides only the internal
 // paths: the host↔guest control channel (the guest returns it to the host) and the
 // host→lab collector file the soak reads out-of-band. Removing it from shared/api is the
-// point -- the cloud stops receiving agent/payload RSS+FDs, load, log/store sizes, guest
+// point -- the cloud stops receiving agent/service RSS+FDs, load, log/store sizes, guest
 // kernel errors. A product-health subset (volume used/free, crash-loop restarts) is re-added
 // to shared/api *deliberately* if/when the cloud consumes it.
 package telemetry
@@ -18,7 +18,7 @@ package telemetry
 // Two scopes in one struct: the Agent* fields are the host-side product daemon's own
 // footprint (measured in-process via /proc/self on every node, witness included -- the "does
 // the agent leak over days" surface); the rest are the appliance (guest), read via the
-// sys.resources verb (zero on a witness / payload-less node, which has no payload or volume).
+// sys.resources verb (zero on a witness / service-less node, which has no service or volume).
 type NodeResources struct {
 	AgentRSSKB int64 `json:"agent_rss_kb,omitempty"` // host agent (product daemon) resident set
 	AgentFDs   int   `json:"agent_fds,omitempty"`    // host agent open file descriptors

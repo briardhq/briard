@@ -1,5 +1,5 @@
 # The SIMPLEST deterministic reproduction of the promote-vs-stop systemd deadlock,
-# stripped of everything downstream (no broken payload, no snapshot/restore, no btrfs race).
+# stripped of everything downstream (no broken service, no snapshot/restore, no btrfs race).
 #
 # One node promotes r0 (so drbd-services@r0.target is active and drbd-reactor has written its
 # `Before=drbd-reactor.service` drop-in), then we time a BARE stop of the daemon. On the buggy
@@ -58,7 +58,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
 
     # Hand off to the promoter and let the WHOLE ordered chain converge — promote → mount →
-    # payload → VIP. The deadlock is a property of stopping a promoter that has services up, so
+    # service → VIP. The deadlock is a property of stopping a promoter that has services up, so
     # pausing before the chain finished would be timing something else.
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)

@@ -1,5 +1,5 @@
 # Zero services is the SHIPPED state. This boots the guest exactly as the downloadable
-# artifact is built (guest-image/configuration.nix, no payload module) and asserts that a node
+# artifact is built (guest-image/configuration.nix, no workload) and asserts that a node
 # with nothing installed is a working node: the volume mounts, the promoter chain completes,
 # the VIP comes up, and the front door answers there.
 #
@@ -80,7 +80,7 @@ pkgs.testers.runNixOSTest {
     assert left == "", f"converge wrote service units on a node with nothing installed: {left!r}"
 
     # The node reports itself READY, not sick. A fresh install used to sit unhealthy forever
-    # because the health probe pointed at a payload port nobody was listening on.
+    # because the health probe pointed at a service port nobody was listening on.
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "no backend configured" in health, f"/healthz on an empty node said: {health!r}"
 
@@ -89,7 +89,7 @@ pkgs.testers.runNixOSTest {
     assert "Briard" in page and "Nothing is routed to this address" in page, f"the VIP served: {page!r}"
 
     # The data volume is mounted and genuinely empty of service data — the substrate is up,
-    # waiting for something to run. (.snapshots is the ladder's own directory, not a payload.)
+    # waiting for something to run. (.snapshots is the ladder's own directory, not a service.)
     primary.succeed("mountpoint -q /var/lib/briard")
     primary.fail("ls -d /var/lib/briard/.services/*.json >/dev/null 2>&1")
 

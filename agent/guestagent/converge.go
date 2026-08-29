@@ -26,7 +26,7 @@ import (
 // promotes WITH, but the volume is only readable AFTER promotion. So the chain is STATIC —
 // `briard-data -> briard-services -> briard-vip` on every data node — and `briard-services` is
 // the unit that, once the mount exists, reads the manifests, renders, warms and starts them.
-// A constant chain is what made converge-at-promotion possible for the baked payload slot;
+// A constant chain is what made converge-at-promotion possible for the deleted payload slot;
 // generalising it is what makes it possible for N runtime-installed services.
 //
 // The manifests are TRUSTED here, and the signature is not re-checked. Identity is the host's:

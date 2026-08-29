@@ -8,7 +8,7 @@
 # right cost.
 #
 # ⚠️ WHAT THIS NO LONGER PROVES, and where it went. It used to assert HA was reachable THROUGH the
-# front door, and that /healthz forwarded the question to HA. Both came from the build-time payload
+# front door, and that /healthz forwarded the question to HA. Both came from the build-time service
 # slot, which fed the reverse proxy its `-backend` at guest-build time; the slot is deleted
 # ([V3b.3](e2)) and routing the front door to a runtime-installed service is [B.48]'s -- the sole
 # owner of the routes table. So the door answers for itself here, exactly as it does on every

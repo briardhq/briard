@@ -135,7 +135,7 @@ func ConfigFromEnv() Config {
 		// Exactly one node seeds a fresh cluster (skip-initial-sync); the rest sync
 		// from it. The first peer is that node by convention (single-node: itself).
 		FreshInit: node == peers[0].Name,
-		// A diskless node has no payload/VIP to probe (nor a service NIC to reach it), so
+		// A diskless node has no service/VIP to probe (nor a service NIC to reach it), so
 		// its health follows quorum ("" -> healthy == quorate); data nodes probe the VIP.
 		//
 		// The probe target is the FRONT DOOR (:80), not a service's own port. That is what makes
@@ -233,7 +233,7 @@ func disklessOr(role model.Role, w, d string) string {
 	return d
 }
 
-// disklessOrSpecs empties the service set on a diskless node (no payload to upgrade).
+// disklessOrSpecs empties the service set on a diskless node (nothing to upgrade).
 func disklessOrSpecs(role model.Role, s []model.ServiceSpec) []model.ServiceSpec {
 	if role == model.RoleDiskless {
 		return nil

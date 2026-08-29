@@ -99,7 +99,7 @@ func TestRebootUpgradeDeclinesWhenAPeerCanTakeOver(t *testing.T) {
 
 // The other half, and the one that makes the test above mean something: a node with no possible
 // successor is exactly where a local reboot upgrade IS allowed, because it stays Primary
-// throughout and the payload-shaped health gate is then the right question.
+// throughout and the service-shaped health gate is then the right question.
 //
 // status-lone-anchor is the case that pins the predicate down. A sole diskful anchor beside a
 // connected witness is Primary AND fully quorate AND has nobody to take over -- so it is the one
@@ -155,7 +155,7 @@ func TestRebootUpgradeDeclinesWhenTheClusterIsUnreadable(t *testing.T) {
 // THE SWITCH METHOD. What these two tests are for is less the sequence than the
 // shape gave it: an OS upgrade that does not touch the workload, and one rollback for
 // both methods. Both are things the code can lose silently, so both are asserted directly --
-// no payload verb, no data snapshot, and exactly one activation on the failing run.
+// no service verb, no data snapshot, and exactly one activation on the failing run.
 //
 // What they cannot do is prove the rollback LEG. Restoring the point means stopping a real VM
 // and reverting a real qcow2, neither of which exists in a unit test; that is the lab7(f)'s, on
@@ -392,7 +392,7 @@ func TestSwitchUpgradeRollsBackThroughTheDiskNotAnInBandSwitchBack(t *testing.T)
 	assertLeftTheWorkloadAlone(t, x)
 }
 
-// assertLeftTheWorkloadAlone is as a check: no payload lifecycle, no service data. It
+// assertLeftTheWorkloadAlone is as a check: no service lifecycle, no service data. It
 // reads the recorded commands rather than the code because that is where a regression would
 // show up -- a re-added quiesce or data snapshot is a command, whoever calls it.
 func assertLeftTheWorkloadAlone(t *testing.T, x *recExec) {
@@ -400,7 +400,7 @@ func assertLeftTheWorkloadAlone(t *testing.T, x *recExec) {
 	for _, c := range x.all() {
 		switch {
 		case strings.Contains(c, "podman-"):
-			t.Errorf("the OS path drove the payload unit: %q", c)
+			t.Errorf("the OS path drove a service unit: %q", c)
 		case strings.Contains(c, "btrfs subvolume"):
 			t.Errorf("the OS path touched service data: %q", c)
 		}

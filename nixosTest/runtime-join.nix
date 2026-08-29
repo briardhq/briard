@@ -58,7 +58,7 @@ let
       # that mkForce. [V3.19] removed the guest's baked VIP (`vipFallback = ""`) because no address
       # is right in a house we have not seen, which means every agent-less harness must name one.
       # This one did not: briard-vip fell through to the DHCP branch on a network with no DHCP
-      # server, failed, and took the VIP and the payload with it -- surfacing three layers away as
+      # server, failed, and took the VIP and the service with it -- surfacing three layers away as
       # a connect timeout on `curl http://192.168.1.100:8080/healthz`. It has had no full green
       # nightly since 2026-08-08, the night before [V3.19] landed.
       #

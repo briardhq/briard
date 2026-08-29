@@ -235,10 +235,10 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 	}
 }
 
-// PayloadActiveSince reads the unit's ActiveEnterTimestampMonotonic (usec) as the
+// ServiceActiveSince reads the unit's ActiveEnterTimestampMonotonic (usec) as the
 // adopt-not-bounce proof for the maintenance contract: unchanged across a pause/resume
 // means the promoter re-adopted the running payload. An inactive unit ("") parses to 0.
-func TestPayloadActiveSince(t *testing.T) {
+func TestServiceActiveSince(t *testing.T) {
 	const unit = "podman-briard-payload.service"
 	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if name == "systemctl" && reflect.DeepEqual(args, []string{"show", "-p", "ActiveEnterTimestampMonotonic", "--value", unit}) {
@@ -246,35 +246,35 @@ func TestPayloadActiveSince(t *testing.T) {
 		}
 		return nil, nil
 	}}
-	if got, err := dial(t, f).PayloadActiveSince(context.Background(), unit); err != nil || got != 123456789 {
-		t.Errorf("PayloadActiveSince = (%d,%v), want (123456789,nil)", got, err)
+	if got, err := dial(t, f).ServiceActiveSince(context.Background(), unit); err != nil || got != 123456789 {
+		t.Errorf("ServiceActiveSince = (%d,%v), want (123456789,nil)", got, err)
 	}
 
 	// Inactive unit: systemctl prints an empty value -> 0 (never entered active).
 	f2 := &fakeExec{runFn: func(string, []string) ([]byte, error) { return []byte("\n"), nil }}
-	if got, err := dial(t, f2).PayloadActiveSince(context.Background(), unit); err != nil || got != 0 {
+	if got, err := dial(t, f2).ServiceActiveSince(context.Background(), unit); err != nil || got != 0 {
 		t.Errorf("inactive: got (%d,%v), want (0,nil)", got, err)
 	}
 }
 
-// PayloadHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the payload's
+// ServiceHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the payload's
 // health URL itself and reports 200. Exercises the real raw-net.Dial HTTP/1.0 path end to end
 // (Client -> dispatch -> probeHTTPOK), since it deliberately avoids net/http in the guest binary.
-func TestPayloadHealth(t *testing.T) {
+func TestServiceHealth(t *testing.T) {
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer ok.Close()
 	sick := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer sick.Close()
 
 	f := &fakeExec{runFn: func(string, []string) ([]byte, error) { return nil, nil }} // health path doesn't shell out
-	if got, err := dial(t, f).PayloadHealth(context.Background(), ok.URL); err != nil || !got {
+	if got, err := dial(t, f).ServiceHealth(context.Background(), ok.URL); err != nil || !got {
 		t.Errorf("200 payload: got (%v,%v), want (true,nil)", got, err)
 	}
-	if got, err := dial(t, f).PayloadHealth(context.Background(), sick.URL); err != nil || got {
+	if got, err := dial(t, f).ServiceHealth(context.Background(), sick.URL); err != nil || got {
 		t.Errorf("503 payload: got (%v,%v), want (false,nil)", got, err)
 	}
 	// Unreachable endpoint -> not healthy, still no transport error (the probe swallows dial errors).
-	if got, err := dial(t, f).PayloadHealth(context.Background(), "http://127.0.0.1:1/healthz"); err != nil || got {
+	if got, err := dial(t, f).ServiceHealth(context.Background(), "http://127.0.0.1:1/healthz"); err != nil || got {
 		t.Errorf("unreachable: got (%v,%v), want (false,nil)", got, err)
 	}
 }
@@ -783,13 +783,13 @@ func TestBringUpFreshInit(t *testing.T) {
 	}
 }
 
-func TestPayloadStartStopCommands(t *testing.T) {
+func TestServiceStartStopCommands(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.PayloadStart(context.Background(), "podman-briard-payload.service"); err != nil {
+	if err := g.ServiceStart(context.Background(), "podman-briard-payload.service"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.PayloadStop(context.Background(), "podman-briard-payload.service"); err != nil {
+	if err := g.ServiceStop(context.Background(), "podman-briard-payload.service"); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -801,9 +801,9 @@ func TestPayloadStartStopCommands(t *testing.T) {
 	}
 }
 
-// Is-active prints the state word and exits non-zero when inactive; PayloadActive
+// Is-active prints the state word and exits non-zero when inactive; ServiceActive
 // trusts the word, not the exit code.
-func TestPayloadActiveReadsState(t *testing.T) {
+func TestServiceActiveReadsState(t *testing.T) {
 	for _, tc := range []struct {
 		out  string
 		err  error
@@ -815,12 +815,12 @@ func TestPayloadActiveReadsState(t *testing.T) {
 	} {
 		f := &fakeExec{output: []byte(tc.out), err: tc.err}
 		g := dial(t, f)
-		active, err := g.PayloadActive(context.Background(), "podman-briard-payload.service")
+		active, err := g.ServiceActive(context.Background(), "podman-briard-payload.service")
 		if err != nil {
-			t.Fatalf("PayloadActive(%q): %v", tc.out, err)
+			t.Fatalf("ServiceActive(%q): %v", tc.out, err)
 		}
 		if active != tc.want {
-			t.Errorf("PayloadActive(%q) = %v, want %v", tc.out, active, tc.want)
+			t.Errorf("ServiceActive(%q) = %v, want %v", tc.out, active, tc.want)
 		}
 	}
 }

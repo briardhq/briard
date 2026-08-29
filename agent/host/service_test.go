@@ -80,7 +80,7 @@ func (f *fakeInstaller) ServiceInstalled(_ context.Context, name string) (string
 	return f.prior[name], nil
 }
 func (f *fakeInstaller) SupportsServiceInstalled() bool { return !f.oldGuest }
-func (f *fakeInstaller) PayloadStop(_ context.Context, unit string) error {
+func (f *fakeInstaller) ServiceStop(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "stop:"+unit)
 	return nil
 }
@@ -108,7 +108,7 @@ func (f *fakeInstaller) ServiceForget(_ context.Context, name string) error {
 	f.steps = append(f.steps, "forget:"+name)
 	return f.forgetEr
 }
-func (f *fakeInstaller) PayloadStart(_ context.Context, unit string) error {
+func (f *fakeInstaller) ServiceStart(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "warm:"+unit)
 	return f.warmEr
 }
@@ -121,7 +121,7 @@ func (f *fakeInstaller) ServiceWarm(_ context.Context, unit, ref string) error {
 	f.warmedRefs = append(f.warmedRefs, ref)
 	return f.warmEr
 }
-func (f *fakeInstaller) PayloadHealth(_ context.Context, url string) (bool, error) {
+func (f *fakeInstaller) ServiceHealth(_ context.Context, url string) (bool, error) {
 	f.steps = append(f.steps, "health")
 	f.healthURL = url // the gate must probe the SERVICE, not the front door
 	if !f.healthy {
@@ -248,7 +248,7 @@ func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 // BEFORE writing anything — a refusal must leave the node exactly as it was.
 //
 // It SURVIVES the bracket's deletion ([V3b.3](f)) even though an install no longer pauses the
-// promoter itself, and deliberately: a paused promoter means an OS or payload upgrade is in
+// promoter itself, and deliberately: a paused promoter means an OS upgrade is in
 // flight, and starting a second operation on that node is the overlap [V3b.5](b) exists to
 // serialise. Dropping this check because we no longer take the bracket would quietly WIDEN
 // concurrency at the moment the item narrowed it.
@@ -550,7 +550,7 @@ func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
 // A service installed at RUNTIME must land in the live config immediately, not at the next agent
 // restart. The gap was invisible in the log and total in effect: cfg.resources() is gated on there
 // being a service, so between installing one and restarting, the node reported no appliance
-// telemetry at all -- payload footprint, volume usage, snapshots, load, journal and store sizes.
+// telemetry at all -- per-service footprint, volume usage, snapshots, load, journal and store sizes.
 func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	dir := t.TempDir()
 	raw := []byte(`{"name":"home-assistant","version":"2026.7.1","containers":[` +

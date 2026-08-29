@@ -12,7 +12,7 @@ import (
 // restores to. These are qcow2 INTERNAL snapshots, taken with the VM stopped.
 //
 // WHAT THIS COVERS, AND WHY IT IS NOT REDUNDANT. NixOS generations roll back *code*;'s
-// btrfs snapshot rolls back the payload's *data*. Neither covers mutable state on the guest
+// btrfs snapshot rolls back a service's *data*. Neither covers mutable state on the guest
 // OS disk -- /var/lib/nixos, /var/lib/containers, systemd state, anything a stateVersion
 // migration touches. That gap is this snapshot's whole justification: cheap insurance against
 // the upgrades that corrupt state OUTSIDE the closure, where a generation rollback would

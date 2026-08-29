@@ -54,7 +54,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Run the product agent (host mode = plain `run`): boots the guest, drives the
-    # ordered bring-up (data -> VIP, no payload -- the shipped disk runs none), then holds it in
+    # ordered bring-up (data -> VIP, no service -- the shipped disk runs none), then holds it in
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
     host.succeed(
         "systemd-run --unit=briard-agent --collect "

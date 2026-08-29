@@ -153,7 +153,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 		// An OS upgrade needs a TARGET and an UPGRADER -- not a service. The old guard also
 		// required spec.Name, which silently made the SHIPPED node un-upgradable: a fresh
 		// install has the zero ServiceSpec, so every OS update it was ever offered came back
-		// "failed". That condition dates from when every anchor carried a payload and
+		// "failed". That condition dates from when every anchor carried a service and
 		// "no service" once meant "nothing to upgrade"; zero services is the shipped state
 		// and the two stopped being the same statement. The system closure is a property of
 		// the NODE, so what happens to run on top of it cannot be a precondition for updating it.
@@ -161,7 +161,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 			logf("directive kind=upgrade-system ignored (no target/upgrader on this node)")
 			return failed("no target/upgrader on this node")
 		}
-		// The whole-OS switch is heavier than a payload re-pin (activation, service
+		// The whole-OS switch is heavier than a service install (activation, service
 		// restarts), so give it a longer bound. The same bound covers staging, which is
 		// the one part that goes to the network (tens of MB).
 		//
@@ -323,7 +323,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 // IT WRITES THE LOCAL TRAIL FIRST, and that ordering is the point rather than a detail. This
 // function used to do nothing BUT hand the alert to the notifier -- which on the free tier is
 // notify.Nop(), because there is no cloud contact to configure one from. So every failed OS
-// upgrade, payload upgrade, cert renewal and agent self-update on a free node produced an alert
+// upgrade, service upgrade, cert renewal and agent self-update on a free node produced an alert
 // that reached NOBODY: not the owner, not the journal, not a support bundle. The one place a
 // person looks after "it stopped working" held no record that briard had noticed anything.
 //

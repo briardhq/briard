@@ -30,7 +30,7 @@
 # WHAT IT DOES NOT PROVE, said here rather than left to be assumed: that bring-up ADOPTED the
 # existing replica rather than re-seeding it in place. A re-seed rewrites metadata in the same
 # file, keeping both inode and size, and byte-comparing will not separate the two either because
-# DRBD legitimately rewrites its metadata on attach. Proving adoption needs real payload data in
+# DRBD legitimately rewrites its metadata on attach. Proving adoption needs real service data in
 # the volume (the catalogued fixture the data tests install); that is worth building and is
 # deliberately not smuggled in here as an assertion that would look stronger than it is.
 #

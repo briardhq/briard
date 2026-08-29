@@ -27,7 +27,7 @@ type fakeControl struct {
 	snapErr                 error
 	restoreFrom, restoreDir string
 	restored                bool
-	startErr                error                                  // PayloadStart returns this (to trigger a rollback)
+	startErr                error                                  // ServiceStart returns this (to trigger a rollback)
 	components              map[string]guestagent.SystemComponents // keyed by closure ("" = booted), V3.17c1
 	componentsFor           []string                               // closures Components was asked about, in order
 	componentsErr           error
@@ -41,31 +41,31 @@ type fakeControl struct {
 	paused, resumed         int
 	cluster                 model.Cluster // what OSReady reads about this node
 	clusterErr              error
-	activeHook              func(ctx context.Context) // inspect the ctx PayloadActive receives
-	health                  bool                      // PayloadHealth in-guest result (used when healthVerb is set)
-	healthVerb              bool                      // when false, PayloadHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
+	activeHook              func(ctx context.Context) // inspect the ctx ServiceActive receives
+	health                  bool                      // ServiceHealth in-guest result (used when healthVerb is set)
+	healthVerb              bool                      // when false, ServiceHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
 	vip                     string                    // net.vip: the address the named device actually holds (CIDR); "" = it holds none
 	vipErr                  error
-	probed                  []string // URLs PayloadHealth was asked to probe, in order
+	probed                  []string // URLs ServiceHealth was asked to probe, in order
 }
 
-func (f *fakeControl) PayloadStart(_ context.Context, unit string) error {
+func (f *fakeControl) ServiceStart(_ context.Context, unit string) error {
 	f.started = append(f.started, unit)
 	f.ops = append(f.ops, "start")
 	return f.startErr
 }
-func (f *fakeControl) PayloadStop(_ context.Context, unit string) error {
+func (f *fakeControl) ServiceStop(_ context.Context, unit string) error {
 	f.stopped = append(f.stopped, unit)
 	f.ops = append(f.ops, "stop")
 	return nil
 }
-func (f *fakeControl) PayloadActive(ctx context.Context, _ string) (bool, error) {
+func (f *fakeControl) ServiceActive(ctx context.Context, _ string) (bool, error) {
 	if f.activeHook != nil {
 		f.activeHook(ctx)
 	}
 	return f.active, f.activeErr
 }
-func (f *fakeControl) PayloadHealth(_ context.Context, url string) (bool, error) {
+func (f *fakeControl) ServiceHealth(_ context.Context, url string) (bool, error) {
 	f.probed = append(f.probed, url)
 	if !f.healthVerb {
 		return false, errors.New(`guestagent: unknown verb "payload.health"`) // old guest -> probeReady falls back
@@ -170,7 +170,7 @@ func newPromoterManager(ctl control, healthURL string) *Manager {
 	})
 }
 
-func TestStartStopDrivePayloadUnit(t *testing.T) {
+func TestStartStopDriveTheServingUnit(t *testing.T) {
 	f := &fakeControl{}
 	m := newManager(f, "")
 	if err := m.Start(context.Background(), haSpec); err != nil {
@@ -237,7 +237,7 @@ func TestHealthPropagatesControlError(t *testing.T) {
 	}
 }
 
-// When the guest supports payload.health, readiness follows the IN-GUEST probe, NOT a host-side
+// When the guest supports the service-health verb, readiness follows the IN-GUEST probe, NOT a host-side
 // GET of the VIP — so the health-gate works under a substrate where the host can't reach the VIP
 // (macvtap). A failable pair: the host URL always says the opposite of the verb.
 func TestHealthPrefersInGuestProbe(t *testing.T) {
@@ -257,7 +257,7 @@ func TestHealthPrefersInGuestProbe(t *testing.T) {
 
 // AwaitReady must poll on a context detached from the upgrade deadline. Otherwise a
 // deadline that fires *inside* a control-channel call closes the channel mid-call, and the
-// rollback that reuses that channel then fails to restore. Assert the ctx PayloadActive
+// rollback that reuses that channel then fails to restore. Assert the ctx ServiceActive
 // receives does not observe the upgrade ctx's cancellation.
 func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 	srv := codeServer(t, http.StatusServiceUnavailable) // running but never ready → keep polling
@@ -329,12 +329,12 @@ func TestRestoreUsesRefFields(t *testing.T) {
 // THE OS-UPGRADE SEQUENCE TESTS MOVED OUT, with the sequence itself: it is
 // agent/host's now, because an OS upgrade rolls back to a snapshot of the OS disk and only the
 // host can take or restore one. Their replacements are TestSwitchUpgrade* in
-// agent/host/osupgrade_test.go, and they assert the shape gave the path -- no payload
+// agent/host/osupgrade_test.go, and they assert the shape gave the path -- no service
 // stop/start, no data snapshot/restore, one activation on a failing run.
 //
 // What stays here is what the guest still owns and this file can still fail on: the health
 // floor (including the zero-service case), the S1 gate's verdicts, the primitives, and the
-// PAYLOAD upgrade -- which is unchanged, because {image + data} rolling back together is the
+// SERVICE upgrade -- which is unchanged, because {image + data} rolling back together is the
 // whole point of that one.
 
 // fakeAssessor drives the differential S1 gate: a canned verdict + a record of when it
@@ -509,7 +509,7 @@ func TestActivationMethodDiffsAgainstBooted(t *testing.T) {
 // cloud (cfg.snapshot takes the probe's answer with no such conjunct).
 func TestHealthZeroServiceGatesOnTheFrontDoorAlone(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
-	f := &fakeControl{active: false} // no payload unit exists, so it cannot be active
+	f := &fakeControl{active: false} // no service unit exists, so it cannot be active
 	m := newManager(f, srv.URL)
 
 	h, err := m.Health(context.Background(), model.ServiceSpec{})
@@ -520,7 +520,7 @@ func TestHealthZeroServiceGatesOnTheFrontDoorAlone(t *testing.T) {
 		t.Error("a zero-service node whose front door answers 200 must be Ready")
 	}
 	if !h.Running {
-		t.Error("Running should be vacuously true with no service -- there is no payload to be down")
+		t.Error("Running should be vacuously true with no service -- there is nothing that could be down")
 	}
 }
 
@@ -600,7 +600,7 @@ func TestResolveHealthURL(t *testing.T) {
 		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},
 
 		// An old guest predating net.vip is one that still has a baked address to fall back
-		// to -- the same compatibility posture probeReady takes for payload.health.
+		// to -- the same compatibility posture probeReady takes for the service-health verb.
 		{"verb error falls back", false, "eth2", configured, "", errors.New("unknown verb"), configured},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -621,7 +621,7 @@ func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
 	f := &fakeControl{healthVerb: true, health: true, active: true}
 	m := NewManager(f, Config{VIPDev: "eth2"}) // no configured URL, guest reports none
 
-	h, err := m.Health(context.Background(), model.ServiceSpec{Name: "dummy", Unit: "podman-briard-payload.service"})
+	h, err := m.Health(context.Background(), model.ServiceSpec{Name: "dummy", Unit: "briard-dummy-app.service"})
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}

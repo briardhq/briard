@@ -181,11 +181,11 @@ func TestReactorConfigStartOrder(t *testing.T) {
 	const want = `[[promoter]]
 [promoter.resources.r0]
 adjust-resource-on-start = false
-start = [ "briard-data.service", "podman-briard-payload.service", "briard-vip.service" ]
+start = [ "briard-data.service", "briard-services.service", "briard-vip.service" ]
 `
 	got := ReactorConfig("r0", []string{
 		"briard-data.service",
-		"podman-briard-payload.service",
+		"briard-services.service",
 		"briard-vip.service",
 	})
 	if got != want {

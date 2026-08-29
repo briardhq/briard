@@ -3,7 +3,7 @@
 # never processed a real HA upgrade").
 #
 # HA boots on the `from` image (2025.11.0, recorder schema 51), the recorder writes
-# history, then the payload is upgraded to `to` (2025.12.0, schema 53) and HA runs the
+# history, then the service is upgraded to `to` (2025.12.0, schema 53) and HA runs the
 # real migration on first boot (migrators 52+53). We assert the *outcome*, not just
 # liveness: the recorder schema advances 51→53 (the migration signal — HA must detect
 # the older schema and record the bump), the pre-upgrade `states` history survives, HA
@@ -17,7 +17,7 @@
 # as a diagnostic.
 #
 # Harness scope (matches rolling-update.nix's in-place idiom): this drives the core
-# payload-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — under the
+# service-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — under the
 # running promoter. It deliberately does NOT exercise Manager's maintenance bracket
 # (reactor.pause/quiesce): in a single-node lib.nix rig, stopping drbd-reactor tears down
 # drbd-services@r0.target and unmounts the data volume, whereas the product pauses the
@@ -120,7 +120,7 @@ pkgs.testers.runNixOSTest {
     # reactor.pause avoids that by pausing the guest agent's live promoter (proven
     # non-destructive by the maintenance contract). That
     # maintenance bracket is Manager orchestration, tested there — this test's job is the
-    # migration. A payload restart is not a DRBD event, so the running promoter doesn't react;
+    # migration. A service restart is not a DRBD event, so the running promoter doesn't react;
     # the volume stays mounted throughout (the rolling-update.nix in-place idiom).
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
     node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume

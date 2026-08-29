@@ -53,15 +53,15 @@ type serviceInstaller interface {
 	ServiceForget(ctx context.Context, name string) error
 	// ReactorActive is the interim overlap guard, and the ONLY promoter verb left here: an
 	// install no longer takes the maintenance bracket ([V3b.3](f)), it only refuses to start
-	// while somebody else holds it. Pausing and resuming belong to the OS/payload upgrade path
+	// while somebody else holds it. Pausing and resuming belong to the OS upgrade path
 	// (agent/guest), which still changes what a live promoted resource runs.
 	ReactorActive(ctx context.Context) (bool, error)
-	PayloadStart(ctx context.Context, unit string) error
+	ServiceStart(ctx context.Context, unit string) error
 	// ServiceWarm ensures an image is present, pulling only if it is missing -- see BringUp for
 	// why "start the .image unit" is not the same operation.
 	ServiceWarm(ctx context.Context, unit, ref string) error
-	PayloadStop(ctx context.Context, unit string) error
-	PayloadHealth(ctx context.Context, url string) (bool, error)
+	ServiceStop(ctx context.Context, unit string) error
+	ServiceHealth(ctx context.Context, url string) (bool, error)
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
@@ -141,7 +141,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 }
 
 // ApplyServiceInstall installs — or UPGRADES — the catalogued service named by the directive
-// payload, returning the terminal outcome (announce-before-act). Install and upgrade are the
+// service, returning the terminal outcome (announce-before-act). Install and upgrade are the
 // SAME path: install is an upgrade from "empty" to the target. Idempotent by construction —
 // re-installing the same manifest re-renders identical units and reuses the existing subvolume.
 //
@@ -383,7 +383,7 @@ func (cfg Config) manifestPath(name string) string {
 // something restarted it.
 //
 // That is not cosmetic: cfg.resources() is gated on there being a service, so a node that had just
-// installed one stopped reporting the guest's telemetry ENTIRELY -- not merely the payload
+// installed one stopped reporting the guest's telemetry ENTIRELY -- not merely the service
 // footprint but volume usage, snapshot count, load average, journal size and podman-store size,
 // every one of them a soak trend input or a growth surface. The node ran perfectly and described
 // itself as empty.
@@ -656,7 +656,7 @@ func filesToRemove(have, want map[string]string) []string {
 // never needs to stop it.
 func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnits []string, logf func(string, ...any)) {
 	for i := len(containerUnits) - 1; i >= 0; i-- {
-		if err := g.PayloadStop(ctx, containerUnits[i]); err != nil {
+		if err := g.ServiceStop(ctx, containerUnits[i]); err != nil {
 			logf("service switch: stop %s: %v (continuing)", containerUnits[i], err)
 		}
 	}
@@ -732,7 +732,7 @@ func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, healthUR
 	}
 	deadline := time.Now().Add(healthGate)
 	for {
-		ok, err := g.PayloadHealth(ctx, healthURL)
+		ok, err := g.ServiceHealth(ctx, healthURL)
 		if err == nil && ok {
 			return nil
 		}

@@ -55,7 +55,7 @@ let
   # nodes and restarts the workload, which is the opposite technique.
   #
   # libkrun is crun's microVM handler, reached only by an explicit `run.oci.handler=krun`
-  # annotation. Our payload is an ordinary host-networked container; there is no path to it.
+  # annotation. Our service is an ordinary host-networked container; there is no path to it.
   #
   # `criu = null` RATHER THAN FILTERING buildInputs BY NAME, and the difference is which way it
   # breaks. A name filter fails OPEN -- a nixpkgs bump that renames the input silently re-admits

@@ -69,8 +69,8 @@ type fakeStatus struct {
 	sysErr  error
 	res     telemetry.NodeResources // Resources return (appliance telemetry)
 	resErr  error
-	health  bool  // PayloadHealth return (the in-guest probe result)
-	hlthErr error // when set, PayloadHealth errors -> snapshot falls back to the host-side probe
+	health  bool  // ServiceHealth return (the in-guest probe result)
+	hlthErr error // when set, ServiceHealth errors -> snapshot falls back to the host-side probe
 	// vip is what net.vip answers: the address the service NIC ACTUALLY holds, in CIDR form,
 	// "" for a device that holds none. probed records the URL snapshot resolved from it, so a
 	// test can assert WHAT was probed and not merely that something was.
@@ -102,11 +102,11 @@ func (f fakeStatus) Cluster(context.Context, string) (model.Cluster, error) {
 
 func (f fakeStatus) MDNSPublished(context.Context) (string, error) { return f.mdns, f.mdnsErr }
 
-func (f fakeStatus) PayloadActive(_ context.Context, unit string) (bool, error) {
+func (f fakeStatus) ServiceActive(_ context.Context, unit string) (bool, error) {
 	return f.active[unit], f.activeErr
 }
 
-func (f fakeStatus) PayloadHealth(_ context.Context, url string) (bool, error) {
+func (f fakeStatus) ServiceHealth(_ context.Context, url string) (bool, error) {
 	if f.probed != nil {
 		*f.probed = url
 	}

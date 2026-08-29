@@ -30,8 +30,8 @@
 # thing that can distinguish them is which menu entry grub chose. No binary cache is involved —
 # delivery is os-stage's proof, not this one.
 #
-# It needs no payload: `BOOT_SELECT=1` returns before bring-up ever runs and the guest is given
-# no NICs at all, so a payload would never be observed.
+# It needs no service: `BOOT_SELECT=1` returns before bring-up ever runs and the guest is given
+# no NICs at all, so a service would never be observed.
 #
 # Heavy (nested VM), so it rides the `integration` tag; `nix flake check` skips it. Run:
 #   nix build .#tests.boot-select -L

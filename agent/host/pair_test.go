@@ -537,8 +537,8 @@ func (m meshReader) Cluster(context.Context, string) (model.Cluster, error) {
 	}
 	return cl, nil
 }
-func (m meshReader) PayloadHealth(context.Context, string) (bool, error) { return true, nil }
-func (m meshReader) PayloadActive(context.Context, string) (bool, error) { return true, nil }
+func (m meshReader) ServiceHealth(context.Context, string) (bool, error) { return true, nil }
+func (m meshReader) ServiceActive(context.Context, string) (bool, error) { return true, nil }
 func (m meshReader) MDNSPublished(context.Context) (string, error)       { return "", nil }
 func (m meshReader) VIP(context.Context, string) (string, error)         { return "", nil }
 

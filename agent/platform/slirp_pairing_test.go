@@ -14,7 +14,7 @@ import (
 // VIP's own client -- so a change on one side and not the other yields a guest with an address on
 // a network qemu is not running, i.e. no WAN, i.e. no image pulls, discovered late and far away.
 //
-// Same cheap mechanism as TestPayloadConstantsMatchGuestImage: read both sides, no build step.
+// Same cheap mechanism as TestVolumePathsMatchGuestImage: read both sides, no build step.
 func TestSlirpAddressingMatchesGuestImage(t *testing.T) {
 	raw, err := os.ReadFile("../../guest-image/disk-image.nix")
 	if err != nil {

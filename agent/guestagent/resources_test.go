@@ -142,7 +142,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 
 // A stopped payload (MainPID=0) skips the /proc read rather than reading /proc/0, and the
 // rest of the telemetry still comes back -- best-effort, never fatal.
-func TestResourcesVerbSkipsStoppedPayload(t *testing.T) {
+func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		cmd := strings.Join(append([]string{name}, args...), " ")
 		switch {

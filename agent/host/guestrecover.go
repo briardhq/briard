@@ -34,7 +34,7 @@ import (
 // THE GATE, AND WHY IT IS THE GUEST'S ANSWER RATHER THAN THE HOST'S QUESTION.
 //
 // The guard anyone asks for first is "don't reboot a guest that is still serving". The host
-// cannot evaluate that itself: DRBD's quorum view lives in the guest, the payload's health verb
+// cannot evaluate that itself: DRBD's quorum view lives in the guest, the service-health verb
 // rides the channel that just died, and under the default macvtap substrate the host cannot
 // reach the VIP either. Every question that would gate the decision is asked over the channel
 // whose death is the trigger.
@@ -65,7 +65,7 @@ import (
 //
 // The residual risk is smaller than it was but not zero, and it is named rather than argued
 // away: a guest whose agent is wedged AND whose deadman is dead (so the gate is unreachable)
-// while its payload still serves gets rebooted, and on a node with no peer that is an outage the
+// while its services still serve gets rebooted, and on a node with no peer that is an outage the
 // host chose. That is the trade B.22b locked in 2026-07-14 -- serving is not healthy; reboot
 // serving nodes, patiently -- and it is now confined to the case where two independent in-guest
 // processes are both gone.

@@ -1,5 +1,5 @@
 // Package entrygate is the S1 (stateless) health-gate signal for a Home Assistant
-// payload upgrade. It turns two samples of HA's per-config-entry setup
+// service upgrade. It turns two samples of HA's per-config-entry setup
 // state — one taken pre-upgrade at steady state, one taken post-upgrade after the
 // retry backoff has settled — into a Verdict: keep the upgrade, hold for a human, or
 // auto-roll-back the {code+data} snapshot.

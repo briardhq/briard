@@ -2,7 +2,7 @@
 #
 # drbd-failover proves the mechanism (3-node majority, kill-primary → VIP + data
 # move) for the deterministic dummy; this proves the *differentiated claim* on the
-# real payload: real HA state survives a takeover. The dummy's tick counter stands
+# real service: real HA state survives a takeover. The dummy's tick counter stands
 # in for "committed data crossed the DRBD link"; HA's equivalent is its **sacred
 # `.storage`** — so we create the owner user through HA's own (no-auth)
 # onboarding API, which writes `.storage/auth*`, and after the kill assert that

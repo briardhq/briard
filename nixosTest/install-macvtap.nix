@@ -1,7 +1,7 @@
 # The free-local `curl | sh` install on the MACVTAP substrate -- the DEFAULT substrate as of
 # the test that owns the WHOLE install chain end to end:
 #   report-card gate -> BUNDLED qemu (no distro qemu on the host) boots the guest -> single-node
-#   DRBD data volume -> payload served at the VIP -> an OFF-BOX LAN client reaches it.
+#   DRBD data volume -> service served at the VIP -> an OFF-BOX LAN client reaches it.
 #
 # The macvtap-specific deltas on top of that chain:
 #   1. NO bridge is created and the host's IP never leaves the physical NIC (the invasiveness
@@ -9,13 +9,13 @@
 #   2. the guest's NICs are macvtap children of the host NIC (L2 citizens, no bridge).
 #   3. qemu is launched behind the fd-passing wrapper (briard-net-wrap) and really holds the
 #      /dev/tap<ifindex> chardevs on the inherited fds — the mechanism ifname= can't provide.
-#   4. an OFF-BOX LAN client still reaches the payload at the VIP through the macvtap (the guest
+#   4. an OFF-BOX LAN client still reaches the service at the VIP through the macvtap (the guest
 #      is a full L2 citizen), which is the whole point.
 #   5. and so does the INSTALL HOST -- by the VIP and by the name -- over the private link, which
 #      is the one machine macvtap would otherwise hide the household's own service from ([V3b.19]).
 #
 # It also proves assertion (d) -- cattle/pet reinstall: after green, `rm -rf /opt/briard`
-# (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the payload's persisted
+# (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the service's persisted
 # tick counter, on the pet /var/lib/briard data volume, does not reset). The failable control is
 # sharp -- a wiped/reformatted volume would restart the counter at ~0.
 #
@@ -386,7 +386,7 @@ pkgs.testers.runNixOSTest {
 
     # What a stranger actually gets. The install ships NO service, so the front door is
     # what answers -- and it says so, rather than the node looking broken or serving a workload
-    # nobody chose. This is the assertion that would catch a payload sneaking back into the
+    # nobody chose. This is the assertion that would catch a service sneaking back into the
     # shipped disk.
     page = client.succeed(f"curl -fsS http://{vip}/")
     assert "Nothing is routed to this address" in page, f"the VIP served: {page!r}"

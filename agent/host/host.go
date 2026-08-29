@@ -229,7 +229,7 @@ type Config struct {
 	VIPAddr string
 
 	// Observability + north-bound control.
-	HealthURL       string        // payload /healthz at the VIP; "" -> health follows quorum
+	HealthURL       string        // the front door's /healthz at the VIP; "" -> health follows quorum
 	StatusEvery     time.Duration // observe cadence
 	BringUpBudget   time.Duration // bounds the launch -> converge phase
 	ControllerURL   string        // fleet controller base URL; "" -> don't report up (standalone)
@@ -358,19 +358,19 @@ type statusReader interface {
 	// rides, so this reads strictly more from the same call rather than costing another.
 	Cluster(ctx context.Context, resource string) (model.Cluster, error)
 
-	// PayloadHealth probes the payload's /healthz from INSIDE the guest (macvtap-safe: the
+	// ServiceHealth probes the health URL from INSIDE the guest (macvtap-safe: the
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
-	PayloadHealth(ctx context.Context, url string) (bool, error)
+	ServiceHealth(ctx context.Context, url string) (bool, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
 	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
 	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
 	guest.VIPReader
-	// PayloadActive answers "is this unit up?" for ONE service, which is what per-service health
+	// ServiceActive answers "is this unit up?" for ONE service, which is what per-service health
 	// rides on ([V3b.3](f)). It is here rather than derived from Healthy because Healthy is the
 	// front door at the VIP -- which answers 200 on a node running no services at all.
-	PayloadActive(ctx context.Context, unit string) (bool, error)
+	ServiceActive(ctx context.Context, unit string) (bool, error)
 	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
 	// address off the interface: the value we asked for is not evidence of the value in force.
 	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
@@ -466,8 +466,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	}
 
 	// The guest binding an `upgrade` directive drives: a guest.Manager for the health-gated
-	// payload/system upgrades, plus the VM handle the reboot path needs.
-	// nil-safe: a witness / payload-less node just won't act on those directives. guestCfg is
+	// service/system upgrades, plus the VM handle the reboot path needs.
+	// nil-safe: a witness / service-less node just won't act on those directives. guestCfg is
 	// hoisted so the reconnect loop can rebuild the Manager on a fresh connection.
 	guestCfg := guest.Config{
 		HealthURL: cfg.HealthURL,
@@ -491,7 +491,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// would then refuse every OS upgrade with "no target/upgrader on this node" — i.e. the shipped
 	// state, and the whole free tier, could not take an OS update. A system closure is a
 	// property of the NODE; what happens to run on top of it cannot decide whether the node can
-	// be updated. Payload directives stay correctly refused: their own guard still reads spec.Name.
+	// be updated. Service directives stay correctly refused: their own guard still reads spec.Name.
 	mgr := newOSUpgrade(cfg, g, client, guestCfg, logf)
 	// Redundancy alerting: a data node warns when it loses a replica connection
 	// while still serving. Ntfy if a topic URL is configured, else a log-only notifier
@@ -527,7 +527,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
 
 	// Roll this node's per-cycle resource samples into hourly aggregates and upload
-	// them up the cloud seam (never raw). Only a payload node reporting to a cloud has
+	// them up the cloud seam (never raw). Only a node with services reporting to a cloud has
 	// dashboard metrics (volume/load); a witness or standalone node has none, so the
 	// aggregator stays nil and observe skips the upload. Built once here so it survives the
 	// reconnect loop (like the alerter).
@@ -831,7 +831,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	}
 	if err == nil && len(spec.Promoter) > 0 {
 		// A data node converges when quorate: drbd-reactor then promotes exactly one
-		// of them to Primary (VIP + payload), the rest settle Secondary. Gating on
+		// of them to Primary (VIP + services), the rest settle Secondary. Gating on
 		// quorate (not Primary) is what lets a multi-node cluster's secondaries
 		// converge instead of hanging. A witness has no promoter -- it just comes up.
 		err = client.WaitQuorate(bringup, cfg.Resource.Name, guestagent.DefaultPollInterval)
@@ -1144,7 +1144,7 @@ func resourceLog(r *telemetry.NodeResources) string {
 // Resources gathers the node's resource telemetry for the soak trend oracle: the
 // host agent's own footprint (measured in-process, so it's present on every node -- witness
 // included -- as the "does the product daemon leak" surface) plus the appliance's, read from
-// the guest via the sys.resources verb. Best-effort throughout: a witness or payload-less
+// the guest via the sys.resources verb. Best-effort throughout: a witness or service-less
 // node reports agent-only telemetry, and a guest read hiccup degrades to agent-only rather
 // than blanking the report or breaking the observe loop. Never nil (the agent footprint
 // always measures), so the trend oracle always has a numeric sample.
@@ -1331,7 +1331,7 @@ func parseSelfVmRSSKB(status []byte) int64 {
 	return 0
 }
 
-// Snapshot reads the node's current state into an api.NodeStatus (the payload reported up the shared/api seam). A failed Status read surfaces as a
+// Snapshot reads the node's current state into an api.NodeStatus (what is reported up the shared/api seam). A failed Status read surfaces as a
 // non-quorate, unhealthy snapshot rather than a hard error -- the observe loop
 // must ride out transient control-channel hiccups. The read error is returned
 // alongside so the loop can tell a dead channel (ErrChannelDown -> reconnect,
@@ -1391,11 +1391,11 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 		st.Healthy = !cl.Primary && cl.Quorate && cl.UpToDate
 	} else {
 		probe = url
-		// Prefer the in-guest probe (payload.health) so the health signal survives a substrate
+		// Prefer the in-guest probe (the service-health verb) so the health signal survives a substrate
 		// where the host can't reach the VIP (macvtap). Fall back to the legacy host->VIP GET only
 		// when the verb errors — an old guest built before it existed, which is always tap-based, so
 		// the LAN probe still works there.
-		healthy, herr := r.PayloadHealth(rctx, url)
+		healthy, herr := r.ServiceHealth(rctx, url)
 		if herr != nil {
 			healthy = probeHealth(rctx, url)
 		}
@@ -1405,7 +1405,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 }
 
 // hasService reports whether this node runs anything at all. The shipped state is FALSE — a node
-// is installed before it is given something to run — so this is the "is there a payload" test the
+// is installed before it is given something to run — so this is the "does it run anything" test the
 // singular `cfg.Service.Name != ""` used to be, with the trap that reading removed: it says
 // nothing about whether the node has a GUEST. A witness is Diskless; a zero-service anchor has a
 // guest, a closure and an OS the cloud may roll, and conflating the two is [V3b.3](d).
@@ -1449,7 +1449,7 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 		}
 		st := api.ServiceStatus{Name: s.Name, Manifest: s.Manifest}
 		if primary {
-			if active, err := r.PayloadActive(ctx, s.ServingUnit()); err == nil {
+			if active, err := r.ServiceActive(ctx, s.ServingUnit()); err == nil {
 				st.State = api.StateStopped
 				if active {
 					st.State = api.StateRunning
@@ -1464,7 +1464,7 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 // serviceStateReader is the one verb serviceStatuses needs: is this unit up? Narrow interface for
 // DI, not a seam.
 type serviceStateReader interface {
-	PayloadActive(ctx context.Context, unit string) (bool, error)
+	ServiceActive(ctx context.Context, unit string) (bool, error)
 }
 
 // serviceLog renders the reported services for the status line -- "name@identity" per service,
@@ -1504,7 +1504,7 @@ func (cfg Config) currentSystem(ctx context.Context, r guestReader) string {
 	return sys
 }
 
-// probeHealth GETs the payload health endpoint; a 200 is healthy, anything else
+// probeHealth GETs the health endpoint; a 200 is healthy, anything else
 // (including any error) is not.
 func probeHealth(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

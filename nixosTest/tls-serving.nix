@@ -91,7 +91,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("sync")
 
     # briard-reverse-proxy (woven into the promoter chain via briard-vip) hot-reloads the cert
-    # and serves HTTPS at the VIP, proxying to the payload — https://<name> is now true.
+    # and serves HTTPS at the VIP, proxying to the service — https://<name> is now true.
     primary.wait_until_succeeds("curl -fsS --cacert ${testCert}/fullchain.pem https://192.168.1.100/healthz")
     print("HTTPS served at the VIP, terminated by briard-reverse-proxy")
     # The front door also answers PLAIN http on :80 — the only door a free node has,

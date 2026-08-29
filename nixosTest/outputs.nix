@@ -174,7 +174,7 @@ let
 
   # The boot selector. Unlike os-stage this needs a second generation that IS on
   # the disk — the question is which of two bootable entries grub picks, not how bytes get
-  # there — so it takes a disk that bakes one, and no payload.
+  # there — so it takes a disk that bakes one, and no service.
   bootSelect = import ./boot-select.nix {
     inherit pkgs;
     guestDisk = bootSelectGuestDisk;
@@ -196,7 +196,7 @@ let
   reactorPauseDeadlock = import ./reactor-pause-deadlock.nix { inherit pkgs fixture guestModule; };
 
   # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing [B.85]:
-  # a lib.nix node converged the same way — DRBD Primary, volume mounted, payload serving, VIP up,
+  # a lib.nix node converged the same way — DRBD Primary, volume mounted, service serving, VIP up,
   # the reactor's `Before=` drop-in present — powered itself off in 1.5s while the SHIPPED guest
   # sat in that deadlock for 90s. The throwaway harness that showed this is not kept: it was green
   # against a broken product, which is the most expensive kind of test to leave lying around.
@@ -247,7 +247,7 @@ let
   };
 
   # On the DEFAULT macvtap substrate: the whole free-local `curl | sh` install
-  # -> green, proven by an OFF-BOX LAN client reaching the payload at the VIP, using the bundled
+  # -> green, proven by an OFF-BOX LAN client reaching the service at the VIP, using the bundled
   # qemu (no distro qemu) + a nested guest; plus the cattle/pet reinstall. It carries that
   # mode-independent chain here from the bridge test, so the default substrate carries it.
   installMacvtap = import ./install-macvtap.nix {
