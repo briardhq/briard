@@ -102,21 +102,29 @@ func TestNoAutoUpdate(t *testing.T) {
 	}
 }
 
-// TestOnlyImageUnitsAutoStart: the promoter decides what runs, so nothing but the boot-time
-// pre-warm may carry [Install]. A pod or container with [Install] would start itself on a
-// SECONDARY node — two nodes writing the same replicated volume is the one outcome the whole
-// single-primary design exists to prevent.
-func TestOnlyImageUnitsAutoStart(t *testing.T) {
+// TestNothingAutoStarts: NO rendered unit may carry [Install]. A pod or container with one would
+// start itself on a SECONDARY node — two nodes writing the same replicated volume is the one
+// outcome the whole single-primary design exists to prevent. An .image unit with one is the
+// regression the 2026-08-29 nightly caught: starting it is an unconditional `podman image pull`,
+// so systemd warming it behind our back
+// pulls an image that is already local, fails on a node with no registry, and makes the next
+// `switch-to-configuration switch` exit 4 — which the agent reads as a failed OS upgrade.
+//
+// This test was the inverse until 2026-08-29 (it REQUIRED [Install] on .image), which is why it
+// held while the nightly's os-reboot and os-upgrade both rolled back. Warming is a caller's job,
+// guarded by `podman image exists`; see ServiceWarm/warmImage.
+func TestNothingAutoStarts(t *testing.T) {
 	r := mustRender(t, ha())
 	for name, body := range r.Files {
-		hasInstall := strings.Contains(body, "[Install]")
-		isImage := strings.HasSuffix(name, ".image")
-		if hasInstall != isImage {
-			t.Fatalf("%s: [Install]=%v but .image=%v\n%s", name, hasInstall, isImage, body)
+		if strings.Contains(body, "[Install]") {
+			t.Fatalf("%s carries [Install] — systemd, not a guarded caller, would start it:\n%s", name, body)
 		}
 	}
-	if !strings.Contains(r.Files["briard-home-assistant-ha.image"], "WantedBy=multi-user.target") {
-		t.Fatal("the pre-warm unit is not boot-time — it must warm every node, not just the primary")
+	// The pre-warm unit must still EXIST and name its image: it is what ServiceWarm starts when
+	// the guard says the image is genuinely absent.
+	img := r.Files["briard-home-assistant-ha.image"]
+	if !strings.Contains(img, "[Image]") || !strings.Contains(img, "Image=") {
+		t.Fatalf("the pre-warm unit no longer names an image — nothing could warm a cold node:\n%s", img)
 	}
 }
 

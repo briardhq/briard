@@ -69,8 +69,8 @@ type Rendered struct {
 	// propagation left to fire. Recovery is the unit's own Restart= (see Render); the household
 	// hears about it through per-service health, which reports but never gates.
 	ContainerUnits []string
-	// ImageUnits are the .image pre-warm units, which are NOT promoter members — they are
-	// boot-time and run on every node (see Render).
+	// ImageUnits are the .image pre-warm units, which are NOT promoter members and NOT started
+	// by systemd either — every warm goes through a caller that guards the pull (see Render).
 	ImageUnits []string
 	// ImageRefs maps each of those warm units to the image REF it obtains. It exists because
 	// starting the unit is a `podman image pull` — measured, not assumed: quadlet generates
@@ -99,9 +99,25 @@ const prefix = "briard-"
 //  2. AutoUpdate is never set. Podman would change image identity behind our back, breaking
 //     announce-before-act and the health gate. Our upgrade path owns image identity.
 //
-// The .image units carry [Install] WantedBy=multi-user.target: boot-time, on every node, NOT
-// promoter-gated — warm standby is a node fact, and a standby is exactly where a cold pull would
-// hurt. Nothing else gets an [Install] section, because the promoter decides what runs.
+// NOTHING carries an [Install] section, the .image pre-warm units included. Warm standby is
+// still a node fact rather than a promoter one, but systemd is the wrong thing to entrust it to,
+// and that is what the 2026-08-29 nightly caught: starting an .image unit IS an unconditional
+// `podman image pull` (see ImageRefs), so a `WantedBy=multi-user.target` on one pulls even when
+// the image is already local.
+// MEASURED on a fleet node 2026-08-29, in the same millisecond: briard-dummy-app.service started
+// its container off localhost/briard-dummy@sha256:9c63… while briard-dummy-app-image.service was
+// failing to fetch that exact digest from a registry the node does not have. One failed unit is
+// all it takes for `switch-to-configuration switch` to exit 4, which the agent reads as a failed
+// commit — so this line turned every OS upgrade on a node with an installed service into a
+// rollback, and took os-reboot + os-upgrade down with it.
+//
+// The warm itself is unaffected, because it never came from here. Install, prewarm, bring-up and
+// converge each ensure their images through ServiceWarm/warmImage, which asks `podman image
+// exists` before starting anything. [Install] was the one path that skipped that guard, and it
+// could not even do the job it claimed: these units live on tmpfs under /run/containers/systemd,
+// so at boot — the moment it was meant to fire — they do not exist yet. It only ever fired when
+// something re-ran the generators after converge had written them, which is precisely the
+// switch-to-configuration case above.
 func Render(m manifest.Manifest) (Rendered, error) {
 	if err := m.Validate(); err != nil {
 		// Rendering an unvalidated manifest is how an injected line reaches a unit file. The
@@ -169,12 +185,12 @@ func Render(m manifest.Manifest) (Rendered, error) {
 		// One .image unit per container. Two containers sharing a ref yield two oneshot units
 		// that ensure the same image — idempotent and harmless, and cheaper to read than a
 		// dedup table keyed on a digest.
+		//
+		// No [Install]: this unit exists to BE started by a guarded caller, never to start
+		// itself. See Render's doc comment.
 		out.Files[unit+".image"] = join(
 			"[Image]",
 			"Image="+c.Image,
-			"",
-			"[Install]",
-			"WantedBy=multi-user.target",
 		)
 		out.ImageUnits = append(out.ImageUnits, unit+"-image.service")
 		if out.ImageRefs == nil {

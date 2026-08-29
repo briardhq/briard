@@ -2497,9 +2497,9 @@ type BringUpSpec struct {
 	// anything can be asked to start them.
 	ServiceUnits map[string]string
 	// ServiceImages maps each .image warm unit to the image REF it obtains, for every installed
-	// service. Their WantedBy=multi-user.target already fired during boot, so units written now
-	// would never run otherwise, and the containers' Pull=never would fail the chain at promotion
-	// instead of fetching.
+	// service. NOTHING else starts these units -- their [Install] was removed 2026-08-29, so systemd
+	// never touches them -- and the containers' Pull=never would fail the chain at promotion
+	// instead of fetching. Warming here is what makes a reboot land on a running service.
 	//
 	// A MAP, not a unit list, because bring-up must not pull. This comment used to claim "on a
 	// reboot the images are still in local storage, so this is a no-op, not a pull" -- and that was
