@@ -67,6 +67,56 @@ let
     };
   };
 
+
+  # THE BROKER AS A CATALOGUED SERVICE ([V3b.4]) -- the second real entry, and the one that proves
+  # "N services" rather than "one service, twice". Its manifest differs from HA's in the way that
+  # matters: `port` is the broker's HTTP MANAGEMENT endpoint (the only thing the liveness floor can
+  # probe -- MQTT is not HTTP), bound to the guest's loopback by the config the product renders
+  # for it (agent/mosquitto), while the port a household uses is 1883.
+  mosquittoFixture = import ./fixture-service.nix {
+    inherit pkgs;
+    name = "mosquitto";
+    container = "broker";
+    mount = "/mosquitto/data";
+    port = 9883;
+    healthPath = "/api/v1/listeners";
+    version = "2.1.2";
+    imageFile = pkgs.mosquitto-upgrade-pair.to;
+    imageName = "docker.io/library/eclipse-mosquitto";
+  };
+  # The same service published twice, 2.1.1 with 2.1.2 as a variant: installing the variant IS the
+  # upgrade. Both ends serve the same management API under Briard's config (measured before the
+  # pair was pinned -- guest-image/pkgs/mosquitto-image), so an upgrade that failed here would be
+  # reporting on the pipeline rather than on a broker that changed its API mid-pair.
+  mosquittoPairFixture = import ./fixture-service.nix {
+    inherit pkgs;
+    name = "mosquitto";
+    container = "broker";
+    mount = "/mosquitto/data";
+    port = 9883;
+    healthPath = "/api/v1/listeners";
+    version = "2.1.1";
+    imageFile = pkgs.mosquitto-upgrade-pair.from;
+    imageName = "docker.io/library/eclipse-mosquitto";
+    variants.to = {
+      version = "2.1.2";
+      imageFile = pkgs.mosquitto-upgrade-pair.to;
+      imageName = "docker.io/library/eclipse-mosquitto";
+    };
+  };
+
+  # The broker's own lifecycle: Briard's config in effect, its management API dark from the LAN,
+  # MQTT open on it, and retained state that survives a restart on the replicated volume.
+  mosquittoTest = import ./mosquitto.nix {
+    inherit pkgs guestModule;
+    fixture = mosquittoFixture;
+  };
+  # Two services on one node: both converge, upgrading one leaves the other alone, the rollback
+  # point restores only what moved, and a failover carries both.
+  servicesPair = import ./services-pair.nix {
+    inherit pkgs guestModule fixture;
+    mosquitto = mosquittoPairFixture;
+  };
   # HA installed as a service: real Home Assistant boots and serves, its recorder
   # SQLite + .storage landing on the DRBD subvolume.
   hassPayload = import ./hass-payload.nix { inherit pkgs guestModule; fixture = hassFixture; };
@@ -294,6 +344,14 @@ in
       tls-serving = tlsServing;
     };
 
+
+    # THE CATALOGUED SERVICES THEMSELVES ([V3b.4]). Everything else here tests a mechanism with a
+    # service standing in it; these test the services, and the properties that only exist once
+    # there is more than one of them.
+    services = {
+      mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
+      services-pair = servicesPair; # two services: upgrade one, the other keeps serving
+    };
     # Real Home Assistant as an INSTALLED SERVICE (2.4 GB image boot).
     ha = {
       hass-payload = hassPayload;

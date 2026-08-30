@@ -89,8 +89,15 @@ let
   #
   # NO REGISTRY, and that is measured rather than assumed — see fixture-service.nix for the three
   # facts. The image arrives as a tarball whose digest the manifest already pins.
-  fixtureInstall = fixture: config: {
-    description = "Prewarm the ${fixture.name} fixture onto this node (test harness)";
+  # ONE UNIT, N FIXTURES ([V3b.4]). A node may carry more than one catalogued service, because the
+  # coordination is plural and a harness that can stage only one can only ever prove the singular
+  # case — which is exactly how "N services" stayed a fixture-shaped claim.
+  #
+  # Each fixture is staged under /run/briard/fixtures/<service name>, and /run/briard/fixture is a
+  # symlink to the FIRST one: that is the path every single-service test and every helper default
+  # already reads, so adding the plural form changed no existing test.
+  fixturesInstall = fixtures: config: {
+    description = "Prewarm ${lib.concatMapStringsSep " + " (f: f.name) fixtures} onto this node (test harness)";
     wantedBy = [ "multi-user.target" ];
     # Before the promoter can be started by hand: a converge that runs before the image is
     # resident would have to pull it, and there is no registry on a hermetic node.
@@ -106,6 +113,10 @@ let
     };
     script = ''
       set -eu
+      rm -rf /run/briard/fixtures /run/briard/fixture
+      mkdir -p /run/briard/fixtures
+    ''
+    + lib.concatMapStrings (fixture: ''
       # The tarball load is what makes the manifest's digest resolvable locally, which is what
       # Pull=never requires. Measured: podman records a RepoDigest for a loaded archive.
       podman load -i ${fixture}/image.tar
@@ -114,13 +125,12 @@ let
       # The manifest, plus the RENDERER's sidecars (`dataroot`, `subdirs`, `units`, `identity`)
       # that install_fixture reads. The sidecars exist so a test never restates the layout the
       # product decides; no unit file is copied anywhere, because converge writes those itself.
-      rm -rf /run/briard/fixture
-      mkdir -p /run/briard/fixture
-      quadlet-render ${fixture}/manifest.json /run/briard/fixture
-      cp ${fixture}/manifest.json /run/briard/fixture/manifest.json
+      mkdir -p /run/briard/fixtures/${fixture.serviceName}
+      quadlet-render ${fixture}/manifest.json /run/briard/fixtures/${fixture.serviceName}
+      cp ${fixture}/manifest.json /run/briard/fixtures/${fixture.serviceName}/manifest.json
       # The image ref the manifest pins, exposed so a test can assert WARMTH by digest
       # rather than by a tag (a tag can match an image the manifest does not name).
-      cp ${fixture}/ref /run/briard/fixture/ref
+      cp ${fixture}/ref /run/briard/fixtures/${fixture.serviceName}/ref
 
       # EVERY OTHER PUBLISHED VERSION is warmed here too, and only its manifest is kept aside:
       # a test that upgrades installs a different manifest under the SAME name, which is what a
@@ -129,12 +139,18 @@ let
       ${lib.concatMapStrings (label: ''
         podman load -i ${fixture}/variants/${label}/image.tar
         podman image exists "$(cat ${fixture}/variants/${label}/ref)"
-        mkdir -p /run/briard/fixture/variants/${label}
-        cp ${fixture}/variants/${label}/manifest.json /run/briard/fixture/variants/${label}/manifest.json
-        cp ${fixture}/variants/${label}/ref /run/briard/fixture/variants/${label}/ref
+        mkdir -p /run/briard/fixtures/${fixture.serviceName}/variants/${label}
+        cp ${fixture}/variants/${label}/manifest.json /run/briard/fixtures/${fixture.serviceName}/variants/${label}/manifest.json
+        cp ${fixture}/variants/${label}/ref /run/briard/fixtures/${fixture.serviceName}/variants/${label}/ref
       '') (fixture.variantLabels or [ ])}
+    '') fixtures
+    + ''
+      ln -sfn /run/briard/fixtures/${(lib.head fixtures).serviceName} /run/briard/fixture
     '';
   };
+
+  # The singular form every existing test is written against.
+  fixtureInstall = fixture: fixturesInstall [ fixture ];
 
   # testScript helpers for a node built with `fixture`. Prepend to a test's script.
   #
@@ -155,18 +171,25 @@ let
   # Both the subvolume path and the subdirectory list come from the RENDERER's sidecars, so a
   # test never restates the layout the product decides.
   fixtureHelpers = ''
-    def install_fixture(m, variant=None):
+    def fixture_dir(service=None):
+        """Where a staged fixture lives. `service` names one when the node carries several
+        ([V3b.4]); the default is the symlink to the first, which is what a single-service node
+        has always read."""
+        return "/run/briard/fixture" if service is None else f"/run/briard/fixtures/{service}"
+
+    def install_fixture(m, variant=None, service=None):
         """Install the fixture -- or, with `variant`, a DIFFERENT VERSION of it under the same
         name, which is what an upgrade is. Both go through the product's own converge."""
-        dataroot = m.succeed("cat /run/briard/fixture/dataroot").strip()
+        d = fixture_dir(service)
+        dataroot = m.succeed(f"cat {d}/dataroot").strip()
         m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
-        for sub in m.succeed("cat /run/briard/fixture/subdirs").split():
+        for sub in m.succeed(f"cat {d}/subdirs").split():
             m.succeed(f"mkdir -p {dataroot}/{sub}")
         # The service's name IS the last element of its data root -- taken from the renderer
         # rather than restated, like everything else here.
         name = dataroot.rstrip("/").split("/")[-1]
-        src = "/run/briard/fixture/manifest.json" if variant is None \
-            else f"/run/briard/fixture/variants/{variant}/manifest.json"
+        src = f"{d}/manifest.json" if variant is None \
+            else f"{d}/variants/{variant}/manifest.json"
         m.succeed("mkdir -p /var/lib/briard/.services")
         m.succeed(f"cp {src} /var/lib/briard/.services/{name}.json")
         m.succeed("sync")
@@ -176,11 +199,11 @@ let
         m.succeed("briard-agent --converge")
         return dataroot
 
-    def fixture_units(m):
+    def fixture_units(m, service=None):
         """The service units the RENDERER produced -- never a list restated here. They are NOT
         promoter chain members ([V3b.3](f)): briard-services starts them, which is what keeps a
         crashed container from demoting the node."""
-        units = m.succeed("cat /run/briard/fixture/units").split()
+        units = m.succeed(f"cat {fixture_dir(service)}/units").split()
         assert units, f"the renderer produced no service units: {units}"
         return units
   '';
@@ -202,7 +225,15 @@ let
       # slot), and it is the way a shipped node gets one, which is the point: a test that put a
       # container on a node by a mechanism no user has proves a path nobody runs.
       fixture ? null,
+      # SEVERAL catalogued services on one node ([V3b.4]). `fixture` is the one-service spelling
+      # and stays exactly as it was; anything listed here is staged beside it, each under its own
+      # name, so a test can prove what the plural coordination actually does — that installing or
+      # upgrading one service leaves the others alone.
+      fixtures ? [ ],
     }:
+    let
+      allFixtures = lib.optional (fixture != null) fixture ++ fixtures;
+    in
     { config, ... }:
     {
       imports = [ guestModule ];
@@ -218,7 +249,7 @@ let
       # and converge from briard-services'. install_fixture runs both from a test shell, so both
       # have to be reachable there.
       environment.systemPackages = [ pkgs.curl ]
-        ++ lib.optionals (fixture != null) [ pkgs.btrfs-progs config.briard.agentPackage ];
+        ++ lib.optionals (allFixtures != [ ]) [ pkgs.btrfs-progs config.briard.agentPackage ];
       # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes
       # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
       # L2. So the harness states the address it is going to curl, rather than inheriting one
@@ -262,7 +293,7 @@ let
         "L+ /run/briard/drbd-reactor.d/briard.toml - - - - ${pkgs.writeText "briard.toml" promoterSnippet}"
       ];
       systemd.services.briard-test-fixture-install =
-        mkIf (fixture != null) (fixtureInstall fixture config);
+        mkIf (allFixtures != [ ]) (fixturesInstall allFixtures config);
     };
 in
 {
@@ -270,6 +301,7 @@ in
     mkResource
     mkNode
     fixtureInstall
+    fixturesInstall
     fixtureHelpers
     ;
 }

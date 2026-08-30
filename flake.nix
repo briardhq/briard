@@ -103,6 +103,8 @@
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =
         # 2025.12.0 (schema 53)}, straddling the recorder v52 `unit_class` migration.
         home-assistant-upgrade-pair = final.callPackage ./guest-image/pkgs/home-assistant-image-pair { };
+        # The broker, in the two versions the [V3b.4] upgrade tests switch between.
+        mosquitto-upgrade-pair = final.callPackage ./guest-image/pkgs/mosquitto-image { };
       };
 
       packages = forAllSystems (pkgs: {
@@ -114,6 +116,10 @@
         # refresh procedure) and each end can be built directly.
         home-assistant-image-2025_11 = (pkgs.callPackage ./guest-image/pkgs/home-assistant-image-pair { }).from;
         home-assistant-image-2025_12 = (pkgs.callPackage ./guest-image/pkgs/home-assistant-image-pair { }).to;
+        # The mosquitto pair, surfaced by name for the same reason: each end builds directly so
+        # its FOD sha256 can be filled in (see the pin refresh procedure).
+        mosquitto-image-2_1_1 = (pkgs.callPackage ./guest-image/pkgs/mosquitto-image { }).from;
+        mosquitto-image-2_1_2 = (pkgs.callPackage ./guest-image/pkgs/mosquitto-image { }).to;
         # The nixpkgs-pinned Postgres, surfaced by name so the lab soak (soak-demo.sh, a
         # host script — not a nixosTest) provisions an ephemeral PG from the SAME pin the
         # store nixosTest + schema.sql drift-gate use (real PG in the soak).
