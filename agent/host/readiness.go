@@ -40,10 +40,13 @@ type readinessProbe interface {
 	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
 	SupportsServiceReadiness() bool
 	// The probe half ([V3b.4]). A service whose work is invisible to a sample needs a signal it
-	// leaves behind and picks up again, so the seam carries both kinds: one service is asked what
-	// it is doing, another is asked whether it still has what it was given.
+	// leaves behind and picks up again, so this carries both kinds: one service is asked what it is
+	// doing, another is asked whether it still has what it was given.
+	//
+	// NO CAPABILITY CHECK BESIDE IT, deliberately. The agent and the guest closure are published
+	// together and the alpha reinstalls rather than upgrading in place, so a guest that does not
+	// know this verb is a mismatched pair -- a fault to see, not a configuration to tolerate.
 	ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error)
-	SupportsServiceProbe() bool
 }
 
 // settleWindow is how long the post-change sample waits before it is judged.
@@ -85,10 +88,6 @@ func (cfg Config) assessorFor(m manifest.Manifest, p readinessProbe, logf func(s
 		}
 		return entryAssessor{p: p, name: m.Name, port: m.Primary().Port, settle: settle}
 	case mosquitto.Name:
-		if !p.SupportsServiceProbe() {
-			logf("service install %s: this guest cannot run a service probe (no service.probe); gating on liveness alone", m.Name)
-			return nil
-		}
 		if settle == 0 {
 			settle = probeSettle
 		}

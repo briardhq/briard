@@ -78,12 +78,10 @@ type serviceInstaller interface {
 	// can. A guest without the verb leaves the install on the floor alone.
 	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
 	SupportsServiceReadiness() bool
-	// ServiceProbe/SupportsServiceProbe are the other kind of S1 input ([V3b.4]): a token left in
-	// the service's own durable state before the change and looked for after, for a service whose
-	// work no sample can see. Degrades the same way -- a guest without the verb leaves the install
-	// on the floor alone.
+	// ServiceProbe is the other kind of S1 input ([V3b.4]): a token left in the service's own
+	// durable state before the change and looked for after, for a service whose work no sample can
+	// see. No capability check: agent and guest closure publish together (see readinessProbe).
 	ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error)
-	SupportsServiceProbe() bool
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.

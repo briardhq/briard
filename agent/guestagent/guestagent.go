@@ -210,9 +210,10 @@ const (
 	// read is how a closed verb set stops describing what the host can make the guest do, which is
 	// the only thing that makes it a capability list.
 	//
-	// Gated by Supports and degrading rather than refusing, for the reason service.readiness gives:
-	// a guest too old to probe leaves the install on the liveness floor, which is what every node
-	// had before the gate existed.
+	// NO CAPABILITY CHECK GUARDS IT, and that is the alpha policy rather than an oversight: the
+	// agent and the guest closure are published together, and the alpha reinstalls rather than
+	// upgrading in place, so there is no such thing as a node whose guest is older than its agent.
+	// A guest that does not know this verb is a mismatched pair -- a fault worth seeing as one.
 	verbServiceProbe = "service.probe"
 )
 
@@ -2347,11 +2348,6 @@ func (g *Client) ServiceProbe(ctx context.Context, name, token string) (mosquitt
 	err := g.c.call(ctx, verbServiceProbe, serviceProbeRequest{Name: name, Token: token}, &out)
 	return out, err
 }
-
-// SupportsServiceProbe reports whether the guest can run a service's probe. A guest without it
-// leaves the install on the liveness floor alone -- degrade, never refuse, like the readiness
-// verb beside it.
-func (g *Client) SupportsServiceProbe() bool { return g.Supports(verbServiceProbe) }
 
 // ServiceConverge makes the guest match the volume, in place: every manifest under the replicated
 // `.services/` rendered, warmed and started ([V3b.3](f), converge.go). PRIMARY ONLY in effect --

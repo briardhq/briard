@@ -68,8 +68,6 @@ func (p *probe) ServiceProbe(_ context.Context, _ string, token string) (mosquit
 	return mosquitto.Sample{Serving: true, Token: p.stored}, nil
 }
 
-func (p *probe) SupportsServiceProbe() bool { return !p.old }
-
 func entriesOf(states ...string) []hass.Entry {
 	out := make([]hass.Entry, len(states))
 	for i, st := range states {

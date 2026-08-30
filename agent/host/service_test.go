@@ -97,8 +97,6 @@ func (f *fakeInstaller) ServiceProbe(_ context.Context, _ string, token string) 
 	return mosquitto.Sample{Serving: !f.notServing, Token: f.stored}, nil
 }
 
-func (f *fakeInstaller) SupportsServiceProbe() bool { return !f.noReadiness }
-
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
 	f.steps = append(f.steps, "status")
 	return model.QuorumState{Primary: f.primary, Quorate: true}, nil
