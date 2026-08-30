@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"briard.io/agent/hass"
 )
 
 // A manifest the fixture catalog could have signed. Digest-pinned, which is what makes an
@@ -403,5 +405,67 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 	}
 	if !g.Supports(verbServiceForget) {
 		t.Fatal("service.forget is handled but not advertised")
+	}
+}
+
+// A Home Assistant manifest as the catalog signs one. Same shape as the dummy's; the NAME is
+// what makes it different, which is the point of the assertions below.
+const hassManifest = `{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
+	`"image":"ghcr.io/home-assistant/home-assistant@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
+	`"mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}`
+
+func hassNode(t *testing.T) *convergeExec {
+	t.Helper()
+	x := &convergeExec{services: []string{"home-assistant.json"}, haveImage: true}
+	x.fakeExec.files = map[string]string{manifestDir + "/home-assistant.json": hassManifest}
+	return x
+}
+
+// TestConvergePreparesTheControlChannel: converge is where Home Assistant's control channel gets
+// materialised, and converge is the only path that covers every node — the Primary that ran the
+// install, a survivor promoting into a service it was never told about, and every guest reboot
+// (/run is tmpfs). Doing it at install time only would leave that survivor mounting files that do
+// not exist, and podman creates a missing bind source as a DIRECTORY — a directory shadowed over
+// HA's run script is a service that can never start.
+func TestConvergePreparesTheControlChannel(t *testing.T) {
+	x := hassNode(t)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	if _, ok := x.fakeExec.files[hass.TokenPath+".new"]; !ok {
+		t.Fatalf("converge minted no token; wrote %v", keys(x.fakeExec.files))
+	}
+	// Before the container starts, or the bind resolves to nothing.
+	prepared, started := -1, -1
+	for i, r := range x.fakeExec.runs {
+		if prepared < 0 && len(r) > 1 && r[0] == "podman" && r[1] == "cp" {
+			prepared = i
+		}
+		if started < 0 && len(r) == 3 && r[0] == "systemctl" && r[1] == "start" && r[2] == "briard-home-assistant-app.service" {
+			started = i
+		}
+	}
+	if prepared < 0 {
+		t.Fatalf("converge did not extract Home Assistant's own run script; ran %v", x.fakeExec.runs)
+	}
+	if started < 0 || prepared > started {
+		t.Fatalf("the control channel was prepared after the container started (prepare=%d start=%d)", prepared, started)
+	}
+}
+
+// TestConvergeLeavesOtherServicesAlone: the knowledge is keyed on the catalog name, so a service
+// the product knows nothing about must converge exactly as it did before any of this existed.
+func TestConvergeLeavesOtherServicesAlone(t *testing.T) {
+	x := dummyNode(t)
+	if err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	for _, r := range x.fakeExec.runs {
+		if len(r) > 1 && r[0] == "podman" && r[1] == "create" {
+			t.Fatalf("a service that is not home-assistant staged an extraction container: %v", r)
+		}
+	}
+	if _, ok := x.fakeExec.files[hass.TokenPath+".new"]; ok {
+		t.Fatal("a service that is not home-assistant got a Home Assistant token")
 	}
 }

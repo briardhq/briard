@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/manifest"
 )
@@ -114,6 +115,17 @@ func Converge(ctx context.Context, x Executor) error {
 	sort.Strings(warm) // the images are independent; the order is for a log a human reads
 	for _, u := range warm {
 		if err := warmImage(ctx, x, u, all.ImageRefs[u]); err != nil {
+			return fmt.Errorf("converge: %w", err)
+		}
+	}
+	// The per-service knowledge the product holds about one catalogued service, materialised on
+	// this node: today only Home Assistant has any, and it is the control channel its health gate
+	// reads through (agent/hass). Here because converge is the one path every node takes — the
+	// installing Primary, the survivor promoting into a service it was never told about, and
+	// every guest reboot, /run being tmpfs. After the warm, because it reads the image; before
+	// the start, because the containers bind what it writes.
+	for _, s := range svcs {
+		if err := hass.Prepare(ctx, x, s.m); err != nil {
 			return fmt.Errorf("converge: %w", err)
 		}
 	}
@@ -238,7 +250,7 @@ func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
 		if err != nil {
 			return nil, fmt.Errorf("converge: %s does not render: %w", n, err)
 		}
-		svcs = append(svcs, convergedService{name: m.Name, r: r})
+		svcs = append(svcs, convergedService{name: m.Name, m: m, r: r})
 	}
 	return svcs, nil
 }
@@ -249,7 +261,12 @@ func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
 // not stop the others).
 type convergedService struct {
 	name string
-	r    quadlet.Rendered
+	// m is the manifest as the volume gave it, kept beside the rendering because the units are
+	// not the only thing derived from it: hass.Prepare is handed the manifest so that the
+	// per-service knowledge stays keyed on the service's NAME and its pinned image, never on a
+	// unit filename it would have to parse back out.
+	m manifest.Manifest
+	r quadlet.Rendered
 }
 
 // touched reports whether any of this service's unit source was written differently this pass.

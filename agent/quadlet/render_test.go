@@ -156,15 +156,56 @@ func TestUnitOrder(t *testing.T) {
 
 // TestStatelessContainerGetsNoVolume: an empty Mount means the container keeps nothing, so it
 // must not be handed a directory it will never write.
+//
+// Deliberately NOT the ha() fixture: `home-assistant` is a name the renderer knows, and it always
+// carries the control-channel binds (see TestControlChannelIsKeyedOnTheServiceName). This
+// assertion is about statelessness, so it needs a service the product holds no knowledge about.
 func TestStatelessContainerGetsNoVolume(t *testing.T) {
 	m := ha()
+	m.Name = "sample-app"
 	m.Containers[0].Mount = ""
 	r := mustRender(t, m)
-	if strings.Contains(r.Files["briard-home-assistant-ha.container"], "Volume=") {
+	if strings.Contains(r.Files["briard-sample-app-ha.container"], "Volume=") {
 		t.Fatalf("stateless container got a Volume:\n%s", r)
 	}
 	if dirs := Subdirs(m); len(dirs) != 0 {
 		t.Fatalf("Subdirs = %v, want none for a stateless service", dirs)
+	}
+}
+
+// TestControlChannelIsKeyedOnTheServiceName: Home Assistant's primary container gets the two
+// binds its control channel needs (agent/hass), and nothing else does.
+//
+// The manifest cannot ask for a host bind — the schema refuses them so a catalog entry cannot
+// reach the host — so these come from the product, keyed on the catalog name. The negative half
+// is the one that matters: an identical manifest under any other name must render an identical
+// unit WITHOUT them, or "service-specific by design" would be a comment rather than a property.
+func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
+	binds := []string{
+		"Volume=/run/briard/hass:/briard:ro",
+		"Volume=/run/briard/hass/run:/etc/services.d/home-assistant/run:ro",
+	}
+	got := mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
+	for _, b := range binds {
+		if !strings.Contains(got, b) {
+			t.Fatalf("home-assistant is missing %q:\n%s", b, got)
+		}
+	}
+
+	other := ha()
+	other.Name = "sample-app"
+	got = mustRender(t, other).Files["briard-sample-app-ha.container"]
+	if strings.Contains(got, "/run/briard/hass") {
+		t.Fatalf("a service that is not home-assistant got the control channel:\n%s", got)
+	}
+
+	// And only the PRIMARY container: the mint runs inside the one container that is Home
+	// Assistant, not beside it.
+	side := ha()
+	side.Containers = append(side.Containers, manifest.Container{Name: "cache", Image: digestB})
+	got = mustRender(t, side).Files["briard-home-assistant-cache.container"]
+	if strings.Contains(got, "/run/briard/hass") {
+		t.Fatalf("a non-primary container got the control channel:\n%s", got)
 	}
 }
 
