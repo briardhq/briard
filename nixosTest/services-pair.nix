@@ -43,8 +43,12 @@ let
     {
       imports = [ baseNode ];
       # An MQTT client on every node: the broker's data is read from whichever node is NOT the one
-      # under test at that moment, and after the kill that set changes.
-      environment.systemPackages = [ pkgs.mosquitto ];
+      # under test at that moment, and after the kill that set changes. service-probe is the REAL
+      # S1 probe as a command, so the rig drives the shipping code rather than a lookalike.
+      environment.systemPackages = [
+        pkgs.mosquitto
+        (pkgs.callPackage ./service-probe-pkg.nix { })
+      ];
     };
   # The broker's rollback point, in the product's own layout: a read-only sibling of the service's
   # subvolume under the btrfs root's .snapshots dir (agent/quadlet.SnapshotPath), so it replicates
@@ -206,6 +210,52 @@ pkgs.testers.runNixOSTest {
     got = reader.succeed(f"mosquitto_sub -h {VIP} -t briard/pair -C 1 -W 20").strip()
     assert got == "before-the-kill", f"the broker's retained state did not cross the failover: {got!r}"
     new_primary.succeed(f"test -s {broker_root}/broker/mosquitto.db")
+
+
+    # ---- (5) THE S1 PROBE, ON A REAL BROKER ---------------------------------------------------
+    # The gate above the liveness floor ([V3b.4](d)): a token left in the service's own durable
+    # state before a change and looked for after. What is asserted here is the SIGNAL -- that the
+    # real probe discriminates the three states a broker can be in -- because a lib.nix rig cannot
+    # run the host's install path at all. The verdicts those states map to are unit-tested
+    # (agent/host/readiness.go), the same split hass-upgrade-rollback.nix makes for HA.
+    broker_ctr = "briard-${mosquitto.name}-${mosquitto.container}"
+
+    def probe(m, token=""):
+        return m.succeed(f"service-probe {broker_ctr} {token}").strip()
+
+    # (i) A REAL UPGRADE PRESERVES IT. The token is written through the product's own code path --
+    # published retained and persisted with SIGUSR1 -- so what crosses the upgrade is what the
+    # gate would have written, not a message a test left lying around.
+    out = probe(new_primary, "briard-rig-token")
+    assert out == "serving=true token=briard-rig-token", f"the probe did not store its token: {out}"
+    install_fixture(new_primary, variant="to", service="${mosquitto.name}")
+    new_primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    assert broker_version(new_primary) == "2.1.2", "the broker did not move to the upgraded version"
+    out = probe(new_primary)
+    assert out == "serving=true token=briard-rig-token", \
+        f"the token did not survive a real upgrade, so the gate would have rolled a good one back: {out}"
+
+    # (ii) A BROKER THAT CAME BACK EMPTY IS SEEN. This is the failure no floor can catch: the
+    # service answers its health endpoint and has lost every retained message the household had.
+    # The store is emptied under it, which is what a mount that no longer covers the data
+    # directory, or a database format the new version cannot read, produces.
+    units = fixture_units(new_primary, "${mosquitto.name}")
+    ctrs = [u for u in units if not u.endswith("-pod.service")]
+    for u in reversed(ctrs):
+        new_primary.succeed(f"systemctl stop {u}")
+    new_primary.succeed(f"rm -f {broker_root}/broker/mosquitto.db")
+    for u in units:
+        new_primary.succeed(f"systemctl start {u}")
+    new_primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    out = probe(new_primary)
+    assert out == "serving=true token=", f"a broker that lost everything still looked healthy to the probe: {out}"
+
+    # (iii) AND A BROKER NOBODY CAN CONNECT TO IS A DIFFERENT ANSWER, not the same one. The two
+    # are separate findings with separate reasons, so the probe has to tell them apart.
+    for u in reversed(ctrs):
+        new_primary.succeed(f"systemctl stop {u}")
+    out = probe(new_primary)
+    assert out == "serving=false token=", f"a stopped broker was not reported as unreachable: {out}"
 
     # Single-primary preserved: exactly one survivor holds the DRBD primary role.
     primaries = [m.name for m in survivors if role(m) == "Primary"]

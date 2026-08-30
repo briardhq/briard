@@ -20,8 +20,11 @@ import (
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent/deadman"
 	"briard.io/agent/hass"
+	"briard.io/agent/mosquitto"
+	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
 	"briard.io/shared/backup"
+	"briard.io/shared/manifest"
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
 )
@@ -198,6 +201,19 @@ const (
 	// Supports, for the reason service.installed sets out: a bump is fleet-wide, a new verb is
 	// refused by exactly the one path that needs it.
 	verbServiceReadiness = "service.readiness"
+
+	// service.probe stores a token in a service's OWN durable state and reports what is stored --
+	// the S1 readiness signal for a service that publishes no readiness of its own ([V3b.4]).
+	//
+	// A SECOND VERB RATHER THAN A WIDER service.readiness, because it does a different KIND of
+	// thing: readiness samples, this one writes. Folding a write into a verb whose name promises a
+	// read is how a closed verb set stops describing what the host can make the guest do, which is
+	// the only thing that makes it a capability list.
+	//
+	// Gated by Supports and degrading rather than refusing, for the reason service.readiness gives:
+	// a guest too old to probe leaves the install on the liveness floor, which is what every node
+	// had before the gate existed.
+	verbServiceProbe = "service.probe"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -274,7 +290,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbServiceReadiness, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbServiceReadiness, verbServiceProbe, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -456,6 +472,15 @@ type serviceWarmRequest struct {
 type serviceReadinessRequest struct {
 	Name string `json:"name"`
 	Port int    `json:"port"`
+}
+
+// serviceProbeRequest names the service to probe and, optionally, the token to store first
+// (service.probe). No port: the port a CLIENT of the broker uses is not the manifest's, which
+// names the endpoint the liveness floor probes -- so it is product knowledge, and it stays with
+// the rest of that service's knowledge rather than travelling on the wire.
+type serviceProbeRequest struct {
+	Name  string `json:"name"`
+	Token string `json:"token,omitempty"`
 }
 
 // certWriteRequest carries a renewed cert + key to land on the DRBD volume (cert.write).
@@ -977,6 +1002,33 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, fmt.Errorf("%s: no readiness signal is defined for %q", verbServiceReadiness, req.Name)
 			}
 			return hass.Readiness(ctx, x, req.Port)
+		case verbServiceProbe:
+			var req serviceProbeRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// A refusal for anything else, like service.readiness: the host only probes a service
+			// it has an assessor for, so an unknown name means the two sides disagree about which
+			// services the product knows -- news, not a quiet nothing.
+			if req.Name != mosquitto.Name {
+				return nil, fmt.Errorf("%s: no probe is defined for %q", verbServiceProbe, req.Name)
+			}
+			// The container is derived from the manifest ON THE VOLUME, not from the request. The
+			// name becomes a podman argument, and the volume's copy is the same document the
+			// renderer named the container from -- so this cannot be steered from the wire and
+			// cannot drift from what is actually running.
+			if err := safeUnitName(req.Name); err != nil { // the name is a path element
+				return nil, err
+			}
+			raw, err := x.ReadFile(manifestPath(req.Name))
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s is not installed on this volume: %w", verbServiceProbe, req.Name, err)
+			}
+			m, _, err := manifest.Parse(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s does not parse: %w", verbServiceProbe, req.Name, err)
+			}
+			return mosquitto.Probe(ctx, x, quadlet.ContainerName(m.Name, m.Primary().Name), req.Token)
 		case verbServiceConverge:
 			// No request body: converge takes its whole input from the volume, which is the point
 			// -- a caller that could name what to converge TO would be the node-was-told model
@@ -2283,6 +2335,23 @@ func (g *Client) ServiceReadiness(ctx context.Context, name string, port int) ([
 // every node did before the gate existed -- so this degrades rather than refuses, unlike the
 // verbs an install cannot be correct without.
 func (g *Client) SupportsServiceReadiness() bool { return g.Supports(verbServiceReadiness) }
+
+// ServiceProbe stores `token` in a service's own durable state (when one is given) and returns
+// what the service holds -- the S1 signal for a service whose work is invisible to a sample
+// ([V3b.4]). An empty token makes it a pure read.
+//
+// A NOT-SERVING sample is an ANSWER, not an error: it says no client can use this service, which
+// is exactly what the gate is asked to notice. Errors here are the probe itself failing.
+func (g *Client) ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error) {
+	var out mosquitto.Sample
+	err := g.c.call(ctx, verbServiceProbe, serviceProbeRequest{Name: name, Token: token}, &out)
+	return out, err
+}
+
+// SupportsServiceProbe reports whether the guest can run a service's probe. A guest without it
+// leaves the install on the liveness floor alone -- degrade, never refuse, like the readiness
+// verb beside it.
+func (g *Client) SupportsServiceProbe() bool { return g.Supports(verbServiceProbe) }
 
 // ServiceConverge makes the guest match the volume, in place: every manifest under the replicated
 // `.services/` rendered, warmed and started ([V3b.3](f), converge.go). PRIMARY ONLY in effect --

@@ -12,6 +12,7 @@ import (
 
 	"briard.io/agent/guest"
 	"briard.io/agent/hass"
+	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/selfupdate"
 	"briard.io/agent/services"
@@ -77,6 +78,12 @@ type serviceInstaller interface {
 	// can. A guest without the verb leaves the install on the floor alone.
 	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
 	SupportsServiceReadiness() bool
+	// ServiceProbe/SupportsServiceProbe are the other kind of S1 input ([V3b.4]): a token left in
+	// the service's own durable state before the change and looked for after, for a service whose
+	// work no sample can see. Degrades the same way -- a guest without the verb leaves the install
+	// on the floor alone.
+	ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error)
+	SupportsServiceProbe() bool
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
@@ -542,7 +549,7 @@ func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
 		Name:    m.Name,
 		DataDir: quadlet.DataRoot(m.Name),
 		Units:   rendered.Units,
-		Unit:    "briard-" + m.Name + "-" + primary.Name + ".service",
+		Unit:    quadlet.ContainerName(m.Name, primary.Name) + ".service",
 		// The identity of the bytes as read, not of a re-marshalling of them -- Parse returns it
 		// here for free, which is why the report reads it from the spec.
 		Manifest: string(id),

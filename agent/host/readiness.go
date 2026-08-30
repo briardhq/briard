@@ -2,12 +2,15 @@ package host
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
 	"briard.io/agent/guest"
 	"briard.io/agent/guest/entrygate"
 	"briard.io/agent/hass"
+	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
 )
 
@@ -36,6 +39,11 @@ import (
 type readinessProbe interface {
 	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
 	SupportsServiceReadiness() bool
+	// The probe half ([V3b.4]). A service whose work is invisible to a sample needs a signal it
+	// leaves behind and picks up again, so the seam carries both kinds: one service is asked what
+	// it is doing, another is asked whether it still has what it was given.
+	ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error)
+	SupportsServiceProbe() bool
 }
 
 // settleWindow is how long the post-change sample waits before it is judged.
@@ -65,20 +73,30 @@ const sampleBudget = 30 * time.Second
 // first is the shipped default, the second degrades rather than refuses — an install must not
 // fail because the gate above its floor is unavailable.
 func (cfg Config) assessorFor(m manifest.Manifest, p readinessProbe, logf func(string, ...any)) guest.ReadinessAssessor {
+	settle := cfg.readinessSettle
 	switch m.Name {
 	case hass.Name:
+		if !p.SupportsServiceReadiness() {
+			logf("service install %s: this guest cannot sample readiness (no service.readiness); gating on liveness alone", m.Name)
+			return nil
+		}
+		if settle == 0 {
+			settle = settleWindow
+		}
+		return entryAssessor{p: p, name: m.Name, port: m.Primary().Port, settle: settle}
+	case mosquitto.Name:
+		if !p.SupportsServiceProbe() {
+			logf("service install %s: this guest cannot run a service probe (no service.probe); gating on liveness alone", m.Name)
+			return nil
+		}
+		if settle == 0 {
+			settle = probeSettle
+		}
+		// A POINTER, because this assessor carries the token it minted from Baseline to Assess.
+		return &probeAssessor{p: p, name: m.Name, settle: settle}
 	default:
 		return nil
 	}
-	if !p.SupportsServiceReadiness() {
-		logf("service install %s: this guest cannot sample readiness (no service.readiness); gating on liveness alone", m.Name)
-		return nil
-	}
-	settle := cfg.readinessSettle
-	if settle == 0 {
-		settle = settleWindow
-	}
-	return entryAssessor{p: p, name: m.Name, port: m.Primary().Port, settle: settle}
 }
 
 // entryAssessor is the config-entry differential gate, wired to a guest that can sample one. The
@@ -146,4 +164,126 @@ func verdict(v entrygate.Verdict) guest.Verdict {
 	default:
 		return guest.VerdictPass
 	}
+}
+
+// probeSettle bounds how long a broker gets to start accepting clients before the gate judges it.
+//
+// It is a POLL, not a wait: the sample is retried until the service answers or this expires, so a
+// healthy upgrade pays only what it needs. Home Assistant's minute is a settle window because its
+// signal is a state machine that retries with backoff; a broker either accepts a connection or it
+// does not, and by the time this runs the liveness floor has already seen the service answer.
+const probeSettle = 30 * time.Second
+
+// probeRetry is how often the poll asks again. Short enough that a broker that comes up in two
+// seconds is judged in two seconds.
+const probeRetry = 2 * time.Second
+
+// probeAssessor is the S1 gate for a service whose work is invisible to a sample: it leaves a
+// token in the service's own durable state before the change and looks for it after ([V3b.4]).
+//
+// The two findings it can produce are kept apart on purpose, because they are different failures
+// with the same symptom at the floor — a service that answers:
+//
+//   - NOT SERVING: nothing can connect. The management endpoint the floor probes is not the port
+//     clients use, so a broker that refuses every client answers the floor perfectly.
+//   - SERVING, TOKEN GONE: it came back without the state it had. For a broker that means every
+//     retained message the household had is gone — device availability, the last reading of a
+//     sensor that publishes daily, the discovery topics HA rebuilds its entities from.
+//
+// BOTH ARE ROLLBACK, and this is the item's one real judgement call. The alternative, Hold, keeps
+// a service the household cannot use (or has silently lost data from) while it waits for someone
+// to notice — and the pre-upgrade snapshot is exactly the state that would fix it. The
+// false-positive path that would make Rollback dangerous is closed at the source rather than
+// hedged here: the baseline is only accepted once the token has round-tripped AND the broker has
+// been made to persist it (agent/mosquitto's SIGUSR1), so "the token is gone" cannot mean "the
+// token was never written down".
+type probeAssessor struct {
+	p      readinessProbe
+	name   string
+	settle time.Duration
+	// token is what Baseline stored, kept on the assessor as well as in the Baseline value so a
+	// mismatch can be reported as a mismatch rather than as an absence.
+	token string
+}
+
+// Baseline stores a fresh token in the service and confirms the service is serving.
+//
+// A FRESH TOKEN EVERY TIME, and that is not decoration: the topic is retained, so a value left by
+// a previous upgrade would still be there — and a broker that lost everything since would hand it
+// back, turning total data loss into a Pass. Randomness makes the answer evidence of THIS
+// upgrade's round trip.
+//
+// An error here degrades the install to the liveness floor, which is the right answer for both
+// ways it can fail: a service that is not serving clients BEFORE the change is a confounder, not
+// a regression, and a probe that could not run is the gate's own telemetry breaking.
+func (a *probeAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
+	ctx, cancel := context.WithTimeout(ctx, sampleBudget)
+	defer cancel()
+	token, err := newToken()
+	if err != nil {
+		return nil, err
+	}
+	s, err := a.p.ServiceProbe(ctx, a.name, token)
+	if err != nil {
+		return nil, err
+	}
+	if !s.Serving {
+		return nil, fmt.Errorf("readiness: %s was not serving clients before the change; nothing to compare against", a.name)
+	}
+	if s.Token != token {
+		// The write did not round-trip. Not a verdict about the service: it is this gate failing
+		// to establish a baseline, and it must not be dressed up as a regression later.
+		return nil, fmt.Errorf("readiness: %s did not store the probe token", a.name)
+	}
+	a.token = token
+	return token, nil
+}
+
+// Assess polls until the service is serving again, then asks whether it still holds the token.
+func (a *probeAssessor) Assess(ctx context.Context, base guest.Baseline) (guest.Verdict, string, error) {
+	want, ok := base.(string)
+	if !ok || want == "" {
+		return "", "", fmt.Errorf("readiness: baseline is %T, not a probe token", base)
+	}
+	deadline := time.Now().Add(a.settle)
+	var last mosquitto.Sample
+	for {
+		sampleCtx, cancel := context.WithTimeout(ctx, sampleBudget)
+		s, err := a.p.ServiceProbe(sampleCtx, a.name, "")
+		cancel()
+		if err != nil {
+			// The probe itself broke. Never a verdict — S1 does not revert a household's service
+			// because the gate could not ask.
+			return "", "", err
+		}
+		last = s
+		if s.Serving || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", fmt.Errorf("readiness: no time left to settle: %w", ctx.Err())
+		case <-time.After(probeRetry):
+		}
+	}
+	switch {
+	case !last.Serving:
+		return guest.VerdictRollback,
+			fmt.Sprintf("%s answers its health endpoint but accepts no clients", a.name), nil
+	case last.Token != want:
+		return guest.VerdictRollback,
+			fmt.Sprintf("%s came back without the state it had (its retained messages are gone)", a.name), nil
+	default:
+		return guest.VerdictPass, "", nil
+	}
+}
+
+// newToken mints the probe value. crypto/rand because the only property that matters is that it
+// cannot coincide with a value already on the topic — including one this code wrote before.
+func newToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("readiness: mint a probe token: %w", err)
+	}
+	return "briard-" + hex.EncodeToString(b[:]), nil
 }

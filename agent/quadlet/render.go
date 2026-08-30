@@ -270,3 +270,9 @@ func (r Rendered) String() string {
 	}
 	return b.String()
 }
+
+// ContainerName is the podman container (and unit prefix) for one container of one service. The
+// renderer decides it, so everything that needs to name a running container asks here rather than
+// rebuilding the string — the host's service spec does, and so does the guest when it has to
+// exec into one ([V3b.4]).
+func ContainerName(service, container string) string { return prefix + service + "-" + container }

@@ -24,6 +24,7 @@ import (
 
 	"briard.io/agent/drbd"
 	"briard.io/agent/hass"
+	"briard.io/agent/mosquitto"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -59,9 +60,13 @@ type fakeInstaller struct {
 	// readiness is the S1 differential sample, queued: the first call answers with the first
 	// element, the next with the second. Two calls per gated install (baseline, then settled),
 	// so a two-element queue is one whole verdict.
-	readiness    [][]hass.Entry
-	readinessEr  error
-	noReadiness  bool // the guest does not advertise service.readiness -- floor-only
+	readiness   [][]hass.Entry
+	readinessEr error
+	noReadiness bool // the guest does not advertise service.readiness -- floor-only
+	// the probe half ([V3b.4]): what the service is holding, and the two ways it can be broken.
+	stored       string
+	notServing   bool
+	loseState    bool
 	readinessHit int
 }
 
@@ -78,6 +83,21 @@ func (f *fakeInstaller) ServiceReadiness(_ context.Context, name string, port in
 }
 
 func (f *fakeInstaller) SupportsServiceReadiness() bool { return !f.noReadiness }
+
+// The probe half ([V3b.4]). Nothing in this file's tests installs mosquitto, so the default is a
+// service that holds what it is given -- present so the fake satisfies the seam, and so a test
+// that DOES install a broker can make it lose its state by setting loseState.
+func (f *fakeInstaller) ServiceProbe(_ context.Context, _ string, token string) (mosquitto.Sample, error) {
+	if token != "" {
+		f.stored = token
+	}
+	if f.loseState {
+		f.stored = ""
+	}
+	return mosquitto.Sample{Serving: !f.notServing, Token: f.stored}, nil
+}
+
+func (f *fakeInstaller) SupportsServiceProbe() bool { return !f.noReadiness }
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
 	f.steps = append(f.steps, "status")
