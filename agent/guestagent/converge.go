@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 )
 
@@ -126,11 +126,11 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 		}
 	}
 	// The per-service knowledge the product holds about one catalogued service, materialised on
-	// this node: today only Home Assistant has any, and it is the control channel its health gate
-	// reads through (agent/hass). Here because converge is the one path every node takes — the
-	// installing Primary, the survivor promoting into a service it was never told about, and
-	// every guest reboot, /run being tmpfs. After the warm, because it reads the image; before
-	// the start, because the containers bind what it writes.
+	// this node: Home Assistant's control channel, mosquitto's config file (agent/services).
+	// Here because converge is the one path every node takes — the installing Primary, the
+	// survivor promoting into a service it was never told about, and every guest reboot, /run
+	// being tmpfs. After the warm, because it reads the image; before the start, because the
+	// containers bind what it writes.
 	//
 	// A FAILURE HERE COSTS ONE SERVICE, NOT THE NODE. Preparation is the one step whose inputs
 	// are the SERVICE's (its image's own layout), so a service whose upstream packaging moved
@@ -145,7 +145,7 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 	// from making that directory at all.
 	var skipped []string
 	for i := range svcs {
-		if err := hass.Prepare(ctx, x, svcs[i].m); err != nil {
+		if err := services.Prepare(ctx, x, svcs[i].m); err != nil {
 			log.Printf("converge: %s cannot be prepared (%v); it is NOT being started, the node is serving what it can", svcs[i].name, err)
 			svcs[i].skip = true
 			skipped = append(skipped, svcs[i].name)
@@ -307,7 +307,7 @@ func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
 type convergedService struct {
 	name string
 	// m is the manifest as the volume gave it, kept beside the rendering because the units are
-	// not the only thing derived from it: hass.Prepare is handed the manifest so that the
+	// not the only thing derived from it: services.Prepare is handed the manifest so that the
 	// per-service knowledge stays keyed on the service's NAME and its pinned image, never on a
 	// unit filename it would have to parse back out.
 	m manifest.Manifest

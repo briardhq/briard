@@ -14,6 +14,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/selfupdate"
+	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/manifest"
@@ -387,15 +388,11 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// address to be guessed, which walks the user to the front door's "nothing is routed here"
 	// page and reads a working install as a broken one.
 	//
-	// Lead with the NAME, the doctrine install.sh already prints under: the name stays true if
-	// the address moves. Only the name is offered, because it is the only half this code can
-	// state truthfully -- under DHCP the VIP is acquired in-guest and rebuilt per cycle, and
-	// printing a plausible-but-wrong address is the failure [V3.17] exists to end. No published
-	// name (a witness, or FLOCK_NAME unset) means no URL to promise: say the port and stop.
-	reach := fmt.Sprintf("it answers on port %d", primary.Port)
-	if cfg.FlockName != "" {
-		reach = fmt.Sprintf("reach it at http://briard-%s.local:%d/", cfg.FlockName, primary.Port)
-	}
+	// The sentence itself is the registry's (agent/services), because it is not the same sentence
+	// for every service: the manifest's port is what the liveness floor probes, which for a
+	// broker is a management endpoint on the guest's loopback rather than anything a household
+	// opens.
+	reach := services.Reach(m, cfg.FlockName)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
 

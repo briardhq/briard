@@ -1,0 +1,79 @@
+// Package catalog holds the published service manifests. It has no code: the test is the point.
+//
+// It parses every entry with the SAME function a node uses, so the schema check that would
+// otherwise happen for the first time on a household's node happens here instead. The failures it
+// is built to catch are the cheap ones that are expensive live: an image reference that is not
+// digest-pinned, a container name that is not a slug, a missing or duplicated primary, a health
+// path that is not a path — every one of them a manifest a node will refuse AFTER the signature
+// verified and the fetch succeeded.
+package catalog
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"briard.io/agent/mosquitto"
+	"briard.io/shared/manifest"
+)
+
+func TestEveryPublishedEntryParses(t *testing.T) {
+	entries, err := filepath.Glob("*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no catalog entries found; this test is vacuous without them")
+	}
+	for _, path := range entries {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, id, err := manifest.Parse(raw)
+			if err != nil {
+				t.Fatalf("a node would refuse this entry: %v", err)
+			}
+			// The filename is what the node requests (`<name>.json`), so a manifest whose name
+			// differs is one no `briard service install <name>` can ever reach.
+			if want := strings.TrimSuffix(path, ".json"); m.Name != want {
+				t.Errorf("entry is served as %q but names itself %q", want, m.Name)
+			}
+			// The identity is the hash of the bytes as published. Recording it in the log is how
+			// a reviewer sees that an edit here is a new service version, not a cosmetic change.
+			t.Logf("%s %s -> %s", m.Name, m.Version, id)
+			// A trailing newline is a different identity for the same service (see README).
+			if strings.HasSuffix(string(raw), "\n") {
+				t.Error("entry ends in a newline; the published bytes do not, and the bytes are the identity")
+			}
+		})
+	}
+}
+
+// TestMosquittoEntryMatchesTheProductsConfig is the cross-document check: this entry and the
+// config agent/services renders for it are two files that must agree, written in two languages,
+// and nothing at runtime would notice them drifting apart. A port changed here and not there is a
+// health gate that can never pass; a mount changed here and not there puts the broker's retained
+// state outside the replicated volume, where a failover silently loses it.
+func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
+	raw, err := os.ReadFile("mosquitto.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := manifest.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := m.Primary()
+	if p.Port != mosquitto.HealthPort {
+		t.Errorf("nodes are told to probe port %d; the config opens %d", p.Port, mosquitto.HealthPort)
+	}
+	if p.HealthPath != mosquitto.HealthPath {
+		t.Errorf("nodes are told to probe %q; the broker's API serves %q", p.HealthPath, mosquitto.HealthPath)
+	}
+	if p.Mount != mosquitto.DataMount {
+		t.Errorf("the replicated volume is bound at %q; the config persists into %q", p.Mount, mosquitto.DataMount)
+	}
+}

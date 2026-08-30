@@ -33,7 +33,7 @@ import (
 	"sort"
 	"strings"
 
-	"briard.io/agent/hass"
+	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 )
 
@@ -154,13 +154,12 @@ func Render(m manifest.Manifest) (Rendered, error) {
 			// a subvolume or rollback breaks outright.
 			lines = append(lines, "Volume="+DataPath(m.Name, c.Name)+":"+c.Mount)
 		}
-		// The binds one CATALOGUED SERVICE needs beyond its own data, which today is Home
-		// Assistant's control channel and nothing else (agent/hass). They cannot come from the
-		// manifest — the schema refuses host binds on purpose, so that a catalog entry cannot ask
-		// for the host — so they come from the product, keyed on the service's name. Render stays
-		// a pure function of the manifest: the same manifest still renders the same units on
-		// every node.
-		for _, v := range hass.Volumes(m, c) {
+		// The binds one CATALOGUED SERVICE needs beyond its own data — Home Assistant's control
+		// channel, mosquitto's config (agent/services). They cannot come from the manifest — the
+		// schema refuses host binds on purpose, so that a catalog entry cannot ask for the host —
+		// so they come from the product, keyed on the service's name. Render stays a pure
+		// function of the manifest: the same manifest still renders the same units on every node.
+		for _, v := range services.Volumes(m, c) {
 			lines = append(lines, "Volume="+v)
 		}
 		for _, k := range sortedKeys(c.Env) {

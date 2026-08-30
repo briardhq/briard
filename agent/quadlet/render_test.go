@@ -263,3 +263,38 @@ func TestRenderRefusesInvalid(t *testing.T) {
 		t.Fatal("Render accepted a manifest carrying a unit-injection payload")
 	}
 }
+
+// TestBrokerRendersItsConfigAndItsData: the second catalogued service renders as a plain unit
+// plus the one bind the product holds for it — its config, read-only, over the image's baked one
+// ([V3b.4]). The negative half is the same one the control channel gets: the same manifest under
+// another name renders without it.
+//
+// It is here rather than only in agent/services because THIS is where a bind reaches a unit file:
+// a registry that returned the right string and a renderer that dropped it would pass every test
+// in that package and leave the broker reading the config it ships with — persistence off,
+// management API on every interface.
+func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
+	m := manifest.Manifest{
+		Name:    "mosquitto",
+		Version: "2.1.2",
+		Containers: []manifest.Container{{
+			Name: "broker", Image: digestB, Mount: "/mosquitto/data",
+			Primary: true, Port: 9883, HealthPath: "/api/v1/listeners",
+		}},
+	}
+	got := mustRender(t, m).Files["briard-mosquitto-broker.container"]
+	for _, want := range []string{
+		"Volume=/run/briard/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro",
+		"Volume=/var/lib/briard/mosquitto/broker:/mosquitto/data",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("mosquitto is missing %q:\n%s", want, got)
+		}
+	}
+
+	other := m
+	other.Name = "sample-app"
+	if got := mustRender(t, other).Files["briard-sample-app-broker.container"]; strings.Contains(got, "/run/briard/mosquitto") {
+		t.Fatalf("a service that is not mosquitto got the broker's config:\n%s", got)
+	}
+}
