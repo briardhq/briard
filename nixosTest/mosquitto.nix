@@ -98,21 +98,44 @@ pkgs.testers.runNixOSTest {
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the broker did not return the retained message: {got!r}"
 
-    # (4) IT KEEPS WHAT IT WAS TOLD TO KEEP. mosquitto writes its database on a clean stop, so the
-    # restart both proves persistence and puts the file where the next assertion looks.
+    # (4) IT KEEPS WHAT IT WAS TOLD TO KEEP -- across a clean bounce and across a crash.
     #
-    # The CONTAINER unit is restarted, never the pod: `systemctl stop <pod>` makes podman kill the
-    # members out from under their own units (agent/quadlet says why), which is not the shape a
-    # household ever produces.
-    broker = [u for u in fixture_units(primary) if not u.endswith("-pod.service")]
-    assert len(broker) == 1, f"expected one container unit, got {broker}"
-    primary.succeed(f"systemctl restart {broker[0]}")
-    other.wait_until_succeeds(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10", timeout=120)
+    # THE BOUNCE IS THE PRODUCT'S OWN SEQUENCE, and it has to be: `systemctl restart` on a
+    # container unit does not work at all in a pod, MEASURED here on the first run of this test.
+    # Stopping the container takes the POD down with it, and the start half then fails with
+    # `Bound to unit briard-mosquitto-pod.service, but unit isn't active`. So the units are
+    # stopped containers-first and started pod-first -- exactly what converge does
+    # (agent/guestagent) and the reason it never spells this as a restart.
+    units = fixture_units(primary)
+    containers = [u for u in units if not u.endswith("-pod.service")]
+    assert len(containers) == 1, f"expected one container unit, got {containers}"
+    for u in reversed(containers):
+        primary.succeed(f"systemctl stop {u}")
+    for u in units:
+        primary.succeed(f"systemctl start {u}")
+    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners", timeout=120)
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
-    assert got == "before-restart", f"the retained message did not survive a restart: {got!r}"
+    assert got == "before-restart", f"the retained message did not survive a bounce: {got!r}"
 
     # And the file is on the REPLICATED subvolume, not in the container's own layer -- the
     # difference between a broker whose state fails over and one whose state is lost with the node.
+    # mosquitto writes it on a clean stop, so by here it exists and holds what was published.
     primary.succeed(f"test -s {dataroot}/broker/mosquitto.db")
+
+    # THE CRASH, which is the household's actual failure mode and a claim [V3b.3](f) rests on:
+    # service units are NOT promoter chain members, so nothing outside the unit brings a dead
+    # container back -- its own `Restart=always` is the whole recovery. A SIGKILL is the honest
+    # test of that, and the retained message is already on disk from the clean stop above, so what
+    # comes back is answering from the replicated volume rather than from memory.
+    primary.succeed(f"systemctl kill --signal=SIGKILL {containers[0]}")
+    primary.wait_until_succeeds(f"systemctl is-active {containers[0]}", timeout=180)
+    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners", timeout=180)
+    got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
+    assert got == "before-restart", f"the broker did not recover its state after a crash: {got!r}"
+
+    # The node did NOT demote for it: a crashed service alerts, it never fails the household over
+    # ([V3b.3](f)). The primary is still primary and the front door still answers.
+    assert role(primary) == "Primary", "a crashed container demoted the node"
+    primary.succeed(f"curl -fsS -o /dev/null http://{VIP}/healthz")
   '';
 }
