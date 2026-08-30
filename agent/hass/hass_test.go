@@ -27,6 +27,14 @@ type fake struct {
 	files map[string]string
 	runs  [][]string
 	fail  func(name string, args []string) error
+	// extracted is what a `podman cp` out of the image yields. "" models the copy producing
+	// nothing readable -- a directory, or a path that moved.
+	extracted string
+}
+
+// withImage is a fake whose image hands over a plausible s6 run script.
+func withImage() *fake {
+	return &fake{extracted: "#!/usr/bin/with-contenv bashio\nexec python3 -m homeassistant\n"}
 }
 
 func (f *fake) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -42,6 +50,14 @@ func (f *fake) Run(_ context.Context, name string, args ...string) ([]byte, erro
 		if v, ok := f.files[args[1]]; ok {
 			delete(f.files, args[1])
 			f.files[args[2]] = v
+		}
+	}
+	// `podman cp` is modelled too, because what it produced is now checked: the extraction has
+	// to come back as a readable, non-empty file or it is refused. extracted lets a test say
+	// what the image handed over -- including nothing at all.
+	if name == "podman" && len(args) == 3 && args[0] == "cp" {
+		if f.extracted != "" {
+			f.WriteFile(args[2], []byte(f.extracted))
 		}
 	}
 	return nil, nil
@@ -84,7 +100,7 @@ func (f *fake) ran(argv ...string) bool {
 // will bind — a token, the mint, our wrapper, and the image's own run extracted out of the
 // digest the manifest pins.
 func TestPrepareMaterialisesTheChannel(t *testing.T) {
-	f := &fake{}
+	f := withImage()
 	if err := Prepare(context.Background(), f, ha()); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -144,7 +160,7 @@ func TestPrepareIsOnlyForHomeAssistant(t *testing.T) {
 // Home Assistant, so a token that is already there survives. Rotation comes from tmpfs — a guest
 // reboot clears /run, and nothing is running then either.
 func TestTokenIsEnsuredNotRotated(t *testing.T) {
-	f := &fake{}
+	f := withImage()
 	ctx := context.Background()
 	if err := Prepare(ctx, f, ha()); err != nil {
 		t.Fatalf("first Prepare: %v", err)
@@ -162,7 +178,8 @@ func TestTokenIsEnsuredNotRotated(t *testing.T) {
 // empty string as a credential is the failure worth being explicit about. (The mint refuses it
 // too — this is the node-side half of the same guard.)
 func TestShortTokenIsReplaced(t *testing.T) {
-	f := &fake{files: map[string]string{TokenPath: "\n"}}
+	f := withImage()
+	f.files = map[string]string{TokenPath: "\n"}
 	if err := Prepare(context.Background(), f, ha()); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -277,5 +294,57 @@ func TestMintAsksForAdminAndPrunes(t *testing.T) {
 		if strings.Contains(scriptSource, copied) {
 			t.Fatalf("the mint still imports %q, so it is rebuilding the bootstrap by hand", copied)
 		}
+	}
+}
+
+// TestExtractionRefusesWhatIsNotAScript: `podman cp` copies a DIRECTORY as happily as a file, and
+// a native s6-rc service IS a directory holding a `run`. So a layout change that turned this path
+// into a directory would otherwise mount a directory over Home Assistant's run script — the same
+// unstartable container a missing bind source produces. Anything that does not read back as a
+// non-empty file is refused.
+func TestExtractionRefusesWhatIsNotAScript(t *testing.T) {
+	for _, tc := range []struct{ name, extracted string }{
+		{"nothing readable", ""},
+		{"an empty file", ""},
+	} {
+		f := &fake{extracted: tc.extracted}
+		err := Prepare(context.Background(), f, ha())
+		if err == nil {
+			t.Fatalf("%s: extraction was accepted", tc.name)
+		}
+		if _, ok := f.files[originalPath]; ok {
+			t.Fatalf("%s: a bad extraction was installed anyway", tc.name)
+		}
+	}
+}
+
+// TestExtractionFailureNamesTheLayout is the whole of the breadth this package has, and it is
+// DIAGNOSTIC, never adaptive. The bind path is fixed when the unit is rendered, before this code
+// can look at anything, and an upstream layout change is meant to fail a blessed image in catalog
+// CI rather than be papered over on a household's node. What the search buys is that the CI
+// failure names the layout the image actually has — including the native s6-rc tree that a
+// migration off the legacy one would use — instead of an errno.
+func TestExtractionFailureNamesTheLayout(t *testing.T) {
+	f := &fake{}
+	// The image answers the layout probe but not the script itself: the shape of a service that
+	// moved.
+	f.fail = func(name string, args []string) error {
+		if name == "podman" && len(args) == 3 && args[0] == "cp" && strings.HasSuffix(args[1], s6Run) {
+			return errors.New("exit status 125")
+		}
+		return nil
+	}
+	err := Prepare(context.Background(), f, ha())
+	if err == nil {
+		t.Fatal("a failed extraction was accepted")
+	}
+	for _, root := range serviceRoots {
+		if !strings.Contains(err.Error(), root) {
+			t.Fatalf("the error does not report %s, so a layout change reads as an errno: %v", root, err)
+		}
+	}
+	// And it must have LOOKED rather than guessed.
+	if !f.ran("podman", "cp", extractCtr+":/etc/s6-overlay/s6-rc.d", Dir+"/layout") {
+		t.Fatalf("the native s6-rc tree was never probed; ran: %v", f.runs)
 	}
 }

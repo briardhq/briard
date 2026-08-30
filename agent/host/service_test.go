@@ -49,9 +49,13 @@ type fakeInstaller struct {
 	renderEr     error
 	provEr       error
 	convergeEr   error
-	forgetEr     error
-	warmEr       error
-	restoreEr    error
+	// convergeSkips are the services converge reports it could not PREPARE, having started the
+	// rest. An install whose own service is named there must fail: the node is still serving the
+	// prior version.
+	convergeSkips []string
+	forgetEr      error
+	warmEr        error
+	restoreEr     error
 	// readiness is the S1 differential sample, queued: the first call answers with the first
 	// element, the next with the second. Two calls per gated install (baseline, then settled),
 	// so a two-element queue is one whole verdict.
@@ -122,9 +126,9 @@ func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
 
 // ServiceConverge is what an install does instead of rewriting the promoter chain: the volume
 // is written first, and this tells the node to re-read it ([V3b.3](f)).
-func (f *fakeInstaller) ServiceConverge(context.Context) error {
+func (f *fakeInstaller) ServiceConverge(context.Context) ([]string, error) {
 	f.steps = append(f.steps, "converge")
-	return f.convergeEr
+	return f.convergeSkips, f.convergeEr
 }
 func (f *fakeInstaller) SupportsServiceConverge() bool { return !f.oldGuest }
 func (f *fakeInstaller) ServiceForget(_ context.Context, name string) error {
@@ -1276,5 +1280,34 @@ func TestUpgradeOfAnUnknownServiceIsFloorOnly(t *testing.T) {
 	}
 	if f.readinessHit != 0 {
 		t.Fatalf("a service with no assessor sampled readiness %d times, want 0", f.readinessHit)
+	}
+}
+
+// TestInstallFailsWhenItsOwnServiceWasSkipped is the other half of converge's containment. A
+// preparation failure is contained there so a promoting node keeps the services that work — which
+// means converge SUCCEEDS while declining to start ours. For an install that is the wrong answer:
+// the old container is still serving, so the health gate below would pass on it and the install
+// would report a version nothing is running.
+func TestInstallFailsWhenItsOwnServiceWasSkipped(t *testing.T) {
+	f := &fakeInstaller{convergeSkips: []string{"home-assistant"}}
+	o := upgradeWith(t, f)
+	if o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back — converge did not start our service", o)
+	}
+	if !strings.Contains(o.Detail, "could not prepare") {
+		t.Fatalf("the outcome does not say why: %q", o.Detail)
+	}
+}
+
+// TestInstallIgnoresAnotherServiceBeingSkipped: containment cuts both ways. A DIFFERENT service
+// failing to prepare is not this install's problem, and failing here would make one broken
+// catalog entry block every other install on the node.
+func TestInstallIgnoresAnotherServiceBeingSkipped(t *testing.T) {
+	f := &fakeInstaller{
+		convergeSkips: []string{"mosquitto"},
+		readiness:     [][]hass.Entry{sample("loaded"), sample("loaded")},
+	}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done — another service's skip is not ours", o)
 	}
 }

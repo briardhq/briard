@@ -227,7 +227,15 @@ func runInternal(args []string) {
 	// Flags rather than `briard` verbs for the same reason as --guest-shutdown: nobody types them.
 	// They are plumbing between the agent and a unit file, and drbd-reactor is the only caller.
 	if *converge || *convergeStop {
-		run, what := guestagent.Converge, "converge"
+		// Converge's skip list is DROPPED here on purpose. This is drbd-reactor's call, and a
+		// service it could not prepare must not fail the unit: briard-services is a chain member,
+		// so exiting non-zero would take the promotion down over one service's packaging. Converge
+		// has already logged which one and declined to start it. The install path reads the list
+		// through the verb, where failing IS the right answer.
+		run, what := func(ctx context.Context, x guestagent.Executor) error {
+			_, err := guestagent.Converge(ctx, x)
+			return err
+		}, "converge"
 		if *convergeStop {
 			run, what = guestagent.ConvergeStop, "converge-stop"
 		}

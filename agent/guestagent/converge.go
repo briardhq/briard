@@ -92,15 +92,22 @@ const unitPrefix = "briard-"
 //
 // A node with nothing installed converges successfully to nothing. That is the shipped state, not
 // an error.
-func Converge(ctx context.Context, x Executor) error {
+//
+// It RETURNS the services it could not prepare, having started every other one. That list is not
+// bookkeeping: preparation is per-service work that can fail for one service and not the rest
+// (agent/hass), and the two callers need opposite things from it. `briard-services` is a promoter
+// chain member, so it must promote anyway and let the household keep the services that work; an
+// INSTALL must fail, because the service it was told to install is the one that did not start.
+// Same code, one report, each caller deciding for itself.
+func Converge(ctx context.Context, x Executor) ([]string, error) {
 	svcs, err := renderVolume(ctx, x)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	all := merged(svcs)
 	changed, err := writeUnits(ctx, x, all)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Warm before starting, not during: the containers are Pull=never, so an image that is not
 	// resident fails the container rather than fetching it. Absence here means the design was not
@@ -115,7 +122,7 @@ func Converge(ctx context.Context, x Executor) error {
 	sort.Strings(warm) // the images are independent; the order is for a log a human reads
 	for _, u := range warm {
 		if err := warmImage(ctx, x, u, all.ImageRefs[u]); err != nil {
-			return fmt.Errorf("converge: %w", err)
+			return nil, fmt.Errorf("converge: %w", err)
 		}
 	}
 	// The per-service knowledge the product holds about one catalogued service, materialised on
@@ -124,17 +131,39 @@ func Converge(ctx context.Context, x Executor) error {
 	// installing Primary, the survivor promoting into a service it was never told about, and
 	// every guest reboot, /run being tmpfs. After the warm, because it reads the image; before
 	// the start, because the containers bind what it writes.
-	for _, s := range svcs {
-		if err := hass.Prepare(ctx, x, s.m); err != nil {
-			return fmt.Errorf("converge: %w", err)
+	//
+	// A FAILURE HERE COSTS ONE SERVICE, NOT THE NODE. Preparation is the one step whose inputs
+	// are the SERVICE's (its image's own layout), so a service whose upstream packaging moved
+	// must not take the other N-1 down with it, or the promoter chain becomes hostage to whatever
+	// a vendor did to a container this month. The service is skipped and named; everything else
+	// promotes.
+	//
+	// SKIPPING IS ALSO WHAT MAKES IT SAFE, which is why this cannot simply log and carry on to
+	// the start: the rendered unit names bind sources Prepare writes, and podman CREATES a
+	// missing source as a root-owned directory, leaving a container that can never start and a
+	// path a later Prepare cannot fix (agent/hass). Never starting the unit is what keeps podman
+	// from making that directory at all.
+	var skipped []string
+	for i := range svcs {
+		if err := hass.Prepare(ctx, x, svcs[i].m); err != nil {
+			log.Printf("converge: %s cannot be prepared (%v); it is NOT being started, the node is serving what it can", svcs[i].name, err)
+			svcs[i].skip = true
+			skipped = append(skipped, svcs[i].name)
 		}
 	}
 	// Record BEFORE starting: a start that fails part-way still leaves units running, and a stop
 	// that does not know about them would leave containers on an unmounted volume.
 	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {
-		return fmt.Errorf("converge: record started units: %w", err)
+		return nil, fmt.Errorf("converge: record started units: %w", err)
 	}
 	for _, s := range svcs {
+		if s.skip {
+			// Not started, so not stopped either: on an upgrade whose new image cannot be
+			// prepared, the OLD container is still serving and taking it down would turn a
+			// failed upgrade into an outage. The install path is told (see the return), and
+			// reverts.
+			continue
+		}
 		// A CHANGED RENDERING MUST BE MADE TO TAKE EFFECT, and a start alone will not do it:
 		// systemd does not restart an already-active unit on daemon-reload, so an upgrade
 		// (same service name => same unit names) would leave the OLD container serving while
@@ -159,7 +188,10 @@ func Converge(ctx context.Context, x Executor) error {
 	// Remember what is now running, so the NEXT converge can tell an upgrade from a promotion.
 	// A failure here is not worth aborting a converge that has already started the services: the
 	// cost is a needless bounce next time, not a wrong one.
-	if err := writeStarted(x, all); err != nil {
+	// Recorded WITHOUT the skipped services: their new bytes are on disk but are not running, and
+	// a record claiming otherwise would make the next converge treat them as current and never
+	// retry them.
+	if err := writeStarted(x, started(svcs)); err != nil {
 		log.Printf("converge: could not record what was started (%v); the next converge will bounce everything", err)
 	}
 	if len(svcs) == 0 {
@@ -167,7 +199,20 @@ func Converge(ctx context.Context, x Executor) error {
 	} else {
 		log.Printf("converge: %d unit(s) started from the volume: %s", len(all.Units), strings.Join(all.Units, " "))
 	}
-	return nil
+	return skipped, nil
+}
+
+// started folds the services converge actually started, for the record the NEXT converge compares
+// against. A skipped service is deliberately absent rather than present-and-stale.
+func started(svcs []convergedService) quadlet.Rendered {
+	out := quadlet.Rendered{Files: map[string]string{}}
+	for _, s := range svcs {
+		if s.skip {
+			continue
+		}
+		mergeInto(&out, s.r)
+	}
+	return out
 }
 
 // stopService quiesces one service so a re-render takes effect: its CONTAINER units in reverse,
@@ -267,6 +312,10 @@ type convergedService struct {
 	// unit filename it would have to parse back out.
 	m manifest.Manifest
 	r quadlet.Rendered
+	// skip marks a service whose per-service preparation failed. Its units are written but never
+	// started, which is both the containment and the safety: an unstarted unit cannot make podman
+	// create the bind source Prepare did not write.
+	skip bool
 }
 
 // touched reports whether any of this service's unit source was written differently this pass.

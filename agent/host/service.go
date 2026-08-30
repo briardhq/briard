@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -49,7 +50,11 @@ type serviceInstaller interface {
 	// ServiceConverge makes the node match the VOLUME -- render, warm and start every manifest
 	// recorded there ([V3b.3](f)). It is what an install does instead of rewriting the promoter
 	// chain, and SupportsServiceConverge gates it the same way.
-	ServiceConverge(ctx context.Context) error
+	// ServiceConverge returns the services the node could not PREPARE, having started every other
+	// one. An install must fail when its own service is in that list: the node is still serving
+	// the prior version, and reporting success would leave the volume, the cache and the cloud
+	// naming a version nothing is running.
+	ServiceConverge(ctx context.Context) ([]string, error)
 	SupportsServiceConverge() bool
 	// ServiceForget removes one service's manifest from the volume -- what reverting a FRESH
 	// install requires, now that the volume is what every future promotion renders from.
@@ -329,8 +334,16 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	revert := func(cause error) api.DirectiveOutcome {
 		return cfg.revert(ctx, g, d, m.Name, dataDir, rendered, prior, priorSubdirs, priorRaw, snap, logf, cause)
 	}
-	if err := g.ServiceConverge(ctx); err != nil {
+	skipped, err := g.ServiceConverge(ctx)
+	if err != nil {
 		return revert(fmt.Errorf("install %s: %w", m.Name, err))
+	}
+	// CONVERGE CONTAINS A PREPARATION FAILURE TO THE ONE SERVICE, so it succeeds while declining
+	// to start ours — the right answer for a promoting node, and the wrong one to report as an
+	// install. Without this the old container would still be serving, the health gate below would
+	// pass on it, and the install would report the new version as running.
+	if slices.Contains(skipped, m.Name) {
+		return revert(fmt.Errorf("install %s: the node could not prepare it and did not start it (see the guest log)", m.Name))
 	}
 	logf("service install %s: converged from the volume; waiting for health", m.Name)
 
@@ -756,7 +769,11 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		// same way. There is no prior manifest to put back, so the identity is removed instead.
 		return bothFailed("remove the failed service's manifest from the volume", err)
 	}
-	if err := g.ServiceConverge(rctx); err != nil {
+	// The revert's skip list is not consulted, and that is not an oversight: the prior manifest is
+	// one this node already prepared and ran, so a preparation failure here is a new fault on the
+	// undo path, and converge has logged it. What matters to the caller is the same either way —
+	// the node is on the prior service, and the outcome below says rolled-back.
+	if _, err := g.ServiceConverge(rctx); err != nil {
 		return bothFailed("converge back to the prior service", err)
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: cause.Error()}

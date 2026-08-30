@@ -980,8 +980,10 @@ func dispatch(x Executor) dispatchFunc {
 		case verbServiceConverge:
 			// No request body: converge takes its whole input from the volume, which is the point
 			// -- a caller that could name what to converge TO would be the node-was-told model
-			// this replaces.
-			return nil, Converge(ctx, x)
+			// this replaces. It ANSWERS with the services it could not prepare, having started
+			// every other one -- see Converge on why the two callers need opposite things from
+			// that list.
+			return Converge(ctx, x)
 		case verbServiceForget:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2293,8 +2295,12 @@ func (g *Client) SupportsServiceReadiness() bool { return g.Supports(verbService
 //
 // SupportsServiceConverge gates it: an older guest has no briard-services unit to converge, so a
 // host must refuse rather than call a verb that guest cannot honour.
-func (g *Client) ServiceConverge(ctx context.Context) error {
-	return g.c.call(ctx, verbServiceConverge, struct{}{}, nil)
+func (g *Client) ServiceConverge(ctx context.Context) ([]string, error) {
+	var skipped []string
+	// A guest built before converge reported anything answers with no value at all, which decodes
+	// to an empty list -- correctly, since such a guest also has nothing that can be skipped.
+	err := g.c.call(ctx, verbServiceConverge, nil, &skipped)
+	return skipped, err
 }
 
 // SupportsServiceConverge reports whether the guest can converge itself to the volume.

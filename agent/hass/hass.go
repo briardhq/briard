@@ -54,6 +54,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"briard.io/shared/manifest"
@@ -158,14 +159,18 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // is about to exec. A rename swaps the directory entry, so a container that is already
 // running keeps the inode it started with and the next start gets the new one.
 //
-// FAILURE IS FATAL TO CONVERGE, which is the harsher of the two available answers and
-// the right one. Returning nil here would leave the rendered units naming bind sources
-// that do not exist, and the degradation from that is not "HA starts without a token".
-// MEASURED (docker 29.6.2 / runc, same OCI bind semantics podman drives): a missing bind
-// source is CREATED as a root-owned directory and the container then refuses to start —
-// "not a directory: Are you trying to mount a directory onto a file". It also poisons the
-// path, since the next Prepare has to write a FILE where a directory now sits. A
-// promotion that fails loudly beats one that half-succeeds and cannot recover.
+// FAILURE MUST NOT BE SURVIVED SILENTLY, and the caller is what decides how loudly. The
+// rendered units name bind sources this writes, and MEASURED (docker 29.6.2 / runc, the
+// same OCI bind semantics podman drives) a missing bind source is CREATED as a root-owned
+// directory, after which the container refuses to start — "not a directory: Are you trying
+// to mount a directory onto a file" — and the path is poisoned for the next attempt, since
+// a file has to go where a directory now sits. So a caller that ignores this error and
+// starts the container anyway gets a service that can never run again.
+//
+// What converge does with it is NOT to fail the whole node: it declines to start THIS
+// service and lets the others promote, which is the only safe use of the error and is
+// argued at its call site. Never starting the unit is what keeps podman from creating the
+// bad source in the first place.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if m.Name != Name {
 		return nil
@@ -224,7 +229,19 @@ func extractOriginal(ctx context.Context, x Executor, image string) error {
 	defer func() { _, _ = x.Run(ctx, "podman", "rm", "-f", extractCtr) }()
 	tmp := originalPath + ".new"
 	if out, err := x.Run(ctx, "podman", "cp", extractCtr+":"+s6Run, tmp); err != nil {
-		return fmt.Errorf("hass: extract %s: %w: %s", s6Run, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("hass: extract %s: %w: %s%s", s6Run, err, strings.TrimSpace(string(out)), describeLayout(ctx, x))
+	}
+	// WHAT CAME BACK HAS TO BE A SCRIPT. `podman cp` copies a DIRECTORY just as happily as a
+	// file, so a layout change that turned this path into a directory — a native s6-rc service
+	// is a directory holding `run` — would otherwise be mounted over HA's `run` and produce the
+	// same unstartable container as a missing source. ReadFile answers both questions at once:
+	// a directory is an error, and an empty file has a length.
+	body, err := x.ReadFile(tmp)
+	if err != nil {
+		return fmt.Errorf("hass: extracted %s is not a readable file: %w%s", s6Run, err, describeLayout(ctx, x))
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("hass: extracted %s is empty%s", s6Run, describeLayout(ctx, x))
 	}
 	if out, err := x.Run(ctx, "chmod", "0755", tmp); err != nil {
 		return fmt.Errorf("hass: %s permissions: %w: %s", tmp, err, strings.TrimSpace(string(out)))
@@ -233,6 +250,44 @@ func extractOriginal(ctx context.Context, x Executor, image string) error {
 		return fmt.Errorf("hass: install %s: %w: %s", originalPath, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// serviceRoots are the two places an s6-overlay image can keep its service definitions: the
+// legacy tree (what Home Assistant uses, and what s6-overlay v3 still supports through its
+// `legacy-services` bundle) and the native s6-rc tree beside it.
+//
+// They are here to DESCRIBE, never to search. Finding the script elsewhere and adapting to it
+// would defeat the point of relaying it at all: the bind path is fixed when the unit is rendered,
+// before this code can look at anything, and an upstream layout change is meant to fail a blessed
+// image in catalog CI rather than be papered over on a household's node (§6.4). What breadth buys
+// is a diagnosis — the failure names the layout the image actually has instead of an errno.
+var serviceRoots = []string{"/etc/services.d", "/etc/s6-overlay/s6-rc.d"}
+
+// describeLayout reports what service definitions the staged image carries, for the error message
+// that a layout change will produce. Best-effort and silent about its own failures: it runs only
+// on a path that has already failed, and a diagnosis that could itself fail the caller would be
+// worse than no diagnosis.
+func describeLayout(ctx context.Context, x Executor) string {
+	var found []string
+	for _, root := range serviceRoots {
+		dst := Dir + "/layout"
+		_, _ = x.Run(ctx, "rm", "-rf", dst)
+		if _, err := x.Run(ctx, "podman", "cp", extractCtr+":"+root, dst); err != nil {
+			continue
+		}
+		out, err := x.Run(ctx, "ls", "-1", dst)
+		if err != nil {
+			continue
+		}
+		names := strings.Fields(string(out))
+		sort.Strings(names)
+		found = append(found, fmt.Sprintf("%s: %s", root, strings.Join(names, " ")))
+		_, _ = x.Run(ctx, "rm", "-rf", dst)
+	}
+	if len(found) == 0 {
+		return " (the image carries no service directory this build knows of)"
+	}
+	return " (the image's service layout is " + strings.Join(found, "; ") + ")"
 }
 
 // write puts content at path atomically, with the mode given. See Prepare on why every

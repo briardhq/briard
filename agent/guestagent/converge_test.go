@@ -24,10 +24,11 @@ const otherManifest = `{"name":"other","version":"1","containers":[{"name":"app"
 // image store it asks about. Everything else falls through to fakeExec's defaults.
 type convergeExec struct {
 	fakeExec
-	services  []string // what `ls -1 <manifestDir>` returns; nil = the directory does not exist
-	quadlet   []string // what `ls -1 <quadletDir>` returns
-	haveImage bool     // whether `podman image exists <ref>` succeeds
-	failStart map[string]bool
+	services    []string // what `ls -1 <manifestDir>` returns; nil = the directory does not exist
+	quadlet     []string // what `ls -1 <quadletDir>` returns
+	haveImage   bool     // whether `podman image exists <ref>` succeeds
+	failExtract bool     // whether the per-service extraction out of the image fails
+	failStart   map[string]bool
 }
 
 func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -47,6 +48,15 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 		return nil, errors.New("exit status 125")
 	case name == "systemctl" && len(args) == 2 && args[0] == "start" && c.failStart[args[1]]:
 		return []byte("Job failed"), errors.New("exit status 1")
+	case name == "podman" && len(args) == 3 && args[0] == "cp":
+		// The per-service preparation extracts a script out of the image, and converge now
+		// refuses a service whose extraction comes back empty. failExtract models an image whose
+		// layout moved -- the case that must cost ONE service and not the node.
+		if c.failExtract {
+			return []byte("Error: no such file or directory"), errors.New("exit status 125")
+		}
+		c.fakeExec.WriteFile(args[2], []byte("#!/bin/sh\nexec true\n"))
+		return nil, nil
 	}
 	return nil, nil
 }
@@ -82,7 +92,7 @@ func dummyNode(t *testing.T) *convergeExec {
 // the volume said so. The measured failure was a survivor that promoted and served nothing.
 func TestConvergeRendersFromTheVolume(t *testing.T) {
 	x := dummyNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, f := range []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"} {
@@ -105,7 +115,7 @@ func TestConvergeRendersFromTheVolume(t *testing.T) {
 // given a workload to, which is every node at install time.
 func TestConvergeToNothingIsNotAnError(t *testing.T) {
 	x := &convergeExec{} // services nil => `ls` fails => no such directory
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("a zero-service node must converge successfully to nothing, got: %v", err)
 	}
 	if x.ran("systemctl", "daemon-reload") == false && len(x.fakeExec.files) > 1 {
@@ -121,7 +131,7 @@ func TestConvergeToNothingIsNotAnError(t *testing.T) {
 func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 	x := &convergeExec{services: []string{"dummy.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/dummy.json": "{not json"}
-	err := Converge(context.Background(), x)
+	_, err := Converge(context.Background(), x)
 	if err == nil {
 		t.Fatal("converge accepted a manifest that does not parse — the node would promote and serve nothing")
 	}
@@ -135,7 +145,7 @@ func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 // podman's own generator), so a resident image must not have its unit started.
 func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 	x := dummyNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if x.ran("systemctl", "start", "briard-dummy-app-image.service") {
@@ -151,7 +161,7 @@ func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 func TestConvergePullsAMissingImage(t *testing.T) {
 	x := dummyNode(t)
 	x.haveImage = false
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if !x.ran("systemctl", "start", "briard-dummy-app-image.service") {
@@ -166,7 +176,7 @@ func TestConvergeFailsWhenAnAbsentImageCannotBeFetched(t *testing.T) {
 	x := dummyNode(t)
 	x.haveImage = false
 	x.failStart = map[string]bool{"briard-dummy-app-image.service": true}
-	if err := Converge(context.Background(), x); err == nil {
+	if _, err := Converge(context.Background(), x); err == nil {
 		t.Fatal("converge promoted with an image it could neither find nor fetch")
 	}
 	if x.ran("systemctl", "start", "briard-dummy-app.service") {
@@ -185,7 +195,7 @@ func TestAServiceThatWillNotStartDoesNotFailConverge(t *testing.T) {
 		manifestDir + "/other.json": otherManifest,
 	}
 	x.failStart = map[string]bool{"briard-dummy-app.service": true}
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("a crashing service demoted the node: %v", err)
 	}
 	// ...and the OTHER service still ran. This is the "N-1" half, and without it the test would
@@ -201,7 +211,7 @@ func TestAServiceThatWillNotStartDoesNotFailConverge(t *testing.T) {
 func TestConvergeRemovesOrphanUnits(t *testing.T) {
 	x := dummyNode(t)
 	x.quadlet = []string{"briard-gone-app.container", "briard-gone.pod", "user-thing.container"}
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, orphan := range []string{"briard-gone-app.container", "briard-gone.pod"} {
@@ -221,7 +231,7 @@ func TestConvergeRemovesOrphanUnits(t *testing.T) {
 // that is about to be unmounted.
 func TestConvergeStopStopsWhatItStarted(t *testing.T) {
 	x := dummyNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	before := len(x.fakeExec.runs)
@@ -272,14 +282,14 @@ const dummyManifestV2 = `{"name":"dummy","version":"2","containers":[{"name":"ap
 // the bracket's deletion.
 func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
 	x := dummyNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
 	// The upgrade: a new manifest lands on the volume and the node re-converges in place.
 	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2
 	x.quadlet = []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"}
 	before := len(x.fakeExec.runs)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("re-Converge: %v", err)
 	}
 	var stopped []string
@@ -308,7 +318,7 @@ func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
 // new bytes to disk first, exactly as the install path does.
 func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 	x := dummyNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
 	// The install: the new manifest lands on the volume AND the new units are rendered to /run by
@@ -323,7 +333,7 @@ func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 		x.fakeExec.files[quadletDir+"/"+name] = body
 	}
 	before := len(x.fakeExec.runs)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("re-Converge: %v", err)
 	}
 	var stopped []string
@@ -347,7 +357,7 @@ func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
 		manifestDir + "/dummy.json": dummyManifest,
 		manifestDir + "/other.json": otherManifest,
 	}
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
 	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2 // only `dummy` is upgraded
@@ -356,7 +366,7 @@ func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
 		"briard-other.pod", "briard-other-app.container", "briard-other-app.image",
 	}
 	before := len(x.fakeExec.runs)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("re-Converge: %v", err)
 	}
 	for _, r := range x.fakeExec.runs[before:] {
@@ -429,7 +439,7 @@ func hassNode(t *testing.T) *convergeExec {
 // HA's run script is a service that can never start.
 func TestConvergePreparesTheControlChannel(t *testing.T) {
 	x := hassNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if _, ok := x.fakeExec.files[hass.TokenPath+".new"]; !ok {
@@ -457,7 +467,7 @@ func TestConvergePreparesTheControlChannel(t *testing.T) {
 // the product knows nothing about must converge exactly as it did before any of this existed.
 func TestConvergeLeavesOtherServicesAlone(t *testing.T) {
 	x := dummyNode(t)
-	if err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, r := range x.fakeExec.runs {
@@ -467,5 +477,68 @@ func TestConvergeLeavesOtherServicesAlone(t *testing.T) {
 	}
 	if _, ok := x.fakeExec.files[hass.TokenPath+".new"]; ok {
 		t.Fatal("a service that is not home-assistant got a Home Assistant token")
+	}
+}
+
+// TestPreparationFailureCostsOneServiceNotTheNode: preparation is the one converge step whose
+// inputs are the SERVICE's — its image's own layout — so a service whose upstream packaging moved
+// must not take the other N-1 down with it. Converge succeeds, the node promotes, the healthy
+// service runs, and the broken one is named rather than started.
+//
+// NOT STARTING IT IS ALSO WHAT MAKES IT SAFE: the rendered unit names bind sources Prepare writes,
+// and podman creates a missing source as a root-owned directory — a container that can never start
+// and a path a later Prepare cannot fix. An unstarted unit cannot do that.
+func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
+	x := &convergeExec{
+		services:    []string{"dummy.json", "home-assistant.json"},
+		haveImage:   true,
+		failExtract: true,
+	}
+	x.fakeExec.files = map[string]string{
+		manifestDir + "/dummy.json":          dummyManifest,
+		manifestDir + "/home-assistant.json": hassManifest,
+	}
+	skipped, err := Converge(context.Background(), x)
+	if err != nil {
+		t.Fatalf("one service's preparation failure took the whole converge down: %v", err)
+	}
+	if len(skipped) != 1 || skipped[0] != "home-assistant" {
+		t.Fatalf("skipped = %v, want [home-assistant]", skipped)
+	}
+	// The healthy service ran...
+	if !x.ran("systemctl", "start", "briard-dummy-app.service") {
+		t.Fatalf("the healthy service was not started; ran %v", x.fakeExec.runs)
+	}
+	// ...and the broken one was not started at all.
+	for _, u := range []string{"briard-home-assistant-pod.service", "briard-home-assistant-app.service"} {
+		if x.ran("systemctl", "start", u) {
+			t.Fatalf("%s was started with no control channel prepared for it", u)
+		}
+	}
+	// Its bytes must NOT be recorded as running, or the next converge treats them as current and
+	// never retries.
+	started := x.fakeExec.files[startedFile]
+	if strings.Contains(started, "briard-home-assistant") {
+		t.Fatalf("a service that was never started was recorded as started:\n%s", started)
+	}
+	if !strings.Contains(started, "briard-dummy") {
+		t.Fatalf("the service that DID start was not recorded:\n%s", started)
+	}
+}
+
+// TestPreparationFailureLeavesTheOldContainerServing: on an UPGRADE whose new image cannot be
+// prepared, the running container is the old version and it is still serving. Stopping it would
+// turn a failed upgrade into an outage, so the skip covers the stop as well as the start — the
+// install path is told through the return value and reverts.
+func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
+	x := &convergeExec{services: []string{"home-assistant.json"}, haveImage: true, failExtract: true}
+	x.fakeExec.files = map[string]string{manifestDir + "/home-assistant.json": hassManifest}
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	for _, r := range x.fakeExec.runs {
+		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" {
+			t.Fatalf("the old container was stopped for an upgrade that could not be prepared: %v", r)
+		}
 	}
 }
