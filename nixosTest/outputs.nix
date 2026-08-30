@@ -407,10 +407,6 @@ in
     # merges this into the flat `.#tests.*` only). Run by hand in a repro loop.
     debug = {
       reactor-pause-deadlock = reactorPauseDeadlock;
-      # Spike: can a service be installed at runtime as a podman pod (quadlet), and does
-      # that pod work as a promoter chain member? Answers a design question; promoted or deleted
-      # once the design settles.
-      quadlet-spike = import ./quadlet-spike.nix { inherit pkgs guestModule; };
       # — **THIS TEST FAILS TODAY, AND THAT IS ITS JOB.** Act 1 (crash the primary, the
       # survivor promotes) passes and is the control; act 2 (the survivor then restarts while its
       # peer is still absent) does not, because a diskless witness can KEEP quorum but never GRANT
