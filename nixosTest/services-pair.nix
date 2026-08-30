@@ -129,10 +129,25 @@ pkgs.testers.runNixOSTest {
     # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)
-    # The rollback point, taken the way the maintenance bracket takes it: a read-only snapshot of
-    # the SERVICE's subvolume, before anything changes.
+    # THE ROLLBACK POINT, TAKEN QUIESCED -- which is [B.121]'s rule, and this rig measured why it
+    # is one. Taken LIVE (which is what applyServiceInstall does today) the snapshot did not
+    # contain the message the broker had already accepted: mosquitto holds retained state in memory
+    # and writes it on a clean stop or every autosave_interval, so a live snapshot of a service
+    # that has just been written to is a rollback point missing exactly the data someone would roll
+    # back FOR. The run that showed it: the upgrade carried the message across (2.1.2 logged
+    # "Restored 1 retained messages"), and the rollback then restored a broker with nothing in it.
+    #
+    # So the bracket's own order is used here: stop the service, take the point, start it again.
+    # Application-consistent by construction, and nothing writes between the stop and the snapshot.
+    mq_units = fixture_units(primary, "${mosquitto.name}")
+    mq_containers = [u for u in mq_units if not u.endswith("-pod.service")]
+    for u in reversed(mq_containers):
+        primary.succeed(f"systemctl stop {u}")
     primary.succeed("mkdir -p /var/lib/briard/.snapshots")
     primary.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
+    for u in mq_units:
+        primary.succeed(f"systemctl start {u}")
+    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
 
     install_fixture(primary, variant="to", service="${mosquitto.name}")
     primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
@@ -167,6 +182,12 @@ pkgs.testers.runNixOSTest {
     # ---- (4) FAILOVER WITH BOTH RIDING ---------------------------------------------------------
     # Everything the survivor runs, it renders from the VOLUME: it never installed either service.
     client.succeed(f"mosquitto_pub -h {VIP} -t briard/pair -m 'before-the-kill' -r")
+    # WAIT FOR THE BROKER TO HAVE WRITTEN IT, then cut the power. mosquitto persists on a clean
+    # stop and every autosave_interval (30s, agent/mosquitto) -- so an abrupt loss can cost up to
+    # that much retained state, and a test that crashed the node the instant after a publish would
+    # be asserting on a race rather than on replication. Waiting for the bytes to reach the file
+    # is what makes this a claim about DRBD carrying what the service durably wrote.
+    primary.wait_until_succeeds(f"grep -aq before-the-kill {broker_root}/broker/mosquitto.db", timeout=120)
     primary.succeed("sync")
     primary.crash()
     survivors = [m for m in machines if m != primary]
