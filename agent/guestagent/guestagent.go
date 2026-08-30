@@ -1347,8 +1347,7 @@ func dispatch(x Executor) dispatchFunc {
 			// ship in the same closure (the guest agent is built INTO the guest image,
 			// disk-image.nix), so there is no version in which one is present without the other,
 			// and duplicating it only buys a second place to have to keep correct. Measured
-			// after the move: a bare stop of a promoted reactor completes in 401ms
-			// (nixosTest/reactor-pause-deadlock.nix, which now drives exactly this line).
+			// after the move: a bare stop of a promoted reactor completes in 401ms.
 			return nil, run("systemctl", "stop", "drbd-reactor.service")
 		case verbReactorResume:
 			// Restart the daemon; it re-reads config and adopts the already-Primary services,

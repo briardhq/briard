@@ -238,21 +238,20 @@ let
   # instead of through the agent's verbs on a nested guest — see the file's header.
   maintenanceContract = import ./maintenance-contract.nix { inherit pkgs fixture guestModule; };
 
-  # The isolated, deterministic promote-vs-stop deadlock gate (promote, then
-  # time a BARE maintenance pause -- no upgrade / snapshot / btrfs race). Reds at ~90s on the
-  # deadlock (drbd-services@r0.target Before=drbd-reactor.service serializes the dying reactor's
-  # own promote behind its stop), greens in ms once the drop-in is removed first. Debug tag; NOT
-  # nightly. Hermetic same reason as the contract suite above.
-  reactorPauseDeadlock = import ./reactor-pause-deadlock.nix { inherit pkgs fixture guestModule; };
-
   # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing [B.85]:
   # a lib.nix node converged the same way — DRBD Primary, volume mounted, service serving, VIP up,
   # the reactor's `Before=` drop-in present — powered itself off in 1.5s while the SHIPPED guest
   # sat in that deadlock for 90s. The throwaway harness that showed this is not kept: it was green
   # against a broken product, which is the most expensive kind of test to leave lying around.
-  # The gate lives on the real artifact instead (guest-rescue asserts the agent route was taken
-  # and that no unit held the guest's shutdown), and reactor-pause-deadlock stays the isolated
-  # red/green for the deadlock itself.
+  # The gate lives on the real artifact instead: guest-rescue asserts the agent route was taken
+  # and that no unit held the guest's shutdown, and its `integration` tag is in the nightly.
+  #
+  # THE ISOLATED HARNESS IS GONE FOR THE SAME REASON, 2026-08-30. `reactor-pause-deadlock` timed a
+  # bare stop on a lib.nix node and asserted <10s. Measured with the unit's whole ExecStop defusal
+  # deleted and the `Before=` drop-in verified armed: it stopped in 28ms and PASSED. So it could
+  # not tell a defused reactor from an armed one -- the 391ms it used to report was the cost of
+  # the defusal running, not the absence of a deadlock. A guard that cannot fail when its subject
+  # is removed is not a guard, and this is the same trap the throwaway harness above fell into.
 
   # A whole cluster running NOTHING -- the state every node is in until something is installed.
   # Every other test here now boots the same guest, so what this one still owns is the assertion
@@ -406,7 +405,6 @@ in
     # Debug harnesses — deliberately EXCLUDED from allTests / the nightly `.#all` (flake.nix
     # merges this into the flat `.#tests.*` only). Run by hand in a repro loop.
     debug = {
-      reactor-pause-deadlock = reactorPauseDeadlock;
       # — **THIS TEST FAILS TODAY, AND THAT IS ITS JOB.** Act 1 (crash the primary, the
       # survivor promotes) passes and is the control; act 2 (the survivor then restarts while its
       # peer is still absent) does not, because a diskless witness can KEEP quorum but never GRANT

@@ -158,7 +158,7 @@ pkgs.testers.runNixOSTest {
     #
     # What it showed: the shutdown STARTED a second after the request, then drbd-reactor deadlocked
     # on its own stop for a full 90s TimeoutStopSec and was SIGKILLed -- the promote-vs-stop
-    # deadlock of nixosTest/reactor-pause-deadlock.nix, on the shutdown path, where nothing was
+    # deadlock of [B.28], on the shutdown path, where nothing was
     # defusing it. Fixed on drbd-reactor.service's ExecStop (guest-image/configuration.nix).
     #
     # TWO ASSERTIONS, because either alone passes for the wrong reason. The fallback line proves

@@ -804,8 +804,8 @@ in
         # Removing the drop-in first is drbd-reactor's own sanctioned defusal: it is what
         # `reactor.pause` does (guestagent.go, verbReactorPause), and it is race-free because the
         # promoter only (re)writes the file in Promoter::new -- i.e. on the next START -- so
-        # nothing re-arms it while we are stopping. The deadlock and this defusal are gated by
-        # nixosTest/reactor-pause-deadlock.nix.
+        # nothing re-arms it while we are stopping. The deadlock is [B.28]; the defusal is guarded
+        # on the shipped artifact by nixosTest/guest-rescue.nix (no unit may hold the shutdown).
         #
         # ON ExecStop RATHER THAN IN THE VERB, and that is the point: this stop happens on paths
         # no agent verb touches -- the deadman's `systemctl reboot`, a user rebooting the host
@@ -836,7 +836,7 @@ in
         # The `daemon-reload` is not optional: removing the file leaves the `Before=` in systemd's
         # in-memory graph, so the deadlock would survive its own defusal.
         #
-        # PAIRED with the same path in nixosTest/{reactor-pause-deadlock,maintenance-contract}.nix,
+        # PAIRED with the same path in nixosTest/maintenance-contract.nix,
         # deliberately written out rather than shared, for v0's single resource (r0): a test that
         # imported the constant could not notice the product changing it.
         ExecStop = [

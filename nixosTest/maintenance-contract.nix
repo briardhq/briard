@@ -6,8 +6,8 @@
 # One node promotes r0, then the script drives one pause → poke → resume lifecycle and checks
 # each contract point in turn:
 #
-#   #1 the pause completes promptly            — no promote-vs-stop deadlock. The DURATION is
-#                                                gated by reactor-pause-deadlock; here the pause
+#   #1 the pause completes promptly            — no promote-vs-stop deadlock ([B.28]), defused on
+#                                                drbd-reactor.service's ExecStop; here the pause
 #                                                is just the lifecycle's entry.
 #   #2 the pause is NON-DESTRUCTIVE            — still Primary+quorate, and the service is the
 #                                                SAME process (active-since unchanged: a pause is
@@ -116,7 +116,8 @@ pkgs.testers.runNixOSTest {
     # NOTHING IS DISARMED FIRST any more. The verb used to `rm` drbd-reactor's `Before=` drop-in
     # and reload before stopping, to dodge the promote-vs-stop deadlock, and this file mirrored
     # it; [B.85] moved that defusal onto drbd-reactor.service's ExecStop, so the bare stop below
-    # is the whole of it. The DURATION is reactor-pause-deadlock's gate, not this test's — what is
+    # is the whole of it. The DURATION is not gated anywhere now (the isolated harness could not
+    # fail when the defusal was removed, so it was deleted) — what is
     # under test here is that a pause is non-destructive, a claim about the state the stop leaves
     # behind however it got there. Keep this in step with the verb.
     node1.succeed("systemctl stop drbd-reactor.service")

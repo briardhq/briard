@@ -151,7 +151,7 @@
       # The per-tag aggregates themselves are generated above the attrset; `.#store`
       # is there only when the private half is.
       all = mkTag "all" allTests;
-      # Flat `.#tests.<name>` includes debug harnesses (reactor-pause-deadlock); `.#all`
+      # Flat `.#tests.<name>` includes debug harnesses (drbd-link-split); `.#all`
       # above deliberately does not, so the nightly never runs them.
       tests = allTests // (tags.debug or { });
 
