@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
+	"briard.io/agent/hass"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -50,7 +52,28 @@ type fakeInstaller struct {
 	forgetEr     error
 	warmEr       error
 	restoreEr    error
+	// readiness is the S1 differential sample, queued: the first call answers with the first
+	// element, the next with the second. Two calls per gated install (baseline, then settled),
+	// so a two-element queue is one whole verdict.
+	readiness    [][]hass.Entry
+	readinessEr  error
+	noReadiness  bool // the guest does not advertise service.readiness -- floor-only
+	readinessHit int
 }
+
+func (f *fakeInstaller) ServiceReadiness(_ context.Context, name string, port int) ([]hass.Entry, error) {
+	f.steps = append(f.steps, fmt.Sprintf("readiness:%s:%d", name, port))
+	f.readinessHit++
+	if f.readinessEr != nil {
+		return nil, f.readinessEr
+	}
+	if f.readinessHit <= len(f.readiness) {
+		return f.readiness[f.readinessHit-1], nil
+	}
+	return nil, nil
+}
+
+func (f *fakeInstaller) SupportsServiceReadiness() bool { return !f.noReadiness }
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
 	f.steps = append(f.steps, "status")
@@ -1114,5 +1137,144 @@ func TestAdoptVolumeServicesSkipsOnlyTheBadManifest(t *testing.T) {
 	cfg.adoptVolumeServices(context.Background(), g, func(string, ...any) {})
 	if len(cfg.Services) != 1 || cfg.Services[0].Name != "home-assistant" {
 		t.Fatalf("services = %+v, want only the one that parses", cfg.Services)
+	}
+}
+
+// upgradeWith runs an UPGRADE (a prior manifest is installed) whose floor passes, with the S1
+// samples the fake will answer. The settle window is squeezed to nothing: the production minute
+// is there to let HA's retry backoff run, and a fake has nothing to wait for.
+func upgradeWith(t *testing.T, f *fakeInstaller) api.DirectiveOutcome {
+	t.Helper()
+	cfg := catalogFor(t, testManifest())
+	cfg.readinessSettle = time.Millisecond
+	f.prior = mustPrior(t)
+	f.primary, f.active, f.healthy = true, true, true
+	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+	return cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {})
+}
+
+func sample(states ...string) []hass.Entry {
+	out := make([]hass.Entry, len(states))
+	for i, st := range states {
+		out[i] = hass.Entry{ID: string(rune('a' + i)), Domain: "d" + string(rune('a'+i)), State: st}
+	}
+	return out
+}
+
+// TestUpgradeRollsBackOnAReadinessRegression is the whole point of [V3b.29]: the floor PASSES —
+// the fake reports healthy, exactly as Home Assistant answering /manifest.json with a 200 does —
+// and the upgrade is reverted anyway, because the integrations that were working stopped working.
+// Without this layer that install reports success and the household quietly loses half its house.
+func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{
+		sample("loaded", "loaded"),
+		sample("setup_error", "setup_error"),
+	}}
+	o := upgradeWith(t, f)
+	if o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back (the floor passed; the gate above it must not)", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	// The SAME {code + data} revert a failed floor drives — the verdict changes, the undo does not.
+	if !strings.Contains(joined, "restore:/var/lib/briard/.snapshots/home-assistant-preupgrade") {
+		t.Fatalf("a tripped readiness gate did not restore the data subvolume: %v", f.steps)
+	}
+	if n := strings.Count(joined, "converge"); n != 2 {
+		t.Fatalf("converged %d times, want 2 (install then revert): %v", n, f.steps)
+	}
+}
+
+// TestUpgradeCapturesTheBaselineBeforeTheSnapshot: the baseline is the confounder control, so it
+// must be a sample of the service as it was — before the rollback point is taken and before
+// anything is written to the volume.
+//
+// ⚠️ It must also stay above whatever [B.121] inserts: that item puts a `stop` before the
+// snapshot, and a baseline captured after a stop is a baseline of a service that is not running.
+// This assertion is what will catch that if the two land in the wrong order.
+func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	ri := strings.Index(joined, "readiness:")
+	si := strings.Index(joined, "snapshot:")
+	pi := strings.Index(joined, "provision")
+	if ri < 0 {
+		t.Fatalf("no baseline was captured on an upgrade: %v", f.steps)
+	}
+	if si < 0 || ri > si {
+		t.Fatalf("the baseline must precede the snapshot: %v", f.steps)
+	}
+	if pi < 0 || ri > pi {
+		t.Fatalf("the baseline must precede provision — the volume is already mutated by then: %v", f.steps)
+	}
+	if f.readinessHit != 2 {
+		t.Fatalf("sampled %d times, want 2 (baseline, then settled)", f.readinessHit)
+	}
+}
+
+// TestFreshInstallHasNoBaseline: a differential gate has nothing to differ against on a first
+// install — the service was not running, so there is no "was loaded" to regress from. The floor
+// is the honest gate there, and this is deliberate rather than incidental: it is also the case
+// where sampling would be asking a service that does not exist yet.
+func TestFreshInstallHasNoBaseline(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	cfg.readinessSettle = time.Millisecond
+	f := &fakeInstaller{primary: true, active: true, healthy: true} // no prior => fresh
+	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+	if o := cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {}); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if f.readinessHit != 0 {
+		t.Fatalf("a fresh install sampled readiness %d times, want 0", f.readinessHit)
+	}
+}
+
+// TestUpgradeKeepsOnAHold: one terminal regression is the ambiguous middle. The upgrade stands —
+// reverting a household's service on a single entry that might legitimately have been removed is
+// the worse error — and the rollback window plus the user remain the backstop.
+func TestUpgradeKeepsOnAHold(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{
+		sample("loaded", "loaded"),
+		sample("setup_error", "loaded"),
+	}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done — a hold keeps the upgrade", o)
+	}
+}
+
+// TestUpgradeKeepsWhenReadinessCannotBeSampled: S1 must never revert a working upgrade because
+// its own telemetry failed. This is the safe direction and the one that keeps a broken gate from
+// becoming a broken update path.
+func TestUpgradeKeepsWhenReadinessCannotBeSampled(t *testing.T) {
+	f := &fakeInstaller{readinessEr: errors.New("connection refused")}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done — a failed sample is not evidence of a regression", o)
+	}
+}
+
+// TestUpgradeOfAnUnknownServiceIsFloorOnly: the registry's default, at the level that matters.
+// A service the product holds no knowledge about is upgraded exactly as it was before the gate
+// existed — no sample taken, no minute spent settling.
+func TestUpgradeOfAnUnknownServiceIsFloorOnly(t *testing.T) {
+	m := testManifest()
+	m.Name = "mosquitto"
+	cfg := catalogFor(t, m)
+	body, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeInstaller{
+		primary: true, active: true, healthy: true,
+		prior:     map[string]string{"mosquitto": string(body)},
+		readiness: [][]hass.Entry{sample("loaded"), sample("setup_error")},
+	}
+	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "mosquitto"}
+	if o := cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {}); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if f.readinessHit != 0 {
+		t.Fatalf("a service with no assessor sampled readiness %d times, want 0", f.readinessHit)
 	}
 }

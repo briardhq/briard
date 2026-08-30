@@ -19,6 +19,7 @@ import (
 
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent/deadman"
+	"briard.io/agent/hass"
 	"briard.io/shared/api"
 	"briard.io/shared/backup"
 	"briard.io/shared/model"
@@ -185,6 +186,18 @@ const (
 	// future promotion anywhere in the flock would render and start it again. Reverting a fresh
 	// install therefore has to remove the identity, not just stop the units.
 	verbServiceForget = "service.forget"
+	// service.readiness samples ONE service's own readiness detail from inside the guest -- for
+	// Home Assistant, its per-config-entry setup states ([V3b.29]). It is the differential S1
+	// gate's input, one layer above the liveness floor `service.health` answers: the floor says
+	// the service replies, this says which of the things it was doing it is still doing.
+	//
+	// IN THE GUEST because both halves are: the control token is on this node's tmpfs and the
+	// service listens on the guest's loopback, which under macvtap the host cannot reach at all.
+	// It is still dumb hands -- how to talk to the service is agent/hass's, what the answer MEANS
+	// is the host's (agent/guest/entrygate). A NEW verb rather than a widened one, gated by
+	// Supports, for the reason service.installed sets out: a bump is fleet-wide, a new verb is
+	// refused by exactly the one path that needs it.
+	verbServiceReadiness = "service.readiness"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -261,7 +274,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbServiceReadiness, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -434,6 +447,15 @@ func manifestPath(name string) string { return manifestDir + "/" + name + ".json
 type serviceWarmRequest struct {
 	Unit string `json:"unit"`
 	Ref  string `json:"ref"`
+}
+
+// serviceReadinessRequest names the service to sample and the port it serves on
+// (service.readiness). The PORT comes from the host because the host holds the manifest, which is
+// where a service's port is declared once -- the same field the liveness floor's URL is built
+// from. The guest supplies the rest, because the rest is knowledge about that one service.
+type serviceReadinessRequest struct {
+	Name string `json:"name"`
+	Port int    `json:"port"`
 }
 
 // certWriteRequest carries a renewed cert + key to land on the DRBD volume (cert.write).
@@ -942,6 +964,19 @@ func dispatch(x Executor) dispatchFunc {
 			// converging survivor must not disagree about what "the image is already here" means.
 			// The exists-or-pull rule and why it is safe are argued there.
 			return nil, warmImage(ctx, x, req.Unit, req.Ref)
+		case verbServiceReadiness:
+			var req serviceReadinessRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// The switch that makes this verb service-specific, and it is deliberately a
+			// REFUSAL for anything else rather than an empty answer: the host only calls this
+			// for a service it has an assessor for, so an unknown name here means the two sides
+			// disagree about which services the product knows -- news, not a quiet nothing.
+			if req.Name != hass.Name {
+				return nil, fmt.Errorf("%s: no readiness signal is defined for %q", verbServiceReadiness, req.Name)
+			}
+			return hass.Readiness(ctx, x, req.Port)
 		case verbServiceConverge:
 			// No request body: converge takes its whole input from the volume, which is the point
 			// -- a caller that could name what to converge TO would be the node-was-told model
@@ -2228,6 +2263,24 @@ func (g *Client) ServiceProvision(ctx context.Context, name, dataDir string, sub
 func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
 	return g.c.call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
 }
+
+// ServiceReadiness samples one service's own readiness detail from inside the guest -- for Home
+// Assistant, its per-config-entry setup states, which is the differential S1 gate's whole input.
+//
+// An EMPTY list is a legitimate answer, not a failure: a service that has answered its health URL
+// but has not finished setting its integrations up has none yet. The gate handles that by
+// construction -- it only judges entries that were loaded BEFORE the change.
+func (g *Client) ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error) {
+	var out []hass.Entry
+	err := g.c.call(ctx, verbServiceReadiness, serviceReadinessRequest{Name: name, Port: port}, &out)
+	return out, err
+}
+
+// SupportsServiceReadiness reports whether the guest can sample a service's readiness detail. A
+// guest without it leaves the install path on the liveness floor alone, which is exactly what
+// every node did before the gate existed -- so this degrades rather than refuses, unlike the
+// verbs an install cannot be correct without.
+func (g *Client) SupportsServiceReadiness() bool { return g.Supports(verbServiceReadiness) }
 
 // ServiceConverge makes the guest match the volume, in place: every manifest under the replicated
 // `.services/` rendered, warmed and started ([V3b.3](f), converge.go). PRIMARY ONLY in effect --

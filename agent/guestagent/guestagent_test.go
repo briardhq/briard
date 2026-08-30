@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
+	"briard.io/agent/hass"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
 	"briard.io/shared/backup"
@@ -1633,4 +1634,34 @@ func TestConfigureNetReassertsTheFlockMAC(t *testing.T) {
 		}
 	}
 	t.Errorf("an existing service NIC kept whatever MAC it had; runs = %v", f.runs)
+}
+
+// TestServiceReadinessIsAdvertisedAndKeyedOnTheService: the verb has to be in the handshake or a
+// capability-checking host cannot see it however well the switch handles it — and the switch has
+// to REFUSE a service the product knows nothing about, because the host only calls this for one
+// it has an assessor for. An unknown name here means the two sides disagree about which services
+// the product knows, which is news rather than a quiet empty answer.
+func TestServiceReadinessIsAdvertisedAndKeyedOnTheService(t *testing.T) {
+	g := dial(t, &fakeExec{})
+	if _, err := g.Handshake(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !g.Supports(verbServiceReadiness) {
+		t.Fatal("guest does not advertise service.readiness, so no host will ever call it")
+	}
+	if !g.SupportsServiceReadiness() {
+		t.Fatal("SupportsServiceReadiness disagrees with the advertised set")
+	}
+	if _, err := g.ServiceReadiness(context.Background(), "mosquitto", 1883); err == nil {
+		t.Fatal("the guest answered a readiness sample for a service with no defined signal")
+	}
+	// And the one it does know reaches hass.Readiness, which fails here for the honest reason:
+	// this fake guest has no control token on it.
+	_, err := g.ServiceReadiness(context.Background(), hass.Name, 8123)
+	if err == nil {
+		t.Fatal("a guest with no control token reported a readiness sample")
+	}
+	if !strings.Contains(err.Error(), hass.TokenPath) {
+		t.Fatalf("the error does not name the missing token: %v", err)
+	}
 }

@@ -39,7 +39,17 @@ MIN_TOKEN_LEN = 32
 
 async def ensure(config_dir: str, token: str) -> None:
     hass = HomeAssistant(config_dir)
-    dr.async_setup(hass)
+    # The registries have to be up before the auth manager: removing a refresh token reaches
+    # into the device registry, and on a release that expects it and does not have it the mint
+    # dies with "Device registry not set up".
+    #
+    # GUARDED BECAUSE THE STEP IS NEWER THAN THE RELEASES WE UPGRADE FROM, and this package
+    # necessarily spans two of them: an upgrade mints under the old image for the baseline and
+    # under the new one afterwards. Measured across 2025.11.0 / 2025.12.0 / 2026.7.1 -- the older
+    # pair has no `async_setup` at all and raises AttributeError if it is called, the newer one
+    # raises RuntimeError if it is not. Presence is the only thing that separates them.
+    if hasattr(dr, "async_setup"):
+        dr.async_setup(hass)
     await asyncio.gather(dr.async_load(hass), er.async_load(hass))
     hass.auth = await auth_manager_from_config(hass, [{"type": "homeassistant"}], [])
 

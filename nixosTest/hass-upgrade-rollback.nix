@@ -118,8 +118,17 @@ pkgs.testers.runNixOSTest {
     # default_config entry can't be mistaken for the canary settling).
     canary_is = lambda st: f"jq -e '.[]|select(.domain==\"briard_canary\" and .state==\"{st}\")' ${entriesFile} >/dev/null"
     node1.wait_until_succeeds(canary_is("loaded"), timeout=240)
-    node1.succeed("cp ${entriesFile} /tmp/pre.json")
+    # THE SAMPLE THE GATE JUDGES COMES FROM THE PRODUCT, not from the fixture ([V3b.29](b)).
+    # The canary's dump is still what we WAIT on -- it is the cheapest way to know the entry has
+    # settled -- but computing the verdict from it would prove the fixture can write a file. This
+    # goes through agent/hass: read the control token off tmpfs, exchange it for an access token,
+    # present the Bearer, and trim HA's answer to the triple the gate reasons over.
+    node1.succeed("entrygate-eval -sample ${toString fixture.port} > /tmp/pre.json")
     print("pre-upgrade entry states: " + node1.succeed("cat /tmp/pre.json"))
+    # Non-vacuity: a sampler that returned nothing would make every verdict below Pass by
+    # construction, and the test would go green having proved the opposite of its subject.
+    node1.succeed("jq -e 'length > 0' /tmp/pre.json >/dev/null")
+    node1.succeed("jq -e '.[]|select(.domain==\"briard_canary\" and .state==\"loaded\")' /tmp/pre.json >/dev/null")
 
     pre_schema = node1.succeed("sqlite3 ${db} '${schemaQ}'").strip()
     pre_states = int(node1.succeed("sqlite3 ${db} 'SELECT COUNT(*) FROM states'").strip())
@@ -146,13 +155,21 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test $(sqlite3 ${db} '${schemaQ}') -eq 53", timeout=300)
     # The canary's entry lands migration_error (HA ran async_migrate_entry, which refused).
     node1.wait_until_succeeds(canary_is("migration_error"), timeout=300)
-    node1.succeed("cp ${entriesFile} /tmp/post.json")
+    # Sampled through the product again, and the token still answers -- across a container bounce
+    # onto a different image digest, which is the boundary (a)'s wrapper re-mints at.
+    node1.succeed("entrygate-eval -sample ${toString fixture.port} > /tmp/post.json")
     print("post-upgrade entry states: " + node1.succeed("cat /tmp/post.json"))
+    # The product's sampler and HA's own computed state agree about the regression. If these ever
+    # disagreed, every verdict below would be judging something other than what HA thinks.
+    node1.succeed("jq -e '.[]|select(.domain==\"briard_canary\" and .state==\"migration_error\")' /tmp/post.json >/dev/null")
 
-    # ---- The gate MUST trip: run the real entrygate verdict over HA's real states ----
+    # ---- The gate MUST trip: the real verdict over the real states, sampled the real way ----
     verdict = node1.succeed("entrygate-eval /tmp/pre.json /tmp/post.json")
     print("gate: " + verdict.strip())
     assert "VERDICT=rollback" in verdict, f"health-gate did not trip on the regression: {verdict!r}"
+    # And the floor it sits above was HAPPY throughout -- which is the entire reason this layer
+    # exists. A gate that only fired when the service was also down would be the floor again.
+    node1.succeed("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json")
 
     # ---- Rollback-with-history-intact: the {code+data} snapshot is a valid rollback point ----
     # The live swap-and-reserve (stop service → restore subvolume → re-pin `from` → re-serve)
@@ -180,8 +197,8 @@ pkgs.testers.runNixOSTest {
     assert rb_schema == "51", f"rollback point schema = {rb_schema}, want 51 (schema not reverted)"
     assert rb_states >= pre_states, f"rollback point lost history: {pre_states} -> {rb_states}"
     assert rb_row == pre_row, f"named pre-upgrade row not intact in rollback point: {pre_row!r} -> {rb_row!r}"
-    # The pre-upgrade dump (captured live) shows the canary was loaded — restoring this point
-    # returns HA to that working config (schema 51, entry v1).
+    # The pre-upgrade sample (taken live, through the product's own sampler) shows the canary was
+    # loaded — restoring this point returns HA to that working config (schema 51, entry v1).
     node1.succeed("jq -e '.[]|select(.domain==\"briard_canary\" and .state==\"loaded\")' /tmp/pre.json >/dev/null")
     print(f"rollback point valid: schema {rb_schema} (reverted from 53), states={rb_states} (>= pre {pre_states}), named row intact: {rb_row!r}")
   '';

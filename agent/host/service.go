@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/guest"
+	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/api"
@@ -63,6 +65,12 @@ type serviceInstaller interface {
 	ServiceWarm(ctx context.Context, unit, ref string) error
 	ServiceStop(ctx context.Context, unit string) error
 	ServiceHealth(ctx context.Context, url string) (bool, error)
+	// ServiceReadiness/SupportsServiceReadiness are the differential S1 gate's input, one layer
+	// above the liveness floor ServiceHealth answers ([V3b.29]). Not on `upgrader`, deliberately:
+	// an OS upgrade must not be able to name a service, and its interface carries nothing that
+	// can. A guest without the verb leaves the install on the floor alone.
+	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
+	SupportsServiceReadiness() bool
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
@@ -261,6 +269,27 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 
 	dataDir := quadlet.DataRoot(m.Name)
 
+	// CAPTURE THE S1 BASELINE FIRST, while the OLD version is still serving and still untouched.
+	//
+	// It is a DIFFERENTIAL gate, so this sample is the whole confounder control: an integration
+	// already broken before the upgrade is excluded, and only what this change breaks can trip it.
+	// A sample taken any later is a sample of something already disturbed.
+	//
+	// ⚠️ THIS LINE MUST STAY ABOVE THE SNAPSHOT, and above whatever [B.121] inserts: that item
+	// rules the live snapshot wrong and puts a `stop` before it, and a baseline captured after a
+	// stop is a baseline of a service that is not running. Both items edit this function; either
+	// order is fine as long as this stays first.
+	//
+	// ONLY ON AN UPGRADE. A fresh install has nothing to differ against — the service was not
+	// running, so there is no "was loaded" to regress from — and the floor is the honest gate
+	// there. Deliberate rather than incidental: it is also the case where a Baseline call would
+	// be asking a service that does not exist yet.
+	gate := guest.Gate{Assessor: cfg.assessorFor(m, g, logf), Logf: logf}
+	var readiness guest.Readiness
+	if prior != nil {
+		readiness = gate.Capture(ctx)
+	}
+
 	// Snapshot the rollback point BEFORE the switch, whenever a service is already installed — its
 	// data is what a broken upgrade can poison, and the read-only snapshot on the replicated
 	// volume is what a failed gate restores. The snapshot is taken live, which [B.121] rules
@@ -311,6 +340,20 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d%s", primary.Port, primary.HealthPath)
 	if err := cfg.awaitHealthy(ctx, g, healthURL); err != nil {
 		logf("service install %s failed its health gate (%v); reverting", m.Name, err)
+		return revert(err)
+	}
+	// THE FLOOR HELD; now ask whether the service still does what it did. The floor's whole
+	// blind spot is a service that answers while its work is broken — Home Assistant returning
+	// 200 for /manifest.json with half the house's integrations dead — and this is the layer
+	// that sees it. A Rollback verdict reverts {code + data} exactly as a failed floor does; a
+	// Hold keeps the upgrade and says so; a Pass, a missing assessor, a fresh install or a
+	// failed sample all keep it silently, because S1 must never revert a household's service on
+	// the strength of its own telemetry breaking.
+	//
+	// ⚠️ A Hold currently reaches only the log. On the free tier that is nobody ([B.119] owns
+	// the surface it needs); the rollback window and the user remain the backstop until then.
+	if err := gate.Judge(ctx, readiness); err != nil {
+		logf("service install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
 	// Record the manifest NODE-LOCALLY as well as on the volume. Both copies are needed and they

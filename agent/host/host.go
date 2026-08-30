@@ -342,6 +342,12 @@ type Config struct {
 	// goroutine and not a deadline (B.87).
 	telemetry *telemetryWriter
 
+	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
+	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
+	// const and nothing sets this but tests, which would otherwise spend a real minute per
+	// gated install to observe a verdict the fake already knows. 0 = the shipped window.
+	readinessSettle time.Duration
+
 	// WedgeFIFO is a TEST FIXTURE, not a product knob: a path the observe loop opens each cycle
 	// so agent-watchdog.nix can wedge that goroutine on purpose. Empty everywhere but that test.
 	// See wedgeForTest for why this is explicit rather than borrowed from a defect.

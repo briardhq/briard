@@ -254,4 +254,12 @@ func TestMintAsksForAdminAndPrunes(t *testing.T) {
 	if !strings.Contains(scriptSource, "EVENT_HOMEASSISTANT_FINAL_WRITE") {
 		t.Fatal("the mint does not flush the auth store; nothing would be persisted")
 	}
+	// The registry setup MUST be presence-guarded. This package necessarily spans two Home
+	// Assistant releases -- an upgrade mints under the old image to take the baseline and under
+	// the new one afterwards -- and the step exists in one and not the other. Measured: calling
+	// it on 2025.11.0 raises AttributeError, omitting it on 2026.7.1 raises RuntimeError. An
+	// unguarded call is a mint that silently does nothing on half the upgrades it is there for.
+	if !strings.Contains(scriptSource, `hasattr(dr, "async_setup")`) {
+		t.Fatal("the registry setup is not presence-guarded; the mint will fail on one release or the other")
+	}
 }

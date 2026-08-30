@@ -637,43 +637,83 @@ type Readiness struct {
 	on   bool
 }
 
-// CaptureBaseline samples the assessor's pre-upgrade signal while the old version still
-// serves. A missing assessor or a capture failure degrades to the floor-only gate (S1
-// never blocks an upgrade because its own telemetry failed — the safe direction).
-func (m *Manager) CaptureBaseline(ctx context.Context) Readiness {
-	if m.cfg.ReadinessAssessor == nil {
+// Gate is the S1 differential health gate: capture a baseline before the change, judge the
+// signal after the liveness floor passes. It holds the POLICY — what a missing assessor means,
+// what a failed sample means, and which verdict is worth undoing an upgrade for — and holds it
+// exactly once.
+//
+// It is a type rather than two Manager methods because there are two callers with no route to
+// each other. The OS-upgrade path drives it through a Manager, which is where the assessor is
+// configured; the SERVICE-install path has no Manager at all — it is handed a narrow guest
+// interface, and `upgrader` deliberately carries nothing that can name a service, so an OS
+// upgrade cannot touch one ([V3b.29]). Two copies of these twenty lines would be two S1 gates
+// that could drift on the only question that matters: when to roll a household back.
+type Gate struct {
+	// Assessor is the service-specific differential signal. nil = the liveness floor alone,
+	// which is the shipped default for every service the product holds no knowledge about.
+	Assessor ReadinessAssessor
+	// Logf receives the gate's one line per non-Pass outcome. Never nil in practice; guarded
+	// anyway, because a gate that panicked while reporting a Hold would turn an advisory into
+	// an outage.
+	Logf func(format string, args ...any)
+}
+
+func (g Gate) logf(format string, args ...any) {
+	if g.Logf != nil {
+		g.Logf(format, args...)
+	}
+}
+
+// Capture samples the assessor's pre-change signal while the old version still serves. A missing
+// assessor or a capture failure degrades to the floor-only gate: S1 never blocks a change because
+// its own telemetry failed — the safe direction, and the one that keeps a broken gate from
+// becoming a broken update path.
+func (g Gate) Capture(ctx context.Context) Readiness {
+	if g.Assessor == nil {
 		return Readiness{}
 	}
-	base, err := m.cfg.ReadinessAssessor.Baseline(ctx)
+	base, err := g.Assessor.Baseline(ctx)
 	if err != nil {
-		m.cfg.Logf("readiness: baseline capture failed (%v) -> floor-only gate", err)
+		g.logf("readiness: baseline capture failed (%v) -> floor-only gate", err)
 		return Readiness{}
 	}
 	return Readiness{base: base, on: true}
 }
 
-// Assess runs the differential S1 gate above the liveness floor. It returns a
-// non-nil error only on a Rollback verdict (the caller trips {code+data} rollback); a
-// Hold keeps the upgrade but is surfaced loudly, and a
-// Pass keeps it silently. A nil assessor, uncaptured baseline, or an assess failure is a
-// no-op — never an auto-rollback on our own signal breaking.
-func (m *Manager) Assess(ctx context.Context, r Readiness) error {
+// Judge runs the differential gate above the liveness floor. It returns a non-nil error only on a
+// Rollback verdict (the caller trips the {code+data} rollback); a Hold keeps the change but is
+// surfaced loudly, and a Pass keeps it silently. A nil assessor, an uncaptured baseline, or an
+// assess failure is a no-op — never an auto-rollback on our own signal breaking.
+func (g Gate) Judge(ctx context.Context, r Readiness) error {
 	if !r.on {
 		return nil
 	}
-	verdict, reason, err := m.cfg.ReadinessAssessor.Assess(ctx, r.base)
+	verdict, reason, err := g.Assessor.Assess(ctx, r.base)
 	if err != nil {
-		m.cfg.Logf("readiness: assess failed (%v) -> keep (floor stood)", err)
+		g.logf("readiness: assess failed (%v) -> keep (floor stood)", err)
 		return nil
 	}
 	switch verdict {
 	case VerdictRollback:
 		return fmt.Errorf("readiness gate: %s", reason)
 	case VerdictHold:
-		m.cfg.Logf("readiness: HOLD -- %s (kept; awaiting review)", reason)
+		g.logf("readiness: HOLD -- %s (kept; awaiting review)", reason)
 	}
 	return nil
 }
+
+// gate is the Manager's own, built from its config.
+func (m *Manager) gate() Gate {
+	return Gate{Assessor: m.cfg.ReadinessAssessor, Logf: m.cfg.Logf}
+}
+
+// CaptureBaseline samples the assessor's pre-upgrade signal while the old version still serves —
+// the OS-upgrade path's entry into the shared Gate above.
+func (m *Manager) CaptureBaseline(ctx context.Context) Readiness { return m.gate().Capture(ctx) }
+
+// Assess runs the differential S1 gate above the liveness floor — the OS-upgrade path's entry
+// into the shared Gate above.
+func (m *Manager) Assess(ctx context.Context, r Readiness) error { return m.gate().Judge(ctx, r) }
 
 // Stub is a no-op GuestManager for core tests and v0 wiring.
 type Stub struct{}
