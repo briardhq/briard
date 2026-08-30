@@ -72,16 +72,12 @@ type serviceInstaller interface {
 	ServiceWarm(ctx context.Context, unit, ref string) error
 	ServiceStop(ctx context.Context, unit string) error
 	ServiceHealth(ctx context.Context, url string) (bool, error)
-	// ServiceReadiness/SupportsServiceReadiness are the differential S1 gate's input, one layer
-	// above the liveness floor ServiceHealth answers ([V3b.29]). Not on `upgrader`, deliberately:
-	// an OS upgrade must not be able to name a service, and its interface carries nothing that
-	// can. A guest without the verb leaves the install on the floor alone.
-	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
-	SupportsServiceReadiness() bool
-	// ServiceProbe is the other kind of S1 input ([V3b.4]): a token left in the service's own
-	// durable state before the change and looked for after, for a service whose work no sample can
-	// see. No capability check: agent and guest closure publish together (see readinessProbe).
-	ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error)
+	// The S1 gate.s input, one layer above the liveness floor ServiceHealth answers -- one method
+	// per service that has a signal, named for it (see readinessProbe, which is the same set).
+	// Not on `upgrader`, deliberately: an OS upgrade must not be able to name a service, and its
+	// interface carries nothing that can.
+	HassReadiness(ctx context.Context, port int) ([]hass.Entry, error)
+	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.

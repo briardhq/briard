@@ -62,7 +62,6 @@ type fakeInstaller struct {
 	// so a two-element queue is one whole verdict.
 	readiness   [][]hass.Entry
 	readinessEr error
-	noReadiness bool // the guest does not advertise service.readiness -- floor-only
 	// the probe half ([V3b.4]): what the service is holding, and the two ways it can be broken.
 	stored       string
 	notServing   bool
@@ -70,8 +69,8 @@ type fakeInstaller struct {
 	readinessHit int
 }
 
-func (f *fakeInstaller) ServiceReadiness(_ context.Context, name string, port int) ([]hass.Entry, error) {
-	f.steps = append(f.steps, fmt.Sprintf("readiness:%s:%d", name, port))
+func (f *fakeInstaller) HassReadiness(_ context.Context, port int) ([]hass.Entry, error) {
+	f.steps = append(f.steps, fmt.Sprintf("readiness:%s:%d", hass.Name, port))
 	f.readinessHit++
 	if f.readinessEr != nil {
 		return nil, f.readinessEr
@@ -82,12 +81,10 @@ func (f *fakeInstaller) ServiceReadiness(_ context.Context, name string, port in
 	return nil, nil
 }
 
-func (f *fakeInstaller) SupportsServiceReadiness() bool { return !f.noReadiness }
-
 // The probe half ([V3b.4]). Nothing in this file's tests installs mosquitto, so the default is a
 // service that holds what it is given -- present so the fake satisfies the seam, and so a test
 // that DOES install a broker can make it lose its state by setting loseState.
-func (f *fakeInstaller) ServiceProbe(_ context.Context, _ string, token string) (mosquitto.Sample, error) {
+func (f *fakeInstaller) MosquittoProbe(_ context.Context, token string) (mosquitto.Sample, error) {
 	if token != "" {
 		f.stored = token
 	}

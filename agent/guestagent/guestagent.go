@@ -189,32 +189,42 @@ const (
 	// future promotion anywhere in the flock would render and start it again. Reverting a fresh
 	// install therefore has to remove the identity, not just stop the units.
 	verbServiceForget = "service.forget"
-	// service.readiness samples ONE service's own readiness detail from inside the guest -- for
-	// Home Assistant, its per-config-entry setup states ([V3b.29]). It is the differential S1
-	// gate's input, one layer above the liveness floor `service.health` answers: the floor says
-	// the service replies, this says which of the things it was doing it is still doing.
+	// ── SERVICE-SPECIFIC VERBS: `service.<catalog name>.<action>` ────────────────────────────
 	//
-	// IN THE GUEST because both halves are: the control token is on this node's tmpfs and the
-	// service listens on the guest's loopback, which under macvtap the host cannot reach at all.
-	// It is still dumb hands -- how to talk to the service is agent/hass's, what the answer MEANS
-	// is the host's (agent/guest/entrygate). A NEW verb rather than a widened one, gated by
-	// Supports, for the reason service.installed sets out: a bump is fleet-wide, a new verb is
-	// refused by exactly the one path that needs it.
-	verbServiceReadiness = "service.readiness"
+	// The naming rule, and it is a property rather than a style (owner, 2026-08-30). Every other
+	// verb here works on ANY service: service.health probes whatever URL it is handed,
+	// service.converge renders whatever the volume says. These two do not — each knows one
+	// service's API, returns that service's own shape, and refuses every other name. A verb set is
+	// a CAPABILITY LIST, so it has to say what it grants: `service.readiness` promised a generic
+	// power the guest never had, while `service.home-assistant.readiness` grants exactly the one
+	// it does. It also puts the service in the name rather than in a request field, so there is no
+	// name to steer from the wire and no unknown-name branch to write.
+	//
+	// Both are IN THE GUEST because both halves are: the credential is on this node's tmpfs and
+	// the service listens on the guest's loopback, which under macvtap the host cannot reach at
+	// all. Both are still dumb hands — how to talk to a service is agent/hass's and
+	// agent/mosquitto's, what the answer MEANS is the host's (agent/host/readiness.go).
+	//
+	// NEITHER IS GUARDED BY A CAPABILITY CHECK, which is the alpha policy rather than an
+	// oversight: the agent and the guest closure are published together, and the alpha reinstalls
+	// rather than upgrading in place, so there is no such thing as a node whose guest is older
+	// than its agent. A guest that does not know one of these is a mismatched pair — a fault worth
+	// seeing as one, not a configuration to tolerate.
 
-	// service.probe stores a token in a service's OWN durable state and reports what is stored --
-	// the S1 readiness signal for a service that publishes no readiness of its own ([V3b.4]).
+	// service.home-assistant.readiness samples Home Assistant's per-config-entry setup states
+	// ([V3b.29]). It is the differential S1 gate's input, one layer above the liveness floor
+	// `service.health` answers: the floor says the service replies, this says which of the things
+	// it was doing it is still doing.
+	verbHassReadiness = "service.home-assistant.readiness"
+
+	// service.mosquitto.probe stores a token in the broker's own retained state and reports what
+	// is stored — the S1 signal for a service that publishes no readiness of its own ([V3b.4]).
 	//
-	// A SECOND VERB RATHER THAN A WIDER service.readiness, because it does a different KIND of
-	// thing: readiness samples, this one writes. Folding a write into a verb whose name promises a
-	// read is how a closed verb set stops describing what the host can make the guest do, which is
-	// the only thing that makes it a capability list.
-	//
-	// NO CAPABILITY CHECK GUARDS IT, and that is the alpha policy rather than an oversight: the
-	// agent and the guest closure are published together, and the alpha reinstalls rather than
-	// upgrading in place, so there is no such thing as a node whose guest is older than its agent.
-	// A guest that does not know this verb is a mismatched pair -- a fault worth seeing as one.
-	verbServiceProbe = "service.probe"
+	// A SEPARATE VERB rather than a mosquitto arm of the one above, because it does a different
+	// KIND of thing: readiness samples, this one writes. Folding a write into a verb whose name
+	// promises a read is the other way a capability list stops describing what the host can make
+	// the guest do.
+	verbMosquittoProbe = "service.mosquitto.probe"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -291,7 +301,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbServiceReadiness, verbServiceProbe, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbMosquittoProbe, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -466,21 +476,23 @@ type serviceWarmRequest struct {
 	Ref  string `json:"ref"`
 }
 
-// serviceReadinessRequest names the service to sample and the port it serves on
-// (service.readiness). The PORT comes from the host because the host holds the manifest, which is
-// where a service's port is declared once -- the same field the liveness floor's URL is built
-// from. The guest supplies the rest, because the rest is knowledge about that one service.
-type serviceReadinessRequest struct {
-	Name string `json:"name"`
-	Port int    `json:"port"`
+// hassReadinessRequest carries the port Home Assistant serves on
+// (service.home-assistant.readiness). The PORT comes from the host because the host holds the
+// manifest, which is where a service's port is declared once -- the same field the liveness floor
+// builds its URL from. The guest supplies the rest, because the rest is knowledge about that one
+// service.
+//
+// NO NAME FIELD: the verb names the service (see the verb block). One less thing on the wire, and
+// one less unknown-name branch that could only ever mean the two sides disagree.
+type hassReadinessRequest struct {
+	Port int `json:"port"`
 }
 
-// serviceProbeRequest names the service to probe and, optionally, the token to store first
-// (service.probe). No port: the port a CLIENT of the broker uses is not the manifest's, which
-// names the endpoint the liveness floor probes -- so it is product knowledge, and it stays with
-// the rest of that service's knowledge rather than travelling on the wire.
-type serviceProbeRequest struct {
-	Name  string `json:"name"`
+// mosquittoProbeRequest carries the token to store, if any (service.mosquitto.probe). An empty
+// token makes it a pure read. No port either: the port a CLIENT of the broker uses is not the
+// manifest's, which names the endpoint the liveness floor probes -- so it is product knowledge,
+// and it stays with the rest of that service's knowledge rather than travelling on the wire.
+type mosquittoProbeRequest struct {
 	Token string `json:"token,omitempty"`
 }
 
@@ -990,44 +1002,28 @@ func dispatch(x Executor) dispatchFunc {
 			// converging survivor must not disagree about what "the image is already here" means.
 			// The exists-or-pull rule and why it is safe are argued there.
 			return nil, warmImage(ctx, x, req.Unit, req.Ref)
-		case verbServiceReadiness:
-			var req serviceReadinessRequest
+		case verbHassReadiness:
+			var req hassReadinessRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
-			}
-			// The switch that makes this verb service-specific, and it is deliberately a
-			// REFUSAL for anything else rather than an empty answer: the host only calls this
-			// for a service it has an assessor for, so an unknown name here means the two sides
-			// disagree about which services the product knows -- news, not a quiet nothing.
-			if req.Name != hass.Name {
-				return nil, fmt.Errorf("%s: no readiness signal is defined for %q", verbServiceReadiness, req.Name)
 			}
 			return hass.Readiness(ctx, x, req.Port)
-		case verbServiceProbe:
-			var req serviceProbeRequest
+		case verbMosquittoProbe:
+			var req mosquittoProbeRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			// A refusal for anything else, like service.readiness: the host only probes a service
-			// it has an assessor for, so an unknown name means the two sides disagree about which
-			// services the product knows -- news, not a quiet nothing.
-			if req.Name != mosquitto.Name {
-				return nil, fmt.Errorf("%s: no probe is defined for %q", verbServiceProbe, req.Name)
-			}
-			// The container is derived from the manifest ON THE VOLUME, not from the request. The
-			// name becomes a podman argument, and the volume's copy is the same document the
-			// renderer named the container from -- so this cannot be steered from the wire and
-			// cannot drift from what is actually running.
-			if err := safeUnitName(req.Name); err != nil { // the name is a path element
-				return nil, err
-			}
-			raw, err := x.ReadFile(manifestPath(req.Name))
+			// The container is derived from the manifest ON THE VOLUME. The name becomes a podman
+			// argument, and the volume's copy is the same document the renderer named the
+			// container from -- so it cannot be steered from the wire and cannot drift from what
+			// is actually running. Which service it is, is the verb's to say.
+			raw, err := x.ReadFile(manifestPath(mosquitto.Name))
 			if err != nil {
-				return nil, fmt.Errorf("%s: %s is not installed on this volume: %w", verbServiceProbe, req.Name, err)
+				return nil, fmt.Errorf("%s: %s is not installed on this volume: %w", verbMosquittoProbe, mosquitto.Name, err)
 			}
 			m, _, err := manifest.Parse(raw)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %s does not parse: %w", verbServiceProbe, req.Name, err)
+				return nil, fmt.Errorf("%s: %s does not parse: %w", verbMosquittoProbe, mosquitto.Name, err)
 			}
 			return mosquitto.Probe(ctx, x, quadlet.ContainerName(m.Name, m.Primary().Name), req.Token)
 		case verbServiceConverge:
@@ -2319,33 +2315,30 @@ func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
 	return g.c.call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
 }
 
-// ServiceReadiness samples one service's own readiness detail from inside the guest -- for Home
-// Assistant, its per-config-entry setup states, which is the differential S1 gate's whole input.
+// HassReadiness samples Home Assistant's per-config-entry setup states from inside the guest --
+// the differential S1 gate's whole input.
 //
 // An EMPTY list is a legitimate answer, not a failure: a service that has answered its health URL
 // but has not finished setting its integrations up has none yet. The gate handles that by
 // construction -- it only judges entries that were loaded BEFORE the change.
-func (g *Client) ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error) {
+//
+// Named for the service, like the verb: it works for exactly one, and a method that took a name
+// it then ignored would be the same lie the verb's old name told.
+func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, error) {
 	var out []hass.Entry
-	err := g.c.call(ctx, verbServiceReadiness, serviceReadinessRequest{Name: name, Port: port}, &out)
+	err := g.c.call(ctx, verbHassReadiness, hassReadinessRequest{Port: port}, &out)
 	return out, err
 }
 
-// SupportsServiceReadiness reports whether the guest can sample a service's readiness detail. A
-// guest without it leaves the install path on the liveness floor alone, which is exactly what
-// every node did before the gate existed -- so this degrades rather than refuses, unlike the
-// verbs an install cannot be correct without.
-func (g *Client) SupportsServiceReadiness() bool { return g.Supports(verbServiceReadiness) }
-
-// ServiceProbe stores `token` in a service's own durable state (when one is given) and returns
-// what the service holds -- the S1 signal for a service whose work is invisible to a sample
-// ([V3b.4]). An empty token makes it a pure read.
+// MosquittoProbe stores `token` in the broker's own retained state (when one is given) and returns
+// what it holds -- the S1 signal for a service whose work is invisible to a sample ([V3b.4]). An
+// empty token makes it a pure read.
 //
-// A NOT-SERVING sample is an ANSWER, not an error: it says no client can use this service, which
-// is exactly what the gate is asked to notice. Errors here are the probe itself failing.
-func (g *Client) ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error) {
+// A NOT-SERVING sample is an ANSWER, not an error: it says no client can use this broker, which is
+// exactly what the gate is asked to notice. Errors here are the probe itself failing.
+func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error) {
 	var out mosquitto.Sample
-	err := g.c.call(ctx, verbServiceProbe, serviceProbeRequest{Name: name, Token: token}, &out)
+	err := g.c.call(ctx, verbMosquittoProbe, mosquittoProbeRequest{Token: token}, &out)
 	return out, err
 }
 

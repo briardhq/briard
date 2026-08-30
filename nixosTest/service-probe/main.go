@@ -1,7 +1,8 @@
 // Command service-probe is a TEST HELPER (nixosTest/services-pair.nix), not a product binary.
 //
 // It runs the REAL guest-side probe — agent/mosquitto's, the one the S1 gate's assessor drives
-// over the service.probe verb — against a container on this node, and prints what it found. The
+// over the service.mosquitto.probe verb — against a container on this node, and prints what it
+// found. The
 // point is that a rig asserting "the token survived the upgrade" is asserting it about the code
 // that ships, rather than about a shell pipeline that happens to resemble it.
 //

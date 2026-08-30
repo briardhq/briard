@@ -13,7 +13,7 @@ import (
 
 // Entry is one Home Assistant config entry's identity and setup state — the triple the S1
 // readiness gate reasons over (agent/guest/entrygate). It is also the WIRE shape of the
-// service.readiness verb, which is why it carries HA's own JSON names: the guest decodes HA's
+// service.home-assistant.readiness verb, which is why it carries HA's own JSON names: the guest decodes HA's
 // answer straight into it and the host decodes the verb's answer into the same type, so there is
 // one spelling of this triple in the tree rather than one per hop.
 //

@@ -33,20 +33,23 @@ import (
 // and the service's loopback are both there. That is the same line the rest of the product draws
 // ([[logic-on-host-by-default]]): identity and decisions on the host, hands in the guest.
 
-// readinessProbe is the slice of the guest an assessor drives — a narrow interface for DI, not a
-// seam. Deliberately its own rather than a widening of `upgrader`: an OS upgrade must not be able
-// to name a service, and `upgrader` carries nothing that can.
+// readinessProbe is the slice of the guest the registry's assessors drive — a narrow interface for
+// DI, not a seam. Deliberately its own rather than a widening of `upgrader`: an OS upgrade must not
+// be able to name a service, and `upgrader` carries nothing that can.
+//
+// ONE METHOD PER SERVICE THAT HAS A SIGNAL, named for it, because that is what they are: each
+// speaks one service's API and returns that service's own shape. The generic thing is the
+// ASSESSOR seam above (guest.ReadinessAssessor), which knows none of this.
+//
+// NO CAPABILITY CHECKS, deliberately (owner, 2026-08-30). The agent and the guest closure are
+// published together and the alpha reinstalls rather than upgrading in place, so a guest that
+// does not know one of these verbs is a mismatched pair — a fault to see, not a configuration to
+// tolerate. What remains is the different rule it was once confused with: a sample that FAILS at
+// runtime leaves the install on the liveness floor, because S1 must never revert a household's
+// service on the strength of its own telemetry breaking.
 type readinessProbe interface {
-	ServiceReadiness(ctx context.Context, name string, port int) ([]hass.Entry, error)
-	SupportsServiceReadiness() bool
-	// The probe half ([V3b.4]). A service whose work is invisible to a sample needs a signal it
-	// leaves behind and picks up again, so this carries both kinds: one service is asked what it is
-	// doing, another is asked whether it still has what it was given.
-	//
-	// NO CAPABILITY CHECK BESIDE IT, deliberately. The agent and the guest closure are published
-	// together and the alpha reinstalls rather than upgrading in place, so a guest that does not
-	// know this verb is a mismatched pair -- a fault to see, not a configuration to tolerate.
-	ServiceProbe(ctx context.Context, name, token string) (mosquitto.Sample, error)
+	HassReadiness(ctx context.Context, port int) ([]hass.Entry, error)
+	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
 }
 
 // settleWindow is how long the post-change sample waits before it is judged.
@@ -79,10 +82,6 @@ func (cfg Config) assessorFor(m manifest.Manifest, p readinessProbe, logf func(s
 	settle := cfg.readinessSettle
 	switch m.Name {
 	case hass.Name:
-		if !p.SupportsServiceReadiness() {
-			logf("service install %s: this guest cannot sample readiness (no service.readiness); gating on liveness alone", m.Name)
-			return nil
-		}
 		if settle == 0 {
 			settle = settleWindow
 		}
@@ -114,7 +113,7 @@ type entryAssessor struct {
 func (a entryAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
 	ctx, cancel := context.WithTimeout(ctx, sampleBudget)
 	defer cancel()
-	return a.p.ServiceReadiness(ctx, a.name, a.port)
+	return a.p.HassReadiness(ctx, a.port)
 }
 
 // Assess settles, samples again, and hands both to the real gate.
@@ -132,7 +131,7 @@ func (a entryAssessor) Assess(ctx context.Context, base guest.Baseline) (guest.V
 	}
 	sampleCtx, cancel := context.WithTimeout(ctx, sampleBudget)
 	defer cancel()
-	post, err := a.p.ServiceReadiness(sampleCtx, a.name, a.port)
+	post, err := a.p.HassReadiness(sampleCtx, a.port)
 	if err != nil {
 		return "", "", err
 	}
@@ -222,7 +221,7 @@ func (a *probeAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := a.p.ServiceProbe(ctx, a.name, token)
+	s, err := a.p.MosquittoProbe(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +247,7 @@ func (a *probeAssessor) Assess(ctx context.Context, base guest.Baseline) (guest.
 	var last mosquitto.Sample
 	for {
 		sampleCtx, cancel := context.WithTimeout(ctx, sampleBudget)
-		s, err := a.p.ServiceProbe(sampleCtx, a.name, "")
+		s, err := a.p.MosquittoProbe(sampleCtx, "")
 		cancel()
 		if err != nil {
 			// The probe itself broke. Never a verdict — S1 does not revert a household's service

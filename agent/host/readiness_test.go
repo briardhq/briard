@@ -18,7 +18,6 @@ import (
 type probe struct {
 	samples [][]hass.Entry
 	err     error
-	old     bool
 	calls   int
 	ports   []int
 	// the probe half
@@ -30,7 +29,7 @@ type probe struct {
 	loseState  bool
 }
 
-func (p *probe) ServiceReadiness(_ context.Context, _ string, port int) ([]hass.Entry, error) {
+func (p *probe) HassReadiness(_ context.Context, port int) ([]hass.Entry, error) {
 	p.calls++
 	p.ports = append(p.ports, port)
 	if p.err != nil {
@@ -42,12 +41,10 @@ func (p *probe) ServiceReadiness(_ context.Context, _ string, port int) ([]hass.
 	return nil, nil
 }
 
-func (p *probe) SupportsServiceReadiness() bool { return !p.old }
-
 // The probe half of the seam ([V3b.4]). `stored` is what the service is holding: a write puts the
 // token there, a read hands it back — so a test makes the service LOSE its state by clearing it
 // between the two calls, which is what a broken upgrade does.
-func (p *probe) ServiceProbe(_ context.Context, _ string, token string) (mosquitto.Sample, error) {
+func (p *probe) MosquittoProbe(_ context.Context, token string) (mosquitto.Sample, error) {
 	p.probes++
 	if p.probeErr != nil {
 		return mosquitto.Sample{}, p.probeErr
@@ -142,20 +139,28 @@ func TestAssessorUsesTheManifestsPort(t *testing.T) {
 	}
 }
 
-// TestAssessorDegradesOnAnOldGuest: a guest that cannot sample readiness leaves the install on
-// the liveness floor — the behaviour every node had before the gate existed. Degrade, never
-// refuse: an install must not fail because the layer ABOVE its floor is unavailable, which is
-// the opposite call from service.installed/service.converge (an install is wrong without those).
-func TestAssessorDegradesOnAnOldGuest(t *testing.T) {
+// TestAFailedSampleLeavesTheInstallOnTheFloor — what replaced the old-guest test ([V3b.4], owner's
+// call): the capability check it exercised is gone, because agent and guest closure publish
+// together and the alpha reinstalls, so a guest that cannot sample is a mismatched pair rather
+// than a supported configuration.
+//
+// The rule that DOES survive is the different one it was confused with: when the sample itself
+// fails, the install proceeds on the liveness floor. S1 never blocks or reverts a household's
+// upgrade because its own telemetry broke — and it says so, rather than degrading silently.
+func TestAFailedSampleLeavesTheInstallOnTheFloor(t *testing.T) {
 	var logged strings.Builder
-	a := Config{}.assessorFor(hassManifest(), &probe{old: true}, func(f string, args ...any) {
-		logged.WriteString(f)
-	})
-	if a != nil {
-		t.Fatalf("an old guest got an assessor: %T", a)
+	p := &probe{err: errors.New("the guest is not answering")}
+	a := Config{}.assessorFor(hassManifest(), p, func(f string, args ...any) { logged.WriteString(f) })
+	if a == nil {
+		t.Fatal("home-assistant got no assessor")
 	}
-	if !strings.Contains(logged.String(), "service.readiness") {
-		t.Fatalf("the degrade was silent; logged %q", logged.String())
+	g := guest.Gate{Assessor: a, Logf: func(f string, args ...any) { logged.WriteString(f) }}
+	r := g.Capture(context.Background())
+	if err := g.Judge(context.Background(), r); err != nil {
+		t.Fatalf("a failed sample tripped the gate: %v", err)
+	}
+	if !strings.Contains(logged.String(), "baseline") {
+		t.Fatalf("the fallback to the floor was silent; logged %q", logged.String())
 	}
 }
 
