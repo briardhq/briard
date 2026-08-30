@@ -254,12 +254,28 @@ func TestMintAsksForAdminAndPrunes(t *testing.T) {
 	if !strings.Contains(scriptSource, "EVENT_HOMEASSISTANT_FINAL_WRITE") {
 		t.Fatal("the mint does not flush the auth store; nothing would be persisted")
 	}
-	// The registry setup MUST be presence-guarded. This package necessarily spans two Home
-	// Assistant releases -- an upgrade mints under the old image to take the baseline and under
-	// the new one afterwards -- and the step exists in one and not the other. Measured: calling
-	// it on 2025.11.0 raises AttributeError, omitting it on 2026.7.1 raises RuntimeError. An
-	// unguarded call is a mint that silently does nothing on half the upgrades it is there for.
-	if !strings.Contains(scriptSource, `hasattr(dr, "async_setup")`) {
-		t.Fatal("the registry setup is not presence-guarded; the mint will fail on one release or the other")
+	// THE BOOTSTRAP IS BORROWED, NOT COPIED, and this is the assertion that keeps it that way.
+	// This package necessarily spans two Home Assistant releases -- an upgrade mints under the old
+	// image to take the readiness baseline and under the new one afterwards -- and the setup HA
+	// needs before its auth store will load CHANGED between them: 2026 added a
+	// device_registry.async_setup that the store's own load now requires, and releases before it
+	// have no such function. A hand-written copy therefore raises AttributeError on one end of the
+	// range and RuntimeError on the other, which is exactly how this file first failed. Running
+	// HA's own `scripts/auth.run_command` and passing our mint as its callback makes the
+	// version-sensitive part someone else's to maintain, and leaves this file with no version
+	// branch at all.
+	if !strings.Contains(scriptSource, "ha_auth.run_command(") {
+		t.Fatal("the mint no longer borrows HA's own bootstrap; a copy of it drifts per release")
+	}
+	// Checked on the IMPORTS, not on prose: the comment above necessarily names the symbols the
+	// copy used, so a substring search over the whole file would match its own explanation.
+	for _, copied := range []string{
+		"from homeassistant.auth import auth_manager_from_config",
+		"from homeassistant.helpers import device_registry",
+		"from homeassistant.core import HomeAssistant",
+	} {
+		if strings.Contains(scriptSource, copied) {
+			t.Fatalf("the mint still imports %q, so it is rebuilding the bootstrap by hand", copied)
+		}
 	}
 }
