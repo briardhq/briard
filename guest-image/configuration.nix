@@ -84,6 +84,14 @@ let
   mdnsEnvPath = "/run/briard/mdns.env";
   # The name avahi ACTUALLY established, which the host reads back over net.mdnspublished.
   mdnsPublishedPath = "/run/briard/mdns.published";
+  # The publisher's input: the hostname list converge writes beside the front door's routing
+  # table (shared/routes.HostsPath). Restated here rather than shared, the same way mdnsEnvPath and
+  # vipEnvPath are -- a /run path is a two-sided contract with the agent, and the Go side owns it.
+  routesHostsPath = "/run/briard/routes.hosts";
+  # How often the service-name publisher notices that the routing table changed. Lag, not a race:
+  # nothing is waiting on a name to appear within a deadline, and an install prints the name it
+  # just created from the agent's own knowledge, not from avahi.
+  mdnsWatchSecs = 2;
 
   # Publish the VIP under `briard-<flock name>.local`.
   #
@@ -217,6 +225,74 @@ let
       echo "briard-mdns: avahi never established a name (refused, exited first, or never answered)" >&2
     fi
     exit 1
+  '';
+
+  # The PER-SERVICE mDNS names ([B.48]): one `briard-<flock>-<service>.local` A record per routed
+  # service, all pointing at the VIP, so that the front door's Host-based routing has names to be
+  # reached by. The list is written by converge (shared/routes.HostsPath) from the same composed
+  # table the proxy routes on -- so a name that is published but not routed, or routed but not
+  # published, is not expressible.
+  #
+  # ⚠️ A SEPARATE PUBLISHER FROM briard-mdns, deliberately, and this is the containment that made
+  # per-service names acceptable at all. The flock's own name is the node's one canonical contact
+  # address, and V3.22 is what a wedged avahi publisher costs: five minutes of a name resolving
+  # nowhere while the unit read `active`. Folding N records into that process would put the
+  # household's most important name behind a publisher that now churns on every install; split, a
+  # service-name publisher that wedges takes only the service names with it, and briard-mdns keeps
+  # the settle-wait, the establishment deadline and the read-back it earned.
+  #
+  # ⚠️ IT WATCHES THE FILE RATHER THAN BEING RESTARTED. An install writes the table while this is
+  # already running, and a rename rewrites it too, so the alternative was a `systemctl restart`
+  # from inside converge -- which is both a cross-component call and, worse, a no-op exactly when
+  # it is needed most: before the first install this unit may be inactive, and `try-restart` on an
+  # inactive unit publishes nothing while reporting success. Polling the mtime has no such state.
+  # ${toString mdnsWatchSecs}s of lag on a name is nothing; a name that never appears is not.
+  #
+  # A NODE WITH NOTHING TO PUBLISH STILL RUNS. It holds no records and watches: that is the shipped
+  # zero-service state, and it is what makes the first install's names appear without anyone
+  # having to start anything.
+  mdnsServicesPublish = pkgs.writeShellScript "briard-mdns-services-publish" ''
+    set -uo pipefail
+    addr="''${VIP_ADDR%%/*}"
+    if [ -z "$addr" ]; then
+      echo "briard-mdns-services: no VIP address; nothing to point the service names at" >&2
+      exit 1
+    fi
+    pids=""
+    stamp=""
+    # avahi withdraws a record when its publisher exits, so killing these IS the withdrawal --
+    # both on a re-publish and on the demote that stops this unit.
+    withdraw() {
+      [ -n "$pids" ] || return 0
+      kill $pids 2>/dev/null || true
+      wait $pids 2>/dev/null || true
+      pids=""
+    }
+    trap 'withdraw' EXIT
+    while :; do
+      now=$(${pkgs.coreutils}/bin/stat -c %Y ${routesHostsPath} 2>/dev/null || echo none)
+      if [ "$now" != "$stamp" ]; then
+        stamp="$now"
+        withdraw
+        n=0
+        # An ABSENT file is the state before this node has ever converged -- at boot, or on a node
+        # that has not promoted. Not an error and not worth a shell diagnostic every time: it means
+        # nothing is routed, which is exactly what publishing zero names says.
+        if [ -r ${routesHostsPath} ]; then
+          while IFS= read -r host; do
+            [ -n "$host" ] || continue
+            # -R: allow this name to coexist with other records for the same address. NOT unique,
+            # which is what makes a duplicate silently shadow rather than fail (measured 2026-08-23)
+            # -- the reason these names are flock-scoped and not bare `homeassistant.local`.
+            ${pkgs.avahi}/bin/avahi-publish -a -R "$host" "$addr" >/dev/null 2>&1 &
+            pids="$pids $!"
+            n=$((n+1))
+          done <${routesHostsPath}
+        fi
+        echo "briard-mdns-services: publishing $n service name(s) at $addr" >&2
+      fi
+      ${pkgs.coreutils}/bin/sleep ${toString mdnsWatchSecs}
+    done
   '';
 
   # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
@@ -1048,6 +1124,35 @@ in
       unitConfig.ConditionPathExists = mdnsEnvPath;
     };
 
+    # 3b. the per-service mDNS names -- the other half of Host-based routing ([B.48]). See
+    #     mdnsServicesPublish for why this is a second publisher rather than more work inside
+    #     briard-mdns, and why it watches its input instead of being restarted.
+    #
+    #     Bound to briard-vip exactly like briard-mdns (wantedBy + partOf): the records point at
+    #     the VIP, so they must exist only where the VIP does and vanish when it moves. After
+    #     briard-mdns, not because it depends on it, but because the address-settle wait lives
+    #     there and publishing into avahi's probe window is what wedged it (V3.22) -- letting the
+    #     flock's name establish first means these start on an address that has already held still.
+    #
+    #     NO ConditionPathExists on the hosts file: an empty or absent list is a node with nothing
+    #     routed, which is the shipped state, and the watcher's whole job is to be already running
+    #     when the first install writes one.
+    systemd.services.briard-mdns-services = {
+      description = "Briard mDNS names for the routed services";
+      wantedBy = [ "briard-vip.service" ];
+      partOf = [ "briard-vip.service" ];
+      after = [ "briard-vip.service" "briard-mdns.service" "avahi-daemon.service" ];
+      requires = [ "avahi-daemon.service" ];
+      serviceConfig = {
+        # The address briard-vip ACTUALLY claimed, same two files and same last-wins order as
+        # briard-mdns: a service name must never point at an address this node did not take.
+        EnvironmentFile = [ vipEnvPath vipLivePath ];
+        ExecStart = "${mdnsServicesPublish}";
+        Restart = "on-failure";
+        RestartSec = 2;
+      };
+    };
+
     # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443. Woven into the
     #    promoter chain via briard-vip (wantedBy + partOf), NOT the drbd-reactor start-list —
     #    so it tracks the primary role (up on promote, down on demote) without touching the
@@ -1063,13 +1168,18 @@ in
       partOf = [ "briard-vip.service" ];
       after = [ "briard-vip.service" "briard-services.service" ];
       serviceConfig = {
-        # NO -backend, ever, as of [V3b.3](e2): the front door serves Briard's own page and
-        # answers its own /healthz. That is right for a node with nothing installed (ready, not
-        # permanently unhealthy — the zombie state), and it is a KNOWN LOSS for a node that has a
-        # service installed: the backend it used to proxy to came from the build-time slot, and
-        # the slot is gone. Nothing reads a runtime manifest's port/healthPath here yet, so an
-        # installed service answers on its own port and the VIP's :80/:443 does not reach it.
-        # Recorded rather than fixed, because wiring it belongs to the front door's own item.
+        # NO -backend, and no -routes either: the front door has no single backend at all as of
+        # [B.48], and the table it does route on has a compiled-in default (shared/routes.Path)
+        # that this unit deliberately does not restate. Naming the path here would put the same
+        # /run path in two places with nothing checking they agree -- and it is not a knob a node
+        # ever varies, unlike the cert paths, which live on the replicated volume this module
+        # defines.
+        #
+        # ORDERED AFTER briard-services, which is what makes the table exist before the door reads
+        # it: converge writes it as part of the same promotion, one chain member earlier. The door
+        # reloads the file on mtime anyway, so an install that lands later needs nothing from
+        # systemd -- this ordering only spares a freshly-promoted node from a few seconds of
+        # serving its own page over services it already runs.
         ExecStart = "${pkgs.reverse-proxy}/bin/reverse-proxy"
           + " -http :80 -listen :443"
           + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem";

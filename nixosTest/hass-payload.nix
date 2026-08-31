@@ -7,13 +7,11 @@
 # wiring, not failover (that is hass-failover), and HA is heavy enough that one instance is the
 # right cost.
 #
-# ⚠️ WHAT THIS NO LONGER PROVES, and where it went. It used to assert HA was reachable THROUGH the
-# front door, and that /healthz forwarded the question to HA. Both came from the build-time service
-# slot, which fed the reverse proxy its `-backend` at guest-build time; the slot is deleted
-# ([V3b.3](e2)) and routing the front door to a runtime-installed service is [B.48]'s -- the sole
-# owner of the routes table. So the door answers for itself here, exactly as it does on every
-# shipped node, and the proxying assertion comes back when routing does: [B.48] carries the
-# obligation to restore it, because this coverage was deleted rather than superseded.
+# HA reachable THROUGH the front door under its own name is asserted again, at the bottom of this
+# file ([B.48] landed the routing table). It was lost when the build-time service slot went
+# ([V3b.3](e2)) -- the door's `-backend` came from that slot, so with the slot gone no node routed
+# to a service at all -- and it comes back keyed on the SERVICE's name rather than on there being
+# exactly one thing to forward to, which is what the table changed.
 { pkgs, guestModule, fixture }:
 
 let
@@ -51,6 +49,10 @@ pkgs.testers.runNixOSTest {
     node1.succeed("systemctl start drbd@r0.target")
     # Single node: no peer to connect to — just make it UpToDate so it's promotable.
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
+
+    # Give the node a flock name before anything converges, the way the agent does at bring-up:
+    # the per-service names are composed from it, so a node with none routes nothing.
+    name_the_flock(node1)
 
     # Hand off to the promoter: it has quorum alone, promotes, and runs the ordered chain. Nothing
     # is installed yet, so the front door comes up answering for itself.
@@ -169,5 +171,37 @@ pkgs.testers.runNixOSTest {
         f"the container restarted ({started_before} -> {started_after}); the mint must ride "
         "the service-start boundary, not a container bounce"
     )
+
+    # ── THROUGH THE FRONT DOOR ───────────────────────────────────────────────────────
+    #
+    # THE ASSERTION THIS FILE OWED BACK ([B.48]). Until [V3.15] the door forwarded to a backend
+    # baked at guest-build time; [V3b.3](e2) deleted that slot, and for two epochs no node routed
+    # to a runtime-installed service at all -- an installed HA answered only on :8123 while the
+    # VIP's :80 served Briard's own page. It comes back keyed on the service's NAME, from the table
+    # the guest's converge wrote.
+    host = routed_host(node1, "home-assistant")
+    assert host == "briard-brave-elf-home-assistant.local", f"the node composed {host}"
+
+    # HA itself, through the door, on :80 -- no port in the address.
+    node1.wait_until_succeeds(
+        f"curl -fsS -o /dev/null -H 'Host: {host}' http://192.168.1.100/manifest.json", timeout=120
+    )
+    # And /healthz under that name is NOT the node's answer: under a name we route, EVERY path
+    # belongs to the service (HA has no /healthz of its own, so what comes back is HA's 404 --
+    # which is precisely the proof, because the node's own /healthz is a 200 saying "front door
+    # up"). The node's answer is still there at the bare address, where the OS health gate reads
+    # it, and that is why a wedged service cannot change it.
+    under_name = node1.succeed(f"curl -sS -H 'Host: {host}' http://192.168.1.100/healthz || true")
+    assert "front door up" not in under_name, (
+        f"/healthz under the service's name was answered by the front door: {under_name!r}"
+    )
+    node_health = node1.succeed("curl -fsS http://192.168.1.100/healthz")
+    assert "1 service(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
+    assert "home-assistant" in node_health, f"the node's /healthz does not name what it routes: {node_health!r}"
+
+    # The name is PUBLISHED, not merely routed: the two lists are the same list, so a name that
+    # resolves nowhere and a name that routes nowhere are both excluded by construction.
+    published = node1.succeed("cat /run/briard/routes.hosts").split()
+    assert host in published, f"the routed name is not published: {published}"
   '';
 }

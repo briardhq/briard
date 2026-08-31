@@ -206,6 +206,26 @@ let
         units = m.succeed(f"cat {fixture_dir(service)}/units").split()
         assert units, f"the renderer produced no service units: {units}"
         return units
+
+    def name_the_flock(m, name="brave-elf"):
+        """Give the node a flock name the way the AGENT does -- net.mdnsname writes exactly this
+        file, and converge composes the per-service names from it ([B.48]). Without it a node has
+        no name to route on: the service is installed and reachable on its port, but nothing
+        answers for it at the front door, which is the honest state of a node whose flock has
+        never been named."""
+        m.succeed("mkdir -p /run/briard")
+        m.succeed(f"printf 'FLOCK_NAME={name}\\n' >/run/briard/mdns.env")
+
+    def routed_host(m, service):
+        """The name the front door routes `service` on, read from the table the PRODUCT wrote --
+        never a name restated here, which would assert our own arithmetic rather than the node's."""
+        import json
+        table = json.loads(m.succeed("cat /run/briard/routes.json"))
+        for s in table["services"]:
+            if s["name"] == service:
+                assert s.get("hosts"), f"{service} is routed but unnamed: {s}"
+                return s["hosts"][0]
+        raise AssertionError(f"{service} is not in the node's routing table: {table}")
   '';
 
   # A test node: the unit image + a backing disk (unless diskless) + its private

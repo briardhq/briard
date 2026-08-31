@@ -120,15 +120,21 @@ const (
 	verbServiceActive = "service.active" // systemctl is-active <unit> -> bool
 	verbServiceHealth = "service.health" // in-guest GET of the service's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
 	verbServiceSince  = "service.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
-	verbDataSnapshot  = "data.snapshot"  // btrfs subvolume snapshot -r <DataDir> <dest>
-	verbDataRestore   = "data.restore"   // replace the live subvolume with a snapshot
-	verbOSSystem      = "os.system"      // readlink -f /run/current-system -> closure store path
-	verbOSStage       = "os.stage"       // nix-store --realise: pull a closure INTO the store
-	verbOSComponents  = "os.components"  // read a closure's boot-critical parts, for the reboot decision
-	verbOSSwitch      = "os.switch"      // point the system profile at a closure + activate it
-	verbOSStageBoot   = "os.stageboot"   // make a closure BOOTABLE without making it the default
-	verbOSPowerOff    = "os.poweroff"    // ask the guest OS to shut itself down cleanly
-	verbOSGC          = "os.gc"          // drop old profile generations, then collect the store
+	// verbServiceHealthOf is the same probe asked BY SERVICE NAME ([B.48]): the guest resolves the
+	// address from its own routing table instead of being handed one. A separate verb rather than
+	// a field on service.health, so an older guest refuses it loudly instead of silently probing
+	// an empty URL and reporting the service unhealthy -- which on the install gate would revert a
+	// perfectly good install.
+	verbServiceHealthOf = "service.healthof"
+	verbDataSnapshot    = "data.snapshot" // btrfs subvolume snapshot -r <DataDir> <dest>
+	verbDataRestore     = "data.restore"  // replace the live subvolume with a snapshot
+	verbOSSystem        = "os.system"     // readlink -f /run/current-system -> closure store path
+	verbOSStage         = "os.stage"      // nix-store --realise: pull a closure INTO the store
+	verbOSComponents    = "os.components" // read a closure's boot-critical parts, for the reboot decision
+	verbOSSwitch        = "os.switch"     // point the system profile at a closure + activate it
+	verbOSStageBoot     = "os.stageboot"  // make a closure BOOTABLE without making it the default
+	verbOSPowerOff      = "os.poweroff"   // ask the guest OS to shut itself down cleanly
+	verbOSGC            = "os.gc"         // drop old profile generations, then collect the store
 )
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
@@ -299,7 +305,7 @@ const bootIDPath = "/proc/sys/kernel/random/boot_id"
 var guestCapabilities = []string{
 	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
-	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceSince,
+	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbMosquittoProbe, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
@@ -372,6 +378,12 @@ type unitRequest struct {
 // (service.health). The host owns the URL (its HealthURL config); the guest just probes it.
 type healthRequest struct {
 	URL string `json:"url"`
+}
+
+// serviceRequest names a service by its catalog slug — the form every verb takes once the guest
+// resolves what it needs from its own state rather than from the caller's (service.healthof).
+type serviceRequest struct {
+	Service string `json:"service"`
 }
 
 // snapshotRequest is a btrfs subvolume op: DataDir is the live rw subvolume, Path is
@@ -931,6 +943,27 @@ func dispatch(x Executor) dispatchFunc {
 			// net.Dial HTTP/1.0 GET keeps the guest binary free of net/http + the TLS stack the
 			// -tags guest build deliberately trims. 200 == healthy; any error == not.
 			return probeHTTPOK(ctx, req.URL), nil
+		case verbServiceHealthOf:
+			var req serviceRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// THE ADDRESS COMES FROM THE ROUTING TABLE, not from the caller ([B.48]). The host used
+			// to build `http://127.0.0.1:<port>` out of the manifest, which is right only for as
+			// long as every pod is host-networked: the manifest names a port, and what host
+			// answers on it is the renderer's decision. Resolving here is what makes the install
+			// gate and the steady-state probe follow that decision instead of restating it.
+			//
+			// An unresolvable service is an ERROR rather than `false`. "I cannot find where this
+			// service listens" and "this service is not answering" have opposite consequences on
+			// the install gate -- the first is worth retrying until the deadline, the second is
+			// the thing being measured -- and collapsing them would revert an install because a
+			// table was written a moment late.
+			url, err := serviceHealthURL(x, req.Service)
+			if err != nil {
+				return nil, err
+			}
+			return probeHTTPOK(ctx, url), nil
 		case verbServiceSince:
 			req, err := unitReq(payload)
 			if err != nil {
@@ -1554,6 +1587,12 @@ func dispatch(x Executor) dispatchFunc {
 			// The rename applies WITHOUT touching addressing -- no VIP re-assert, no MAC, no DHCP
 			// client-id, no DRBD state. That is the property the three-way identifier split was
 			// for, and this line is where it is cashed in.
+			//
+			// The per-service names are derived from this one ([B.48]), so they move with it --
+			// in the routing table the front door matches on AND in the records the publisher
+			// claims, which are the same list precisely so that a rename cannot leave a name
+			// published that nothing routes.
+			renameRoutes(x, req.Name)
 			return nil, run("systemctl", "try-restart", mdnsUnit)
 		case verbNetMDNSPublished:
 			// The name avahi ESTABLISHED, which is not always the name we asked for: on a
@@ -2466,6 +2505,22 @@ func (g *Client) ServiceActive(ctx context.Context, unit string) (bool, error) {
 func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 	var ok bool
 	err := g.c.call(ctx, verbServiceHealth, healthRequest{URL: url}, &ok)
+	return ok, err
+}
+
+// ServiceHealthOf asks the guest whether ONE NAMED SERVICE is serving, letting the guest resolve
+// the address from its own routing table ([B.48]).
+//
+// It replaces callers that built `http://127.0.0.1:<port>` from the manifest. That URL is correct
+// only while every pod shares the guest's network namespace: the manifest names a port, and which
+// host answers on it is decided by the renderer. Asking by name is what keeps the install gate and
+// the steady-state probe pointed wherever the front door is pointed.
+//
+// An unresolvable service returns an ERROR, never a false: "I cannot find it" must not be read as
+// "it is broken" by a gate that reverts installs.
+func (g *Client) ServiceHealthOf(ctx context.Context, service string) (bool, error) {
+	var ok bool
+	err := g.c.call(ctx, verbServiceHealthOf, serviceRequest{Service: service}, &ok)
 	return ok, err
 }
 

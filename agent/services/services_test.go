@@ -43,7 +43,9 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 	if x.runs != 0 {
 		t.Errorf("an unknown service ran %d command(s) on the node", x.runs)
 	}
-	if got := Reach(m, "home"); got != "reach it at http://briard-home.local:8080/" {
+	// The service's OWN name on the front door's :80 ([B.48]), not the flock name and a port: the
+	// port in this sentence was the shape of a node that could only be reached around its door.
+	if got := Reach(m, "home"); got != "reach it at http://briard-home-something-else.local/" {
 		t.Errorf("Reach = %q", got)
 	}
 }
@@ -89,5 +91,22 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	// No published name means no address to promise — the same rule the HTTP form follows.
 	if bare := Reach(mq, ""); strings.Contains(bare, ".local") {
 		t.Errorf("a node with no published name promised a name anyway: %q", bare)
+	}
+}
+
+// TestOnlyTheBrokerIsNotFronted — the front door's exposure decision, keyed on the catalog name
+// like everything else here ([B.48]). It is a security property: mosquitto's manifest port is its
+// management API, which mosquitto.conf binds to 127.0.0.1 deliberately, and the door runs inside
+// that same guest — so fronting it would republish a loopback-only endpoint on the LAN through a
+// mechanism that never mentions the bind.
+func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
+	if Fronted(svc(mosquitto.Name, mosquitto.HealthPort)) {
+		t.Error("the broker is fronted; its loopback-bound management API would reach the LAN")
+	}
+	// The default is the front door: an ordinary service's primary port IS what a household opens.
+	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
+		if !Fronted(m) {
+			t.Errorf("%s is not fronted; the default must be that a service is reachable by name", m.Name)
+		}
 	}
 }

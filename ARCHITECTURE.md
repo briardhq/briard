@@ -183,7 +183,7 @@ agent/          the host daemon: orchestration, and the provider seams
   agent/guest   the host↔guest boundary and the upgrade/rollback mechanism
 shared/         wire types (api) and domain types (model), plus the notify seam
 guest-image/    the NixOS guest: DRBD, drbd-reactor, and the front door (it ships running nothing)
-reverse-proxy/  the front door: answers the VIP, terminates TLS, hot-reloads certs
+reverse-proxy/  the front door: answers the VIP, routes by name, terminates TLS, hot-reloads both
 internal/arch   the architecture guards, as failing tests
 nixosTest/      real-VM tests of the mechanisms above
 scripts/        the installer

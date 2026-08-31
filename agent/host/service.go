@@ -72,6 +72,9 @@ type serviceInstaller interface {
 	ServiceWarm(ctx context.Context, unit, ref string) error
 	ServiceStop(ctx context.Context, unit string) error
 	ServiceHealth(ctx context.Context, url string) (bool, error)
+	// ServiceHealthOf is the same floor asked BY NAME, so the guest resolves the address from the
+	// routing table it converged rather than from a URL the host assembled ([B.48]).
+	ServiceHealthOf(ctx context.Context, service string) (bool, error)
 	// The S1 gate.s input, one layer above the liveness floor ServiceHealth answers -- one method
 	// per service that has a signal, named for it (see readinessProbe, which is the same set).
 	// Not on `upgrader`, deliberately: an OS upgrade must not be able to name a service, and its
@@ -349,11 +352,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	}
 	logf("service install %s: converged from the volume; waiting for health", m.Name)
 
-	// Gate on the SERVICE's own endpoint (in-guest), not the front door — see awaitHealthy. The
-	// primary container's port + healthPath are manifest-guaranteed (Validate requires both).
-	primary := m.Primary()
-	healthURL := fmt.Sprintf("http://127.0.0.1:%d%s", primary.Port, primary.HealthPath)
-	if err := cfg.awaitHealthy(ctx, g, healthURL); err != nil {
+	// Gate on the SERVICE's own endpoint (in-guest), not the front door — see awaitHealthy. BY
+	// NAME: the converge above wrote the routing table, so the guest already knows where this
+	// service listens, and the host no longer assembles an address it can only guess stays true.
+	if err := cfg.awaitHealthy(ctx, g, m.Name); err != nil {
 		logf("service install %s failed its health gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
@@ -777,27 +779,37 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: cause.Error()}
 }
 
-// AwaitHealthy polls the SERVICE's OWN health endpoint (its port + healthPath from the manifest,
-// probed in-guest at 127.0.0.1) until it comes up, or the gate expires.
+// AwaitHealthy polls the SERVICE's OWN health endpoint until it comes up, or the gate expires.
 //
-// It does NOT gate on the front door. The reverse-proxy's /healthz reports NODE readiness — on a
-// shipped zero-service node it answers "no backend configured" (200) and never learns about a
-// runtime-installed service (its backend is baked at guest-build time from cfg.image) — so gating
-// on it passes a broken install. Probing the service directly is also the
-// shape multi-service needs: each service gated on its own endpoint, not one VIP /healthz that
-// cannot reflect N of them. The front door's per-domain routing to runtime services (and the
-// matching steady-state health) is deferred with the routing work.
-func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, healthURL string) error {
-	if healthURL == "" {
-		return nil // no probe endpoint (a witness never installs; a valid manifest always has one)
+// IT ASKS BY NAME, and the guest resolves where that is ([B.48]). It used to assemble
+// `http://127.0.0.1:<port>` from the manifest, which is correct only while every pod shares the
+// guest's network namespace — the manifest names a port, and which host answers on it is the
+// renderer's decision. Handing the guest a name means the gate probes wherever the front door
+// routes, by construction, instead of two places agreeing by coincidence.
+//
+// It does NOT gate on the front door. That /healthz reports NODE readiness — on a node with
+// nothing routed it answers 200 because a node with no services is ready, not sick — so gating on
+// it would pass a broken install. The distinction is not a workaround: node health and service
+// health have different consequences (one can cost a failover, the other must only alert), and the
+// front door answering for the node is what keeps them separable.
+//
+// An ERROR IS NOT AN UNHEALTHY VERDICT here: a service the guest cannot resolve yet is retried
+// until the deadline, exactly like one that is not answering yet, because the two are
+// indistinguishable from outside and only one of them is worth reverting an install over.
+func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, service string) error {
+	if service == "" {
+		return nil // nothing to probe (a witness never installs)
 	}
 	deadline := time.Now().Add(healthGate)
 	for {
-		ok, err := g.ServiceHealth(ctx, healthURL)
+		ok, err := g.ServiceHealthOf(ctx, service)
 		if err == nil && ok {
 			return nil
 		}
 		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("service did not become healthy within %s (%w)", healthGate, err)
+			}
 			return fmt.Errorf("service did not become healthy within %s", healthGate)
 		}
 		select {

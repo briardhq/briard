@@ -199,6 +199,28 @@ type ServiceStatus struct {
 	// channel hiccuped this cycle knows nothing. Reporting either as stopped would make an
 	// ordinary standby indistinguishable from a broken primary.
 	State string `json:"state,omitempty"`
+	// Health is whether the service itself ANSWERS: the guest GETs the service's own health
+	// endpoint, resolved through the node's routing table, and reports StateHealthy or
+	// StateUnhealthy. Empty means the question does not apply or could not be asked — a Secondary
+	// (which runs nothing), a service that is not running (State already says so), a service with
+	// no HTTP endpoint, or a cycle whose control channel hiccuped.
+	//
+	// Widening the closed allowlist is a deliberate act, so here is the argument, and it is the
+	// second half of the one State makes. State closed the hole where a promoted node ran NOTHING
+	// and reported healthy. It cannot close the next one: a container that is up while the
+	// application inside it is broken reads as `running`, and the node-level Healthy is the front
+	// door, which answers for the NODE. So "the unit is up" was the only thing anyone could see,
+	// and a service that starts and then fails to serve was invisible to every signal we have.
+	//
+	// It became askable at all with the routing table ([B.48]): before it, the address of a
+	// service was something each caller assembled for itself, and a health field would have been
+	// a claim about a URL rather than about the thing the household reaches.
+	//
+	// IT REPORTS AND NEVER GATES, exactly like State and for the same reason: [V3b.3](f) takes
+	// service failures out of the promoter's reach on purpose, because a code fault is
+	// deterministic and failing over to a peer running the identical closure only flaps. This is
+	// what makes such a failure VISIBLE without making it actionable by the wrong machinery.
+	Health string `json:"health,omitempty"`
 }
 
 // The values ServiceStatus.State takes. A closed set, spelled here rather than at each end, so
@@ -206,6 +228,14 @@ type ServiceStatus struct {
 const (
 	StateRunning = "running"
 	StateStopped = "stopped"
+)
+
+// The values ServiceStatus.Health takes. Separate from State's set, because they answer different
+// questions about the same service and a single field could not say "running but not serving" --
+// which is the only interesting combination of the two.
+const (
+	StateHealthy   = "healthy"
+	StateUnhealthy = "unhealthy"
 )
 
 // MetricAggregate is one field's hourly rollup a node uploads: min/max/avg over the

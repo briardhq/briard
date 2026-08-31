@@ -25,6 +25,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
+	"briard.io/shared/routes"
 )
 
 // Executor is the guest-side command runner the preparation steps need. Its method set matches
@@ -73,21 +74,53 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 // the failure [V3.17] exists to end. No published name (a witness, or FLOCK_NAME unset) means no
 // URL to promise: say the port and stop.
 //
+// THE NAME IS THE SERVICE'S OWN since [B.48]: `briard-<flock>-<service>.local`, on the front
+// door's :80, rather than the flock name and the service's port. That is the whole user-facing
+// payoff of the routing table -- a port in the address was the shape of a node that could only
+// reach a service by going around its front door.
+//
 // The default assumes the manifest's port is an HTTP front door, which is true of every service
 // whose front door IS its HTTP endpoint. mosquitto is the first entry where it is not: what it
 // publishes for the household is MQTT on 1883, while the manifest's port is the management
 // endpoint the liveness floor probes, bound to the guest's loopback. Telling a user to open that
-// in a browser would hand them a dead link for a service that is working perfectly.
+// in a browser would hand them a dead link for a service that is working perfectly -- and no
+// reverse proxy can front it either, which is why its name resolves but does not serve.
 func Reach(m manifest.Manifest, flock string) string {
-	port := m.Primary().Port
 	if m.Name == mosquitto.Name {
 		if flock == "" {
 			return fmt.Sprintf("it accepts MQTT on port %d", mosquitto.MQTTPort)
 		}
 		return fmt.Sprintf("point MQTT clients at briard-%s.local:%d", flock, mosquitto.MQTTPort)
 	}
-	if flock == "" {
-		return fmt.Sprintf("it answers on port %d", port)
+	host := routes.HostName(flock, m.Name)
+	if host == "" {
+		return fmt.Sprintf("it answers on port %d", m.Primary().Port)
 	}
-	return fmt.Sprintf("reach it at http://briard-%s.local:%d/", flock, port)
+	return fmt.Sprintf("reach it at http://%s/", host)
+}
+
+// Fronted reports whether the front door may proxy to this service ([B.48]).
+//
+// TRUE BY DEFAULT, because a catalogued service's primary port is normally the HTTP front door a
+// household is meant to open — Home Assistant's :8123 is the whole example.
+//
+// FALSE FOR mosquitto, and this is a security property rather than a nicety. Its manifest `port` is
+// the broker's **management API**, which `mosquitto.conf` binds to `127.0.0.1` on purpose, with the
+// reason written at the listener: "it is still not exposed, because nothing outside the guest has
+// any business reading it". The front door runs INSIDE the guest, so routing to it by name would
+// republish that loopback-only endpoint on the LAN at the VIP — undoing a deliberate bind through
+// a mechanism that never mentions it. What a household actually reaches on the broker is MQTT on
+// 1883, which no reverse proxy can serve anyway, and which host networking already exposes.
+//
+// SO THIS IS NOT THE SAME QUESTION AS HEALTH. A not-fronted service still has an address and is
+// still probed there: mosquitto's management endpoint is exactly what the liveness floor GETs, and
+// the guest can reach it because the guest is where the bind is. Fronted decides what the DOOR may
+// forward, never what the node may ask.
+//
+// The keying is the same as everything else in this package — the catalog name, product-side, code
+// we ship and review. A manifest cannot say it, which is the point: a publisher must not be able to
+// hand itself the front door. That changes when a manifest can declare its own networking and
+// exposure ([B.48](a)), and the default flips to whatever the schema says then.
+func Fronted(m manifest.Manifest) bool {
+	return m.Name != mosquitto.Name
 }

@@ -368,6 +368,11 @@ type statusReader interface {
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
 	ServiceHealth(ctx context.Context, url string) (bool, error)
+	// ServiceHealthOf probes ONE named service, the guest resolving its address from the routing
+	// table it converged ([B.48]). It answers a different question from ServiceHealth above: that
+	// one is the NODE's front door, this one is a service's own endpoint, and the observe loop
+	// needs both because a node can be up while a service on it is not.
+	ServiceHealthOf(ctx context.Context, service string) (bool, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
 	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
@@ -1461,25 +1466,57 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 					st.State = api.StateRunning
 				}
 			}
+			// ONLY WHEN IT IS RUNNING. A stopped service is not unhealthy, it is stopped, and
+			// State has already said so; probing it would spend a round trip to learn what we
+			// know and then report the same fact twice under two names. The interesting answer is
+			// the one this makes possible: running AND unhealthy — a container that came up and
+			// does not serve, which every signal we had read as fine ([B.48]).
+			//
+			// An ERROR LEAVES IT EMPTY rather than unhealthy. The guest cannot resolve a service
+			// it has no route for, and a node mid-converge is briefly in exactly that state; a
+			// report of "unhealthy" there would be a false alarm about a healthy household, on a
+			// field whose whole value is that someone acts on it.
+			if st.State == api.StateRunning {
+				if ok, err := r.ServiceHealthOf(ctx, s.Name); err == nil {
+					st.Health = api.StateUnhealthy
+					if ok {
+						st.Health = api.StateHealthy
+					}
+				}
+			}
 		}
 		out = append(out, st)
 	}
 	return out
 }
 
-// serviceStateReader is the one verb serviceStatuses needs: is this unit up? Narrow interface for
-// DI, not a seam.
+// serviceStateReader is what serviceStatuses needs of the guest: is this unit up, and does the
+// service behind it answer. Narrow interface for DI, not a seam.
 type serviceStateReader interface {
 	ServiceActive(ctx context.Context, unit string) (bool, error)
+	// ServiceHealthOf probes ONE service by name, the guest resolving its address from the
+	// routing table ([B.48]) — the steady-state twin of the install gate, and the only reason
+	// the two can be trusted to be asking about the same address.
+	ServiceHealthOf(ctx context.Context, service string) (bool, error)
 }
 
 // serviceLog renders the reported services for the status line -- "name@identity" per service,
-// which is what a version change looks like from outside. Empty on a node that runs nothing,
-// which the caller prints as a dash.
+// which is what a version change looks like from outside, plus "!unhealthy" for one that is
+// RUNNING and not serving ([B.48]).
+//
+// The mark is here rather than only on the cloud wire because a signal that reaches only the cloud
+// is a signal the free tier never gets, and this is the one state nothing else on the node makes
+// visible: the unit is up, the promoter is deliberately not watching it ([V3b.3](f)), and the
+// front door answers for the node. Empty means not asked or not applicable and prints nothing --
+// a standby would otherwise look like a node full of broken services.
 func serviceLog(svcs []api.ServiceStatus) string {
 	parts := make([]string, 0, len(svcs))
 	for _, s := range svcs {
-		parts = append(parts, s.Name+"@"+s.Manifest)
+		p := s.Name + "@" + s.Manifest
+		if s.Health == api.StateUnhealthy {
+			p += "!unhealthy"
+		}
+		parts = append(parts, p)
 	}
 	return strings.Join(parts, ",")
 }

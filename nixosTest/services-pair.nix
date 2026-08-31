@@ -130,6 +130,48 @@ pkgs.testers.runNixOSTest {
     client.succeed(f"mosquitto_pub -h {VIP} -t briard/pair -m 'written-on-2.1.1' -r")
     assert broker_version(primary) == "2.1.1", "the pair did not start on its `from` version"
 
+
+    # ---- (1b) TWO SERVICES, TWO NAMES, ONE DOOR -- AND THE BROKER IS NOT BEHIND IT ([B.48]) ----
+    # N=1 could not test any of this. The properties that only exist at N=2 are that each name
+    # reaches its OWN service, and that "fronted" is a per-service decision rather than a property
+    # of there being exactly one thing to forward to.
+    name_the_flock(primary)
+    primary.succeed("briard-agent --converge")
+    import json as _rj
+    table = _rj.loads(primary.succeed("cat /run/briard/routes.json"))
+    routed = {s["name"]: s for s in table["services"]}
+    assert set(routed) == {"${fixture.name}", "${mosquitto.name}"}, f"routing table = {table}"
+    assert routed["${fixture.name}"]["hosts"] != routed["${mosquitto.name}"]["hosts"], \
+        f"the two services share a name: {table}"
+
+    # The ordinary service: reachable through the door, on :80, by its own name.
+    app_host = routed["${fixture.name}"]["hosts"][0]
+    body = primary.succeed(f"curl -fsS -H 'Host: {app_host}' http://{VIP}${fixture.healthPath}")
+    assert "ok" in body and "front door" not in body, f"the fixture through the door answered {body!r}"
+
+    # THE BROKER IS NAMED BUT NOT FRONTED, and this is a security property rather than a nicety.
+    # Its manifest port is the MANAGEMENT API, which mosquitto.conf binds to 127.0.0.1 on purpose
+    # ("nothing outside the guest has any business reading it") -- and the front door runs inside
+    # that guest, so a table that fronted it would republish a loopback-only endpoint on the LAN
+    # through a mechanism that never mentions the bind.
+    mq_host = routed["${mosquitto.name}"]["hosts"][0]
+    assert routed["${mosquitto.name}"]["fronted"] is False, f"the broker is fronted: {table}"
+    # It keeps the name and the address: the name resolves to the VIP where MQTT listens, and the
+    # address is what the health floor probes from inside the guest. Not-fronted is one of three.
+    assert routed["${mosquitto.name}"]["backend"], f"the broker has no address to probe: {table}"
+    primary.succeed("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners")
+
+    # The regression this guards, asserted from OFF the box, which is where it would matter.
+    client.fail(f"curl -fsS -m 5 -o /dev/null http://{VIP}:9883/api/v1/listeners")
+    denied = client.succeed(
+        f"curl -sS -m 5 -H 'Host: {mq_host}' http://{VIP}/api/v1/listeners || true"
+    )
+    assert "listeners" not in denied, f"the front door served the broker's management API: {denied!r}"
+    assert "${mosquitto.name}" in denied, f"the door did not name the service it declined to serve: {denied!r}"
+    # NOT asserted by NAME from off the box: resolving `.local` needs nss-mdns on the client, which
+    # is avahi's property and not this item's -- install-macvtap owns the does-a-stranger's-machine
+    # resolve-it question. What is asserted here is the door's decision, which is what changed.
+
     # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)

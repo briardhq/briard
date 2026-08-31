@@ -537,10 +537,11 @@ func (m meshReader) Cluster(context.Context, string) (model.Cluster, error) {
 	}
 	return cl, nil
 }
-func (m meshReader) ServiceHealth(context.Context, string) (bool, error) { return true, nil }
-func (m meshReader) ServiceActive(context.Context, string) (bool, error) { return true, nil }
-func (m meshReader) MDNSPublished(context.Context) (string, error)       { return "", nil }
-func (m meshReader) VIP(context.Context, string) (string, error)         { return "", nil }
+func (m meshReader) ServiceHealth(context.Context, string) (bool, error)   { return true, nil }
+func (m meshReader) ServiceHealthOf(context.Context, string) (bool, error) { return true, nil }
+func (m meshReader) ServiceActive(context.Context, string) (bool, error)   { return true, nil }
+func (m meshReader) MDNSPublished(context.Context) (string, error)         { return "", nil }
+func (m meshReader) VIP(context.Context, string) (string, error)           { return "", nil }
 
 // A GUEST REPLICATING TO PEERS THE HOST HAS NO RECORD OF IS AN ALERT ([V3b.16b]). Such a node is
 // serving and replicating right now, and will come back a mesh-of-one on its next guest reboot,

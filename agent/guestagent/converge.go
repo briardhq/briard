@@ -13,6 +13,7 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
 	"briard.io/shared/manifest"
+	"briard.io/shared/routes"
 )
 
 // Converge-at-promotion: a node that takes over makes itself match the VOLUME ([V3b.3](f)).
@@ -155,6 +156,12 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 	// that does not know about them would leave containers on an unmounted volume.
 	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {
 		return nil, fmt.Errorf("converge: record started units: %w", err)
+	}
+	// The front door's routing table, from the same rendering ([B.48]). Before the start for the
+	// same reason as the unit record: a service that is coming up must never be running behind a
+	// door that does not know about it, and the door 502s harmlessly for the seconds in between.
+	if err := writeRoutes(x, svcs); err != nil {
+		return nil, err
 	}
 	for _, s := range svcs {
 		if s.skip {
@@ -521,4 +528,162 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 		b.WriteString(n + " " + sum(r.Files[n]) + "\n")
 	}
 	return x.WriteFile(startedFile, []byte(b.String()))
+}
+
+// writeRoutes materialises the front door's routing table from what this converge rendered — the
+// names included, so the mDNS publisher and the door read one list.
+//
+// IT IS WRITTEN EVEN WHEN THERE ARE NO SERVICES, as an empty table rather than an absent file:
+// "this node routes nothing" and "nobody has told me anything" are different states, and the door
+// reading a stale table left over from before an uninstall is exactly the failure the file exists
+// to make impossible. Converge is the whole truth here for the same reason it is for the units.
+//
+// SKIPPED SERVICES ARE INCLUDED, unlike the started-record. The volume says the node serves them,
+// so the door should say so too: a name that resolves and gives a 502 tells a household its
+// service is down, while a name that resolves to nothing tells them they typed it wrong. The
+// per-service health probe reads the same table and reports the same truth.
+//
+// A FAILURE HERE FAILS THE CONVERGE, and that is the harsher of the two options on purpose. This
+// runs as a promoter chain member ahead of briard-vip, so a node that cannot write its routing
+// table takes no address and is reported unhealthy, rather than promoting into a front door
+// serving the landing page over a household's running service — the silent-degradation shape
+// [V3b.3](f) was built to end, one layer up.
+func writeRoutes(x Executor, svcs []convergedService) error {
+	t := routesFor(flockName(x), svcs)
+	return putRoutes(x, t)
+}
+
+// putRoutes writes both halves of the table: the JSON the front door routes on, and the plain
+// hostname list the mDNS publisher claims (see routes.HostsPath for why there are two).
+//
+// NEITHER IS SIGNALLED TO ITS READER, and that is the design rather than an omission. The door
+// reloads on mtime and the publisher watches the same way, so writing the file IS the
+// notification — which means an install needs no `systemctl restart` of either, and neither can be
+// left stale by a restart that was skipped because the unit happened to be inactive. On a
+// Secondary, where both are stopped, the write is simply read by whoever promotes next.
+func putRoutes(x Executor, t routes.Table) error {
+	raw, err := t.Marshal()
+	if err != nil {
+		return fmt.Errorf("converge: routing table: %w", err)
+	}
+	if err := x.WriteFile(routes.Path, raw); err != nil {
+		return fmt.Errorf("converge: write %s: %w", routes.Path, err)
+	}
+	hosts := t.Hosts()
+	var b strings.Builder
+	for _, h := range hosts {
+		b.WriteString(h + "\n")
+	}
+	if err := x.WriteFile(routes.HostsPath, []byte(b.String())); err != nil {
+		return fmt.Errorf("converge: write %s: %w", routes.HostsPath, err)
+	}
+	return nil
+}
+
+// routesFor turns the rendered services into the table. The renderer supplies the ADDRESS (see
+// quadlet.Rendered.Backend — it is the only thing that knows how the pod was wired) and this
+// supplies the NAMES, composed in one place so that what the publisher claims and what the door
+// matches cannot drift apart.
+func routesFor(flock string, svcs []convergedService) routes.Table {
+	t := routes.Table{Services: make([]routes.Service, 0, len(svcs))}
+	for _, s := range svcs {
+		e := routes.Service{
+			Name:       s.name,
+			Backend:    s.r.Backend,
+			HealthPath: s.r.HealthPath,
+			// Whether the DOOR may forward there, which is not the same as whether the node can
+			// reach it: mosquitto's address is its loopback-bound management API, probed by the
+			// health floor and deliberately not exposed to the LAN (agent/services.Fronted).
+			Fronted: services.Fronted(s.m),
+		}
+		if h := routes.HostName(flock, s.name); h != "" {
+			e.Hosts = []string{h}
+		}
+		t.Services = append(t.Services, e)
+	}
+	return t
+}
+
+// flockName reads the flock's visible name out of the file net.mdnsname wrote, or "" if this node
+// has none.
+//
+// READ RATHER THAN PASSED IN, because the alternative is worse than it looks: the host knows the
+// name too (it minted it), so it could hand it over with the converge — and then a node that
+// promoted on its own, which is the whole case converge-at-promotion exists for, would render its
+// routing table with no name in it. The name is guest-local state for exactly the same reason the
+// manifests are volume state: it must be readable by a node that nobody is talking to.
+//
+// An unreadable or nameless file yields "", which routes.HostName turns into a service with no
+// hostname — installed and reachable on its port, simply not yet named. That is the same rule
+// briard-mdns already applies to the flock's own name, and it is the state of a node between
+// install and its first name.
+func flockName(x Executor) string {
+	raw, err := x.ReadFile(mdnsEnvPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range nonEmptyLines(raw) {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "FLOCK_NAME="); ok {
+			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	return ""
+}
+
+// renameRoutes re-composes the hostnames in the EXISTING routing table after a flock rename, and
+// republishes them.
+//
+// IT DOES NOT RE-DERIVE THE TABLE FROM THE VOLUME, which was the obvious shape and is the wrong
+// one: a rename can arrive on a Secondary, or on a Primary whose volume read hiccups, and
+// re-rendering would then write an EMPTY table over a good one — losing every route because a
+// name changed. A rename changes names and nothing else, so it rewrites names and nothing else.
+//
+// An absent table is not an error: the node has never converged (or runs nothing), and the next
+// converge composes the names from the file this rename has already written.
+func renameRoutes(x Executor, flock string) {
+	raw, err := x.ReadFile(routes.Path)
+	if err != nil {
+		return
+	}
+	t, err := routes.Parse(raw)
+	if err != nil {
+		log.Printf("mdns rename: the routing table does not parse (%v); leaving it for the next converge", err)
+		return
+	}
+	for i := range t.Services {
+		t.Services[i].Hosts = nil
+		if h := routes.HostName(flock, t.Services[i].Name); h != "" {
+			t.Services[i].Hosts = []string{h}
+		}
+	}
+	if err := putRoutes(x, t); err != nil {
+		log.Printf("mdns rename: %v; the routing table still carries the old names", err)
+	}
+}
+
+// serviceHealthURL resolves where to ask one service whether it is serving, from the routing
+// table this node last converged.
+//
+// It is deliberately the SAME source the front door routes on: "is it healthy" and "where do
+// requests go" must never be answered about two different addresses, which is exactly what a
+// caller-supplied URL allows. A service that is not in the table, or that is in it with no HTTP
+// backend, yields an error rather than an unhealthy verdict — see the verb for why that
+// distinction is load-bearing.
+func serviceHealthURL(x Executor, name string) (string, error) {
+	raw, err := x.ReadFile(routes.Path)
+	if err != nil {
+		return "", fmt.Errorf("health: no routing table (%w)", err)
+	}
+	t, err := routes.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("health: %w", err)
+	}
+	s, ok := t.Get(name)
+	if !ok {
+		return "", fmt.Errorf("health: %s is not in this node's routing table", name)
+	}
+	if s.Backend == "" {
+		return "", fmt.Errorf("health: %s has no HTTP endpoint to probe", name)
+	}
+	return s.Backend + s.HealthPath, nil
 }

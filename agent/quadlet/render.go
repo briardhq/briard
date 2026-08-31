@@ -79,6 +79,23 @@ type Rendered struct {
 	// already-present short-circuit. A caller that must not touch the network (bring-up, which
 	// runs after every guest reboot) needs the ref to ask whether the pull is needed at all.
 	ImageRefs map[string]string
+	// Backend is where the front door must forward to in order to reach this service, as a URL,
+	// and HealthPath the path on it that answers "are you serving".
+	//
+	// THEY COME FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION ([B.48]). The
+	// manifest names a port; what host that port answers on is decided by the networking this
+	// file writes into the .pod. Under host networking it is the guest's own loopback, which is
+	// why every caller could get away with assembling `127.0.0.1:<port>` for itself — and why
+	// they all break the moment a service may ask for a private pod network ([B.48](a)), where
+	// the port is not on the guest's loopback at all. Returning the address from the one place
+	// that chose it is what makes that change a one-file change.
+	//
+	// A service with no HTTP front door leaves Backend empty. Nothing does today — Validate
+	// requires a primary with a port — but the field is what a not-fronted service (mosquitto:
+	// MQTT on 1883, which no reverse proxy can serve) will say when exposure becomes something a
+	// manifest can declare, so the consumers are written for it now rather than retrofitted.
+	Backend    string
+	HealthPath string
 }
 
 // prefix keeps every generated unit in one obvious namespace, so a `systemctl list-units
@@ -207,6 +224,14 @@ func Render(m manifest.Manifest) (Rendered, error) {
 		}
 		out.ImageRefs[unit+"-image.service"] = c.Image
 	}
+	// Where the pod above can be reached. HOST NETWORKING IS WHY IT IS LOOPBACK: the containers
+	// share the guest's network namespace, so the primary's port is the guest's own port. This is
+	// the one line that changes when a service may ask for a private network ([B.48](a)) — and it
+	// is deliberately the ONLY place that knows, so that changing it changes the front door's
+	// route and the health probe's target together, rather than leaving three callers to agree.
+	p := m.Primary()
+	out.Backend = fmt.Sprintf("http://127.0.0.1:%d", p.Port)
+	out.HealthPath = p.HealthPath
 	return out, nil
 }
 

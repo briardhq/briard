@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"briard.io/agent/hass"
+	"briard.io/shared/routes"
 )
 
 // A manifest the fixture catalog could have signed. Digest-pinned, which is what makes an
@@ -19,6 +20,12 @@ const dummyManifest = `{"name":"dummy","version":"1","containers":[{"name":"app"
 const otherManifest = `{"name":"other","version":"1","containers":[{"name":"app",` +
 	`"image":"localhost/briard-other@sha256:2222222222222222222222222222222222222222222222222222222222222222",` +
 	`"primary":true,"port":9090,"healthPath":"/healthz"}]}`
+
+// mosquitto's REAL catalog shape: the manifest port is 9883, the management API the broker binds
+// to the guest's loopback -- which is exactly why the front door must not route to it.
+const mosquittoManifest = `{"name":"mosquitto","version":"2.1.2","containers":[{"name":"broker",` +
+	`"image":"docker.io/library/eclipse-mosquitto@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
+	`"mount":"/mosquitto/data","primary":true,"port":9883,"healthPath":"/api/v1/listeners"}]}`
 
 // convergeExec is a fakeExec taught the two directory listings converge reads and the podman
 // image store it asks about. Everything else falls through to fakeExec's defaults.
@@ -540,5 +547,180 @@ func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
 		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" {
 			t.Fatalf("the old container was stopped for an upgrade that could not be prepared: %v", r)
 		}
+	}
+}
+
+// The front door's routing table is converge's output too ([B.48]): the same pass that renders the
+// units writes where each service can be reached and under what name. Before this, a
+// runtime-installed service was reachable only on its own port -- the door kept serving the
+// landing page over a running household.
+func TestConvergeWritesTheRoutingTable(t *testing.T) {
+	x := dummyNode(t)
+	x.fakeExec.files[mdnsEnvPath] = "FLOCK_NAME=brave-elf\n"
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	raw, ok := x.fakeExec.files[routes.Path]
+	if !ok {
+		t.Fatalf("converge wrote no routing table; wrote %v", keys(x.fakeExec.files))
+	}
+	tbl, err := routes.Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("the table converge wrote does not parse: %v", err)
+	}
+	if len(tbl.Services) != 1 {
+		t.Fatalf("table = %+v, want the one installed service", tbl.Services)
+	}
+	s := tbl.Services[0]
+	// The ADDRESS comes from the renderer, which is the only thing that knows how the pod was
+	// wired -- host networking today, which is why it is the guest's own loopback.
+	if s.Name != "dummy" || s.Backend != "http://127.0.0.1:8080" || s.HealthPath != "/healthz" {
+		t.Errorf("route = %+v, want the rendered backend and the manifest's health path", s)
+	}
+	if len(s.Hosts) != 1 || s.Hosts[0] != "briard-brave-elf-dummy.local" {
+		t.Errorf("hosts = %v, want the flock-scoped single label", s.Hosts)
+	}
+	// The publisher's half, written from the same list so the published name and the routed name
+	// cannot disagree.
+	if got := x.fakeExec.files[routes.HostsPath]; got != "briard-brave-elf-dummy.local\n" {
+		t.Errorf("hosts file = %q, want the same name the table carries", got)
+	}
+}
+
+// A node whose flock has no minted name publishes nothing rather than a guess -- the rule
+// briard-mdns already follows for the flock's own name. The service is still installed and still
+// routed in the table; it simply has no name yet, and the front door says exactly that.
+func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
+	x := dummyNode(t) // no mdns.env at all
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tbl.Services) != 1 || len(tbl.Services[0].Hosts) != 0 {
+		t.Fatalf("table = %+v, want the service present and unnamed", tbl.Services)
+	}
+	if got := x.fakeExec.files[routes.HostsPath]; got != "" {
+		t.Errorf("hosts file = %q, want nothing published", got)
+	}
+}
+
+// An UNINSTALL must take the route with it. Converge is the whole truth for the table exactly as
+// it is for the units: a stale route is a name that resolves to a service the node no longer runs.
+func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
+	x := &convergeExec{} // nothing installed
+	x.fakeExec.files = map[string]string{
+		routes.Path:      `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"backend":"http://127.0.0.1:8080"}]}`,
+		routes.HostsPath: "briard-brave-elf-dummy.local\n",
+	}
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tbl.Services) != 0 {
+		t.Fatalf("table = %+v, want it emptied with the services", tbl.Services)
+	}
+	if got := x.fakeExec.files[routes.HostsPath]; got != "" {
+		t.Errorf("hosts file = %q, want the name withdrawn", got)
+	}
+}
+
+// The by-name health probe resolves through the SAME table the door routes on, which is the whole
+// reason the install gate and the steady-state probe can be trusted to be asking about one
+// address. An unresolvable service is an error, never an unhealthy verdict -- see the verb.
+func TestServiceHealthURLResolvesThroughTheTable(t *testing.T) {
+	x := &convergeExec{}
+	x.fakeExec.files = map[string]string{
+		routes.Path: `{"services":[` +
+			`{"name":"dummy","backend":"http://127.0.0.1:8080","healthPath":"/healthz"},` +
+			`{"name":"mosquitto","hosts":["briard-brave-elf-mosquitto.local"]}]}`,
+	}
+	got, err := serviceHealthURL(x, "dummy")
+	if err != nil || got != "http://127.0.0.1:8080/healthz" {
+		t.Fatalf("serviceHealthURL(dummy) = %q, %v; want the rendered endpoint", got, err)
+	}
+	if _, err := serviceHealthURL(x, "nope"); err == nil {
+		t.Error("a service absent from the table resolved; the gate must retry, not fail it")
+	}
+	if _, err := serviceHealthURL(x, "mosquitto"); err == nil {
+		t.Error("a service with no HTTP endpoint resolved; there is nothing to GET")
+	}
+}
+
+// A flock RENAME moves the service names with it, in the table and in the publisher's list -- and
+// it must not re-derive the table from the volume to do it: a rename can arrive on a Secondary,
+// where the volume is not mounted, and re-rendering there would write an empty table over a good
+// one and take every route down because a name changed.
+func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
+	x := &convergeExec{} // services nil: `ls` fails, exactly like an unmounted volume
+	x.fakeExec.files = map[string]string{
+		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],` +
+			`"backend":"http://127.0.0.1:8080","healthPath":"/healthz"}]}`,
+	}
+	renameRoutes(x, "picked-hornet")
+	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tbl.Services) != 1 {
+		t.Fatalf("table = %+v, want the service kept through the rename", tbl.Services)
+	}
+	if got := tbl.Services[0].Hosts; len(got) != 1 || got[0] != "briard-picked-hornet-dummy.local" {
+		t.Errorf("hosts = %v, want the new flock name", got)
+	}
+	if tbl.Services[0].Backend != "http://127.0.0.1:8080" {
+		t.Errorf("backend = %q, want it untouched: a rename changes names and nothing else", tbl.Services[0].Backend)
+	}
+	if got := x.fakeExec.files[routes.HostsPath]; got != "briard-picked-hornet-dummy.local\n" {
+		t.Errorf("hosts file = %q, want the publisher moved with the table", got)
+	}
+}
+
+// mosquitto is in the table with a name, an address and Fronted=FALSE ([B.48]). The address is
+// real and is what the health floor probes; what must not happen is the front door forwarding LAN
+// traffic to it, because that address is the broker's MANAGEMENT API, bound to the guest's
+// loopback on purpose — and the door runs inside that guest. A routing table that fronted it would
+// undo a deliberate bind through a mechanism that never mentions it.
+func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
+	x := &convergeExec{services: []string{"dummy.json", "mosquitto.json"}, haveImage: true}
+	x.fakeExec.files = map[string]string{
+		manifestDir + "/dummy.json":     dummyManifest,
+		manifestDir + "/mosquitto.json": mosquittoManifest,
+		mdnsEnvPath:                     "FLOCK_NAME=brave-elf\n",
+	}
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mq, ok := tbl.Get("mosquitto")
+	if !ok {
+		t.Fatalf("the broker is not in the table at all: %+v", tbl.Services)
+	}
+	if mq.Fronted {
+		t.Error("the broker is fronted; its management API would be republished on the LAN")
+	}
+	// It keeps its NAME and its ADDRESS: the name resolves to the VIP where MQTT is listening, and
+	// the address is what the health floor GETs from inside the guest. Not-fronted is one of the
+	// three, never all of them.
+	if len(mq.Hosts) != 1 || mq.Hosts[0] != "briard-brave-elf-mosquitto.local" {
+		t.Errorf("broker hosts = %v, want it named", mq.Hosts)
+	}
+	if mq.Backend == "" || mq.HealthPath == "" {
+		t.Errorf("broker = %+v, want an address to probe even though the door may not use it", mq)
+	}
+	if _, err := serviceHealthURL(x, "mosquitto"); err != nil {
+		t.Errorf("the broker cannot be health-probed (%v); Fronted must not decide that", err)
+	}
+	// And an ordinary service is unaffected.
+	if d, _ := tbl.Get("dummy"); !d.Fronted {
+		t.Error("an ordinary service came out not-fronted; the default is the front door")
 	}
 }

@@ -260,13 +260,41 @@ pkgs.testers.runNixOSTest {
     print(primary.succeed("podman ps --format '{{.Names}} {{.Pod}} {{.Status}}'"))
 
     # The service answers on its OWN endpoint (host-networked :8080) — the same thing the health
-    # gate probes (agent/host/service.go awaitHealthy), and a REAL 200 from the service, not the
-    # front door's "no backend configured" 200. The front door reports NODE readiness and
-    # does not route to a runtime-installed service (per-domain routing is deferred), so gating
-    # on the VIP /healthz would pass vacuously — which is exactly what the broken-install test caught.
+    # gate probes (agent/host/service.go awaitHealthy, which now asks the guest to resolve it
+    # rather than assembling this URL itself), and a REAL 200 from the service, not the front
+    # door's own answer.
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
     assert "ok" in primary.succeed("curl -fsS http://127.0.0.1:8080/healthz"), "service /healthz did not report ready"
     print("the installed service answers healthy on its own endpoint — install -> promote -> serve")
+
+    # === 5c. AND THROUGH THE FRONT DOOR, under its own name ([B.48]) ===
+    # The install above happened on a node with no flock name, so it was routed and UNNAMED --
+    # which is a real shipped state (a node publishes nothing rather than a guess) and the one this
+    # asserts first: the table carries the service, with no host to reach it by.
+    import json
+    table = json.loads(primary.succeed("cat /run/briard/routes.json"))
+    assert [s["name"] for s in table["services"]] == ["fixture"], f"routing table = {table}"
+    assert not table["services"][0].get("hosts"), f"an unnamed node composed a name: {table}"
+    assert table["services"][0]["backend"] == "http://127.0.0.1:8080", f"routing table = {table}"
+
+    # Name the flock the way the agent does, re-converge, and the SAME service acquires a name.
+    # This is the sequence a real node runs in the other order; doing it this way is what proves
+    # the name is composed from the flock name rather than baked at install.
+    primary.succeed("mkdir -p /run/briard && printf 'FLOCK_NAME=brave-elf\\n' >/run/briard/mdns.env")
+    primary.succeed("briard-agent --converge")
+    host = json.loads(primary.succeed("cat /run/briard/routes.json"))["services"][0]["hosts"][0]
+    assert host == "briard-brave-elf-fixture.local", f"the node composed {host}"
+    body = primary.succeed(f"curl -fsS -H 'Host: {host}' http://192.168.1.100/healthz")
+    assert "ok" in body and "front door" not in body, (
+        f"the VIP under the service's name answered {body!r}; want the SERVICE's own answer"
+    )
+    # The bare address is still the node's, and it names what it routes.
+    node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
+    assert "1 service(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
+    # A name nobody serves is the node's page, not a service's 404: that is where a household
+    # reads which names this node does answer to.
+    page = primary.succeed("curl -fsS -H 'Host: briard-brave-elf-nope.local' http://192.168.1.100/")
+    assert "fixture" in page, f"the front door's page does not list what it serves: {page!r}"
 
     # And the service's data really lands on the replicated subvolume.
     primary.wait_until_succeeds(f"test -s {dataroot}/app/state.json", timeout=60)

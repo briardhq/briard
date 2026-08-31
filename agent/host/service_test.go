@@ -47,6 +47,7 @@ type fakeInstaller struct {
 	staleRemoved []string // unit files a render was told to remove: the collateral surface
 	manifests    []string
 	healthURL    string
+	healthOf     string
 	renderEr     error
 	provEr       error
 	convergeEr   error
@@ -172,6 +173,18 @@ func (f *fakeInstaller) ServiceHealth(_ context.Context, url string) (bool, erro
 	return true, nil
 }
 
+// ServiceHealthOf is the by-name probe the install gate uses ([B.48]): the guest resolves the
+// address from its routing table, so what the host is asserted to have asked for is a SERVICE,
+// never a URL it assembled.
+func (f *fakeInstaller) ServiceHealthOf(_ context.Context, service string) (bool, error) {
+	f.steps = append(f.steps, "health")
+	f.healthOf = service
+	if !f.healthy {
+		return false, errors.New("not ready")
+	}
+	return true, nil
+}
+
 // The service-install path has no opinion about names. "" -- this node publishes none -- is the
 // honest answer here; a fixture name could be mistaken for an assertion that one was published.
 func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return "", nil }
@@ -252,8 +265,8 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	}
 	// The gate probes the SERVICE's own endpoint (manifest port + healthPath, in-guest), NOT the
 	// VIP front door — the front door doesn't reflect a runtime-installed service.
-	if f.healthURL != "http://127.0.0.1:8123/manifest.json" {
-		t.Fatalf("health probe = %q, want the service endpoint (not the VIP front door)", f.healthURL)
+	if f.healthOf != "home-assistant" {
+		t.Fatalf("health probe asked about %q, want the installed service by name", f.healthOf)
 	}
 	// THE CHAIN IS NOT TOUCHED, and that is the whole shape change. It is static
 	// (data -> services -> vip) and the installed service is not a member of it, which is what
@@ -672,7 +685,9 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	if want := "reach it at http://briard-picked-hornet.local:8123/"; o.Detail != want {
+	// The SERVICE's own name, on the door's :80 ([B.48]). The port that used to be in this
+	// sentence was the address of a service reached around the front door rather than through it.
+	if want := "reach it at http://briard-picked-hornet-home-assistant.local/"; o.Detail != want {
 		t.Fatalf("Detail = %q, want %q", o.Detail, want)
 	}
 }
@@ -1324,5 +1339,43 @@ func TestInstallIgnoresAnotherServiceBeingSkipped(t *testing.T) {
 	}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done — another service's skip is not ours", o)
+	}
+}
+
+// PER-SERVICE HEALTH, the [B.48] half, and the hole it closes is the one State could not: a
+// container that is UP while the application inside it does not serve. State says `running`, the
+// node-level Healthy is the front door answering for the NODE, and before this nothing in the
+// system could see the difference.
+//
+// It is only asked of a RUNNING service, and an unresolvable one leaves the field empty rather
+// than calling it unhealthy -- a node mid-converge has no route yet, and a false alarm on a field
+// whose whole value is that someone acts on it is worse than silence.
+func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
+	cfg := Config{Services: []model.ServiceSpec{
+		{Name: "serving", Manifest: "sha256:aa", Unit: "briard-serving-app.service"},
+		{Name: "wedged", Manifest: "sha256:bb", Unit: "briard-wedged-app.service"},
+		{Name: "unrouted", Manifest: "sha256:cc", Unit: "briard-unrouted-app.service"},
+		{Name: "stopped", Manifest: "sha256:dd", Unit: "briard-stopped-app.service"},
+	}}
+	r := fakeStatus{
+		active: map[string]bool{
+			"briard-serving-app.service":  true,
+			"briard-wedged-app.service":   true,
+			"briard-unrouted-app.service": true,
+		},
+		// "unrouted" is deliberately absent: the guest cannot resolve it.
+		svcHealth: map[string]bool{"serving": true, "wedged": false, "stopped": true},
+	}
+	got := cfg.serviceStatuses(context.Background(), r, true)
+	want := []api.ServiceStatus{
+		{Name: "serving", Manifest: "sha256:aa", State: api.StateRunning, Health: api.StateHealthy},
+		// THE ONE THAT MATTERS: up, and not serving.
+		{Name: "wedged", Manifest: "sha256:bb", State: api.StateRunning, Health: api.StateUnhealthy},
+		{Name: "unrouted", Manifest: "sha256:cc", State: api.StateRunning},
+		// Not probed at all: State already says stopped, and "unhealthy" would say it twice.
+		{Name: "stopped", Manifest: "sha256:dd", State: api.StateStopped},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
 	}
 }

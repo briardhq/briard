@@ -52,10 +52,14 @@ failing over and rolling back with the catalog unreachable. The install pulls th
 its data on the replicated volume, and starts it behind a health gate that reverts the node if
 it does not come up.
 
-> **Alpha gap:** the front door at `http://briard-<name>.local/` does not route to a service you
-> install this way yet — it keeps serving Briard's own page, and the service answers on its own
-> port (Home Assistant: `http://briard-<name>.local:8123/`). Per-domain routing is the next
-> thing landing. The catalog is also one entry long today.
+Each installed service gets its own name on the LAN — `briard-<name>-<service>.local` (Home
+Assistant on a node called `brave-elf`: `http://briard-brave-elf-home-assistant.local/`) — and the
+node's front door routes to it. `briard service install` prints the address when it finishes.
+`http://briard-<name>.local/` stays the node's own page and lists what it serves.
+
+> **Alpha gap:** those names are `.local` (mDNS) only, so they work on the LAN and nowhere else;
+> a per-home domain with a real certificate is still to come. The catalog is also one entry long
+> today.
 
 ## Commands
 
