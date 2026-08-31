@@ -143,6 +143,14 @@ func systemCandidate(rnd io.Reader) (netip.Prefix, error) {
 // 10.11.x DELIBERATELY, and not the 10.9.x the code used all along: renaming the pool off its
 // historical value means any surviving `10.9.` in either tree is provably a leftover rather than
 // a judgement call, which turns a class of rogue use into one grep.
+//
+// ⚠️ THE POOL IS L2 SUBSTRATE AND NO BRIARD CODE MAY REFERENCE IT. On Linux, macvtap leaves host
+// and guest unable to route each other's subnets directly, and these addresses on eth3 are what
+// both routing tables hang that routing off -- so the pool is permanent, whatever else stops using
+// it (scripts/install.sh's PRIV_HOST_CIDR note). It does not exist at all on a Windows host, which
+// is what makes the rule a rule rather than a preference: anything that dials this range cannot
+// run where the link was never built. A product network that needs addresses of its own draws its
+// own pool and excludes it below, exactly as this one is excluded from the flock's.
 func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 	var o [1]byte
 	if _, err := io.ReadFull(rnd, o[:]); err != nil {
@@ -179,7 +187,7 @@ var occupied = []struct {
 	{netip.MustParsePrefix("10.200.0.0/16"), "a round number operators pick by hand"},
 	// OURS, and the entry that does the structural work: excluding the whole link pool from the
 	// flock pool is what keeps the two disjoint without either draw knowing about the other.
-	{netip.MustParsePrefix("10.11.0.0/16"), "briard's own private-link pool"},
+	{netip.MustParsePrefix("10.11.0.0/16"), "briard's own private-link pool -- L2 substrate, permanent, referenced by no code"},
 }
 
 // conventional names the occupant of p, or "" if the range is free of them.

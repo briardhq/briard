@@ -79,11 +79,20 @@ DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's system NIC (eth1) -- i
 #     node, where a wrong reboot is a real outage.
 #   - the host-side witness-forwarder on a managed pairing, which listens at PRIV_HOST_IP:7789 and
 #     has always needed this address to exist.
-# ⚠️ PRIV_HOST_CIDR IS ON ITS WAY OUT and survives for exactly one consumer: the cloud-witness
-# forwarder, whose address the mesh composer still hands out fleet-constant (cloud/server/pair.go).
-# The reboot gate and the host's route to the VIP have already moved to this node's own addresses
-# ([V3b.26b]), which is why SYSTEM_HOST_CIDR is derived beside it in step 4b -- when the forwarder
-# follows, PRIV_HOST_CIDR and the subnet behind it go, and the link keeps only its /32s.
+# ⚠️ PRIV_HOST_CIDR IS ON ITS WAY OUT AS A PRODUCT ADDRESS, and survives for exactly one consumer:
+# the cloud-witness forwarder, whose address the mesh composer still hands out fleet-constant
+# (cloud/server/pair.go). The reboot gate and the host's route to the VIP have already moved to
+# this node's own addresses ([V3b.26b]), which is why SYSTEM_HOST_CIDR is derived beside it in
+# step 4b.
+#
+# ⚠️ THE LINK'S ADDRESSING IS NOT GOING ANYWHERE, and reading the line above as "the subnet goes"
+# is a mistake this comment has already caused once. 10.11.R is L2 SUBSTRATE, not an L3 product
+# subnet: on Linux, macvtap leaves host and guest unable to route each other's subnets directly,
+# and these addresses on eth3 are what both routing tables hang that routing off. Address-less
+# alternatives were tried and were more complex than this. It may narrow to a /30, and it does not
+# exist AT ALL on a Windows host -- which is exactly why NO BRIARD CODE MAY REFERENCE IT: code that
+# dials this range cannot run on a host that never had it. What retires is the forwarder's USE of
+# the address, not the link's addressing.
 PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
 # The link's subnet, drawn in step 4b exactly like the flock's above and for a quieter version of
 # the same reason. It cannot collide at L2 -- a point-to-point tap reaches no LAN -- but the
