@@ -123,6 +123,7 @@ func ConfigFromEnv() Config {
 		SystemHostCIDR: os.Getenv("SYSTEM_HOST_CIDR"), // e.g. 10.0.0.129/32
 		WitnessDev:     env("WITNESS_DEV", "eth3"),
 		WitnessCIDR:    os.Getenv("WITNESS_CIDR"), // the guest's end of the private link, e.g. 10.11.9.2/24
+		PodSubnet:      os.Getenv("POD_SUBNET"),   // the pool private service networks come from, e.g. 10.12.7
 		VIPDev:         os.Getenv("VIP_DEV"),      // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
 		VIPAddr:        os.Getenv("VIP_ADDR"),     // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
 		FlockID:        os.Getenv("FLOCK_ID"),     // flock-scoped VIP MAC seed; "" -> fall back to the node name

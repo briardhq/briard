@@ -586,6 +586,12 @@ type netConfigureRequest struct {
 	// anyone handed us; VIPParent names the NIC to build it on as a macvlan child, and VIPMAC is
 	// the flock-scoped MAC that child must carry, because failover moves a MAC and never just an
 	// address. Both empty = the host built the device (macvtap), and nothing here creates anything.
+	// PodSubnet is the pool this guest allocates its PRIVATE SERVICE NETWORKS from, as the first
+	// three octets ("10.12.7"). Drawn on the host (agent/subnet) because the draw must see the
+	// household's address space, which only the host can; used only in here, because a pod network
+	// exists nowhere else. Empty = this node cannot render a private service, and converge says so
+	// rather than quietly handing it the guest's own namespace.
+	PodSubnet string `json:"pod_subnet,omitempty"`
 	VIPParent string `json:"vip_parent,omitempty"`
 	VIPMAC    string `json:"vip_mac,omitempty"`
 }
@@ -603,6 +609,7 @@ type NetConfig struct {
 	PrivCIDR    string // this end's own address on it -- SUBSTRATE, addressed by nobody; see the handler
 	PrivHostIP  string // the host's system-subnet address, routed over PrivDev
 	PrivHostMAC string // that end's link address, pinned as a permanent neighbour -- see the handler
+	PodSubnet   string // the pool private service networks are allocated from, "10.12.7"; "" = none drawn
 	VIPParent   string // the NIC to build VIPDev on as a macvlan child; "" = the host already built it
 	VIPMAC      string // the flock MAC that child carries; meaningless without VIPParent
 }
@@ -1446,6 +1453,21 @@ func dispatch(x Executor) dispatchFunc {
 			// both ends pin. The host's mirror is platform.SetNodeRoute, and it pins for a
 			// different reason -- our node IP lives on eth1 while its request would arrive on this
 			// NIC, which arp_ignore=1 refuses ([B.101]).
+			// THE POD POOL, recorded rather than configured. Nothing is created here: the pool is
+			// the range converge allocates each private service's network from, and those networks
+			// come into being when a service is rendered, not at bring-up. Writing it to /run is
+			// what makes it readable by converge, which runs later and in another process.
+			//
+			// Absent is a real state and stays absent -- a witness draws no pool, and a node whose
+			// host predates the draw has none to send. Converge refuses a private service then,
+			// which is the honest failure; the alternative is giving it the guest's own namespace,
+			// which is host networking under another name and would grant by accident exactly the
+			// capability the manifest field exists to make deliberate.
+			if req.PodSubnet != "" {
+				if err := x.WriteFile(podSubnetPath, []byte(req.PodSubnet+"\n")); err != nil {
+					return nil, err
+				}
+			}
 			if req.PrivDev != "" && req.PrivHostIP != "" {
 				if err := run("ip", "link", "set", "dev", req.PrivDev, "up"); err != nil {
 					return nil, err
@@ -1766,6 +1788,11 @@ const (
 	// serving stays quiet: there is no name to correct where no name is published.
 	mdnsUnit = "briard-mdns.service"
 )
+
+// podSubnetPath records the pool this guest allocates private service networks from, written by
+// net.configure and read by converge. /run, like every other node-scoped fact the host hands down:
+// it is re-sent at every bring-up, so nothing durable can go stale.
+const podSubnetPath = "/run/briard/pod.subnet"
 
 // resDir is where the agent drops the DRBD resource config. TMPFS, and it is the LAST of the four
 // node-scoped facts to get there ([V3b.16b]) because it was the only one the host could not
@@ -2238,6 +2265,7 @@ func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
 		PrivDev: n.PrivDev, PrivCIDR: n.PrivCIDR,
 		PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
+		PodSubnet: n.PodSubnet,
 		VIPParent: n.VIPParent, VIPMAC: n.VIPMAC,
 	}, nil)
 }

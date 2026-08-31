@@ -41,7 +41,14 @@ func main() {
 	if err != nil {
 		fatal("parse manifest: %v", err)
 	}
-	r, err := quadlet.Render(m)
+	// The address a node would allocate. The harness is not the allocator, so it passes the
+	// loopback a host-networked service gets anyway and a fixed pod address otherwise -- enough to
+	// render, and never mistaken for what a real node would choose.
+	addr := "127.0.0.1"
+	if !m.HostNetwork() {
+		addr = "10.12.0.2"
+	}
+	r, err := quadlet.Render(m, addr)
 	if err != nil {
 		fatal("render: %v", err)
 	}

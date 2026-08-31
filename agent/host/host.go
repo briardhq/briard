@@ -220,7 +220,12 @@ type Config struct {
 	// collide with. The system subnet is the opposite -- it rides the LAN's L2 by design, which is
 	// why THAT one must be randomized per home ([V3b.26f]).
 	WitnessCIDR string
-	VIPDev      string // guest NIC the promoter claims the VIP on; "" = the guest's baked default
+	// PodSubnet is the pool the GUEST allocates each private service's network from, first three
+	// octets. Drawn at install (agent/subnet) and handed down at every bring-up like the rest of
+	// this node's addressing; the host itself never configures anything in it, which is what keeps
+	// a pod unreachable from outside the guest.
+	PodSubnet string
+	VIPDev    string // guest NIC the promoter claims the VIP on; "" = the guest's baked default
 	// VIPAddr is the service address the promoter claims, in CIDR form ("192.168.9.50/24").
 	// It is the LAN's address, not ours: baking it made the product work only on the one
 	// subnet our lab happened to use, and fail GREEN everywhere else (the readiness probe
@@ -806,6 +811,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
 			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
 			PrivDev: cfg.privDev(), PrivCIDR: cfg.WitnessCIDR, PrivHostIP: cfg.hostNodeIP(),
+			PodSubnet:   cfg.PodSubnet,
 			PrivHostMAC: cfg.privHostMAC(bringup, logf),
 			// The same MAC the macvtap substrate pins host-side at launch, derived the same way
 			// from the same seed -- so the two substrates present the identical L2 identity and

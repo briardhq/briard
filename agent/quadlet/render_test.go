@@ -24,7 +24,7 @@ func ha() manifest.Manifest {
 
 func mustRender(t *testing.T, m manifest.Manifest) Rendered {
 	t.Helper()
-	r, err := Render(m)
+	r, err := Render(m, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestSpecifiersEscaped(t *testing.T) {
 func TestRenderRefusesInvalid(t *testing.T) {
 	m := ha()
 	m.Containers[0].Env = map[string]string{"X": "a\nPodmanArgs=--privileged"}
-	if _, err := Render(m); err == nil {
+	if _, err := Render(m, "127.0.0.1"); err == nil {
 		t.Fatal("Render accepted a manifest carrying a unit-injection payload")
 	}
 }
@@ -296,5 +296,77 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 	other.Name = "sample-app"
 	if got := mustRender(t, other).Files["briard-sample-app-broker.container"]; strings.Contains(got, "/run/briard/mosquitto") {
 		t.Fatalf("a service that is not mosquitto got the broker's config:\n%s", got)
+	}
+}
+
+// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until [B.48](a) it was made the
+// same way for everyone. These are the three shapes it can take, asserted on the rendered bytes
+// because that is what podman reads.
+func TestPodNetworkingFollowsTheManifest(t *testing.T) {
+	svc := func(network string) manifest.Manifest {
+		return manifest.Manifest{Name: "svc", Version: "1", Network: network, Containers: []manifest.Container{{
+			Name: "app", Image: digestA, Primary: true, Port: 8080, HealthPath: "/healthz",
+		}}}
+	}
+	// Host: the pod IS the guest's namespace, and no address is written into it at all.
+	r, err := Render(svc(manifest.NetworkHost), "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := r.Files["briard-svc.pod"]
+	if !strings.Contains(pod, "Network=host") {
+		t.Errorf("host-networked pod = %q, want Network=host", pod)
+	}
+	if strings.Contains(pod, "IP=") {
+		t.Errorf("host-networked pod carries an address: %q", pod)
+	}
+
+	// Private with an address: the node's own choice, PINNED, so a recreated container returns to
+	// the same place and the routing table cannot go stale behind it.
+	r, err = Render(svc(""), "10.12.7.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod = r.Files["briard-svc.pod"]
+	if !strings.Contains(pod, "Network="+PodNetwork) || !strings.Contains(pod, "IP=10.12.7.2") {
+		t.Errorf("private pod = %q, want the named network and the pinned address", pod)
+	}
+	if strings.Contains(pod, "Network=host") {
+		t.Errorf("a manifest that said nothing about networking got the host's namespace: %q", pod)
+	}
+	if r.Address != "10.12.7.2" {
+		t.Errorf("Address = %q, want what the caller allocated", r.Address)
+	}
+
+	// Private with no address: UNPINNED, for callers that need names and digests rather than
+	// something to start. Still a private network -- an address-less render must never silently
+	// become host networking, which is the one way this could grant a capability by accident.
+	r, err = Render(svc(manifest.NetworkPrivate), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod = r.Files["briard-svc.pod"]
+	if strings.Contains(pod, "Network=host") || strings.Contains(pod, "IP=") {
+		t.Errorf("address-less private pod = %q, want the named network and no address", pod)
+	}
+}
+
+// Images renders the pre-warm units and NOTHING that depends on an address -- which is what lets a
+// node that is not serving, and so has allocated nothing, hold a private service's images.
+func TestImagesNeedsNoAddress(t *testing.T) {
+	m := manifest.Manifest{Name: "svc", Version: "1", Containers: []manifest.Container{{
+		Name: "app", Image: digestA, Primary: true, Port: 8080, HealthPath: "/healthz",
+	}}}
+	r, err := Images(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ImageUnits) != 1 || r.ImageRefs["briard-svc-app-image.service"] != digestA {
+		t.Errorf("Images = %+v, want the one pre-warm unit and its digestA", r)
+	}
+	for name := range r.Files {
+		if !strings.HasSuffix(name, ".image") {
+			t.Errorf("Images rendered %s; a prewarm must write nothing that needs an address", name)
+		}
 	}
 }

@@ -137,7 +137,9 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 		logf("service prewarm %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
-	rendered, err := quadlet.Render(m)
+	// Images only: a prewarm is done by a node that is not serving, which has not allocated this
+	// service an address — and does not need one to hold its images.
+	rendered, err := quadlet.Images(m)
 	if err != nil {
 		return failed(err.Error())
 	}
@@ -201,7 +203,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		logf("service install %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
-	rendered, err := quadlet.Render(m)
+	// No address: this render supplies unit names and image digests, and converge re-renders with
+	// the allocated one before anything starts (see Render).
+	rendered, err := quadlet.Render(m, "")
 	if err != nil {
 		return failed(err.Error())
 	}
@@ -536,7 +540,7 @@ func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
 	if err != nil {
 		return model.ServiceSpec{}, quadlet.Rendered{}, err
 	}
-	rendered, err := quadlet.Render(m)
+	rendered, err := quadlet.Render(m, "")
 	if err != nil {
 		return model.ServiceSpec{}, quadlet.Rendered{}, err
 	}
@@ -680,7 +684,7 @@ func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name str
 		logf("service install: installed manifest does not parse (%v); no rollback target", perr)
 		return nil, nil, ""
 	}
-	pr, rerr := quadlet.Render(pm)
+	pr, rerr := quadlet.Render(pm, "")
 	if rerr != nil {
 		logf("service install: installed manifest does not render (%v); no rollback target", rerr)
 		return nil, nil, ""

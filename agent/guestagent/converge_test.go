@@ -13,11 +13,11 @@ import (
 
 // A manifest the fixture catalog could have signed. Digest-pinned, which is what makes an
 // exists-or-pull warm safe (converge.go argues why).
-const dummyManifest = `{"name":"dummy","version":"1","containers":[{"name":"app",` +
+const dummyManifest = `{"name":"dummy","version":"1","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-dummy@sha256:1111111111111111111111111111111111111111111111111111111111111111",` +
 	`"mount":"/data","primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
-const otherManifest = `{"name":"other","version":"1","containers":[{"name":"app",` +
+const otherManifest = `{"name":"other","version":"1","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-other@sha256:2222222222222222222222222222222222222222222222222222222222222222",` +
 	`"primary":true,"port":9090,"healthPath":"/healthz"}]}`
 
@@ -278,7 +278,7 @@ func keys(m map[string]string) []string {
 // dummyManifestV2 is the same service at a new version: same name, therefore the same unit names,
 // and a different image digest. This is the real upgrade shape (home-assistant 2026.8 -> 2026.9),
 // and the one a start alone cannot deliver.
-const dummyManifestV2 = `{"name":"dummy","version":"2","containers":[{"name":"app",` +
+const dummyManifestV2 = `{"name":"dummy","version":"2","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-dummy@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
 	`"mount":"/data","primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
@@ -427,7 +427,7 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 
 // A Home Assistant manifest as the catalog signs one. Same shape as the dummy's; the NAME is
 // what makes it different, which is the point of the assertions below.
-const hassManifest = `{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
+const hassManifest = `{"name":"home-assistant","version":"2026.7.1","network":"host","containers":[{"name":"app",` +
 	`"image":"ghcr.io/home-assistant/home-assistant@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
 	`"mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}`
 
@@ -711,6 +711,9 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 		manifestDir + "/dummy.json":     dummyManifest,
 		manifestDir + "/mosquitto.json": mosquittoManifest,
 		mdnsEnvPath:                     "FLOCK_NAME=brave-elf\n",
+		// The broker is PRIVATE (its manifest says nothing, and silence means private), so this
+		// node needs the pool net.configure hands down or it cannot render one at all.
+		podSubnetPath: "10.12.7\n",
 	}
 	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
@@ -743,4 +746,102 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if _, ok := d.Route(routes.ListenName); !ok {
 		t.Error("an ordinary service came out with no route")
 	}
+}
+
+// privateNode is a node with a pod pool and one private service on the volume.
+func privateNode(t *testing.T) *convergeExec {
+	t.Helper()
+	x := &convergeExec{services: []string{"mosquitto.json"}, haveImage: true}
+	x.fakeExec.files = map[string]string{
+		manifestDir + "/mosquitto.json": mosquittoManifest,
+		podSubnetPath:                   "10.12.7\n",
+	}
+	return x
+}
+
+// A RUNNING SERVICE KEEPS ITS ADDRESS whatever is installed or removed around it, and that is the
+// whole reason allocation is a ledger rather than a function of the name. A pure hash is stable
+// until it collides: the loser is probed to the next slot, and then uninstalling the WINNER frees
+// the loser's own hash and moves it -- bouncing a service for a reason that has nothing to do with
+// it. This is the property that shape cannot have.
+func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
+	x := privateNode(t)
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	first := addressOf(t, x, "mosquitto")
+	if !strings.HasPrefix(first, "10.12.7.") {
+		t.Fatalf("address %q is outside the node's pod pool", first)
+	}
+
+	// A second private service arrives, then leaves. The broker must not move for either.
+	x.services = []string{"mosquitto.json", "other.json"}
+	x.fakeExec.files[manifestDir+"/other.json"] = strings.Replace(otherManifest, `"network":"host",`, "", 1)
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge with a second service: %v", err)
+	}
+	if got := addressOf(t, x, "mosquitto"); got != first {
+		t.Errorf("the broker moved to %q when another service was installed (was %q)", got, first)
+	}
+	second := addressOf(t, x, "other")
+	if second == first {
+		t.Fatalf("two services were given the same address %q", first)
+	}
+
+	x.services = []string{"mosquitto.json"}
+	delete(x.fakeExec.files, manifestDir+"/other.json")
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge after the uninstall: %v", err)
+	}
+	if got := addressOf(t, x, "mosquitto"); got != first {
+		t.Errorf("the broker moved to %q when ANOTHER service was uninstalled (was %q)", got, first)
+	}
+}
+
+// A REBOOT REALLOCATES, and that is safe rather than merely tolerated: the table lives in /run, so
+// it dies with the guest -- and at that moment nothing is running, so no address change can bounce
+// anything. This is the tmpfs lifetime being the correctness argument.
+func TestARebootReallocatesFromNothing(t *testing.T) {
+	x := privateNode(t)
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	before := addressOf(t, x, "mosquitto")
+	delete(x.fakeExec.files, routes.Path) // /run is gone; the guest rebooted
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge after the reboot: %v", err)
+	}
+	if got := addressOf(t, x, "mosquitto"); got == "" || !strings.HasPrefix(got, "10.12.7.") {
+		t.Errorf("address after a reboot = %q, want one from the pool", got)
+	}
+	_ = before // it MAY differ; what matters is that converge succeeds and allocates from the pool
+}
+
+// A PRIVATE SERVICE ON A NODE WITH NO POOL IS AN ERROR, never a quiet fallback. Handing it the
+// guest's namespace would be host networking under another name -- granting by accident exactly
+// the capability the manifest field exists to make deliberate.
+func TestAPrivateServiceRefusesWithoutAPool(t *testing.T) {
+	x := &convergeExec{services: []string{"mosquitto.json"}, haveImage: true}
+	x.fakeExec.files = map[string]string{manifestDir + "/mosquitto.json": mosquittoManifest}
+	_, err := Converge(context.Background(), x)
+	if err == nil {
+		t.Fatal("a private service rendered on a node with no pod pool")
+	}
+	if !strings.Contains(err.Error(), "pod pool") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+}
+
+// addressOf reads one service's address out of the table converge wrote.
+func addressOf(t *testing.T, x *convergeExec, name string) string {
+	t.Helper()
+	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
+	if err != nil {
+		t.Fatalf("the routing table does not parse: %v", err)
+	}
+	s, ok := tbl.Get(name)
+	if !ok {
+		t.Fatalf("%s is not in the table: %+v", name, tbl.Services)
+	}
+	return s.Address
 }

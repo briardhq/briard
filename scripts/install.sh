@@ -880,6 +880,7 @@ Environment=SYSTEM_DEV=eth1
 Environment=SYSTEM_CIDR=$SYSTEM_CIDR
 Environment=SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
 Environment=WITNESS_CIDR=$WITNESS_CIDR_ENV
+Environment=POD_SUBNET=$POD_SUBNET
 # SERVICE_TAP and WITNESS_TAP are EMPTY under bridge mode, and that is the substrate fork
 # ([V3b.26c]) reaching the agent. Empty reads exactly as unset everywhere downstream: qemu renders
 # no second or third NIC, the node route and the VIP route both no-op on an absent WITNESS_TAP, and

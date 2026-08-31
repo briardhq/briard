@@ -136,7 +136,7 @@ const prefix = "briard-"
 // so at boot — the moment it was meant to fire — they do not exist yet. It only ever fired when
 // something re-ran the generators after converge had written them, which is precisely the
 // switch-to-configuration case above.
-func Render(m manifest.Manifest) (Rendered, error) {
+func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	if err := m.Validate(); err != nil {
 		// Rendering an unvalidated manifest is how an injected line reaches a unit file. The
 		// caller has normally validated already (Parse does); this is the belt to that braces.
@@ -145,14 +145,37 @@ func Render(m manifest.Manifest) (Rendered, error) {
 	base := prefix + m.Name
 	out := Rendered{Files: map[string]string{}}
 
-	// The pod. Host networking is OUR uniform substrate decision, not a per-service capability —
-	// which is why the manifest cannot ask for it (or refuse it). It matches what the deleted baked
-	// slot did (--network=host) and what service discovery on a home LAN needs.
-	out.Files[base+".pod"] = join(
-		"[Pod]",
-		"PodName="+base,
-		"Network=host",
-	)
+	// The pod, and the ONE decision this file makes that everything else derives from.
+	//
+	// HOST NETWORKING IS NOW ASKED FOR, not assumed. The manifest's silence means private
+	// (shared/manifest property 2), so a service reaches nothing but itself unless a catalog entry
+	// deliberately says otherwise and carries that word in its identity hash.
+	//
+	// The address is the caller's, because allocation needs to see every service on the node and
+	// this function sees one manifest. Under host networking it is the guest's own loopback and
+	// nothing is written into the pod; under a private network it is this pod's address on the
+	// node's pod pool, and both podman and the front door are told the same value from here — the
+	// property that keeps "where it answers" a single fact rather than an agreement.
+	pod := []string{"[Pod]", "PodName=" + base}
+	switch {
+	case m.HostNetwork():
+		pod = append(pod, "Network=host")
+	case addr != "":
+		// A named network with an address WE chose, never one podman assigns. Two reasons, and the
+		// second is why it is not merely tidier: an assigned address has to be READ BACK after the
+		// pod starts, which is a second source of truth and a value that moves when a container is
+		// recreated -- so the routing table would go stale with the service healthy and nothing
+		// watching. Writing it means a recreated container returns to the same address.
+		pod = append(pod, "Network="+PodNetwork, "IP="+addr)
+	default:
+		// UNPINNED, and legitimately so: a caller with no address is one that needs unit names and
+		// image digests rather than something to start -- the host's prewarm and its node-local
+		// spec cache, neither of which is serving. The rendering is a true description of the
+		// service, just a less specific one, and nothing starts from it: converge re-renders with
+		// the allocated address before any pod is started, on every promotion and every install.
+		pod = append(pod, "Network="+PodNetwork)
+	}
+	out.Files[base+".pod"] = join(pod...)
 	out.Units = append(out.Units, base+"-pod.service")
 
 	for _, c := range m.Containers {
@@ -229,7 +252,7 @@ func Render(m manifest.Manifest) (Rendered, error) {
 	// the one line that changes when a service asks for a private network ([B.48](a)) — and it is
 	// deliberately the ONLY place that knows, so that changing it moves the front door's route and
 	// the health probe's target together rather than leaving callers to agree.
-	out.Address = "127.0.0.1"
+	out.Address = addr
 	return out, nil
 }
 
@@ -299,3 +322,34 @@ func (r Rendered) String() string {
 // rebuilding the string — the host's service spec does, and so does the guest when it has to
 // exec into one ([V3b.4]).
 func ContainerName(service, container string) string { return prefix + service + "-" + container }
+
+// PodNetwork is the podman network every private service's pod joins. One network for the node
+// rather than one per service: the pool is a /24 and the addresses inside it are what separate
+// services, while a network per service would spend a subnet each to express the same thing.
+//
+// It is created by the node before the first private service starts, never by quadlet: an
+// [Network] unit would make network creation a side-effect of starting a pod, which is the same
+// trap `Image=foo.image` sets for pulls.
+const PodNetwork = "briard"
+
+// Images renders ONLY the pre-warm units — the part of a service that has no networking in it.
+//
+// It exists because warming is something a node does when it is NOT serving, and a node that is
+// not serving has not allocated this service an address. Rendering the whole set would demand one,
+// and the honest answer would be a placeholder written into a .pod file that converge is about to
+// overwrite. The image units depend on nothing but the manifest's digests, so this is the whole
+// truth for a prewarm rather than a subset of a lie.
+func Images(m manifest.Manifest) (Rendered, error) {
+	if err := m.Validate(); err != nil {
+		return Rendered{}, err
+	}
+	base := prefix + m.Name
+	out := Rendered{Files: map[string]string{}, ImageRefs: map[string]string{}}
+	for _, c := range m.Containers {
+		unit := base + "-" + c.Name
+		out.Files[unit+".image"] = join("[Image]", "Image="+c.Image)
+		out.ImageUnits = append(out.ImageUnits, unit+"-image.service")
+		out.ImageRefs[unit+"-image.service"] = c.Image
+	}
+	return out, nil
+}

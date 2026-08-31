@@ -289,6 +289,7 @@ func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
 		return nil, err
 	}
 	var svcs []convergedService
+	alloc := newAllocator(x)
 	for _, n := range names {
 		raw, err := x.ReadFile(manifestDir + "/" + n)
 		if err != nil {
@@ -298,13 +299,105 @@ func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
 		if err != nil {
 			return nil, fmt.Errorf("converge: %s does not parse: %w", n, err)
 		}
-		r, err := quadlet.Render(m)
+		addr, err := alloc.addressFor(m)
+		if err != nil {
+			return nil, fmt.Errorf("converge: %s: %w", m.Name, err)
+		}
+		r, err := quadlet.Render(m, addr)
 		if err != nil {
 			return nil, fmt.Errorf("converge: %s does not render: %w", n, err)
 		}
 		svcs = append(svcs, convergedService{name: m.Name, m: m, r: r})
 	}
 	return svcs, nil
+}
+
+// allocator hands each service the address its pod answers on.
+//
+// IT IS A LEDGER, NOT A FUNCTION, and that is the whole design. A pure hash of the service name
+// would be stable until the day it collides: the loser is probed to the next slot, and then
+// UNINSTALLING THE WINNER frees the loser's own hash, moves it, and bounces a service for a reason
+// that has nothing to do with it. Any collision-resolution scheme without memory has that shape.
+//
+// The ledger is the previous routing table, because that table already records, per service, the
+// address it has on this node -- a second file would hold the same fact twice. So: keep every
+// address already recorded, allocate only for services that have none, and take the lowest free
+// slot, which needs no hashing at all once there is memory to consult.
+//
+// /run IS THE CORRECTNESS ARGUMENT, not just where it happens to live. The table dies with the
+// guest, so a reboot reallocates from nothing -- and at that moment no container is running, so no
+// address change can bounce anything. Within a run the ledger holds and a running service keeps
+// its address whatever else is installed or removed around it.
+//
+// AN ADDRESS THAT DOES CHANGE MUST BOUNCE, which is why nothing here tries to prevent that in
+// general: a service moving from host networking to private genuinely changed where it answers,
+// and recreating the container is the correct response rather than something to suppress.
+type allocator struct {
+	pool  string          // the node's pod pool, first three octets; "" = none drawn
+	taken map[string]bool // addresses already spoken for this pass
+	known map[string]string
+}
+
+func newAllocator(x Executor) *allocator {
+	a := &allocator{taken: map[string]bool{}, known: map[string]string{}}
+	if raw, err := x.ReadFile(podSubnetPath); err == nil {
+		a.pool = strings.TrimSpace(string(raw))
+	}
+	// The ledger. A table that will not parse loses it, and every service reallocates once -- one
+	// bounce, no worse. That is the honest cost of not persisting an allocation nobody needs to
+	// survive a reboot.
+	raw, err := x.ReadFile(routes.Path)
+	if err != nil {
+		return a
+	}
+	t, err := routes.Parse(raw)
+	if err != nil {
+		log.Printf("converge: the previous routing table does not parse (%v); every service is being readdressed", err)
+		return a
+	}
+	for _, s := range t.Services {
+		if s.Address != "" {
+			a.known[s.Name] = s.Address
+		}
+	}
+	return a
+}
+
+// addressFor answers where this service's pod will be, keeping any address it already has.
+func (a *allocator) addressFor(m manifest.Manifest) (string, error) {
+	if m.HostNetwork() {
+		// The pod IS the guest's namespace, so there is nothing to allocate and nothing that can
+		// collide. Recorded as taken by nobody: loopback is not in the pool.
+		return "127.0.0.1", nil
+	}
+	if a.pool == "" {
+		return "", fmt.Errorf("wants a private network and this node has no pod pool (net.configure sent none)")
+	}
+	if prev, ok := a.known[m.Name]; ok && strings.HasPrefix(prev, a.pool+".") && !a.taken[prev] {
+		a.taken[prev] = true
+		return prev, nil
+	}
+	// .1 is the network's own gateway on the guest side, so services start at .2.
+	for host := 2; host < 255; host++ {
+		addr := fmt.Sprintf("%s.%d", a.pool, host)
+		if !a.taken[addr] && !a.inUse(addr) {
+			a.taken[addr] = true
+			return addr, nil
+		}
+	}
+	return "", fmt.Errorf("the pod pool %s.0/24 is full", a.pool)
+}
+
+// inUse reports whether another service already holds this address in the ledger. Checked so that
+// a newly-allocated service cannot be handed an address a LATER service in the same pass is about
+// to keep -- the services are walked in name order, and a new one may sort before an existing one.
+func (a *allocator) inUse(addr string) bool {
+	for _, held := range a.known {
+		if held == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // convergedService is one service the volume names, with its rendering. Kept PER SERVICE rather
