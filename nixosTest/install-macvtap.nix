@@ -391,9 +391,9 @@ pkgs.testers.runNixOSTest {
     # nobody chose. This is the assertion that would catch a service sneaking back into the
     # shipped disk.
     page = client.succeed(f"curl -fsS http://{vip}/")
-    assert "Nothing is routed to this address" in page, f"the VIP served: {page!r}"
+    assert "Nothing is installed" in page, f"the VIP served: {page!r}"
     health = client.succeed(f"curl -fsS http://{vip}/healthz")
-    assert "no backend configured" in health, f"/healthz said: {health!r}"
+    assert "no services routed" in health, f"/healthz said: {health!r}"
 
     # --- V3.20: the NAME, and the three identifiers behind it ---
     # Until this item one string (`guest`) was the API identity, the guest hostname, DRBD's
