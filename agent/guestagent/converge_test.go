@@ -752,10 +752,25 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if _, err := serviceHealthURL(x, "mosquitto"); err != nil {
 		t.Errorf("the broker cannot be health-probed (%v); having no route must not decide that", err)
 	}
+	// AND IT ANNOUNCES ITSELF ([V3b.30](a)). The one service the household's other devices go
+	// looking for rather than type a name at -- and the record must carry MQTT's port, not the
+	// management port two lines above that the door is being kept away from.
+	if len(mq.Announce) != 1 {
+		t.Fatalf("the broker announces %+v, want exactly one record", mq.Announce)
+	}
+	if mq.Announce[0].Type != "_mqtt._tcp" || mq.Announce[0].Port != 1883 {
+		t.Errorf("the broker is announced as %+v; a device browsing for a broker would miss it or dial the management API", mq.Announce[0])
+	}
+	if mq.Announce[0].Name != "briard-brave-elf-mosquitto" {
+		t.Errorf("the announcement's label %q is not the name it is pointed at (%v)", mq.Announce[0].Name, mq.Hosts)
+	}
 	// And an ordinary service is unaffected: the default is the front door.
 	d, _ := tbl.Get("dummy")
 	if _, ok := d.Route(routes.ListenName); !ok {
 		t.Error("an ordinary service came out with no route")
+	}
+	if len(d.Announce) != 0 {
+		t.Errorf("an ordinary service announced %+v; only the broker does", d.Announce)
 	}
 }
 

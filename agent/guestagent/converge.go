@@ -686,6 +686,11 @@ func putRoutes(x Executor, t routes.Table) error {
 // route is how "do not expose this" is said: the door is then never handed a way to reach the
 // service at all, rather than being handed one and trusted not to use it. mosquitto is the live
 // case — its manifest port is the broker's management API, bound inside the pod on purpose.
+//
+// It gets an ANNOUNCEMENT only if the product says the household's other devices go looking for
+// it (agent/services.Announce), and only alongside a name, because that name is what the record
+// points at. mosquitto is again the live case, from the other side: the one service whose clients
+// are appliances that browse rather than people who type.
 func routesFor(flock string, svcs []convergedService) routes.Table {
 	t := routes.Table{Services: make([]routes.Service, 0, len(svcs))}
 	for _, s := range svcs {
@@ -700,6 +705,10 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 		}
 		if h := routes.HostName(flock, s.name); h != "" {
 			e.Hosts = []string{h}
+			// Only alongside a name, because an announcement's SRV target is that name. The
+			// registry applies the same rule to itself; the ordering here is what makes it true
+			// of the table rather than merely of the caller.
+			e.Announce = services.Announce(s.m, flock)
 		}
 		if services.Fronted(s.m) {
 			e.Routes = []routes.Route{{

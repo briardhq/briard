@@ -66,9 +66,12 @@ let
   '';
   # The FLOCK's visible name, handed down by the agent (net.mdnsname) and NOT baked: it is pet
   # identity arriving at a cattle image, which is the distinction V3.19 was found for.
-  # How long the publisher waits for avahi to confirm the name before it gives up and lets systemd
-  # restart it. This is the BACKSTOP for a case we have not seen, not the working path: the settle
-  # wait below is what keeps us out of the one failure we measured. See vipPublish.
+  # How long a publisher waits for avahi to confirm what it published before it gives up and lets
+  # systemd restart it. Shared by both publishers, and for the flock name it is still the BACKSTOP
+  # rather than the working path -- the settle wait below is what keeps that one out of the failure
+  # V3.22 measured. For the SERVICE records it is load-bearing: they are created while converge is
+  # starting containers, so podman's bridge and veths appear inside their probe window and avahi
+  # wedges the group ([V3b.30](a), measured on two runs of one closure). See vipPublish, settled.
   mdnsEstablishSecs = 15;
 
   # How long the published address must sit still before we publish it, and how long we are willing
@@ -241,7 +244,11 @@ let
   # nowhere while the unit read `active`. Folding N records into that process would put the
   # household's most important name behind a publisher that now churns on every install; split, a
   # service-name publisher that wedges takes only the service names with it, and briard-mdns keeps
-  # the settle-wait, the establishment deadline and the read-back it earned.
+  # its settle-wait untouched. The split is NOT a licence to skip the rest of what V3.22 bought:
+  # this publisher wedged the same way the moment anything asserted its records ([V3b.30](a)), so
+  # it now carries its own establishment deadline and read-back (settled, below). What stays
+  # unshared is the settle-wait, which is about the VIP moving and belongs where the VIP is
+  # resolved.
   #
   # ⚠️ IT WATCHES THE FILE RATHER THAN BEING RESTARTED. An install writes the table while this is
   # already running, and a rename rewrites it too, so the alternative was a `systemctl restart`
@@ -270,6 +277,49 @@ let
       wait $pids 2>/dev/null || true
       pids=""
     }
+    # THE READ-BACK, which is what makes "publishing" a claim rather than a hope ([V3b.30](a)).
+    #
+    # ⚠️ MEASURED 2026-09-01, on THREE RUNS OF A BYTE-IDENTICAL CLOSURE (nixosTest/mosquitto):
+    # twice no record established at all -- with the avahi-publish processes alive, silent, and
+    # exiting never -- while the flock's own name, published three seconds earlier by the other
+    # publisher, resolved fine and a manual publish issued at that moment established instantly.
+    # The daemon is healthy and only the existing groups are wedged, so nothing but NEW groups
+    # clears them. It is V3.22's wedge one level down, and the window is structural rather than
+    # unlucky: converge rewrites the routing table and starts the containers at the same instant,
+    # podman creates a bridge and a veth, and avahi re-probes every group when an interface
+    # appears.
+    #
+    # ⚠️ IT HAS TO BE THE PUBLISHER'S OWN `Established under name`, and the cheaper check that is
+    # NOT good enough was measured too: asking the local daemon to resolve the name comes back
+    # SUCCESSFUL for a group that is merely registered, probing or wedged -- the record is in its
+    # registry either way -- so a read-back through avahi-resolve passes while nothing on the LAN
+    # can see the name. That is the same vacuous green in a new place. The line the client prints
+    # is the daemon telling it the group reached ESTABLISHED, and it is the only signal that means
+    # what we need it to mean.
+    #
+    # PER-PUBLISHER FILES, not vipPublish's fifo: a fifo needs a reader in the main shell and the
+    # pid bookkeeping that goes with it, which is affordable for one publisher and not for N. A
+    # file on tmpfs that stdbuf keeps line-fresh is the same signal with none of that, and it
+    # doubles as the diagnostic to print when the deadline passes.
+    #
+    # Failure exits rather than warns, for the reason vipPublish exits: a restart IS the cure, and
+    # `Restart=on-failure` is already there. A publisher that no-ops quietly is the same disease as
+    # a name that resolves nowhere.
+    outDir=/run/briard/mdns-services
+    settled() {
+      [ "$k" -gt 0 ] || return 0
+      waited=0
+      while [ "$waited" -lt ${toString mdnsEstablishSecs} ]; do
+        ok=1
+        for f in "$outDir"/*.log; do
+          ${pkgs.gnugrep}/bin/grep -q "Established under name" "$f" 2>/dev/null || ok=0
+        done
+        [ "$ok" = 1 ] && return 0
+        ${pkgs.coreutils}/bin/sleep 1
+        waited=$((waited+1))
+      done
+      return 1
+    }
     trap 'withdraw' EXIT
     while :; do
       now=$(${pkgs.coreutils}/bin/stat -c %Y ${routesPath} 2>/dev/null || echo none)
@@ -277,6 +327,9 @@ let
         stamp="$now"
         withdraw
         n=0
+        m=0
+        k=0
+        rm -rf "$outDir"; mkdir -p "$outDir"
         # An ABSENT file is the state before this node has ever converged -- at boot, or on a node
         # that has not promoted. Not an error and not worth a shell diagnostic every time: it means
         # nothing is routed, which is exactly what publishing zero names says.
@@ -290,12 +343,42 @@ let
             # -R: allow this name to coexist with other records for the same address. NOT unique,
             # which is what makes a duplicate silently shadow rather than fail (measured 2026-08-23)
             # -- the reason these names are flock-scoped and not bare `homeassistant.local`.
-            ${pkgs.avahi}/bin/avahi-publish -a -R "$host" "$addr" >/dev/null 2>&1 &
+            # Output to its own file, line-buffered, because settled reads it: see settled.
+            k=$((k+1))
+            ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R "$host" "$addr" >"$outDir/$k.log" 2>&1 &
             pids="$pids $!"
             n=$((n+1))
           done < <(${pkgs.jq}/bin/jq -r '.services[]?.hosts[]? // empty' ${routesPath} 2>/dev/null)
+          # THE SERVICE RECORDS ([V3b.30](a)). Same file, same withdrawal, one more loop -- the
+          # difference from the names above is who does the looking: a name is what someone types,
+          # a service record is what an appliance BROWSES for. Tasmota- and ESPHome-class firmware
+          # finds its broker by asking for `_mqtt._tcp` and nothing else.
+          #
+          # -H POINTS THE SRV RECORD AT THE SERVICE'S OWN NAME -- the A record published in the
+          # loop above, which resolves to the VIP. Never at the guest's own hostname, which is
+          # what avahi-publish would use by default: that name is node-scoped, so every device on
+          # the LAN would be sent to the machine that has just stopped being Primary. Both halves
+          # come out of this one process, so a service record cannot outlive the name it targets.
+          #
+          # READ AS TSV, NEVER COMPOSED, for the same reason the host names are: the instance
+          # label is built once, in shared/routes.InstanceName. jq's @tsv is also what makes the
+          # field split safe -- it escapes an embedded tab or newline rather than emitting one,
+          # and shared/routes refuses them upstream of that.
+          while IFS="$(${pkgs.coreutils}/bin/printf '\t')" read -r host name type port; do
+            [ -n "$host" ] && [ -n "$name" ] || continue
+            # Output kept and line-buffered, for the reason the address loop above gives.
+            k=$((k+1))
+            ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -s -H "$host" "$name" "$type" "$port" >"$outDir/$k.log" 2>&1 &
+            pids="$pids $!"
+            m=$((m+1))
+          done < <(${pkgs.jq}/bin/jq -r '.services[]? | (.hosts[0]? // empty) as $h | .announce[]? | [$h, .name, .type, .port] | @tsv' ${routesPath} 2>/dev/null)
         fi
-        echo "briard-mdns-services: publishing $n service name(s) at $addr" >&2
+        echo "briard-mdns-services: publishing $n service name(s) and $m service record(s) at $addr" >&2
+        if ! settled; then
+          echo "briard-mdns-services: avahi did not establish all $k record(s) within ${toString mdnsEstablishSecs}s -- giving up so systemd retries with fresh entry groups" >&2
+          ${pkgs.gnugrep}/bin/grep -H "" "$outDir"/*.log >&2 || true
+          exit 1
+        fi
       fi
       ${pkgs.coreutils}/bin/sleep ${toString mdnsWatchSecs}
     done
@@ -1279,9 +1362,35 @@ in
     # publish an A record for every address on every interface under its own hostname; measured on
     # the real machine that produced V3.19, `giouli-desktop.local` resolved to `172.18.0.1` -- a
     # **Docker bridge**, not the LAN address. eth0 is qemu's SLIRP net (10.0.2.15), an address that
-    # would be a name resolving to nowhere, so it is DENIED and avahi never sees it. eth1/eth2 stay
-    # allowed because which one carries the VIP is not fixed -- production puts it on eth2, the
-    # agent-less harnesses use the baked eth1 default -- and pinning one here would break the other.
+    # would be a name resolving to nowhere.
+    #
+    # ⚠️ AN ALLOW-LIST, NOT A DENY-LIST, AND THAT IS A FIX RATHER THAN A PREFERENCE ([V3b.30](a)).
+    # Denying eth0 kept the guest's OWN interfaces honest but said nothing about the ones podman
+    # creates, and those are the ones that broke it. MEASURED across ten runs of
+    # nixosTest/mosquitto: converge writes the routing table and starts the containers in the same
+    # instant, podman brings up its bridge and a veth, avahi logs `New relevant interface
+    # veth0.IPv4 for mDNS` and RE-PROBES every entry group -- and a group caught in that window
+    # wedges for good, neither established nor refused. It happened on about half of runs; it took
+    # the per-service names down with it every time, silently, INCLUDING AFTER the publisher had
+    # already logged `Established under name` (so a one-shot read-back cannot see it, and a restart
+    # lands in the same window). A household hits exactly this on every install and every
+    # promotion that starts a service.
+    #
+    # So the household's NICs are named and everything else is invisible to avahi, which removes
+    # the trigger rather than reacting to it -- and it is the right shape anyway: a pod-internal
+    # bridge has no business carrying the household's names, and a browse from the guest used to
+    # show its own records arriving on `podman1` and `veth0`.
+    #
+    # eth1/eth2 are BOTH here because which one carries the VIP is not fixed -- production puts it
+    # on eth2, the agent-less harnesses use the baked eth1 default -- and pinning one would break
+    # the other. The list is the guest's whole NIC set minus eth0, so a future NIC needs a line
+    # here; that is the cost of an allow-list, and it is paid in the one place a reader looks.
+    #
+    # ⚠️ ONE RE-PROBE REMAINS, and it is harmless where the old one was not: under BRIDGE mode the
+    # guest MAKES eth2 itself, as a macvlan child, after avahi has started (platform/qemu.go). That
+    # interface IS allowed, so avahi re-probes when it appears -- but it appears during network
+    # setup, before anything has a routing table to publish from, rather than in the middle of a
+    # promotion. The wedge needed a new interface DURING a publish.
     #
     # ⚠️ eth3, THE PRIVATE HOST<->GUEST LINK, IS ALLOWED, and it is the one interface whose
     # inclusion is a decision rather than a default ([V3b.19]). The host running this guest is the
@@ -1311,7 +1420,9 @@ in
     # rather than going through NSS.
     services.avahi = {
       enable = true;
-      denyInterfaces = [ "eth0" ]; # eth3 is allowed on purpose -- see above ([V3b.19])
+      # The household's NICs and nothing else -- not eth0, and not the interfaces podman creates.
+      # eth3 is here on purpose ([V3b.19]); the exclusions are the point ([V3b.30](a)). See above.
+      allowInterfaces = [ "eth1" "eth2" "eth3" ];
       publish.enable = true;
       publish.userServices = true; # THE gate: without it EntryGroupNew is refused and nothing publishes
       publish.addresses = true;

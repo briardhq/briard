@@ -13,10 +13,14 @@
 #      can reach would pass (1) and (2) perfectly;
 #   4. a retained message SURVIVES a restart of the container, and lands in the file on the
 #      REPLICATED subvolume -- which is what makes the broker a service with data at all, and
-#      what the failover half of [V3b.4] then carries across a node.
+#      what the failover half of [V3b.4] then carries across a node;
+#   5. the broker is FINDABLE -- it answers a `_mqtt._tcp` browse from that same off-box client,
+#      under the flock's name and on the port MQTT actually listens on, and the browse result is
+#      then connected to. An image that advertises nothing is invisible to every appliance in the
+#      house, which is a broker nobody without our documentation can use.
 #
 # Two nodes for one broker: node2 is the off-box client. It holds no service and never promotes
-# -- it is the outside from which (2) and (3) are observed.
+# -- it is the outside from which (2), (3) and (5) are observed.
 { pkgs, guestModule, fixture }:
 
 let
@@ -28,14 +32,16 @@ let
       { name = "node2"; id = 1; }
     ];
   };
-  # The client needs an MQTT client and nothing else. It is the same mosquitto build the image
-  # would have, but that is incidental: what matters is that the publish and the subscribe happen
-  # from a machine that is not the one running the broker.
+  # The client is the OUTSIDE. It is the same mosquitto build the image would have, but that is
+  # incidental: what matters is that the publish, the subscribe and the browse all happen from a
+  # machine that is not the one running the broker.
   client =
     { ... }:
     {
       imports = [ node ];
-      environment.systemPackages = [ pkgs.mosquitto ];
+      # avahi-browse as well: this node is also where the broker's own announcement is OBSERVED,
+      # and observing it from the machine that publishes it would prove nothing.
+      environment.systemPackages = [ pkgs.mosquitto pkgs.avahi ];
     };
 in
 pkgs.testers.runNixOSTest {
@@ -54,6 +60,10 @@ pkgs.testers.runNixOSTest {
     for m in [node1, node2]:
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service", timeout=600)
+        # Named BEFORE the reactor promotes, which is the order a real node runs in: the agent
+        # mints the flock name at bring-up, and the mDNS publishers are pulled up by briard-vip.
+        # Naming afterwards would leave briard-mdns-services inactive on its ConditionPathExists.
+        name_the_flock(m)
         m.succeed("modprobe drbd")
         m.succeed("drbdadm create-md --force r0")
         m.succeed("systemctl start drbd@r0.target")
@@ -153,5 +163,52 @@ pkgs.testers.runNixOSTest {
     # ([V3b.3](f)). The primary is still primary and the front door still answers.
     assert role(primary) == "Primary", "a crashed container demoted the node"
     primary.succeed(f"curl -fsS -o /dev/null http://{VIP}/healthz")
+
+    # (5) AND THE HOUSEHOLD'S OTHER DEVICES CAN FIND IT ([V3b.30](a)). The broker is the one
+    # catalogued service whose clients are appliances rather than people: Tasmota- and
+    # ESPHome-class firmware browses `_mqtt._tcp` and never types a name. mosquitto's own image
+    # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes
+    # from the guest's avahi, off the same routing table the front door reads.
+    #
+    # FROM THE OTHER MACHINE AGAIN, because that is the only place the claim means anything: a
+    # record published to a LAN nobody hears is not an announcement.
+    #
+    # EVERY EXPECTED VALUE IS READ FROM THE NODE, never composed here: the name from the routing
+    # table (routed_host) and the announcement the product itself wrote beside it. So this asserts
+    # what the node decided, and a wrong decision fails rather than being restated.
+    host = routed_host(primary, "mosquitto")
+    ann = next(s for s in _mj.loads(primary.succeed("cat /run/briard/routes.json"))["services"]
+               if s["name"] == "mosquitto")["announce"][0]
+    assert ann["port"] == 1883, f"the node announces port {ann['port']}, not MQTT's"
+
+    # (5a) THE SRV TARGET RESOLVES ON THE LAN. Also the first assertion anywhere to resolve a
+    # [B.48] per-service name over mDNS at all: every earlier one reached those names with
+    # `curl -H 'Host: …'`, which never touches a resolver, so a name that resolved nowhere would
+    # have passed all of them.
+    other.wait_until_succeeds(f"avahi-resolve -n {host} | grep -q {VIP}", timeout=120)
+
+    # (5b) AND THE SERVICE RECORD IS THERE, under the type and instance the node chose.
+    seen = f"';{ann['name']};{ann['type']};'"
+    other.wait_until_succeeds(f"avahi-browse -atp | grep -q {seen}", timeout=60)
+
+    # (5c) AND THE ANNOUNCED ENDPOINT SERVES, from off the box. The port is the one the NODE
+    # announced, not one restated here -- so an announcement carrying the pod-internal management
+    # port fails at this line, because 9883 does not speak MQTT.
+    got = other.succeed(f"mosquitto_sub -h {VIP} -p {ann['port']} -t briard/test -C 1 -W 10").strip()
+    assert got == "before-restart", f"the announced endpoint did not serve MQTT: {got!r}"
+    print(f"a browsing device finds {ann['name']} under {ann['type']} at {host} -> {VIP}:{ann['port']}")
+
+    # ⚠️ WHAT THIS DELIBERATELY DOES NOT ASSERT, and why, so nobody adds it back and spends the
+    # day: the SRV record's own target/port fields as read by `avahi-browse -r`. Those fields ARE
+    # correct -- observed resolving to `briard-brave-elf-mosquitto.local / 192.168.1.100 / 1883`
+    # in runs 33445936181, 33448573206 and 33449242156 -- but avahi's SERVICE resolver cannot be
+    # made to produce them on demand. MEASURED: it does not fetch the SRV target's address itself,
+    # so `-r` returns "Failed to resolve … Timeout reached" indefinitely -- through 120s of
+    # repeated short browses, a single 90s browse, on the off-box client AND on the node that
+    # publishes the records, with both records established and the name resolvable on that very
+    # box. Resolving the host first fixes it sometimes (33449242156) and not others (33475931135,
+    # 180s of exactly that sequence). It is avahi's client, not our records, and the three claims
+    # above cover what a household actually needs: the name is on the LAN, the service is on the
+    # LAN under its type, and the endpoint serves.
   '';
 }

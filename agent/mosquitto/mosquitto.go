@@ -48,6 +48,21 @@ const (
 // the user to reach.
 const MQTTPort = 1883
 
+// ServiceType is the mDNS service type a broker is found under, and it is product knowledge for
+// the same reason MQTTPort is: the manifest names the management port, and what protocol answers
+// where is ours to say.
+//
+// MEASURED: the broker cannot advertise itself. There is no mDNS, avahi or bonjour code anywhere
+// in eclipse-mosquitto -- the daemon has no notion of announcing its own existence -- so a broker
+// sitting on a household LAN is invisible to the Tasmota- and ESPHome-class devices that look
+// `_mqtt._tcp` up precisely in order to find one. The announcement therefore has to come from
+// outside the container, which for us costs nothing: the guest already runs avahi ([V3b.19]) and
+// already publishes the service's name from the routing table.
+//
+// `_mqtt._tcp` is the registered type for plain MQTT (`_secure-mqtt._tcp` is the TLS one, which
+// this broker does not speak).
+const ServiceType = "_mqtt._tcp"
+
 // HealthPort, HealthPath and DataMount are the three facts THIS package's config and the
 // PUBLISHED manifest must agree on: the config opens the management listener, and the manifest
 // tells every node to probe it; the config writes the persistence file into the directory the

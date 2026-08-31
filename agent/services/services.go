@@ -141,3 +141,35 @@ func Reach(m manifest.Manifest, flock string) string {
 func Fronted(m manifest.Manifest) bool {
 	return m.Name != mosquitto.Name
 }
+
+// Announce is what this service wants said about itself on the household LAN: the mDNS service
+// records converge writes into the routing table for the guest's publisher to claim.
+//
+// THE DEFAULT IS SILENCE, like everything else here. A service that answers HTTP is already
+// reachable by the name the door serves it under, and browsing types it into a category it may
+// not belong in; the announcement exists for the services a household's OTHER DEVICES go looking
+// for, which today is one.
+//
+// mosquitto is that one, and it is not a nicety: a broker is the rare service whose clients are
+// appliances rather than people. Tasmota and ESPHome firmware browse `_mqtt._tcp` to find a
+// broker, the image cannot advertise itself (agent/mosquitto), and a broker on a LAN announcing
+// nothing is simply a service being impolite. The port is MQTT's, never the manifest's -- the
+// manifest names the management endpoint the health floor probes, which is bound inside the pod
+// and is nobody else's business ([B.48](a)).
+//
+// The instance label is the flock-scoped name, composed once in shared/routes, so what a device
+// offers a household to pick from names the flock it belongs to.
+func Announce(m manifest.Manifest, flock string) []routes.Announcement {
+	name := routes.InstanceName(flock, m.Name)
+	if name == "" {
+		// No flock name yet means no name to point an SRV record at, and announcing a broker at a
+		// host nothing resolves is worse than announcing nothing. The same rule already governs
+		// the service's own A record.
+		return nil
+	}
+	switch m.Name {
+	case mosquitto.Name:
+		return []routes.Announcement{{Name: name, Type: mosquitto.ServiceType, Port: mosquitto.MQTTPort}}
+	}
+	return nil
+}

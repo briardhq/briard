@@ -261,6 +261,14 @@ let
     }:
     let
       allFixtures = lib.optional (fixture != null) fixture ++ fixtures;
+      # THE HARNESS'S SERVICE ADDRESS, stated once and consumed twice -- see the briard-vip
+      # override below for why the harness states it at all. briard-vip takes it as unit
+      # Environment; the mDNS publishers read it out of the file the agent would have written
+      # (they have no Environment override, and requiring one per consumer is how the two halves
+      # would drift). One value, so they cannot disagree.
+      vipDev = "eth1";
+      vipAddr = "192.168.1.100/24";
+      vipEnvFile = pkgs.writeText "vip.env" "VIP_DEV=${vipDev}\nVIP_ADDR=${vipAddr}\n";
     in
     { config, ... }:
     {
@@ -294,8 +302,8 @@ let
       # declaring its own configuration -- the same rule the reactor snippet above follows.
       systemd.services.briard-vip.serviceConfig = {
         Environment = mkForce [
-          "VIP_DEV=eth1"
-          "VIP_ADDR=192.168.1.100/24"
+          "VIP_DEV=${vipDev}"
+          "VIP_ADDR=${vipAddr}"
         ];
         EnvironmentFile = mkForce [ ];
       };
@@ -311,6 +319,14 @@ let
       # never minded). Paths that match the product are the point: the divergence between these
       # nodes and the disk-image guest is where [V3b.16] lived.
       systemd.tmpfiles.rules = [
+        # The VIP configuration at the path the AGENT would have written it. briard-vip has the
+        # Environment override above and does not need this; the two mDNS publishers do, because
+        # they read the same file and have no override -- without it they fail on a missing
+        # EnvironmentFile and restart forever, which is how a rig produces 47 failed starts while
+        # every assertion in it still passes. Only a test that names its flock ever starts them
+        # (ConditionPathExists on mdns.env), so the noise was invisible until one asserted mDNS.
+        "d /run/briard 0755 root root -"
+        "L+ /run/briard/vip.env - - - - ${vipEnvFile}"
         "d /run/briard/drbd.d 0755 root root -"
         "L+ /run/briard/drbd.d/r0.res - - - - ${pkgs.writeText "r0.res" resource}"
       ]

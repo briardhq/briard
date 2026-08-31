@@ -177,3 +177,82 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 		t.Error("a table carrying an unknown field parsed; a partly-understood table must be refused")
 	}
 }
+
+// TestInstanceNameIsTheHostNameWithoutTheDomain — the instance label and the SRV target it points
+// at must be the same name, and the way to guarantee that is to derive one from the other. A
+// second composition would drift silently: the record would resolve nowhere while both halves
+// looked plausible in the file.
+func TestInstanceNameIsTheHostNameWithoutTheDomain(t *testing.T) {
+	host := HostName("brave-elf", "mosquitto")
+	name := InstanceName("brave-elf", "mosquitto")
+	if name != "briard-brave-elf-mosquitto" {
+		t.Errorf("InstanceName = %q, want the flock-scoped label", name)
+	}
+	if name+".local" != host {
+		t.Errorf("the instance %q and the host %q are not the same name", name, host)
+	}
+	// No flock name yields no label, exactly as it yields no host: a node between install and its
+	// first name announces nothing rather than a guess.
+	if got := InstanceName("", "mosquitto"); got != "" {
+		t.Errorf("a nameless flock produced the instance label %q", got)
+	}
+}
+
+// TestValidateRefusesAnAnnouncementWithNothingToPointAt — the record's SRV target is the service's
+// own name, so an announcement without one is a record aimed nowhere. Refused rather than
+// published against the guest's hostname, which is node-scoped: on a failover every device that
+// had browsed for the broker would keep dialling the machine that just demoted.
+func TestValidateRefusesAnAnnouncementWithNothingToPointAt(t *testing.T) {
+	tbl := Table{Services: []Service{{Name: "mosquitto", Address: "10.12.9.3",
+		Announce: []Announcement{{Name: "briard-brave-elf-mosquitto", Type: "_mqtt._tcp", Port: 1883}}}}}
+	if err := tbl.Validate(); err == nil {
+		t.Fatal("an announcement with no host validated; it would resolve nowhere")
+	} else if !strings.Contains(err.Error(), "no name to point it at") {
+		t.Errorf("the error does not say what is missing: %v", err)
+	}
+}
+
+// TestValidateRefusesUnusableAnnouncements — these strings become arguments to a publisher on a
+// household's LAN, and the publisher splits them on tabs. A malformed type is a record avahi
+// refuses and nobody notices; a tab in a name is a shifted line, i.e. a port parsed as a type.
+func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
+	for _, tc := range []struct {
+		what string
+		a    Announcement
+	}{
+		{"no instance name", Announcement{Type: "_mqtt._tcp", Port: 1883}},
+		{"a tab in the name", Announcement{Name: "briard\tevil", Type: "_mqtt._tcp", Port: 1883}},
+		{"a newline in the name", Announcement{Name: "briard\nevil", Type: "_mqtt._tcp", Port: 1883}},
+		{"no type", Announcement{Name: "briard-x", Port: 1883}},
+		{"a bare protocol name", Announcement{Name: "briard-x", Type: "mqtt", Port: 1883}},
+		{"an unknown transport", Announcement{Name: "briard-x", Type: "_mqtt._sctp", Port: 1883}},
+		{"port zero", Announcement{Name: "briard-x", Type: "_mqtt._tcp"}},
+		{"a port out of range", Announcement{Name: "briard-x", Type: "_mqtt._tcp", Port: 70000}},
+	} {
+		tbl := Table{Services: []Service{{Name: "mosquitto", Hosts: []string{"briard-x.local"},
+			Address: "10.12.9.3", Announce: []Announcement{tc.a}}}}
+		if err := tbl.Validate(); err == nil {
+			t.Errorf("an announcement with %s validated: %+v", tc.what, tc.a)
+		}
+	}
+	// The control: the shape converge actually writes has to pass, or the assertions above are
+	// vacuous and the broker is never announced at all.
+	tbl := Table{Services: []Service{{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
+		Address: "10.12.9.3", Announce: []Announcement{{Name: "briard-brave-elf-mosquitto", Type: "_mqtt._tcp", Port: 1883}}}}}
+	if err := tbl.Validate(); err != nil {
+		t.Errorf("the broker's own announcement was refused: %v", err)
+	}
+	// And it survives the file, which is the only form the publisher ever sees.
+	raw, err := tbl.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mq, _ := out.Get("mosquitto")
+	if len(mq.Announce) != 1 || mq.Announce[0].Type != "_mqtt._tcp" || mq.Announce[0].Port != 1883 {
+		t.Errorf("the announcement did not survive the round trip: %+v", mq.Announce)
+	}
+}

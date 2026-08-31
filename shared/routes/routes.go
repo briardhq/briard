@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -95,6 +96,35 @@ type Service struct {
 	// address, and the manifest names only the primary's -- so any list written then would have
 	// been partial, and the page would have printed it as though it were the whole truth.
 	Ports []int `json:"ports,omitempty"`
+	// Announce are the mDNS SERVICE records this service wants on the household LAN -- what a
+	// device looking for a broker browses for, as opposed to Hosts, which are names something has
+	// to know already in order to ask.
+	//
+	// PRODUCT KNOWLEDGE, never the manifest's: which service type a thing is found under is the
+	// kind of per-service fact a curated catalog exists to let us encode (agent/services), and a
+	// publisher declaring its own type would be claiming a well-known name on a household's LAN.
+	// The catalog names a port; what protocol answers there is ours to say.
+	//
+	// MATERIALISED, for the same reason Hosts is: the publisher is a shell script, so every rule
+	// for composing a name lives in this package (InstanceName) and the script stays permanently
+	// dumb. Each record is pointed at the service's OWN name -- the first of Hosts -- which is why
+	// Validate refuses an announcement on a service that has none. An SRV record needs a target,
+	// and the only other candidate is the guest's own hostname, which is node-scoped and would
+	// send every device on the LAN to a machine that just stopped being the Primary.
+	Announce []Announcement `json:"announce,omitempty"`
+}
+
+// Announcement is one mDNS service record: the label a browser shows, the type it browses for,
+// and the port the SRV record carries. The target host is deliberately absent -- it is the
+// service's own Hosts[0], so there is one name per service rather than two that can disagree.
+type Announcement struct {
+	// Name is the service-instance label, composed by InstanceName.
+	Name string `json:"name"`
+	// Type is the RFC 6763 service type: `_mqtt._tcp` and its kin.
+	Type string `json:"type"`
+	// Port is what the SRV record advertises -- the port a household connects to, which is not
+	// always the manifest's, since that one names what the health floor probes.
+	Port int `json:"port"`
 }
 
 // Route is one way in to a service: which listener the request arrives on, and where it goes.
@@ -142,6 +172,18 @@ func HostName(flock, service string) string {
 	return "briard-" + flock + "-" + service + ".local"
 }
 
+// InstanceName is the mDNS SERVICE-INSTANCE label an announcement carries: the same
+// `briard-<flock>-<service>` HostName builds, without the domain. It is what a household sees in
+// a device's broker picker, which is why it is the flock-scoped name and not the bare slug -- two
+// briard flocks in one house must be told apart by the person choosing between them.
+//
+// DERIVED FROM HostName ON PURPOSE, rather than assembled a second time: the instance and the SRV
+// target it points at are then the same name by construction, and a future name form ([V3b.14])
+// changes one function.
+func InstanceName(flock, service string) string {
+	return strings.TrimSuffix(HostName(flock, service), ".local")
+}
+
 // Parse decodes and validates a table. Unknown fields are refused for the same reason
 // shared/manifest refuses them: the writer and the reader ship together, so a field this build
 // does not understand means the two have drifted, and routing traffic on a table you only partly
@@ -184,6 +226,42 @@ func (t Table) Validate() error {
 		if (s.Health != "" || len(s.Routes) > 0) && s.Address == "" {
 			return fmt.Errorf("routes: service %q has endpoints but no address to resolve them against", s.Name)
 		}
+		for _, a := range s.Announce {
+			if err := a.check(s); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// serviceType is an RFC 6763 service type: an underscore-prefixed application protocol label of
+// at most 15 characters, then `._tcp` or `._udp`. Narrow because these strings become arguments
+// to a publisher on a household's LAN, and because a type that avahi refuses would be a record
+// that silently never appears.
+var serviceType = regexp.MustCompile(`^_[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?\._(tcp|udp)$`)
+
+// check is the announcement half of Validate, and every rule in it is load-bearing rather than
+// tidy. The publisher reads these fields out of jq as tab-separated words, so a tab or a newline
+// in a name would not be a bad label but a shifted line -- a port read as a type. Refusing them
+// here is the same discipline shared/manifest applies to every string that reaches a unit file.
+func (a Announcement) check(s Service) error {
+	if a.Name == "" {
+		return fmt.Errorf("routes: service %q announces %q with no instance name", s.Name, a.Type)
+	}
+	if strings.ContainsAny(a.Name, "\t\r\n") {
+		return fmt.Errorf("routes: service %q announces under a name containing whitespace: %q", s.Name, a.Name)
+	}
+	if !serviceType.MatchString(a.Type) {
+		return fmt.Errorf("routes: service %q announces an unusable service type %q", s.Name, a.Type)
+	}
+	if a.Port < 1 || a.Port > 65535 {
+		return fmt.Errorf("routes: service %q announces %s on port %d", s.Name, a.Type, a.Port)
+	}
+	if len(s.Hosts) == 0 {
+		// The record's SRV target is Hosts[0]; with no name there is nothing to point devices at,
+		// and pointing them at the guest's own hostname would name a node rather than the flock.
+		return fmt.Errorf("routes: service %q announces %s but has no name to point it at", s.Name, a.Type)
 	}
 	return nil
 }

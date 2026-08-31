@@ -117,3 +117,44 @@ func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyTheBrokerAnnouncesItself — the registry's third exposure decision, keyed on the catalog
+// name like Fronted and Reach.
+//
+// It is the inverse of Fronted's question rather than the same one: Fronted asks what the DOOR may
+// serve, this asks what the household's other DEVICES may find. mosquitto is false for one and
+// true for the other, which is the whole point -- a broker's clients are appliances that browse,
+// and its image advertises nothing on its own (agent/mosquitto).
+func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
+	mq := svc(mosquitto.Name, mosquitto.HealthPort)
+	mq.Network = manifest.NetworkPrivate
+	mq.Ports = []int{mosquitto.MQTTPort}
+	got := Announce(mq, "brave-elf")
+	if len(got) != 1 {
+		t.Fatalf("the broker announced %d record(s), want exactly one: %+v", len(got), got)
+	}
+	if got[0].Type != "_mqtt._tcp" {
+		t.Errorf("the broker is announced under %q, which no device browses for", got[0].Type)
+	}
+	// THE MQTT PORT, NEVER THE MANIFEST'S. The manifest names the management endpoint the health
+	// floor probes, bound inside the pod -- announcing it would send every device on the LAN to a
+	// port that refuses them, for a broker that is working perfectly.
+	if got[0].Port != mosquitto.MQTTPort {
+		t.Errorf("the announcement carries port %d, want MQTT's %d", got[0].Port, mosquitto.MQTTPort)
+	}
+	if got[0].Name != "briard-brave-elf-mosquitto" {
+		t.Errorf("the instance label %q is not the flock-scoped name", got[0].Name)
+	}
+	// The default is silence: an ordinary HTTP service is reached by the name the door serves it
+	// under, and browsing types it into a category it may not belong in.
+	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
+		if a := Announce(m, "brave-elf"); len(a) != 0 {
+			t.Errorf("%s announced %+v; the default must be nothing", m.Name, a)
+		}
+	}
+	// No flock name means no name to point an SRV record at, so nothing is announced -- the same
+	// rule that leaves the service's own A record unpublished.
+	if a := Announce(mq, ""); len(a) != 0 {
+		t.Errorf("a node with no published name announced %+v", a)
+	}
+}
