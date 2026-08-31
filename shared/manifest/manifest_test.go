@@ -225,3 +225,52 @@ func TestMultiContainerPod(t *testing.T) {
 		t.Fatalf("Primary() = %q, want ha", m.Primary().Name)
 	}
 }
+
+// THE NETWORK FIELD IS A CLOSED ENUM AND ITS SILENCE MEANS PRIVATE ([B.48](a)). Both halves are
+// load-bearing: silence yielding the LESS capable shape is property 2 working as stated, and
+// refusing an unrecognised word is what stops a misspelled `"network":"hostt"` from installing,
+// running, and finding no devices with nothing anywhere saying why.
+func TestNetworkIsAClosedEnumDefaultingToPrivate(t *testing.T) {
+	base := func(network string) Manifest {
+		m := Manifest{Name: "svc", Version: "1", Network: network, Containers: []Container{{
+			Name: "app", Image: digestA, Primary: true, Port: 8080, HealthPath: "/healthz",
+		}}}
+		return m
+	}
+	// Absent and explicit-private are the same answer, so no caller can handle them differently.
+	for _, network := range []string{"", NetworkPrivate} {
+		m := base(network)
+		if err := m.Validate(); err != nil {
+			t.Errorf("network %q rejected: %v", network, err)
+		}
+		if m.HostNetwork() {
+			t.Errorf("network %q reads as host networking; silence must mean private", network)
+		}
+	}
+	host := base(NetworkHost)
+	if err := host.Validate(); err != nil {
+		t.Errorf("network %q rejected: %v", NetworkHost, err)
+	}
+	if !host.HostNetwork() {
+		t.Error("an explicit host manifest does not read as host networking")
+	}
+	for _, bad := range []string{"hostt", "HOST", "bridge", "none", "container:x"} {
+		if err := base(bad).Validate(); err == nil {
+			t.Errorf("network %q validated; an unrecognised mode must be refused, never defaulted", bad)
+		}
+	}
+}
+
+// A manifest written before the field existed still parses, and parses as private -- which is what
+// makes "silence means private" a compatibility property as well as a security one.
+func TestAManifestWithoutTheFieldParsesAsPrivate(t *testing.T) {
+	raw := []byte(`{"name":"svc","version":"1","containers":[{"name":"app",` +
+		`"image":"` + digestA + `","primary":true,"port":8080,"healthPath":"/healthz"}]}`)
+	m, _, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("a manifest with no network field did not parse: %v", err)
+	}
+	if m.HostNetwork() {
+		t.Error("a manifest that says nothing about networking got host networking")
+	}
+}
