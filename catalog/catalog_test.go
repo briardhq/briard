@@ -109,3 +109,36 @@ func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 		}
 	}
 }
+
+// THE BROKER IS PRIVATE AND PUBLISHES ONLY MQTT, which is the shape [B.48](a) exists to make
+// expressible -- and the one entry where getting it wrong is a security regression rather than an
+// outage. Its manifest `port` is the MANAGEMENT API, which must reach the guest and nothing else:
+// private keeps it off the LAN, publishing 1883 and only 1883 is what the household actually
+// reaches, and the front door is not involved because no reverse proxy can serve MQTT.
+func TestTheBrokerIsPrivateAndPublishesOnlyMQTT(t *testing.T) {
+	m, _, err := manifest.Parse(read(t, "mosquitto.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HostNetwork() {
+		t.Fatal("the broker asks for host networking; its management API would be on the household's LAN")
+	}
+	if len(m.Ports) != 1 || m.Ports[0] != mosquitto.MQTTPort {
+		t.Errorf("published ports = %v, want exactly MQTT (%d)", m.Ports, mosquitto.MQTTPort)
+	}
+	for _, p := range m.Ports {
+		if p == m.Primary().Port {
+			t.Errorf("the broker publishes its management port %d to the household", p)
+		}
+	}
+}
+
+// read is the entry's exact bytes -- the thing the identity is taken over.
+func read(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}

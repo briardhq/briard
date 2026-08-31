@@ -77,7 +77,11 @@ func TestEachKnownServiceGetsItsOwn(t *testing.T) {
 // and it is bound to the guest's loopback. Printing it would hand the household a dead link for a
 // service that is working perfectly — which is the failure the reach line exists to prevent.
 func TestReachNamesMQTTForTheBroker(t *testing.T) {
+	// The port comes from the MANIFEST now, not from a constant in this package: what a household
+	// reaches is what the catalog publishes, so a change there moves this sentence with it.
 	mq := svc(mosquitto.Name, mosquitto.HealthPort)
+	mq.Network = manifest.NetworkPrivate
+	mq.Ports = []int{mosquitto.MQTTPort}
 	got := Reach(mq, "home")
 	if strings.Contains(got, "http://") {
 		t.Errorf("the broker was advertised as a web address: %q", got)
@@ -86,7 +90,10 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 		t.Errorf("the reach line does not name the MQTT port: %q", got)
 	}
 	if strings.Contains(got, "9883") {
-		t.Errorf("the reach line names the loopback-only management port: %q", got)
+		t.Errorf("the reach line names the pod-internal management port: %q", got)
+	}
+	if !strings.Contains(got, "briard-home-mosquitto.local") {
+		t.Errorf("the reach line does not name the service: %q", got)
 	}
 	// No published name means no address to promise — the same rule the HTTP form follows.
 	if bare := Reach(mq, ""); strings.Contains(bare, ".local") {

@@ -85,6 +85,16 @@ type Service struct {
 	// a pod-internal endpoint to the LAN. With no route there is nothing to forward and nothing to
 	// get wrong — the same reason shared/manifest grants capability by omission.
 	Routes []Route `json:"routes,omitempty"`
+	// Ports are what this service publishes to the household, reachable at the node's service
+	// address on the same number. NOT the door's business -- it forwards HTTP and these exist for
+	// the services that do not speak it -- but the node's, because the page and `briard service
+	// install` have to be able to say where a service actually is.
+	//
+	// It stayed out of this table until a manifest could declare exposure, and the reason is worth
+	// keeping: under host networking every port a container listens on is reachable at the service
+	// address, and the manifest names only the primary's -- so any list written then would have
+	// been partial, and the page would have printed it as though it were the whole truth.
+	Ports []int `json:"ports,omitempty"`
 }
 
 // Route is one way in to a service: which listener the request arrives on, and where it goes.

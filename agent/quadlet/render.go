@@ -167,6 +167,12 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// recreated -- so the routing table would go stale with the service healthy and nothing
 		// watching. Writing it means a recreated container returns to the same address.
 		pod = append(pod, "Network="+PodNetwork, "IP="+addr)
+		for _, p := range m.Ports {
+			// Published as itself on every interface the guest holds, which is what puts a
+			// non-HTTP service on the household's service address. The front door is not involved
+			// and cannot be: it speaks HTTP, and this exists for the services that do not.
+			pod = append(pod, fmt.Sprintf("PublishPort=%d:%d", p, p))
+		}
 	default:
 		// UNPINNED, and legitimately so: a caller with no address is one that needs unit names and
 		// image digests rather than something to start -- the host's prewarm and its node-local

@@ -77,20 +77,36 @@ pkgs.testers.runNixOSTest {
     for unit in fixture_units(primary):
         primary.wait_for_unit(unit, timeout=180)
 
-    # (1) THE CONFIG IS IN EFFECT. The bind is what the product added (agent/services), and the
+    # (1) THE CONFIG IS IN EFFECT. The bind is what the product added (agent/mosquitto), and the
     # proof that it took is the broker answering on the port only OUR config opens: the image's
     # own config would leave 9883 open to every interface, and no config at all would leave the
     # broker with no management listener for the health floor to probe.
+    #
+    # ⚠️ REACHED AT THE POD'S ADDRESS, NOT THE GUEST'S LOOPBACK ([B.48](a)). The broker runs on a
+    # PRIVATE network now, so 127.0.0.1 in here is the guest's namespace and the broker is not in
+    # it. The address comes from the routing table -- the same place the product's own health probe
+    # resolves it -- so this test cannot pass against an address nothing else uses.
+    import json as _mj
     primary.succeed("test -f /run/briard/mosquitto/mosquitto.conf")
-    primary.wait_until_succeeds("curl -fsS http://127.0.0.1:9883/api/v1/listeners", timeout=120)
+    table = _mj.loads(primary.succeed("cat /run/briard/routes.json"))
+    broker = next(s for s in table["services"] if s["name"] == "mosquitto")
+    pod = broker["address"]
+    assert pod.startswith("10.12."), f"the broker is not on the pod pool: {broker}"
+    mgmt = f"http://{pod}:9883/api/v1/listeners"
+    primary.wait_until_succeeds(f"curl -fsS {mgmt}", timeout=120)
     # The broker reports its own MQTT listener open -- the health path is not a static file, so a
     # 200 here is the process answering rather than a directory being served.
-    primary.succeed("curl -fsS http://127.0.0.1:9883/api/v1/listeners | grep -q '\"port\":.*1883'")
+    primary.succeed(f"curl -fsS {mgmt} | grep -q '\"port\":.*1883'")
 
     # (2) AND IT IS NOT ON THE LAN. From the other machine, to the address the household uses.
-    # This is the assertion that fails if anyone simplifies the config back to the image's.
+    # This is the assertion that fails if anyone simplifies the config back to the image's -- and
+    # it now has a second guard behind it: the management port is not in the manifest's `ports`, so
+    # nothing publishes it out of the pod at all.
     other.fail(f"curl -fsS --max-time 5 http://{VIP}:9883/api/v1/listeners")
     other.fail(f"curl -fsS --max-time 5 http://{primary.name}:9883/api/v1/listeners")
+    # Nor is the pod's own address reachable from off the box: the pod pool is guest-internal, and
+    # no host anywhere holds a route to it.
+    other.fail(f"curl -fsS --max-time 5 {mgmt}")
 
     # (3) MQTT IS. An off-box client publishes and reads its own retained message back -- which is
     # also the control for (2): a broker nothing could reach would satisfy (2) vacuously.
@@ -113,7 +129,7 @@ pkgs.testers.runNixOSTest {
         primary.succeed(f"systemctl stop {u}")
     for u in units:
         primary.succeed(f"systemctl start {u}")
-    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners", timeout=120)
+    primary.wait_until_succeeds(f"curl -fsS -o /dev/null {mgmt}", timeout=120)
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the retained message did not survive a bounce: {got!r}"
 
@@ -129,7 +145,7 @@ pkgs.testers.runNixOSTest {
     # comes back is answering from the replicated volume rather than from memory.
     primary.succeed(f"systemctl kill --signal=SIGKILL {containers[0]}")
     primary.wait_until_succeeds(f"systemctl is-active {containers[0]}", timeout=180)
-    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners", timeout=180)
+    primary.wait_until_succeeds(f"curl -fsS -o /dev/null {mgmt}", timeout=180)
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the broker did not recover its state after a crash: {got!r}"
 

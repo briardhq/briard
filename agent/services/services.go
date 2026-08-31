@@ -86,13 +86,25 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 // in a browser would hand them a dead link for a service that is working perfectly -- and no
 // reverse proxy can front it either, which is why its name resolves but does not serve.
 func Reach(m manifest.Manifest, flock string) string {
-	if m.Name == mosquitto.Name {
-		if flock == "" {
-			return fmt.Sprintf("it accepts MQTT on port %d", mosquitto.MQTTPort)
-		}
-		return fmt.Sprintf("point MQTT clients at briard-%s.local:%d", flock, mosquitto.MQTTPort)
-	}
 	host := routes.HostName(flock, m.Name)
+	// A service the door does not front is reached at a PUBLISHED PORT, and saying which one is
+	// the whole of its address. mosquitto is the case: the manifest's port is the management
+	// endpoint the liveness floor probes, and what the household points clients at is MQTT.
+	if !Fronted(m) {
+		port := 0
+		if len(m.Ports) > 0 {
+			port = m.Ports[0]
+		}
+		if port == 0 {
+			// Nothing published and nothing fronted: there is no address to promise, and inventing
+			// one is the plausible-but-wrong answer [V3.17] exists to end.
+			return "it publishes no address of its own yet"
+		}
+		if host == "" {
+			return fmt.Sprintf("it accepts connections on port %d", port)
+		}
+		return fmt.Sprintf("point clients at %s:%d", host, port)
+	}
 	if host == "" {
 		return fmt.Sprintf("it answers on port %d", m.Primary().Port)
 	}

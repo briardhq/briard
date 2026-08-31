@@ -89,11 +89,27 @@ pkgs.testers.runNixOSTest {
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
+    def broker_mgmt(m, path="/api/v1/listeners"):
+        """The broker's management API ON THIS NODE.
+
+        It runs on a PRIVATE pod ([B.48](a)), so the address is the pod's and not the guest's
+        loopback -- and it is per node, because each node allocates from its own pool, which is
+        exactly what a failover exercises. Resolved through the routing table, which is where the
+        product's own health probe resolves it: a test that hardcoded an address would be asserting
+        against a place nothing else looks."""
+        import json
+        tbl = json.loads(m.succeed("cat /run/briard/routes.json"))
+        for s in tbl["services"]:
+            if s["name"] == "${mosquitto.name}":
+                assert s["address"].startswith("10.12."), f"the broker is not on the pod pool: {s}"
+                return f"http://{s['address']}:9883{path}"
+        raise AssertionError(f"the broker is not in {m.name}'s routing table: {tbl}")
+
     def broker_version(m):
         """The broker's own answer, over the management API on the guest's loopback. Reading the
         version from the SERVICE rather than from the manifest is what makes an upgrade
         observable: a document naming a version proves nothing about what is running."""
-        return m.succeed("curl -fsS http://127.0.0.1:9883/api/v1/version").strip()
+        return m.succeed(f"curl -fsS {broker_mgmt(m, '/api/v1/version')}").strip()
 
     def container_unit(m, service=None):
         units = [u for u in fixture_units(m, service) if not u.endswith("-pod.service")]
@@ -117,7 +133,7 @@ pkgs.testers.runNixOSTest {
         for unit in fixture_units(primary, service):
             primary.wait_for_unit(unit, timeout=300)
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null http://{VIP}:${toString fixture.port}${fixture.healthPath}", timeout=180)
-    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners", timeout=180)
+    primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary)}", timeout=180)
 
     # WARM ON EVERY NODE, both services, by the DIGEST each manifest pins -- the standby holds the
     # images before it ever promotes, which is what makes a promotion that cannot pull survivable.
@@ -159,7 +175,7 @@ pkgs.testers.runNixOSTest {
     # It keeps the name and the address: the name resolves to the VIP where MQTT listens, and the
     # address is what the health floor probes from inside the guest. Not-fronted is one of three.
     assert routed["${mosquitto.name}"]["health"], f"the broker has no health endpoint to probe: {table}"
-    primary.succeed("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners")
+    primary.succeed(f"curl -fsS -o /dev/null {broker_mgmt(primary)}")
 
     # The regression this guards, asserted from OFF the box, which is where it would matter.
     client.fail(f"curl -fsS -m 5 -o /dev/null http://{VIP}:9883/api/v1/listeners")
@@ -193,10 +209,10 @@ pkgs.testers.runNixOSTest {
     primary.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
     for u in mq_units:
         primary.succeed(f"systemctl start {u}")
-    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
 
     install_fixture(primary, variant="to", service="${mosquitto.name}")
-    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
     assert broker_version(primary) == "2.1.2", "the broker did not move to the upgraded version"
 
     # THE PROPERTY THAT ONLY EXISTS AT N=2: the other service was not touched. Same unit start
@@ -218,7 +234,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("btrfs subvolume delete ${subvol}")
     primary.succeed("btrfs subvolume snapshot ${snap} ${subvol}")
     install_fixture(primary, service="${mosquitto.name}")
-    primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
     assert broker_version(primary) == "2.1.1", "the rollback did not put the previous version back"
     got = client.succeed(f"mosquitto_sub -h {VIP} -t briard/pair -C 1 -W 15").strip()
     assert got == "written-on-2.1.1", f"the rollback lost the data it exists to restore: {got!r}"
@@ -246,7 +262,7 @@ pkgs.testers.runNixOSTest {
 
     # The broker came back on the version the volume names -- the rolled-back one, not the one the
     # dead node was upgraded to and reverted from.
-    new_primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    new_primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(new_primary, '/api/v1/version')}", timeout=180)
     assert broker_version(new_primary) == "2.1.1", "the survivor promoted onto the wrong version"
     reader = next(m for m in survivors if m != new_primary)
     got = reader.succeed(f"mosquitto_sub -h {VIP} -t briard/pair -C 1 -W 20").strip()
@@ -271,7 +287,7 @@ pkgs.testers.runNixOSTest {
     out = probe(new_primary, "briard-rig-token")
     assert out == "serving=true token=briard-rig-token", f"the probe did not store its token: {out}"
     install_fixture(new_primary, variant="to", service="${mosquitto.name}")
-    new_primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    new_primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(new_primary, '/api/v1/version')}", timeout=180)
     assert broker_version(new_primary) == "2.1.2", "the broker did not move to the upgraded version"
     out = probe(new_primary)
     assert out == "serving=true token=briard-rig-token", \
@@ -288,7 +304,7 @@ pkgs.testers.runNixOSTest {
     new_primary.succeed(f"rm -f {broker_root}/broker/mosquitto.db")
     for u in units:
         new_primary.succeed(f"systemctl start {u}")
-    new_primary.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/version", timeout=180)
+    new_primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(new_primary, '/api/v1/version')}", timeout=180)
     out = probe(new_primary)
     assert out == "serving=true token=", f"a broker that lost everything still looked healthy to the probe: {out}"
 

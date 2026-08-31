@@ -82,8 +82,14 @@ func TestPrepareMaterialisesTheConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("%s was not written (files: %v)", confPath, f.files)
 	}
-	if got != confSource {
-		t.Error("the written config is not the embedded one")
+	// The embedded template with the bind substituted -- the ONE thing Prepare does to it. Asserted
+	// as "equal to the template with the token replaced" rather than "equal to the template", so a
+	// second silent substitution could not hide here.
+	if want := strings.Replace(confSource, bindToken, bindAddress(broker()), 1); got != want {
+		t.Error("the written config is not the embedded one with the bind substituted")
+	}
+	if strings.Contains(got, bindToken) {
+		t.Errorf("the written config still carries %s; the broker would listen nowhere valid", bindToken)
 	}
 	if _, stillThere := f.files[confPath+".new"]; stillThere {
 		t.Error("the config was left at the .new path; the rename did not happen")
@@ -156,9 +162,10 @@ func TestVolumesBindTheConfigReadOnly(t *testing.T) {
 // the manifest is what every node PROBES and what it BINDS. An edit to one without the other is
 // a health gate that can never pass, or retained state written outside the replicated volume.
 func TestConfigAgreesWithWhatEveryNodeIsToldToProbe(t *testing.T) {
-	// The management listener, on the loopback only. The address matters as much as the port:
-	// dropping it would publish the broker's management API to the LAN.
-	if want := fmt.Sprintf("listener %d 127.0.0.1", HealthPort); !strings.Contains(confSource, want) {
+	// The management listener. The ADDRESS is now the templated half -- it follows the pod's
+	// networking (see bindToken) -- so what this asserts is the port and the token, which is the
+	// part the manifest has to agree with.
+	if want := fmt.Sprintf("listener %d %s", HealthPort, bindToken); !strings.Contains(confSource, want) {
 		t.Errorf("config does not open the management listener as %q", want)
 	}
 	if !strings.Contains(confSource, "protocol http_api") {
@@ -175,5 +182,43 @@ func TestConfigAgreesWithWhatEveryNodeIsToldToProbe(t *testing.T) {
 	}
 	if !strings.Contains(confSource, "persistence true") {
 		t.Error("persistence is off; retained state would not survive a restart, let alone a failover")
+	}
+}
+
+// THE BIND FOLLOWS THE POD, and getting it backwards is a LAN exposure rather than a bug: under
+// host networking the pod IS the guest, so 0.0.0.0 there is every interface the household can see.
+// The two modes are asserted together because each is only meaningful against the other.
+func TestTheManagementBindFollowsTheNetworkMode(t *testing.T) {
+	private := broker()
+	private.Network = manifest.NetworkPrivate
+	host := broker()
+	host.Network = manifest.NetworkHost
+
+	for _, tc := range []struct {
+		name string
+		m    manifest.Manifest
+		want string
+	}{
+		{"private pod", private, "listener 9883 0.0.0.0"},
+		{"host networking", host, "listener 9883 127.0.0.1"},
+		// Silence means private (shared/manifest), so it must bind like private and not like host.
+		{"silent manifest", broker(), "listener 9883 0.0.0.0"},
+	} {
+		f := &fake{}
+		if err := Prepare(context.Background(), f, tc.m); err != nil {
+			t.Fatalf("%s: Prepare: %v", tc.name, err)
+		}
+		got := f.files[confPath]
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: config does not carry %q", tc.name, tc.want)
+		}
+	}
+	// And the one that would be a LAN exposure: host networking must never produce 0.0.0.0.
+	f := &fake{}
+	if err := Prepare(context.Background(), f, host); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.files[confPath], "listener 9883 0.0.0.0") {
+		t.Error("a host-networked broker binds its management API to every interface the household can see")
 	}
 }

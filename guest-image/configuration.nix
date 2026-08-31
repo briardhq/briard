@@ -1157,8 +1157,13 @@ in
         Restart = "on-failure";
         RestartSec = 2;
       };
+      # THE SAME GUARD briard-mdns CARRIES, and for the same reason: a node with no minted flock
+      # name has no per-service names either (they are composed from it), so there is nothing to
+      # publish and the unit must stay inactive rather than fail in a restart loop. Measured
+      # 2026-08-31 without it: 56 restarts in one test run, on a rig that had no name and no VIP
+      # env -- noise that would have hidden a real failure of this unit.
+      unitConfig.ConditionPathExists = mdnsEnvPath;
     };
-
     # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443. Woven into the
     #    promoter chain via briard-vip (wantedBy + partOf), NOT the drbd-reactor start-list —
     #    so it tracks the primary role (up on promote, down on demote) without touching the

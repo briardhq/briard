@@ -105,6 +105,18 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The pod network, before any unit is written that names it. Only when something actually
+	// wants one: a node running host-networked services creates nothing, which keeps the shipped
+	// zero-service and all-host cases exactly as they were.
+	if needsPodNetwork(svcs) {
+		pool := podPool(x)
+		if pool == "" {
+			return nil, fmt.Errorf("converge: a service wants a private network and this node has no pod pool")
+		}
+		if err := ensurePodNetwork(ctx, x, pool); err != nil {
+			return nil, err
+		}
+	}
 	all := merged(svcs)
 	changed, err := writeUnits(ctx, x, all)
 	if err != nil {
@@ -684,6 +696,7 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 			// Host-less: the address above is spliced in by whoever dials it, which is the one
 			// thing that keeps a table from being able to name another machine.
 			Health: fmt.Sprintf("http://:%d%s", p.Port, p.HealthPath),
+			Ports:  s.m.Ports,
 		}
 		if h := routes.HostName(flock, s.name); h != "" {
 			e.Hosts = []string{h}
@@ -787,4 +800,57 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 		return "", fmt.Errorf("health: %w", err)
 	}
 	return u.String(), nil
+}
+
+// ensurePodNetwork creates the podman network private pods join, if it is not already there.
+//
+// IT IS THE NODE'S JOB, NEVER QUADLET'S. A `.network` unit would make network creation a
+// side-effect of starting a pod -- the same trap `Image=foo.image` sets for pulls, where a unit
+// that looks declarative reaches out and does something at the worst moment. Creating it here, once
+// per converge and before anything starts, keeps promotion a sequence of steps that either work or
+// say why.
+//
+// ONE NETWORK FOR THE NODE, not one per service: the pool is a /24 and the addresses inside it are
+// what separate services, while a network each would spend a subnet to express the same thing.
+//
+// A NETWORK THAT EXISTS ON A DIFFERENT SUBNET FAILS THE CONVERGE rather than being adopted. The
+// addresses this node allocates come from the pool it was handed, so a network carrying some other
+// range would place every pod outside its own address -- reachable by nothing, with the routing
+// table and the health probe both pointing where the service is not. That can only happen if the
+// pool was redrawn under a live guest, and the honest answer is to refuse and name it.
+func ensurePodNetwork(ctx context.Context, x Executor, pool string) error {
+	want := pool + ".0/24"
+	out, err := x.Run(ctx, "podman", "network", "inspect", quadlet.PodNetwork, "--format", "{{range .Subnets}}{{.Subnet}}{{end}}")
+	if err == nil {
+		if got := strings.TrimSpace(string(out)); got != want {
+			return fmt.Errorf("converge: the %s network is on %s but this node allocates from %s; "+
+				"the pod pool changed under a running guest", quadlet.PodNetwork, got, want)
+		}
+		return nil
+	}
+	if _, err := x.Run(ctx, "podman", "network", "create", "--subnet", want, quadlet.PodNetwork); err != nil {
+		return fmt.Errorf("converge: create the %s network on %s: %w", quadlet.PodNetwork, want, err)
+	}
+	log.Printf("converge: created the %s pod network on %s", quadlet.PodNetwork, want)
+	return nil
+}
+
+// needsPodNetwork reports whether any service on this node wants a private pod.
+func needsPodNetwork(svcs []convergedService) bool {
+	for _, s := range svcs {
+		if !s.m.HostNetwork() {
+			return true
+		}
+	}
+	return false
+}
+
+// podPool is the range this node allocates private service addresses from, as the first three
+// octets, or "" if the host has sent none.
+func podPool(x Executor) string {
+	raw, err := x.ReadFile(podSubnetPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }

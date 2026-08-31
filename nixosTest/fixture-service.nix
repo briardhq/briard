@@ -39,6 +39,15 @@
   healthPath ? "/healthz",
   env ? { },
   version ? "0.0.0",
+  # THE POD'S NETWORKING, defaulting to host ([B.48](a)). Host rather than the schema's own default
+  # because this fixture is the SUBSTRATE for the DRBD, promoter and converge tests -- putting a new
+  # networking mode underneath tests whose subject is something else makes every future failure
+  # ambiguous. The private path is proven where it IS the subject: by mosquitto, which is private in
+  # the real catalog, and by a fixture that asks for it deliberately.
+  network ? "host",
+  # PUBLISHED PORTS, meaningful only on a private pod: a host-networked one already holds the
+  # guest's ports, and the manifest schema refuses the combination.
+  ports ? [ ],
   # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
   # pinned upstream image instead, which is what lets a REAL service be catalogued rather than only
   # the fixture ([V3b.3](e2) -- the baked slot was how HA reached a guest before).
@@ -103,6 +112,9 @@ let
     default = [ { type = "insecureAcceptAnything"; } ];
   });
   envJSON = e: if e == { } then "" else '',"env":${builtins.toJSON e}'';
+  # Published ports, omitted entirely when empty so a host-networked fixture renders the manifest it
+  # always did -- the schema refuses `ports` alongside host networking.
+  portsJSON = ps: if ps == [ ] then "" else '',"ports":${builtins.toJSON ps}'';
   variantImages = lib.mapAttrs (
     label: v:
     imageOf {
@@ -138,7 +150,7 @@ let
     ref="${p.image.repo}@$digest"
     printf '%s' "$ref" > $out/${p.dir}/ref
     cat > $out/${p.dir}/manifest.json <<EOF
-    {"name":"${name}","version":"${p.version}","containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]}
+    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]}
     EOF
     # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
     # strip the indentation rather than shipping it into the content hash.

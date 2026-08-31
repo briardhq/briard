@@ -36,6 +36,9 @@ type convergeExec struct {
 	haveImage   bool     // whether `podman image exists <ref>` succeeds
 	failExtract bool     // whether the per-service extraction out of the image fails
 	failStart   map[string]bool
+	// podNetwork models `podman network inspect`: the subnet the briard network carries, or "" for
+	// a network that does not exist (inspect fails, which is how the real one reports absence).
+	podNetwork string
 }
 
 func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -48,6 +51,14 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 		return []byte(strings.Join(c.services, "\n") + "\n"), nil
 	case name == "ls" && len(args) == 2 && args[1] == quadletDir:
 		return []byte(strings.Join(c.quadlet, "\n") + "\n"), nil
+	case name == "podman" && len(args) >= 2 && args[0] == "network" && args[1] == "inspect":
+		if c.podNetwork == "" {
+			return nil, errors.New("exit status 125") // no such network
+		}
+		return []byte(c.podNetwork + "\n"), nil
+	case name == "podman" && len(args) >= 4 && args[0] == "network" && args[1] == "create":
+		c.podNetwork = args[3]
+		return nil, nil
 	case name == "podman" && len(args) == 3 && args[0] == "image" && args[1] == "exists":
 		if c.haveImage {
 			return nil, nil
@@ -844,4 +855,56 @@ func addressOf(t *testing.T, x *convergeExec, name string) string {
 		t.Fatalf("%s is not in the table: %+v", name, tbl.Services)
 	}
 	return s.Address
+}
+
+// The pod network is created ONCE, by the node, before anything joins it -- and a node running
+// only host-networked services creates none at all, which is what keeps the shipped all-host case
+// exactly as it was.
+func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
+	hostOnly := dummyNode(t)
+	hostOnly.fakeExec.files[podSubnetPath] = "10.12.7\n"
+	if _, err := Converge(context.Background(), hostOnly); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	if hostOnly.ran("podman", "network", "create", "--subnet", "10.12.7.0/24", "briard") {
+		t.Error("a node with only host-networked services created a pod network")
+	}
+
+	x := privateNode(t)
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	if !x.ran("podman", "network", "create", "--subnet", "10.12.7.0/24", "briard") {
+		t.Fatalf("the pod network was never created; runs: %v", x.fakeExec.runs)
+	}
+	// Idempotent: a second converge adopts the network it already made rather than making another.
+	before := len(x.fakeExec.runs)
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("second Converge: %v", err)
+	}
+	creates := 0
+	for _, r := range x.fakeExec.runs[before:] {
+		if len(r) > 2 && r[0] == "podman" && r[1] == "network" && r[2] == "create" {
+			creates++
+		}
+	}
+	if creates != 0 {
+		t.Errorf("a re-converge created the network again (%d times)", creates)
+	}
+}
+
+// A NETWORK ON THE WRONG SUBNET FAILS THE CONVERGE rather than being adopted: the addresses this
+// node allocates come from the pool it was handed, so a network carrying another range would place
+// every pod outside its own address -- reachable by nothing, with the routing table and the health
+// probe both pointing where the service is not.
+func TestAPodNetworkOnTheWrongSubnetIsRefused(t *testing.T) {
+	x := privateNode(t)
+	x.podNetwork = "10.12.42.0/24" // drawn before, or by something else
+	_, err := Converge(context.Background(), x)
+	if err == nil {
+		t.Fatal("converge adopted a pod network on a different subnet")
+	}
+	if !strings.Contains(err.Error(), "10.12.42.0/24") || !strings.Contains(err.Error(), "10.12.7.0/24") {
+		t.Errorf("the error does not name both ranges: %v", err)
+	}
 }

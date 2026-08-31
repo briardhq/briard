@@ -80,6 +80,11 @@ let
     mount = "/mosquitto/data";
     port = 9883;
     healthPath = "/api/v1/listeners";
+    # PRIVATE, PUBLISHING ONLY MQTT -- the shape the real catalog entry carries. The fixture has to
+    # match it or the tests prove a deployment no household runs: the manifest'"'"'s port is the
+    # management API, which stays inside the pod, and 1883 is the whole of what is reachable.
+    network = "private";
+    ports = [ 1883 ];
     version = "2.1.2";
     imageFile = pkgs.mosquitto-upgrade-pair.to;
     imageName = "docker.io/library/eclipse-mosquitto";
@@ -95,6 +100,11 @@ let
     mount = "/mosquitto/data";
     port = 9883;
     healthPath = "/api/v1/listeners";
+    # PRIVATE, PUBLISHING ONLY MQTT -- the shape the real catalog entry carries. The fixture has to
+    # match it or the tests prove a deployment no household runs: the manifest'"'"'s port is the
+    # management API, which stays inside the pod, and 1883 is the whole of what is reachable.
+    network = "private";
+    ports = [ 1883 ];
     version = "2.1.1";
     imageFile = pkgs.mosquitto-upgrade-pair.from;
     imageName = "docker.io/library/eclipse-mosquitto";

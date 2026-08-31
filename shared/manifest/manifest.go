@@ -117,6 +117,25 @@ type Manifest struct {
 	// code: the manifest's silence now MEANS something, and saying "host" is a deliberate,
 	// reviewable act recorded in the identity hash.
 	Network string `json:"network,omitempty"`
+	// Ports are the container ports this service PUBLISHES to the household, each reachable at the
+	// node's service address on the same number. A list rather than a host:container map: for every
+	// service we can foresee the two are the same number, and a map would spend a second field on
+	// expressing the identity function.
+	//
+	// THE CATALOG PICKS THEM, which makes this a node-level allocation decided in a published
+	// document — safe because the catalog is curated and hand-checked for conflicts, which is the
+	// same argument that refused a runtime port-collision pre-flight ([B.48](a)). Two entries
+	// wanting one port is a review failure, not a runtime one.
+	//
+	// It is how a service that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and
+	// nothing else, so mosquitto's MQTT on 1883 has no route and never will; publishing is the
+	// whole of its reachability, and the front door is not involved.
+	//
+	// ⚠️ MEANINGLESS UNDER HOST NETWORKING, and refused there rather than ignored: a host-networked
+	// pod already holds the guest's ports, so there is nothing to publish, and podman rejects the
+	// combination outright. A manifest that asked for both would describe a service no node could
+	// run, which is exactly what Validate exists to catch before a household does.
+	Ports []int `json:"ports,omitempty"`
 }
 
 // Container is one member of the service's pod.
@@ -196,6 +215,21 @@ func (m Manifest) Validate() error {
 		// with nothing anywhere saying why. Refusing names the typo at the door.
 		return fmt.Errorf("%w: service %q network %q is not one of %q, %q (or absent, meaning private)",
 			ErrInvalid, m.Name, m.Network, NetworkHost, NetworkPrivate)
+	}
+	seenPort := map[int]bool{}
+	for _, p := range m.Ports {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("%w: service %q publishes port %d, out of range", ErrInvalid, m.Name, p)
+		}
+		if seenPort[p] {
+			return fmt.Errorf("%w: service %q publishes port %d twice", ErrInvalid, m.Name, p)
+		}
+		seenPort[p] = true
+	}
+	if len(m.Ports) > 0 && m.HostNetwork() {
+		// Not a style rule: podman refuses port bindings on a host-networked pod, so this manifest
+		// describes a service no node could start. Caught here rather than at the household.
+		return fmt.Errorf("%w: service %q asks for host networking and publishes ports; a host-networked pod already holds the guest's ports", ErrInvalid, m.Name)
 	}
 	if len(m.Containers) == 0 {
 		return fmt.Errorf("%w: service %q declares no containers", ErrInvalid, m.Name)

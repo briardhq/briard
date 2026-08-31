@@ -115,6 +115,14 @@ let
       set -eu
       rm -rf /run/briard/fixtures /run/briard/fixture
       mkdir -p /run/briard/fixtures
+      # THE POD POOL, which on a real node arrives over net.configure from a HOST that drew it
+      # (agent/subnet). These rigs have no host -- the node IS the guest -- so the fact is seeded
+      # here, exactly as the VIP's device and address are. Without it a private service cannot be
+      # rendered at all, and converge says so rather than quietly using the guest's namespace.
+      #
+      # A fixed octet rather than a draw: the draw exists to miss a HOUSEHOLD's addressing, and a
+      # hermetic rig has none to miss.
+      printf '10.12.99\n' >/run/briard/pod.subnet
     ''
     + lib.concatMapStrings (fixture: ''
       # The tarball load is what makes the manifest's digest resolvable locally, which is what

@@ -92,6 +92,27 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // prepare and starts the rest (agent/guestagent/converge.go). Skipping is also what keeps podman
 // from creating the missing bind source as a root-owned DIRECTORY over the container's config
 // path, which no later Prepare could fix.
+// bindToken is the placeholder mosquitto.conf carries for the management listener's address, and
+// substituting it is why Prepare takes the manifest rather than just the node.
+//
+// THE SAME LITERAL MEANS OPPOSITE THINGS IN THE TWO MODES, which is the whole reason this is not a
+// constant in the file. Under a PRIVATE pod, 0.0.0.0 is that pod's namespace -- the guest reaches
+// the management API across the pod network, and the LAN cannot, because only `ports` are
+// published and this is not one of them. Under HOST networking the pod IS the guest, so 0.0.0.0
+// would be every interface the household can see.
+//
+// It also removes an ordering hazard rather than merely expressing a preference: a config flipped
+// to 0.0.0.0 one commit before the network mode would publish the management API to the LAN for
+// exactly that long. Derived from the manifest, the two cannot be out of step in either direction.
+const bindToken = "@BIND@"
+
+func bindAddress(m manifest.Manifest) string {
+	if m.HostNetwork() {
+		return "127.0.0.1"
+	}
+	return "0.0.0.0"
+}
+
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if m.Name != Name {
 		return nil
@@ -99,9 +120,15 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if _, err := x.Run(ctx, "mkdir", "-p", Dir); err != nil {
 		return fmt.Errorf("mosquitto: %s: %w", Dir, err)
 	}
+	conf := strings.Replace(confSource, bindToken, bindAddress(m), 1)
+	if strings.Contains(conf, bindToken) {
+		// The token is the contract between this function and the embedded file; if the file stops
+		// carrying it, the broker would silently listen wherever the literal left behind says.
+		return fmt.Errorf("mosquitto: the config template no longer carries %s", bindToken)
+	}
 	// 0644, not 0600: the broker runs as its own unprivileged user inside the container (uid
 	// 1883 on the pinned image) and has to read this file.
-	return write(ctx, x, confPath, confSource, "0644")
+	return write(ctx, x, confPath, conf, "0644")
 }
 
 // write installs a file atomically-enough for /run: write beside, chmod, rename over. The rename

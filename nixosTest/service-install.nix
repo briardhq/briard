@@ -163,7 +163,7 @@ pkgs.testers.runNixOSTest {
 
     # === 2. the service manifest, and the REAL renderer ===
     manifest = (
-        '{"name":"fixture","version":"v0","containers":[{'
+        '{"name":"fixture","version":"v0","network":"host","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
         '"mount":"${fixtureMount}","primary":true,"port":8080,"healthPath":"/healthz"}]}'
     )
@@ -378,7 +378,7 @@ pkgs.testers.runNixOSTest {
     #     BRIARD_BROKEN=1. The dummy then poisons its state and holds /healthz at 503 forever while
     #     staying a live process — the exact shape a runtime service breaks in. ---
     broken_manifest = (
-        '{"name":"fixture","version":"v1-broken","containers":[{'
+        '{"name":"fixture","version":"v1-broken","network":"host","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
         '"mount":"${fixtureMount}","primary":true,"port":8080,"healthPath":"/healthz",'
         '"env":{"BRIARD_BROKEN":"1"}}]}'
