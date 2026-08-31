@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -56,6 +57,27 @@ func getHost(t *testing.T, base, path, host string) (int, string) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
+}
+
+// fronted is a table entry for a service the door may serve: httptest hands back a full URL, and
+// the table wants the host and the port apart — one address per service, ports on the endpoints —
+// exactly as converge writes it.
+func fronted(name, host, server string) routes.Service {
+	s := named(name, host, server)
+	u, _ := url.Parse(server)
+	s.Routes = []routes.Route{{Listen: routes.ListenName, To: "http://:" + u.Port()}}
+	return s
+}
+
+// named is the same entry with NO route: a service the household can name and the node can probe,
+// which the door is given no way to reach. mosquitto's shape.
+func named(name, host, server string) routes.Service {
+	u, _ := url.Parse(server)
+	s := routes.Service{Name: name, Address: u.Hostname(), Health: "http://:" + u.Port() + "/healthz"}
+	if host != "" {
+		s.Hosts = []string{host}
+	}
+	return s
 }
 
 // fixed is a routing table that never reloads — the shape most tests want.
@@ -100,8 +122,8 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 	defer mq.Close()
 
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Address: ha.URL, HealthPath: "/", Fronted: true},
-		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"}, Address: mq.URL, HealthPath: "/", Fronted: true},
+		fronted("home-assistant", "briard-brave-elf-home-assistant.local", ha.URL),
+		fronted("mosquitto", "briard-brave-elf-mosquitto.local", mq.URL),
 	}})))
 	defer srv.Close()
 
@@ -139,7 +161,7 @@ func TestHealthIsTheNodesOwnAnswerNotAServices(t *testing.T) {
 	}))
 	defer dead.Close()
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Address: dead.URL, HealthPath: "/healthz", Fronted: true},
+		fronted("home-assistant", "briard-brave-elf-home-assistant.local", dead.URL),
 	}})))
 	defer srv.Close()
 
@@ -169,11 +191,10 @@ func TestRoutedButNotFronted(t *testing.T) {
 	}))
 	defer mgmt.Close()
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		// A REACHABLE backend, deliberately: the node can and does probe this address (it is what
-		// the health floor GETs), so a test with no backend at all would prove only that the door
-		// cannot reach what does not exist.
-		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
-			Address: mgmt.URL, HealthPath: "/api/v1/listeners", Fronted: false},
+		// A REACHABLE address, deliberately: the node can and does probe it (it is what the health
+		// floor GETs), so a test whose service had no address at all would prove only that the
+		// door cannot reach what does not exist.
+		named("mosquitto", "briard-brave-elf-mosquitto.local", mgmt.URL),
 	}})))
 	defer srv.Close()
 
@@ -193,7 +214,7 @@ func TestRoutedButNotFronted(t *testing.T) {
 // routes nothing — and must SAY the service is installed rather than pretend the node is empty.
 func TestInstalledButUnnamed(t *testing.T) {
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "home-assistant", Address: "http://127.0.0.1:8123", HealthPath: "/", Fronted: true},
+		fronted("home-assistant", "", "http://127.0.0.1:8123"),
 	}})))
 	defer srv.Close()
 
@@ -244,7 +265,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 
 	// The install writes the table. No restart, no reload signal: the next request routes.
 	write(marshal(routes.Table{Services: []routes.Service{
-		{Name: "fixture", Hosts: []string{"briard-brave-elf-fixture.local"}, Address: backend.URL, HealthPath: "/healthz", Fronted: true},
+		fronted("fixture", "briard-brave-elf-fixture.local", backend.URL),
 	}}), t0.Add(2*time.Second))
 	if code, body := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusOK || body != "payload-ok" {
 		t.Fatalf("after the install = %d %q, want it routed to the service", code, body)
@@ -281,7 +302,7 @@ func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	}))
 	defer backend.Close()
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "fixture", Hosts: []string{"home.example.test"}, Address: backend.URL, HealthPath: "/healthz", Fronted: true},
+		fronted("fixture", "home.example.test", backend.URL),
 	}})))
 	defer srv.Close()
 
@@ -366,7 +387,7 @@ func TestCertHotReloadAndProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: newFrontDoor(fixed(routes.Table{Services: []routes.Service{{Name: "fixture", Hosts: []string{"briard-brave-elf-fixture.local"}, Address: backend.URL, HealthPath: "/healthz", Fronted: true}}})), TLSConfig: &tls.Config{GetCertificate: r.getCertificate}}
+	srv := &http.Server{Handler: newFrontDoor(fixed(routes.Table{Services: []routes.Service{fronted("fixture", "briard-brave-elf-fixture.local", backend.URL)}})), TLSConfig: &tls.Config{GetCertificate: r.getCertificate}}
 	go srv.ServeTLS(ln, "", "")
 	defer srv.Close()
 	addr := ln.Addr().String()

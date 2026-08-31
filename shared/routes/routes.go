@@ -1,36 +1,39 @@
 // Package routes is the front door's routing table: the file the guest's converge WRITES and the
 // reverse proxy READS, mapping a hostname a household types to the service that answers it.
 //
-// WHY A FILE, AND WHY THIS ONE WRITES IT ([B.48]). The proxy could have read the volume's
-// `.services/*.json` itself and built the table from the manifests — it runs in the same guest and
-// the volume is mounted by the time it starts. That is wrong for one reason that decides
-// everything else: A SERVICE'S ADDRESS IS A RENDERING FACT, NOT A MANIFEST FACT. The manifest
-// names a port; where that port can be reached depends on how the renderer wired the pod, which is
-// `127.0.0.1:<port>` under today's host networking and a pod address once a service may ask for a
-// private network ([B.48](a)). Teaching the door to answer that question would weld it to podman
-// and duplicate the renderer. Converge already holds both halves — the manifest and the rendering
-// — and already runs at exactly the moments the table can change: every promotion, every install,
-// every guest reboot.
+// IT IS A DERIVED PROJECTION, NOT THE CATALOG. The signed manifest is stored verbatim on the
+// replicated volume, because the service identity is the sha256 of those exact bytes — enriching
+// it would remint the identity on every node, so the catalog document physically cannot be the
+// thing we add fields to. This is the separate document derived from it, and its inputs come from
+// three places that no single one of them could supply:
 //
-// THE TABLE IS DERIVED, so it lives in /run: node-local, tmpfs, re-derived rather than replicated,
-// exactly like the quadlet units it is written beside. What replicates is the manifest, which is
-// the identity; a rendered address is this node's own answer to it.
+//   - the MANIFEST: the service's name, its port and its health path.
+//   - the RENDERER: Address. A service's address is a rendering fact, not a manifest fact — the
+//     manifest names a port, and what host answers on it is decided by how the pod was wired.
+//   - NODE IDENTITY: Hosts, composed from the flock's minted name, which cannot exist in a
+//     published catalog because it is per-household and chosen at install.
 //
-// A HOSTNAME APPEARS HERE AND NOWHERE ELSE. The same entries are what the mDNS publisher claims
-// on the LAN and what the proxy matches on, so a name that is published but not routed — or routed
-// but not published — is not expressible. That is the whole reason the names are composed once,
-// here (HostName), rather than independently by the door and by the publisher's shell.
+// So it lives in /run: node-local, tmpfs, re-derived by every converge rather than replicated,
+// exactly like the quadlet units it is written beside.
+//
+// A HOSTNAME APPEARS HERE AND NOWHERE ELSE. These entries are what the mDNS publisher claims on
+// the LAN and what the proxy matches on, so a name that is published but not routed — or routed
+// but not published — is not expressible. That is why the names are composed once, here
+// (HostName), rather than independently by the door and by the publisher.
 package routes
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 )
 
-// Path is where converge writes the table and the proxy reads it. Under /run/briard, beside
-// services.units and mdns.env, all of them the same kind of fact: what this node is doing now.
+// Path is where converge writes the table, the proxy reads it, and the mDNS publisher reads it.
+// One file: the publisher parses it with jq rather than being handed a pre-flattened projection,
+// because a second file is a second thing that can be stale.
 const Path = "/run/briard/routes.json"
 
 // Table is the whole front door's routing, as one file. Ordered by service name, because converge
@@ -40,55 +43,70 @@ type Table struct {
 	Services []Service `json:"services"`
 }
 
-// Service is one runtime-installed service as the front door needs to see it.
-//
-// WHAT IS DELIBERATELY NOT HERE: the manifest identity (the door does not care WHICH version it
-// forwards to — that is the cloud's question, and api.ServiceStatus carries it), and the ports a
-// service publishes for clients that are not HTTP. The second is a real gap and it is left open
-// on purpose: under host networking every port a container listens on is already reachable at the
-// VIP, and the manifest names only the primary's — so a port list today would be a partial one,
-// and the landing page would print it as if it were the whole truth. It becomes fillable when a
-// service can declare its own exposure ([B.48](a)), and not before.
+// Service is one runtime-installed service as the node needs to see it.
 type Service struct {
 	// Name is the catalog slug, the same one the manifest and the units carry.
 	Name string `json:"name"`
-	// Hosts are the names this service answers to, lowercase and without a port — today the
-	// single mDNS label HostName composes, later the per-home `*.casa` name ([V3b.14]).
+	// Hosts are the names this service answers to — today the single mDNS label HostName
+	// composes, later the per-home `*.casa` name too ([V3b.14]).
 	//
-	// EMPTY IS A REAL STATE, not a bug: a node whose flock has no minted name publishes nothing
-	// rather than a guess (net.mdnsname), so it routes nothing either. The service is still
-	// installed, still running and still reachable on its port; it simply has no name yet.
+	// MATERIALISED RATHER THAN DERIVED, though both forms are computable from (flock, slug). The
+	// reason is the mDNS publisher: it is a shell script, and if it composed names itself the
+	// naming rule would live in two languages — one more each time a name form is added. Stored,
+	// the publisher stays permanently dumb: it claims whatever this list says, and every rule for
+	// building a name stays in HostName.
+	//
+	// EMPTY IS A REAL STATE: a node whose flock has no minted name publishes nothing rather than
+	// a guess (net.mdnsname), so it routes nothing either. The service is still installed and
+	// still reachable on any port it publishes; it simply has no name yet.
 	Hosts []string `json:"hosts,omitempty"`
-	// Address is where this service ANSWERS, as a URL ("http://127.0.0.1:8123"), and HealthPath
-	// the path on it that says whether it is serving. Both come from the renderer, which is the
-	// only thing that knows how the pod was wired.
+	// Address is the host this service answers on — the guest's own loopback while the pod shares
+	// the guest's network namespace, the pod's address once it does not ([B.48](a)). A bare host,
+	// with no port: a service is ONE pod and a pod is ONE network namespace, so one address serves
+	// every port it listens on, and Health and Routes below carry only the port.
 	//
-	// NAMED FOR THE SERVICE, NOT FOR THE DOOR, because it is not the door's fact. The health probe
-	// GETs this unconditionally — from inside the guest, never through the proxy — and the front
-	// door additionally uses it as a proxy target when Fronted below allows. mosquitto is what
-	// makes the distinction concrete: its address is a loopback-bound management API, probed every
-	// cycle and relayed to nobody. Calling this "backend" implied the probe was proxy-adjacent,
-	// which it has never been.
-	Address    string `json:"address,omitempty"`
-	HealthPath string `json:"healthPath,omitempty"`
-	// Fronted is whether the door may PROXY to Address. False is a real and deliberate state, not
-	// a missing value: mosquitto's manifest port is its management API, bound to the guest's
-	// loopback on purpose, and the front door runs inside the guest — so routing to it by name
-	// would republish a loopback-only endpoint on the LAN. Such a service keeps its name (which
-	// resolves to the VIP, where its real protocol is listening) and the door says it does not
-	// answer HTTP rather than 404ing, because the name IS ours.
+	// It comes from the renderer, which is the only thing that knows how the pod was wired, and it
+	// never appears in the catalog: a published, signed, node-independent document cannot carry a
+	// fact that differs per node and per render.
+	Address string `json:"address,omitempty"`
+	// Health is the endpoint that answers "is this service serving", as a host-less URL resolved
+	// against Address (see Resolve).
 	//
-	// It costs such a service NOTHING but the relay: the address above is still real and still
-	// probed, so "not fronted" and "not monitored" are unrelated — which is the whole reason this
-	// is a second field rather than an empty Address.
+	// It is NOT a route, and that is the point: the probe is performed by the guest, straight to
+	// the service, and never traverses the proxy. A service the door may not front is still
+	// probed here every cycle — mosquitto's management API is exactly that, bound inside the pod
+	// and relayed to nobody.
+	Health string `json:"health,omitempty"`
+	// Routes is what the DOOR does about this service, and an empty list means nothing — the
+	// service is named and probed, and no request is ever forwarded to it.
 	//
-	// Written explicitly rather than by omission: this file is derived, not a published document,
-	// and a security-relevant default is worth being able to read in a `cat`. The product decides
-	// it today (agent/services.Fronted); a manifest will, once it can state its own exposure
-	// ([B.48](a)) — where the second axis lands too, since a private-network service may want the
-	// door, a published port, or both.
-	Fronted bool `json:"fronted"`
+	// ABSENCE RATHER THAN A FLAG, deliberately. A boolean saying "do not front this" leaves the
+	// door holding an address it is trusted not to use, one inverted condition away from relaying
+	// a pod-internal endpoint to the LAN. With no route there is nothing to forward and nothing to
+	// get wrong — the same reason shared/manifest grants capability by omission.
+	Routes []Route `json:"routes,omitempty"`
 }
+
+// Route is one way in to a service: which listener the request arrives on, and where it goes.
+type Route struct {
+	// Listen is the listener this route is served on. ListenName is the shared :80/:443 front
+	// door, matched against the service's own Hosts; a dedicated listener is spelled
+	// "tls:<port>" and is not implemented yet (Validate refuses it, loudly — a route the door
+	// silently ignored would be a service unreachable with nothing saying why).
+	Listen string `json:"listen"`
+	// To is where the door forwards, as a host-less URL resolved against the service's Address.
+	// The scheme says how to speak to it: "http" is a proxied request, upgrades included.
+	//
+	// THE MISSING HOST IS A SECURITY PROPERTY, not a spelling convenience. Because the only
+	// address the door can ever splice in is the service's own, no table — however it was written
+	// — can point the front door at another machine. Validate refuses a host here.
+	To string `json:"to"`
+}
+
+// ListenName is the shared front door: :80 and :443, matched on the request's Host header against
+// the service's Hosts. The two ports are one listener here because the door treats them
+// identically; separating them is a new value, not a new shape.
+const ListenName = "name"
 
 // HostName is the single place a service's LAN name is composed: `briard-<flock>-<service>.local`.
 //
@@ -102,8 +120,8 @@ type Service struct {
 // tutorial uses and the one thing a household might already own. Measured 2026-08-23: two avahi
 // publishers of the same `-a` record BOTH report Established, with no conflict, no rename and no
 // log — the later silently shadows the earlier — and the household most likely to already own
-// that name is the one migrating from an HAOS box, which is the likeliest way anyone arrives
-// here. Claiming a name we can only lose silently is worse than a longer one nobody contests.
+// that name is the one migrating from an HAOS box. Claiming a name we can only lose silently is
+// worse than a longer one nobody contests.
 //
 // An empty flock name yields no name at all, deliberately: `briard--home-assistant.local` is worse
 // than silence, and the same rule already governs the flock's own publisher.
@@ -114,10 +132,10 @@ func HostName(flock, service string) string {
 	return "briard-" + flock + "-" + service + ".local"
 }
 
-// Parse decodes a table. Unknown fields are refused for the same reason shared/manifest refuses
-// them: the writer and the reader ship together, so a field this build does not understand means
-// the two have drifted, and routing traffic on a table you only partly understand is worse than
-// keeping the last one you did.
+// Parse decodes and validates a table. Unknown fields are refused for the same reason
+// shared/manifest refuses them: the writer and the reader ship together, so a field this build
+// does not understand means the two have drifted, and routing traffic on a table you only partly
+// understand is worse than keeping the last one you did.
 func Parse(raw []byte) (Table, error) {
 	var t Table
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -125,7 +143,59 @@ func Parse(raw []byte) (Table, error) {
 	if err := dec.Decode(&t); err != nil {
 		return Table{}, fmt.Errorf("routes: %w", err)
 	}
+	if err := t.Validate(); err != nil {
+		return Table{}, err
+	}
 	return t, nil
+}
+
+// Validate enforces the two rules that are not style. A host in a URL would let the door be
+// pointed off this node; an unrecognised listener would be a route silently not served.
+func (t Table) Validate() error {
+	for _, s := range t.Services {
+		if s.Name == "" {
+			return fmt.Errorf("routes: a service has no name")
+		}
+		if s.Health != "" {
+			if err := checkSpec(s.Name, "health", s.Health); err != nil {
+				return err
+			}
+		}
+		for _, r := range s.Routes {
+			if r.Listen != ListenName {
+				// Deliberately not "ignore what we do not know": a route the door drops is a
+				// service that is unreachable with nothing saying why.
+				return fmt.Errorf("routes: service %q has a route on unknown listener %q", s.Name, r.Listen)
+			}
+			if err := checkSpec(s.Name, "route target", r.To); err != nil {
+				return err
+			}
+		}
+		if (s.Health != "" || len(s.Routes) > 0) && s.Address == "" {
+			return fmt.Errorf("routes: service %q has endpoints but no address to resolve them against", s.Name)
+		}
+	}
+	return nil
+}
+
+// checkSpec is the host-less-URL rule both Health and Route.To follow.
+func checkSpec(service, what, spec string) error {
+	u, err := url.Parse(spec)
+	if err != nil {
+		return fmt.Errorf("routes: service %q %s %q: %w", service, what, spec, err)
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("routes: service %q %s %q: scheme must be http", service, what, spec)
+	}
+	if u.Hostname() != "" {
+		// The whole point of the missing host: with nothing but the service's own Address to
+		// splice, no table can aim the door at another machine.
+		return fmt.Errorf("routes: service %q %s %q names a host; it must be host-less", service, what, spec)
+	}
+	if u.Port() == "" {
+		return fmt.Errorf("routes: service %q %s %q has no port", service, what, spec)
+	}
+	return nil
 }
 
 // Marshal renders the table for the file. Indented, because a human debugging why their service
@@ -138,13 +208,43 @@ func (t Table) Marshal() ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
+// Resolve turns one of this service's host-less specs into a real URL by splicing in its Address.
+// The one operation every consumer performs, implemented once so the door and the health probe
+// cannot disagree about where a service is.
+func (s Service) Resolve(spec string) (*url.URL, error) {
+	u, err := url.Parse(spec)
+	if err != nil {
+		return nil, fmt.Errorf("routes: %s: %w", s.Name, err)
+	}
+	if s.Address == "" {
+		return nil, fmt.Errorf("routes: %s has no address", s.Name)
+	}
+	if u.Hostname() != "" {
+		// Validate already refused this; repeated here because Resolve is what actually hands an
+		// address to a dialer, and a check at the point of use costs nothing.
+		return nil, fmt.Errorf("routes: %s: %q names a host", s.Name, spec)
+	}
+	u.Host = net.JoinHostPort(s.Address, u.Port())
+	return u, nil
+}
+
+// Route returns this service's route on the given listener.
+func (s Service) Route(listen string) (Route, bool) {
+	for _, r := range s.Routes {
+		if r.Listen == listen {
+			return r, true
+		}
+	}
+	return Route{}, false
+}
+
 // Lookup finds the service a request's Host header names. The header is normalised first, because
 // what arrives is whatever the client typed: any case, a trailing dot from a fully-qualified
 // resolver, and a `:port` whenever the port is not the scheme's default.
 //
-// It reports a match for a service the door may not front, which is NOT the same as no match: the
-// door then knows the name is ours and the service is real, and can say so instead of
-// serving a 404 that reads as "you typed it wrong".
+// A match says only that the name is OURS. Whether anything is served under it is the service's
+// Routes, and the difference matters: the door can then say "this is ours and does not answer
+// HTTP" instead of a 404 that reads as "you typed it wrong".
 func (t Table) Lookup(host string) (Service, bool) {
 	h := Normalise(host)
 	if h == "" {
@@ -152,7 +252,7 @@ func (t Table) Lookup(host string) (Service, bool) {
 	}
 	for _, s := range t.Services {
 		for _, n := range s.Hosts {
-			if n == h {
+			if Normalise(n) == h {
 				return s, true
 			}
 		}
@@ -183,24 +283,4 @@ func Normalise(host string) string {
 		h = h[:i] // a single colon is a port; several mean a bare v6 literal, which has none
 	}
 	return strings.TrimSuffix(h, ".")
-}
-
-// HostsPath is the same table's hostnames, one per line, for the mDNS publisher.
-//
-// A SECOND FILE, DELIBERATELY, and the reason is that its reader is a shell script: the publisher
-// is a systemd unit bound to the VIP (a record lives exactly as long as the process holding it,
-// which is the property that makes withdrawal on demote impossible to get wrong), and the guest
-// image ships no JSON parser for it to use. The alternatives were worse in the way that matters —
-// adding jq to parse the door's table, or hand-rolling a second JSON reader in shell, either of
-// which is a second chance for the published names and the routed names to disagree. Written by
-// the same call, from the same composed list, so they cannot.
-const HostsPath = "/run/briard/routes.hosts"
-
-// Hosts is every name in the table, in service order — the publisher's whole input.
-func (t Table) Hosts() []string {
-	var out []string
-	for _, s := range t.Services {
-		out = append(out, s.Hosts...)
-	}
-	return out
 }

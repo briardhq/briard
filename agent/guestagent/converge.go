@@ -553,14 +553,11 @@ func writeRoutes(x Executor, svcs []convergedService) error {
 	return putRoutes(x, t)
 }
 
-// putRoutes writes both halves of the table: the JSON the front door routes on, and the plain
-// hostname list the mDNS publisher claims (see routes.HostsPath for why there are two).
-//
-// NEITHER IS SIGNALLED TO ITS READER, and that is the design rather than an omission. The door
-// reloads on mtime and the publisher watches the same way, so writing the file IS the
-// notification — which means an install needs no `systemctl restart` of either, and neither can be
-// left stale by a restart that was skipped because the unit happened to be inactive. On a
-// Secondary, where both are stopped, the write is simply read by whoever promotes next.
+// putRoutes writes the table. ONE FILE: the front door reloads it on mtime and the mDNS publisher
+// watches the same file and reads it with jq, so writing it IS the notification to both. No
+// `systemctl restart` of either, and neither can be left stale by a restart that was skipped
+// because the unit happened to be inactive. On a Secondary, where both are stopped, the write is
+// simply read by whoever promotes next.
 func putRoutes(x Executor, t routes.Table) error {
 	raw, err := t.Marshal()
 	if err != nil {
@@ -569,35 +566,40 @@ func putRoutes(x Executor, t routes.Table) error {
 	if err := x.WriteFile(routes.Path, raw); err != nil {
 		return fmt.Errorf("converge: write %s: %w", routes.Path, err)
 	}
-	hosts := t.Hosts()
-	var b strings.Builder
-	for _, h := range hosts {
-		b.WriteString(h + "\n")
-	}
-	if err := x.WriteFile(routes.HostsPath, []byte(b.String())); err != nil {
-		return fmt.Errorf("converge: write %s: %w", routes.HostsPath, err)
-	}
 	return nil
 }
 
-// routesFor turns the rendered services into the table. The renderer supplies the ADDRESS (see
-// quadlet.Rendered.Address — it is the only thing that knows how the pod was wired) and this
-// supplies the NAMES, composed in one place so that what the publisher claims and what the door
-// matches cannot drift apart.
+// routesFor turns the rendered services into the table. Three sources meet here and no one of
+// them could supply the others: the MANIFEST's port and health path, the RENDERER's address, and
+// the node's own flock name for the hostnames.
+//
+// A service gets a NAME whether or not the door serves it. The name resolves to the VIP, which is
+// where a non-HTTP service is listening anyway, and it is the anchor any future route hangs off —
+// so `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under it.
+//
+// It gets a ROUTE only if the product says the door may front it (agent/services.Fronted). No
+// route is how "do not expose this" is said: the door is then never handed a way to reach the
+// service at all, rather than being handed one and trusted not to use it. mosquitto is the live
+// case — its manifest port is the broker's management API, bound inside the pod on purpose.
 func routesFor(flock string, svcs []convergedService) routes.Table {
 	t := routes.Table{Services: make([]routes.Service, 0, len(svcs))}
 	for _, s := range svcs {
+		p := s.m.Primary()
 		e := routes.Service{
-			Name:       s.name,
-			Address:    s.r.Address,
-			HealthPath: s.r.HealthPath,
-			// Whether the DOOR may forward there, which is not the same as whether the node can
-			// reach it: mosquitto's address is its loopback-bound management API, probed by the
-			// health floor and deliberately not exposed to the LAN (agent/services.Fronted).
-			Fronted: services.Fronted(s.m),
+			Name:    s.name,
+			Address: s.r.Address,
+			// Host-less: the address above is spliced in by whoever dials it, which is the one
+			// thing that keeps a table from being able to name another machine.
+			Health: fmt.Sprintf("http://:%d%s", p.Port, p.HealthPath),
 		}
 		if h := routes.HostName(flock, s.name); h != "" {
 			e.Hosts = []string{h}
+		}
+		if services.Fronted(s.m) {
+			e.Routes = []routes.Route{{
+				Listen: routes.ListenName,
+				To:     fmt.Sprintf("http://:%d", p.Port),
+			}}
 		}
 		t.Services = append(t.Services, e)
 	}
@@ -661,14 +663,16 @@ func renameRoutes(x Executor, flock string) {
 	}
 }
 
-// serviceHealthURL resolves where to ask one service whether it is serving, from the routing
-// table this node last converged.
+// serviceHealthURL resolves where to ask one service whether it is serving, from the routing table
+// this node last converged.
 //
-// It is deliberately the SAME source the front door routes on: "is it healthy" and "where do
-// requests go" must never be answered about two different addresses, which is exactly what a
-// caller-supplied URL allows. A service that is not in the table, or that is in it with no HTTP
-// address, yields an error rather than an unhealthy verdict — see the verb for why that
-// distinction is load-bearing.
+// It reads the SAME table the front door routes on, so "is it healthy" and "where do requests go"
+// can never be answered about two different addresses — which a caller-supplied URL allows by
+// construction. It does NOT go through the door: the probe is a direct GET from inside the guest,
+// which is why a service the door may not front is still probed here every cycle.
+//
+// A service that is not in the table, or that has no health endpoint, yields an error rather than
+// an unhealthy verdict — see the verb for why that distinction is load-bearing.
 func serviceHealthURL(x Executor, name string) (string, error) {
 	raw, err := x.ReadFile(routes.Path)
 	if err != nil {
@@ -682,8 +686,12 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("health: %s is not in this node's routing table", name)
 	}
-	if s.Address == "" {
-		return "", fmt.Errorf("health: %s has no HTTP endpoint to probe", name)
+	if s.Health == "" {
+		return "", fmt.Errorf("health: %s has no health endpoint to probe", name)
 	}
-	return s.Address + s.HealthPath, nil
+	u, err := s.Resolve(s.Health)
+	if err != nil {
+		return "", fmt.Errorf("health: %w", err)
+	}
+	return u.String(), nil
 }

@@ -155,10 +155,10 @@ pkgs.testers.runNixOSTest {
     # that guest, so a table that fronted it would republish a loopback-only endpoint on the LAN
     # through a mechanism that never mentions the bind.
     mq_host = routed["${mosquitto.name}"]["hosts"][0]
-    assert routed["${mosquitto.name}"]["fronted"] is False, f"the broker is fronted: {table}"
+    assert not routed["${mosquitto.name}"].get("routes"), f"the broker has a route: {table}"
     # It keeps the name and the address: the name resolves to the VIP where MQTT listens, and the
     # address is what the health floor probes from inside the guest. Not-fronted is one of three.
-    assert routed["${mosquitto.name}"]["address"], f"the broker has no address to probe: {table}"
+    assert routed["${mosquitto.name}"]["health"], f"the broker has no health endpoint to probe: {table}"
     primary.succeed("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners")
 
     # The regression this guards, asserted from OFF the box, which is where it would matter.

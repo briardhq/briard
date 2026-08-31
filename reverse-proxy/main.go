@@ -152,14 +152,15 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		f.page(w, req, t)
 		return
 	}
-	if r.backend == nil {
-		// A routed service with no HTTP front door. Nothing in the catalog is this today; MQTT is
-		// the first thing that will be, and a proxy cannot serve it. Saying so beats a 404 that
-		// reads as "you typed the name wrong".
+	if r.to == nil {
+		// Ours, and nothing here answers HTTP. mosquitto is the live case: what a household
+		// reaches on the broker is MQTT, which no reverse proxy can serve, and its manifest port
+		// is a management API the door is deliberately given no way to reach. Saying so beats a
+		// 404 that reads as "you typed the name wrong".
 		http.Error(w, fmt.Sprintf("%s does not answer HTTP; reach it on its own port\n", r.name), http.StatusNotImplemented)
 		return
 	}
-	f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r.backend)))
+	f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r.to)))
 }
 
 // health answers the NODE's readiness, and only ever its own.
@@ -210,7 +211,7 @@ func (f *frontDoor) page(w http.ResponseWriter, req *http.Request, t *routing) {
 				// No name yet: the flock has none, so neither does the service. Say that rather
 				// than print a URL that resolves nowhere.
 				b.WriteString(" — installed, not yet reachable by name")
-			case !s.Fronted || s.Address == "":
+			case !hasNameRoute(s):
 				b.WriteString(" — " + html.EscapeString(s.Hosts[0]) + " (not served over HTTP)")
 			default:
 				u := "http://" + s.Hosts[0] + "/"
@@ -224,36 +225,36 @@ func (f *frontDoor) page(w http.ResponseWriter, req *http.Request, t *routing) {
 	w.Write([]byte(b.String()))
 }
 
-// routing is one loaded routing table, prepared for lookup: hostnames resolved to backends once
-// per reload rather than per request, so a request costs a map read and nothing else.
+// routing is one loaded routing table, prepared for lookup: each name resolved to its destination
+// once per reload rather than per request, so a request costs a map read and nothing else.
 type routing struct {
 	table  routes.Table
 	byHost map[string]route
 }
 
-// route is one resolved destination. A nil backend is a service that is routed by name but not
-// served over HTTP — see frontDoor.ServeHTTP.
+// route is one resolved destination. A nil `to` is a service that is named but has no route on
+// this listener — see frontDoor.ServeHTTP.
 type route struct {
-	name    string
-	backend *url.URL
+	name string
+	to   *url.URL
 }
 
 func newRouting(t routes.Table) *routing {
 	r := &routing{table: t, byHost: make(map[string]route, len(t.Services))}
 	for _, s := range t.Services {
 		e := route{name: s.Name}
-		// A service the table says is NOT fronted keeps its name and gets no proxy target here. Its
-		// address is real and the node probes it; what it must not have is this process forwarding
-		// LAN traffic to it (mosquitto's management API is bound to the guest's loopback on
-		// purpose, and the door lives inside that guest).
-		if s.Fronted && s.Address != "" {
-			u, err := url.Parse(s.Address)
+		// A service with no route on this listener keeps its name and gets no destination here.
+		// The door is never handed an address it must be trusted not to use: with nothing to
+		// forward to, there is nothing to get wrong. mosquitto is the live case — its address is
+		// the broker's management API, probed by the guest and relayed to nobody.
+		if rt, ok := s.Route(routes.ListenName); ok {
+			u, err := s.Resolve(rt.To)
 			if err != nil {
-				// One unusable backend must not cost the other services their routes. The name
-				// still resolves and says the service is not served, which is true.
-				log.Printf("reverse-proxy: %s has an unusable address %q (%v); routing its name to nothing", s.Name, s.Address, err)
+				// One unusable route must not cost the other services theirs. The name still
+				// resolves and says the service is not served over HTTP, which is true.
+				log.Printf("reverse-proxy: %s has an unusable route %q (%v); routing its name to nothing", s.Name, rt.To, err)
 			} else {
-				e.backend = u
+				e.to = u
 			}
 		}
 		for _, h := range s.Hosts {
@@ -420,4 +421,13 @@ func (r *certReloader) load() (*tls.Certificate, error) {
 		r.keyTime = ki.ModTime()
 	}
 	return &cert, nil
+}
+
+// hasNameRoute reports whether this service is served under its own name on the shared front
+// door. The page asks it to tell "reachable at this URL" apart from "named, but nothing here
+// answers HTTP" — which is a real state a household should be told about rather than left to
+// discover by getting a 501.
+func hasNameRoute(s routes.Service) bool {
+	_, ok := s.Route(routes.ListenName)
+	return ok
 }

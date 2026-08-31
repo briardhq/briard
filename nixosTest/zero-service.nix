@@ -95,7 +95,7 @@ pkgs.testers.runNixOSTest {
     import json
     assert json.loads(primary.succeed("cat /run/briard/routes.json")) == {"services": []}, \
         f"the routing table on an empty node: {primary.succeed('cat /run/briard/routes.json')!r}"
-    assert primary.succeed("cat /run/briard/routes.hosts").strip() == "", "an empty node published a service name"
+    primary.fail("test -e /run/briard/routes.hosts")  # one file: the publisher reads the table itself
 
     # The data volume is mounted and genuinely empty of service data — the substrate is up,
     # waiting for something to run. (.snapshots is the ladder's own directory, not a service.)

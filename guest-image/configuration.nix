@@ -84,10 +84,12 @@ let
   mdnsEnvPath = "/run/briard/mdns.env";
   # The name avahi ACTUALLY established, which the host reads back over net.mdnspublished.
   mdnsPublishedPath = "/run/briard/mdns.published";
-  # The publisher's input: the hostname list converge writes beside the front door's routing
-  # table (shared/routes.HostsPath). Restated here rather than shared, the same way mdnsEnvPath and
-  # vipEnvPath are -- a /run path is a two-sided contract with the agent, and the Go side owns it.
-  routesHostsPath = "/run/briard/routes.hosts";
+  # The front door's routing table (shared/routes.Path), written by converge. BOTH the proxy and
+  # the service-name publisher read this one file -- the publisher with jq, so that there is no
+  # pre-flattened second copy for anyone to read while it is stale. Restated here rather than
+  # shared, the same way mdnsEnvPath and vipEnvPath are: a /run path is a two-sided contract with
+  # the agent, and the Go side owns it.
+  routesPath = "/run/briard/routes.json";
   # How often the service-name publisher notices that the routing table changed. Lag, not a race:
   # nothing is waiting on a name to appear within a deadline, and an install prints the name it
   # just created from the agent's own knowledge, not from avahi.
@@ -270,7 +272,7 @@ let
     }
     trap 'withdraw' EXIT
     while :; do
-      now=$(${pkgs.coreutils}/bin/stat -c %Y ${routesHostsPath} 2>/dev/null || echo none)
+      now=$(${pkgs.coreutils}/bin/stat -c %Y ${routesPath} 2>/dev/null || echo none)
       if [ "$now" != "$stamp" ]; then
         stamp="$now"
         withdraw
@@ -278,7 +280,11 @@ let
         # An ABSENT file is the state before this node has ever converged -- at boot, or on a node
         # that has not promoted. Not an error and not worth a shell diagnostic every time: it means
         # nothing is routed, which is exactly what publishing zero names says.
-        if [ -r ${routesHostsPath} ]; then
+        #
+        # THE NAMES ARE READ, NEVER COMPOSED. Every rule for building one lives in
+        # shared/routes.HostName, so a second name form (`*.casa`, [V3b.14]) is a change in one Go
+        # function rather than in a Go function and a shell format string that must agree.
+        if [ -r ${routesPath} ]; then
           while IFS= read -r host; do
             [ -n "$host" ] || continue
             # -R: allow this name to coexist with other records for the same address. NOT unique,
@@ -287,7 +293,7 @@ let
             ${pkgs.avahi}/bin/avahi-publish -a -R "$host" "$addr" >/dev/null 2>&1 &
             pids="$pids $!"
             n=$((n+1))
-          done <${routesHostsPath}
+          done < <(${pkgs.jq}/bin/jq -r '.services[]?.hosts[]? // empty' ${routesPath} 2>/dev/null)
         fi
         echo "briard-mdns-services: publishing $n service name(s) at $addr" >&2
       fi

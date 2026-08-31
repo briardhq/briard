@@ -574,16 +574,20 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	s := tbl.Services[0]
 	// The ADDRESS comes from the renderer, which is the only thing that knows how the pod was
 	// wired -- host networking today, which is why it is the guest's own loopback.
-	if s.Name != "dummy" || s.Address != "http://127.0.0.1:8080" || s.HealthPath != "/healthz" {
-		t.Errorf("route = %+v, want the rendered address and the manifest's health path", s)
+	if s.Name != "dummy" || s.Address != "127.0.0.1" || s.Health != "http://:8080/healthz" {
+		t.Errorf("entry = %+v, want the rendered address and a host-less health endpoint", s)
 	}
 	if len(s.Hosts) != 1 || s.Hosts[0] != "briard-brave-elf-dummy.local" {
 		t.Errorf("hosts = %v, want the flock-scoped single label", s.Hosts)
 	}
-	// The publisher's half, written from the same list so the published name and the routed name
-	// cannot disagree.
-	if got := x.fakeExec.files[routes.HostsPath]; got != "briard-brave-elf-dummy.local\n" {
-		t.Errorf("hosts file = %q, want the same name the table carries", got)
+	// ONE FILE: the mDNS publisher reads these same names out of this same table with jq, so there
+	// is no flattened second copy anyone can read while it is stale.
+	if _, ok := x.fakeExec.files["/run/briard/routes.hosts"]; ok {
+		t.Error("converge wrote a second hosts file; the publisher reads the table itself")
+	}
+	// And the door has a route to it: an ordinary service is fronted by default.
+	if r, ok := s.Route(routes.ListenName); !ok || r.To != "http://:8080" {
+		t.Errorf("route = %+v %v, want a host-less target on the shared door", r, ok)
 	}
 }
 
@@ -602,8 +606,9 @@ func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 	if len(tbl.Services) != 1 || len(tbl.Services[0].Hosts) != 0 {
 		t.Fatalf("table = %+v, want the service present and unnamed", tbl.Services)
 	}
-	if got := x.fakeExec.files[routes.HostsPath]; got != "" {
-		t.Errorf("hosts file = %q, want nothing published", got)
+	// Still fronted, though: the flock having no name is not a statement about exposure.
+	if _, ok := tbl.Services[0].Route(routes.ListenName); !ok {
+		t.Error("an unnamed service lost its route; only the NAME is missing")
 	}
 }
 
@@ -612,8 +617,7 @@ func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	x := &convergeExec{} // nothing installed
 	x.fakeExec.files = map[string]string{
-		routes.Path:      `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"address":"http://127.0.0.1:8080"}]}`,
-		routes.HostsPath: "briard-brave-elf-dummy.local\n",
+		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"address":"127.0.0.1","routes":[{"listen":"name","to":"http://:8080"}]}]}`,
 	}
 	if _, err := Converge(context.Background(), x); err != nil {
 		t.Fatalf("Converge: %v", err)
@@ -625,33 +629,46 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	if len(tbl.Services) != 0 {
 		t.Fatalf("table = %+v, want it emptied with the services", tbl.Services)
 	}
-	if got := x.fakeExec.files[routes.HostsPath]; got != "" {
-		t.Errorf("hosts file = %q, want the name withdrawn", got)
+	// The publisher reads the same table, so an emptied table IS the withdrawal -- there is no
+	// second file that could still be listing a name nothing serves.
+	if _, ok := x.fakeExec.files["/run/briard/routes.hosts"]; ok {
+		t.Error("converge wrote a second hosts file")
 	}
 }
 
 // The by-name health probe resolves through the SAME table the door routes on, which is the whole
 // reason the install gate and the steady-state probe can be trusted to be asking about one
-// address. An unresolvable service is an error, never an unhealthy verdict -- see the verb.
+// address. It resolves for a service with NO ROUTE too: not-fronted is a statement about the door,
+// never about whether the node may look. An unresolvable service is an error, never an unhealthy
+// verdict -- see the verb.
 func TestServiceHealthURLResolvesThroughTheTable(t *testing.T) {
 	x := &convergeExec{}
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"services":[` +
-			`{"name":"dummy","address":"http://127.0.0.1:8080","healthPath":"/healthz"},` +
-			`{"name":"mosquitto","hosts":["briard-brave-elf-mosquitto.local"]}]}`,
+			`{"name":"dummy","address":"127.0.0.1","health":"http://:8080/healthz",` +
+			`"routes":[{"listen":"name","to":"http://:8080"}]},` +
+			`{"name":"mosquitto","hosts":["briard-brave-elf-mosquitto.local"],` +
+			`"address":"127.0.0.1","health":"http://:9883/api/v1/listeners"},` +
+			`{"name":"nameless","address":"127.0.0.1"}]}`,
 	}
 	got, err := serviceHealthURL(x, "dummy")
 	if err != nil || got != "http://127.0.0.1:8080/healthz" {
 		t.Fatalf("serviceHealthURL(dummy) = %q, %v; want the rendered endpoint", got, err)
 	}
+	// The broker has no route and is probed anyway, at the address the door is never given.
+	got, err = serviceHealthURL(x, "mosquitto")
+	if err != nil || got != "http://127.0.0.1:9883/api/v1/listeners" {
+		t.Fatalf("serviceHealthURL(mosquitto) = %q, %v; a service with no route must still be probed", got, err)
+	}
 	if _, err := serviceHealthURL(x, "nope"); err == nil {
 		t.Error("a service absent from the table resolved; the gate must retry, not fail it")
 	}
-	if _, err := serviceHealthURL(x, "mosquitto"); err == nil {
-		t.Error("a service with no HTTP endpoint resolved; there is nothing to GET")
+	if _, err := serviceHealthURL(x, "nameless"); err == nil {
+		t.Error("a service with no health endpoint resolved; there is nothing to GET")
 	}
 }
 
+// A flock RENAME moves the service names with it -- and it must not re-derive the table from the
 // A flock RENAME moves the service names with it, in the table and in the publisher's list -- and
 // it must not re-derive the table from the volume to do it: a rename can arrive on a Secondary,
 // where the volume is not mounted, and re-rendering there would write an empty table over a good
@@ -660,7 +677,8 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	x := &convergeExec{} // services nil: `ls` fails, exactly like an unmounted volume
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],` +
-			`"address":"http://127.0.0.1:8080","healthPath":"/healthz"}]}`,
+			`"address":"127.0.0.1","health":"http://:8080/healthz",` +
+			`"routes":[{"listen":"name","to":"http://:8080"}]}]}`,
 	}
 	renameRoutes(x, "picked-hornet")
 	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
@@ -673,15 +691,16 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	if got := tbl.Services[0].Hosts; len(got) != 1 || got[0] != "briard-picked-hornet-dummy.local" {
 		t.Errorf("hosts = %v, want the new flock name", got)
 	}
-	if tbl.Services[0].Address != "http://127.0.0.1:8080" {
+	if tbl.Services[0].Address != "127.0.0.1" {
 		t.Errorf("address = %q, want it untouched: a rename changes names and nothing else", tbl.Services[0].Address)
 	}
-	if got := x.fakeExec.files[routes.HostsPath]; got != "briard-picked-hornet-dummy.local\n" {
-		t.Errorf("hosts file = %q, want the publisher moved with the table", got)
+	// The route survives untouched too: a rename changes names and nothing else.
+	if r, ok := tbl.Services[0].Route(routes.ListenName); !ok || r.To != "http://:8080" {
+		t.Errorf("route = %+v %v, want it untouched by the rename", r, ok)
 	}
 }
 
-// mosquitto is in the table with a name, an address and Fronted=FALSE ([B.48]). The address is
+// mosquitto is in the table with a name and an address and NO ROUTE ([B.48]). The address is
 // real and is what the health floor probes; what must not happen is the front door forwarding LAN
 // traffic to it, because that address is the broker's MANAGEMENT API, bound to the guest's
 // loopback on purpose — and the door runs inside that guest. A routing table that fronted it would
@@ -704,23 +723,24 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if !ok {
 		t.Fatalf("the broker is not in the table at all: %+v", tbl.Services)
 	}
-	if mq.Fronted {
-		t.Error("the broker is fronted; its management API would be republished on the LAN")
+	if _, ok := mq.Route(routes.ListenName); ok {
+		t.Error("the broker has a route; its management API would be republished on the LAN")
 	}
 	// It keeps its NAME and its ADDRESS: the name resolves to the VIP where MQTT is listening, and
-	// the address is what the health floor GETs from inside the guest. Not-fronted is one of the
+	// the address is what the health floor GETs from inside the guest. No route is one of the
 	// three, never all of them.
 	if len(mq.Hosts) != 1 || mq.Hosts[0] != "briard-brave-elf-mosquitto.local" {
 		t.Errorf("broker hosts = %v, want it named", mq.Hosts)
 	}
-	if mq.Address == "" || mq.HealthPath == "" {
+	if mq.Address == "" || mq.Health == "" {
 		t.Errorf("broker = %+v, want an address to probe even though the door may not use it", mq)
 	}
 	if _, err := serviceHealthURL(x, "mosquitto"); err != nil {
-		t.Errorf("the broker cannot be health-probed (%v); Fronted must not decide that", err)
+		t.Errorf("the broker cannot be health-probed (%v); having no route must not decide that", err)
 	}
-	// And an ordinary service is unaffected.
-	if d, _ := tbl.Get("dummy"); !d.Fronted {
-		t.Error("an ordinary service came out not-fronted; the default is the front door")
+	// And an ordinary service is unaffected: the default is the front door.
+	d, _ := tbl.Get("dummy")
+	if _, ok := d.Route(routes.ListenName); !ok {
+		t.Error("an ordinary service came out with no route")
 	}
 }

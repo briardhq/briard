@@ -160,6 +160,18 @@ pkgs.testers.runNixOSTest {
     )
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
 
+    # WAIT FOR THE TRANSITION, DO NOT ASSUME IT. HA's in-process restart is not instant and
+    # /manifest.json keeps answering from the OLD process for a moment after the call is accepted
+    # -- measured here at 0.04s, which is how this raced. A single-shot check at that instant reads
+    # the PRE-restart token state and fails a working mint. Waiting on the rotated value itself is
+    # the honest form: it was proven REFUSED four lines above, so this is the boundary being
+    # crossed, with a deadline rather than a hope.
+    node1.wait_until_succeeds(
+        "curl -fsS -o /dev/null -X POST http://127.0.0.1:8123/auth/token "
+        f"-d grant_type=refresh_token -d refresh_token={rotated}",
+        timeout=300,
+    )
+
     # The mismatch healed itself at the boundary: the new value answers...
     assert exchange(rotated).startswith("ey"), "the mint did not heal the token at the restart boundary"
     # ...and the prune revoked the old one, which is what makes a token resurrected by a
@@ -199,9 +211,9 @@ pkgs.testers.runNixOSTest {
     assert "1 service(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
     assert "home-assistant" in node_health, f"the node's /healthz does not name what it routes: {node_health!r}"
 
-    # The name is PUBLISHED, not merely routed: the two lists are the same list, so a name that
-    # resolves nowhere and a name that routes nowhere are both excluded by construction.
-    published = node1.succeed("cat /run/briard/routes.hosts").split()
-    assert host in published, f"the routed name is not published: {published}"
+    # ONE LIST, so "published but not routed" is no longer something to assert — it is not
+    # expressible. The mDNS publisher reads this same table with jq; there is no flattened second
+    # copy for it to read while stale, and this is the assertion that keeps it that way.
+    node1.fail("test -e /run/briard/routes.hosts")
   '';
 }

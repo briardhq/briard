@@ -99,28 +99,33 @@ func Reach(m manifest.Manifest, flock string) string {
 	return fmt.Sprintf("reach it at http://%s/", host)
 }
 
-// Fronted reports whether the front door may proxy to this service ([B.48]).
+// Fronted reports whether the front door may serve this service under its own name ([B.48]).
+//
+// It decides whether converge emits a ROUTE for the service, not a flag the door then has to
+// honour: a service this returns false for is named and probed, and the door is handed no way to
+// reach it at all. Absence rather than a checked condition, for the same reason shared/manifest
+// grants capability by omission.
 //
 // TRUE BY DEFAULT, because a catalogued service's primary port is normally the HTTP front door a
 // household is meant to open — Home Assistant's :8123 is the whole example.
 //
-// FALSE FOR mosquitto, and this is a security property rather than a nicety. Its manifest `port` is
-// the broker's **management API**, which `mosquitto.conf` binds to `127.0.0.1` on purpose, with the
-// reason written at the listener: "it is still not exposed, because nothing outside the guest has
-// any business reading it". The front door runs INSIDE the guest, so routing to it by name would
-// republish that loopback-only endpoint on the LAN at the VIP — undoing a deliberate bind through
-// a mechanism that never mentions it. What a household actually reaches on the broker is MQTT on
-// 1883, which no reverse proxy can serve anyway, and which host networking already exposes.
+// FALSE FOR mosquitto, and this is a security property rather than a nicety. Its manifest `port`
+// is the broker's **management API**, which `mosquitto.conf` binds inside the container on
+// purpose, with the reason written at the listener: "it is still not exposed, because nothing
+// outside the guest has any business reading it". The front door runs INSIDE that guest, so
+// routing to it by name would republish that endpoint on the LAN — undoing a deliberate bind
+// through a mechanism that never mentions it. What a household actually reaches on the broker is
+// MQTT on 1883, which no reverse proxy can serve anyway.
 //
 // SO THIS IS NOT THE SAME QUESTION AS HEALTH. A not-fronted service still has an address and is
-// still probed there: mosquitto's management endpoint is exactly what the liveness floor GETs, and
-// the guest can reach it because the guest is where the bind is. Fronted decides what the DOOR may
-// forward, never what the node may ask.
+// still probed there every cycle: mosquitto's management endpoint is exactly what the liveness
+// floor GETs, and the guest can reach it because the guest is where the bind is. This decides what
+// the DOOR may serve, never what the node may ask.
 //
 // The keying is the same as everything else in this package — the catalog name, product-side, code
 // we ship and review. A manifest cannot say it, which is the point: a publisher must not be able to
 // hand itself the front door. That changes when a manifest can declare its own networking and
-// exposure ([B.48](a)), and the default flips to whatever the schema says then.
+// exposure ([B.48](a)), and this becomes the fallback for entries that say nothing.
 func Fronted(m manifest.Manifest) bool {
 	return m.Name != mosquitto.Name
 }
