@@ -1,1 +1,1 @@
-{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app","image":"ghcr.io/home-assistant/home-assistant@sha256:f73512ba4fe06bb4d57636fe3578d0820cdec46f81e8f837ab59e451662ff3cb","mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}
+{"name":"home-assistant","version":"2026.7.1","network":"host","containers":[{"name":"app","image":"ghcr.io/home-assistant/home-assistant@sha256:f73512ba4fe06bb4d57636fe3578d0820cdec46f81e8f837ab59e451662ff3cb","mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}

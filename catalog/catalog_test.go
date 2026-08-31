@@ -77,3 +77,35 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 		t.Errorf("the replicated volume is bound at %q; the config persists into %q", p.Mount, mosquitto.DataMount)
 	}
 }
+
+// EVERY ENTRY STATES ITS NETWORKING EXPLICITLY, even though the schema lets silence mean private.
+//
+// The schema's default is a SAFETY property -- an unknown manifest gets the least capable shape --
+// while this is a CURATION rule, and they are not in tension: in a document a human reviews before
+// it reaches every household, the deployment shape should be visible rather than inferred from an
+// absence. It also catches the failure that produced this test: the field was added, the renderer
+// was taught to honour it, and both published entries kept saying nothing -- which would have moved
+// Home Assistant onto a private network and taken the mDNS/SSDP discovery it exists for with it.
+func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
+	paths, err := filepath.Glob("*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no catalog entries found; this test is vacuous without them")
+	}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _, err := manifest.Parse(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if m.Network == "" {
+			t.Errorf("%s does not say what networking it wants; a published entry must state it, "+
+				"even where silence would be valid", path)
+		}
+	}
+}
