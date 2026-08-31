@@ -1,7 +1,9 @@
 package subnet
 
 import (
+	"crypto/rand"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 )
@@ -182,10 +184,55 @@ func TestConventionalTableCoversTheVerifiedOccupants(t *testing.T) {
 
 func TestReportIsTheFormatInstallShParses(t *testing.T) {
 	var b strings.Builder
-	if err := Report(&b, Draw{System: "10.173.94", Priv: "10.11.203"}); err != nil {
+	if err := Report(&b, Draw{System: "10.173.94", Priv: "10.11.203", Pod: "10.12.7"}); err != nil {
 		t.Fatalf("Report: %v", err)
 	}
-	if got, want := b.String(), "SYSTEM_SUBNET=10.173.94\nPRIV_SUBNET=10.11.203\n"; got != want {
+	if got, want := b.String(), "SYSTEM_SUBNET=10.173.94\nPRIV_SUBNET=10.11.203\nPOD_SUBNET=10.12.7\n"; got != want {
 		t.Errorf("Report wrote %q, want %q", got, want)
+	}
+}
+
+// THE THREE POOLS ARE STRUCTURALLY DISJOINT, not checked against each other -- the flock pool
+// excludes both of the others by table, so no ordering between the draws can make them collide.
+// Asserted over many draws rather than argued, because "they cannot overlap" is exactly the kind
+// of claim that stays true until someone adds a fourth pool.
+func TestTheThreePoolsCannotOverlap(t *testing.T) {
+	for i := range 200 {
+		d, err := Pick(Observed{}, rand.Reader, nil)
+		if err != nil {
+			t.Fatalf("draw %d: %v", i, err)
+		}
+		if d.Pod == "" {
+			t.Fatal("the draw produced no pod subnet")
+		}
+		if !strings.HasPrefix(d.Priv, "10.11.") {
+			t.Errorf("private link %q is outside its pool", d.Priv)
+		}
+		if !strings.HasPrefix(d.Pod, "10.12.") {
+			t.Errorf("pod pool %q is outside its pool", d.Pod)
+		}
+		// The flock subnet is the one that has to miss both, because it is the one on the
+		// household's L2 and the one whose /24 the host holds on-link.
+		if strings.HasPrefix(d.System, "10.11.") || strings.HasPrefix(d.System, "10.12.") {
+			t.Errorf("flock subnet %q landed in one of our own pools", d.System)
+		}
+	}
+}
+
+// The pod pool is GUEST-INTERNAL, which is the property the host must never contradict: nothing in
+// the installer or the agent may put an address or a route in it. Asserted as a grep rather than a
+// runtime check, because the guarantee is the ABSENCE of configuration -- there is no code path to
+// test, and a test that ran one would be testing the wrong thing.
+func TestNothingConfiguresThePodPoolOnTheHost(t *testing.T) {
+	for _, f := range []string{"../../scripts/install.sh", "../platform/route.go"} {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for _, verb := range []string{"ip addr replace $POD", "ip addr add $POD", "route replace $POD"} {
+			if strings.Contains(string(raw), verb) {
+				t.Errorf("%s configures the pod pool on the host (%q); it must stay guest-internal", f, verb)
+			}
+		}
 	}
 }

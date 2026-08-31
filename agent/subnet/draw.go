@@ -38,6 +38,17 @@ import (
 type Draw struct {
 	System string // the flock subnet -- LAN-scoped, shared by every node in the flock
 	Priv   string // the private host<->guest link -- node-private, never on the LAN
+	// Pod is the pool the guest's PRIVATE SERVICE NETWORKS are allocated from ([B.48](a)) --
+	// node-private and guest-internal, never configured on the host at all. That last part is the
+	// point rather than an omission: the host holding no address and no route in this range is
+	// what makes a pod unreachable from outside the guest BY CONSTRUCTION, with nothing to
+	// enforce and no firewall to get wrong.
+	//
+	// It is drawn rather than carved out of Priv, and the reason is a rule rather than tidiness:
+	// 10.11 is L2 SUBSTRATE that no briard code may reference, because it does not exist on a
+	// Windows host and code that dialled it could not run there. A podman network our renderer
+	// manages is exactly briard code referencing it.
+	Pod string
 }
 
 // attempts bounds each draw. Statistically absurd as a bound on bad luck -- the conventional
@@ -84,7 +95,11 @@ func Pick(obs Observed, rnd io.Reader, answers func(netip.Addr) bool) (Draw, err
 	if err != nil {
 		return Draw{}, fmt.Errorf("could not draw a private-link subnet: %w; set BRIARD_PRIV_SUBNET to one this machine can use", err)
 	}
-	return Draw{System: three(sys), Priv: three(priv)}, nil
+	pod, err := draw(rnd, podCandidate, obs.Occupied)
+	if err != nil {
+		return Draw{}, fmt.Errorf("could not draw a pod subnet: %w; set BRIARD_POD_SUBNET to one this machine can use", err)
+	}
+	return Draw{System: three(sys), Priv: three(priv), Pod: three(pod)}, nil
 }
 
 // draw is the loop both pools share: propose, reject with a reason, stop at the bound. reject
@@ -159,6 +174,28 @@ func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 	return slash24(10, 11, o[0]), nil
 }
 
+// podCandidate proposes the guest's private-service pool: 10.12.R.0/24, one octet random.
+//
+// Node-scoped like the link and for the same reason: these networks live inside ONE guest's
+// namespace, so two nodes may draw the same 10.12.R without ever meeting. 256 candidates is
+// therefore plenty, exactly as it is for privCandidate.
+//
+// It still has to be DRAWN rather than fixed, because the guest is not isolated from the
+// household: eth2 sits on the household LAN, which can itself be 10.x, and a pool that collided
+// with it would leave a service unable to reach the devices it exists to talk to.
+//
+// 10.12 rather than spare room inside 10.11 — the cost was measured, not guessed: excluding
+// another /16 costs 256 of 59,900 free /24s in the flock pool, 0.43%. Borrowing from 10.11 would
+// have cost nothing there and broken the rule that no briard code may reference the link pool
+// (see privCandidate), which is worth more than 0.43%.
+func podCandidate(rnd io.Reader) (netip.Prefix, error) {
+	var o [1]byte
+	if _, err := io.ReadFull(rnd, o[:]); err != nil {
+		return netip.Prefix{}, err
+	}
+	return slash24(10, 12, o[0]), nil
+}
+
 // occupied is the conventional-occupant table: ranges inside 10/8 that are already somebody's by
 // convention, so a draw that lands on one is a collision waiting for the user to install the
 // other thing.
@@ -188,6 +225,7 @@ var occupied = []struct {
 	// OURS, and the entry that does the structural work: excluding the whole link pool from the
 	// flock pool is what keeps the two disjoint without either draw knowing about the other.
 	{netip.MustParsePrefix("10.11.0.0/16"), "briard's own private-link pool -- L2 substrate, permanent, referenced by no code"},
+	{netip.MustParsePrefix("10.12.0.0/16"), "briard's own pod pool -- guest-internal, never configured on the host"},
 }
 
 // conventional names the occupant of p, or "" if the range is free of them.

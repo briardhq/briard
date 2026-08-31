@@ -231,10 +231,10 @@ func LANProbe(ctx context.Context, nic string) func(netip.Addr) bool {
 	}
 }
 
-// Report renders a drawn pair for install.sh: two shell-shaped lines on stdout, nothing else.
+// Report renders a drawn set for install.sh: three shell-shaped lines on stdout, nothing else.
 // The installer parses them with sed rather than sourcing the file, so this format is a contract
 // with one regexp -- keep it boring.
 func Report(w io.Writer, d Draw) error {
-	_, err := fmt.Fprintf(w, "SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\n", d.System, d.Priv)
+	_, err := fmt.Fprintf(w, "SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\nPOD_SUBNET=%s\n", d.System, d.Priv, d.Pod)
 	return err
 }

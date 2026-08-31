@@ -101,6 +101,10 @@ PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
 # and insertion order. Both directions can then break and neither choice is ours ([V3b.26f]).
 # Set to a bare "10.11.203" to pin it; empty means draw.
 PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
+# The guest's private-service pool ([B.48](a)): 10.12.R, guest-internal, never configured on this
+# host. The host holding no address and no route in it is what makes a pod unreachable from outside
+# the guest by construction -- there is nothing here to enforce, and that is the design.
+POD_SUBNET="${BRIARD_POD_SUBNET:-}"
 # Net substrate. "macvtap" (DEFAULT) makes the guest's NICs macvtap children of the host
 # NIC directly: L2 citizenship with NO bridge and NO host-IP move, so no SSH-risk moment and no net
 # guard -- the least invasive substrate, proven green and validated no worse than bridge. "bridge" is the validated fallback (BRIARD_NET_MODE=bridge): enslaves the host NIC to an
@@ -319,30 +323,40 @@ mkdir -p /etc/modules-load.d && printf 'tun\n' > /etc/modules-load.d/briard.conf
 # table of conventional occupants, a prefix cut over this host's own routes and an ARP probe of the
 # candidate, and none of that should exist twice in two languages.
 SUBNET_FILE="$STATE/subnets"
-if [ ! -s "$SUBNET_FILE" ] && { [ -z "$SYSTEM_SUBNET" ] || [ -z "$PRIV_SUBNET" ]; }; then
+# READ FIRST, DRAW ONLY WHAT IS MISSING. The order matters and it is not the obvious one: drawing
+# whenever the file is incomplete and then reading the result would RENUMBER a live node the day a
+# third subnet is added, which is precisely what this pet file exists to prevent. So each value is
+# taken from the first source that has it -- the environment, then the recorded file, then a fresh
+# draw -- and a node that predates a pool gains only that pool.
+#
+# Parsed with sed rather than sourced. The file is ours and root-owned, but a `.` makes every line
+# in it executable and there is no reason to hand that power to a file we need three numbers out
+# of. The pattern doubles as the format's assertion: anything that is not a bare 10.a.b reads as
+# absent, and the guards below fire rather than the substrate being built out of a typo.
+subnet_line() { sed -n "s/^$1=\(10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)\$/\1/p" "$2" 2>/dev/null; }
+if [ -s "$SUBNET_FILE" ]; then
+	[ -n "$SYSTEM_SUBNET" ] || SYSTEM_SUBNET="$(subnet_line SYSTEM_SUBNET "$SUBNET_FILE")"
+	[ -n "$PRIV_SUBNET" ] || PRIV_SUBNET="$(subnet_line PRIV_SUBNET "$SUBNET_FILE")"
+	[ -n "$POD_SUBNET" ] || POD_SUBNET="$(subnet_line POD_SUBNET "$SUBNET_FILE")"
+fi
+if [ -z "$SYSTEM_SUBNET" ] || [ -z "$PRIV_SUBNET" ] || [ -z "$POD_SUBNET" ]; then
 	if ! "$AGENT" --draw-subnets >"$SUBNET_FILE.new"; then
 		rm -f "$SUBNET_FILE.new" # never leave a half-drawn file where the next run could read it
-		die "could not draw this node's subnets; set BRIARD_SYSTEM_SUBNET and BRIARD_PRIV_SUBNET to ranges this network has free"
+		die "could not draw this node's subnets; set BRIARD_SYSTEM_SUBNET, BRIARD_PRIV_SUBNET and BRIARD_POD_SUBNET to ranges this network has free"
 	fi
-	mv -f "$SUBNET_FILE.new" "$SUBNET_FILE"
-fi
-# Parsed with sed rather than sourced. The file is ours and root-owned, but a `.` makes every line
-# in it executable and there is no reason to hand that power to a file we need two numbers out of.
-# The pattern doubles as the format's assertion: anything that is not a bare 10.a.b reads as
-# absent, and the guards below fire rather than the substrate being built out of a typo.
-if [ -s "$SUBNET_FILE" ]; then
-	[ -n "$SYSTEM_SUBNET" ] ||
-		SYSTEM_SUBNET="$(sed -n 's/^SYSTEM_SUBNET=\(10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$SUBNET_FILE")"
-	[ -n "$PRIV_SUBNET" ] ||
-		PRIV_SUBNET="$(sed -n 's/^PRIV_SUBNET=\(10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$SUBNET_FILE")"
+	[ -n "$SYSTEM_SUBNET" ] || SYSTEM_SUBNET="$(subnet_line SYSTEM_SUBNET "$SUBNET_FILE.new")"
+	[ -n "$PRIV_SUBNET" ] || PRIV_SUBNET="$(subnet_line PRIV_SUBNET "$SUBNET_FILE.new")"
+	[ -n "$POD_SUBNET" ] || POD_SUBNET="$(subnet_line POD_SUBNET "$SUBNET_FILE.new")"
+	rm -f "$SUBNET_FILE.new"
 fi
 [ -n "$SYSTEM_SUBNET" ] || die "no system subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_SYSTEM_SUBNET"
 [ -n "$PRIV_SUBNET" ] || die "no private-link subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_PRIV_SUBNET"
+[ -n "$POD_SUBNET" ] || die "no pod subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_POD_SUBNET"
 # Record what this node ACTUALLY numbers itself from, the env overrides included. Otherwise a
 # BRIARD_SYSTEM_SUBNET set on one run and forgotten on the next renumbers a live node back to the
 # drawn value in silence -- the exact failure the pet file exists to prevent, arriving by the
 # escape hatch instead of by the draw.
-printf 'SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\n' "$SYSTEM_SUBNET" "$PRIV_SUBNET" >"$SUBNET_FILE" ||
+printf 'SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\nPOD_SUBNET=%s\n' "$SYSTEM_SUBNET" "$PRIV_SUBNET" "$POD_SUBNET" >"$SUBNET_FILE" ||
 	die "could not record this node's subnets at $SUBNET_FILE"
 chmod 0644 "$SUBNET_FILE" # not a secret: the addresses are on the wire the moment the guest boots
 say "this node numbers itself from $SYSTEM_SUBNET.0/24 (its own address is $SYSTEM_SUBNET.1)"
