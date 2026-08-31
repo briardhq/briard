@@ -100,8 +100,8 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 	defer mq.Close()
 
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Backend: ha.URL, HealthPath: "/", Fronted: true},
-		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"}, Backend: mq.URL, HealthPath: "/", Fronted: true},
+		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Address: ha.URL, HealthPath: "/", Fronted: true},
+		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"}, Address: mq.URL, HealthPath: "/", Fronted: true},
 	}})))
 	defer srv.Close()
 
@@ -139,7 +139,7 @@ func TestHealthIsTheNodesOwnAnswerNotAServices(t *testing.T) {
 	}))
 	defer dead.Close()
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Backend: dead.URL, HealthPath: "/healthz", Fronted: true},
+		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Address: dead.URL, HealthPath: "/healthz", Fronted: true},
 	}})))
 	defer srv.Close()
 
@@ -173,7 +173,7 @@ func TestRoutedButNotFronted(t *testing.T) {
 		// the health floor GETs), so a test with no backend at all would prove only that the door
 		// cannot reach what does not exist.
 		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
-			Backend: mgmt.URL, HealthPath: "/api/v1/listeners", Fronted: false},
+			Address: mgmt.URL, HealthPath: "/api/v1/listeners", Fronted: false},
 	}})))
 	defer srv.Close()
 
@@ -193,7 +193,7 @@ func TestRoutedButNotFronted(t *testing.T) {
 // routes nothing — and must SAY the service is installed rather than pretend the node is empty.
 func TestInstalledButUnnamed(t *testing.T) {
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "home-assistant", Backend: "http://127.0.0.1:8123", HealthPath: "/", Fronted: true},
+		{Name: "home-assistant", Address: "http://127.0.0.1:8123", HealthPath: "/", Fronted: true},
 	}})))
 	defer srv.Close()
 
@@ -244,7 +244,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 
 	// The install writes the table. No restart, no reload signal: the next request routes.
 	write(marshal(routes.Table{Services: []routes.Service{
-		{Name: "fixture", Hosts: []string{"briard-brave-elf-fixture.local"}, Backend: backend.URL, HealthPath: "/healthz", Fronted: true},
+		{Name: "fixture", Hosts: []string{"briard-brave-elf-fixture.local"}, Address: backend.URL, HealthPath: "/healthz", Fronted: true},
 	}}), t0.Add(2*time.Second))
 	if code, body := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusOK || body != "payload-ok" {
 		t.Fatalf("after the install = %d %q, want it routed to the service", code, body)
@@ -281,7 +281,7 @@ func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	}))
 	defer backend.Close()
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		{Name: "fixture", Hosts: []string{"home.example.test"}, Backend: backend.URL, HealthPath: "/healthz", Fronted: true},
+		{Name: "fixture", Hosts: []string{"home.example.test"}, Address: backend.URL, HealthPath: "/healthz", Fronted: true},
 	}})))
 	defer srv.Close()
 
@@ -366,7 +366,7 @@ func TestCertHotReloadAndProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: newFrontDoor(fixed(routes.Table{Services: []routes.Service{{Name: "fixture", Hosts: []string{"briard-brave-elf-fixture.local"}, Backend: backend.URL, HealthPath: "/healthz", Fronted: true}}})), TLSConfig: &tls.Config{GetCertificate: r.getCertificate}}
+	srv := &http.Server{Handler: newFrontDoor(fixed(routes.Table{Services: []routes.Service{{Name: "fixture", Hosts: []string{"briard-brave-elf-fixture.local"}, Address: backend.URL, HealthPath: "/healthz", Fronted: true}}})), TLSConfig: &tls.Config{GetCertificate: r.getCertificate}}
 	go srv.ServeTLS(ln, "", "")
 	defer srv.Close()
 	addr := ln.Addr().String()

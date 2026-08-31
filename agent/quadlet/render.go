@@ -79,22 +79,22 @@ type Rendered struct {
 	// already-present short-circuit. A caller that must not touch the network (bring-up, which
 	// runs after every guest reboot) needs the ref to ask whether the pull is needed at all.
 	ImageRefs map[string]string
-	// Backend is where the front door must forward to in order to reach this service, as a URL,
-	// and HealthPath the path on it that answers "are you serving".
+	// Address is where this service ANSWERS, as a URL, and HealthPath the path on it that says
+	// whether it is serving. Together they are the service's own endpoint — NOT "the door's
+	// backend", which is why they are named for the service: the health probe GETs this
+	// unconditionally, from inside the guest, and the front door merely also uses it when the
+	// service is one it may front (shared/routes.Service.Fronted). mosquitto is the case that
+	// separates them — probed here every cycle, never relayed.
 	//
-	// THEY COME FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION ([B.48]). The
+	// IT COMES FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION ([B.48]). The
 	// manifest names a port; what host that port answers on is decided by the networking this
 	// file writes into the .pod. Under host networking it is the guest's own loopback, which is
 	// why every caller could get away with assembling `127.0.0.1:<port>` for itself — and why
 	// they all break the moment a service may ask for a private pod network ([B.48](a)), where
 	// the port is not on the guest's loopback at all. Returning the address from the one place
-	// that chose it is what makes that change a one-file change.
-	//
-	// A service with no HTTP front door leaves Backend empty. Nothing does today — Validate
-	// requires a primary with a port — but the field is what a not-fronted service (mosquitto:
-	// MQTT on 1883, which no reverse proxy can serve) will say when exposure becomes something a
-	// manifest can declare, so the consumers are written for it now rather than retrofitted.
-	Backend    string
+	// that chose it is what makes that change a one-file change: the pod's address reaches the
+	// probe and the door together, with no caller left to update.
+	Address    string
 	HealthPath string
 }
 
@@ -230,7 +230,7 @@ func Render(m manifest.Manifest) (Rendered, error) {
 	// is deliberately the ONLY place that knows, so that changing it changes the front door's
 	// route and the health probe's target together, rather than leaving three callers to agree.
 	p := m.Primary()
-	out.Backend = fmt.Sprintf("http://127.0.0.1:%d", p.Port)
+	out.Address = fmt.Sprintf("http://127.0.0.1:%d", p.Port)
 	out.HealthPath = p.HealthPath
 	return out, nil
 }

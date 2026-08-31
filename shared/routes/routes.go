@@ -59,22 +59,28 @@ type Service struct {
 	// rather than a guess (net.mdnsname), so it routes nothing either. The service is still
 	// installed, still running and still reachable on its port; it simply has no name yet.
 	Hosts []string `json:"hosts,omitempty"`
-	// Backend is where this service ANSWERS, as a URL ("http://127.0.0.1:8123"), and HealthPath
+	// Address is where this service ANSWERS, as a URL ("http://127.0.0.1:8123"), and HealthPath
 	// the path on it that says whether it is serving. Both come from the renderer, which is the
 	// only thing that knows how the pod was wired.
 	//
-	// It is the address the node PROBES, always — never conditioned on Fronted below. A service
-	// can be perfectly reachable by the guest and deliberately unreachable from the LAN, which is
-	// exactly mosquitto's shape, and conflating the two would leave the broker with no health
-	// signal at all.
-	Backend    string `json:"backend,omitempty"`
+	// NAMED FOR THE SERVICE, NOT FOR THE DOOR, because it is not the door's fact. The health probe
+	// GETs this unconditionally — from inside the guest, never through the proxy — and the front
+	// door additionally uses it as a proxy target when Fronted below allows. mosquitto is what
+	// makes the distinction concrete: its address is a loopback-bound management API, probed every
+	// cycle and relayed to nobody. Calling this "backend" implied the probe was proxy-adjacent,
+	// which it has never been.
+	Address    string `json:"address,omitempty"`
 	HealthPath string `json:"healthPath,omitempty"`
-	// Fronted is whether the door may PROXY to Backend. False is a real and deliberate state, not
+	// Fronted is whether the door may PROXY to Address. False is a real and deliberate state, not
 	// a missing value: mosquitto's manifest port is its management API, bound to the guest's
 	// loopback on purpose, and the front door runs inside the guest — so routing to it by name
 	// would republish a loopback-only endpoint on the LAN. Such a service keeps its name (which
 	// resolves to the VIP, where its real protocol is listening) and the door says it does not
 	// answer HTTP rather than 404ing, because the name IS ours.
+	//
+	// It costs such a service NOTHING but the relay: the address above is still real and still
+	// probed, so "not fronted" and "not monitored" are unrelated — which is the whole reason this
+	// is a second field rather than an empty Address.
 	//
 	// Written explicitly rather than by omission: this file is derived, not a published document,
 	// and a security-relevant default is worth being able to read in a `cat`. The product decides
@@ -136,8 +142,8 @@ func (t Table) Marshal() ([]byte, error) {
 // what arrives is whatever the client typed: any case, a trailing dot from a fully-qualified
 // resolver, and a `:port` whenever the port is not the scheme's default.
 //
-// It reports fronted=false for a matched service with no backend, which is NOT the same as no
-// match: the door then knows the name is ours and the service is real, and can say so instead of
+// It reports a match for a service the door may not front, which is NOT the same as no match: the
+// door then knows the name is ours and the service is real, and can say so instead of
 // serving a 404 that reads as "you typed it wrong".
 func (t Table) Lookup(host string) (Service, bool) {
 	h := Normalise(host)

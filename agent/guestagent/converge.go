@@ -581,7 +581,7 @@ func putRoutes(x Executor, t routes.Table) error {
 }
 
 // routesFor turns the rendered services into the table. The renderer supplies the ADDRESS (see
-// quadlet.Rendered.Backend — it is the only thing that knows how the pod was wired) and this
+// quadlet.Rendered.Address — it is the only thing that knows how the pod was wired) and this
 // supplies the NAMES, composed in one place so that what the publisher claims and what the door
 // matches cannot drift apart.
 func routesFor(flock string, svcs []convergedService) routes.Table {
@@ -589,7 +589,7 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 	for _, s := range svcs {
 		e := routes.Service{
 			Name:       s.name,
-			Backend:    s.r.Backend,
+			Address:    s.r.Address,
 			HealthPath: s.r.HealthPath,
 			// Whether the DOOR may forward there, which is not the same as whether the node can
 			// reach it: mosquitto's address is its loopback-bound management API, probed by the
@@ -667,7 +667,7 @@ func renameRoutes(x Executor, flock string) {
 // It is deliberately the SAME source the front door routes on: "is it healthy" and "where do
 // requests go" must never be answered about two different addresses, which is exactly what a
 // caller-supplied URL allows. A service that is not in the table, or that is in it with no HTTP
-// backend, yields an error rather than an unhealthy verdict — see the verb for why that
+// address, yields an error rather than an unhealthy verdict — see the verb for why that
 // distinction is load-bearing.
 func serviceHealthURL(x Executor, name string) (string, error) {
 	raw, err := x.ReadFile(routes.Path)
@@ -682,8 +682,8 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("health: %s is not in this node's routing table", name)
 	}
-	if s.Backend == "" {
+	if s.Address == "" {
 		return "", fmt.Errorf("health: %s has no HTTP endpoint to probe", name)
 	}
-	return s.Backend + s.HealthPath, nil
+	return s.Address + s.HealthPath, nil
 }

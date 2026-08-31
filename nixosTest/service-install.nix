@@ -275,7 +275,7 @@ pkgs.testers.runNixOSTest {
     table = json.loads(primary.succeed("cat /run/briard/routes.json"))
     assert [s["name"] for s in table["services"]] == ["fixture"], f"routing table = {table}"
     assert not table["services"][0].get("hosts"), f"an unnamed node composed a name: {table}"
-    assert table["services"][0]["backend"] == "http://127.0.0.1:8080", f"routing table = {table}"
+    assert table["services"][0]["address"] == "http://127.0.0.1:8080", f"routing table = {table}"
 
     # Name the flock the way the agent does, re-converge, and the SAME service acquires a name.
     # This is the sequence a real node runs in the other order; doing it this way is what proves

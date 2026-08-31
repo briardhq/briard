@@ -210,7 +210,7 @@ func (f *frontDoor) page(w http.ResponseWriter, req *http.Request, t *routing) {
 				// No name yet: the flock has none, so neither does the service. Say that rather
 				// than print a URL that resolves nowhere.
 				b.WriteString(" — installed, not yet reachable by name")
-			case !s.Fronted || s.Backend == "":
+			case !s.Fronted || s.Address == "":
 				b.WriteString(" — " + html.EscapeString(s.Hosts[0]) + " (not served over HTTP)")
 			default:
 				u := "http://" + s.Hosts[0] + "/"
@@ -242,16 +242,16 @@ func newRouting(t routes.Table) *routing {
 	r := &routing{table: t, byHost: make(map[string]route, len(t.Services))}
 	for _, s := range t.Services {
 		e := route{name: s.Name}
-		// A service the table says is NOT fronted keeps its name and gets no backend here. Its
+		// A service the table says is NOT fronted keeps its name and gets no proxy target here. Its
 		// address is real and the node probes it; what it must not have is this process forwarding
 		// LAN traffic to it (mosquitto's management API is bound to the guest's loopback on
 		// purpose, and the door lives inside that guest).
-		if s.Fronted && s.Backend != "" {
-			u, err := url.Parse(s.Backend)
+		if s.Fronted && s.Address != "" {
+			u, err := url.Parse(s.Address)
 			if err != nil {
 				// One unusable backend must not cost the other services their routes. The name
 				// still resolves and says the service is not served, which is true.
-				log.Printf("reverse-proxy: %s has an unusable backend %q (%v); routing its name to nothing", s.Name, s.Backend, err)
+				log.Printf("reverse-proxy: %s has an unusable address %q (%v); routing its name to nothing", s.Name, s.Address, err)
 			} else {
 				e.backend = u
 			}

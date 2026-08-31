@@ -574,8 +574,8 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	s := tbl.Services[0]
 	// The ADDRESS comes from the renderer, which is the only thing that knows how the pod was
 	// wired -- host networking today, which is why it is the guest's own loopback.
-	if s.Name != "dummy" || s.Backend != "http://127.0.0.1:8080" || s.HealthPath != "/healthz" {
-		t.Errorf("route = %+v, want the rendered backend and the manifest's health path", s)
+	if s.Name != "dummy" || s.Address != "http://127.0.0.1:8080" || s.HealthPath != "/healthz" {
+		t.Errorf("route = %+v, want the rendered address and the manifest's health path", s)
 	}
 	if len(s.Hosts) != 1 || s.Hosts[0] != "briard-brave-elf-dummy.local" {
 		t.Errorf("hosts = %v, want the flock-scoped single label", s.Hosts)
@@ -612,7 +612,7 @@ func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	x := &convergeExec{} // nothing installed
 	x.fakeExec.files = map[string]string{
-		routes.Path:      `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"backend":"http://127.0.0.1:8080"}]}`,
+		routes.Path:      `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"address":"http://127.0.0.1:8080"}]}`,
 		routes.HostsPath: "briard-brave-elf-dummy.local\n",
 	}
 	if _, err := Converge(context.Background(), x); err != nil {
@@ -637,7 +637,7 @@ func TestServiceHealthURLResolvesThroughTheTable(t *testing.T) {
 	x := &convergeExec{}
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"services":[` +
-			`{"name":"dummy","backend":"http://127.0.0.1:8080","healthPath":"/healthz"},` +
+			`{"name":"dummy","address":"http://127.0.0.1:8080","healthPath":"/healthz"},` +
 			`{"name":"mosquitto","hosts":["briard-brave-elf-mosquitto.local"]}]}`,
 	}
 	got, err := serviceHealthURL(x, "dummy")
@@ -660,7 +660,7 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	x := &convergeExec{} // services nil: `ls` fails, exactly like an unmounted volume
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],` +
-			`"backend":"http://127.0.0.1:8080","healthPath":"/healthz"}]}`,
+			`"address":"http://127.0.0.1:8080","healthPath":"/healthz"}]}`,
 	}
 	renameRoutes(x, "picked-hornet")
 	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
@@ -673,8 +673,8 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	if got := tbl.Services[0].Hosts; len(got) != 1 || got[0] != "briard-picked-hornet-dummy.local" {
 		t.Errorf("hosts = %v, want the new flock name", got)
 	}
-	if tbl.Services[0].Backend != "http://127.0.0.1:8080" {
-		t.Errorf("backend = %q, want it untouched: a rename changes names and nothing else", tbl.Services[0].Backend)
+	if tbl.Services[0].Address != "http://127.0.0.1:8080" {
+		t.Errorf("address = %q, want it untouched: a rename changes names and nothing else", tbl.Services[0].Address)
 	}
 	if got := x.fakeExec.files[routes.HostsPath]; got != "briard-picked-hornet-dummy.local\n" {
 		t.Errorf("hosts file = %q, want the publisher moved with the table", got)
@@ -713,7 +713,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if len(mq.Hosts) != 1 || mq.Hosts[0] != "briard-brave-elf-mosquitto.local" {
 		t.Errorf("broker hosts = %v, want it named", mq.Hosts)
 	}
-	if mq.Backend == "" || mq.HealthPath == "" {
+	if mq.Address == "" || mq.HealthPath == "" {
 		t.Errorf("broker = %+v, want an address to probe even though the door may not use it", mq)
 	}
 	if _, err := serviceHealthURL(x, "mosquitto"); err != nil {

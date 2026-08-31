@@ -28,7 +28,7 @@ func TestHostNameIsASingleLabel(t *testing.T) {
 // is not the scheme's default, a trailing dot from a fully-qualified resolver, and any case.
 func TestLookupNormalisesWhatClientsSend(t *testing.T) {
 	tbl := Table{Services: []Service{
-		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Backend: "http://127.0.0.1:8123"},
+		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Address: "http://127.0.0.1:8123"},
 	}}
 	for _, host := range []string{
 		"briard-brave-elf-home-assistant.local",
@@ -67,7 +67,7 @@ func TestNormaliseKeepsIPv6Literals(t *testing.T) {
 // only partly read.
 func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	in := Table{Services: []Service{
-		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Backend: "http://127.0.0.1:8123", HealthPath: "/manifest.json"},
+		{Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"}, Address: "http://127.0.0.1:8123", HealthPath: "/manifest.json"},
 		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"}},
 	}}
 	raw, err := in.Marshal()
@@ -78,13 +78,13 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Services) != 2 || out.Services[0].Backend != "http://127.0.0.1:8123" || out.Services[1].Backend != "" {
+	if len(out.Services) != 2 || out.Services[0].Address != "http://127.0.0.1:8123" || out.Services[1].Address != "" {
 		t.Fatalf("round trip lost something: %+v", out.Services)
 	}
 	// A not-fronted service keeps its name and its place in the table: the door must be able to
 	// say "this is ours and it does not answer HTTP" rather than 404.
-	if s, ok := out.Lookup("briard-brave-elf-mosquitto.local"); !ok || s.Backend != "" {
-		t.Fatalf("the not-fronted service = %+v %v, want a match with no backend", s, ok)
+	if s, ok := out.Lookup("briard-brave-elf-mosquitto.local"); !ok || s.Address != "" {
+		t.Fatalf("the not-fronted service = %+v %v, want a match the door may not front", s, ok)
 	}
 	if got := out.Hosts(); len(got) != 2 {
 		t.Fatalf("Hosts() = %v, want both names (it is the publisher's whole input)", got)

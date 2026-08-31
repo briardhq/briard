@@ -158,7 +158,7 @@ pkgs.testers.runNixOSTest {
     assert routed["${mosquitto.name}"]["fronted"] is False, f"the broker is fronted: {table}"
     # It keeps the name and the address: the name resolves to the VIP where MQTT listens, and the
     # address is what the health floor probes from inside the guest. Not-fronted is one of three.
-    assert routed["${mosquitto.name}"]["backend"], f"the broker has no address to probe: {table}"
+    assert routed["${mosquitto.name}"]["address"], f"the broker has no address to probe: {table}"
     primary.succeed("curl -fsS -o /dev/null http://127.0.0.1:9883/api/v1/listeners")
 
     # The regression this guards, asserted from OFF the box, which is where it would matter.
