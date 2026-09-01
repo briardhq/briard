@@ -77,8 +77,12 @@ def ensure_yaml_key(config_dir):
         return
     with open(path, encoding="utf-8") as fh:
         body = fh.read()
+    # ANY top-level line that OPENS the key, not just the bare one we write. A household that
+    # gave it a value (`briard: {}`) still owns the key, and appending a second one would leave
+    # configuration.yaml with a duplicate top-level key -- a config error in a file we do not own,
+    # caused by briard, at every start.
     for line in body.splitlines():
-        if line.strip() == DOMAIN + ":" and not line.startswith((" ", "\t")):
+        if line.startswith(DOMAIN + ":"):
             return
     # A leading newline because the file may end mid-line, and a top-level key that got appended
     # onto the end of somebody else's line is a config error rather than a config.
