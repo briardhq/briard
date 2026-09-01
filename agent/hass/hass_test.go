@@ -101,7 +101,7 @@ func (f *fake) ran(argv ...string) bool {
 // digest the manifest pins.
 func TestPrepareMaterialisesTheChannel(t *testing.T) {
 	f := withImage()
-	if err := Prepare(context.Background(), f, ha()); err != nil {
+	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	for _, p := range []string{TokenPath, scriptPath, wrapperPath} {
@@ -144,7 +144,7 @@ func TestPrepareIsOnlyForHomeAssistant(t *testing.T) {
 	m := ha()
 	m.Name = "sample-app"
 	f := &fake{}
-	if err := Prepare(context.Background(), f, m); err != nil {
+	if err := Prepare(context.Background(), f, m, 1883); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if len(f.runs) != 0 || len(f.files) != 0 {
@@ -162,11 +162,11 @@ func TestPrepareIsOnlyForHomeAssistant(t *testing.T) {
 func TestTokenIsEnsuredNotRotated(t *testing.T) {
 	f := withImage()
 	ctx := context.Background()
-	if err := Prepare(ctx, f, ha()); err != nil {
+	if err := Prepare(ctx, f, ha(), 1883); err != nil {
 		t.Fatalf("first Prepare: %v", err)
 	}
 	first := f.files[TokenPath]
-	if err := Prepare(ctx, f, ha()); err != nil {
+	if err := Prepare(ctx, f, ha(), 1883); err != nil {
 		t.Fatalf("second Prepare: %v", err)
 	}
 	if f.files[TokenPath] != first {
@@ -180,7 +180,7 @@ func TestTokenIsEnsuredNotRotated(t *testing.T) {
 func TestShortTokenIsReplaced(t *testing.T) {
 	f := withImage()
 	f.files = map[string]string{TokenPath: "\n"}
-	if err := Prepare(context.Background(), f, ha()); err != nil {
+	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if got := strings.TrimSpace(f.files[TokenPath]); len(got) != 2*tokenBytes {
@@ -200,7 +200,7 @@ func TestPrepareFailsLoudly(t *testing.T) {
 		}
 		return nil
 	}}
-	err := Prepare(context.Background(), f, ha())
+	err := Prepare(context.Background(), f, ha(), 1883)
 	if err == nil {
 		t.Fatal("a failed extraction was swallowed")
 	}
@@ -308,7 +308,7 @@ func TestExtractionRefusesWhatIsNotAScript(t *testing.T) {
 		{"an empty file", ""},
 	} {
 		f := &fake{extracted: tc.extracted}
-		err := Prepare(context.Background(), f, ha())
+		err := Prepare(context.Background(), f, ha(), 1883)
 		if err == nil {
 			t.Fatalf("%s: extraction was accepted", tc.name)
 		}
@@ -334,7 +334,7 @@ func TestExtractionFailureNamesTheLayout(t *testing.T) {
 		}
 		return nil
 	}
-	err := Prepare(context.Background(), f, ha())
+	err := Prepare(context.Background(), f, ha(), 1883)
 	if err == nil {
 		t.Fatal("a failed extraction was accepted")
 	}
@@ -346,5 +346,69 @@ func TestExtractionFailureNamesTheLayout(t *testing.T) {
 	// And it must have LOOKED rather than guessed.
 	if !f.ran("podman", "cp", extractCtr+":/etc/s6-overlay/s6-rc.d", Dir+"/layout") {
 		t.Fatalf("the native s6-rc tree was never probed; ran: %v", f.runs)
+	}
+}
+
+// TestPrepareMaterialisesTheWirerWithTheBrokersPort — the wiring is delivered the same way the
+// mint is, and its port is SUBSTITUTED rather than hardcoded ([V3b.30](c)). The port belongs to
+// the other service, so it arrives from the registry; what this checks is that it actually lands.
+func TestPrepareMaterialisesTheWirerWithTheBrokersPort(t *testing.T) {
+	f := withImage()
+	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
+		t.Fatal(err)
+	}
+	src, ok := f.files[wirerPath]
+	if !ok {
+		t.Fatalf("the wirer was not materialised; the wrapper would spawn a missing file")
+	}
+	if strings.Contains(src, mqttPortToken) {
+		t.Error("the wirer kept its placeholder; it would dial a port that is not a number")
+	}
+	if !strings.Contains(src, "BROKER_PORT = 1883") {
+		t.Error("the broker's port did not reach the wirer")
+	}
+	if !strings.Contains(src, "http://127.0.0.1:8123") {
+		t.Error("Home Assistant's own port did not reach the wirer; it would talk to a restated one")
+	}
+	// The wrapper must actually spawn it, or none of the above runs on a household's node.
+	if w := f.files[wrapperPath]; !strings.Contains(w, "wire-mqtt.py") {
+		t.Errorf("the wrapper does not spawn the wirer:\n%s", w)
+	}
+}
+
+// TestPrepareRefusesAWirerThatLostItsPlaceholder — the token is the contract between the Go side
+// and the embedded file. Without this check a file that stopped carrying it would be installed
+// verbatim and fail forever, silently, on every Home Assistant start in the fleet — the same
+// reasoning mosquitto's bind address is checked under.
+func TestPrepareRefusesAWirerThatLostItsPlaceholder(t *testing.T) {
+	saved := wirerSource
+	t.Cleanup(func() { wirerSource = saved })
+	wirerSource = "BASE = \"http://127.0.0.1:@HA_PORT@\"\nBROKER_PORT = 1883\n"
+	if err := writeWirer(context.Background(), withImage(), 8123, 1883); err == nil {
+		t.Fatal("a wirer with no placeholder was installed; the port would be whatever it says")
+	}
+}
+
+// TestWrapperIsAWellFormedScript — the cheapest possible guard on the file we mount over Home
+// Assistant's own `run`, and it exists because its absence cost a VM run: an edit dropped the
+// shebang, every Go test still passed, and s6 answered with `unable to spawn ./run (waiting 60
+// seconds): Exec format error` and retried forever, so HA never started at all.
+//
+// Asserted on the EMBEDDED source rather than on what Prepare wrote, because the defect is in the
+// file as shipped: by the time it reaches a node it is already too late to be a unit test.
+func TestWrapperIsAWellFormedScript(t *testing.T) {
+	if !strings.HasPrefix(wrapperSource, "#!") {
+		t.Fatalf("the wrapper has no shebang; s6 cannot spawn it at all:\n%.80s", wrapperSource)
+	}
+	// It must END by handing over to the image's own run -- at the path the CONTAINER sees, which
+	// is the mount point and not the node's. Anything after the exec is dead code, and anything
+	// instead of it is briard authoring HA's bootstrap rather than relaying it.
+	handover := "exec " + mountPoint + "/run.original"
+	if !strings.HasSuffix(strings.TrimSpace(wrapperSource), handover) {
+		t.Errorf("the wrapper does not end with %q; it would not hand over", handover)
+	}
+	// And it must spawn the wirer, or (c) never runs on a household's node.
+	if !strings.Contains(wrapperSource, mountPoint+"/wire-mqtt.py") {
+		t.Error("the wrapper does not spawn the wirer")
 	}
 }

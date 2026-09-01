@@ -59,7 +59,12 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	switch m.Name {
 	case hass.Name:
-		return hass.Prepare(ctx, x, m)
+		// The broker's port travels from one service's package to the other's HERE, which is the
+		// only place that sees both. Home Assistant needs to be told where the broker is
+		// ([V3b.30](c)), and neither package may reach into the other: agent/hass would then
+		// carry mosquitto knowledge, and a second copy of the port is a second thing to keep in
+		// step with the catalog.
+		return hass.Prepare(ctx, x, m, mosquitto.MQTTPort)
 	case mosquitto.Name:
 		return mosquitto.Prepare(ctx, x, m)
 	}

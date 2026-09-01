@@ -305,5 +305,55 @@ pkgs.testers.runNixOSTest {
     assert "192.168.1.100" in seen, f"the record HA resolved does not carry the VIP: {seen!r}"
 
     node1.fail("test -e /run/briard/routes.hosts")
+
+    # ── (c) THE BROKER IS WIRED INTO HOME ASSISTANT ([V3b.30](c)) ────────────────────
+    #
+    # A household that installs the broker should not then have to tell Home Assistant about it.
+    # The wiring is driven through HA's OWN config-flow API -- so `async_validate_broker_settings`
+    # runs on submit and a dead broker yields an error instead of an entry pointing at nothing --
+    # by a script the s6 `run` wrapper spawns DETACHED, because `run`'s moment is the stopped
+    # window and the flow API needs a serving HA.
+    #
+    # The entry is not asserted to exist "eventually" by polling forever: it is waited for once,
+    # then its CONTENTS are read, because an entry naming the wrong broker would satisfy any
+    # existence check.
+    # A FRESH token: the healing section above rotated the value and pruned every other token on
+    # our user, so the `access` from before that boundary is revoked by design.
+    wired = exchange(node1.succeed("cat /run/briard/hass/token").strip())
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' "
+        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
+        timeout=300,
+    )
+    mqtt_entries = _zj.loads(node1.succeed(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' "
+        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
+    ))
+    assert len(mqtt_entries) == 1, f"want exactly one mqtt entry, got {mqtt_entries}"
+    # It LOADED -- the flow validated the broker by connecting to it, so a state of "loaded" is
+    # Home Assistant reporting that it reached the broker, not that a file was written.
+    assert mqtt_entries[0]["state"] == "loaded", f"the mqtt entry is not loaded: {mqtt_entries[0]}"
+    assert mqtt_entries[0]["source"] == "user", f"unexpected flow source: {mqtt_entries[0]}"
+    print("HA is wired to the broker: " + _zj.dumps(mqtt_entries[0]))
+
+    # ⚠️ AND IT IS IDEMPOTENT, which is the guard that matters most: the wirer runs at EVERY HA
+    # start, and mqtt is `single_config_entry: true`, so a second entry is not merely untidy --
+    # a household pointing HA at their own broker must never find their one slot taken by a
+    # localhost entry they did not ask for.
+    #
+    # THE WIRER IS RE-RUN DIRECTLY rather than by restarting Home Assistant. Re-running it IS what
+    # a restart does -- the wrapper spawns exactly this -- and doing it this way drops the restart's
+    # timing out of the assertion. Measured why that matters: forcing a second restart seconds
+    # after the first had the service API answer 4xx while HA was still coming back, which failed
+    # the test for a reason that had nothing to do with the guard under test.
+    node1.succeed("podman exec briard-home-assistant-app python3 /briard/wire-mqtt.py /briard/token")
+    again = _zj.loads(node1.succeed(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' "
+        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
+    ))
+    assert len(again) == 1, f"a second run created another entry: {again}"
+    assert again[0]["entry_id"] == mqtt_entries[0]["entry_id"], (
+        f"the entry was replaced rather than left alone: {again} vs {mqtt_entries}"
+    )
   '';
 }

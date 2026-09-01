@@ -55,6 +55,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"briard.io/shared/manifest"
@@ -95,6 +96,21 @@ const wrapperPath = Dir + "/run"
 // scriptPath is the mint, run one-shot on the image's own python.
 const scriptPath = Dir + "/ensure-token.py"
 
+// wirerPath is the mqtt wiring ([V3b.30](c)), spawned detached by the wrapper and left to wait
+// for a serving Home Assistant on its own.
+const wirerPath = Dir + "/wire-mqtt.py"
+
+// mqttPortToken is the placeholder wire-mqtt.py carries for the broker's port. The value is
+// agent/mosquitto's, handed down by the registry rather than restated here: this is the one fact
+// that spans two catalogued services, and a second copy of it would be a second thing to keep in
+// step with the catalog.
+const mqttPortToken = "@MQTT_PORT@"
+
+// haPortToken is the placeholder for Home Assistant's OWN port. Substituted from the manifest
+// for the reason Readiness states: the catalog names it once, and a second copy here would be a
+// second thing to keep in step with it.
+const haPortToken = "@HA_PORT@"
+
 // extractCtr is the throwaway container the original `run` is copied out of. Created
 // and removed, never started: `podman cp` reads the image's filesystem without
 // executing anything from it.
@@ -109,6 +125,9 @@ var wrapperSource string
 
 //go:embed ensure-token.py
 var scriptSource string
+
+//go:embed wire-mqtt.py
+var wirerSource string
 
 // Executor is the narrow slice of the guest agent's executor this package needs. A
 // local interface for dependency injection, not a seam: it exists so the package can
@@ -171,7 +190,10 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // service and lets the others promote, which is the only safe use of the error and is
 // argued at its call site. Never starting the unit is what keeps podman from creating the
 // bad source in the first place.
-func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
+// mqttPort is the broker's port, passed in by the registry (agent/services) because it belongs
+// to the OTHER service. Zero means "this build knows of no broker", and the wirer is then
+// materialised with nothing to dial -- it still runs, and its own socket check is what stops it.
+func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int) error {
 	if m.Name != Name {
 		return nil
 	}
@@ -186,6 +208,9 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 		return err
 	}
 	if err := write(ctx, x, scriptPath, scriptSource, "0644"); err != nil {
+		return err
+	}
+	if err := writeWirer(ctx, x, m.Primary().Port, mqttPort); err != nil {
 		return err
 	}
 	if err := write(ctx, x, wrapperPath, wrapperSource, "0755"); err != nil {
@@ -304,4 +329,30 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 		return fmt.Errorf("hass: install %s: %w: %s", path, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// writeWirer materialises the mqtt wiring with both ports substituted in: Home Assistant's own,
+// so the wirer talks to the port the CATALOG names rather than one restated here, and the
+// broker's, which arrives from the registry because it belongs to the other service.
+//
+// EACH SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that actually bites: a
+// Replace of a token that is not there is a silent no-op, so a check only AFTER it catches a
+// SECOND placeholder and never a MISSING one -- and a missing one is the case that installs a
+// wirer dialling a port named "@MQTT_PORT@", failing forever and silently, at every Home
+// Assistant start in the fleet.
+func writeWirer(ctx context.Context, x Executor, haPort, mqttPort int) error {
+	src := wirerSource
+	for _, sub := range []struct {
+		token string
+		value int
+	}{{haPortToken, haPort}, {mqttPortToken, mqttPort}} {
+		if !strings.Contains(src, sub.token) {
+			return fmt.Errorf("hass: the wirer no longer carries %s", sub.token)
+		}
+		src = strings.Replace(src, sub.token, strconv.Itoa(sub.value), 1)
+		if strings.Contains(src, sub.token) {
+			return fmt.Errorf("hass: the wirer carries %s more than once", sub.token)
+		}
+	}
+	return write(ctx, x, wirerPath, src, "0644")
 }
