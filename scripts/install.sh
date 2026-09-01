@@ -450,6 +450,25 @@ for t in $DRBD_TAP $TAP; do
 		echo 1 > /proc/sys/net/ipv6/conf/\$t/disable_ipv6
 	fi
 	ip link set \$t up
+	# ALLMULTI, or inbound multicast never reaches the guest. The guest's avahi joins 224.0.0.251
+	# on its VIRTIO NIC inside the VM, and nothing carries that join out to this device: qemu only
+	# emits a NIC_RX_FILTER_CHANGED event, and the code that acts on it (query-rx-filter ->
+	# virNetDevSetRxFilter) is libvirt's, gated on trustGuestRxFilters, and we run qemu directly.
+	# So this macvtap's multicast list holds only the all-hosts group, and macvlan_broadcast()
+	# drops every inbound mDNS query on its per-child test_bit(hash, vlan->mc_filter). ALLMULTI is
+	# what fills that bitmap -- macvlan_compute_filter bitmap_fill()s it for IFF_PROMISC/IFF_ALLMULTI.
+	#
+	# Egress does not need it, and that asymmetry is the trap: without this the guest still
+	# ANNOUNCES its name fine and answers unicast queries, so every client caches the record and
+	# the household name resolves -- until that cached record expires, after which nothing can
+	# query the guest and the name is dead. An install therefore looks correct at the moment it
+	# finishes and only fails later, off-box.
+	#
+	# The CHILD, not the parent: adding the group to the parent NIC's own multicast list
+	# (ip maddr add 01:00:5e:00:00:fb) does not help, because the gate is the per-child filter.
+	# Multicast only -- deliberately not promiscuous, which would pull every unicast frame on the
+	# segment off the wire for no benefit.
+	ip link set \$t allmulticast on
 done
 $PRIV_UP
 EOF

@@ -470,6 +470,34 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://briard-{flock_name}.local/healthz", timeout=120)
     print(f"off-box client reached http://briard-{flock_name}.local/ by NAME")
 
+    # THE SAME NAME, FROM A COLD CACHE -- and this is the half that has teeth. The assertion above
+    # is satisfied by the guest's establishment ANNOUNCEMENT alone: avahi multicasts the record
+    # when it establishes (and re-announces for tens of seconds afterwards), every client on the
+    # segment caches it for its TTL, and a resolve inside that window is a CACHE READ rather than
+    # a query. Egress through the macvtap needs nothing from us, so a rig that only ever asks
+    # while the announcement is warm cannot fail on inbound mDNS being dropped -- which is the
+    # failure a household meets, hours later, from a cold cache.
+    #
+    # 130s clears both the ~120s record TTL and the announcement tail; a 5s gap does NOT (the
+    # same query resolves at +5s and times out at +130s). The restart immediately before asking
+    # drops anything cached during the wait, so only the guest itself can answer what follows.
+    client.sleep(130)
+    client.succeed("systemctl restart avahi-daemon")
+    client.sleep(5)
+    # avahi-resolve-host-name EXITS 0 EVEN WHEN IT FAILS -- it prints "Failed to resolve host
+    # name ...: Timeout reached" on stderr and returns success -- so read the OUTPUT, never $?.
+    cold = client.succeed(f"avahi-resolve-host-name -4 briard-{flock_name}.local")
+    if vip not in cold:
+        mdns_state("after the cold-cache resolve failed")
+    assert vip in cold, (
+        f"from a COLD cache briard-{flock_name}.local resolved to {cold!r}, not to {vip} -- the "
+        f"name is reachable only while the guest's announcement is still cached, so inbound mDNS "
+        f"is not reaching the guest. The macvtap drops it on macvlan_broadcast()'s per-child "
+        f"mc_filter unless the child carries ALLMULTI (install.sh sets it at device creation)"
+    )
+    client.succeed(f"curl -fsS -m 20 http://briard-{flock_name}.local/healthz")
+    print(f"off-box client reached http://briard-{flock_name}.local/ by NAME from a COLD cache")
+
     # DELTA 5 [V3b.19]: THE INSTALL HOST REACHES ITS OWN GUEST -- the one machine on this L2 that
     # could not. Everything above is proved from `client`, deliberately, and that is exactly how
     # the defect survived: the substrate isolates a parent NIC from its own children and a switch
