@@ -74,6 +74,10 @@ pkgs.testers.runNixOSTest {
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
+        # The guest console, because this test's failure mode is "the guest never answered" and
+        # everything else here observes from OUTSIDE the VM. agent-readopt/deadman/watchdog all
+        # carry it for the same reason ([[guest-console-is-the-window]]).
+        "--setenv=GUEST_SERIAL=/tmp/guest-serial.log "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
         "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
@@ -117,9 +121,18 @@ pkgs.testers.runNixOSTest {
     assert relaunch_took < 300, f"took {relaunch_took:.0f}s to notice a STOPPED unit -- it is waiting out the silence window instead of asking systemd"
     print(f"agent noticed the stopped unit and relaunched after {relaunch_took:.0f}s")
 
-    host.wait_until_succeeds(
-        "journalctl -u briard-agent | grep -q 'guest relaunched and converged'", timeout=900
-    )
+    try:
+        host.wait_until_succeeds(
+            "journalctl -u briard-agent | grep -q 'guest relaunched and converged'", timeout=900
+        )
+    except Exception:
+        # The guest is the only place that knows why it did not answer, and the console is the only
+        # way in once the control channel is down ([[guest-console-is-the-window]]).
+        print("=== guest console ===")
+        print(host.execute("tail -120 /tmp/guest-serial.log")[1])
+        print("=== agent ===")
+        print(host.execute("journalctl -u briard-agent --no-pager | tail -40")[1])
+        raise
     restarted = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     assert restarted != gone, f"same qemu pid {restarted} -- nothing was relaunched"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
