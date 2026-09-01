@@ -43,13 +43,20 @@ import (
 // every member `Requires=drbd-promote@<res>.service`, so their jobs fail with 'dependency' and
 // never execute, where `wantedBy` used to start them into a node that had claimed no address.
 //
-// ORDER IS THE DEPENDENCY: reactor writes `Requires=`/`After=` the PREVIOUS member, so these two
-// come after briard-vip because they publish the address it claims.
+// THE FRONT DOOR IS A MEMBER FOR THE SAME REASON ([B.125]): every name the publishers claim
+// resolves to the VIP, where the door is the only thing that answers, so a node with no door is a
+// node whose services are unreachable however healthy the rest of it looks.
+//
+// ORDER IS THE DEPENDENCY: reactor writes `Requires=`/`After=` the PREVIOUS member. The door comes
+// after briard-vip and BEFORE the publishers, so a node only claims names once the thing that
+// serves them has started -- publishing a name nothing answers is the failure mode the order
+// exists to avoid.
 func promoterUnits() []string {
 	return []string{
 		"briard-data.service",
 		"briard-services.service",
 		"briard-vip.service",
+		"briard-reverse-proxy.service",
 		"briard-mdns.service",
 		"briard-mdns-services.service",
 	}

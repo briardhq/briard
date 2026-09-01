@@ -244,6 +244,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 		"briard-data.service",
 		"briard-services.service",
 		"briard-vip.service",
+		"briard-reverse-proxy.service",
 		"briard-mdns.service",
 		"briard-mdns-services.service",
 	}

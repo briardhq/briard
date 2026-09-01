@@ -1272,19 +1272,24 @@ in
         StartLimitBurst = 5;
       };
     };
-    # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443. Woven into the
-    #    promoter chain via briard-vip (wantedBy + partOf), NOT the drbd-reactor start-list —
-    #    so it tracks the primary role (up on promote, down on demote) without touching the
-    #    reactor snippet, leaving the six DRBD mechanism tests untouched. Cert/key live on the
-    #    DRBD volume (${tlsDir}) so they replicate +
-    #    survive failover; the proxy hot-reloads them, so a renewal is gap-free.
-    #    wantedBy (not requires) => a missing cert never fails the VIP: :443 just doesn't
-    #    answer until a cert exists, while :80 keeps serving — which is the *shipped* state of
-    #    a free node, since a cert needs a domain.
+    # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443.
+    #
+    #    A PROMOTER CHAIN MEMBER since [B.125], where it used to ride briard-vip (wantedBy +
+    #    partOf) and stay out of the reactor start-list. The reason it moved is the reason the
+    #    mDNS publishers did: every name they claim resolves to the VIP, and this is the only
+    #    thing that answers there, so a node with no door serves nothing while reporting healthy.
+    #    It still tracks the primary role exactly as before -- reactor writes PartOf=<target> --
+    #    and it is ordered BEFORE the publishers so a node claims names only once the door that
+    #    serves them has started.
+    #
+    #    Cert/key live on the DRBD volume (${tlsDir}) so they replicate + survive failover; the
+    #    proxy hot-reloads them, so a renewal is gap-free. ⚠️ A MISSING CERT IS STILL NOT A
+    #    FAILURE, and that property is the door's own, not the old wantedBy's: :443 simply does
+    #    not answer until a cert exists while :80 keeps serving, which is the *shipped* state of a
+    #    free node, since a cert needs a domain. Membership would be wrong if the door failed on
+    #    it -- it does not.
     systemd.services.briard-reverse-proxy = {
       description = "Briard front door (serves the VIP on :80/:443)";
-      wantedBy = [ "briard-vip.service" ];
-      partOf = [ "briard-vip.service" ];
       after = [ "briard-vip.service" "briard-services.service" ];
       serviceConfig = {
         # NO -backend, and no -routes either: the front door has no single backend at all as of
@@ -1304,6 +1309,15 @@ in
           + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem";
         Restart = "on-failure";
         RestartSec = 2;
+      };
+      # THE ESCALATION BUDGET, now that failing means demoting ([B.125]). Without it systemd's
+      # 5-in-10s default applies, and with RestartSec=2 that is ~10 seconds of trying before a
+      # node hands the resource on -- far too eager for a door whose likeliest transient is losing
+      # the race for :80 against its own previous instance during a failover. Same shape as the
+      # publishers'; the numbers across the whole chain are [B.125](b)'s to settle.
+      unitConfig = {
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
       };
     };
 

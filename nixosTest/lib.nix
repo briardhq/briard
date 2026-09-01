@@ -15,21 +15,22 @@ let
   # by the harness is rendered by the same code the agent runs.
   quadletRender = pkgs.callPackage ./quadlet-render-pkg.nix { };
 
-  # The promoter's ordered unit: the same three units everywhere, on every node, whatever is
-  # installed ([V3b.3](f)/(e1)). `briard-services` is what converges this node to the manifests on
-  # the volume once the mount exists, which is why the services themselves are not members. The
-  # front door is not listed either; it rides briard-vip (wantedBy + partOf), so it tracks the
-  # primary regardless. The two mDNS publishers ARE members since [B.125] -- on a node with no
-  # `.casa` domain their names are the ONLY way to reach a service, so a node that cannot publish
-  # should hand the resource on rather than serve addresses nobody can resolve. This mirrors what
-  # the host agent writes in production (host.promoterUnits), which also takes no arguments any
-  # more, and the two lists are kept in step BY HAND ([V3b.3](f)).
+  # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed
+  # ([V3b.3](f)/(e1)). `briard-services` is what converges this node to the manifests on the volume
+  # once the mount exists, which is why the services themselves are not members. The front door and
+  # the two mDNS publishers ARE members since [B.125]: on a node with no `.casa` domain those names
+  # are the ONLY way to reach a service and the door is the only thing that answers them, so a node
+  # that cannot publish or cannot serve should hand the resource on rather than look healthy while
+  # reaching nobody. This mirrors what the host agent writes in production (host.promoterUnits),
+  # which also takes no arguments any more, and the two lists are kept in step BY HAND
+  # ([V3b.3](f)).
   promoterSnippet =
     let
       units = [
         "briard-data.service"
         "briard-services.service"
         "briard-vip.service"
+        "briard-reverse-proxy.service"
         "briard-mdns.service"
         "briard-mdns-services.service"
       ];
