@@ -1178,16 +1178,21 @@ in
     #     RENAME MUST NEVER RISK THE ADDRESS. The router's list and the mDNS name therefore differ,
     #     which costs one line of installer wording and buys an identity that is safe to change.
     #
-    #     Bound to briard-vip exactly like the front door (wantedBy + partOf), which buys three
-    #     things: the name appears only when this node actually holds the VIP, it points at the
-    #     VIP rather than at whatever else the guest is addressed on, and on a pair only the
-    #     PRIMARY publishes — so the two nodes of ONE flock never collide with each other. Two
+    #     A PROMOTER CHAIN MEMBER since [B.125], where it used to be bound to briard-vip the way
+    #     the front door is (wantedBy + partOf). The three things that binding bought are all
+    #     still true, and the chain states them more strongly: the name appears only when this
+    #     node actually holds the VIP, it points at the VIP rather than at whatever else the guest
+    #     is addressed on, and on a pair only the PRIMARY publishes — so the two nodes of ONE
+    #     flock never collide with each other. What membership ADDS is that a node which cannot
+    #     publish hands the resource on instead of serving addresses nobody can reach. Two
     #     DIFFERENT flocks in one house still can, and avahi resolves that by renaming one of them
     #     silently, which is why the published name is read back rather than assumed.
     systemd.services.briard-mdns = {
       description = "Briard mDNS name for the VIP";
-      wantedBy = [ "briard-vip.service" ];
-      partOf = [ "briard-vip.service" ];
+      # A PROMOTER CHAIN MEMBER ([B.125]), which is why there is no wantedBy/partOf here: reactor
+      # writes PartOf=drbd-services@<res>.target and Requires=/After= briard-vip, so the binding
+      # the two directives used to express is the chain's now. avahi-daemon is NOT a member, so
+      # its ordering stays stated here.
       after = [ "briard-vip.service" "avahi-daemon.service" ];
       requires = [ "avahi-daemon.service" ];
       serviceConfig = {
@@ -1210,26 +1215,41 @@ in
         Restart = "on-failure";
         RestartSec = 2;
       };
-      unitConfig.ConditionPathExists = mdnsEnvPath;
+      unitConfig = {
+        ConditionPathExists = mdnsEnvPath;
+        # THE ESCALATION BUDGET, and it is ours alone ([B.125]). drbd-reactor starts the chain once
+        # and never watches it again -- it has no retry counter -- so what turns a broken publisher
+        # into a failover is systemd reaching `failed`, which `Restart=` prevents until the start
+        # limit is exceeded. WITHOUT THESE TWO LINES IT NEVER ESCALATES: a failing cycle here is
+        # RestartSec plus the establishment deadline, ~17s, which can never hit the 5-in-10s
+        # default. Five attempts is ~85s of trying before the node hands the resource on, which is
+        # long enough to ride out a slow avahi and short enough that an unreachable node does not
+        # stay unreachable. ⚠️ The number is reasoned, not measured -- [B.125](b) owes the
+        # measurement it should be sized against.
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
+      };
     };
 
     # 3b. the per-service mDNS names -- the other half of Host-based routing ([B.48]). See
     #     mdnsServicesPublish for why this is a second publisher rather than more work inside
     #     briard-mdns, and why it watches its input instead of being restarted.
     #
-    #     Bound to briard-vip exactly like briard-mdns (wantedBy + partOf): the records point at
-    #     the VIP, so they must exist only where the VIP does and vanish when it moves. After
-    #     briard-mdns, not because it depends on it, but because the address-settle wait lives
-    #     there and publishing into avahi's probe window is what wedged it (V3.22) -- letting the
-    #     flock's name establish first means these start on an address that has already held still.
+    #     A chain member beside briard-mdns since [B.125]: the records point at the VIP, so they
+    #     must exist only where the VIP does and vanish when it moves. Ordered after briard-mdns,
+    #     not because it depends on it, but because the address-settle wait lives there and
+    #     publishing into avahi's probe window is what wedged it (V3.22) -- letting the flock's
+    #     name establish first means these start on an address that has already held still. Under
+    #     the chain that ordering is reactor's Requires=/After= on the previous member, so it is
+    #     no longer stated twice.
     #
     #     NO ConditionPathExists on the hosts file: an empty or absent list is a node with nothing
     #     routed, which is the shipped state, and the watcher's whole job is to be already running
     #     when the first install writes one.
     systemd.services.briard-mdns-services = {
       description = "Briard mDNS names for the routed services";
-      wantedBy = [ "briard-vip.service" ];
-      partOf = [ "briard-vip.service" ];
+      # A chain member too ([B.125]); see briard-mdns above for why the wantedBy/partOf pair is
+      # gone. Reactor orders it after briard-mdns because that is the previous member.
       after = [ "briard-vip.service" "briard-mdns.service" "avahi-daemon.service" ];
       requires = [ "avahi-daemon.service" ];
       serviceConfig = {
@@ -1245,7 +1265,12 @@ in
       # publish and the unit must stay inactive rather than fail in a restart loop. Measured
       # 2026-08-31 without it: 56 restarts in one test run, on a rig that had no name and no VIP
       # env -- noise that would have hidden a real failure of this unit.
-      unitConfig.ConditionPathExists = mdnsEnvPath;
+      unitConfig = {
+        ConditionPathExists = mdnsEnvPath;
+        # The same budget, for the same reason -- see briard-mdns above ([B.125]).
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
+      };
     };
     # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443. Woven into the
     #    promoter chain via briard-vip (wantedBy + partOf), NOT the drbd-reactor start-list —

@@ -19,14 +19,19 @@ let
   # installed ([V3b.3](f)/(e1)). `briard-services` is what converges this node to the manifests on
   # the volume once the mount exists, which is why the services themselves are not members. The
   # front door is not listed either; it rides briard-vip (wantedBy + partOf), so it tracks the
-  # primary regardless. This mirrors what the host agent writes in production
-  # (host.promoterUnits), which also takes no arguments any more.
+  # primary regardless. The two mDNS publishers ARE members since [B.125] -- on a node with no
+  # `.casa` domain their names are the ONLY way to reach a service, so a node that cannot publish
+  # should hand the resource on rather than serve addresses nobody can resolve. This mirrors what
+  # the host agent writes in production (host.promoterUnits), which also takes no arguments any
+  # more, and the two lists are kept in step BY HAND ([V3b.3](f)).
   promoterSnippet =
     let
       units = [
         "briard-data.service"
         "briard-services.service"
         "briard-vip.service"
+        "briard-mdns.service"
+        "briard-mdns-services.service"
       ];
     in
     ''

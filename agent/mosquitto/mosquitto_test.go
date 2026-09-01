@@ -222,3 +222,20 @@ func TestTheManagementBindFollowsTheNetworkMode(t *testing.T) {
 		t.Error("a host-networked broker binds its management API to every interface the household can see")
 	}
 }
+
+// TestPrepareRefusesAConfigThatLostItsPlaceholder — the guard that the before-check exists for.
+// Without it a template that stopped carrying @BIND@ would be installed verbatim, and the broker
+// would listen wherever the leftover literal said — which is exactly what the comment above the
+// check has always claimed to prevent, and what the check did not actually do.
+func TestPrepareRefusesAConfigThatLostItsPlaceholder(t *testing.T) {
+	saved := confSource
+	t.Cleanup(func() { confSource = saved })
+	confSource = "listener 9883 0.0.0.0\n"
+	err := Prepare(context.Background(), &fake{}, manifest.Manifest{Name: Name})
+	if err == nil {
+		t.Fatal("a config with no placeholder was installed; the broker would bind whatever it says")
+	}
+	if !strings.Contains(err.Error(), bindToken) {
+		t.Errorf("the error does not name the missing token: %v", err)
+	}
+}

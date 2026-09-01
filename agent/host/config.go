@@ -31,9 +31,28 @@ import (
 // nothing left to make conditional.
 //
 // It takes no arguments, and that is the end state [V3b.3](e1) was after: the chain is the same
-// three units on every anchor in the fleet, so there is nothing to decide and nothing to pass.
+// units on every anchor in the fleet, so there is nothing to decide and nothing to pass.
+//
+// THE TWO mDNS PUBLISHERS ARE MEMBERS ([B.125]), and that is a correction rather than an addition.
+// They hung off briard-vip as `wantedBy` + `partOf`, on the reasoning that a naming failure must
+// not fail a household over -- which undervalued the name. On a node with no `.casa` domain the
+// front door routes `byHost` against the service's own `.local` names, so a request to the bare
+// VIP matches nothing: there is NO address path to a service, and a node whose publishers are dead
+// is unreachable while every other part of it reports healthy. That is what the promoter is for.
+// Membership also means they never run on the node that LOST the promotion race -- reactor gives
+// every member `Requires=drbd-promote@<res>.service`, so their jobs fail with 'dependency' and
+// never execute, where `wantedBy` used to start them into a node that had claimed no address.
+//
+// ORDER IS THE DEPENDENCY: reactor writes `Requires=`/`After=` the PREVIOUS member, so these two
+// come after briard-vip because they publish the address it claims.
 func promoterUnits() []string {
-	return []string{"briard-data.service", "briard-services.service", "briard-vip.service"}
+	return []string{
+		"briard-data.service",
+		"briard-services.service",
+		"briard-vip.service",
+		"briard-mdns.service",
+		"briard-mdns-services.service",
+	}
 }
 
 // buildVersion is the agent's release id, stamped at build time:

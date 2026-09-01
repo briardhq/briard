@@ -229,15 +229,24 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 // precisely the state `curl | sh` lands in. briard-services is why it can now be unconditional —
 // the guest image defines it always, exactly as it defines briard-data and briard-vip.
 //
-// Nothing is conditional any more ([V3b.3](e1) took the last member out): the chain is these three
-// units on every anchor, whatever the node is running and whatever the environment says.
+// Nothing is conditional any more ([V3b.3](e1) took the last member out): the chain is the same
+// units on every anchor, whatever the node is running and whatever the environment says. The
+// SHAPE is what this guards, not the membership -- [B.125] added the two mDNS publishers, and the
+// property that must survive any such change is that nothing about the environment or the
+// installed services can alter the list.
 func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	t.Setenv("ROLE", string(model.RoleAnchor))
 	cfg := ConfigFromEnv()
 	if len(cfg.Services) != 0 {
 		t.Errorf("Services = %+v with nothing installed, want the empty set", cfg.Services)
 	}
-	want := []string{"briard-data.service", "briard-services.service", "briard-vip.service"}
+	want := []string{
+		"briard-data.service",
+		"briard-services.service",
+		"briard-vip.service",
+		"briard-mdns.service",
+		"briard-mdns-services.service",
+	}
 	if !slices.Equal(cfg.Promoter, want) {
 		t.Errorf("promoter chain = %v, want %v", cfg.Promoter, want)
 	}

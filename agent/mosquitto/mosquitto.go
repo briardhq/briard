@@ -135,11 +135,18 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if _, err := x.Run(ctx, "mkdir", "-p", Dir); err != nil {
 		return fmt.Errorf("mosquitto: %s: %w", Dir, err)
 	}
+	// The token is the contract between this function and the embedded file; if the file stops
+	// carrying it, the broker would silently listen wherever the literal left behind says.
+	//
+	// CHECKED BEFORE THE REPLACE, because that is the half that actually catches it: a Replace of a
+	// token that is not there is a silent NO-OP, so a check only afterwards catches a SECOND
+	// placeholder and never a missing one -- which is precisely the case this paragraph describes.
+	if !strings.Contains(confSource, bindToken) {
+		return fmt.Errorf("mosquitto: the config template no longer carries %s", bindToken)
+	}
 	conf := strings.Replace(confSource, bindToken, bindAddress(m), 1)
 	if strings.Contains(conf, bindToken) {
-		// The token is the contract between this function and the embedded file; if the file stops
-		// carrying it, the broker would silently listen wherever the literal left behind says.
-		return fmt.Errorf("mosquitto: the config template no longer carries %s", bindToken)
+		return fmt.Errorf("mosquitto: the config template carries %s more than once", bindToken)
 	}
 	// 0644, not 0600: the broker runs as its own unprivileged user inside the container (uid
 	// 1883 on the pinned image) and has to read this file.
