@@ -7,11 +7,17 @@
 // what the S1 health gate reads to tell "the container answers" from "half the house's
 // integrations are dead", and reading them needs an authenticated, admin-scoped API.
 //
-// So this package delivers exactly one capability: an authenticated HA API, available
-// to the guest from the moment HA starts. It is deliberately auth-only. There is no
-// briard code inside Home Assistant — no custom integration, no plugin, no planted
-// files — because a token is the whole need, and two mechanisms over one credential is
-// two failure modes and split authority.
+// So this package delivers two capabilities, and the line between them is what each one
+// can only do from where it stands. The first is an authenticated HA API available to
+// the guest from the moment HA starts, for consumers OUTSIDE Home Assistant. The second
+// is briard's own integration, running INSIDE it ([B.124]): everything that wants a
+// running Home Assistant rather than a stopped one — offering the node's broker today,
+// restore intent and entities next — belongs in a process that already holds `hass`,
+// not in a stopped-window script talking HTTP to a process it is inside of.
+//
+// The two share no credential, which is what keeps them one mechanism and not two. The
+// integration never mints: it needs no token to act in-process, so the mint stays where
+// only it can be done, and the token goes on serving the outside.
 //
 // THE MECHANISM, and why every part of it is where it is:
 //
@@ -96,20 +102,28 @@ const wrapperPath = Dir + "/run"
 // scriptPath is the mint, run one-shot on the image's own python.
 const scriptPath = Dir + "/ensure-token.py"
 
-// wirerPath is the mqtt wiring ([V3b.30](c)), spawned detached by the wrapper and left to wait
-// for a serving Home Assistant on its own.
-const wirerPath = Dir + "/wire-mqtt.py"
+// planterPath is the /config-side planting, run one-shot in the same stopped window as the mint.
+const planterPath = Dir + "/plant.py"
 
-// mqttPortToken is the placeholder wire-mqtt.py carries for the broker's port. The value is
+// stubDir holds the integration's stub package, which the planter copies into
+// /config/custom_components/briard at every start. It is staged here rather than planted from
+// Go because only the container can see /config.
+const stubDir = Dir + "/stub"
+
+// implDir is where the integration's implementation is mounted, read-only, OUTSIDE /config —
+// which is the whole placement decision ([B.124]): the restore wipe never sees it, no backup
+// can carry it, and the stub in /config stays inert wherever it is restored. The stub names
+// this same path; the two agree on a path and a module name and on nothing else.
+const implDir = Dir + "/integration"
+
+// implPath is the implementation itself, one module under implDir.
+const implPath = implDir + "/briard_ha.py"
+
+// mqttPortToken is the placeholder the integration carries for the broker's port. The value is
 // agent/mosquitto's, handed down by the registry rather than restated here: this is the one fact
 // that spans two catalogued services, and a second copy of it would be a second thing to keep in
 // step with the catalog.
 const mqttPortToken = "@MQTT_PORT@"
-
-// haPortToken is the placeholder for Home Assistant's OWN port. Substituted from the manifest
-// for the reason Readiness states: the catalog names it once, and a second copy here would be a
-// second thing to keep in step with it.
-const haPortToken = "@HA_PORT@"
 
 // extractCtr is the throwaway container the original `run` is copied out of. Created
 // and removed, never started: `podman cp` reads the image's filesystem without
@@ -126,8 +140,17 @@ var wrapperSource string
 //go:embed ensure-token.py
 var scriptSource string
 
-//go:embed wire-mqtt.py
-var wirerSource string
+//go:embed plant.py
+var planterSource string
+
+//go:embed component/__init__.py
+var stubSource string
+
+//go:embed component/manifest.json
+var stubManifest string
+
+//go:embed briard_ha.py
+var implSource string
 
 // Executor is the narrow slice of the guest agent's executor this package needs. A
 // local interface for dependency injection, not a seam: it exists so the package can
@@ -191,8 +214,8 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // argued at its call site. Never starting the unit is what keeps podman from creating the
 // bad source in the first place.
 // mqttPort is the broker's port, passed in by the registry (agent/services) because it belongs
-// to the OTHER service. Zero means "this build knows of no broker", and the wirer is then
-// materialised with nothing to dial -- it still runs, and its own socket check is what stops it.
+// to the OTHER service. Zero means "this build knows of no broker", and the integration is then
+// materialised with nothing to dial -- it still loads, and its own socket check is what stops it.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int) error {
 	if m.Name != Name {
 		return nil
@@ -210,7 +233,10 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int)
 	if err := write(ctx, x, scriptPath, scriptSource, "0644"); err != nil {
 		return err
 	}
-	if err := writeWirer(ctx, x, m.Primary().Port, mqttPort); err != nil {
+	if err := write(ctx, x, planterPath, planterSource, "0644"); err != nil {
+		return err
+	}
+	if err := writeIntegration(ctx, x, mqttPort); err != nil {
 		return err
 	}
 	if err := write(ctx, x, wrapperPath, wrapperSource, "0755"); err != nil {
@@ -331,28 +357,37 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 	return nil
 }
 
-// writeWirer materialises the mqtt wiring with both ports substituted in: Home Assistant's own,
-// so the wirer talks to the port the CATALOG names rather than one restated here, and the
-// broker's, which arrives from the registry because it belongs to the other service.
+// writeIntegration materialises briard's own integration: the stub the planter will copy into
+// /config, and the implementation it delegates to, staged outside /config where no restore and
+// no backup can reach it.
 //
-// EACH SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that actually bites: a
+// The broker's port is substituted in, because it arrives from the registry: it belongs to the
+// other service, and a second copy of it here would be a second thing to keep in step with the
+// catalog.
+//
+// THE SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that actually bites: a
 // Replace of a token that is not there is a silent no-op, so a check only AFTER it catches a
-// SECOND placeholder and never a MISSING one -- and a missing one is the case that installs a
-// wirer dialling a port named "@MQTT_PORT@", failing forever and silently, at every Home
+// SECOND placeholder and never a MISSING one -- and a missing one is the case that installs an
+// integration dialling a port named "@MQTT_PORT@", failing forever and silently, at every Home
 // Assistant start in the fleet.
-func writeWirer(ctx context.Context, x Executor, haPort, mqttPort int) error {
-	src := wirerSource
-	for _, sub := range []struct {
-		token string
-		value int
-	}{{haPortToken, haPort}, {mqttPortToken, mqttPort}} {
-		if !strings.Contains(src, sub.token) {
-			return fmt.Errorf("hass: the wirer no longer carries %s", sub.token)
-		}
-		src = strings.Replace(src, sub.token, strconv.Itoa(sub.value), 1)
-		if strings.Contains(src, sub.token) {
-			return fmt.Errorf("hass: the wirer carries %s more than once", sub.token)
+func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
+	if !strings.Contains(implSource, mqttPortToken) {
+		return fmt.Errorf("hass: the integration no longer carries %s", mqttPortToken)
+	}
+	src := strings.Replace(implSource, mqttPortToken, strconv.Itoa(mqttPort), 1)
+	if strings.Contains(src, mqttPortToken) {
+		return fmt.Errorf("hass: the integration carries %s more than once", mqttPortToken)
+	}
+	for _, dir := range []string{stubDir, implDir} {
+		if out, err := x.Run(ctx, "mkdir", "-p", dir); err != nil {
+			return fmt.Errorf("hass: %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
 		}
 	}
-	return write(ctx, x, wirerPath, src, "0644")
+	if err := write(ctx, x, stubDir+"/__init__.py", stubSource, "0644"); err != nil {
+		return err
+	}
+	if err := write(ctx, x, stubDir+"/manifest.json", stubManifest, "0644"); err != nil {
+		return err
+	}
+	return write(ctx, x, implPath, src, "0644")
 }

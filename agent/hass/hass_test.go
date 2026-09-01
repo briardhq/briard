@@ -104,7 +104,7 @@ func TestPrepareMaterialisesTheChannel(t *testing.T) {
 	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	for _, p := range []string{TokenPath, scriptPath, wrapperPath} {
+	for _, p := range []string{TokenPath, scriptPath, planterPath, wrapperPath, implPath} {
 		if _, ok := f.files[p]; !ok {
 			t.Fatalf("%s was not written (files: %v)", p, f.files)
 		}
@@ -349,43 +349,84 @@ func TestExtractionFailureNamesTheLayout(t *testing.T) {
 	}
 }
 
-// TestPrepareMaterialisesTheWirerWithTheBrokersPort — the wiring is delivered the same way the
-// mint is, and its port is SUBSTITUTED rather than hardcoded ([V3b.30](c)). The port belongs to
-// the other service, so it arrives from the registry; what this checks is that it actually lands.
-func TestPrepareMaterialisesTheWirerWithTheBrokersPort(t *testing.T) {
+// TestPrepareMaterialisesTheIntegration — briard's own integration is delivered the same way the
+// mint is, and the broker's port is SUBSTITUTED rather than hardcoded ([B.124]). The port belongs
+// to the other service, so it arrives from the registry; what this checks is that it lands.
+func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	f := withImage()
 	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
 		t.Fatal(err)
 	}
-	src, ok := f.files[wirerPath]
+	src, ok := f.files[implPath]
 	if !ok {
-		t.Fatalf("the wirer was not materialised; the wrapper would spawn a missing file")
+		t.Fatalf("the implementation was not materialised; the stub would find nothing to import")
 	}
 	if strings.Contains(src, mqttPortToken) {
-		t.Error("the wirer kept its placeholder; it would dial a port that is not a number")
+		t.Error("the integration kept its placeholder; it would dial a port that is not a number")
 	}
 	if !strings.Contains(src, "BROKER_PORT = 1883") {
-		t.Error("the broker's port did not reach the wirer")
+		t.Error("the broker's port did not reach the integration")
 	}
-	if !strings.Contains(src, "http://127.0.0.1:8123") {
-		t.Error("Home Assistant's own port did not reach the wirer; it would talk to a restated one")
+	// The stub is what lands in /config, so it has to be staged for the planter to copy — both
+	// files, because a package without its manifest is an integration HA refuses to load.
+	for _, p := range []string{stubDir + "/__init__.py", stubDir + "/manifest.json"} {
+		if _, ok := f.files[p]; !ok {
+			t.Errorf("%s was not staged; the planter would copy a missing file", p)
+		}
 	}
-	// The wrapper must actually spawn it, or none of the above runs on a household's node.
-	if w := f.files[wrapperPath]; !strings.Contains(w, "wire-mqtt.py") {
-		t.Errorf("the wrapper does not spawn the wirer:\n%s", w)
+	// THE STUB AND THE IMPLEMENTATION AGREE ON THE PATH, and nothing else checks it: the stub
+	// carries it as a literal because it is a permanent ABI that outlives the briard that wrote
+	// it, so a change on this side that did not reach it would silently stop resolving.
+	if !strings.Contains(stubSource, mountPoint+"/integration") {
+		t.Errorf("the stub does not look for the implementation where Prepare mounts it")
+	}
+	// The wrapper must actually run the planter, or none of the above reaches /config.
+	if w := f.files[wrapperPath]; !strings.Contains(w, "plant.py") {
+		t.Errorf("the wrapper does not run the planter:\n%s", w)
 	}
 }
 
-// TestPrepareRefusesAWirerThatLostItsPlaceholder — the token is the contract between the Go side
-// and the embedded file. Without this check a file that stopped carrying it would be installed
-// verbatim and fail forever, silently, on every Home Assistant start in the fleet — the same
-// reasoning mosquitto's bind address is checked under.
-func TestPrepareRefusesAWirerThatLostItsPlaceholder(t *testing.T) {
-	saved := wirerSource
-	t.Cleanup(func() { wirerSource = saved })
-	wirerSource = "BASE = \"http://127.0.0.1:@HA_PORT@\"\nBROKER_PORT = 1883\n"
-	if err := writeWirer(context.Background(), withImage(), 8123, 1883); err == nil {
-		t.Fatal("a wirer with no placeholder was installed; the port would be whatever it says")
+// TestPrepareRefusesAnIntegrationThatLostItsPlaceholder — the token is the contract between the Go
+// side and the embedded file. Without this check a file that stopped carrying it would be
+// installed verbatim and fail forever, silently, on every Home Assistant start in the fleet — the
+// same reasoning mosquitto's bind address is checked under.
+func TestPrepareRefusesAnIntegrationThatLostItsPlaceholder(t *testing.T) {
+	saved := implSource
+	t.Cleanup(func() { implSource = saved })
+	implSource = "BROKER_PORT = 1883\n"
+	if err := writeIntegration(context.Background(), withImage(), 1883); err == nil {
+		t.Fatal("an integration with no placeholder was installed; the port would be whatever it says")
+	}
+}
+
+// TestStubDelegatesAndSurvivesAnAbsentImplementation — the stub is the one artifact that outlives
+// the briard that wrote it: a household's backup carries it, and restoring that backup onto a
+// Home Assistant with no briard brings this exact file back. So it must do one thing and it must
+// not fail when the implementation is not mounted — an integration that raises would be a red
+// error in a house briard does not even manage.
+func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
+	if !strings.Contains(stubSource, "except ImportError:") {
+		t.Error("the stub does not survive an absent implementation")
+	}
+	if !strings.Contains(stubSource, "return await impl.async_setup(hass, config)") {
+		t.Error("the stub does not delegate async_setup")
+	}
+	// One job only. Anything else here is a second thing an old stub could get wrong.
+	if strings.Count(stubSource, "async def ") != 1 {
+		t.Errorf("the stub defines more than async_setup:\n%s", stubSource)
+	}
+	if !strings.Contains(stubManifest, `"domain": "briard"`) {
+		t.Errorf("the stub's manifest does not claim the briard domain:\n%s", stubManifest)
+	}
+	// No config_flow: a YAML-only integration has no card and no disable switch, which is right
+	// for plumbing and is what keeps briard out of the household's decisions.
+	if strings.Contains(stubManifest, "config_flow") {
+		t.Errorf("the stub declares a config flow; it would be UI-visible and deletable:\n%s", stubManifest)
+	}
+	// A custom integration with no `version` is BLOCKED FROM LOADING by HA's loader, with an
+	// error and no other symptom.
+	if !strings.Contains(stubManifest, `"version"`) {
+		t.Errorf("the stub's manifest has no version; HA blocks it from loading:\n%s", stubManifest)
 	}
 }
 
@@ -407,8 +448,9 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	if !strings.HasSuffix(strings.TrimSpace(wrapperSource), handover) {
 		t.Errorf("the wrapper does not end with %q; it would not hand over", handover)
 	}
-	// And it must spawn the wirer, or (c) never runs on a household's node.
-	if !strings.Contains(wrapperSource, mountPoint+"/wire-mqtt.py") {
-		t.Error("the wrapper does not spawn the wirer")
+	// And it must run the planter, or briard's integration never reaches /config and nothing
+	// inside Home Assistant runs at all.
+	if !strings.Contains(wrapperSource, mountPoint+"/plant.py") {
+		t.Error("the wrapper does not run the planter")
 	}
 }

@@ -309,20 +309,50 @@ pkgs.testers.runNixOSTest {
 
     node1.fail("test -e /run/briard/routes.hosts")
 
-    # ── (c) THE BROKER IS WIRED INTO HOME ASSISTANT ([V3b.30](c)) ────────────────────
+    # ── (c) BRIARD'S OWN INTEGRATION, AND THE BROKER WIRED FROM INSIDE IT ([B.124]) ───
     #
     # A household that installs the broker should not then have to tell Home Assistant about it.
     # The wiring is driven through HA's OWN config-flow API -- so `async_validate_broker_settings`
     # runs on submit and a dead broker yields an error instead of an entry pointing at nothing --
-    # by a script the s6 `run` wrapper spawns DETACHED, because `run`'s moment is the stopped
-    # window and the flow API needs a serving HA.
+    # and since [B.124] it is driven IN-PROCESS, by briard's own integration, which needs no
+    # token, no HTTP and no waiting for HA to serve because it IS the serving HA.
     #
-    # The entry is not asserted to exist "eventually" by polling forever: it is waited for once,
-    # then its CONTENTS are read, because an entry naming the wrong broker would satisfy any
-    # existence check.
+    # WHAT THE PLACEMENT COSTS AND WHY IT IS ASSERTED HERE. Only a stub lands in /config; the
+    # implementation is bind-mounted outside it. That is what keeps the restore wipe and the
+    # household's backups away from briard's code, and it is invisible from the outside -- so the
+    # test asserts both halves separately, and then asserts that Home Assistant actually loaded
+    # the thing they add up to.
+    #
     # A FRESH token: the healing section above rotated the value and pruned every other token on
     # our user, so the `access` from before that boundary is revoked by design.
     wired = exchange(node1.succeed("cat /run/briard/hass/token").strip())
+
+    # The stub, planted into /config by the wrapper in the stopped window s6's `run` provides --
+    # a REAL package, not a symlink into the mount: a household restoring its backup outside
+    # briard would restore a dangling link, and HA's scan skips what is not a directory, leaving
+    # a permanent "Integration 'briard' not found" against the `briard:` line below.
+    node1.succeed(f"test -f {dataroot}/app/custom_components/briard/__init__.py")
+    node1.succeed(f"test -f {dataroot}/app/custom_components/briard/manifest.json")
+    # And the line that switches it on, in a file the household owns. Re-planted at every start.
+    node1.succeed(f"grep -q '^briard:' {dataroot}/app/configuration.yaml")
+    # THE IMPLEMENTATION IS NOT IN /config, which is the whole placement decision: what is not
+    # there cannot be wiped by a restore and cannot ride out in a backup.
+    node1.fail(f"test -e {dataroot}/app/custom_components/briard/briard_ha.py")
+    node1.succeed("test -f /run/briard/hass/integration/briard_ha.py")
+
+    # HOME ASSISTANT LOADED IT. `/api/config` lists the components HA actually set up, so this is
+    # HA's own verdict on the whole chain at once -- the stub answered the custom-component scan,
+    # the manifest passed the loader's version check, the `briard:` line reached the config HA
+    # read, and the stub resolved an implementation that lives outside /config.
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config "
+        "| grep -q '\"briard\"'",
+        timeout=300,
+    )
+
+    # The entry is not asserted to exist "eventually" by polling forever: it is waited for once,
+    # then its CONTENTS are read, because an entry naming the wrong broker would satisfy any
+    # existence check.
     node1.wait_until_succeeds(
         f"curl -fsS -H 'Authorization: Bearer {wired}' "
         "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
@@ -339,22 +369,44 @@ pkgs.testers.runNixOSTest {
     assert mqtt_entries[0]["source"] == "user", f"unexpected flow source: {mqtt_entries[0]}"
     print("HA is wired to the broker: " + _zj.dumps(mqtt_entries[0]))
 
-    # ⚠️ AND IT IS IDEMPOTENT, which is the guard that matters most: the wirer runs at EVERY HA
-    # start, and mqtt is `single_config_entry: true`, so a second entry is not merely untidy --
+    # ⚠️ AND IT IS IDEMPOTENT, which is the guard that matters most: the integration runs at EVERY
+    # HA start, and mqtt is `single_config_entry: true`, so a second entry is not merely untidy --
     # a household pointing HA at their own broker must never find their one slot taken by a
     # localhost entry they did not ask for.
     #
-    # THE WIRER IS RE-RUN DIRECTLY rather than by restarting Home Assistant. Re-running it IS what
-    # a restart does -- the wrapper spawns exactly this -- and doing it this way drops the restart's
-    # timing out of the assertion. Measured why that matters: forcing a second restart seconds
-    # after the first had the service API answer 4xx while HA was still coming back, which failed
-    # the test for a reason that had nothing to do with the guard under test.
-    node1.succeed("podman exec briard-home-assistant-app python3 /briard/wire-mqtt.py /briard/token")
+    # THE WHOLE START IS REPEATED, which is what changed with [B.124]: the wiring is no longer a
+    # script that can be re-run on its own, it is what the integration does when Home Assistant
+    # starts, so the honest way to run it twice is to start Home Assistant twice.
+    #
+    # ⚠️ WAIT FOR THE FIRST START TO FINISH BEFORE ASKING FOR THE SECOND. Measured on the wirer:
+    # restarting seconds after a previous restart had the service API answer 4xx while HA was
+    # still coming back, failing the test for a reason unrelated to the guard under test.
+    # `/api/config` reports HA's own state, so "RUNNING" is that boundary rather than a sleep.
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config "
+        "| grep -qE '\"state\": ?\"RUNNING\"'",
+        timeout=300,
+    )
+    node1.succeed(
+        f"curl -fsS -X POST -H 'Authorization: Bearer {wired}' "
+        "http://127.0.0.1:8123/api/services/homeassistant/restart"
+    )
+    node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
+    # A fresh exchange again, and WAITED FOR rather than assumed: the mint at the restart boundary
+    # replaces the refresh token object behind our value, so every access token issued before it
+    # is revoked -- and /auth/token starts answering only once HA's auth store is back up.
+    token_now = node1.succeed("cat /run/briard/hass/token").strip()
+    node1.wait_until_succeeds(
+        "curl -fsS -o /dev/null -X POST http://127.0.0.1:8123/auth/token "
+        f"-d grant_type=refresh_token -d refresh_token={token_now}",
+        timeout=300,
+    )
+    restarted = exchange(token_now)
     again = _zj.loads(node1.succeed(
-        f"curl -fsS -H 'Authorization: Bearer {wired}' "
+        f"curl -fsS -H 'Authorization: Bearer {restarted}' "
         "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
     ))
-    assert len(again) == 1, f"a second run created another entry: {again}"
+    assert len(again) == 1, f"a second start created another entry: {again}"
     assert again[0]["entry_id"] == mqtt_entries[0]["entry_id"], (
         f"the entry was replaced rather than left alone: {again} vs {mqtt_entries}"
     )
