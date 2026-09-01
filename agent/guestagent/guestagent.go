@@ -823,7 +823,48 @@ func dispatch(x Executor) dispatchFunc {
 			// Declare a brand-new resource's local data current, skipping the initial
 			// sync (there is no peer to sync from on first init). One-time; NOT a
 			// force-promotion. The agent does this only when it first creates a resource.
-			return nil, run("drbdadm", "new-current-uuid", "--clear-bitmap", req.Resource+"/0")
+			if err := run("drbdadm", "new-current-uuid", "--clear-bitmap", req.Resource+"/0"); err != nil {
+				return nil, err
+			}
+			// AND THE ONLY PLACE THE DATA VOLUME IS EVER FORMATTED ([B.126]).
+			//
+			// It used to live in briard-data.service, on the PROMOTION path, as a `blkid ||
+			// mkfs.btrfs -f`. That is a format guarded by a probe which cannot tell "this device is
+			// blank" from "this device could not be read" -- both make blkid non-zero -- so any
+			// transient read failure on a healthy volume ran a forced mkfs over the household's
+			// replicated data, on a path that executes at every promotion forever.
+			//
+			// HERE IT IS SAFE FOR REASONS THAT ARE CHECKED RATHER THAN HOPED. The caller reaches
+			// this verb only under `spec.FreshInit && prov.CreatedMetadata` -- the designated seed
+			// of a NEW flock, on a disk `create-md` just wrote metadata to, having refused to touch
+			// one that already had it. A joiner is hard-wired FreshInit=false, a reboot has
+			// CreatedMetadata=false, so neither ever arrives. And nothing can promote yet:
+			// drbd-reactor is armed by verbReactor, strictly after this ([V3b.16a]).
+			//
+			// -f STAYS, and only its LOCATION changed: on a disk the installer has just claimed for
+			// a brand-new flock, overwriting whatever a previous life left behind is the intent.
+			// The bug was never the flag, it was a destructive operation sitting on a path that
+			// runs forever, reachable by a probe that answers "blank" when it means "I cannot tell".
+			dev, err := x.Run(ctx, "drbdadm", "sh-dev", req.Resource+"/0")
+			if err != nil {
+				return nil, fmt.Errorf("resolve %s device: %w: %s", req.Resource, err, bytes.TrimSpace(dev))
+			}
+			// PRIMARY FIRST, because DRBD denies write access on a Secondary. Plain `primary`,
+			// never --force (architectural invariant 3): this node is alone, quorate and just
+			// declared UpToDate, so there is nothing to force past.
+			if err := run("drbdadm", "primary", req.Resource); err != nil {
+				return nil, err
+			}
+			mkerr := run("mkfs.btrfs", "-f", string(bytes.TrimSpace(dev)))
+			// Demote whatever happened: leaving the seed Primary would hand drbd-reactor a
+			// resource that is already promoted and a role nothing in the chain claimed.
+			if err := run("drbdadm", "secondary", req.Resource); err != nil {
+				if mkerr != nil {
+					return nil, mkerr
+				}
+				return nil, err
+			}
+			return nil, mkerr
 		case verbReactor:
 			if _, err := resourceReq(payload); err != nil {
 				return nil, err

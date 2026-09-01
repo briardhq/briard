@@ -142,6 +142,9 @@ pkgs.testers.runNixOSTest {
     anchor1.succeed("drbdadm create-md --force r0")
     anchor1.succeed("systemctl start drbd@r0.target")
     anchor1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")  # peer-less -> UpToDate
+    # Format the fresh volume the way the INSTALLER now does ([B.126]): the product stopped
+    # formatting on the promotion path, so a harness that seeds a resource by hand states it.
+    anchor1.succeed("drbdadm primary r0 && mkfs.btrfs -f $(drbdadm sh-dev r0/0) && drbdadm secondary r0")
     anchor1.succeed("systemctl start drbd-reactor.service")
     anchor1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     # The front door first, with nothing installed: that is what a node coming up single-handed

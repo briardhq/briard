@@ -98,6 +98,9 @@ pkgs.testers.runNixOSTest {
     node1.succeed("systemctl start drbd@r0.target")
     # Single node: no peer to connect to — just make it UpToDate so it's promotable.
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
+    # Format the fresh volume the way the INSTALLER now does ([B.126]): the product stopped
+    # formatting on the promotion path, so a harness that seeds a resource by hand states it.
+    node1.succeed("drbdadm primary r0 && mkfs.btrfs -f $(drbdadm sh-dev r0/0) && drbdadm secondary r0")
 
     # Give the node a flock name before anything converges, the way the agent does at bring-up:
     # the per-service names are composed from it, so a node with none routes nothing.

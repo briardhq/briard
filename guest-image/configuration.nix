@@ -1036,12 +1036,19 @@ in
         ExecStart = pkgs.writeShellScript "briard-data-up" ''
           set -eu
           mkdir -p ${btrfsRoot}
-          # Format on first use only: a blank DRBD device has no fs signature.
-          # btrfs for CoW snapshots -- the atomic {data} half of rollback, and they
-          # replicate with the volume.
-          if ! blkid /dev/drbd0 >/dev/null 2>&1; then
-            mkfs.btrfs -f /dev/drbd0
-          fi
+          # MOUNT ONLY. This used to format the volume too -- `blkid /dev/drbd0 || mkfs.btrfs -f` --
+          # and that has moved to the installer ([B.126], drbd.init-uptodate). Two reasons, and the
+          # second is the one that matters:
+          #
+          #   1. this runs at EVERY promotion, forever, while a volume is formatted exactly once;
+          #   2. blkid answers non-zero both for "blank" and for "could not read it", so a
+          #      transient read failure on a healthy volume ran a FORCED mkfs over the household's
+          #      replicated data. A destructive operation must not sit behind a probe that cannot
+          #      tell those two apart.
+          #
+          # An unformatted volume now fails the mount, which fails this unit, which fails the
+          # chain and demotes the node -- loud, and recoverable, which "silently reformatted" is
+          # not. The same direction `create-md` already takes: refuse rather than overwrite.
           mount /dev/drbd0 ${btrfsRoot}
           # First use: the snapshots dir, sibling of whatever service subvolumes get created
           # later. It replicates with the volume, so it survives failover. Idempotent. A
