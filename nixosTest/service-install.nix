@@ -210,11 +210,14 @@ pkgs.testers.runNixOSTest {
     # THE CHAIN IS STATIC, and no longer derived from the rendering at all ([V3b.3](f)). The chain
     # is what drbd-reactor promotes WITH, but the volume it must converge to is only readable
     # AFTER promotion — so the start-list cannot name the services, and briard-services is what
-    # renders and starts them once the mount exists. This is exactly what host.promoterUnits
-    # writes in production.
-    chain = ["briard-data.service", "briard-services.service", "briard-vip.service"]
-    quoted = ", ".join(f'"{u}"' for u in chain)
-    snippet = f'[[promoter]]\n[promoter.resources.r0]\nstart = [ {quoted} ]\n'
+    # renders and starts them once the mount exists.
+    #
+    # TAKEN FROM lib.nix rather than restated ([B.125]). This used to be a hand-written list
+    # annotated "exactly what host.promoterUnits writes in production", which is the kind of claim
+    # that stops being true silently: when the front door and the mDNS publishers became chain
+    # MEMBERS, this copy still had three units, so the door never started here at all and the
+    # service was unreachable by name — the failure this comment is now attached to.
+    snippet = """${h.promoterSnippet}"""
     for m in disk_nodes:
         m.succeed(f"install -D /dev/stdin /run/briard/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
     for m in disk_nodes:

@@ -22,14 +22,12 @@ let
   # Only for the fixture wiring: the node itself is rolled here (see mkNode below).
   h = import ./lib.nix { inherit pkgs guestModule; };
 
-  # The promoter's ordered chain (identical to lib.nix), and STATIC ([V3b.3](f)): the services are
-  # not members -- briard-services starts them from the volume once the mount exists.
-  promoterSnippet = ''
-    [[promoter]]
-    [promoter.resources.r0]
-    adjust-resource-on-start = false
-    start = [ "briard-data.service", "briard-services.service", "briard-vip.service" ]
-  '';
+  # The promoter's ordered chain, TAKEN FROM lib.nix rather than restated ([B.125]). It used to be
+  # a hand-copy annotated "identical to lib.nix", which was true until the front door and the mDNS
+  # publishers became MEMBERS -- and a rig whose copy is short no longer merely differs from
+  # production, it never starts them at all, because nothing else pulls them in any more.
+  promoterSnippet = h.promoterSnippet;
+
 
   # A node like lib.nix's mkNode, but with no baked r0.res so the testScript can write and rewrite
   # it at runtime (the whole point).
