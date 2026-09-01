@@ -1218,14 +1218,24 @@ in
       unitConfig = {
         ConditionPathExists = mdnsEnvPath;
         # THE ESCALATION BUDGET, and it is ours alone ([B.125]). drbd-reactor starts the chain once
-        # and never watches it again -- it has no retry counter -- so what turns a broken publisher
-        # into a failover is systemd reaching `failed`, which `Restart=` prevents until the start
-        # limit is exceeded. WITHOUT THESE TWO LINES IT NEVER ESCALATES: a failing cycle here is
-        # RestartSec plus the establishment deadline, ~17s, which can never hit the 5-in-10s
-        # default. Five attempts is ~85s of trying before the node hands the resource on, which is
-        # long enough to ride out a slow avahi and short enough that an unreachable node does not
-        # stay unreachable. ⚠️ The number is reasoned, not measured -- [B.125](b) owes the
-        # measurement it should be sized against.
+        # and never watches it again -- it has no retry counter -- so what turns a broken unit into
+        # a failover is systemd reaching the failed state, which `Restart=` postpones until the
+        # start limit is exceeded.
+        #
+        # ⚠️ THE SEMANTICS ARE BACK TO FRONT FROM THE OBVIOUS READING, so tune them deliberately:
+        # with Burst held constant, a LARGER interval is STRICTER -- it demands fewer than Burst
+        # starts across a wider window. It is also what decides whether the limit fires at all,
+        # since it only ever trips when Burst x failure-cycle < Interval. That is exactly why the
+        # 5-in-10s DEFAULT never fired here: a cycle of RestartSec plus the establishment deadline
+        # is 17-37s, so a 10s window never held more than one start and this unit would have
+        # restarted forever without escalating.
+        #
+        # 300/5 IS A JUDGEMENT, NOT A MEASUREMENT, and it is the same on all three `simple` chain
+        # members deliberately -- one number to reason about until something gives us a reason for
+        # more. It buys ~85s of trying for a publisher and ~10s for the front door, whose cycle is
+        # ~2s; that asymmetry is known and accepted rather than overlooked. [B.125](b) holds what
+        # would justify changing it: how long a healthy publisher takes to establish on a cold
+        # household LAN, and how long the door can lose :80 to its own previous instance.
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;
       };
@@ -1310,11 +1320,12 @@ in
         Restart = "on-failure";
         RestartSec = 2;
       };
-      # THE ESCALATION BUDGET, now that failing means demoting ([B.125]). Without it systemd's
-      # 5-in-10s default applies, and with RestartSec=2 that is ~10 seconds of trying before a
-      # node hands the resource on -- far too eager for a door whose likeliest transient is losing
-      # the race for :80 against its own previous instance during a failover. Same shape as the
-      # publishers'; the numbers across the whole chain are [B.125](b)'s to settle.
+      # The same budget as the publishers, deliberately identical -- see briard-mdns above for the
+      # semantics and why the number is a judgement ([B.125]). It matters more here than the shape
+      # suggests: with no StartLimit at all systemd's 5-in-10s default applies, and at RestartSec=2
+      # that IS reachable, so a door would hand the resource on after ~10s of trying. That is eager
+      # for one whose likeliest transient is losing the race for :80 to its own previous instance
+      # during a failover, and it is the asymmetry [B.125](b) holds open.
       unitConfig = {
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;
