@@ -3,8 +3,8 @@
 #
 #   curl -fsSL https://get.briard.io/install.sh | sh
 #
-# Brings a stock single-node Linux host to GREEN: a wired L2 bridge enslaving the host
-# NIC, a guest VM (booted by our BUNDLED qemu -- no distro qemu) holding
+# Brings a stock single-node Linux host to GREEN: the guest's NICs as macvtap children of the
+# host NIC (no bridge, no host-IP move), a guest VM (booted by our BUNDLED qemu -- no distro qemu) holding
 # the VIP, a single-node DRBD data volume (guest-side), and Briard answering at the VIP
 # on the LAN. No cloud, no name (rung 0).
 #
@@ -105,12 +105,18 @@ PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
 # host. The host holding no address and no route in it is what makes a pod unreachable from outside
 # the guest by construction -- there is nothing here to enforce, and that is the design.
 POD_SUBNET="${BRIARD_POD_SUBNET:-}"
-# Net substrate. "macvtap" (DEFAULT) makes the guest's NICs macvtap children of the host
-# NIC directly: L2 citizenship with NO bridge and NO host-IP move, so no SSH-risk moment and no net
-# guard -- the least invasive substrate, proven green and validated no worse than bridge. "bridge" is the validated fallback (BRIARD_NET_MODE=bridge): enslaves the host NIC to an
-# L2 bridge and puts the guest's NICs on it as taps -- more invasive (moves the host IP), but lets a
-# user AT the host reach the guest VIP (macvtap isolates host↔guest). TAP/DRBD_TAP name the devices
-# either way.
+# Net substrate. "macvtap" (DEFAULT, and the only shape a Linux node ships in) makes the guest's
+# NICs macvtap children of the host NIC directly: L2 citizenship with NO bridge and NO host-IP
+# move, so no SSH-risk moment and no net guard -- the least invasive substrate.
+# "bridge" (BRIARD_NET_MODE=bridge) enslaves the host NIC to an L2 bridge and puts ONE tap on it,
+# the guest making its own service identity on top: the Linux clone of the Windows shape (DESIGN
+# §4), which is what it is FOR -- `install-bridge.nix` drives it, so the knob is load-bearing for
+# the rig that exercises the Windows topology before a Windows host agent exists. Deliberately
+# undocumented rather than removed: it is also the only substrate where the host sits on the
+# guest's L2, so it is the one you can tcpdump a networking problem from -- macvtap's host<->guest
+# isolation is the design, and it is also what hides the wire. NOT a supported install shape and
+# NOT an HA-proven one: the pair half is unmeasured, so a flock built on it is on the single-L2
+# ARP-flux hazard with nothing behind it. TAP/DRBD_TAP name the devices either way.
 NET_MODE="${BRIARD_NET_MODE:-macvtap}"
 # The service address, in CIDR form -- it must carry a prefix because it is an address ON THE
 # USER'S LAN, and the LAN's prefix is not ours to assume. Until V3.19 this was a bare address that
@@ -451,6 +457,10 @@ EOF
 	say "network: the guest will share $NIC with you (your machine keeps its own address)"
 	sh "$PREFIX/net-up.sh"
 else
+# Say it, so the mode is undocumented rather than silent: someone reaches this branch by typing
+# BRIARD_NET_MODE=bridge, and what they typed is a diagnostic/rig shape, not the shipped one.
+say "network: bridge mode -- the Windows-shape clone, for tests and for watching the wire."
+say "network: not the shipped Linux substrate and not proven as an HA pair; use macvtap to install."
 # THE SUBSTRATE FORK's other half ([V3b.26c]) -- the Linux clone of the Windows shape. ONE tap, so
 # the guest gets ONE kernel NIC (eth1) and MAKES its service identity: a macvlan child named eth2
 # carrying the flock MAC, which the agent delivers over the channel. No third tap, so no eth3.
