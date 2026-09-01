@@ -7,17 +7,66 @@
 # wiring, not failover (that is hass-failover), and HA is heavy enough that one instance is the
 # right cost.
 #
+# It also carries [V3b.30](b), the one measurement that needs real HA and a real announcement in
+# one place: whether HA's OWN zeroconf library, inside HA's own container, sees a record the
+# guest published. The broker is installed alongside for exactly that, and for nothing else.
+#
 # HA reachable THROUGH the front door under its own name is asserted again, at the bottom of this
 # file ([B.48] landed the routing table). It was lost when the build-time service slot went
 # ([V3b.3](e2)) -- the door's `-backend` came from that slot, so with the slot gone no node routed
 # to a service at all -- and it comes back keyed on the SERVICE's name rather than on there being
 # exactly one thing to forward to, which is what the table changed.
-{ pkgs, guestModule, fixture }:
+{ pkgs, guestModule, fixture, mosquitto }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # The zeroconf probe, as its OWN file rather than a heredoc inside the test script. Nix's
+  # indented strings strip the SMALLEST indentation found in the string, so a Python body sitting
+  # at column 0 stops anything from being stripped and silently de-indents the whole test script
+  # around it -- which is a driver syntax error a long way from its cause.
+  zeroconfProbe = pkgs.writeText "zeroconf-probe.py" ''
+    """Browse _mqtt._tcp with HA's own zeroconf, print what resolved, exit 1 if nothing did."""
+    import sys
+    import time
+
+    from zeroconf import ServiceBrowser, Zeroconf
+
+    found = {}
+
+
+    class Listener:
+        def add_service(self, zc, type_, name):
+            info = zc.get_service_info(type_, name, timeout=5000)
+            if info:
+                found[name] = (sorted(info.parsed_addresses()), info.port, info.server)
+
+        def update_service(self, *a):
+            pass
+
+        def remove_service(self, *a):
+            pass
+
+
+    zc = Zeroconf()
+    ServiceBrowser(zc, "_mqtt._tcp.local.", Listener())
+    for _ in range(45):
+        if found:
+            break
+        time.sleep(1)
+    zc.close()
+    for name, value in found.items():
+        print(name, value)
+    sys.exit(0 if found else 1)
+  '';
+
   node = h.mkNode {
-    inherit fixture;
+    # The broker rides along for ONE claim -- [V3b.30](b), at the bottom of this file: whether
+    # HA's own zeroconf stack sees what the guest announces. It needs a real service record on
+    # the LAN, and the product publishes exactly one.
+    fixtures = [
+      fixture
+      mosquitto
+    ];
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
 in
@@ -65,6 +114,8 @@ pkgs.testers.runNixOSTest {
     # warms it (already resident) and starts it.
     dataroot = install_fixture(node1)
     assert dataroot == "/var/lib/briard/home-assistant", f"the renderer chose {dataroot}"
+    # The broker, for the zeroconf claim at the bottom. Installed through the same converge as HA.
+    install_fixture(node1, service="${mosquitto.name}")
 
     # The DRBD device is mounted; HA's /config subvolume lives on it. (Assert the
     # real mount, not the subvolume path — a fresh btrfs subvolume isn't reliably
@@ -208,12 +259,51 @@ pkgs.testers.runNixOSTest {
         f"/healthz under the service's name was answered by the front door: {under_name!r}"
     )
     node_health = node1.succeed("curl -fsS http://192.168.1.100/healthz")
-    assert "1 service(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
-    assert "home-assistant" in node_health, f"the node's /healthz does not name what it routes: {node_health!r}"
+    assert "2 service(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
+    for svc in ("home-assistant", "${mosquitto.name}"):
+        assert svc in node_health, f"the node's /healthz does not name what it routes: {node_health!r}"
 
     # ONE LIST, so "published but not routed" is no longer something to assert — it is not
     # expressible. The mDNS publisher reads this same table with jq; there is no flattened second
     # copy for it to read while stale, and this is the assertion that keeps it that way.
+
+    # ── (b) DOES HA'S OWN ZEROCONF SEE WHAT THE GUEST ANNOUNCES? ([V3b.30](b)) ────────
+    #
+    # THE GATE, and it is a MEASUREMENT rather than a feature: [V3b.29] §6.5 sketched an in-HA
+    # integration discovered over zeroconf and left two legs unverified, of which this is one --
+    # that HA's zeroconf sees the guest's mDNS FROM INSIDE THE CONTAINER. It decides [V3b.30](a)'s
+    # reach into HA, (d)'s worth, and Music Assistant's wiring, and it is cheap, so it is measured
+    # rather than reasoned. The reasoning said it SHOULD work -- python-zeroconf sets
+    # SO_REUSEADDR/SO_REUSEPORT so sharing :5353 with avahi is normal, and Linux defaults
+    # IP_MULTICAST_LOOP on for IPv4 -- and "should" is not a measurement.
+    #
+    # ⚠️ INSIDE THE CONTAINER ON PURPOSE, not from the guest shell. Under host networking the two
+    # share a netns, so the socket behaviour ought to be identical and a guest-side probe would be
+    # the easier thing to write -- but "ought to be identical" is the assumption under test, and a
+    # probe run outside the container cannot refute it. This runs HA's OWN zeroconf library, in
+    # HA's own interpreter, in the namespace HA actually lives in.
+    #
+    # ⚠️ WHAT A GREEN HERE DOES NOT BUY, so nobody reads more into it: HA browses only the service
+    # types some manifest declares (`async_get_zeroconf`), and `_mqtt._tcp` appears NOWHERE in
+    # home-assistant/core. So Home Assistant will not act on this record until (d) teaches mqtt to
+    # ask for it. What is proven is the TRANSPORT -- that a record the guest publishes is visible
+    # to HA's stack -- which is the leg §6.5 could not verify.
+    import json as _zj
+    host_mq = routed_host(node1, "${mosquitto.name}")
+    want = next(
+        s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["services"]
+        if s["name"] == "${mosquitto.name}"
+    )["announce"][0]
+    seen = node1.succeed(
+        "podman exec -i briard-home-assistant-app python3 - < ${zeroconfProbe}"
+    )
+    print("HA's zeroconf saw: " + seen.strip())
+    # Every expected value is the NODE's, read from the table it published from.
+    assert want["name"] in seen, f"HA's zeroconf did not see {want['name']!r}: {seen!r}"
+    assert str(want["port"]) in seen, f"the record HA saw carries the wrong port: {seen!r}"
+    assert host_mq in seen, f"the record HA saw does not point at {host_mq!r}: {seen!r}"
+    assert "192.168.1.100" in seen, f"the record HA resolved does not carry the VIP: {seen!r}"
+
     node1.fail("test -e /run/briard/routes.hosts")
   '';
 }

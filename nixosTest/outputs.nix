@@ -129,7 +129,11 @@ let
   };
   # HA installed as a service: real Home Assistant boots and serves, its recorder
   # SQLite + .storage landing on the DRBD subvolume.
-  hassPayload = import ./hass-payload.nix { inherit pkgs guestModule; fixture = hassFixture; };
+  hassPayload = import ./hass-payload.nix {
+    inherit pkgs guestModule;
+    fixture = hassFixture;
+    mosquitto = mosquittoFixture;
+  };
 
   # Kill the primary → HA fails over with config intact at the same VIP.
   hassFailover = import ./hass-failover.nix { inherit pkgs guestModule; fixture = hassFixture; };
