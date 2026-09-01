@@ -335,6 +335,20 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"test -f {dataroot}/app/custom_components/briard/manifest.json")
     # And the line that switches it on, in a file the household owns. Re-planted at every start.
     node1.succeed(f"grep -q '^briard:' {dataroot}/app/configuration.yaml")
+
+    # ⚠️ WHAT THE HOUSEHOLD IS LEFT HOLDING IS STOCK HOME ASSISTANT PLUS ONE LINE, and the line
+    # above alone would not have caught the failure that matters. On a node's first boot /config
+    # is empty and briard has to make `configuration.yaml` exist before HA reads it, so the file
+    # the household lives with is one briard had a hand in. It RELAYS `async_ensure_config_exists`
+    # rather than authoring anything -- because `_write_default_config` is skipped entirely once
+    # the file exists, so a briard-authored file would silently cost the household `default_config`
+    # (most of Home Assistant) and the three `!include` files it names. That regression leaves
+    # `^briard:` perfectly satisfied, which is why the stock half is asserted separately.
+    for stock in ("default_config:", "automation: !include automations.yaml"):
+        node1.succeed(f"grep -qF '{stock}' {dataroot}/app/configuration.yaml")
+    for made in ("automations.yaml", "scripts.yaml", "scenes.yaml", "secrets.yaml", ".HA_VERSION"):
+        node1.succeed(f"test -f {dataroot}/app/{made}")
+    print("the household's configuration.yaml:\n" + node1.succeed(f"cat {dataroot}/app/configuration.yaml"))
     # THE IMPLEMENTATION IS NOT IN /config, which is the whole placement decision: what is not
     # there cannot be wiped by a restore and cannot ride out in a backup.
     node1.fail(f"test -e {dataroot}/app/custom_components/briard/briard_ha.py")
