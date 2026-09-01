@@ -607,6 +607,14 @@ fi
 # read-only base image, recreated every install (the base may have moved).
 DATA="$STATE/data.img"
 if [ ! -f "$DATA" ]; then
+	# ⚠️ CREATE IT EXCLUSIVELY, and the test above is not enough on its own ([B.126]): `[ ! -f ]`
+	# is true for "absent" AND for "present but cannot be stat'd", and the dd fallback below
+	# writes from byte 0 -- so the test alone would let an unreadable-but-present data volume be
+	# zeroed. noclobber makes the CREATION the proof of absence: it refuses if anything is there,
+	# so "I could not tell" can no longer route into a destructive write.
+	if ! (set -o noclobber; : >"$DATA") 2>/dev/null; then
+		die "$DATA already exists but could not be read -- refusing to touch it; move it aside if this node really is new"
+	fi
 	say "creating the $DATA_SIZE data volume at $DATA -- your services' data lives here"
 	# THICK, not sparse. This is the one volume whose failure mode is unacceptable: DRBD replicates
 	# it and the guest writes service data into it, so a `truncate` sparse file that the host cannot

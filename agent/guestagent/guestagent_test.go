@@ -877,7 +877,10 @@ func TestDataSnapshotReplacesAStaleRollbackPoint(t *testing.T) {
 	}
 }
 
-// Restore swaps the live subvolume for a fresh rw snapshot of the restore point.
+// The ORDER is the safety property ([B.126]): verify the restore point, materialise the
+// replacement beside the live subvolume, and only then destroy the live one. Asserted as a
+// sequence because any reordering is the bug -- this used to delete first, so a restore point that
+// was missing or unreadable left the household with nothing at all.
 func TestDataRestoreCommands(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
@@ -885,23 +888,42 @@ func TestDataRestoreCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
+		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "show", "/data/ha.restoring"},
+		{"btrfs", "subvolume", "delete", "/data/ha.restoring"},
+		{"btrfs", "subvolume", "snapshot", "/data/ha/.snapshots/ha-1", "/data/ha.restoring"},
 		{"btrfs", "subvolume", "delete", "/data/ha"},
-		{"btrfs", "subvolume", "snapshot", "/data/ha/.snapshots/ha-1", "/data/ha"},
+		{"mv", "/data/ha.restoring", "/data/ha"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
 	}
 }
 
-// A failed delete aborts restore before the (destructive) re-snapshot.
-func TestDataRestoreStopsOnDeleteError(t *testing.T) {
-	f := &fakeExec{err: errors.New("delete boom")}
+// AND THE LIVE SUBVOLUME SURVIVES A BAD RESTORE POINT, which is the whole point of the reorder: an
+// unusable source must cost the household nothing.
+//
+// Only the SOURCE probe fails here, and that is deliberate -- a fake that errors on everything
+// would pass this assertion no matter which order the code ran in, because nothing would get far
+// enough to delete. This is the shape that actually distinguishes the fix from the bug.
+func TestDataRestoreRefusesAnUnusableRestorePoint(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if len(args) >= 3 && args[0] == "subvolume" && args[1] == "show" && args[2] == "/snap" {
+			return nil, errors.New("No such file or directory")
+		}
+		return nil, nil
+	}}
 	g := dial(t, f)
 	if err := g.Restore(context.Background(), "/data/ha", "/snap"); err == nil {
-		t.Fatal("expected error")
+		t.Fatal("restore accepted a restore point it could not read")
 	}
-	if len(f.runs) != 1 {
-		t.Errorf("restore should stop after a failed delete, ran %v", f.runs)
+	for _, r := range f.runs {
+		if len(r) >= 3 && r[1] == "subvolume" && r[2] == "delete" {
+			t.Errorf("restore deleted something before validating the source: %v", f.runs)
+		}
+		if r[0] == "mv" {
+			t.Errorf("restore moved something despite an unusable source: %v", f.runs)
+		}
 	}
 }
 

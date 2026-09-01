@@ -1040,10 +1040,40 @@ func dispatch(x Executor) dispatchFunc {
 			}
 			// Precondition: the host has stopped the service (bind released). Swap the
 			// live rw subvolume for a fresh rw snapshot of the RO restore point.
+			//
+			// ⚠️ VERIFY, MATERIALISE, THEN DESTROY -- in that order, and the order IS the fix
+			// ([B.126]). This used to `btrfs subvolume delete <live>` unconditionally and only
+			// then snapshot the restore point over it, so a restore point that was missing,
+			// unreadable, or a snapshot that failed left the household with the live data already
+			// gone and nothing in its place. On the SERVICE ROLLBACK path, which is to say: after
+			// a failed upgrade, when their data is the only thing left worth having.
+			//
+			// It is not the `blkid` shape that started that audit -- there was no bad probe here,
+			// there was no probe at all -- but it is the same lesson from the other side: nothing
+			// irreversible happens until the thing meant to replace it exists on disk.
+			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err != nil {
+				return nil, fmt.Errorf("restore point %s is not a usable subvolume (%w) -- refusing to delete %s",
+					req.Path, err, req.DataDir)
+			}
+			// A staging name beside the live one, on the same btrfs so the rename below is a
+			// metadata operation. Cleared first: `btrfs subvolume snapshot` given an existing
+			// directory creates the new snapshot INSIDE it, which is the trap data.snapshot
+			// documents one case up.
+			staged := req.DataDir + ".restoring"
+			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", staged); err == nil {
+				if err := run("btrfs", "subvolume", "delete", staged); err != nil {
+					return nil, err
+				}
+			}
+			if err := run("btrfs", "subvolume", "snapshot", req.Path, staged); err != nil {
+				return nil, err
+			}
+			// Only now is the live copy expendable: its replacement is already on disk, so a
+			// crash from here leaves something to finish rather than nothing to recover.
 			if err := run("btrfs", "subvolume", "delete", req.DataDir); err != nil {
 				return nil, err
 			}
-			return nil, run("btrfs", "subvolume", "snapshot", req.Path, req.DataDir)
+			return nil, run("mv", staged, req.DataDir)
 		case verbServiceRender:
 			var req serviceRenderRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
