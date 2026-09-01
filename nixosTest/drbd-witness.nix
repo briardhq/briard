@@ -58,9 +58,9 @@ pkgs.testers.runNixOSTest {
     # initial sync. The per-node volume form needs the volume id (r0/0).
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Format the fresh volume the way the INSTALLER now does ([B.126]): the product stopped
-    # formatting on the promotion path, so a harness that seeds a resource by hand states it.
-    node1.succeed("drbdadm primary r0 && mkfs.btrfs -f $(drbdadm sh-dev r0/0) && drbdadm secondary r0")
+    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
+    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
+    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
 
     # Only the disk nodes run the promoter; the witness just votes.
     for m in disk_nodes:

@@ -826,45 +826,27 @@ func dispatch(x Executor) dispatchFunc {
 			if err := run("drbdadm", "new-current-uuid", "--clear-bitmap", req.Resource+"/0"); err != nil {
 				return nil, err
 			}
-			// AND THE ONLY PLACE THE DATA VOLUME IS EVER FORMATTED ([B.126]).
+			// AND ARM THE ONE-TIME FORMAT ([B.126]). briard-data used to format the volume itself,
+			// on the promotion path, as `blkid /dev/drbd0 || mkfs.btrfs -f`: a forced format behind
+			// a probe that cannot tell "this device is blank" from "this device could not be read",
+			// since blkid is non-zero for both. A transient read failure on a healthy volume would
+			// have reformatted the household's replicated data, on a path that runs at EVERY
+			// promotion forever.
 			//
-			// It used to live in briard-data.service, on the PROMOTION path, as a `blkid ||
-			// mkfs.btrfs -f`. That is a format guarded by a probe which cannot tell "this device is
-			// blank" from "this device could not be read" -- both make blkid non-zero -- so any
-			// transient read failure on a healthy volume ran a forced mkfs over the household's
-			// replicated data, on a path that executes at every promotion forever.
+			// So the decision moves here and the ACT stays in briard-data, which is the only split
+			// that respects architectural invariant 2: nothing in the agent may promote, and only a
+			// Primary can be formatted. This verb is reached solely under `spec.FreshInit &&
+			// prov.CreatedMetadata` -- the designated seed of a NEW flock, on a disk create-md just
+			// wrote metadata to having refused to touch one that already had it. A joiner is
+			// hard-wired FreshInit=false; a reboot has CreatedMetadata=false.
 			//
-			// HERE IT IS SAFE FOR REASONS THAT ARE CHECKED RATHER THAN HOPED. The caller reaches
-			// this verb only under `spec.FreshInit && prov.CreatedMetadata` -- the designated seed
-			// of a NEW flock, on a disk `create-md` just wrote metadata to, having refused to touch
-			// one that already had it. A joiner is hard-wired FreshInit=false, a reboot has
-			// CreatedMetadata=false, so neither ever arrives. And nothing can promote yet:
-			// drbd-reactor is armed by verbReactor, strictly after this ([V3b.16a]).
-			//
-			// -f STAYS, and only its LOCATION changed: on a disk the installer has just claimed for
-			// a brand-new flock, overwriting whatever a previous life left behind is the intent.
-			// The bug was never the flag, it was a destructive operation sitting on a path that
-			// runs forever, reachable by a probe that answers "blank" when it means "I cannot tell".
-			dev, err := x.Run(ctx, "drbdadm", "sh-dev", req.Resource+"/0")
-			if err != nil {
-				return nil, fmt.Errorf("resolve %s device: %w: %s", req.Resource, err, bytes.TrimSpace(dev))
-			}
-			// PRIMARY FIRST, because DRBD denies write access on a Secondary. Plain `primary`,
-			// never --force (architectural invariant 3): this node is alone, quorate and just
-			// declared UpToDate, so there is nothing to force past.
-			if err := run("drbdadm", "primary", req.Resource); err != nil {
+			// ⚠️ THE MARKER IS ON TMPFS, AND THAT IS THE SAFETY PROPERTY, not an accident of where
+			// /run happens to be: it cannot outlive the boot the installer created the volume in,
+			// so no later boot, promotion or failover can find it. A reboot can never format.
+			if err := run("mkdir", "-p", filepath.Dir(dataFormatMarker)); err != nil {
 				return nil, err
 			}
-			mkerr := run("mkfs.btrfs", "-f", string(bytes.TrimSpace(dev)))
-			// Demote whatever happened: leaving the seed Primary would hand drbd-reactor a
-			// resource that is already promoted and a role nothing in the chain claimed.
-			if err := run("drbdadm", "secondary", req.Resource); err != nil {
-				if mkerr != nil {
-					return nil, mkerr
-				}
-				return nil, err
-			}
-			return nil, mkerr
+			return nil, x.WriteFile(dataFormatMarker, []byte(req.Resource+"\n"))
 		case verbReactor:
 			if _, err := resourceReq(payload); err != nil {
 				return nil, err
@@ -1809,6 +1791,15 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 // reactor.pause removed it by hand. That defusal is drbd-reactor.service's ExecStop now
 // ([B.85], guest-image/configuration.nix), so the path belongs to the unit that acts on it and
 // nothing in Go needs to know it.)
+
+// dataFormatMarker is how the installer tells briard-data.service that THIS volume is brand new
+// and may be formatted ([B.126]). Written only under `FreshInit && CreatedMetadata`, consumed and
+// removed by the unit, and on TMPFS so it cannot survive the boot that created it -- which is what
+// makes "a reboot can never format" a property of the filesystem rather than of our care.
+//
+// The DECISION is here and the ACT is in the unit because only a Primary can be formatted and
+// nothing in the agent may promote (architectural invariant 2, and internal/arch enforces it).
+const dataFormatMarker = "/run/briard/data.format"
 
 // vipEnvPath is the REQUIRED EnvironmentFile briard-vip.service reads its VIP_DEV and VIP_ADDR
 // from; the agent writes it via net.configure at every bring-up. Nothing is baked behind it

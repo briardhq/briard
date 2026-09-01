@@ -10,6 +10,10 @@
 { config, pkgs, lib, ... }:
 let
   btrfsRoot = "/var/lib/briard"; # the DRBD btrfs volume mount
+  # The installer's one-time "this volume is brand new" marker (agent/guestagent's
+  # dataFormatMarker). A /run path is a two-sided contract with the agent, restated here the way
+  # mdnsEnvPath and vipEnvPath are, and the Go side owns it.
+  dataFormatMarker = "/run/briard/data.format";
   snapDir = "${btrfsRoot}/.snapshots"; # pre-upgrade snapshots, siblings of the data subvolume
   tlsDir = "${btrfsRoot}/tls"; # cert/key on the DRBD volume (replicated, survive failover)
   # The VIP's address AND device are both agent-determined: net.configure writes VIP_ADDR +
@@ -1036,19 +1040,29 @@ in
         ExecStart = pkgs.writeShellScript "briard-data-up" ''
           set -eu
           mkdir -p ${btrfsRoot}
-          # MOUNT ONLY. This used to format the volume too -- `blkid /dev/drbd0 || mkfs.btrfs -f` --
-          # and that has moved to the installer ([B.126], drbd.init-uptodate). Two reasons, and the
-          # second is the one that matters:
+          # FORMAT ONLY WHEN THE INSTALLER SAID SO ([B.126]). This used to be
+          # `blkid /dev/drbd0 || mkfs.btrfs -f` -- a forced format behind a probe that cannot tell
+          # "this device is blank" from "this device could not be read", since blkid is non-zero
+          # for both. A transient read failure on a healthy volume would have reformatted the
+          # household's replicated data, and this unit runs at EVERY promotion, forever.
           #
-          #   1. this runs at EVERY promotion, forever, while a volume is formatted exactly once;
-          #   2. blkid answers non-zero both for "blank" and for "could not read it", so a
-          #      transient read failure on a healthy volume ran a FORCED mkfs over the household's
-          #      replicated data. A destructive operation must not sit behind a probe that cannot
-          #      tell those two apart.
+          # The decision now belongs to bring-up, which alone knows this is the seed of a NEW flock
+          # on a disk create-md just claimed (FreshInit && CreatedMetadata). The ACT stays here
+          # because only a Primary can be formatted and nothing in the agent may promote
+          # (architectural invariant 2). ⚠️ The marker is on TMPFS, and that is the property rather
+          # than a detail: it cannot outlive the boot that created the volume, so no later boot,
+          # promotion or failover can ever find it.
           #
-          # An unformatted volume now fails the mount, which fails this unit, which fails the
-          # chain and demotes the node -- loud, and recoverable, which "silently reformatted" is
-          # not. The same direction `create-md` already takes: refuse rather than overwrite.
+          # -f is right HERE, where the installer has just claimed the disk for a brand-new flock
+          # and overwriting a previous life is the intent. The bug was never the flag; it was a
+          # destructive operation on a path that runs forever.
+          if [ -e ${dataFormatMarker} ]; then
+            rm -f ${dataFormatMarker}   # consume FIRST: a format that fails must not be retried
+            mkfs.btrfs -f /dev/drbd0
+          fi
+          # An unformatted volume fails here, which fails the chain and demotes the node -- loud
+          # and recoverable, which "silently reformatted" is not. Same direction create-md takes:
+          # refuse rather than overwrite.
           mount /dev/drbd0 ${btrfsRoot}
           # First use: the snapshots dir, sibling of whatever service subvolumes get created
           # later. It replicates with the volume, so it survives failover. Idempotent. A

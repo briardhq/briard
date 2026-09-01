@@ -78,9 +78,9 @@ pkgs.testers.runNixOSTest {
     node1.succeed("drbdadm create-md --force r0")
     node1.succeed("systemctl start drbd@r0.target")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Format the fresh volume the way the INSTALLER now does ([B.126]): the product stopped
-    # formatting on the promotion path, so a harness that seeds a resource by hand states it.
-    node1.succeed("drbdadm primary r0 && mkfs.btrfs -f $(drbdadm sh-dev r0/0) && drbdadm secondary r0")
+    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
+    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
+    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("systemctl is-active briard-data.service", timeout=120)

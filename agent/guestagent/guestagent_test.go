@@ -778,10 +778,18 @@ func TestBringUpFreshInit(t *testing.T) {
 		{"drbdadm", "create-md", "r0"},
 		{"systemctl", "start", "drbd@r0.target"},
 		{"drbdadm", "new-current-uuid", "--clear-bitmap", "r0/0"},
+		// The one-time format is ARMED here and performed by briard-data ([B.126]); the mkdir is
+		// that marker's directory. Nothing promotes -- invariant 2 -- so the act stays in the unit
+		// the promoter runs, and only the DECISION crosses.
+		{"mkdir", "-p", "/run/briard"},
 		{"systemctl", "start", "drbd-reactor.service"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("fresh-init bring-up = %v, want %v", f.runs, want)
+	}
+	// And the marker itself is what a fresh seed leaves behind for the unit to consume.
+	if _, ok := f.files[dataFormatMarker]; !ok {
+		t.Errorf("fresh init left no %s; the volume would never be formatted", dataFormatMarker)
 	}
 }
 
