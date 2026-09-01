@@ -105,15 +105,35 @@ func Reach(m manifest.Manifest, flock string) string {
 			// one is the plausible-but-wrong answer [V3.17] exists to end.
 			return "it publishes no address of its own yet"
 		}
-		if host == "" {
-			return fmt.Sprintf("it accepts connections on port %d", port)
+		// NAME THE PROTOCOL WHERE WE KNOW IT. A port on its own is an address a user cannot act on:
+		// nothing in the manifest says what to speak to it, because the schema deliberately carries
+		// ports and never protocols. The qualifier is therefore product knowledge, keyed on the
+		// service name like everything else here, and it degrades to the bare sentence for a
+		// service we have nothing to say about rather than guessing from the port number.
+		qual := ""
+		if p := protocol(m); p != "" {
+			qual = p + " "
 		}
-		return fmt.Sprintf("point clients at %s:%d", host, port)
+		if host == "" {
+			return fmt.Sprintf("it accepts %sconnections on port %d", qual, port)
+		}
+		return fmt.Sprintf("point %sclients at %s:%d", qual, host, port)
 	}
 	if host == "" {
 		return fmt.Sprintf("it answers on port %d", m.Primary().Port)
 	}
 	return fmt.Sprintf("reach it at http://%s/", host)
+}
+
+// protocol is what a client speaks to a service's published port, or "" when we have nothing to
+// say. Keyed on the service name, in the same place and for the same reason as Prepare's switch:
+// this is the one file that may hold knowledge of both services, and a protocol is a fact about a
+// service rather than about the manifest that describes it.
+func protocol(m manifest.Manifest) string {
+	if m.Name == mosquitto.Name {
+		return mosquitto.Protocol
+	}
+	return ""
 }
 
 // Fronted reports whether the front door may serve this service under its own name ([B.48]).

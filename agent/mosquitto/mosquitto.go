@@ -48,6 +48,13 @@ const (
 // the user to reach.
 const MQTTPort = 1883
 
+// Protocol is what a client must SPEAK to the published port, and it is product knowledge for the
+// same reason MQTTPort and ServiceType are: a manifest names ports and never protocols, so without
+// it the install verb can only say "point clients at <name>:1883" -- an address with no
+// instruction attached to it. [B.48a] generalised that sentence off mosquitto and the word went
+// with it; tier 4 caught the loss.
+const Protocol = "MQTT"
+
 // ServiceType is the mDNS service type a broker is found under, and it is product knowledge for
 // the same reason MQTTPort is: the manifest names the management port, and what protocol answers
 // where is ours to say.

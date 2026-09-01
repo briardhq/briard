@@ -89,6 +89,14 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	if !strings.Contains(got, "1883") {
 		t.Errorf("the reach line does not name the MQTT port: %q", got)
 	}
+	// THE PROTOCOL, not just the port -- the assertion this test was named for and did not make.
+	// [B.48a] generalised the sentence off mosquitto and the word "MQTT" went with it while every
+	// check here still passed, because a port and a name both survive a protocol going missing.
+	// Tier 4 caught it against the live channel: a ten-minute VM run standing in for a string
+	// compare.
+	if !strings.Contains(got, mosquitto.Protocol) {
+		t.Errorf("the reach line does not say what a client must speak to the port: %q", got)
+	}
 	if strings.Contains(got, "9883") {
 		t.Errorf("the reach line names the pod-internal management port: %q", got)
 	}
