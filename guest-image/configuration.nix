@@ -1035,6 +1035,13 @@ in
       wantedBy = [ ];
       path = [ pkgs.util-linux pkgs.btrfs-progs ];
       serviceConfig = {
+        # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
+        # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
+        # oneshot that exits cleanly is never restarted -- so the policy is uniform across the
+        # chain rather than "the simple ones retry and the oneshots get exactly one attempt",
+        # which is what the absence of a directive used to mean and nobody had decided.
+        Restart = "on-failure";
+        RestartSec = 2;
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "briard-data-up" ''
@@ -1056,14 +1063,18 @@ in
           # -f is right HERE, where the installer has just claimed the disk for a brand-new flock
           # and overwriting a previous life is the intent. The bug was never the flag; it was a
           # destructive operation on a path that runs forever.
-          if [ -e ${dataFormatMarker} ]; then
+          # MOUNT GUARDED, because this unit may now be RETRIED ([B.125](b)): mounting an already
+          # mounted path stacks a second mount rather than failing, so the retry has to ask.
+          if [ -e  ]; then
             rm -f ${dataFormatMarker}   # consume FIRST: a format that fails must not be retried
             mkfs.btrfs -f /dev/drbd0
           fi
           # An unformatted volume fails here, which fails the chain and demotes the node -- loud
           # and recoverable, which "silently reformatted" is not. Same direction create-md takes:
           # refuse rather than overwrite.
-          mount /dev/drbd0 ${btrfsRoot}
+          # MOUNT GUARDED, because this unit may now be RETRIED ([B.125](b)): mounting an already
+          # mounted path stacks a second mount rather than failing, so a retry has to ask first.
+          ${pkgs.util-linux}/bin/mountpoint -q ${btrfsRoot} || mount /dev/drbd0 ${btrfsRoot}
           # First use: the snapshots dir, sibling of whatever service subvolumes get created
           # later. It replicates with the volume, so it survives failover. Idempotent. A
           # service's own data subvolume is created when that service is INSTALLED (the guest's
@@ -1072,6 +1083,10 @@ in
           mkdir -p ${snapDir}
         '';
         ExecStop = "${pkgs.util-linux}/bin/umount ${btrfsRoot}";
+      };
+      unitConfig = {
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
       };
     };
 
@@ -1140,10 +1155,21 @@ in
         config.virtualisation.podman.package
       ];
       serviceConfig = {
+        # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
+        # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
+        # oneshot that exits cleanly is never restarted -- so the policy is uniform across the
+        # chain rather than "the simple ones retry and the oneshots get exactly one attempt",
+        # which is what the absence of a directive used to mean and nobody had decided.
+        Restart = "on-failure";
+        RestartSec = 2;
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = "${config.briard.agentPackage}/bin/briard-agent --converge";
         ExecStop = "${config.briard.agentPackage}/bin/briard-agent --converge-stop";
+      };
+      unitConfig = {
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
       };
     };
 
@@ -1164,6 +1190,13 @@ in
       wantedBy = [ ];
       path = [ pkgs.iproute2 pkgs.iputils ];
       serviceConfig = {
+        # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
+        # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
+        # oneshot that exits cleanly is never restarted -- so the policy is uniform across the
+        # chain rather than "the simple ones retry and the oneshots get exactly one attempt",
+        # which is what the absence of a directive used to mean and nobody had decided.
+        Restart = "on-failure";
+        RestartSec = 2;
         Type = "oneshot";
         RemainAfterExit = true;
         EnvironmentFile = vipEnvPath;
@@ -1173,6 +1206,10 @@ in
         ExecStart = "${vipUp}";
         ExecStartPost = "-${vipArping}";
         ExecStop = "${vipDown}";
+      };
+      unitConfig = {
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
       };
     };
 
@@ -1210,10 +1247,17 @@ in
     #     silently, which is why the published name is read back rather than assumed.
     systemd.services.briard-mdns = {
       description = "Briard mDNS name for the VIP";
-      # A PROMOTER CHAIN MEMBER ([B.125]), which is why there is no wantedBy/partOf here: reactor
-      # writes PartOf=drbd-services@<res>.target and Requires=/After= briard-vip, so the binding
-      # the two directives used to express is the chain's now. avahi-daemon is NOT a member, so
-      # its ordering stays stated here.
+      # A PROMOTER CHAIN MEMBER ([B.125]): reactor writes PartOf=drbd-services@<res>.target and
+      # Requires=/After= briard-vip, so the START binding wantedBy used to express is the chain's
+      # now. avahi-daemon is NOT a member, so its ordering stays stated here.
+      #
+      # ⚠️ partOf briard-vip STAYS, for RESTART propagation rather than for start ([B.125](b)).
+      # briard-vip may now be retried, and its ExecStop withdraws the address and can take the NIC
+      # down -- which is the V3.22 wedge trigger for a publisher that keeps running across it: an
+      # established entry group whose interface goes away and returns is exactly what was "never
+      # established again" in the field. Carrying these two with a VIP restart means they
+      # re-establish cleanly instead of holding a record through the churn.
+      partOf = [ "briard-vip.service" ];
       after = [ "briard-vip.service" "avahi-daemon.service" ];
       requires = [ "avahi-daemon.service" ];
       serviceConfig = {
@@ -1279,8 +1323,9 @@ in
     #     when the first install writes one.
     systemd.services.briard-mdns-services = {
       description = "Briard mDNS names for the routed services";
-      # A chain member too ([B.125]); see briard-mdns above for why the wantedBy/partOf pair is
-      # gone. Reactor orders it after briard-mdns because that is the previous member.
+      # A chain member too ([B.125]); see briard-mdns above, including why partOf briard-vip stays
+      # for restart propagation. Reactor orders it after briard-mdns, the previous member.
+      partOf = [ "briard-vip.service" ];
       after = [ "briard-vip.service" "briard-mdns.service" "avahi-daemon.service" ];
       requires = [ "avahi-daemon.service" ];
       serviceConfig = {
