@@ -1065,8 +1065,15 @@ in
           # destructive operation on a path that runs forever.
           # MOUNT GUARDED, because this unit may now be RETRIED ([B.125](b)): mounting an already
           # mounted path stacks a second mount rather than failing, so the retry has to ask.
-          if [ -e  ]; then
-            rm -f ${dataFormatMarker}   # consume FIRST: a format that fails must not be retried
+          # ⚠️ QUOTED, AND THAT IS A SAFETY PROPERTY RATHER THAN STYLE. `[ -e $X ]` with an empty X
+          # is a ONE-argument test on the string "-e", which is always TRUE -- so a lost
+          # interpolation here does not mean "never format", it means "format on EVERY promotion",
+          # on every node. MEASURED, by doing it: an editing slip emptied this path, drbd-failover
+          # went red, and the survivor had reformatted the replicated volume mid-failover. Quoted,
+          # the same slip yields `[ -e "" ]`, which is false -- the mount then fails and the node
+          # demotes, which is the direction this whole item exists to move things in.
+          if [ -e "${dataFormatMarker}" ]; then
+            rm -f "${dataFormatMarker}"   # consume FIRST: a format that fails must not be retried
             mkfs.btrfs -f /dev/drbd0
           fi
           # An unformatted volume fails here, which fails the chain and demotes the node -- loud
