@@ -60,7 +60,13 @@ pkgs.testers.runNixOSTest {
       imports = [ node ];
       # Two 2.4 GB HA images resident (from serving + to staged) + HA's live Python
       # stack + the migration: give it real memory and disk headroom.
-      virtualisation.memorySize = 4096;
+      # 3072 rather than the 2048 the other HA tests take, and the extra GB buys HEADROOM, not
+      # speed: a guest grows page cache into what it is given, so 4096 measured 4192 MB resident,
+      # 3072 measures 3168, 2048 measures 2143, and all three run in the same time to within the
+      # noise. What is different here is the recorder SCHEMA MIGRATION -- the one workload in the
+      # set whose peak could grow with a future HA -- so this keeps a margin the others do not
+      # need ([B.127]).
+      virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       # Sqlite3 to read the recorder DB + btrfs to take the pre-upgrade snapshot
       # directly (lib.nix nodes ship only curl; the guest services carry their own paths).

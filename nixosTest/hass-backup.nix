@@ -39,7 +39,9 @@ pkgs.testers.runNixOSTest {
     { ... }:
     {
       imports = [ node ];
-      virtualisation.memorySize = 4096;
+      # 2048, MEASURED: a guest grows page cache into whatever it is given, so this sat at 4191
+      # MB resident of 4096 declared and sits at 2142 MB of 2048, in the same 112s ([B.127]).
+      virtualisation.memorySize = 2048;
       virtualisation.diskSize = 20480;
       environment.systemPackages = [ pkgs.sqlite pkgs.diffutils briardBackup ];
       # The off-box target on its own tmpfs — genuinely off the DRBD volume.

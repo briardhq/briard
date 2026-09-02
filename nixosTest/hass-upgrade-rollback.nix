@@ -62,7 +62,12 @@ pkgs.testers.runNixOSTest {
     { ... }:
     {
       imports = [ node ];
-      virtualisation.memorySize = 4096;
+      # 3072, and the extra GB over the other HA tests buys HEADROOM rather than speed: a guest
+      # grows page cache into what it is given, so 4096 measured 4192 MB resident and 3072
+      # measures 3167, in the same time to within the noise. The recorder SCHEMA MIGRATION this
+      # test drives is the one workload whose peak could grow with a future HA, so it keeps a
+      # margin the others do not need ([B.127]).
+      virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       environment.systemPackages = [ pkgs.sqlite pkgs.btrfs-progs pkgs.jq entrygateEval ];
     };

@@ -28,7 +28,10 @@ let
     { ... }:
     {
       imports = [ baseNode ];
-      virtualisation.memorySize = 3072;
+      # 2048 per node, MEASURED: three guests each grow page cache into what they are given, so
+      # this trio sat at 9498 MB resident of 9216 declared -- the heaviest test in the tier by
+      # far -- and sits at 6426 MB of 6144, in 140s rather than 155s ([B.127]).
+      virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
     };
 in

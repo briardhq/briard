@@ -82,8 +82,11 @@ pkgs.testers.runNixOSTest {
       # that resembles it -- the same split service-probe makes in services-pair.nix.
       environment.systemPackages = [ (pkgs.callPackage ./hass-nudge-pkg.nix { }) ];
       # HA needs real memory + disk headroom: the 2.4 GB image is `podman load`ed
-      # onto the writable root, and HA's Python stack wants ~1 GB live.
-      virtualisation.memorySize = 3072;
+      # onto the writable root (disk, not RAM), and HA's Python stack wants ~1 GB live.
+      # 2048 is MEASURED, not guessed: a guest grows page cache into whatever it is given, so
+      # this test sat at 3166 MB resident of 3072 declared and would have sat at 4192 of 4096.
+      # At 2048 it is 2143 MB resident and the same 129s ([B.127]).
+      virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
     };
 
