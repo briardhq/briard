@@ -1291,10 +1291,19 @@ in
         ConditionPathExists = mdnsEnvPath;
         # THE ESCALATION BUDGET, and it is ours alone ([B.125]). drbd-reactor starts the chain once
         # and never watches it again -- it has no retry counter -- so what turns a broken unit into
-        # a failover is systemd reaching the failed state, which `Restart=` postpones until the
-        # start limit is exceeded.
+        # a failover is systemd reaching the failed state.
         #
-        # ⚠️ THE SEMANTICS ARE BACK TO FRONT FROM THE OBVIOUS READING, so tune them deliberately:
+        # ⚠️ THE BUDGET DOES NOT CURRENTLY DO WHAT THE REST OF THIS COMMENT DESCRIBES, measured
+        # 2026-09-02 ([V3b.5](c)). The reading below is that `Restart=` POSTPONES the failover
+        # until the start limit is exceeded, and every number here is tuned on it. It does not: the
+        # target `Requires=` this unit, so the FIRST crash already stops the target, demotes the
+        # resource and unmounts the data volume -- and the rebuild starts this unit fresh, so the
+        # counter reads `restart counter is at 1` on every cycle and the limit is never reached.
+        # The numbers are left exactly as they were rather than re-tuned around a mechanism that
+        # is not running; what needs fixing is the propagation, not the budget. Everything below
+        # is the ORIGINAL rationale, kept because it is what the numbers mean once (c) lands.
+        #
+        # THE SEMANTICS ARE BACK TO FRONT FROM THE OBVIOUS READING, so tune them deliberately:
         # with Burst held constant, a LARGER interval is STRICTER -- it demands fewer than Burst
         # starts across a wider window. It is also what decides whether the limit fires at all,
         # since it only ever trips when Burst x failure-cycle < Interval. That is exactly why the
