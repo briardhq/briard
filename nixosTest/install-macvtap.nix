@@ -486,8 +486,8 @@ pkgs.testers.runNixOSTest {
     # multicast it never asked for -- passing without a single query ever reaching the guest.
     #
     # 40s clears the tail, and it was checked the only way that means anything: with
-    # `allmulticast` removed from install.sh the assertion below still FAILS at 40s, resolving to
-    # '' exactly as it does at 130s. A shorter wait that merely passed would have proved nothing
+    # `allmulticast` removed from install.sh the assertion below still FAILS at 40s, resolving to an
+    # empty string exactly as it does at 130s. A shorter wait that merely passed would prove nothing
     # ([B.127]; 130s -> 40s took this test from 361s to 269s).
     client.sleep(40)
     client.succeed("systemctl restart avahi-daemon")
