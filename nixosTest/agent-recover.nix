@@ -78,6 +78,15 @@ pkgs.testers.runNixOSTest {
         # everything else here observes from OUTSIDE the VM. agent-readopt/deadman/watchdog all
         # carry it for the same reason ([[guest-console-is-the-window]]).
         "--setenv=GUEST_SERIAL=/tmp/guest-serial.log "
+        # THE RECOVERY WINDOW, SHORTENED FROM THE SHIPPED TEN MINUTES ([B.127]). Proving a
+        # ten-minute timer by waiting ten minutes cost 730s of an 800s tier -- 91% of the wall
+        # clock for one idle wait -- and the principle it served does not scale: nobody would
+        # wait out a two-day timer to watch it fire. This still runs the SHIPPED binary on a
+        # real wedged guest; only the number differs, and the assertion below checks the host
+        # waited THE CONFIGURED window, which is the property that would actually rot. That the
+        # shipped value outlasts the guest deadman is asserted where both constants are visible,
+        # in guestrecover_test.go.
+        "--setenv=BRIARD_GUEST_RECOVERY_WINDOW=60s "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
         "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
@@ -197,26 +206,27 @@ pkgs.testers.runNixOSTest {
     # channel that is about to come back, which is the whole reason for the wait.
     host.fail("journalctl -u briard-agent | grep -q 'restarting an unresponsive guest'")
 
-    # It waits out the recovery window, then says what it is about to do -- on the local trail
+    # It waits out the recovery window (shortened to 60s above, [B.127]), then says what it is
+    # about to do -- on the local trail
     # `briard alerts` reads (notify.LogMarker), because on the free tier that trail is the only
-    # delivery there is. The timeout is generous against the 10-minute window plus the ~10s each
-    # re-dial spends on its handshake deadline.
+    # delivery there is.
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'alert \\[warning\\] Briard: the guest has stopped answering'",
-        timeout=1200,
+        timeout=300, # the 60s window plus the re-dials, with room to spare
     )
     waited = time.monotonic() - froze_at
 
-    # THE PATIENCE ASSERTION, and it is the reason this test costs a quarter of an hour.
+    # THE PATIENCE ASSERTION, AND IT IS TWO-SIDED ON PURPOSE. The property worth proving here is
+    # that the host waits THE CONFIGURED WINDOW -- that the timer is wired to the value the agent
+    # was given, not to a number someone typed once. A floor alone passes a host that waited far
+    # too long (a hung ladder looks patient); a ceiling alone passes one that never waited.
     #
-    # The bound is not arbitrary: the host's window sits ABOVE the guest deadman's own threshold
-    # (6m + up to 60s of jitter) so that a guest able to reboot itself gracefully gets to do so,
-    # and the host power-cycle is the backstop for when that failed. A shortened window inverts
-    # that -- the host would win every race and the clean demote would never happen -- while
-    # leaving every other assertion in this file passing. So the floor is checked against the
-    # guest's LATEST possible fire, not against a round number.
-    assert waited >= 420, f"host acted after only {waited:.0f}s -- inside the guest deadman's own window (6m+jitter), so the host would pre-empt the graceful reboot it is supposed to back up"
-    print(f"host held off for {waited:.0f}s before acting")
+    # The slack above the window is the re-dial handshakes the host spends while waiting, ~10s
+    # each, measured at 13s of slack against the shipped 600s window.
+    window = 60
+    assert waited >= window, f"host acted after only {waited:.0f}s, inside its own {window}s window -- the wait is not driving the decision"
+    assert waited < window + 90, f"host waited {waited:.0f}s for a {window}s window -- the ladder is not acting when the window closes"
+    print(f"host held off for {waited:.0f}s against a {window}s window")
 
     # A frozen QEMU answers neither its agent nor the ACPI button, so the clean stop must fail
     # and the forced stop must be what takes it down. Asserted because which route ran is the

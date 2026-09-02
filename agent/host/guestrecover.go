@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"briard.io/agent/guestagent"
@@ -84,9 +85,9 @@ const (
 	// Generous in absolute terms too: the reconnect that matters lands in about a second (B.23),
 	// so silence at this scale is not a slow guest, it is a stopped one.
 	//
-	// A constant rather than a knob (AGENTS §3). The one caller that needs a different number is
-	// a test, and the ladder's decisions are driven through recover()'s arguments so a test can
-	// set them without the product growing an env var.
+	// Unit tests set this through recover()'s arguments and need no knob. The one caller that
+	// cannot is the VM test, which drives the SHIPPED binary end to end -- see
+	// guestRecoveryWindowOverride below for why it may shorten this, and what that costs.
 	guestRecoveryWindow = 10 * time.Minute
 
 	// The interval between host-driven reboots of a guest that stays wedged. The SAME constant
@@ -143,8 +144,40 @@ type guestRecovery struct {
 	cleared   bool          // the all-clear has been sent for this incident
 }
 
+// guestRecoveryWindowOverride shortens the wait above, and exists for exactly one caller: the VM
+// test that drives this ladder end to end on a real frozen guest (nixosTest/agent-recover.nix).
+//
+// WHY THE PRODUCT GROWS A KNOB IT PREVIOUSLY REFUSED. The window is ten minutes, and a test that
+// proves it by waiting costs ten minutes of every run that includes it -- 730s of an 800s tier,
+// 91% of the wall clock, for one idle wait. The principle it served (exercise the shipped
+// timing, not a stand-in) does not scale: nobody would wait out a two-day timer to watch it fire,
+// so the question was always where the line sits, and at ten minutes it sits on the wrong side.
+// With this the VM test still runs the shipped binary, still on a real wedged guest, and asserts
+// the host waited THE CONFIGURED WINDOW -- proving the timer is wired to the value rather than to
+// a number someone typed into the test.
+//
+// ⚠️ WHAT IT NO LONGER PROVES, and where that moved: that the SHIPPED value outlasts the guest
+// deadman, so the guest's graceful reboot always gets its chance and the host only backstops it.
+// TestTheGuestDeadmanFiresBeforeTheHostActs compares the two constants directly and is now the
+// only thing standing between a future tuning and a silent inversion of that design. It was
+// already the load-bearing guard -- the numbers live in different packages and are read by
+// different processes -- but it used to have company.
+//
+// Unset in production and meaningless if set: a shortened window makes a node power-cycle guests
+// that were healing themselves, which is a worse outage than the one it recovers from.
+var guestRecoveryWindowOverride = func() time.Duration {
+	d, err := time.ParseDuration(os.Getenv("BRIARD_GUEST_RECOVERY_WINDOW"))
+	if err != nil || d <= 0 {
+		return 0 // absent, unparseable or nonsense: the constant stands
+	}
+	return d
+}()
+
 func (r *guestRecovery) waitFor() time.Duration {
 	if r.window <= 0 {
+		if guestRecoveryWindowOverride > 0 {
+			return guestRecoveryWindowOverride
+		}
 		return guestRecoveryWindow
 	}
 	return r.window
