@@ -19,6 +19,15 @@
 #                                                via tick continuity.
 #   #4 the resume is CLEAN                     — the daemon re-ADOPTS the already-Primary,
 #                                                already-running service: no demote, no bounce.
+#   #5 the pause holds across a RELOAD         — `systemctl daemon-reload` is what
+#                                                switch-to-configuration does INSIDE the OS
+#                                                upgrade's own bracket, and it must not disturb the
+#                                                promotion or the data mount. Verdict reads unit
+#                                                timestamps, NOT the role: a torn-down chain is
+#                                                Primary again in ~40ms. The two harsher gestures
+#                                                this began as — crashing a chain member, and
+#                                                merely restarting one — are measured RED and are
+#                                                [V3b.5](c)'s, not the bracket's; see the check.
 #
 # HERMETIC. Driving it through a nested guest and the agent's verbs would add nothing: drive the lifecycle
 # through the agent's reactor.*/service.* verbs over virtio-serial (the driver's PAUSE_ONLY hook).
@@ -72,6 +81,17 @@ pkgs.testers.runNixOSTest {
         # comparing it is how "the same process is still running" becomes checkable.
         return node1.succeed(
             "systemctl show -p ActiveEnterTimestampMonotonic --value ${serviceUnit}"
+        ).strip()
+
+    def chain_since():
+        # The PROMOTION's identity, and the data mount's. A pause that lets the chain be torn
+        # down and rebuilt returns to Primary in well under a second (measured: 40ms), so reading
+        # the ROLE afterwards cannot see it -- the first cut of #5 asserted exactly that and
+        # passed through a demote it never noticed. These two timestamps DO move, so the
+        # round trip is visible after the fact ([[verification-assertions-must-fail]]).
+        return node1.succeed(
+            "systemctl show -p ActiveEnterTimestampMonotonic --value drbd-promote@r0.service",
+            "systemctl show -p ActiveEnterTimestampMonotonic --value briard-data.service",
         ).strip()
 
     def ticks():
@@ -176,6 +196,57 @@ pkgs.testers.runNixOSTest {
     # Belt-and-suspenders: green here ⇒ the promoter resumed onto a live, mounted node.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=30)
     node1.succeed("systemctl is-active briard-data.service ${serviceUnit} briard-vip.service")
+
+    # === #5 THE PAUSE ACROSS A DAEMON-RELOAD =================================================
+    # #3 proves the paused promoter ignores a deliberate SERVICE stop. This asks about a CHAIN
+    # MEMBER, which after [V3b.3](f) is a different question: service units are not members any
+    # more -- briard-services converges them from the volume -- so a crashed container cannot
+    # reach the promoter's target at all ("a service error alerts, never demotes"). Six units
+    # still are members, and the target `Requires=` them.
+    #
+    # ONLY THE RELOAD IS ASSERTED HERE, AND THE TWO GESTURES THAT ARE NOT ARE THE POINT OF
+    # [V3b.5](c) -- recorded rather than quietly omitted. Measured 2026-09-02 on this rig: with the
+    # promoter PAUSED, one `systemctl kill -s KILL` of briard-reverse-proxy, and equally one plain
+    # `systemctl restart` of a HEALTHY member, stop the target -> unmount the data volume ->
+    # demote DRBD -> re-promote. That is not a bracket defect: the same crash does the same thing
+    # with drbd-reactor RUNNING, so the pause is not what is missing and an assertion here would
+    # be filed against the wrong layer. The two checks land with (c)'s fix, where they can pass.
+    #
+    # What IS asserted is the control that told those two apart from the harness's own poke: a
+    # bare `systemctl daemon-reload`, which is not a synthetic gesture -- `switch-to-configuration`
+    # reloads, so the OS upgrade does exactly this inside the bracket it opened
+    # (agent/host/osupgrade.go). A reload alone starts no stop job, and this proves it stays inert.
+    #
+    # The verdict does NOT read the role, and that correction is worth keeping: a torn-down chain
+    # rebuilds and is Primary again in ~40ms, so `drbdadm role` a settle window later says Primary
+    # either way -- the first cut of this check asserted exactly that and passed straight through a
+    # full demote + unmount + re-promote ([[verification-assertions-must-fail]]).
+    node1.succeed("systemctl stop drbd-reactor.service")
+    require_primary("second-pause")
+
+    # The edges the whole question turns on, recorded rather than assumed -- and read while PAUSED,
+    # which is the fact that matters: stopping drbd-reactor leaves them in place.
+    print(node1.succeed(
+        "systemctl show -p Requires -p Wants -p BindsTo -p ConsistsOf drbd-services@r0.target",
+        "systemctl show -p PartOf -p RequiredBy -p WantedBy briard-reverse-proxy.service",
+    ))
+
+    chain = chain_since()
+    node1.succeed("systemctl daemon-reload")
+    time.sleep(8)  # the same settle window #3 gives a reaction to manifest
+    print(node1.succeed("drbdadm role r0", "systemctl is-active drbd-services@r0.target || true"))
+    assert chain_since() == chain, (
+        "CONTRACT VIOLATED (#5): a daemon-reload tore the promoter chain down and rebuilt it while "
+        f"PAUSED -- demote + data-volume unmount + re-promote ({chain} -> {chain_since()})"
+    )
+    require_primary("after-daemon-reload-while-paused")
+    print("### #5 promoter inert: a daemon-reload while paused left the chain and the mount alone")
+
+    # Resume, and prove the node is whole -- so a green run leaves the same state #4 did.
+    node1.succeed("systemctl start drbd-reactor.service")
+    time.sleep(8)
+    require_primary("after-second-resume")
+
     print(f"MAINTENANCE_CONTRACT_OK: ticks {pre} -> {post}, service serving")
   '';
 }
