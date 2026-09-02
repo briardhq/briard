@@ -206,6 +206,21 @@ pkgs.testers.runNixOSTest {
     assert rotated != token, "the rotation wrote the same value"
     node1.fail(f"curl -fsS -X POST http://127.0.0.1:8123/auth/token -d grant_type=refresh_token -d refresh_token={rotated}")
 
+    # ⚠️ ASK WHETHER HA CAN BE RESTARTED; THAT IT ANSWERS IS A DIFFERENT FACT. `homeassistant.restart`
+    # creates a task for `hass.async_stop` and returns 200 without waiting for it, and `async_stop`
+    # returns BARE on `CoreState.not_running` -- the branch whose comment is "just ignore", and the
+    # one neighbour of it that logs nothing at all. That state runs from construction until
+    # `async_start()`, i.e. through the whole of integration setup, while the http integration has
+    # been serving since early in the same phase. So a restart asked for on the strength of a 200
+    # from /manifest.json can be discarded in silence, with nothing to retry it. `/api/config`
+    # carries HA's own state, so RUNNING is the boundary to wait on -- the same gate the second
+    # restart in this file already uses. [B.127] measured the alternative: two of six contended
+    # tier runs lost the restart exactly here, and HA served on for the next thirty minutes.
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {access}' http://127.0.0.1:8123/api/config "
+        "| grep -qE '\"state\": ?\"RUNNING\"'",
+        timeout=300,
+    )
     # ALSO THE ADMIN PROOF. Reading config entries does NOT need admin — measured against
     # 2026.7.1: `ConfigManagerEntryIndexView.get` carries no `@require_admin` (only the flow
     # views do), and a group-less system user reads the list with a 200. What needs admin is
