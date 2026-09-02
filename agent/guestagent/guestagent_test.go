@@ -1679,7 +1679,7 @@ func TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService(t *testing
 	if _, err := g.Handshake(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, verb := range []string{verbHassReadiness, verbMosquittoProbe} {
+	for _, verb := range []string{verbHassReadiness, verbHassNudge, verbMosquittoProbe} {
 		if !g.Supports(verb) {
 			t.Fatalf("guest does not advertise %s, so no host will ever call it", verb)
 		}
@@ -1699,5 +1699,17 @@ func TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService(t *testing
 	}
 	if !strings.Contains(err.Error(), mosquitto.Name) {
 		t.Fatalf("the probe verb did not reach the broker's probe: %v", err)
+	}
+	// The nudge is the one that must NOT fail here, and that asymmetry is the point ([B.131]):
+	// its caller fires it after every install without knowing what the node runs, so a volume with
+	// no Home Assistant on it is an ANSWER — nobody to tell — rather than the failure the two
+	// sampling verbs above correctly report. Reporting it as one would put a scary line in the log
+	// of every broker-only install.
+	told, err := g.HassNudge(context.Background())
+	if err != nil {
+		t.Fatalf("a guest with no Home Assistant failed the nudge instead of answering it: %v", err)
+	}
+	if told {
+		t.Fatal("a guest with no Home Assistant claimed it told one")
 	}
 }

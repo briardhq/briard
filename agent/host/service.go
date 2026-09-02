@@ -81,6 +81,10 @@ type serviceInstaller interface {
 	// interface carries nothing that can.
 	HassReadiness(ctx context.Context, port int) ([]hass.Entry, error)
 	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
+	// HassNudge is the one call here that travels INTO a service rather than sampling it: a
+	// Home Assistant that is already running has to be told that the node's offering changed,
+	// because nothing else will restart it ([B.131]).
+	HassNudge(ctx context.Context) (bool, error)
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
@@ -387,6 +391,28 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// Not fatal: the service IS installed and serving. Say so loudly though — the node will
 		// lose it from the chain on the next agent restart.
 		logf("service install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
+	}
+	// TELL A HOME ASSISTANT THAT IS ALREADY RUNNING ([B.131]). Everything briard's integration
+	// does, it does at an HA start, and converge restarts only the services whose bytes changed
+	// ([V3b.3](f)) -- so installing the broker beside a live Home Assistant leaves it running and
+	// unwired until something happens to restart it. Nothing else in the product will.
+	//
+	// UNCONDITIONAL, and that is the cheap half of the design: no "which service implies what"
+	// table here, no check of what else is installed. The guest answers `false` when there is no
+	// Home Assistant to tell, and the signal carries nothing, so firing it after an install that
+	// Home Assistant does not care about costs one loopback request and changes nothing.
+	//
+	// AFTER THE GATES, so a reverted install never fires it, and after the health gate the broker
+	// is already accepting clients -- the integration's own socket check is what would otherwise
+	// have to lose that race.
+	//
+	// BEST-EFFORT, NEVER FATAL: the service IS installed and serving. A failure here costs the
+	// household exactly what they had before this existed, which is a Home Assistant that picks
+	// the change up at its next start.
+	if told, err := g.HassNudge(ctx); err != nil {
+		logf("service install %s: could not tell Home Assistant to reconsider (%v); it will pick this up at its next start", m.Name, err)
+	} else if told {
+		logf("service install %s: Home Assistant was told to reconsider what the node offers", m.Name)
 	}
 	logf("service install %s: healthy, serving", m.Name)
 	// WHERE TO REACH IT, carried back as the outcome Detail. The node holds both halves and the

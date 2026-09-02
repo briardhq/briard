@@ -77,6 +77,10 @@ pkgs.testers.runNixOSTest {
     { ... }:
     {
       imports = [ node ];
+      # hass-nudge is the REAL push half of the control channel as a command (agent/hass's Nudge),
+      # so claim (d) drives the shipping code against the real Home Assistant rather than a curl
+      # that resembles it -- the same split service-probe makes in services-pair.nix.
+      environment.systemPackages = [ (pkgs.callPackage ./hass-nudge-pkg.nix { }) ];
       # HA needs real memory + disk headroom: the 2.4 GB image is `podman load`ed
       # onto the writable root, and HA's Python stack wants ~1 GB live.
       virtualisation.memorySize = 3072;
@@ -424,5 +428,74 @@ pkgs.testers.runNixOSTest {
     assert again[0]["entry_id"] == mqtt_entries[0]["entry_id"], (
         f"the entry was replaced rather than left alone: {again} vs {mqtt_entries}"
     )
+
+    # ── (d) A RUNNING HOME ASSISTANT IS RE-WIRED WITHOUT A RESTART ([B.131]) ──────────
+    #
+    # Everything above happens at an HA start, and that is the gap this closes. converge restarts
+    # only the services whose rendered bytes changed ([V3b.3](f)), so installing the broker beside
+    # a Home Assistant that is ALREADY RUNNING leaves it running, unwired, and with nothing in the
+    # product that will ever restart it -- the household is told the broker is installed and Home
+    # Assistant goes on disagreeing until somebody happens to restart it.
+    #
+    # THE PROOF HAS TO BE THAT NOTHING RESTARTED, which is why the container's start time is read
+    # before and after: an assertion that the entry came back is satisfied just as well by an HA
+    # that bounced, and a bounce is exactly what this exists to avoid.
+    #
+    # It drives the REAL push half (agent/hass's Nudge, via the hass-nudge helper) rather than a
+    # curl, because everything the unit tests know about Home Assistant's event view they know
+    # from a stub of it. This is where that belief meets the pinned image: an admin-gated view, a
+    # Bearer from our own system token, and a JSON-object body.
+    started_at = node1.succeed(
+        "podman inspect -f '{{.State.StartedAt}}' briard-home-assistant-app"
+    ).strip()
+
+    # DELETED, NOT DISABLED, and the difference is the rule the integration keeps: a disabled entry
+    # still occupies the household's one mqtt slot and is a durable NO. Only an empty slot is
+    # filled -- so deleting is the one way to ask for the wiring again, and it is what a household
+    # who removed it and then reinstalled the broker would have done.
+    node1.succeed(
+        f"curl -fsS -X DELETE -H 'Authorization: Bearer {restarted}' "
+        f"http://127.0.0.1:8123/api/config/config_entries/entry/{again[0]['entry_id']}"
+    )
+    node1.wait_until_fails(
+        f"curl -fsS -H 'Authorization: Bearer {restarted}' "
+        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
+        timeout=60,
+    )
+
+    # ⚠️ WAIT FOR "RUNNING" BEFORE NUDGING, and it is not a sleep dressed up: a nudge that lands
+    # while HA is still starting is DROPPED on purpose (the start hook is what will run, against a
+    # settled Home Assistant), so nudging a `starting` HA would prove nothing and pass anyway.
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {restarted}' http://127.0.0.1:8123/api/config "
+        "| grep -qE '\"state\": ?\"RUNNING\"'",
+        timeout=300,
+    )
+    print(node1.succeed("hass-nudge 8123"))
+
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {restarted}' "
+        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
+        timeout=120,
+    )
+    rewired = _zj.loads(node1.succeed(
+        f"curl -fsS -H 'Authorization: Bearer {restarted}' "
+        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
+    ))
+    assert len(rewired) == 1, f"want exactly one mqtt entry after the nudge, got {rewired}"
+    # LOADED again, so the flow validated the broker by connecting to it a second time -- the whole
+    # wiring ran, not just a file being written back.
+    assert rewired[0]["state"] == "loaded", f"the re-wired entry is not loaded: {rewired[0]}"
+    assert rewired[0]["entry_id"] != again[0]["entry_id"], (
+        f"the entry was never actually deleted: {rewired} vs {again}"
+    )
+    # AND HOME ASSISTANT NEVER RESTARTED. Same container, same start time: the wiring happened
+    # inside the process that was already serving the household.
+    still = node1.succeed("podman inspect -f '{{.State.StartedAt}}' briard-home-assistant-app").strip()
+    assert still == started_at, (
+        f"Home Assistant restarted between the delete and the re-wire ({started_at} -> {still}); "
+        "the nudge proves nothing unless the process is the same one"
+    )
+    print("re-wired in place, no restart: " + _zj.dumps(rewired[0]))
   '';
 }

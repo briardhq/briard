@@ -68,6 +68,10 @@ type fakeInstaller struct {
 	notServing   bool
 	loseState    bool
 	readinessHit int
+	// the nudge half ([B.131]): a guest whose volume has no Home Assistant to tell, and one whose
+	// Home Assistant would not take the event.
+	noHass  bool
+	nudgeEr error
 }
 
 func (f *fakeInstaller) HassReadiness(_ context.Context, port int) ([]hass.Entry, error) {
@@ -93,6 +97,16 @@ func (f *fakeInstaller) MosquittoProbe(_ context.Context, token string) (mosquit
 		f.stored = ""
 	}
 	return mosquitto.Sample{Serving: !f.notServing, Token: f.stored}, nil
+}
+
+// The push direction ([B.131]). `told` is what a guest with Home Assistant on its volume answers;
+// the default here is a node that has one, so the install path's call is visible in `steps`.
+func (f *fakeInstaller) HassNudge(context.Context) (bool, error) {
+	f.steps = append(f.steps, "nudge")
+	if f.nudgeEr != nil {
+		return false, f.nudgeEr
+	}
+	return !f.noHass, nil
 }
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
@@ -258,7 +272,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	// rendering actually changed.
 	want := []string{
 		"active?", "installed?:home-assistant", "render", "warm:briard-home-assistant-ha-image.service", "status", "provision:home-assistant",
-		"converge", "health",
+		"converge", "health", "nudge",
 	}
 	if strings.Join(f.steps, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v\nwant   %v", f.steps, want)
@@ -276,6 +290,48 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 		"briard-reverse-proxy.service", "briard-mdns.service", "briard-mdns-services.service",
 	}) {
 		t.Fatalf("install changed the promoter chain to %v — it must be static", cfg.Promoter)
+	}
+}
+
+// TestAFailedNudgeDoesNotFailTheInstall ([B.131]). The service IS installed and serving by the
+// time this runs, and the fallback for a Home Assistant that would not take the event is the
+// behaviour that existed before the nudge did — it picks the change up at its next start. Failing
+// the install would REVERT a working service because a courtesy call did not connect.
+func TestAFailedNudgeDoesNotFailTheInstall(t *testing.T) {
+	f := &fakeInstaller{primary: true, active: true, healthy: true, nudgeEr: errors.New("connection refused")}
+	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done — a refused nudge reverted a healthy install", o)
+	}
+}
+
+// TestTheNudgeIsFiredAfterTheGates, and both halves of that matter. AFTER, because a service that
+// failed its gate is reverted and there is nothing to tell Home Assistant about. And on EVERY
+// install, with no condition on which service it was: the caller holds no table of which service
+// implies what, the signal carries nothing, and the guest answers "nobody to tell" for a node with
+// no Home Assistant on its volume — modelled here by noHass.
+func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	f := &fakeInstaller{primary: true, active: true, healthy: false}
+	// A short budget rather than the 5-minute health gate, the way the revert tests below bound
+	// theirs: what is under test is which steps ran, not how long the gate waits.
+	o := func() api.DirectiveOutcome {
+		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+	}()
+	if o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back", o)
+	}
+	if slices.Contains(f.steps, "nudge") {
+		t.Fatalf("an install that failed its health gate still nudged Home Assistant: %v", f.steps)
+	}
+	f = &fakeInstaller{primary: true, active: true, healthy: true, noHass: true}
+	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if !slices.Contains(f.steps, "nudge") {
+		t.Fatalf("a node with no Home Assistant was not asked; the caller is deciding what only the volume knows: %v", f.steps)
 	}
 }
 

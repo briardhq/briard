@@ -49,26 +49,42 @@ var client = &http.Client{Timeout: 10 * time.Second}
 // The port is the manifest's, passed in rather than assumed: the catalog names it once, and the
 // health gate already builds its URL from the same field.
 func Readiness(ctx context.Context, x Executor, port int) ([]Entry, error) {
+	base, access, err := connect(ctx, x, port)
+	if err != nil {
+		return nil, err
+	}
+	return entries(ctx, base, access)
+}
+
+// connect is the two steps every use of the control channel starts with: find the token this node
+// minted, and trade it for an access token at the Home Assistant on this guest's loopback. The
+// base URL comes back too, because the port it is built from is the caller's.
+//
+// SHARED BY BOTH DIRECTIONS on purpose — the sample the readiness gate pulls out (above) and the
+// one-bit signal Nudge pushes in (nudge.go). There is one control channel and one way to open it;
+// a second copy of these lines would be a second place for the exchange to drift from what Home
+// Assistant documents.
+func connect(ctx context.Context, x Executor, port int) (string, string, error) {
 	if port < 1 || port > 65535 {
-		return nil, fmt.Errorf("hass readiness: port %d out of range", port)
+		return "", "", fmt.Errorf("hass: port %d out of range", port)
 	}
 	raw, err := x.ReadFile(TokenPath)
 	if err != nil {
 		// No token means the control channel was never materialised on this node — Prepare did
 		// not run, or /run was cleared under a running guest. Say which, because the caller's
 		// only alternative reading is "Home Assistant is broken", and it is not.
-		return nil, fmt.Errorf("hass readiness: no control token at %s: %w", TokenPath, err)
+		return "", "", fmt.Errorf("hass: no control token at %s: %w", TokenPath, err)
 	}
 	token := strings.TrimSpace(string(raw))
 	if token == "" {
-		return nil, fmt.Errorf("hass readiness: the control token at %s is empty", TokenPath)
+		return "", "", fmt.Errorf("hass: the control token at %s is empty", TokenPath)
 	}
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
 	access, err := exchange(ctx, base, token)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	return entries(ctx, base, access)
+	return base, access, nil
 }
 
 // exchange trades the long-lived refresh token for a short-lived access token — HA's documented
@@ -81,28 +97,28 @@ func exchange(ctx context.Context, base, token string) (string, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {token}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/auth/token", strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", fmt.Errorf("hass readiness: build token request: %w", err)
+		return "", fmt.Errorf("hass: build token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("hass readiness: exchange token: %w", err)
+		return "", fmt.Errorf("hass: exchange token: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		// A 400 here is the interesting one: it means HA does not know our token, i.e. the mint
 		// did not stick. Worth naming, because the caller degrades to floor-only either way and
 		// the log line is the only place the difference is visible.
-		return "", fmt.Errorf("hass readiness: exchange token: HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("hass: exchange token: HTTP %d", resp.StatusCode)
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("hass readiness: decode token: %w", err)
+		return "", fmt.Errorf("hass: decode token: %w", err)
 	}
 	if out.AccessToken == "" {
-		return "", fmt.Errorf("hass readiness: exchange returned no access token")
+		return "", fmt.Errorf("hass: exchange returned no access token")
 	}
 	return out.AccessToken, nil
 }

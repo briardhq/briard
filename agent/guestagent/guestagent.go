@@ -231,6 +231,15 @@ const (
 	// promises a read is the other way a capability list stops describing what the host can make
 	// the guest do.
 	verbMosquittoProbe = "service.mosquitto.probe"
+
+	// service.home-assistant.nudge tells a RUNNING Home Assistant that something outside it
+	// changed and it should reconsider ([B.131]) -- the one signal that travels INTO Home
+	// Assistant, where the two verbs above pull facts out of it.
+	//
+	// It grants exactly one thing and it is worth saying what: the power to put briard's own
+	// no-payload event on Home Assistant's bus. It cannot name an event, carry data, or reach any
+	// other service -- all three would have to be on the wire for that, and none of them is.
+	verbHassNudge = "service.home-assistant.nudge"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -307,7 +316,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbMosquittoProbe, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -1101,6 +1110,29 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, err
 			}
 			return hass.Readiness(ctx, x, req.Port)
+		case verbHassNudge:
+			// NO REQUEST BODY, and the PORT comes off the VOLUME rather than the wire -- the
+			// opposite choice from service.home-assistant.readiness, for the same reason the probe
+			// below reads its manifest: the service this verb talks to is NOT the one its caller
+			// is installing, so the host is not holding its manifest at the moment it calls. The
+			// volume's copy is the document the renderer named the container from, so the port
+			// cannot drift from what is actually running and cannot be steered from the wire.
+			raw, err := x.ReadFile(manifestPath(hass.Name))
+			if err != nil {
+				// NOT AN ERROR, and this is the answer rather than the absence of one: a node with
+				// no Home Assistant is the ordinary case (a broker-only node, the shipped
+				// zero-service one), and its caller fires this at every install without knowing
+				// which. `false` says there was nobody to tell.
+				return false, nil
+			}
+			m, _, err := manifest.Parse(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s does not parse: %w", verbHassNudge, hass.Name, err)
+			}
+			if err := hass.Nudge(ctx, x, m.Primary().Port); err != nil {
+				return nil, err
+			}
+			return true, nil
 		case verbMosquittoProbe:
 			var req mosquittoProbeRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2456,6 +2488,22 @@ func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, err
 	var out []hass.Entry
 	err := g.c.call(ctx, verbHassReadiness, hassReadinessRequest{Port: port}, &out)
 	return out, err
+}
+
+// HassNudge tells a RUNNING Home Assistant to reconsider what briard has offered it ([B.131]).
+//
+// It answers whether there was a Home Assistant on this volume to tell. That is a fact and not a
+// verdict: `false` on a broker-only node is the ordinary case, because the caller fires this after
+// every install without first working out which services the node runs -- deciding that here, from
+// the volume, is cheaper than a host-side check that could be stale.
+//
+// An ERROR means Home Assistant is installed and would not take the event. Best-effort by
+// contract: the caller logs it and carries on, because the fallback is the behaviour that existed
+// before this verb -- Home Assistant picks the change up at its next start.
+func (g *Client) HassNudge(ctx context.Context) (bool, error) {
+	var told bool
+	err := g.c.call(ctx, verbHassNudge, nil, &told)
+	return told, err
 }
 
 // MosquittoProbe stores `token` in the broker's own retained state (when one is given) and returns

@@ -20,16 +20,25 @@ Assistant. Everything below holds itself to the same bar one level down — a st
 logged and dropped, never raised at setup.
 """
 
+import asyncio
 import logging
 import socket
 
 from homeassistant.config_entries import SOURCE_USER
+from homeassistant.core import CoreState
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.start import async_at_started
 
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "briard"
+
+# The event the node fires on Home Assistant's own bus when something OUTSIDE Home Assistant
+# changed that this integration may want to act on — today, a broker that was installed next to an
+# HA already running ([B.131]). The other half of the contract is agent/hass/nudge.go's, and it is
+# that the event carries NOTHING: it means "reconsider", and everything below re-derives its world
+# from scratch, so a lost, duplicated or unrelated one all cost the same.
+EVENT_RECONSIDER = "briard_reconsider"
 
 # The broker briard installs, as Home Assistant reaches it: every service shares the guest's
 # network namespace or publishes into it, so the address is loopback and the config is anonymous.
@@ -42,15 +51,39 @@ BROKER_PORT = @MQTT_PORT@
 async def async_setup(hass, config):
     """Set up briard from its `briard:` line in configuration.yaml."""
 
+    # ONE AT A TIME. There are two ways in — the start below and a nudge from the node — and they
+    # can land together, which without this is two flows racing the same empty slot. HA's
+    # `single_config_entry: true` would refuse the second, so the cost is a confusing log line
+    # rather than a duplicate entry; a lock is cheaper than explaining that.
+    running = asyncio.Lock()
+
+    async def _reconsider():
+        async with running:
+            try:
+                await _wire_mqtt(hass)
+            except Exception:  # noqa: BLE001 — nothing in here may cost a household its Home Assistant
+                _LOGGER.warning("briard: could not offer the node's MQTT broker", exc_info=True)
+
     async def _started(_hass):
-        try:
-            await _wire_mqtt(hass)
-        except Exception:  # noqa: BLE001 — nothing in here may cost a household its Home Assistant
-            _LOGGER.warning("briard: could not offer the node's MQTT broker", exc_info=True)
+        await _reconsider()
+
+    async def _nudged(_event):
+        # ONLY ONCE HA IS FULLY UP. A nudge that arrives mid-boot is not lost work: `_started`
+        # below has not run yet and will, against a settled Home Assistant. Acting now would mean
+        # starting a config flow into a boot that is still setting entries up, for no gain.
+        # `hass.is_running` is deliberately NOT the test — it is true during `starting` too.
+        if hass.state is not CoreState.running:
+            _LOGGER.debug("briard: nudged during startup; the start hook will do this")
+            return
+        await _reconsider()
 
     # Started, not set-up: config entries are loaded by then, so "does an mqtt entry exist" has a
     # truthful answer, and starting a flow is not competing with the rest of the boot.
     async_at_started(hass, _started)
+    # And the same work on demand, for everything that changes outside Home Assistant while it is
+    # running. The listener is never removed: this integration lives for the lifetime of the
+    # process, and `async_setup` has no unload counterpart to remove it in.
+    hass.bus.async_listen(EVENT_RECONSIDER, _nudged)
     return True
 
 
