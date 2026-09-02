@@ -134,3 +134,44 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 		t.Fatal("call hung despite a ctx deadline")
 	}
 }
+
+// A REPLY ALREADY BEING WRITTEN SURVIVES CANCELLATION, which is what makes EOF mean "the agent
+// died" rather than "the agent answered and we threw the answer away".
+//
+// The verb that forced this is `os.poweroff`: the shutdown it starts is what SIGTERMs the guest
+// agent, so its reply is ALWAYS the one in flight when the context is cancelled. Losing it looked
+// exactly like a crashed agent, and the host escalated to the ACPI power button on a guest that
+// had shut itself down as asked ([B.127]). Here the handler blocks until the context is cancelled
+// and only then returns, so the close and the reply are in the order that used to lose.
+func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
+	cconn, sconn := net.Pipe()
+	defer cconn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handling := make(chan struct{})
+	d := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+		close(handling)
+		<-ctx.Done() // the cancellation lands while this reply is owed
+		return "pong", nil
+	}
+	go serve(ctx, sconn, d)
+
+	go func() {
+		<-handling
+		cancel()
+	}()
+
+	if err := writeFrame(cconn, request{ID: 1, Verb: "ping"}); err != nil {
+		t.Fatalf("writeFrame: %v", err)
+	}
+	cconn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp response
+	if err := readFrame(cconn, &resp); err != nil {
+		t.Fatalf("the reply owed at cancellation never arrived: %v", err)
+	}
+	if resp.ID != 1 || string(resp.Payload) != `"pong"` {
+		t.Errorf("resp = %+v, want ID 1 payload \"pong\"", resp)
+	}
+}

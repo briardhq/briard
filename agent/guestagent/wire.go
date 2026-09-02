@@ -188,7 +188,36 @@ func channelDown(ctx context.Context, err error) error {
 
 // serve is the guest end: read requests, dispatch to d, write responses, until
 // the connection closes (returns nil on EOF) or ctx is done.
+//
+// ⚠️ CANCELLATION CLOSES THE CONNECTION HERE, AND ONLY BETWEEN REPLIES. The blocking read on a
+// virtio-serial port cannot be interrupted by a context, so something has to close the port out
+// from under it; that used to be the caller, the instant ctx was done. It cost "at most one
+// in-flight reply" -- except for `os.poweroff`, where the reply lost is always the one the host is
+// waiting on: the shutdown that verb starts is what SIGTERMs this process, so the race was not a
+// rare interleaving but the guaranteed outcome of the one verb whose answer decides what the host
+// does next. A lost reply reads as EOF, EOF is indistinguishable from a crashed agent, and the
+// host escalated to the ACPI power button on a guest that had done exactly as it was asked
+// ([B.127]).
+//
+// So the close waits for the reply being written, and only for that: after ctx is done the loop
+// above returns before reading another request, so this can hold up the close by one handler and
+// never by two. The caller's own exit deadline remains the backstop for a handler that never
+// returns.
 func serve(ctx context.Context, rw io.ReadWriteCloser, d dispatchFunc) error {
+	var replying sync.Mutex
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-done:
+			return
+		}
+		replying.Lock() // let an answer already being written reach the host
+		replying.Unlock()
+		rw.Close()
+	}()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -200,17 +229,21 @@ func serve(ctx context.Context, rw io.ReadWriteCloser, d dispatchFunc) error {
 			}
 			return err
 		}
-		resp := response{ID: req.ID}
-		if result, herr := d(ctx, req.Verb, req.Payload); herr != nil {
-			resp.Error = herr.Error()
-		} else if result != nil {
-			if b, merr := json.Marshal(result); merr != nil {
-				resp.Error = merr.Error()
-			} else {
-				resp.Payload = b
+		if err := func() error {
+			replying.Lock()
+			defer replying.Unlock()
+			resp := response{ID: req.ID}
+			if result, herr := d(ctx, req.Verb, req.Payload); herr != nil {
+				resp.Error = herr.Error()
+			} else if result != nil {
+				if b, merr := json.Marshal(result); merr != nil {
+					resp.Error = merr.Error()
+				} else {
+					resp.Payload = b
+				}
 			}
-		}
-		if err := writeFrame(rw, resp); err != nil {
+			return writeFrame(rw, resp)
+		}(); err != nil {
 			return err
 		}
 	}

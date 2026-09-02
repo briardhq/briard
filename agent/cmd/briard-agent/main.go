@@ -271,20 +271,23 @@ func runGuest(ctx context.Context) error {
 	//
 	// Two mechanisms, because one is fast and the other is certain:
 	//
-	//   Close unblocks a read already in flight -- measured, it returns "file already closed"
-	//   immediately -- but ONLY while the port is registered with Go's runtime poller. Whether a
-	//   character device is depends on the runtime's judgement about the fd, which is not ours to
-	//   promise, so it cannot be the whole answer.
+	//   Closing the port unblocks a read already in flight -- measured, it returns "file already
+	//   closed" immediately -- but ONLY while the port is registered with Go's runtime poller.
+	//   Whether a character device is depends on the runtime's judgement about the fd, which is
+	//   not ours to promise, so it cannot be the whole answer. THE CLOSE BELONGS TO THE SERVE
+	//   LOOP, not to this goroutine: it holds it until an answer already being written has
+	//   reached the host, because the one verb whose reply is always in flight at cancellation is
+	//   `os.poweroff` -- the shutdown it starts is what sends this process its SIGTERM -- and
+	//   losing that reply told the host its guest agent had died ([B.127], guestagent.serve).
 	//
-	//   The deadline covers the case where it is not. A process that was asked to stop and has
-	//   not is a process to end: the agent is a stateless request server (every verb synchronous,
-	//   nothing buffered across requests), so exiting costs at most one in-flight reply -- and
-	//   the alternative it replaces is that same loss 90 seconds later, with a SIGKILL on top.
-	//   Exit 0 because a deliberate stop is not a failure; systemd does not restart a unit it is
-	//   stopping, and Restart=always already treats the ordinary EOF exit this way.
+	//   The deadline covers the case where the close is not enough. A process that was asked to
+	//   stop and has not is a process to end, and this is the backstop for a handler that never
+	//   returns at all -- the alternative it replaces is the same exit 90 seconds later, with a
+	//   SIGKILL on top. Exit 0 because a deliberate stop is not a failure; systemd does not
+	//   restart a unit it is stopping, and Restart=always already treats the ordinary EOF exit
+	//   this way.
 	go func() {
 		<-ctx.Done()
-		conn.Close()
 		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
 	}()
 
