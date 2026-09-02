@@ -478,10 +478,18 @@ pkgs.testers.runNixOSTest {
     # while the announcement is warm cannot fail on inbound mDNS being dropped -- which is the
     # failure a household meets, hours later, from a cold cache.
     #
-    # 130s clears both the ~120s record TTL and the announcement tail; a 5s gap does NOT (the
-    # same query resolves at +5s and times out at +130s). The restart immediately before asking
-    # drops anything cached during the wait, so only the guest itself can answer what follows.
-    client.sleep(130)
+    # WHAT HAS TO ELAPSE IS THE ANNOUNCEMENT TAIL, NOT THE RECORD TTL. The restart below is the
+    # cache flush, so there is no cached record left for a TTL to expire -- and clearing a TTL is
+    # what the 130s this used to wait was for. What a flush cannot touch is the OTHER end: avahi
+    # re-announces unsolicited for tens of seconds after establishing, and an announcement is the
+    # same packet as a response, so a client asking inside that window can be answered by a
+    # multicast it never asked for -- passing without a single query ever reaching the guest.
+    #
+    # 40s clears the tail, and it was checked the only way that means anything: with
+    # `allmulticast` removed from install.sh the assertion below still FAILS at 40s, resolving to
+    # '' exactly as it does at 130s. A shorter wait that merely passed would have proved nothing
+    # ([B.127]; 130s -> 40s took this test from 361s to 269s).
+    client.sleep(40)
     client.succeed("systemctl restart avahi-daemon")
     client.sleep(5)
     # avahi-resolve-host-name EXITS 0 EVEN WHEN IT FAILS -- it prints "Failed to resolve host
