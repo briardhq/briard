@@ -342,3 +342,10 @@ const hostAbsentPause = 5 * time.Second
 // its own exit instead of being killed. Not a timeout tuned around a race: the close above is the
 // mechanism, and this only runs when the port turns out not to be interruptible.
 const guestStopGrace = 5 * time.Second
+
+// The backstop must outlast the longest verb that keeps running AFTER cancellation, or it ends
+// the process before that verb's reply is written -- turning the [B.132] fix back into the
+// [B.127] symptom it was first mistaken for. `os.poweroff` is the only such verb, and the two
+// constants live in different packages, so this is the thing that notices when one of them
+// moves: a compile error the moment they cross.
+const _ = uint(guestStopGrace - guestagent.PowerOffGrace)

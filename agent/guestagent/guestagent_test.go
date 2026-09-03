@@ -1061,6 +1061,53 @@ func TestPowerOffDoesNotBlockOnTheShutdown(t *testing.T) {
 	}
 }
 
+// cancellingExec is the guest's own shutdown, modelled at the only point that matters: the
+// command cancels the serve context WHILE IT IS STILL RUNNING, exactly as `systemctl poweroff`
+// makes PID 1 SIGTERM this agent before systemctl itself has exited. It then reports its own
+// context the way exec.CommandContext does -- a child killed by cancellation surfaces as
+// ctx.Err(), not as an exit status -- so an attached handler fails here and a detached one
+// does not.
+type cancellingExec struct {
+	fakeExec
+	cancel context.CancelFunc
+	cmdErr error // what the command's context said once the agent had been told to stop
+}
+
+func (c *cancellingExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	c.runs = append(c.runs, append([]string{name}, args...))
+	c.cancel() // synchronous: the serve context is done by the time this returns
+	c.cmdErr = ctx.Err()
+	return nil, c.cmdErr
+}
+
+// [B.132]: os.poweroff must survive the cancellation IT CAUSES. The shutdown this verb asks for
+// is what stops this agent, so a handler running on the dispatch context is killed by its own
+// success and answers "context canceled" for a request that worked -- which the host cannot tell
+// from a refusal, so it escalates to the ACPI power button and the [B.85] assertion in
+// guest-rescue goes red. Live on the nightly 2026-09-03.
+//
+// This is the half [B.127] did not cover, and it is only reachable BECAUSE of that fix: the
+// serve loop now holds the port open until the reply is written, so the error is delivered
+// rather than lost. Both halves are asserted here -- the command outlives the cancellation
+// (cmdErr), and the answer still reaches the host (PowerOff's return).
+func TestPowerOffOutlivesTheCancellationItCauses(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	x := &cancellingExec{cancel: cancel}
+	cconn, sconn := net.Pipe()
+	go Serve(ctx, sconn, x)
+	g := NewClient(cconn)
+	t.Cleanup(func() { g.Close() })
+
+	if err := g.PowerOff(context.Background()); err != nil {
+		t.Errorf("os.poweroff must succeed through the cancellation it causes, got %v", err)
+	}
+	if x.cmdErr != nil {
+		t.Errorf("the poweroff command was killed by the agent's own shutdown: %v", x.cmdErr)
+	}
+}
+
 // Arming never fetches: a closure that is not already in the store is refused
 // before the bootloader is touched, so a half-armed grub cannot outlive the mistake.
 func TestStageBootRefusesUnstagedClosure(t *testing.T) {

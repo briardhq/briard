@@ -137,6 +137,19 @@ const (
 	verbOSGC            = "os.gc"         // drop old profile generations, then collect the store
 )
 
+// PowerOffGrace bounds the one handler that runs DETACHED from the serve context. Every other
+// verb is cancelled when the agent is asked to stop, and that is correct -- `os.stage` fetching a
+// closure has nothing worth finishing once the machine is going down. `os.poweroff` is the
+// exception, and the reason is circular: the shutdown it asks for is what SIGTERMs this process,
+// so inheriting that cancellation means the verb is killed by its own success ([B.132]).
+//
+// Detached, it needs a ceiling of its own -- nothing else can stop it, and the handler holds the
+// serve loop's reply lock, which holds the control port open. Sized far above what the command
+// actually costs (~100ms: `--no-block` returns once systemd has ENQUEUED the job, not run it) and
+// far below the caller's exit backstop, so the reply is always written before the process ends.
+// The gap to that backstop is asserted at compile time where the backstop is declared.
+const PowerOffGrace = 2 * time.Second
+
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
 // whole-OS closure was never a property of the data. The data's identity is per-service — the
 // service manifest, here on the replicated volume — while a system
@@ -718,10 +731,11 @@ type Executor interface {
 // dispatch is the guest-side verb switch: verb -> Executor calls (+ ParseStatus).
 func dispatch(x Executor) dispatchFunc {
 	return func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
-		// Run executes a guest command whose output is only wanted on failure, and
+		// RunIn executes a guest command whose output is only wanted on failure, and
 		// wraps a non-zero exit with the command + its output -- otherwise the host
-		// sees a bare "exit status 1" and bring-up failures are undiagnosable.
-		run := func(name string, args ...string) error {
+		// sees a bare "exit status 1" and bring-up failures are undiagnosable. It takes its
+		// context explicitly because one verb does not want the dispatch one; see os.poweroff.
+		runIn := func(ctx context.Context, name string, args ...string) error {
 			out, err := x.Run(ctx, name, args...)
 			if err == nil {
 				return nil
@@ -731,6 +745,9 @@ func dispatch(x Executor) dispatchFunc {
 			}
 			return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 		}
+		// The dispatch context, which is what almost every verb wants: the command dies with
+		// the agent that was asked to stop.
+		run := func(name string, args ...string) error { return runIn(ctx, name, args...) }
 		switch verb {
 		case verbHello:
 			// Report our protocol version + capabilities so the host can negotiate/refuse
@@ -1374,7 +1391,24 @@ func dispatch(x Executor) dispatchFunc {
 			// dead channel, which is indistinguishable from a guest that crashed. The host
 			// confirms the outcome by watching the VM disappear, not by this return value
 			// (platform.Guest.WaitStopped).
-			return nil, run("systemctl", "poweroff", "--no-block")
+			//
+			// ⚠️ DETACHED FROM THE DISPATCH CONTEXT, because this verb is cancelled by its own
+			// success. `--no-block` returns once systemd has enqueued the shutdown, but PID 1
+			// begins stopping units as soon as it holds the job -- and nothing orders this
+			// agent's unit late, so its SIGTERM can land while `systemctl` is still exiting.
+			// That cancels the dispatch context, exec.CommandContext kills the child, and Wait
+			// reports `context canceled` for a request that WORKED. The host reads that as "the
+			// agent route failed" and reaches for the ACPI power button -- the [B.85] regression
+			// guest-rescue greps for, seen live on the nightly 2026-09-03 ([B.132]).
+			//
+			// [B.127] fixed the neighbouring half: the serve loop now holds the control port
+			// open until this reply is written, so the answer does reach the host. That is why
+			// the failure changed shape from a lost reply into a delivered error -- and why the
+			// fix belongs here rather than in the channel. The reply was never the problem; the
+			// command underneath it was.
+			pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PowerOffGrace)
+			defer cancel()
+			return nil, runIn(pctx, "systemctl", "poweroff", "--no-block")
 		case verbResources:
 			var req resourcesRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
