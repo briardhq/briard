@@ -12,6 +12,10 @@
 #   4 crashes UNDER the start limit do NOT demote               -- so a transient fault is cheap
 #   5 crossing the start limit DOES demote, and the peer takes over
 #   6 the demotion STOPS A
+#   7 the node that gave up MASKS its services target -- a local "not me, for now", the only
+#     lever that exists (reactor has no anti-flap: an UpToDate, Connected node sleeps ZERO
+#     before racing for a resource it just handed away)
+#   8 the hold RELEASES itself and clears the start limit, and the peer keeps serving
 #
 # NOTHING HERE READS THE ROLE FOR ITS VERDICT on rules 3 and 4. A torn-down chain rebuilds and is
 # Primary again in ~40ms, so `drbdadm role` a settle window later says Primary either way -- the
@@ -33,6 +37,16 @@ let
       { name = "node2"; id = 1; }
     ];
   };
+  # The hold, shortened so the test can drive its whole lifecycle. `promotionHoldSecs` is an
+  # option precisely so this is the ONLY thing that varies it -- a field node runs the 300s
+  # default, and the number appears here rather than being hidden in a sleep.
+  # 60 rather than a token value: rules 5 and 6 run inside the hold, so it must outlast them --
+  # a hold that expires mid-assertion would make rule 7 flaky rather than wrong.
+  holdSecs = 60;
+  heldNode = {
+    imports = [ node ];
+    briard.promotionHoldSecs = holdSecs;
+  };
   member = "briard-reverse-proxy.service";
 in
 pkgs.testers.runNixOSTest {
@@ -40,7 +54,7 @@ pkgs.testers.runNixOSTest {
   # The holder is elected by drbd-reactor, so which machine each assertion runs against is
   # decided at runtime and the static checker cannot follow it.
   skipTypeCheck = true;
-  nodes = { node1 = node; node2 = node; };
+  nodes = { node1 = heldNode; node2 = heldNode; };
 
   testScript = ''
     ${h.fixtureHelpers}
@@ -48,6 +62,7 @@ pkgs.testers.runNixOSTest {
 
     # The Nix let-binding, handed to Python once so the unit name has ONE definition.
     member = "${member}"
+    hold_secs = ${toString holdSecs}
 
     machines = [node1, node2]
 
@@ -97,6 +112,18 @@ pkgs.testers.runNixOSTest {
     assert state(loser, member) != "active", (
         f"RULE 2 VIOLATED: {member} is running on {loser.name}, which holds no promotion "
         f"(role={role(loser)})"
+    )
+    # ...AND THE LOSER MUST NOT HAVE HELD ITSELF DOWN. This half is not decoration: a member whose
+    # start job fails with result `dependency` fires OnFailure= exactly like one that failed on its
+    # own, and on the race loser EVERY member does. Without a guard the standby masks itself for
+    # the whole hold on every boot -- a five-minute window, at the shipped duration, in which it
+    # cannot take over. The first version of this test passed anyway, because rule 5's 90s timeout
+    # simply outlasted a 60s hold; the assertion below is what makes that visible instead.
+    assert loser.execute("test -L /run/systemd/system/drbd-services@r0.target")[0] != 0, (
+        "RULE 2 VIOLATED: the race loser masked its own services target, so it cannot take over"
+    )
+    assert loser.execute("systemctl is-active briard-promotion-hold.service")[1].strip() != "active", (
+        "RULE 2 VIOLATED: the race loser is running the promotion hold"
     )
     print(f"### 2 A is not started on the loser (state={state(loser, member)})")
 
@@ -155,8 +182,10 @@ pkgs.testers.runNixOSTest {
     print(f"### 5 the resource handed over: {holder.name} -> {loser.name}")
 
     # The demote ran through the unit built for it, not by accident.
-    holder.succeed("journalctl -u drbd-demote-or-escalate@r0.service --no-pager | grep -q .")
-    print("### 5 the handover went through drbd-demote-or-escalate@r0")
+    # The hand-over went through the unit built for it, not by accident -- and that unit is
+    # OURS, because the mask has to precede the demote (see briard-promotion-hold).
+    holder.succeed("journalctl -u briard-promotion-hold.service --no-pager | grep -q .")
+    print("### 5 the handover went through briard-promotion-hold")
 
     # === 6 THE DEMOTION STOPS A ===========================================================
     assert state(holder, member) != "active", (
@@ -164,6 +193,39 @@ pkgs.testers.runNixOSTest {
     )
     holder.fail("mountpoint -q /var/lib/briard")
     print("### 6 the demotion stopped A and released the data volume")
+
+    # === 7 THE NODE THAT GAVE UP REFUSES TO TAKE THE RESOURCE STRAIGHT BACK =================
+    # The hold, and the reason it exists: reactor re-promotes ~2s after a demote and has no
+    # anti-flap of its own -- an UpToDate, Connected node sleeps ZERO before racing. So the only
+    # thing that can stop a travelling fault ping-ponging is the node declining locally, which is
+    # what masking drbd-services@r0.target says.
+    assert holder.execute("test -L /run/systemd/system/drbd-services@r0.target")[0] == 0, (
+        "RULE 7 VIOLATED: the demoted node did not mask its services target, so nothing stops it "
+        "racing for the resource it just gave up"
+    )
+    assert holder.execute("systemctl is-active briard-promotion-hold.service")[1].strip() == "active", (
+        "RULE 7 VIOLATED: the hold is not running on the demoted node "
+        f"(state={holder.execute('systemctl is-active briard-promotion-hold.service')[1].strip()})"
+    )
+    print("### 7 the demoted node masked its services target and is holding")
+
+    # === 8 THE HOLD RELEASES ITSELF, AND CLEARS THE START LIMIT ============================
+    # Without the reset the member is still inside its StartLimitIntervalSec window when the hold
+    # ends, so the next promotion would start a unit systemd refuses -- and the hold length would
+    # be silently pinned to that window instead of being a free parameter.
+    holder.wait_until_fails("systemctl is-active briard-promotion-hold.service", timeout=hold_secs + 60)
+    holder.wait_until_fails("test -L /run/systemd/system/drbd-services@r0.target", timeout=30)
+    assert holder.execute(f"systemctl is-failed {member}")[1].strip() != "failed", (
+        f"RULE 8 VIOLATED: {member} is still `failed` after the hold released, so its start limit "
+        "was never cleared and the next promotion would refuse to start it"
+    )
+    # The peer kept serving throughout; the released node simply stays Secondary, which is the
+    # right end state -- expiry is not a claim on the resource.
+    assert role(loser) == "Primary", "RULE 8 VIOLATED: the peer stopped serving during the hold"
+    assert role(holder) == "Secondary", (
+        f"RULE 8 VIOLATED: the released node took the resource back (role={role(holder)})"
+    )
+    print("### 8 the hold released, the start limit was cleared, and the peer kept serving")
 
     print("CHAIN_MEMBER_CONTRACT_OK")
   '';

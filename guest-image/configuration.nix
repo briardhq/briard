@@ -422,16 +422,12 @@ let
   # it is being auto-restarted, so this stays silent through the transient crashes and fires
   # exactly once -- when the start limit is exhausted and the unit really has stopped trying.
   #
-  # Upstream's unit is built for this (its own comment says "to be used as OnFailure unit in
-  # drbd-promote@.service"): it `Conflicts=drbd-promote@%i.service`, so starting it demotes, and
-  # it carries `FailureAction=reboot` for the case where `drbdsetup secondary` is REFUSED --
-  # something still holding the device open. That escalation is proportionate however the demote
-  # was triggered: DRBD is single-primary, so a node stuck Primary after declaring it cannot serve
-  # blocks its peer from taking over, and nothing else recovers from that.
-  #
-  # `r0` is written out for v0's single resource, exactly as drbd-reactor.service's ExecStop is.
+  # It points at OUR hold unit rather than upstream's drbd-demote-or-escalate@ directly, and the
+  # reason is ordering: reactor re-promotes ~2s after a demote completes, so the mask that says
+  # "not me, for now" has to go on BEFORE the demote, not after it. briard-promotion-hold does
+  # both in that order and carries the same FailureAction=reboot for a demote DRBD refuses.
   chainMemberFailure = {
-    OnFailure = "drbd-demote-or-escalate@r0.service";
+    OnFailure = "briard-promotion-hold.service";
     OnFailureJobMode = "replace-irreversibly";
   };
 
@@ -794,6 +790,24 @@ in
   # not a service one: an image has to be RESIDENT before anything renders against it, because
   # nothing on the failover path may pull. Used by the fleet's upgrade demo to pre-stage the
   # target of a rotation. Empty by default — the shipped image carries no workload.
+  # HOW LONG A NODE REFUSES TO PROMOTE AFTER ONE OF ITS CHAIN MEMBERS GAVE UP ([V3b.5](c)).
+  #
+  # 300s is a judgement, not a measurement, and the trade is legible: a fault that TRAVELS with the
+  # replicated volume (a bad routes table, a corrupt cert, a name that collides LAN-wide) is hit
+  # identically by whoever promotes next, so the resource ping-pongs with a period of roughly this
+  # value -- five minutes is about twelve hand-overs an hour, each costing a mount cycle and a
+  # service restart. Longer is calmer and sidelines a recovered node for longer. A node-local fault
+  # (memory pressure, a failing disk, a leaked process holding :80) does not ping-pong at all: the
+  # peer simply keeps serving and this node's hold expires against a resource it cannot have.
+  #
+  # It is an OPTION rather than a constant so the contract test can drive the full lifecycle in
+  # seconds. Nothing else varies it; a node in the field runs the default.
+  options.briard.promotionHoldSecs = lib.mkOption {
+    type = lib.types.ints.positive;
+    default = 300;
+    description = "Seconds a node refuses promotion after a promoter chain member exhausts its start limit.";
+  };
+
   options.briard.stagedImages = lib.mkOption {
     type = lib.types.listOf lib.types.package;
     default = [ ];
@@ -1091,25 +1105,97 @@ in
     systemd.packages = [ pkgs.drbd ];
     services.udev.packages = [ pkgs.drbd ]; # DRBD udev rules (/dev/drbd/by-res symlinks + perms)
 
-    # THE ESCALATION MUST NOT RACE THE TEARDOWN IT TRIGGERS ([V3b.5](c)). Upstream ships
-    # drbd-demote-or-escalate@ for use as `OnFailure=` on drbd-promote@ -- a context where the
-    # promotion never completed, so nothing is holding the volume and `drbdsetup secondary`
-    # succeeds immediately. We attach it to the chain MEMBERS instead (chainMemberFailure), where
-    # the members ARE running and have to come down first, and nothing in the shipped unit orders
-    # it after them. Measured without this drop-in: the script ran 0.1s after the target began
-    # stopping, called `drbdsetup secondary` while /var/lib/briard was still mounted, got
-    # `exit code=11`, and FailureAction=reboot rebooted a node whose demote then completed on its
-    # own 0.9s later during shutdown. A spurious reboot, from a race rather than a stuck volume.
+    # THE HAND-OVER, AND THE REFUSAL TO TAKE IT STRAIGHT BACK ([V3b.5](c)). One unit owns the whole
+    # sequence because the ORDER is the design: mask BEFORE demoting.
     #
-    # Ordering after drbd-promote@ is the semantically right one rather than merely the latest:
-    # that unit's own ExecStop is the NORMAL demote path, and it stops after every member. So the
-    # escalation now runs only once the ordinary route has had its turn -- by which point
-    # `drbdsetup secondary` either returns 0 ("already secondary anyways", per the shim) or the
-    # resource really is stuck Primary, which is the only case worth rebooting for.
-    systemd.services."drbd-demote-or-escalate@r0" = {
-      overrideStrategy = "asDropin";
-      after = [ "drbd-promote@r0.service" "briard-data.service" ];
+    # Measured on a lone node: drbd-reactor re-promotes about 2s after a demote completes. So a
+    # hold bolted on AFTER the demote loses that race, and the tidy-looking alternative -- leave
+    # the members' OnFailure pointing at upstream's drbd-demote-or-escalate@ and hang a hold off
+    # its success -- cannot work. Masking first means the promotion is REFUSED rather than
+    # undone: `systemctl start drbd-services@r0.target` fails outright, drbd-promote@ never runs,
+    # DRBD's role never moves, and there is no second mount/unmount cycle to pay for.
+    #
+    # THE MASK IS THE ONLY LEVER THAT SAYS "NOT ME, FOR NOW". Everything else reactor offers is
+    # either DRBD's own decision (may_promote, quorum) or a static handicap biasing WHICH node wins
+    # a race -- preferred-nodes, sleep-before-promote-factor, fencing-promote-delay, the automatic
+    # disk-state sleep. None of them is a local, temporary refusal. `drbd-reactorctl evict` uses
+    # exactly this mask, and `--keep-masked` is exactly this hold without the timer.
+    #
+    # WHY THE ESCALATION LIVES HERE rather than in upstream's unit: whoever attempts the demote has
+    # to own what happens when DRBD refuses it. `secondary-or-escalate` exits non-zero when
+    # `drbdsetup secondary` is refused -- something still holds the device open -- and this unit's
+    # FailureAction=reboot is the answer, for the reason upstream gives: DRBD is single-primary, so
+    # a node stuck Primary after declaring it cannot serve blocks its peer from taking over, and
+    # nothing else recovers from that. Note it runs AFTER the target stop above, so by then the
+    # ordinary demote (drbd-promote@'s own ExecStop) has already had its turn and this is a
+    # confirmation, not a race -- the shim returns 0 for "already secondary anyways".
+    #
+    # `--runtime` puts the mask in /run, so a reboot clears it: a hold can never outlive the boot
+    # that might have fixed its cause.
+    #
+    # RELEASE CLEARS THE START LIMIT TOO, and that is not housekeeping. Without the reset, the
+    # member is still inside its StartLimitIntervalSec window when the hold ends, so the next
+    # promotion starts a member systemd immediately refuses -- and the hold length would be
+    # silently pinned to that window. Two numbers that must agree are two numbers that can drift;
+    # this makes promotionHoldSecs a free parameter instead.
+    systemd.services.briard-promotion-hold = {
+      description = "Briard: hand the resource on, and refuse to take it back for a while";
+      wantedBy = [ ];
+      serviceConfig = {
+        Type = "simple";
+        # ⚠️ ONLY A NODE THAT HOLDS THE RESOURCE MAY HAND IT ON, and this guard is not defensive
+        # programming -- without it the STANDBY masks itself on every boot. Measured: a member whose
+        # start job fails with result `dependency` fires `OnFailure=` exactly like one that failed
+        # on its own, and on the node that loses the promotion race every member does
+        # ("Multiple primaries not allowed by config" -> drbd-promote@ fails -> "Dependency failed
+        # for ... briard-reverse-proxy" -> "Triggering OnFailure= dependencies"). So the loser ran
+        # this unit and masked itself for the whole hold, which at the shipped 300s is a standby
+        # that cannot take over for five minutes after a boot -- and if the primary died in that
+        # window, nobody would serve.
+        #
+        # It was harmless right up until it wasn't: the loser fired OnFailure into upstream's
+        # drbd-demote-or-escalate@ too, which demoted an already-Secondary node and exited 0
+        # ("already secondary anyways", per the shim). The same trigger only became dangerous when
+        # the action grew a five-minute mask.
+        #
+        # ExecCondition rather than ExecStartPre: 1..254 SKIPS the unit and does NOT mark it
+        # failed, so a Secondary quietly declines instead of failing into FailureAction=reboot.
+        ExecCondition = "${pkgs.writeShellScript "briard-hold-only-if-primary" ''
+          ${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'
+        ''}";
+        # 1. refuse promotion, 2. stop the chain (this IS the demote), 3. confirm we really are
+        #    Secondary or escalate. Each is its own ExecStartPre so a failure names its own step.
+        #
+        # STEP 2 STOPS drbd-promote@, NOT THE TARGET, and that is a barrier rather than a
+        # preference. Measured: `systemctl stop drbd-services@r0.target` returns as soon as the
+        # TARGET is down -- `Stopped target` at 62.386, `Stopping briard-vip` at 62.388, the shim
+        # running at 62.412 while the volume was still mounted, exit 11, reboot. The members are
+        # `After=drbd-promote@`, so on the way down they stop BEFORE it: waiting for the promote
+        # unit is the only spelling that waits for all of them. Its own ExecStop is also the
+        # ordinary demote, so step 3 is a confirmation (the shim returns 0 for "already
+        # secondary anyways") rather than the thing doing the work.
+        ExecStartPre = [
+          "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target"
+          "${config.systemd.package}/bin/systemctl daemon-reload"
+          "-${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service"
+          "${pkgs.drbd}/lib/drbd/scripts/drbd-service-shim.sh secondary-or-escalate r0"
+        ];
+        ExecStart = "${pkgs.coreutils}/bin/sleep ${toString config.briard.promotionHoldSecs}";
+        # The release. `-` on the unmask and the resets: a hold that cannot tidy up must still end,
+        # because leaving the mask on is the one outcome worse than releasing early.
+        ExecStopPost = [
+          "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target"
+          "${config.systemd.package}/bin/systemctl daemon-reload"
+          "-${config.systemd.package}/bin/systemctl reset-failed briard-data.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-mdns.service briard-mdns-services.service"
+        ];
+      };
+      unitConfig = {
+        # The stuck-Primary escalation. Reachable only through a demote DRBD refused, never through
+        # an ordinary member failure -- those end in a clean stop and a sleep.
+        FailureAction = "reboot";
+      };
     };
+
 
     # The ordered failover unit. Each piece has wantedBy = [] so it never starts on
     # its own — drbd-reactor starts them, in this order, only after it has promoted
