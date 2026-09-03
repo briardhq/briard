@@ -548,6 +548,42 @@ let
     exec ${pkgs.dhcpcd}/sbin/dhcpcd "$@" "$dev"
   '';
 
+  # Force a RENEW, on a ten-minute timer, INDEPENDENTLY of the lease term.
+  #
+  # WHY NOT A SHORTER LEASE. Asking for one (`-l`) looks like the obvious lever and is the wrong
+  # one twice over. The term is the SERVER's to choose, so on a CPE that ignores a client's option
+  # 51 the flag is a silent no-op and we would believe we had shortened something -- and where it
+  # IS honoured it shortens the wrong thing, because a short lease makes --lastleaseextend, a
+  # knowing RFC 2131 3.7 violation kept as an exceptional safety net, into the routine state for
+  # the length of any router blip. We want the lease LONG and the renewal FREQUENT; nothing in RFC
+  # 2131 requires a client to wait for T1, so the honest implementation is to renew early.
+  #
+  # WHAT IT BUYS is a shorter silence, not a firmer grip. A CPE reboot is the household's usual
+  # fix for anything, it commonly loses the lease table, and a client sitting BOUND says nothing
+  # at all until T1 -- at a router's usual 12-24h term, hours during which a fresh DISCOVER from
+  # any device can be handed the address we still think is ours. Ten minutes bounds that window,
+  # and on dnsmasq a renewal against a server that lost its table is ACKed, so the binding is
+  # recreated rather than merely observed to be gone. It is also how we learn FAST in the case
+  # where we lost it anyway: a NAK inside ten minutes drives the address-changed path, which is
+  # what a briard.casa name depends on.
+  #
+  # ⚠️ THE GUARD IS THE POINT OF THIS SCRIPT, and it is not defensive programming. `dhcpcd -N`'s
+  # documented behaviour with no instance running is "starts up as normal" -- and that is measured,
+  # not inferred from the man page: run against an idle interface it forked a client and took an
+  # address. On a STANDBY node, whose service NIC must have no LAN presence at all, that would put
+  # a DHCP client on it and claim an address the flock's primary owns. The units below already
+  # make it unreachable, since the timer lives and dies with briard-vip; this is what keeps it
+  # safe under a hand-run `systemctl start` too.
+  vipRenew = pkgs.writeShellScript "briard-vip-renew" ''
+    set -eu
+    pidfile="$(${pkgs.dhcpcd}/sbin/dhcpcd -P "$VIP_DEV")"
+    if [ ! -s "$pidfile" ] || ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      echo "briard-vip-renew: nothing is holding $VIP_DEV; declining to start a client" >&2
+      exit 0
+    fi
+    exec ${pkgs.dhcpcd}/sbin/dhcpcd -N "$VIP_DEV"
+  '';
+
   # Resolve the service address, claim it, and record what was actually claimed.
   #
   # THREE SOURCES, and the order is the design:
@@ -1303,6 +1339,41 @@ in
     #     publish hands the resource on instead of serving addresses nobody can reach. Two
     #     DIFFERENT flocks in one house still can, and avahi resolves that by renaming one of them
     #     silently, which is why the published name is read back rather than assumed.
+    # Ten-minute lease renewal, for as long as this node holds the VIP.
+    #
+    # NOT A CHAIN MEMBER, deliberately and for [V3b.5c]'s reason: a renewal that fails must never
+    # be able to demote a serving node. Nothing Requires it, its failure propagates nowhere, and
+    # the real consequence of a renewal going wrong is a NAK, which dhcpcd's own hook handles as
+    # an address change rather than as a unit failure.
+    #
+    # wantedBy + partOf briard-vip is the binding briard-mdns's comment above describes: the timer
+    # starts when the node takes the VIP and stops when it gives it up, so it cannot tick on a
+    # standby. `wantedBy` is a WEAK reference on purpose -- a timer that will not start must not
+    # keep the VIP from coming up.
+    systemd.timers.briard-vip-renew = {
+      description = "Renew the Briard VIP's DHCP lease every ten minutes";
+      wantedBy = [ "briard-vip.service" ];
+      partOf = [ "briard-vip.service" ];
+      timerConfig = {
+        # First one ten minutes after the VIP is taken (the lease is fresh at promotion, so an
+        # immediate renewal would be pure noise), then every ten minutes after each run.
+        OnActiveSec = "10min";
+        OnUnitActiveSec = "10min";
+        AccuracySec = "30s";
+      };
+    };
+    systemd.services.briard-vip-renew = {
+      description = "Renew the Briard VIP's DHCP lease";
+      after = [ "briard-vip.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        # VIP_DEV, the same source briard-vip itself reads: the renewer must act on the interface
+        # that was actually claimed, not on a second opinion about which one that is.
+        EnvironmentFile = vipEnvPath;
+        ExecStart = "${vipRenew}";
+      };
+    };
+
     systemd.services.briard-mdns = {
       description = "Briard mDNS name for the VIP";
       # A PROMOTER CHAIN MEMBER ([B.125]): reactor writes PartOf=drbd-services@<res>.target and
