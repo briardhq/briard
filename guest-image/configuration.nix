@@ -1105,6 +1105,21 @@ in
     systemd.packages = [ pkgs.drbd ];
     services.udev.packages = [ pkgs.drbd ]; # DRBD udev rules (/dev/drbd/by-res symlinks + perms)
 
+    # UPSTREAM'S ESCALATION CANNOT WRITE ITS OWN REASON DOWN ON NIXOS. reactor still attaches
+    # drbd-demote-or-escalate@ as `OnFailure=` on drbd-promote@ -- the PROMOTION-failure path, which
+    # is not ours (a member that gives up goes through briard-promotion-hold instead). That unit
+    # ends in `ExecStopPost=-/bin/journalctl --sync`, a path that does not exist here: measured,
+    # "Unable to locate executable '/bin/journalctl'". The `-` prefix means it is ignored rather
+    # than fatal, so the unit works -- it just loses the one thing it does before rebooting the
+    # node, which is flushing the explanation to disk. Reset the list and give it the real path.
+    systemd.services."drbd-demote-or-escalate@r0" = {
+      overrideStrategy = "asDropin";
+      serviceConfig.ExecStopPost = [
+        ""
+        "-${config.systemd.package}/bin/journalctl --sync"
+      ];
+    };
+
     # THE HAND-OVER, AND THE REFUSAL TO TAKE IT STRAIGHT BACK ([V3b.5](c)). One unit owns the whole
     # sequence because the ORDER is the design: mask BEFORE demoting.
     #
@@ -1187,6 +1202,10 @@ in
           "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target"
           "${config.systemd.package}/bin/systemctl daemon-reload"
           "-${config.systemd.package}/bin/systemctl reset-failed briard-data.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-mdns.service briard-mdns-services.service"
+          # LAST, and the reason is FailureAction=reboot above: a node that reboots because it
+          # could not release the resource must leave the reason on disk first, and the journal
+          # is otherwise still in RAM when the reboot happens.
+          "-${config.systemd.package}/bin/journalctl --sync"
         ];
       };
       unitConfig = {

@@ -214,7 +214,15 @@ pkgs.testers.runNixOSTest {
     # ends, so the next promotion would start a unit systemd refuses -- and the hold length would
     # be silently pinned to that window instead of being a free parameter.
     holder.wait_until_fails("systemctl is-active briard-promotion-hold.service", timeout=hold_secs + 60)
+    # POLL THE THING BEING ASSERTED, not a proxy for it. The release is a sequence -- `rm` the mask,
+    # `daemon-reload` (~300ms), THEN `reset-failed` -- so the mask disappearing means step 1 is done,
+    # not that the release is finished. Keying on the mask made this rule a coin toss: it passed
+    # once and failed the next run, ~300ms early, with the product behaving identically both times.
     holder.wait_until_fails("test -L /run/systemd/system/drbd-services@r0.target", timeout=30)
+    for _ in range(30):
+        if holder.execute(f"systemctl is-failed {member}")[1].strip() != "failed":
+            break
+        time.sleep(1)
     assert holder.execute(f"systemctl is-failed {member}")[1].strip() != "failed", (
         f"RULE 8 VIOLATED: {member} is still `failed` after the hold released, so its start limit "
         "was never cleared and the next promotion would refuse to start it"
