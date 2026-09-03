@@ -39,6 +39,7 @@ let
       [[promoter]]
       [promoter.resources.r0]
       adjust-resource-on-start = false
+      target-as = "Wants"
       start = [ ${concatMapStringsSep ", " (u: ''"${u}"'') units} ]
     '';
 

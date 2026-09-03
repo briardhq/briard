@@ -404,6 +404,37 @@ let
   # A lease that EXPIRES needs nothing from this hook either: the interface then holds no
   # address, net.vip reports "" as ground truth, and the node reads not-ready by the same rule
   # that covers every other addressless data node. The honest signal already flows.
+  # WHAT HANDS THE RESOURCE ON WHEN A CHAIN MEMBER GIVES UP ([V3b.5](c)), and it has to be a
+  # STATE hook rather than a dependency, which is the whole finding.
+  #
+  # `Requires=` is JOB-level: systemd consults it when a stop or restart job is enqueued on the
+  # depended-upon unit, and never against that unit's state (`transaction.c`, atom
+  # UNIT_ATOM_PROPAGATE_STOP on UNIT_REQUIRED_BY). That is why the promoter target's default
+  # `Requires=` on its members demoted this node on EVERY crash: `Restart=` enqueues its
+  # auto-restart with job mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the
+  # target, which stops drbd-promote@ (PartOf) -- measured, and it took the resource away from a
+  # live peer in 2 of 5 door crashes. With `target-as = Wants` (agent/drbd/config.go) nothing
+  # upstream reacts to a member at all, which is right for a crash and wrong for a member that
+  # has genuinely given up.
+  #
+  # OnFailure= is the missing half: `unit.c` fires it on the transition INTO UNIT_FAILED, with no
+  # reference to restart mode. Under `RestartMode=direct` a member never enters that state while
+  # it is being auto-restarted, so this stays silent through the transient crashes and fires
+  # exactly once -- when the start limit is exhausted and the unit really has stopped trying.
+  #
+  # Upstream's unit is built for this (its own comment says "to be used as OnFailure unit in
+  # drbd-promote@.service"): it `Conflicts=drbd-promote@%i.service`, so starting it demotes, and
+  # it carries `FailureAction=reboot` for the case where `drbdsetup secondary` is REFUSED --
+  # something still holding the device open. That escalation is proportionate however the demote
+  # was triggered: DRBD is single-primary, so a node stuck Primary after declaring it cannot serve
+  # blocks its peer from taking over, and nothing else recovers from that.
+  #
+  # `r0` is written out for v0's single resource, exactly as drbd-reactor.service's ExecStop is.
+  chainMemberFailure = {
+    OnFailure = "drbd-demote-or-escalate@r0.service";
+    OnFailureJobMode = "replace-irreversibly";
+  };
+
   vipHook = pkgs.writeShellScript "briard-vip-dhcp-hook" ''
     set -u
     case "''${reason:-}" in
@@ -1024,6 +1055,26 @@ in
     systemd.packages = [ pkgs.drbd ];
     services.udev.packages = [ pkgs.drbd ]; # DRBD udev rules (/dev/drbd/by-res symlinks + perms)
 
+    # THE ESCALATION MUST NOT RACE THE TEARDOWN IT TRIGGERS ([V3b.5](c)). Upstream ships
+    # drbd-demote-or-escalate@ for use as `OnFailure=` on drbd-promote@ -- a context where the
+    # promotion never completed, so nothing is holding the volume and `drbdsetup secondary`
+    # succeeds immediately. We attach it to the chain MEMBERS instead (chainMemberFailure), where
+    # the members ARE running and have to come down first, and nothing in the shipped unit orders
+    # it after them. Measured without this drop-in: the script ran 0.1s after the target began
+    # stopping, called `drbdsetup secondary` while /var/lib/briard was still mounted, got
+    # `exit code=11`, and FailureAction=reboot rebooted a node whose demote then completed on its
+    # own 0.9s later during shutdown. A spurious reboot, from a race rather than a stuck volume.
+    #
+    # Ordering after drbd-promote@ is the semantically right one rather than merely the latest:
+    # that unit's own ExecStop is the NORMAL demote path, and it stops after every member. So the
+    # escalation now runs only once the ordinary route has had its turn -- by which point
+    # `drbdsetup secondary` either returns 0 ("already secondary anyways", per the shim) or the
+    # resource really is stuck Primary, which is the only case worth rebooting for.
+    systemd.services."drbd-demote-or-escalate@r0" = {
+      overrideStrategy = "asDropin";
+      after = [ "drbd-promote@r0.service" "briard-data.service" ];
+    };
+
     # The ordered failover unit. Each piece has wantedBy = [] so it never starts on
     # its own — drbd-reactor starts them, in this order, only after it has promoted
     # the resource, and stops them in reverse on demote. So they run on the primary
@@ -1091,7 +1142,7 @@ in
         '';
         ExecStop = "${pkgs.util-linux}/bin/umount ${btrfsRoot}";
       };
-      unitConfig = {
+      unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;
       };
@@ -1174,7 +1225,7 @@ in
         ExecStart = "${config.briard.agentPackage}/bin/briard-agent --converge";
         ExecStop = "${config.briard.agentPackage}/bin/briard-agent --converge-stop";
       };
-      unitConfig = {
+      unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;
       };
@@ -1214,7 +1265,7 @@ in
         ExecStartPost = "-${vipArping}";
         ExecStop = "${vipDown}";
       };
-      unitConfig = {
+      unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;
       };
@@ -1285,9 +1336,20 @@ in
         # unit's lifetime IS the record's lifetime -- no cleanup path to get wrong on demotion.
         ExecStart = "${vipPublish}";
         Restart = "on-failure";
+        # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
+        # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
+        # volume and demotes the node on ONE crash, measured, with a peer taking the resource
+        # about half the time. `direct` restarts through activating instead of failed, so
+        # dependents are not notified of the temporary failure. It is also what lets the
+        # StartLimit below finally accumulate: the unit is no longer torn down and started
+        # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
+        # and still hands the resource on -- which is what this budget always claimed to do.
+        # NOT on briard-data/services/vip: for those, failure really does mean this node
+        # must not hold the volume.
+        RestartMode = "direct";
         RestartSec = 2;
       };
-      unitConfig = {
+      unitConfig = chainMemberFailure // {
         ConditionPathExists = mdnsEnvPath;
         # THE ESCALATION BUDGET, and it is ours alone ([B.125]). drbd-reactor starts the chain once
         # and never watches it again -- it has no retry counter -- so what turns a broken unit into
@@ -1350,6 +1412,17 @@ in
         EnvironmentFile = [ vipEnvPath vipLivePath ];
         ExecStart = "${mdnsServicesPublish}";
         Restart = "on-failure";
+        # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
+        # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
+        # volume and demotes the node on ONE crash, measured, with a peer taking the resource
+        # about half the time. `direct` restarts through activating instead of failed, so
+        # dependents are not notified of the temporary failure. It is also what lets the
+        # StartLimit below finally accumulate: the unit is no longer torn down and started
+        # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
+        # and still hands the resource on -- which is what this budget always claimed to do.
+        # NOT on briard-data/services/vip: for those, failure really does mean this node
+        # must not hold the volume.
+        RestartMode = "direct";
         RestartSec = 2;
       };
       # THE SAME GUARD briard-mdns CARRIES, and for the same reason: a node with no minted flock
@@ -1357,7 +1430,7 @@ in
       # publish and the unit must stay inactive rather than fail in a restart loop. Measured
       # 2026-08-31 without it: 56 restarts in one test run, on a rig that had no name and no VIP
       # env -- noise that would have hidden a real failure of this unit.
-      unitConfig = {
+      unitConfig = chainMemberFailure // {
         ConditionPathExists = mdnsEnvPath;
         # The same budget, for the same reason -- see briard-mdns above ([B.125]).
         StartLimitIntervalSec = 300;
@@ -1400,6 +1473,17 @@ in
           + " -http :80 -listen :443"
           + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem";
         Restart = "on-failure";
+        # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
+        # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
+        # volume and demotes the node on ONE crash, measured, with a peer taking the resource
+        # about half the time. `direct` restarts through activating instead of failed, so
+        # dependents are not notified of the temporary failure. It is also what lets the
+        # StartLimit below finally accumulate: the unit is no longer torn down and started
+        # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
+        # and still hands the resource on -- which is what this budget always claimed to do.
+        # NOT on briard-data/services/vip: for those, failure really does mean this node
+        # must not hold the volume.
+        RestartMode = "direct";
         RestartSec = 2;
       };
       # The same budget as the publishers, deliberately identical -- see briard-mdns above for the
@@ -1408,7 +1492,7 @@ in
       # that IS reachable, so a door would hand the resource on after ~10s of trying. That is eager
       # for one whose likeliest transient is losing the race for :80 to its own previous instance
       # during a failover, and it is the asymmetry [B.125](b) holds open.
-      unitConfig = {
+      unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;
       };

@@ -158,13 +158,30 @@ func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 // so it lands about half the time, and never in a harness, where the config is baked and no agent
 // races it. Upstream provides this key for exactly this split: the promoter promotes, the drbd@
 // chain configures.
+//
+// ⚠️ `target-as = Wants` IS THE OTHER LAYER LINE, and it cost a measured outage class ([V3b.5](c)).
+// The promoter's default is `Requires`, which reactor writes onto the TARGET pointing at each
+// member. `Requires=` is a JOB-level dependency: systemd consults it when a stop or restart job is
+// enqueued on a member, never against a member's state. And `Restart=` enqueues its auto-restart
+// with job mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the target, which
+// stops drbd-promote@ (PartOf) -- so ONE crash of the front door unmounted the data volume and
+// demoted the node, taking the resource away from a live peer in 2 of 5 tries. Nothing about that
+// was the maintenance bracket's doing, and no bracket could have covered it.
+//
+// `Wants` removes that edge entirely: the target still STARTS every member (which is all this
+// list was ever meant to express), and a member that stops, crashes or is restarted no longer
+// reaches the promotion. What replaces it is a state-level hook rather than a dependency --
+// `OnFailure=drbd-demote-or-escalate@<res>.service` on each member, paired with
+// `RestartMode=direct` so it fires only when a member exhausts its start limit and has genuinely
+// given up (guest-image/configuration.nix, chainMemberFailure). Deliberate action stays cheap;
+// giving up still hands the resource on.
 func ReactorConfig(resource string, start []string) string {
 	quoted := make([]string, len(start))
 	for i, u := range start {
 		quoted[i] = fmt.Sprintf("%q", u)
 	}
 	return fmt.Sprintf(
-		"[[promoter]]\n[promoter.resources.%s]\nadjust-resource-on-start = false\nstart = [ %s ]\n",
+		"[[promoter]]\n[promoter.resources.%s]\nadjust-resource-on-start = false\ntarget-as = \"Wants\"\nstart = [ %s ]\n",
 		resource, strings.Join(quoted, ", "),
 	)
 }

@@ -343,6 +343,11 @@ in
       # while it drove the agent's verbs over a nested guest's channel; V3.17e4 made it
       # hermetic, so it belongs with the other one-node promoter mechanisms. Nightly either way.
       maintenance-contract = maintenanceContract;
+      # The chain-member contract ([V3b.5](c)): what a unit in the promoter start-list may
+      # and may not do to the promotion. Two nodes, because rule 2 needs a race loser and
+      # rule 5's consequence is a HANDOVER -- on one node the demote is followed 40ms later
+      # by the same node re-promoting, which is what hid this defect's severity.
+      chain-member-contract = import ./chain-member-contract.nix { inherit pkgs fixture guestModule; };
       # `witness-proxy` + `witness-tap-link` join this tag from outputs-private.nix —
       # both build the cloud witness. The three tests above mention the cloud only in prose.
     };
