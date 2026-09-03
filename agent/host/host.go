@@ -458,6 +458,24 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	}
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
+		// ASKED TO STOP BEFORE THE GUEST WAS UP. A cancellation is the shutdown this agent was
+		// told to perform, not a failure of it — the same distinction, drawn the same way, as the
+		// observe loop below (`ctx.Err() != nil` immediately after the call). Without it a
+		// `systemctl restart` landing during bring-up reaches main's log.Fatalf, and systemd
+		// records `Failed with result 'exit-code'` against a unit that did exactly what it was
+		// asked: a false fault in the first place anyone looks ([B.133]).
+		//
+		// It cannot be done by inspecting the error instead. Bring-up tags its channel failures
+		// errNoChannel on the dial branch and NOT on the handshake branch beside it, and the
+		// cancellation arrives wrapped in guestagent.ErrChannelDown — a different sentinel from
+		// this package's errNoChannel. Asking the context "were we asked to stop?" needs no
+		// wrapping discipline from anything below it.
+		//
+		// Logged rather than swallowed: the error still says how far bring-up had got.
+		if ctx.Err() != nil {
+			logf("shutting down during bring-up: %v", err)
+			return nil
+		}
 		if errors.Is(err, errNoChannel) {
 			return nil // never heard from the guest before the budget ran out -> clean shutdown
 		}

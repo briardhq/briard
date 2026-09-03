@@ -874,3 +874,43 @@ func TestLogAccelerationSilentWithoutQMP(t *testing.T) {
 		t.Error("without a QMP socket there is nothing to report; the line must be omitted, not guessed")
 	}
 }
+
+// A cancellation during bring-up is the shutdown the agent was ASKED to perform, not a failure of
+// it ([B.133]). Run must return nil, because main hands a non-nil return to log.Fatalf: without
+// this, a `systemctl restart` (or a host reboot) landing in the bring-up window makes systemd
+// record `Failed with result 'exit-code'` against a unit that did exactly what it was told, and a
+// false fault in the journal is worth as much as a missing one.
+//
+// Cancelled BEFORE the call rather than raced against it: the guard is `ctx.Err() != nil` after
+// bring-up returns, so a pre-cancelled context exercises it deterministically, with nothing to
+// race on a loaded runner.
+func TestRunTreatsACancellationDuringBringUpAsAShutdown(t *testing.T) {
+	// NON-VACUITY, and it is the whole reason this test can fail: with a LIVE context this same
+	// config cannot bring a guest up (no QEMU, no sockets), so Run must report an error. If it
+	// returned nil here, the nil asserted below would prove nothing at all.
+	if err := Run(context.Background(), Config{}, func(string, ...any) {}); err == nil {
+		t.Fatal("Run with a live context and an unusable config = nil, want an error — " +
+			"the cancellation check below would be vacuous")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // asked to stop before the guest could ever come up
+
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	if err := Run(ctx, Config{}, logf); err != nil {
+		t.Errorf("Run cancelled during bring-up = %v, want nil — a stop is not a failure", err)
+	}
+
+	// The error is reported, not swallowed: it still says how far bring-up had got, which is the
+	// only thing distinguishing "stopped while launching" from "stopped while handshaking".
+	var found bool
+	for _, l := range logged {
+		if strings.Contains(l, "shutting down during bring-up") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no 'shutting down during bring-up' line; the bring-up error was dropped silently.\ngot: %v", logged)
+	}
+}
