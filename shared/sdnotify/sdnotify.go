@@ -27,7 +27,51 @@ package sdnotify
 import (
 	"net"
 	"os"
+	"sync/atomic"
 )
+
+// adopted holds the socket path taken out of the environment by Adopt, so notify() can still
+// reach systemd once $NOTIFY_SOCKET is gone. Atomic because the watchdog pings from its own
+// goroutine.
+var adopted atomic.Pointer[string]
+
+// Adopt takes ownership of $NOTIFY_SOCKET: it remembers the path and REMOVES the variable from
+// this process's environment, so no child this process execs can inherit the socket. Call it
+// once, early, from a process that is itself the unit's main PID — the host agent does, before it
+// starts anything.
+//
+// WHY, and it is not tidiness ([V3b.21e]). $NOTIFY_SOCKET is an ordinary environment variable, so
+// every child inherits it — and `systemctl`, which the agent shells out to constantly, ends each
+// run by reporting its own exit status to whatever notify socket it finds: `EXIT_STATUS=0`. Under
+// NotifyAccess=main systemd refuses those, and on systemd 255 says so on every start of every
+// node. The refusal breaks nothing; the point is that the socket which gates this unit's
+// readiness and feeds its watchdog has no business being reachable from a `systemctl show`.
+// libsystemd's counterpart is sd_notify's unset_environment argument, which exists for this.
+//
+// The seam rather than a sweep of cmd.Env at every exec site, per [V3b.15]: an opt-in at N call
+// sites is forgotten at site N+1, and silently.
+//
+// SAFE ONLY BECAUSE NOTHING RE-EXECS. A successor started from this process would find no
+// NOTIFY_SOCKET, never signal, and hang until TimeoutStartSec. The agent never re-execs itself
+// (no syscall.Exec in the tree; briard-exec is systemd's ExecStart — a fresh process, handed the
+// variable fresh). Check that still holds before calling this from anywhere new.
+func Adopt() {
+	sock := os.Getenv("NOTIFY_SOCKET")
+	if sock == "" {
+		return // not under Type=notify — nothing to take, and nothing to keep from children
+	}
+	adopted.Store(&sock)
+	_ = os.Unsetenv("NOTIFY_SOCKET")
+}
+
+// socket is where to send: the adopted path if Adopt took one, else the environment. The
+// fallback is what keeps Ready/Watchdog usable without Adopt — tests, a dev run, the lab fleet.
+func socket() string {
+	if p := adopted.Load(); p != nil {
+		return *p
+	}
+	return os.Getenv("NOTIFY_SOCKET")
+}
 
 // Ready tells the service manager the agent has started (READY=1) — see the package doc on what
 // that does and does not assert. It is a no-op when $NOTIFY_SOCKET is unset (not run under
@@ -49,7 +93,7 @@ func Watchdog() error { return notify("WATCHDOG=1") }
 func Notify(state string) error { return notify(state) }
 
 func notify(state string) error {
-	sock := os.Getenv("NOTIFY_SOCKET")
+	sock := socket()
 	if sock == "" {
 		return nil // not under Type=notify — nothing to signal
 	}

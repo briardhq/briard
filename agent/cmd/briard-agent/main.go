@@ -27,6 +27,7 @@ import (
 	"briard.io/agent/reportcard"
 	"briard.io/agent/subnet"
 	"briard.io/shared/flockname"
+	"briard.io/shared/sdnotify"
 )
 
 func main() {
@@ -83,6 +84,11 @@ func runDaemon(args []string) {
 			log.Fatalf("guest agent: %v", err)
 		}
 	default:
+		// Take the notify socket out of the environment before anything is exec'd, so the
+		// children this agent spawns cannot inherit it ([V3b.21e]). Host path only: this is the
+		// mode that runs under Type=notify, and the one that shells out to `systemctl`.
+		sdnotify.Adopt()
+
 		// Host path: boot the guest, drive bring-up, observe status. runHost is
 		// compiled out of a `-tags guest` build (main_guest.go stubs it), so the guest
 		// binary doesn't link the host subsystems.
