@@ -515,5 +515,115 @@ pkgs.testers.runNixOSTest {
         "the nudge proves nothing unless the process is the same one"
     )
     print("re-wired in place, no restart: " + _zj.dumps(rewired[0]))
+
+    # ── (e) ONBOARDING BY API, RESUMABLE BY HA'S OWN FRONTEND ([V3b.31a](f)) ─────────
+    #
+    # The install ends by handing the household a logged-in Home Assistant ([V3b.31a](d)): briard
+    # creates the first user through HA's onboarding API and sends the browser to HA's OWN
+    # onboarding page with the returned code, which resumes at the first undone step. Every claim
+    # below is the SERVER half of that path, driven through the front door under the name the
+    # browser would use -- because the code is bound to the client_id, and HA's `getAuth` refuses
+    # a callback whose state names any other origin (`limitHassInstance`). The frontend half is
+    # source-verified (ha-onboarding.ts `_fetchOnboardingSteps`, `_curStep`) and not driven here.
+    import shlex as _sx
+    origin = f"http://{host}"
+    client_id = origin + "/"  # genClientId(): protocol//host + trailing slash
+    def door(path, bearer=None, post=None, form=None):
+        """One request through the front door, as the browser would make it."""
+        cmd = f"curl -fsS -H 'Host: {host}' "
+        if bearer:
+            cmd += f"-H 'Authorization: Bearer {bearer}' "
+        if post is not None:
+            cmd += f"-X POST -H 'Content-Type: application/json' -d {_sx.quote(_zj.dumps(post))} "
+        if form is not None:
+            cmd += "-X POST " + " ".join(f"-d {_sx.quote(k + '=' + v)}" for k, v in form.items()) + " "
+        return node1.succeed(cmd + f"http://192.168.1.100{path}")
+    def steps_done():
+        """HA's own view of onboarding, unauthenticated -- the thing our button reads."""
+        return {s["step"]: s["done"] for s in _zj.loads(door("/api/onboarding"))}
+
+    # NOTHING IS DONE, and in particular the USER step is not: HA marks it done at startup if any
+    # OWNER exists, and the system user the control channel minted is not one. That is the
+    # first half of "the briard admin is the HA owner" ([V3b.31a](e)) -- our own user must not
+    # have taken the flag before the household's could.
+    assert steps_done() == {"user": False, "core_config": False, "analytics": False, "integration": False}, steps_done()
+
+    # THE USER STEP. Name/username/language are what the installer derives from the OS account;
+    # the password is generated. The code that comes back is bound to client_id.
+    password = "briard-onboarding-test-password"
+    first = _zj.loads(door("/api/onboarding/users", post={
+        "name": "Kostas", "username": "kostas", "password": password,
+        "client_id": client_id, "language": "en",
+    }))
+    assert first.get("auth_code"), f"the user step returned no code: {first}"
+
+    # THE OWNER FLAG, read from the store on the volume rather than asked of HA: the household's
+    # user holds it, alone, and our system user is still system_generated and not owner.
+    # (The auth store saves on a short delay; wait for the flag to land, then parse.)
+    auth_store = f"{dataroot}/app/.storage/auth"
+    node1.wait_until_succeeds(f"grep -q '\"is_owner\": true' {auth_store}", timeout=30)
+    users = _zj.loads(node1.succeed(f"cat {auth_store}"))["data"]["users"]
+    owners = [u for u in users if u.get("is_owner")]
+    assert [u["name"] for u in owners] == ["Kostas"], f"owners: {owners}"
+    ours = [u for u in users if u.get("system_generated")]
+    assert ours and not any(u.get("is_owner") for u in ours), f"the system user took ownership: {ours}"
+
+    # THE RESUME, as getAuth does it: the code exchanges for tokens with the same client_id.
+    # This is what `onboarding.html?auth_callback=1&code=…&state=…` does on arrival.
+    tokens = _zj.loads(door("/auth/token", form={
+        "grant_type": "authorization_code", "code": first["auth_code"], "client_id": client_id,
+    }))
+    human = tokens["access_token"]
+    assert tokens.get("refresh_token"), f"the exchange returned no refresh token: {tokens}"
+    # ...and the page the browser lands on is served while onboarding is in progress.
+    door("/onboarding.html")
+
+    # ANALYTICS IS MARKED DONE FIRST, out of order: preferences untouched means off, and the
+    # frontend resumes at the first UNDONE step (`_curStep`), so this is the page it skips.
+    door("/api/onboarding/analytics", bearer=human, post={})
+    assert steps_done() == {"user": True, "core_config": False, "analytics": True, "integration": False}, steps_done()
+
+    # CORE CONFIG -- the step HA's location page ends on. Marking it is what starts HA's four
+    # default integrations. Two of them create their entry unconditionally and prove the step
+    # ran (their setup wants the internet this VM does not have; that is not the claim). The
+    # third, `met`, is THE MEASUREMENT: its onboarding flow aborts `no_home` while the home
+    # coordinates are unset or still HA's own default (met/config_flow.py, 2026.7.1) -- which they
+    # are here, because nobody ran the location page first. MEASURED 2026-09-04: the first run of
+    # this claim waited 120s for a `met` entry that was never going to come. That absence is the
+    # cost of completing core_config by API instead of handing the browser to HA's location page,
+    # and it is why the install does the latter ([V3b.31a](d)). The negative is not vacuous: all
+    # three flows start in the same loop and `met`'s abort has no await before it, so once both
+    # unconditional entries exist the `met` flow has run and chosen.
+    door("/api/onboarding/core_config", bearer=human, post={})
+    for domain in ("radio_browser", "google_translate"):
+        node1.wait_until_succeeds(
+            f"curl -fsS -H 'Host: {host}' -H 'Authorization: Bearer {human}' "
+            f"'http://192.168.1.100/api/config/config_entries/entry?domain={domain}' | grep -q entry_id",
+            timeout=120,
+        )
+    met = _zj.loads(door("/api/config/config_entries/entry?domain=met", bearer=human))
+    assert met == [], f"met set itself up without a home location: {met}"
+
+    # THE INTEGRATION STEP hands back a FRESH code for the final login. ⚠️ Called exactly once,
+    # with the HUMAN token and a same-origin redirect: the view marks itself done BEFORE it
+    # validates either (views.py, 2026.7.1), so a wrong call burns the step with no code.
+    final = _zj.loads(door("/api/onboarding/integration", bearer=human, post={
+        "client_id": client_id, "redirect_uri": origin + "/?auth_callback=1",
+    }))
+    assert final.get("auth_code") and final["auth_code"] != first["auth_code"], f"no fresh code: {final}"
+    landed = _zj.loads(door("/auth/token", form={
+        "grant_type": "authorization_code", "code": final["auth_code"], "client_id": client_id,
+    }))
+    assert landed.get("refresh_token"), f"the final code did not exchange: {landed}"
+
+    # ONBOARDED. Every step done, and the user step refuses forever after -- the 403 that makes
+    # "fresh HA only" true for the first-open path.
+    assert all(steps_done().values()), steps_done()
+    node1.fail(
+        f"curl -fsS -X POST -H 'Host: {host}' -H 'Content-Type: application/json' "
+        f"-d {_sx.quote(_zj.dumps({'name': 'x', 'username': 'x', 'password': 'x', 'client_id': client_id, 'language': 'en'}))} "
+        "http://192.168.1.100/api/onboarding/users"
+    )
+    print("onboarded by API: " + _zj.dumps(steps_done()))
   '';
 }
