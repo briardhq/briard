@@ -218,16 +218,22 @@ pkgs.testers.runNixOSTest {
 
     recovered = False
     t0 = time.monotonic()
-    while time.monotonic() - t0 < 240:
-        st = node1.succeed("systemctl show -p ActiveState --value pull-act3").strip()
-        if st != "activating":
-            recovered = node1.execute(f"podman image exists {ref}")[0] == 0
+    while time.monotonic() - t0 < 300:
+        # BOTH "active" AND "activating" MEAN STILL RUNNING, and the first cut of this rig got
+        # that wrong. A `systemd-run` transient service is Type=simple, so it reports `active`
+        # from the moment it starts -- an `!= "activating"` test therefore fired on the FIRST
+        # poll, printed "did NOT recover" 0.2s into a 20s outage, and finished the whole act in
+        # under a second. The bytes it reported were the ones already on the wire before the
+        # break. Nothing was measured; the number just looked like one.
+        st = node1.succeed("systemctl show -p ActiveState --value pull-act3 || echo gone").strip()
+        if st not in ("activating", "active"):
             break
         node1.sleep(5)
+    recovered = node1.execute(f"podman image exists {ref}")[0] == 0
     act3_total = tx() - c
     print("=" * 78)
     print(f"ACT 3: the pull {'RECOVERED on its own' if recovered else 'did NOT recover'} "
-          f"after a 20s outage; {act3_total / MiB:.1f} MiB on the wire "
+          f"after a 20s outage (final unit state: {st}); {act3_total / MiB:.1f} MiB on the wire "
           f"({act3_total / baseline:.2f}x the baseline)")
     print(node1.succeed("journalctl -u pull-act3 --no-pager | tail -25"))
     print("=" * 78)
