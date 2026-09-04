@@ -30,10 +30,13 @@ import (
 type pullPaths struct {
 	records string // where the host's pull records land (shared/dashboard.Dir)
 	layers  string // podman's overlay-layers/layers.json
-	tmp     string // the directory PrivateTmp roots under (/tmp on the guest)
+	// tmp is the directory the pull unit's PrivateTmp roots under. /var/tmp, not /tmp: a pull
+	// stages through /var/tmp/container_images_storage<random> ([B.56], measured), and
+	// PrivateTmp gives the unit its own of BOTH, each under its own systemd-private-* root.
+	tmp string
 }
 
-var defaultPullPaths = pullPaths{records: dashboard.Dir, layers: "/var/lib/containers/storage/overlay-layers/layers.json", tmp: "/tmp"}
+var defaultPullPaths = pullPaths{records: dashboard.Dir, layers: "/var/lib/containers/storage/overlay-layers/layers.json", tmp: "/var/tmp"}
 
 // progressView is what the Installing card shows.
 type progressView struct {

@@ -25,6 +25,7 @@ import (
 	"briard.io/agent/drbd"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
+	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -1500,5 +1501,25 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	}
 	if s := strings.Join(f.steps, ","); strings.Contains(s, "storage.free") || strings.Contains(s, "pulling") {
 		t.Fatalf("an unsized entry was measured or recorded: %v", f.steps)
+	}
+}
+
+// THE INSTALL'S OWN BUDGET FOLLOWS THE PULL'S ([V3b.31k]): an unsized entry keeps the fixed 15
+// minutes; a sized one gets at least its pull bound plus the health gate, so the operation
+// cannot expire before the pull it is waiting on is allowed to finish.
+func TestInstallBudgetFollowsThePullBound(t *testing.T) {
+	if got := installBudgetFor(testManifest()); got != installBudget {
+		t.Errorf("unsized = %s, want %s", got, installBudget)
+	}
+	small := testManifest()
+	small.Size, small.InstalledSize = 9981691, 23163392
+	if got := installBudgetFor(small); got != installBudget {
+		t.Errorf("a 10 MB entry = %s, want the fixed %s (its bound + gate is shorter)", got, installBudget)
+	}
+	big := testManifest()
+	big.Size, big.InstalledSize = 621628919, 2486168064
+	want := quadlet.PullTimeout(big.Size) + healthGate
+	if got := installBudgetFor(big); got != want || got <= installBudget {
+		t.Errorf("a 622 MB entry = %s, want %s (> %s)", got, want, installBudget)
 	}
 }

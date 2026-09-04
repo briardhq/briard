@@ -143,10 +143,18 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 	if d.Payload == "" {
 		return failed("no service named")
 	}
-	ctx, cancel := cfg.beat.budget(ctx, installBudget)
-	defer cancel()
+	parent := ctx
+	ctx, cancel := cfg.beat.budget(parent, installBudget)
+	defer func() { cancel() }()
 
 	m, _, err := cfg.fetchManifest(ctx, d.Payload)
+	if err == nil {
+		// Same re-budget as the install ([V3b.31k]): a prewarm is the pull and nothing else.
+		if b := installBudgetFor(m); b > installBudget {
+			cancel()
+			ctx, cancel = cfg.beat.budget(parent, b)
+		}
+	}
 	if err != nil {
 		logf("service prewarm %s: %v", d.Payload, err)
 		return failed(err.Error())
@@ -209,13 +217,21 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if !g.SupportsServiceConverge() {
 		return failed("this guest is too old to converge itself to the volume (no service.converge); update the guest OS before installing")
 	}
-	ctx, cancel := cfg.beat.budget(ctx, installBudget)
-	defer cancel()
+	parent := ctx
+	ctx, cancel := cfg.beat.budget(parent, installBudget)
+	defer func() { cancel() }()
 
 	m, raw, err := cfg.fetchManifest(ctx, d.Payload)
 	if err != nil {
 		logf("service install %s: %v", d.Payload, err)
 		return failed(err.Error())
+	}
+	// The manifest says how long its pull may take ([V3b.31k]); an install must not expire
+	// before the pull it waits on is allowed to. Re-budgeted from the parent, and the deferred
+	// cancel is a closure so it releases whichever lease is current.
+	if b := installBudgetFor(m); b > installBudget {
+		cancel()
+		ctx, cancel = cfg.beat.budget(parent, b)
 	}
 	// THE FREE-SPACE GATE ([V3b.31j]), before the first byte moves: the manifest says what the
 	// image store will hold once pulled, the guest says what its store's filesystem has free,
@@ -914,4 +930,18 @@ func gb(n int64) string {
 		return fmt.Sprintf("%.0f MB", float64(n)/1e6)
 	}
 	return fmt.Sprintf("%d bytes", n)
+}
+
+// installBudgetFor is the whole-operation bound for a manifest ([V3b.31k]): the fixed
+// installBudget for an entry that does not say how big it is, and otherwise at least the pull's
+// own bound plus the health gate -- an install must not give up before the pull it is waiting
+// on is allowed to finish.
+func installBudgetFor(m manifest.Manifest) time.Duration {
+	if m.Size <= 0 {
+		return installBudget
+	}
+	if b := quadlet.PullTimeout(m.Size) + healthGate; b > installBudget {
+		return b
+	}
+	return installBudget
 }

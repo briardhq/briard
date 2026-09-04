@@ -46,11 +46,32 @@ import (
 // output onto a node that may run another.
 const Dir = "/run/containers/systemd"
 
-// ImagePullTimeout bounds one `.image` unit's pull. See the emit site below for why it is this
-// long and why tightening it is the wrong instinct — in short: an expiry throws away every byte
-// fetched so far ([B.56], measured), so the bound exists to make a hopeless pull loud, not to make
-// failure prompt. Named here rather than inlined because the acceptance test varies it.
+// ImagePullTimeout bounds one `.image` unit's pull when the manifest does not say how big the
+// image is. See the emit site below for why it is this long and why tightening it is the wrong
+// instinct — in short: an expiry throws away the layer in flight ([B.56], measured), so the bound
+// exists to make a hopeless pull loud, not to make failure prompt. Named here rather than
+// inlined because the acceptance test varies it.
 const ImagePullTimeout = 45 * time.Minute
+
+// The bound a SIZED entry gets ([V3b.31k]): a fixed allowance for everything that is not bytes
+// (the registry round-trips, the token dance, six layers starting at once, decompression at the
+// end), plus the download itself at the slowest link a household is asked to have. 5 Mbit/s is
+// deliberately below any broadband plan and above the mobile-tethering floor; a link slower than
+// that expires a layer or two per attempt and converges anyway, because finished layers are kept.
+// Home Assistant (622 MB) gets ~22 minutes; a 10 MB broker gets the allowance plus 16 seconds.
+const (
+	PullAllowance = 5 * time.Minute
+	PullBitrate   = 5_000_000 // bits per second
+)
+
+// PullTimeout is the bound for an image of size bytes: the allowance plus the download at
+// PullBitrate, or ImagePullTimeout when the manifest carries no size.
+func PullTimeout(size int64) time.Duration {
+	if size <= 0 {
+		return ImagePullTimeout
+	}
+	return PullAllowance + time.Duration(size*8/PullBitrate)*time.Second
+}
 
 // Rendered is one service's quadlet source plus the promoter chain that drives it.
 type Rendered struct {
@@ -314,12 +335,18 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		//
 		// Only on the .image unit: this one pulls and exits. The .container unit runs the service
 		// and is deliberately left alone.
+		//
+		// SIZED BY THE MANIFEST since [V3b.31k]: an entry that says how many bytes it downloads
+		// gets PullTimeout(size) -- the fixed allowance plus the download at the floor bitrate --
+		// and the 45 minutes above stay for an entry that does not. The manifest's total is the
+		// service's, not this container's, so a multi-container service bounds each image by the
+		// whole: generous per image, and the only number the manifest carries.
 		out.Files[unit+".image"] = join(
 			"[Image]",
 			"Image="+c.Image,
 			"",
 			"[Service]",
-			"TimeoutStartSec="+strconv.Itoa(int(ImagePullTimeout.Seconds())),
+			"TimeoutStartSec="+strconv.Itoa(int(PullTimeout(m.Size).Seconds())),
 			"PrivateTmp=true",
 		)
 		out.ImageUnits = append(out.ImageUnits, unit+"-image.service")

@@ -155,6 +155,25 @@ func TestImagePullIsBounded(t *testing.T) {
 		t.Fatalf("ImagePullTimeout is %s: too short to be safe. An expiry loses all progress, so a "+
 			"bound near a slow household's real pull time never converges", ImagePullTimeout)
 	}
+	// SIZED BY THE MANIFEST ([V3b.31k]): an entry that says its download gets the allowance plus
+	// the bytes at the floor bitrate -- Home Assistant's 622 MB is ~22 minutes, a 10 MB broker
+	// the allowance plus 16 seconds -- and never less than the allowance, which is what keeps a
+	// small image from being given seconds for a pull that is mostly registry round-trips.
+	sized := ha()
+	sized.Size, sized.InstalledSize = 621628919, 2486168064
+	img = mustRender(t, sized).Files["briard-home-assistant-ha.image"]
+	if got, want := PullTimeout(sized.Size), 5*time.Minute+994*time.Second; got != want {
+		t.Fatalf("PullTimeout(622 MB) = %s, want %s", got, want)
+	}
+	if !strings.Contains(img, "TimeoutStartSec="+strconv.Itoa(int(PullTimeout(sized.Size).Seconds()))) {
+		t.Fatalf("a sized entry did not get its own bound:\n%s", img)
+	}
+	if got := PullTimeout(9981691); got != 5*time.Minute+15*time.Second {
+		t.Fatalf("PullTimeout(10 MB) = %s, want the allowance plus 15 s", got)
+	}
+	if PullAllowance < 5*time.Minute || PullBitrate > 10_000_000 {
+		t.Fatalf("allowance %s / bitrate %d: a tighter bound expires layers on ordinary links", PullAllowance, PullBitrate)
+	}
 	// THE BOUND AND THE SWEEP SHIP TOGETHER, which is why they are asserted together. A pull
 	// stages through /var/tmp and only moves into the graph root on completion, so a unit that can
 	// be killed by a timeout and has no private tmp abandons the whole partial image every time it
