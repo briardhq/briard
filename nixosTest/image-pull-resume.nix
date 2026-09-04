@@ -347,5 +347,78 @@ pkgs.testers.runNixOSTest {
     print(node1.succeed("ls -la /var/tmp || true"))
     print("=" * 78)
     throttle(False)
+
+    # === ACT 6: DOES PrivateTmp=true SWEEP THE LEAK? ===
+    # Act 5 found the time bomb: every INTERRUPTED pull abandons its scratch directory in
+    # /var/tmp, and the 45-minute bound is a machine for producing interrupted pulls. On the
+    # 16 GiB root a Home Assistant image leaks ~2.7 GB per expiry, against the ~11 GB free that
+    # disk-image.nix sized for one service plus its upgrade.
+    #
+    # PrivateTmp=true is the candidate because it needs no cleanup code: systemd gives the unit
+    # its own /tmp and /var/tmp and removes them when the unit stops, however it stops.
+    #
+    # TWO THINGS HAVE TO HOLD, and the second is the one that could bite. The sweep must work on
+    # the interrupt path (that is the point), AND the success path must be unaffected -- if the
+    # private /var/tmp were TMPFS-backed, the copy would run through RAM and a multi-GB image
+    # would OOM a guest instead of filling its disk, which trades a slow leak for a fast crash.
+    # So this act measures the filesystem behind it rather than trusting the flag's name.
+    node1.succeed("rm -rf /var/tmp/container_images_storage* || true")
+    print(node1.succeed("findmnt -n -o TARGET,SOURCE,FSTYPE --target /var/tmp || true"))
+    node1.succeed("free -m | head -2")
+
+    # -- 6a: the SUCCESS path still works, and does not leak either
+    node1.execute(f"podman rmi -f {ref}")
+    p_before = usage()
+    node1.succeed(
+        f"systemd-run --unit=pull-act6a --collect --property=PrivateTmp=true "
+        f"--wait podman image pull {ref}"
+    )
+    node1.succeed(f"podman image exists {ref}")
+    p_after_ok = usage()
+    print(f"ACT 6a success under PrivateTmp: image present, "
+          f"/var/tmp {p_before['/var/tmp']} -> {p_after_ok['/var/tmp']} KB, "
+          f"storage {p_before['storage']} -> {p_after_ok['storage']} KB")
+
+    # -- 6b: the INTERRUPT path -- the case act 5 caught leaking
+    node1.succeed(f"podman rmi -f {ref}")
+    throttle(True)
+    q_before = usage()
+    node1.succeed(
+        "systemd-run --unit=pull-act6b --collect --property=PrivateTmp=true "
+        f"podman image pull {ref}"
+    )
+    node1.sleep(12)
+    q_during = usage()
+    # Where the private scratch actually lives, and on what. If this is empty while the pull is
+    # plainly moving bytes, the copy is NOT on the host's /var/tmp and the RAM question is live.
+    print(node1.succeed("ls -la /var/tmp | grep -i private || echo '(no systemd-private dir under /var/tmp)'"))
+    print(node1.succeed("df -h /var/tmp | tail -1"))
+    node1.succeed("systemctl kill --signal=SIGTERM pull-act6b || true")
+    node1.succeed("systemctl stop pull-act6b || true")
+    node1.sleep(5)
+    q_after = usage()
+    throttle(False)
+
+    leak6 = q_after["/var/tmp"] - q_before["/var/tmp"]
+    grew6 = q_during["/var/tmp"] - q_before["/var/tmp"]
+    print("=" * 78)
+    print("                 /var/tmp      storage")
+    print(f"before pull   {q_before['/var/tmp']:9d} KB {q_before['storage']:9d} KB")
+    print(f"mid-pull      {q_during['/var/tmp']:9d} KB {q_during['storage']:9d} KB")
+    print(f"after SIGTERM {q_after['/var/tmp']:9d} KB {q_after['storage']:9d} KB")
+    print(f"ACT 6b: in-flight bytes visible under the host /var/tmp: {grew6} KB")
+    if leak6 < 1024:
+        print(f"VERDICT: PrivateTmp SWEEPS IT -- {leak6} KB left after an interrupted pull.")
+        print("  The bound no longer leaks: systemd tears the private scratch down on stop,")
+        print("  whatever killed the unit, with no cleanup code of ours to get wrong.")
+    else:
+        print(f"VERDICT: STILL LEAKS -- {leak6} KB left behind. PrivateTmp is not the fix;")
+        print("  the scratch must be swept explicitly (ExecStopPost) or relocated.")
+    if grew6 < 1024:
+        print("  ⚠️ AND THE BYTES NEVER APPEARED ON THE HOST'S /var/tmp: the private scratch is")
+        print("     not disk-backed where act 5's was. Check the df/findmnt lines above before")
+        print("     shipping this — a tmpfs here turns a 2.7 GB image into 2.7 GB of RAM.")
+    print(node1.succeed("ls -la /var/tmp || true"))
+    print("=" * 78)
   '';
 }
