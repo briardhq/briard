@@ -555,8 +555,11 @@ pkgs.testers.runNixOSTest {
     # token is the caller, as the dashboard's would be.
     mint_url = "http://192.168.1.100/api/briard/login"
     mint_body = _sx.quote(_zj.dumps({"client_id": client_id}))
+    # A fresh exchange: the restarts above rotated the refresh token, which revoked every access
+    # token issued before them ([V3b.29] §6) -- `access` from the first claim is dead by now.
+    system = exchange(node1.succeed("cat /run/briard/hass/token").strip())
     refused = node1.succeed(
-        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {host}' -H 'Authorization: Bearer {access}' "
+        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {host}' -H 'Authorization: Bearer {system}' "
         f"-H 'Content-Type: application/json' -d {mint_body} {mint_url}"
     ).strip()
     assert refused == "409", f"the minter answered {refused} with no owner; want 409"
@@ -689,7 +692,12 @@ pkgs.testers.runNixOSTest {
         store = _zj.loads(node1.succeed(f"cat {auth_store}"))["data"]
         owner = [u["id"] for u in store["users"] if u.get("is_owner")][0]
         return owner, [t for t in store["refresh_tokens"] if t.get("client_id") == client_id]
+    # The baseline is WAITED FOR: two codes exchanged above (`first`, `final`) mean two tokens for
+    # this client_id, and the store lands them on a debounce ((f)8) -- read too early it held
+    # one, and the later open then looked like two.
+    node1.wait_until_succeeds(f"[ $(grep -c '\"client_id\": \"{client_id}\"' {auth_store}) -ge 2 ]", timeout=30)
     owner_id, before = owner_tokens()
+    assert len(before) == 2, f"tokens for {client_id} before the later open: {len(before)}, want the two exchanged above"
     later = node1.succeed(
         f"curl -sS -o /dev/null -w '%{{redirect_url}}' -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' "
         "http://192.168.1.100/open/home-assistant"
