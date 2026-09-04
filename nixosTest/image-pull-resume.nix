@@ -72,6 +72,26 @@ let
     copyToRoot = padding;
     config.Cmd = [ "/bin/true" ];
   };
+
+  # THE SAME PAYLOAD, SPLIT INTO LAYERS ([B.56], act 4). One store path per layer is how
+  # buildLayeredImage cuts them, so N padding derivations give N distinct blobs of a known size --
+  # and a real image is built this way, where acts 1-3's single 24 MiB blob is not.
+  layerCount = 6;
+  layerMiB = 4;
+  layerPads = builtins.genList (
+    i:
+    pkgs.runCommand "layer-pad-${toString i}" { } ''
+      mkdir -p $out/layer${toString i}
+      head -c ${toString (layerMiB * 1024 * 1024)} /dev/urandom > $out/layer${toString i}/pad.bin
+    ''
+  ) layerCount;
+  layeredImage = pkgs.dockerTools.buildLayeredImage {
+    name = "briard-layered";
+    tag = "v0";
+    contents = layerPads;
+    maxLayers = layerCount + 4;
+    config.Cmd = [ "/bin/true" ];
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "image-pull-resume";
@@ -126,6 +146,14 @@ pkgs.testers.runNixOSTest {
     ).strip()
     ref = f"${registryHost}/briard-pad@{digest}"
     print(f"published {ref}")
+
+    zregistry.succeed(
+        "skopeo copy docker-archive:${layeredImage} docker://${registryHost}/briard-layered:v0"
+    )
+    ldigest = zregistry.succeed(
+        "skopeo inspect docker://${registryHost}/briard-layered:v0 --format '{{.Digest}}'"
+    ).strip()
+    print(f"published the layered image: ${registryHost}/briard-layered@{ldigest}")
 
     def tx():
         return int(zregistry.succeed("cat /sys/class/net/eth1/statistics/tx_bytes").strip())
@@ -237,5 +265,87 @@ pkgs.testers.runNixOSTest {
           f"({act3_total / baseline:.2f}x the baseline)")
     print(node1.succeed("journalctl -u pull-act3 --no-pager | tail -25"))
     print("=" * 78)
+
+    # === ACT 4: MANY LAYERS -- is completed work kept? ===
+    # Acts 1-3 used ONE 24 MiB layer, which measures resume WITHIN a blob and says nothing about
+    # an image made of several. That is the shape real images have, and the distinction decides
+    # how bad a timeout actually is: if finished layers are retained, a long pull makes monotonic
+    # progress across attempts even though the layer in flight is always lost, and the "never
+    # converges" worry applies only to an image whose SINGLE largest layer cannot fit in the
+    # window. If they are not retained, every attempt truly starts from zero.
+    lref = f"${registryHost}/briard-layered@{ldigest}"
+    node1.execute(f"podman rmi -f {lref}")
+    throttle(False)
+    d = tx()
+    node1.succeed(f"podman image pull {lref}")
+    lbaseline = tx() - d
+    print(f"ACT 4 layered baseline: {lbaseline / MiB:.1f} MiB across ${toString layerCount} layers")
+
+    node1.succeed(f"podman rmi -f {lref}")
+    throttle(True)
+    e = tx()
+    node1.succeed(f"systemd-run --unit=pull-act4 --collect podman image pull {lref}")
+    t0 = time.monotonic()
+    while tx() - e < int(lbaseline * 0.5) and time.monotonic() - t0 < 300:
+        node1.sleep(1)
+    lpartial = tx() - e
+    node1.succeed("systemctl kill --signal=SIGTERM pull-act4 || true")
+    node1.succeed("systemctl stop pull-act4 || true")
+    node1.sleep(2)
+    print(f"ACT 4 interrupted after {lpartial / MiB:.1f} MiB ({100 * lpartial / lbaseline:.0f}%)")
+
+    throttle(False)
+    node1.succeed(f"podman image pull {lref}")
+    node1.succeed(f"podman image exists {lref}")
+    ltotal = tx() - e
+    lratio = ltotal / lbaseline
+    print("=" * 78)
+    print(f"layered baseline          : {lbaseline / MiB:8.1f} MiB  (${toString layerCount} layers)")
+    print(f"interrupted then completed: {ltotal / MiB:8.1f} MiB   ({lratio:.2f}x)")
+    if lratio < 1.25:
+        print("VERDICT: COMPLETED LAYERS ARE KEPT -- only the layer in flight was re-fetched.")
+        print("  Progress across attempts is monotonic, so a bound is far less dangerous than")
+        print("  the single-layer measurement suggested: the risk narrows to an image whose")
+        print("  LARGEST SINGLE LAYER cannot cross the link inside the window.")
+    else:
+        print("VERDICT: NOTHING IS KEPT -- the retry re-fetched layers it had already completed.")
+        print("  Every attempt starts from zero regardless of how the image is built.")
+    print("=" * 78)
+
+    # === ACT 5: WHERE DO THE BYTES LIVE, AND WHEN ARE THEY SWEPT? ===
+    # The guest has ONE filesystem for all of this (16 GiB root; the replicated volume holds only
+    # service DATA), so a pull's scratch space competes with the OS closure, the image store and
+    # the second system generation an OS upgrade stages. [B.49]'s host ENOSPC and the guest disk
+    # sizing note in disk-image.nix are the same question from the other side.
+    def usage():
+        def kb(p):
+            out = node1.execute(f"du -sk {p} 2>/dev/null | cut -f1")[1].strip()
+            return int(out) if out.isdigit() else 0
+        return {"/var/tmp": kb("/var/tmp"), "storage": kb("/var/lib/containers/storage")}
+
+    node1.succeed(f"podman rmi -f {lref} {ref} || true")
+    before = usage()
+    throttle(True)
+    node1.succeed(f"systemd-run --unit=pull-act5 --collect podman image pull {ref}")
+    node1.sleep(12)
+    during = usage()
+    print(f"ACT 5 mid-pull /var/tmp contents:\n{node1.succeed('ls -la /var/tmp || true')}")
+    node1.succeed("systemctl kill --signal=SIGTERM pull-act5 || true")
+    node1.succeed("systemctl stop pull-act5 || true")
+    node1.sleep(5)
+    after = usage()
+    print("=" * 78)
+    print("                 /var/tmp      storage")
+    print(f"before pull   {before['/var/tmp']:9d} KB {before['storage']:9d} KB")
+    print(f"mid-pull      {during['/var/tmp']:9d} KB {during['storage']:9d} KB")
+    print(f"after SIGTERM {after['/var/tmp']:9d} KB {after['storage']:9d} KB")
+    grew = "/var/tmp" if during["/var/tmp"] - before["/var/tmp"] > 1024 else "storage"
+    print(f"the in-flight bytes land in: {grew}")
+    leaked = after["/var/tmp"] - before["/var/tmp"]
+    print(f"left behind in /var/tmp after an interrupted pull: {leaked} KB "
+          f"({'SWEPT' if leaked < 1024 else 'NOT SWEPT — this accumulates'})")
+    print(node1.succeed("ls -la /var/tmp || true"))
+    print("=" * 78)
+    throttle(False)
   '';
 }

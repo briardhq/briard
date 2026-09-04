@@ -1,8 +1,10 @@
 package quadlet
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/shared/manifest"
 )
@@ -125,6 +127,33 @@ func TestNothingAutoStarts(t *testing.T) {
 	img := r.Files["briard-home-assistant-ha.image"]
 	if !strings.Contains(img, "[Image]") || !strings.Contains(img, "Image=") {
 		t.Fatalf("the pre-warm unit no longer names an image — nothing could warm a cold node:\n%s", img)
+	}
+}
+
+// TestImagePullIsBounded: the .image unit must carry a TimeoutStartSec.
+//
+// Without one there is NO bound at all, and that is not something a reader would spot by looking
+// at the file: quadlet generates Type=oneshot, and systemd disables TimeoutStartSec= by default
+// for oneshot — so the ABSENCE of this line means "wait forever", not "wait for the default".
+// converge starts this unit on the promotion path, and nixosTest/cold-converge-pull.nix measured
+// what that costs: a node Primary with no VIP, no services and nothing in `failed`, for as long
+// as a registry cares to dribble bytes ([B.56]).
+//
+// The DURATION is asserted only as a floor, on purpose. The exact number is a judgement that may
+// move, and pinning it here would make this test a copy of the constant rather than a check on
+// it. What must not move is that it stays generous: an expiry throws away every byte fetched so
+// far (image-pull-resume.nix measured 1.43x on the wire for one interrupted pull), so a bound
+// short enough to feel responsive is a bound that re-downloads until something gives up.
+func TestImagePullIsBounded(t *testing.T) {
+	r := mustRender(t, ha())
+	img := r.Files["briard-home-assistant-ha.image"]
+	want := "TimeoutStartSec=" + strconv.Itoa(int(ImagePullTimeout.Seconds()))
+	if !strings.Contains(img, want) {
+		t.Fatalf("the pre-warm unit is unbounded — a oneshot with no TimeoutStartSec waits forever:\n%s", img)
+	}
+	if ImagePullTimeout < 20*time.Minute {
+		t.Fatalf("ImagePullTimeout is %s: too short to be safe. An expiry loses all progress, so a "+
+			"bound near a slow household's real pull time never converges", ImagePullTimeout)
 	}
 }
 

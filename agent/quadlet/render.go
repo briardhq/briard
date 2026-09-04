@@ -31,7 +31,9 @@ package quadlet
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"briard.io/agent/services"
 	"briard.io/shared/manifest"
@@ -43,6 +45,12 @@ import (
 // re-renders from it. Storing rendered units instead would mean replaying one podman version's
 // output onto a node that may run another.
 const Dir = "/run/containers/systemd"
+
+// ImagePullTimeout bounds one `.image` unit's pull. See the emit site below for why it is this
+// long and why tightening it is the wrong instinct — in short: an expiry throws away every byte
+// fetched so far ([B.56], measured), so the bound exists to make a hopeless pull loud, not to make
+// failure prompt. Named here rather than inlined because the acceptance test varies it.
+const ImagePullTimeout = 45 * time.Minute
 
 // Rendered is one service's quadlet source plus the promoter chain that drives it.
 type Rendered struct {
@@ -243,9 +251,33 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		//
 		// No [Install]: this unit exists to BE started by a guarded caller, never to start
 		// itself. See Render's doc comment.
+		//
+		// AND IT IS BOUNDED, because otherwise it is not ([B.56]). Quadlet generates a
+		// Type=oneshot unit (measured against podman 5.8.2's own generator), and systemd disables
+		// TimeoutStartSec= by default for oneshot — so an unbounded pull is the shipped behaviour.
+		// converge starts this unit on the PROMOTION path, so a registry that dribbles bytes holds
+		// the promotion open indefinitely: nixosTest/cold-converge-pull.nix measured a node sitting
+		// Primary with the volume mounted, no VIP, no services, restarts=0 and nothing in `failed`
+		// for the full 420 s it was watched. Nothing was broken enough to alert on.
+		//
+		// 45 MINUTES, AND DELIBERATELY NOT TIGHTER. The bound's job is to make a hopeless pull
+		// LOUD, not to make failure prompt, because a retry is expensive in a way that is easy to
+		// get wrong: nixosTest/image-pull-resume.nix measured that an interrupted pull does NOT
+		// resume — a SIGTERM at 43% of a 25 MiB image cost the full 25 MiB again on the next
+		// attempt (1.43x on the wire). Every expiry throws away all progress, so a bound near what
+		// a household's link actually needs would never converge; it would re-download the same
+		// blob until something gave up for good. Tighter is not safer here, it is worse.
+		//
+		// It also sits well clear of the faults that heal themselves. A 20 s outage mid-transfer
+		// was absorbed by TCP retransmission with no re-fetch at all (1.00x, a single
+		// `Copying blob` line spanning the break) — podman's own --retry never ran. A timeout that
+		// fired during one of those would convert a self-healing blip into a full re-download.
 		out.Files[unit+".image"] = join(
 			"[Image]",
 			"Image="+c.Image,
+			"",
+			"[Service]",
+			"TimeoutStartSec="+strconv.Itoa(int(ImagePullTimeout.Seconds())),
 		)
 		out.ImageUnits = append(out.ImageUnits, unit+"-image.service")
 		if out.ImageRefs == nil {
