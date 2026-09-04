@@ -186,6 +186,20 @@ RELEASE_KEYRING_PEM='__BRIARD_RELEASE_KEYRING_PEM__'
 
 say() { printf 'briard: %s\n' "$*"; }
 die() { printf 'briard: ERROR: %s\n' "$*" >&2; exit 1; }
+# open_for_user hands the dashboard link to the invoking user's browser, on a desktop and only
+# there ([V3b.31h]): a user to run it AS (the browser must be theirs, never root's), a display
+# they can see (sudo keeps DISPLAY and XAUTHORITY; a Wayland session carries DISPLAY through
+# Xwayland), and xdg-open present. Best-effort and silent otherwise -- a headless install is the
+# printed link opened on a phone, not a failure -- and never waited on: xdg-open may block until
+# the browser exits.
+open_for_user() {
+	[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || return 0
+	[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+	command -v xdg-open >/dev/null 2>&1 || return 0
+	say "also asking your desktop to open it"
+	sudo -u "$SUDO_USER" -H env DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-}" \
+		xdg-open "$1" >/dev/null 2>&1 &
+}
 fetch_url() { # url dest -- TLS download for the bootstrap agent (curl or wget, whatever the box has)
 	if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
 	elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
@@ -994,6 +1008,10 @@ EOF
 
 if command -v systemctl >/dev/null 2>&1; then
 	say "registering briard with systemd"
+	# The clock mark the closing wait reads the journal from: a reinstall's journal still holds
+	# the previous life's "healthy=true", and a link minted on a stale line is minted before the
+	# guest exists.
+	UNITS_STARTED=$(date '+%Y-%m-%d %H:%M:%S')
 	systemctl daemon-reload
 	if [ "$UNIT_DIR" = /etc/systemd/system ]; then
 		# Persistent install: enable (survive reboot) + start now.
@@ -1047,10 +1065,37 @@ if command -v systemctl >/dev/null 2>&1; then
 	else
 		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ -- it takes its address from your router, where it shows up as a \"briard-\" client -- $SERVICE_NOTE"
 	fi
-	# The dashboard's only door is a one-time link the agent mints ([V3b.31b]); the guest has to be
-	# up for it, and it is not yet, so the sentence says how rather than printing a link that
-	# would expire before the boot finished.
-	say "once it answers, get a one-time link to your dashboard with: sudo briard dashboard"
+	# THE LINK IS THE LAST THING THE INSTALLER PRINTS ([V3b.31h]). The dashboard's only door is a
+	# one-time link the agent mints ([V3b.31b]), and the guest has to be up for it -- so wait for
+	# it, bounded, on the agent's OWN word: the status line it logs once the node is primary and
+	# the chain (the front door, the dashboard) passed its health gate. That is the same signal
+	# the tier-4 rig waits on, and it is local -- no name to resolve, no address to know under
+	# DHCP. Then mint once, the way `sudo briard dashboard` does. Past the bound the sentence says
+	# how instead, as it always did: a link printed before the door is up would 503 in the
+	# household's face, and a link that expired during a slow boot would be worse.
+	link=""
+	if command -v journalctl >/dev/null 2>&1; then
+		say "waiting for the guest to come up (up to 3 minutes), to hand you a link..."
+		waited=0
+		while [ "$waited" -lt 180 ]; do
+			if journalctl -u briard-agent --since "$UNITS_STARTED" --no-pager 2>/dev/null | grep -q 'primary=true.*healthy=true'; then
+				link=$("$PREFIX/agent/briard-agent" dashboard 2>/dev/null | grep -oE 'https?://[^ ]+/\?code=[0-9a-f]+' | head -1) || link=""
+				[ -n "$link" ] && break
+			fi
+			sleep 5
+			waited=$((waited + 5))
+		done
+	fi
+	if [ -n "$link" ]; then
+		say "your dashboard is ready. open this on any device on your network (it works once, within 10 minutes):"
+		say ""
+		say "    $link"
+		say ""
+		say "another link, any time: sudo briard dashboard"
+		open_for_user "$link"
+	else
+		say "the guest is still booting. once it answers, get a one-time link to your dashboard with: sudo briard dashboard"
+	fi
 else
 	# Belt, not the gate: the report card refuses a host that is not systemd-booted before anything
 	# is written (step 2). Reaching HERE means systemctl vanished between that check and this line,
