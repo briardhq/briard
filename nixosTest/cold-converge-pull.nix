@@ -210,6 +210,13 @@ pkgs.testers.runNixOSTest {
 
     print("t     services              result    restarts image           role       mnt vip mask   txKB")
     settled = None
+    # LATCHED ON `activating` FIRST, and the first run of this rig is why. `--no-block` returns
+    # before systemd has moved the unit, so the t=0 probe still saw the PREVIOUS generation's
+    # `active/stop` -- not a start substate, so a bare "is it still starting?" test declared the
+    # job settled at t=0.0s and printed "something DOES bound it" above a timeline showing the
+    # exact opposite for the next 411 seconds. The data was right and the verdict was wrong, which
+    # is the worse way round: nobody re-reads a table underneath a conclusion.
+    seen_activating = False
     while time.monotonic() - t0 < ${toString windowSecs}:
         p = probe()
         print(
@@ -218,7 +225,10 @@ pkgs.testers.runNixOSTest {
         )
         # "Settled" = the start job is over, one way or the other. Recorded, not asserted: the
         # interesting outcome is the one where this never happens.
-        if settled is None and p["services"].split("/")[1] not in ("start", "start-pre", "start-post", "auto-restart"):
+        sub = p["services"].split("/")[1]
+        if sub in ("start", "start-pre", "start-post", "auto-restart"):
+            seen_activating = True
+        elif settled is None and seen_activating:
             settled = p
         node1.sleep(15)
 
