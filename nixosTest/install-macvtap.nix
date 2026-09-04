@@ -201,8 +201,9 @@ pkgs.testers.runNixOSTest {
     # place a household would look. Returns (ip, mac, hostname, client-id) from dnsmasq's lease
     # table, whose columns are: <expiry> <mac> <ip> <hostname> <client-id>.
     #
-    # It waits because the lease is drawn at PROMOTION, not at install: install.sh returns as soon
-    # as the agent is up, and the guest has to boot and promote before it asks for anything.
+    # It waits because the lease is drawn at PROMOTION, not at install: the guest has to boot and
+    # promote before it asks for anything. (install.sh itself now waits for the agent's healthy
+    # line before printing the link, [V3b.31h] -- bounded, so the lease is still not implied.)
     def wait_for_lease(timeout=180):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -305,10 +306,20 @@ pkgs.testers.runNixOSTest {
     # --- the install on the macvtap substrate: one command -> green ---
     # BRIARD_UNIT_DIR=/run/systemd/system: NixOS's /etc/systemd/system is a read-only store
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
-    host.succeed(
+    install_out = host.succeed(
         "${channelEnv} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
+    # THE INSTALLER ENDS WITH THE LINK ([V3b.31h]): it waited for the agent's own healthy line
+    # and minted once, so its last lines carry a one-time dashboard link at the node's own name
+    # -- not merely the name of the verb that would get one. Redeemed below once the router has
+    # leased the VIP (the name is not resolvable from the client; the door is reached by address
+    # under the name the link carries, as a browser with mDNS would reach it).
+    import re
+    m = re.search(r"http://(briard-[a-z0-9-]+\.local)/\?code=([0-9a-f]{64})", install_out)
+    assert m, f"the installer printed no one-time link; its closing lines: {install_out.strip().splitlines()[-6:]}"
+    install_link_host, install_code = m.group(1), m.group(2)
+    assert "sudo briard dashboard" in install_out, "the installer no longer says how to get another link"
 
     # DELTA 1: NO bridge, and the host IP NEVER left eth1 (macvtap's invasiveness win).
     host.fail("ip link show br-briard")
@@ -386,14 +397,28 @@ pkgs.testers.runNixOSTest {
     assert mode in ("600", "640"), f"the guest console is mode {mode} -- readable beyond root"
     print("the INSTALLER's own guest-console capture is live, non-empty and not world-readable")
 
-    # What a stranger actually gets. The install ships NO service, so the front door is
-    # what answers -- and it says so, rather than the node looking broken or serving a workload
-    # nobody chose. This is the assertion that would catch a service sneaking back into the
-    # shipped disk.
-    page = client.succeed(f"curl -fsS http://{vip}/")
-    assert "Nothing is installed" in page, f"the VIP served: {page!r}"
+    # What a stranger actually gets. The bare address is a name the front door does not route,
+    # so it forwards to the household dashboard ([V3b.31b]) -- which REFUSES a browser with no
+    # session and names nothing: 401, one instruction, no inventory. Reaching the VIP is not
+    # authentication ([V3b.31a](a)). The install ships NO service, and /healthz is where the
+    # door says so -- the assertion that would catch a service sneaking back into the shipped
+    # disk.
+    refused = client.succeed(f"curl -sS -o /tmp/vip.html -w '%{{http_code}}' http://{vip}/").strip()
+    page = client.succeed("cat /tmp/vip.html")
+    assert refused == "401" and "not yet trusted" in page, f"the VIP served {refused}: {page!r}"
+    assert "home-assistant" not in page and "Services on this node" not in page, f"the refusal names the inventory: {page!r}"
     health = client.succeed(f"curl -fsS http://{vip}/healthz")
     assert "no services routed" in health, f"/healthz said: {health!r}"
+    # The installer's link, redeemed the way the household's first browser would ([V3b.31h]):
+    # under the name it carries -- the same name the "installed." line printed -- a 303 home and
+    # an HttpOnly session cookie, and the same code refused the second time.
+    assert f"http://{install_link_host}/" in install_out, f"the link's name {install_link_host} is not the one the installer printed"
+    redeemed = client.succeed(
+        f"curl -sS -D - -o /dev/null -H 'Host: {install_link_host}' 'http://{vip}/?code={install_code}'"
+    )
+    assert " 303 " in redeemed.splitlines()[0] and "briard_session=" in redeemed.lower() and "httponly" in redeemed.lower(), redeemed
+    client.fail(f"curl -fsS -o /dev/null -H 'Host: {install_link_host}' 'http://{vip}/?code={install_code}'")
+    print(f"the installer's link redeemed once at {install_link_host}")
 
     # --- V3.20: the NAME, and the three identifiers behind it ---
     # Until this item one string (`guest`) was the API identity, the guest hostname, DRBD's
