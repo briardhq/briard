@@ -10,18 +10,19 @@ import (
 
 func TestQEMUArgsFullSpec(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{
-		Accel:       "kvm:tcg",
-		MemoryMB:    2048,
-		Cores:       2,
-		DiskImage:   "/var/lib/briard/guest.qcow2",
-		DataDisk:    "/dev/vg/drbd0",
-		ControlSock: "/run/briard/ctl.sock",
-		ServiceTap:  "svc0",
-		ServiceMAC:  "52:54:00:aa:bb:cc",
-		SystemTap:   "sys0",
-		SystemMAC:   "52:54:00:11:22:33",
-		WitnessTap:  "wit0",
-		WitnessMAC:  "52:54:00:de:ad:be",
+		Accel:         "kvm:tcg",
+		MemoryMB:      2048,
+		Cores:         2,
+		DiskImage:     "/var/lib/briard/guest.qcow2",
+		DataDisk:      "/dev/vg/drbd0",
+		ControlSock:   "/run/briard/ctl.sock",
+		AdminPortSock: "/run/briard/admin-port.sock",
+		ServiceTap:    "svc0",
+		ServiceMAC:    "52:54:00:aa:bb:cc",
+		SystemTap:     "sys0",
+		SystemMAC:     "52:54:00:11:22:33",
+		WitnessTap:    "wit0",
+		WitnessMAC:    "52:54:00:de:ad:be",
 	}), " ")
 	for _, want := range []string{
 		"accel=kvm:tcg",
@@ -31,6 +32,8 @@ func TestQEMUArgsFullSpec(t *testing.T) {
 		"virtio-serial-pci",
 		"socket,id=briardctl,path=/run/briard/ctl.sock,server=on,wait=off",
 		"virtserialport,chardev=briardctl,name=briard.control",
+		"socket,id=briardadmin,path=/run/briard/admin-port.sock,server=on,wait=off",
+		"virtserialport,chardev=briardadmin,name=briard.admin",
 		"file=/var/lib/briard/guest.qcow2",
 		"file=/dev/vg/drbd0",
 		"user,id=net0",                                     // eth0: throwaway user-net

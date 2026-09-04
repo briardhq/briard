@@ -48,7 +48,7 @@
 </main></body></html>{{end}}
 
 {{define "page"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{template "style"}}</head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{template "style"}}</head>
 <body><main>
   <h1>Briard</h1>
   {{if .HA}}
@@ -66,7 +66,20 @@
     {{end}}
   </div>
   {{else}}
-  <div class="card"><h2>Home Assistant</h2><p class="muted">Not installed on this node yet.</p></div>
+  <div class="card">
+    <h2>Home Assistant</h2>
+    {{if and .Install .Install.Running}}
+      <p>Installing… the node is pulling about 2.4 GB, which takes a minute or two. This page refreshes itself.</p>
+      <p class="muted">Started at {{.Install.Since}}.</p>
+    {{else if and .Install .Install.Failed}}
+      <p>Could not install Home Assistant: {{.Install.Detail}}</p>
+      <form method="post" action="/install/home-assistant"><button type="submit">Try again</button></form>
+      <p class="muted">Or, on the machine that runs Briard: <code>sudo briard service install home-assistant</code></p>
+    {{else}}
+      <p class="muted">Not installed on this node yet.</p>
+      <form method="post" action="/install/home-assistant"><button type="submit">Set up Home Assistant</button></form>
+    {{end}}
+  </div>
   {{end}}
   {{if .Services}}<p class="muted">Services on this node: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
   <div class="card">

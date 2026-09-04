@@ -420,6 +420,36 @@ pkgs.testers.runNixOSTest {
     client.fail(f"curl -fsS -o /dev/null -H 'Host: {install_link_host}' 'http://{vip}/?code={install_code}'")
     print(f"the installer's link redeemed once at {install_link_host}")
 
+    # THE GUEST'S ADMIN PORT, END TO END ([V3b.31i]): the trusted browser presses "Set up Home
+    # Assistant"; the dashboard relays a service-install directive over the second virtio-serial
+    # port; the host agent dispatches it exactly as it would the CLI's. This VM has no WAN, so
+    # the install FAILS -- and that is the measurement: the page must carry the host's own
+    # refusal back, which proves the whole wire (device -> qemu -> host acceptor -> dispatch ->
+    # outcome -> device -> page) rather than a page that merely says "installing" forever.
+    session = [l.split(":", 1)[1].split(";")[0].strip() for l in redeemed.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
+    node_page = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
+    assert "Set up Home Assistant" in node_page and 'action="/install/home-assistant"' in node_page, node_page
+    host.succeed("test -S /run/briard-admin.sock")  # qemu serves the host end
+    pressed = client.succeed(
+        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {install_link_host}' -H 'Cookie: {session}' "
+        f"http://{vip}/install/home-assistant"
+    ).strip()
+    assert pressed == "303", f"the button answered {pressed}"
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'admin port: directive kind=service-install submitted by the guest'", timeout=30)
+    def outcome_on_page():
+        p = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
+        return p if "Could not install Home Assistant" in p else None
+    deadline = time.time() + 300
+    page_after = None
+    while time.time() < deadline and page_after is None:
+        page_after = outcome_on_page()
+        if page_after is None:
+            time.sleep(5)
+    assert page_after, "the host's outcome never reached the page (the dashboard still says installing, or forgot the ask)"
+    assert "sudo briard service install home-assistant" in page_after and "Try again" in page_after, page_after
+    assert "no admin port" not in page_after, "the dashboard found no port -- qemu did not expose it to the guest"
+    print("the admin port carried the button's directive to the host and the host's refusal back")
+
     # --- V3.20: the NAME, and the three identifiers behind it ---
     # Until this item one string (`guest`) was the API identity, the guest hostname, DRBD's
     # `on <name>` AND the mDNS label, so every install on earth answered to briard-guest.local.

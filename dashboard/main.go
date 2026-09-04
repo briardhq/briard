@@ -62,8 +62,10 @@ func main() {
 	handoffPath := flag.String("handoff", dashboard.HandoffPath, "the one-time code the host handed over")
 	statePath := flag.String("state", "/var/lib/briard/dashboard", "device registry + the handed-over account (on the volume)")
 	tokenPath := flag.String("hass-token", hass.TokenPath, "the control channel's Home Assistant token")
+	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (a service install rides it)")
 	flag.Parse()
 	a := newApp(*routesPath, *handoffPath, *statePath, *tokenPath)
+	a.port = &serialPort{path: *adminPortPath}
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("dashboard: serving %s; routes from %s, state at %s", *listen, *routesPath, *statePath)
 	log.Fatalf("dashboard: %v", srv.ListenAndServe())
@@ -80,10 +82,15 @@ type app struct {
 	// one shows. In memory on purpose -- a request outlives neither its five minutes nor this
 	// process, and the volume keeps only what is trusted.
 	pending map[string]*pending
+	// port is the host's admin port ([V3b.31i]); installs is what was asked through it, by
+	// service, from the click until the routes table lists the service.
+	port     adminPort
+	installs map[string]*install
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
-	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, pending: map[string]*pending{}}
+	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
+		pending: map[string]*pending{}, installs: map[string]*install{}, port: &serialPort{path: dashboard.AdminPortDev}}
 }
 
 const (
@@ -124,6 +131,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.revoke(w, r)
+	case strings.HasPrefix(r.URL.Path, "/install/") && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"))
 	case r.URL.Path == "/join" && r.Method == http.MethodPost:
 		a.ask(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodGet:
@@ -518,6 +531,10 @@ type view struct {
 	Services []string
 	HA       *haView
 	Devices  []deviceView
+	// Install is a Home Assistant install the household asked for from this page, while it
+	// runs or after it failed; Refresh makes the page poll itself while something is moving.
+	Install *installView
+	Refresh bool
 }
 
 // deviceView is one row of the trusted-device list: a label a person can tell apart, when it
@@ -593,6 +610,10 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 		}
 		v.HA = hv
 	}
+	v.Install = a.installState(hass.Name, v.HA != nil)
+	// Poll while something is on its way: an install in flight, or a Home Assistant that is
+	// routed but not yet RUNNING.
+	v.Refresh = (v.Install != nil && v.Install.Running) || (v.HA != nil && !v.HA.Running)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, "page", v); err != nil {
 		log.Printf("dashboard: render: %v", err)

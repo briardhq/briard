@@ -40,6 +40,10 @@ at publish time. You can also [build and install from source](CONTRIBUTING.md#bu
 
 ## Install a service
 
+Open the link the installer printed. The dashboard's first card is **Set up Home Assistant**:
+one press, a minute or two while the node pulls the image, and **Open Home Assistant** lands you
+in a logged-in Home Assistant. The same install from the machine that runs Briard:
+
 ```sh
 sudo briard service install home-assistant
 ```

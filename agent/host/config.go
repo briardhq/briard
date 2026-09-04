@@ -125,14 +125,16 @@ func ConfigFromEnv() Config {
 		QMPSock: env("QMP_SOCK", "/run/briard/qmp/guest.sock"),
 		// On by default, because an admin door only an expert can find is not a door.
 		// The CLI defaults to this same path (agent/cli); keep the two literals in step.
-		AdminSock:  env("ADMIN_SOCK", "/run/briard/admin.sock"),
-		ServiceTap: os.Getenv("SERVICE_TAP"),
-		SystemTap:  os.Getenv("SYSTEM_TAP"),
-		WitnessTap: os.Getenv("WITNESS_TAP"),  // eth3 private witness link; "" -> no witness NIC
-		NetMode:    os.Getenv("NET_MODE"),     // "" (bridge, default) | "macvtap"
-		VIPParent:  os.Getenv("VIP_PARENT"),   // bridge substrate only: the NIC the guest builds VIP_DEV on
-		NetWrapBin: os.Getenv("NET_WRAP_BIN"), // the fd-passing launch wrapper; required for NET_MODE=macvtap
-		SerialLog:  os.Getenv("GUEST_SERIAL"),
+		AdminSock: env("ADMIN_SOCK", "/run/briard/admin.sock"),
+		// The guest's admin port ([V3b.31i]), beside the control socket it mirrors.
+		AdminPortSock: env("ADMIN_PORT_SOCK", "/run/briard-admin.sock"),
+		ServiceTap:    os.Getenv("SERVICE_TAP"),
+		SystemTap:     os.Getenv("SYSTEM_TAP"),
+		WitnessTap:    os.Getenv("WITNESS_TAP"),  // eth3 private witness link; "" -> no witness NIC
+		NetMode:       os.Getenv("NET_MODE"),     // "" (bridge, default) | "macvtap"
+		VIPParent:     os.Getenv("VIP_PARENT"),   // bridge substrate only: the NIC the guest builds VIP_DEV on
+		NetWrapBin:    os.Getenv("NET_WRAP_BIN"), // the fd-passing launch wrapper; required for NET_MODE=macvtap
+		SerialLog:     os.Getenv("GUEST_SERIAL"),
 		// Host-side witness-forwarder identity. Bin + the anchor cert/key/ca; a managed
 		// pairing directive (MeshSpec.Witness) starts the forwarder with these. Unset -> a pairing
 		// that needs the cloud witness fails fast (before any DRBD change).

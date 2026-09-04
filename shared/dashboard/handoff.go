@@ -63,3 +63,15 @@ func (h Handoff) Expired(now time.Time) bool {
 func URL(flock, code string) string {
 	return "http://briard-" + flock + ".local/?code=" + code
 }
+
+// AdminPort is the second virtio-serial port between host and guest ([V3b.31i]): the guest end
+// of the host's admin door. The dashboard -- and only the dashboard, a root-owned unit in the
+// guest -- opens AdminPortDev and relays a household's directive to the host agent as one JSON
+// line, reading the outcome back the same way; it is the protocol `briard` speaks to the admin
+// socket, over a wire only these two processes can see. The guest runs no logic on it: a person
+// on a trusted device pressed a button, and the host decides, through the same dispatch every
+// directive takes. The host accepts only directives whose effect stays inside the guest.
+const (
+	AdminPort    = "briard.admin"
+	AdminPortDev = "/dev/virtio-ports/" + AdminPort
+)

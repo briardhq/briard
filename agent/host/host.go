@@ -133,11 +133,16 @@ type Config struct {
 	// AdminSock is the local admin door `briard` submits directives to; "" disables it.
 	// Distinct from ControlSock in both direction and peer: that one is the agent DIALING the
 	// guest, this one is the agent LISTENING for an operator.
-	AdminSock  string
-	ServiceTap string
-	SystemTap  string
-	WitnessTap string // host tap for the guest's private witness NIC (eth3); "" = no witness link
-	SerialLog  string
+	AdminSock string
+	// AdminPortSock is the host end of the GUEST's admin port ([V3b.31i]): a second serial
+	// port qemu serves, which the guest's dashboard writes directives to and the agent answers
+	// -- the same injector semantics as AdminSock, over a wire only the host and this guest
+	// see, and restricted to directives whose effect stays inside the guest. "" = no port.
+	AdminPortSock string
+	ServiceTap    string
+	SystemTap     string
+	WitnessTap    string // host tap for the guest's private witness NIC (eth3); "" = no witness link
+	SerialLog     string
 	// Net substrate for the service + system NICs. NetMode "" (NetBridge) = host
 	// taps on a bridge, opened by name (today's install.sh substrate); "macvtap" (NetMacvtap) =
 	// macvtap chardevs, which the NetWrapBin fd-passing wrapper attaches to qemu. NetWrapBin is
@@ -575,6 +580,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// single observe() call, which is the whole point of an out-of-band admin surface.
 	local := make(chan localRequest)
 	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	// The guest's admin port feeds the same channel: a directive the household pressed a button
+	// for in the dashboard arrives here exactly as one the operator typed ([V3b.31i]).
+	go serveAdminPort(ctx, cfg.AdminPortSock, local, logf)
 
 	// Observe with reconnect. The guest agent serves one connection then exits
 	// (systemd restarts it), and a per-call deadline also closes the channel — either way
@@ -636,17 +644,18 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 // difference between the two launches.
 func (cfg Config) guestSpec() platform.QEMUSpec {
 	return platform.QEMUSpec{
-		Binary:      cfg.QEMUBinary,
-		DataDir:     cfg.QEMUDataDir,
-		Accel:       cfg.Accel,
-		CPUModel:    cfg.CPUModel,
-		MemoryMB:    cfg.MemoryMB,
-		Cores:       cfg.Cores,
-		DiskImage:   cfg.GuestDisk,
-		DataDisk:    cfg.DataDisk,
-		ControlSock: cfg.ControlSock,
-		QMPSock:     cfg.QMPSock,
-		ServiceTap:  cfg.ServiceTap,
+		Binary:        cfg.QEMUBinary,
+		DataDir:       cfg.QEMUDataDir,
+		Accel:         cfg.Accel,
+		CPUModel:      cfg.CPUModel,
+		MemoryMB:      cfg.MemoryMB,
+		Cores:         cfg.Cores,
+		DiskImage:     cfg.GuestDisk,
+		DataDisk:      cfg.DataDisk,
+		ControlSock:   cfg.ControlSock,
+		AdminPortSock: cfg.AdminPortSock,
+		QMPSock:       cfg.QMPSock,
+		ServiceTap:    cfg.ServiceTap,
 		// The service NIC carries the VIP and nothing else, so its MAC is the VIP's identity --
 		// flock-scoped, not node-scoped (see Config.FlockID). The DRBD and witness NICs stay
 		// node-derived: those MUST differ per node or the NICs collide and ARP never resolves.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"briard.io/agent/guestagent"
+	"briard.io/shared/dashboard"
 )
 
 // QEMUSpec describes the guest VM to boot. The Linux v0 backend shells out to
@@ -39,6 +40,10 @@ type QEMUSpec struct {
 	DiskImage   string // guest OS disk; empty in kernel/initrd boots
 	DataDisk    string // backing block device for the DRBD volume -> guest /dev/vdb
 	ControlSock string // host end of the virtio-serial control channel
+	// AdminPortSock is the host end of the guest's admin port ([V3b.31i]): the second serial
+	// port, direction reversed -- the guest's dashboard writes a directive, the host answers.
+	// Empty = no port (what every test that never runs a dashboard passes).
+	AdminPortSock string
 	// QMPSock is the host end of QEMU's own control channel -- the VM, not the guest OS
 	// inside it. Empty = no monitor, which is what every path that never needs to
 	// stop or reset a VM should pass. It buys a clean ACPI shutdown (Guest.Shutdown) where
@@ -160,6 +165,16 @@ func qemuArgs(s QEMUSpec) []string {
 		"-chardev", "socket,id=briardctl,path="+s.ControlSock+",server=on,wait=off",
 		"-device", "virtserialport,chardev=briardctl,name="+guestagent.ControlPort,
 	)
+	if s.AdminPortSock != "" {
+		// The guest's admin port ([V3b.31i]): the same shape as the control channel with the
+		// roles reversed -- the dashboard in the guest writes, the host agent answers. A
+		// second port on the same virtio-serial bus, so it exists on every platform the
+		// control channel does, and nowhere the network is.
+		args = append(args,
+			"-chardev", "socket,id=briardadmin,path="+s.AdminPortSock+",server=on,wait=off",
+			"-device", "virtserialport,chardev=briardadmin,name="+dashboard.AdminPort,
+		)
+	}
 	if s.QMPSock != "" {
 		// Wait=off so a guest never blocks on the monitor being connected: the agent dials
 		// it only for the rare deliberate operations, and a VM that cannot boot
