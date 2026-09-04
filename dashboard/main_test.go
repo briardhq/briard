@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -576,5 +577,175 @@ func TestDeviceLabel(t *testing.T) {
 		if got := deviceLabel(ua); got != want {
 			t.Errorf("deviceLabel(%q) = %q, want %q", ua, got, want)
 		}
+	}
+}
+
+// joiner is a browser that is not trusted and asks to be: it keeps the join cookie the request
+// gave it, which is the only thing that can collect the approval.
+type joiner struct {
+	r    *rig
+	ua   string
+	join *http.Cookie
+	code string
+}
+
+func (r *rig) ask(t *testing.T, ua string) *joiner {
+	t.Helper()
+	resp := r.do("POST", "/join", nil, map[string]string{"User-Agent": ua})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/join" {
+		t.Fatalf("ask = %d %q; want 303 to /join", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	j := &joiner{r: r, ua: ua}
+	for _, c := range resp.Cookies() {
+		if c.Name == joinCookie {
+			j.join = c
+		}
+	}
+	if j.join == nil || !j.join.HttpOnly || j.join.Path != "/join" {
+		t.Fatalf("join cookie = %+v; want HttpOnly on /join", j.join)
+	}
+	body, st := j.poll(t)
+	if st != http.StatusOK {
+		t.Fatalf("waiting page = %d, want 200", st)
+	}
+	m := regexp.MustCompile(`<p class="code">(\d{3}) (\d{3})</p>`).FindStringSubmatch(body)
+	if m == nil || !strings.Contains(body, `http-equiv="refresh"`) {
+		t.Fatalf("the waiting page shows no six-digit code, or does not refresh: %s", body)
+	}
+	j.code = m[1] + m[2]
+	return j
+}
+
+// poll is the waiting page refreshing itself; the response is handed back unfollowed.
+func (j *joiner) poll(t *testing.T) (string, int) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", j.r.srv.URL+"/join", nil)
+	req.AddCookie(j.join)
+	resp, err := noRedirect.Do(req)
+	must(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body), resp.StatusCode
+}
+
+func (r *rig) approve(t *testing.T, c *http.Cookie, code string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest("POST", r.srv.URL+"/devices/approve", strings.NewReader("code="+url.QueryEscape(code)))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if c != nil {
+		req.AddCookie(c)
+	}
+	resp, err := noRedirect.Do(req)
+	must(t, err)
+	resp.Body.Close()
+	return resp
+}
+
+// QUICK-CONNECT ([V3b.31g]): the new device shows a code, a trusted device types it, and the new
+// device is let in -- the session goes to the request's own cookie, never to the code. Nobody
+// else can approve, the wrong code approves nothing, an approval is collected once, and the
+// code alone (no join cookie) collects nothing.
+func TestQuickConnectLetsADeviceInByItsCode(t *testing.T) {
+	r := newRig(t)
+	laptop := r.trust()
+	phone := r.ask(t, "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1")
+	stranger := r.ask(t, "curl/8.5.0")
+	if stranger.code == phone.code {
+		t.Fatal("two requests share a code")
+	}
+	// Not approved yet: the phone keeps waiting, and nobody untrusted can approve.
+	if _, st := phone.poll(t); st != http.StatusOK {
+		t.Errorf("waiting before approval = %d, want 200", st)
+	}
+	if resp := r.approve(t, nil, phone.code); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("approve with no session = %d, want 401", resp.StatusCode)
+	}
+	if resp := r.approve(t, phone.join, phone.code); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the asker approving itself = %d, want 401", resp.StatusCode)
+	}
+	if resp := r.approve(t, laptop, "000000"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("approve with a code nobody shows = %d, want 404", resp.StatusCode)
+	}
+	if len(r.registry().Devices) != 1 {
+		t.Fatal("a refused approval registered a device")
+	}
+	// The household reads the phone's screen and types its code, spaces and all.
+	resp := r.approve(t, laptop, phone.code[:3]+" "+phone.code[3:])
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("approve = %d, want 303", resp.StatusCode)
+	}
+	if resp := r.approve(t, laptop, phone.code); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("approving the same code twice = %d, want 404", resp.StatusCode)
+	}
+	// The code alone collects nothing: a browser with no join cookie gets "expired", no session.
+	bare := r.do("GET", "/join", nil, nil)
+	if bare.StatusCode != http.StatusGone || len(bare.Cookies()) != 0 {
+		t.Errorf("/join with no request = %d and %d cookies; want 410 and none", bare.StatusCode, len(bare.Cookies()))
+	}
+	// The stranger, still waiting, was not let in by the phone's approval.
+	if _, st := stranger.poll(t); st != http.StatusOK {
+		t.Errorf("the stranger's request after the phone's approval = %d, want still waiting", st)
+	}
+	// The phone's next refresh collects: the session cookie, the join cookie cleared, home.
+	req, _ := http.NewRequest("GET", r.srv.URL+"/join", nil)
+	req.AddCookie(phone.join)
+	got, err := noRedirect.Do(req)
+	must(t, err)
+	got.Body.Close()
+	if got.StatusCode != http.StatusSeeOther || got.Header.Get("Location") != "/" {
+		t.Fatalf("collect = %d %q; want 303 home", got.StatusCode, got.Header.Get("Location"))
+	}
+	var session *http.Cookie
+	cleared := false
+	for _, c := range got.Cookies() {
+		switch c.Name {
+		case cookieName:
+			session = c
+		case joinCookie:
+			cleared = c.MaxAge < 0
+		}
+	}
+	if session == nil || !session.HttpOnly || !cleared {
+		t.Fatalf("collect set %v; want an HttpOnly session and the join cookie cleared", got.Cookies())
+	}
+	// Collected once: the same join cookie is spent.
+	if _, st := phone.poll(t); st != http.StatusGone {
+		t.Errorf("collecting twice = %d, want 410", st)
+	}
+	// The phone is a trusted device now, under its own agent, next to the laptop.
+	if resp := r.do("GET", "/", session, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("the phone's page = %d, want 200", resp.StatusCode)
+	}
+	body := r.page(session)
+	if !strings.Contains(body, "Safari on iPhone") || strings.Count(body, `name="id" value="`) != 2 {
+		t.Errorf("the phone is not listed as a second trusted device: %s", body)
+	}
+	if strings.Contains(body, "curl") {
+		t.Error("the stranger's request shows on the trusted page")
+	}
+}
+
+// A request is good for five minutes, approved or not; past that the asker is told to ask
+// again and the code approves nothing. And the table is bounded.
+func TestQuickConnectExpiresAndIsBounded(t *testing.T) {
+	r := newRig(t)
+	laptop := r.trust()
+	phone := r.ask(t, "phone")
+	r.app.now = func() time.Time { return time.Now().Add(joinTTL + time.Second) }
+	if resp := r.approve(t, laptop, phone.code); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("approving an expired request = %d, want 404", resp.StatusCode)
+	}
+	if body, st := phone.poll(t); st != http.StatusGone || !strings.Contains(body, "Ask again") {
+		t.Errorf("an expired request's page = %d; want 410 offering to ask again", st)
+	}
+	r.app.now = time.Now
+	for i := 0; i < maxPending; i++ {
+		r.ask(t, "spam")
+	}
+	if resp := r.do("POST", "/join", nil, nil); resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("request %d = %d, want 429", maxPending+1, resp.StatusCode)
+	}
+	if len(r.registry().Devices) != 1 {
+		t.Error("asking registered a device")
 	}
 }

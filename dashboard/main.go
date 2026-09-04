@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -72,19 +73,28 @@ func main() {
 type app struct {
 	routesPath, handoffPath, statePath, tokenPath string
 	now                                           func() time.Time
-	// mu serialises the two things that must not race: consuming the code, and writing the
-	// registry. Everything else is read-mostly.
+	// mu serialises the things that must not race: consuming the code, writing the registry,
+	// and the pending quick-connect requests. Everything else is read-mostly.
 	mu sync.Mutex
+	// pending is quick-connect ([V3b.31g]): the devices asking to be let in, by the code each
+	// one shows. In memory on purpose -- a request outlives neither its five minutes nor this
+	// process, and the volume keeps only what is trusted.
+	pending map[string]*pending
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
-	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now}
+	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, pending: map[string]*pending{}}
 }
 
 const (
 	cookieName  = "briard_session"
+	joinCookie  = "briard_join"
 	devicesFile = "devices.json"
 	accountFile = "account.json"
+	// joinTTL bounds a quick-connect request; maxPending bounds how many may wait at once, so a
+	// stranger spamming the form fills a small table and nothing else.
+	joinTTL    = 5 * time.Minute
+	maxPending = 8
 )
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +124,16 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.revoke(w, r)
+	case r.URL.Path == "/join" && r.Method == http.MethodPost:
+		a.ask(w, r)
+	case r.URL.Path == "/join" && r.Method == http.MethodGet:
+		a.wait(w, r)
+	case r.URL.Path == "/devices/approve" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.approve(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -271,6 +291,149 @@ func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: scheme(r) == "https", MaxAge: -1})
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// QUICK-CONNECT ([V3b.31g], [V3b.31a](a)): a browser that is not trusted asks; a browser that is
+// lets it in. The new device SHOWS a six-digit code, and the household TYPES that code on any
+// trusted device. That binds the approval to the device in the person's hand, not to "the
+// request that is pending": a stranger asking at the same moment has a different code, so
+// nothing can be approved by accident, and no request is ever approved without a human on a
+// trusted device acting. The code is a SELECTOR, never a credential -- the session goes to
+// whoever holds the request's own cookie, so a code read off the LAN collects nothing. Nothing
+// here auto-approves, and reaching the form is not authentication: it produces, at most, a
+// number on the asker's own screen.
+type pending struct {
+	code   string    // what the asker shows and the approver types
+	secret string    // hash of the asker's cookie: the only thing that collects the approval
+	agent  string    // the asker's user agent, the device's label once trusted
+	asked  time.Time // the clock the TTL runs on, approved or not
+	token  string    // the session token, from approval until the asker collects it
+}
+
+// ask opens a request: a code for the screen, a cookie for the collection, a bound on how many
+// may wait. Called with the lock NOT held.
+func (a *app) ask(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweep()
+	if len(a.pending) >= maxPending {
+		http.Error(w, "too many devices are asking right now; try again in a few minutes\n", http.StatusTooManyRequests)
+		return
+	}
+	secret, err := newSecret()
+	if err != nil {
+		http.Error(w, "could not open a request\n", http.StatusInternalServerError)
+		return
+	}
+	var code string
+	for {
+		if code, err = newJoinCode(); err != nil {
+			http.Error(w, "could not open a request\n", http.StatusInternalServerError)
+			return
+		}
+		if _, taken := a.pending[code]; !taken {
+			break
+		}
+	}
+	a.pending[code] = &pending{code: code, secret: hashToken(secret), agent: r.UserAgent(), asked: a.now()}
+	http.SetCookie(w, &http.Cookie{
+		Name: joinCookie, Value: secret, Path: "/join",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: scheme(r) == "https",
+		MaxAge: int(joinTTL / time.Second),
+	})
+	http.Redirect(w, r, "/join", http.StatusSeeOther)
+}
+
+// wait is the asker's page: the code while nobody has approved, the session once somebody has
+// (the request is spent on collection), and "ask again" once it has expired. The page refreshes
+// itself; no script.
+func (a *app) wait(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweep()
+	var p *pending
+	if c, err := r.Cookie(joinCookie); err == nil && c.Value != "" {
+		want := hashToken(c.Value)
+		for _, q := range a.pending {
+			if subtle.ConstantTimeCompare([]byte(q.secret), []byte(want)) == 1 {
+				p = q
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	switch {
+	case p == nil:
+		w.WriteHeader(http.StatusGone)
+		_ = page.ExecuteTemplate(w, "join", joinView{Expired: true})
+	case p.token != "":
+		delete(a.pending, p.code)
+		http.SetCookie(w, &http.Cookie{Name: joinCookie, Value: "", Path: "/join", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: scheme(r) == "https", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{
+			Name: cookieName, Value: p.token, Path: "/",
+			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: scheme(r) == "https",
+			Expires: a.now().Add(365 * 24 * time.Hour),
+		})
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	default:
+		_ = page.ExecuteTemplate(w, "join", joinView{Code: p.code[:3] + " " + p.code[3:]})
+	}
+}
+
+type joinView struct {
+	Code    string
+	Expired bool
+}
+
+// approve is the trusted device letting one in: the typed code names the request, the device is
+// registered NOW under the asker's agent, and the token waits for the asker to collect it. A
+// code nobody is showing is refused by name; a request already approved cannot be approved twice
+// (its code is gone with it once collected, and until then it already holds its token).
+func (a *app) approve(w http.ResponseWriter, r *http.Request) {
+	code := strings.Map(func(c rune) rune {
+		if c >= '0' && c <= '9' {
+			return c
+		}
+		return -1
+	}, r.FormValue("code"))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweep()
+	p, ok := a.pending[code]
+	if !ok || p.token != "" {
+		http.Error(w, "no device is showing that code; check the new device's screen and try again\n", http.StatusNotFound)
+		return
+	}
+	tok, err := newSecret()
+	if err != nil {
+		http.Error(w, "could not mint a session\n", http.StatusInternalServerError)
+		return
+	}
+	if err := a.addDevice(tok, p.agent); err != nil {
+		log.Printf("dashboard: register approved device: %v", err)
+		http.Error(w, "could not register the device\n", http.StatusInternalServerError)
+		return
+	}
+	p.token = tok
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// sweep drops requests past their TTL, approved or not. Called with the lock held.
+func (a *app) sweep() {
+	for code, p := range a.pending {
+		if a.now().Sub(p.asked) > joinTTL {
+			delete(a.pending, code)
+		}
+	}
+}
+
+// newJoinCode is six digits: typed by a person on another device, so short and unambiguous;
+// a selector among at most maxPending requests, so six is plenty.
+func newJoinCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", n), nil
 }
 
 func hashToken(tok string) string {

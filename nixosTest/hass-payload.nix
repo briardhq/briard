@@ -755,9 +755,43 @@ pkgs.testers.runNixOSTest {
     code1 = "decade" * 10 + "4567"
     handoff = _zj.dumps({"code": code1, "name": "Kostas", "username": "kostas", "language": "en", "issued": node1.succeed("date -u +%Y-%m-%dT%H:%M:%SZ").strip()})
     node1.succeed(f"printf %s {_sx.quote(handoff)} > /run/briard/dashboard/handoff.json && chmod 0600 /run/briard/dashboard/handoff.json")
-    again = node1.succeed(f"curl -sS -o /dev/null -w '%{{http_code}}' -H 'Host: {node_name}' 'http://192.168.1.100/?code={code1}'").strip()
-    assert again == "303", f"a fresh code after the last device left answered {again}; want 303"
+    again = node1.succeed(f"curl -sS -D - -o /dev/null -H 'Host: {node_name}' 'http://192.168.1.100/?code={code1}'")
+    assert " 303 " in again.splitlines()[0], f"a fresh code after the last device left answered: {again}"
+    laptop = [l.split(":", 1)[1].split(";")[0].strip() for l in again.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     print(f"device revoked from the registry only; HA kept its {tokens_before} tokens")
+
+    # QUICK-CONNECT ([V3b.31g]): a second browser asks, shows a six-digit code, and the trusted
+    # one types it. The session goes to the ASKER's own cookie -- the code alone collects nothing
+    # -- and nobody untrusted can approve. Measured through the door under the node's name, the
+    # way both browsers would reach it.
+    asked = node1.succeed(f"curl -sS -D - -o /dev/null -X POST -A 'phone/1.0' -H 'Host: {node_name}' http://192.168.1.100/join")
+    assert " 303 " in asked.splitlines()[0], asked
+    join = [l.split(":", 1)[1].split(";")[0].strip() for l in asked.splitlines() if l.lower().startswith("set-cookie: briard_join=")][0]
+    waiting = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {join}' http://192.168.1.100/join")
+    m = _re.search(r'<p class="code">(\d{3}) (\d{3})</p>', waiting)
+    assert m and 'http-equiv="refresh"' in waiting, waiting
+    join_code = m.group(1) + m.group(2)
+    # Untrusted cannot approve; a code nobody shows approves nothing.
+    node1.fail(f"curl -fsS -X POST -H 'Host: {node_name}' -d code={join_code} http://192.168.1.100/devices/approve")
+    node1.fail(f"curl -fsS -X POST -H 'Host: {node_name}' -H 'Cookie: {laptop}' -d code=000000 http://192.168.1.100/devices/approve")
+    # Still waiting, then the trusted device types the code.
+    node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {join}' http://192.168.1.100/join | grep -q 'class=\"code\"'")
+    approved = node1.succeed(
+        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {node_name}' -H 'Cookie: {laptop}' "
+        f"-d 'code={join_code[:3]} {join_code[3:]}' http://192.168.1.100/devices/approve"
+    ).strip()
+    assert approved == "303", f"approve answered {approved}; want 303"
+    # The code alone (no join cookie) collects nothing; the asker's next refresh collects.
+    bare = node1.succeed(f"curl -sS -D - -o /dev/null -H 'Host: {node_name}' http://192.168.1.100/join")
+    assert " 410 " in bare.splitlines()[0] and "briard_session=" not in bare.lower(), bare
+    collected = node1.succeed(f"curl -sS -D - -o /dev/null -H 'Host: {node_name}' -H 'Cookie: {join}' http://192.168.1.100/join")
+    assert " 303 " in collected.splitlines()[0], collected
+    phone = [l.split(":", 1)[1].split(";")[0].strip() for l in collected.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
+    node1.fail(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {join}' http://192.168.1.100/join")
+    both = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {phone}' http://192.168.1.100/")
+    assert "phone/1.0" in both and len(_re.findall(r'name="id" value="', both)) == 2, both
+    assert len(_zj.loads(node1.succeed(f"cat {registry}"))["devices"]) == 2
+    print("quick-connect: the phone was let in by its code, typed on the laptop")
 
   '';
 }
