@@ -730,5 +730,34 @@ pkgs.testers.runNixOSTest {
     )
     print("later open minted for the owner: " + owner_id)
 
+    # THE DEVICE LIST AND REVOKE ([V3b.31f]): the trusted page lists this browser as a device and
+    # points at HA's own profile for the session it holds there; revoking it takes it out of
+    # briard's registry and out of NOTHING ELSE -- HA's store keeps every refresh token it held
+    # (registry-only by decision, [V3b.31a](a)); the cookie is refused after, on the page and on
+    # the button; and the way back is a fresh code, as at install.
+    import re as _re
+    trusted_page = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/")
+    assert "this device" in trusted_page and f'href="{origin}/profile/security"' in trusted_page, trusted_page
+    ids = _re.findall(r'name="id" value="([0-9a-f]+)"', trusted_page)
+    assert len(ids) == 1, f"devices on the page: {ids}"
+    registry = "/var/lib/briard/dashboard/devices.json"
+    assert [d["id"] for d in _zj.loads(node1.succeed(f"cat {registry}"))["devices"]] == ids
+    tokens_before = len(owner_tokens()[1])
+    revoked = node1.succeed(
+        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' "
+        f"-d id={ids[0]} http://192.168.1.100/devices/revoke"
+    ).strip()
+    assert revoked == "303", f"revoke answered {revoked}; want 303"
+    node1.fail(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/")
+    node1.fail(f"curl -fsS -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/open/home-assistant")
+    assert _zj.loads(node1.succeed(f"cat {registry}"))["devices"] == [], "the registry still holds the revoked device"
+    assert len(owner_tokens()[1]) == tokens_before, "revoking a briard device touched Home Assistant's tokens"
+    code1 = "decade" * 10 + "4567"
+    handoff = _zj.dumps({"code": code1, "name": "Kostas", "username": "kostas", "language": "en", "issued": node1.succeed("date -u +%Y-%m-%dT%H:%M:%SZ").strip()})
+    node1.succeed(f"printf %s {_sx.quote(handoff)} > /run/briard/dashboard/handoff.json && chmod 0600 /run/briard/dashboard/handoff.json")
+    again = node1.succeed(f"curl -sS -o /dev/null -w '%{{http_code}}' -H 'Host: {node_name}' 'http://192.168.1.100/?code={code1}'").strip()
+    assert again == "303", f"a fresh code after the last device left answered {again}; want 303"
+    print(f"device revoked from the registry only; HA kept its {tokens_before} tokens")
+
   '';
 }

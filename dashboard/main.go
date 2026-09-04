@@ -8,6 +8,7 @@
 // agent mint a code, the agent hands it to this guest (shared/dashboard), and the first browser to
 // present it becomes a trusted device: a per-device token in an HttpOnly cookie, its hash on the
 // replicated volume. No briard password exists; `briard dashboard` re-mints, which is the reset.
+// The page lists the trusted devices and revokes one -- from the registry only ([V3b.31f]).
 //
 // WHY THE BUTTON NEEDS THAT: "Open Home Assistant" creates HA's first user and hands out its
 // login. Unauthenticated, that is a LAN race -- whoever reaches the URL first during the install
@@ -40,6 +41,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,17 +96,24 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.redeem(w, r, code)
 			return
 		}
-		if !a.trusted(r) {
+		d, ok := a.session(r)
+		if !ok {
 			a.refuse(w)
 			return
 		}
-		a.render(w, r)
+		a.render(w, r, d)
 	case r.URL.Path == "/open/home-assistant" && r.Method == http.MethodPost:
-		if !a.trusted(r) {
+		if _, ok := a.session(r); !ok {
 			a.refuse(w)
 			return
 		}
 		a.openHomeAssistant(w, r)
+	case r.URL.Path == "/devices/revoke" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.revoke(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -177,23 +186,23 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// trusted says whether the request carries a registered device's token.
-func (a *app) trusted(r *http.Request) bool {
+// session says whether the request carries a registered device's token, and which device.
+func (a *app) session(r *http.Request) (device, bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil || c.Value == "" {
-		return false
+		return device{}, false
 	}
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err != nil {
-		return false
+		return device{}, false
 	}
 	want := hashToken(c.Value)
 	for _, d := range reg.Devices {
 		if subtle.ConstantTimeCompare([]byte(d.Hash), []byte(want)) == 1 {
-			return true
+			return d, true
 		}
 	}
-	return false
+	return device{}, false
 }
 
 // registry is the trusted-device list, on the volume so it follows the VIP. Tokens are stored
@@ -220,6 +229,46 @@ func (a *app) addDevice(tok, agent string) error {
 	}
 	reg.Devices = append(reg.Devices, device{ID: id[:16], Hash: hashToken(tok), Agent: agent, Created: a.now()})
 	return a.writeState(devicesFile, reg)
+}
+
+// revoke takes a device out of the registry, and out of nothing else ([V3b.31a](a), decided
+// 2026-09-04): the Home Assistant session that device already holds is HA's to end, in HA's own
+// profile -- a minted code becomes a refresh token that carries no per-device handle, so there
+// is nothing here to look it up by, and the page says so next to the list. A device revoking
+// ITSELF is a sign-out: the cookie goes with it. The last device may go too -- an empty
+// registry is the state the install starts in, and `briard dashboard` is the way back.
+func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
+	id := r.FormValue("id")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var reg registry
+	if err := a.readState(devicesFile, &reg); err != nil {
+		http.Error(w, "no device registry\n", http.StatusInternalServerError)
+		return
+	}
+	var kept []device
+	var gone *device
+	for i := range reg.Devices {
+		if reg.Devices[i].ID == id && gone == nil {
+			gone = &reg.Devices[i]
+			continue
+		}
+		kept = append(kept, reg.Devices[i])
+	}
+	if gone == nil {
+		http.Error(w, "no such device\n", http.StatusNotFound)
+		return
+	}
+	reg.Devices = kept
+	if err := a.writeState(devicesFile, reg); err != nil {
+		log.Printf("dashboard: revoke device: %v", err)
+		http.Error(w, "could not revoke the device\n", http.StatusInternalServerError)
+		return
+	}
+	if c, err := r.Cookie(cookieName); err == nil && hashToken(c.Value) == gone.Hash {
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: scheme(r) == "https", MaxAge: -1})
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func hashToken(tok string) string {
@@ -303,6 +352,42 @@ func (a *app) findHomeAssistant() *homeAssistant {
 type view struct {
 	Services []string
 	HA       *haView
+	Devices  []deviceView
+}
+
+// deviceView is one row of the trusted-device list: a label a person can tell apart, when it
+// was added, and whether it is the browser looking at the page.
+type deviceView struct {
+	ID, Label, Agent string
+	Added            string
+	This             bool
+}
+
+// deviceLabel is the browser and the OS, read off the user agent the device registered with --
+// enough to tell the lost laptop from the phone in hand, never a fingerprint. Unknown shapes
+// keep the raw agent, which the row shows on hover anyway.
+func deviceLabel(ua string) string {
+	pick := func(pairs ...string) string {
+		for i := 0; i+1 < len(pairs); i += 2 {
+			if strings.Contains(ua, pairs[i]) {
+				return pairs[i+1]
+			}
+		}
+		return ""
+	}
+	browser := pick("Firefox", "Firefox", "Edg", "Edge", "OPR", "Opera", "SamsungBrowser", "Samsung Internet", "Chrome", "Chrome", "Safari", "Safari", "curl", "curl")
+	os := pick("Windows", "Windows", "Android", "Android", "iPhone", "iPhone", "iPad", "iPad", "Mac OS", "Mac", "CrOS", "ChromeOS", "Linux", "Linux")
+	switch {
+	case browser != "" && os != "":
+		return browser + " on " + os
+	case browser != "":
+		return browser
+	case os != "":
+		return os
+	case ua == "":
+		return "Unknown device"
+	}
+	return ua
 }
 
 type haView struct {
@@ -313,10 +398,16 @@ type haView struct {
 	Onboarded bool // every onboarding step done
 }
 
-func (a *app) render(w http.ResponseWriter, r *http.Request) {
+func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	v := view{}
+	var reg registry
+	if err := a.readState(devicesFile, &reg); err == nil {
+		for _, d := range reg.Devices {
+			v.Devices = append(v.Devices, deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.Format("2 Jan 2006"), This: d.ID == self.ID})
+		}
+	}
 	if raw, err := os.ReadFile(a.routesPath); err == nil {
 		if t, err := routes.Parse(raw); err == nil {
 			for _, s := range t.Services {

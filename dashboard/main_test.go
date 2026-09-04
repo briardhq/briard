@@ -419,3 +419,162 @@ func TestNotInstalled(t *testing.T) {
 		t.Errorf("/ with nothing installed = %d, want 200 (the page says so)", resp.StatusCode)
 	}
 }
+
+// reissue writes a fresh handoff, the way `briard dashboard` does for the next device, and
+// redeems it with the given user agent.
+func (r *rig) reissue(agent string) *http.Cookie {
+	r.t.Helper()
+	code, _ := dashboard.NewCode()
+	raw, _ := json.Marshal(dashboard.Handoff{Code: code, Name: "Kostas", Username: "kostas", Language: "el", Issued: time.Now()})
+	must(r.t, os.WriteFile(r.app.handoffPath, raw, 0o600))
+	resp := r.do("GET", "/?code="+code, nil, map[string]string{"User-Agent": agent})
+	if resp.StatusCode != http.StatusSeeOther {
+		r.t.Fatalf("reissued redeem = %d, want 303", resp.StatusCode)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == cookieName {
+			return c
+		}
+	}
+	r.t.Fatal("no session cookie set")
+	return nil
+}
+
+func (r *rig) page(c *http.Cookie) string {
+	r.t.Helper()
+	req, _ := http.NewRequest("GET", r.srv.URL+"/", nil)
+	req.AddCookie(c)
+	resp, err := http.DefaultClient.Do(req)
+	must(r.t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+func (r *rig) registry() registry {
+	r.t.Helper()
+	var reg registry
+	must(r.t, r.app.readState(devicesFile, &reg))
+	return reg
+}
+
+// THE DEVICE LIST AND REVOKE ([V3b.31f]): every trusted device is on the page with a label a
+// person can tell apart and "this device" on the one looking; revoking one takes it out of the
+// registry and nothing else -- the revoked cookie is refused, the others keep working, and the
+// page points at Home Assistant's own profile for the HA session it still holds. A device
+// revoking itself is signed out, cookie cleared; the last one may go, and a fresh code is the
+// way back in.
+func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
+	r := newRig(t)
+	laptop := r.reissue("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0")
+	phone := r.reissue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1")
+	reg := r.registry()
+	if len(reg.Devices) != 2 {
+		t.Fatalf("registry holds %d devices, want 2", len(reg.Devices))
+	}
+	laptopID, phoneID := reg.Devices[0].ID, reg.Devices[1].ID
+
+	body := r.page(phone)
+	for _, want := range []string{"Firefox on Linux", "Safari on iPhone", `name="id" value="` + laptopID + `"`, `name="id" value="` + phoneID + `"`,
+		"/profile/security", `<a href="http://briard-brave-elf-home-assistant.local/profile/security">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the phone's page lacks %q", want)
+		}
+	}
+	if strings.Count(body, "this device") != 1 || !strings.Contains(body, "Safari on iPhone</span> <span class=\"muted\">— added") {
+		t.Errorf("the page does not mark exactly the viewing device")
+	}
+	if strings.Contains(body, laptop.Value) || strings.Contains(body, phone.Value) || strings.Contains(body, reg.Devices[0].Hash) {
+		t.Error("the page leaks a token or its hash")
+	}
+
+	// No session, no revoke -- and the registry is untouched.
+	req, _ := http.NewRequest("POST", r.srv.URL+"/devices/revoke", strings.NewReader("id="+laptopID))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := noRedirect.Do(req)
+	must(t, err)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || len(r.registry().Devices) != 2 {
+		t.Errorf("revoke with no session = %d and %d devices left; want 401 and 2", resp.StatusCode, len(r.registry().Devices))
+	}
+	revoke := func(c *http.Cookie, id string) *http.Response {
+		req, _ := http.NewRequest("POST", r.srv.URL+"/devices/revoke", strings.NewReader("id="+id))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(c)
+		resp, err := noRedirect.Do(req)
+		must(t, err)
+		resp.Body.Close()
+		return resp
+	}
+	if resp := revoke(phone, "nope"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("revoke of an unknown id = %d, want 404", resp.StatusCode)
+	}
+
+	// The phone revokes the laptop: the laptop is refused, the phone is not, and its own cookie
+	// was not touched.
+	resp = revoke(phone, laptopID)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Errorf("revoke = %d %q; want 303 home", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if len(resp.Cookies()) != 0 {
+		t.Errorf("revoking another device touched the cookie: %v", resp.Cookies())
+	}
+	if resp := r.do("GET", "/", laptop, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the revoked laptop = %d, want 401", resp.StatusCode)
+	}
+	if resp := r.do("POST", "/open/home-assistant", laptop, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the revoked laptop can still open Home Assistant: %d", resp.StatusCode)
+	}
+	if resp := r.do("GET", "/", phone, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("the phone after revoking the laptop = %d, want 200", resp.StatusCode)
+	}
+	reg = r.registry()
+	if len(reg.Devices) != 1 || reg.Devices[0].ID != phoneID {
+		t.Errorf("registry after revoke = %+v; want the phone alone", reg.Devices)
+	}
+	// Nothing was asked of Home Assistant: the revoke is briard's registry and no more.
+	if r.ha.mintClient != "" {
+		t.Error("revoking a device touched Home Assistant")
+	}
+
+	// The phone signs itself out: cookie cleared, refused after, registry empty -- and the way
+	// back is a fresh code, as at install.
+	resp = revoke(phone, phoneID)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("self-revoke = %d, want 303", resp.StatusCode)
+	}
+	cleared := false
+	for _, c := range resp.Cookies() {
+		if c.Name == cookieName && c.MaxAge < 0 && c.Value == "" {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Errorf("self-revoke did not clear the cookie: %v", resp.Cookies())
+	}
+	if resp := r.do("GET", "/", phone, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the signed-out phone = %d, want 401", resp.StatusCode)
+	}
+	if reg := r.registry(); len(reg.Devices) != 0 {
+		t.Errorf("registry after the last device left = %+v; want empty", reg.Devices)
+	}
+	if c := r.reissue("curl/8.0"); r.do("GET", "/", c, nil).StatusCode != http.StatusOK {
+		t.Error("a fresh code does not trust a device again after the registry emptied")
+	}
+}
+
+func TestDeviceLabel(t *testing.T) {
+	for ua, want := range map[string]string{
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0":  "Edge on Windows",
+		"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36":          "Chrome on Android",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15":             "Safari on Mac",
+		"Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1": "Safari on iPad",
+		"curl/8.5.0":      "curl",
+		"":                "Unknown device",
+		"SomethingElse/1": "SomethingElse/1",
+	} {
+		if got := deviceLabel(ua); got != want {
+			t.Errorf("deviceLabel(%q) = %q, want %q", ua, got, want)
+		}
+	}
+}

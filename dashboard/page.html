@@ -13,6 +13,10 @@
   button[disabled] { opacity: .5; cursor: default; }
   code { font-size: .95em; }
   a { color: var(--accent); }
+  ul.devices { list-style: none; padding: 0; margin: 0; }
+  ul.devices li { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; }
+  ul.devices form { margin-left: auto; }
+  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: .25rem .7rem; }
 </style>{{end}}
 
 {{define "refused"}}<!doctype html>
@@ -45,4 +49,15 @@
   <div class="card"><h2>Home Assistant</h2><p class="muted">Not installed on this node yet.</p></div>
   {{end}}
   {{if .Services}}<p class="muted">Services on this node: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
+  <div class="card">
+    <h2>Trusted devices</h2>
+    <p class="muted">Browsers that can open this page. Lost one? Revoke it; it can come back only through <code>sudo briard dashboard</code>.</p>
+    <ul class="devices">
+      {{range .Devices}}<li>
+        <span title="{{.Agent}}">{{.Label}}</span> <span class="muted">— added {{.Added}}{{if .This}} · this device{{end}}</span>
+        <form method="post" action="/devices/revoke"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="quiet">{{if .This}}Sign out{{else}}Revoke{{end}}</button></form>
+      </li>{{end}}
+    </ul>
+    {{if .HA}}<p class="muted">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.HA.URL}}profile/security">your Home Assistant profile</a>.</p>{{end}}
+  </div>
 </main></body></html>{{end}}
