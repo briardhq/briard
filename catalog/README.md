@@ -33,6 +33,22 @@ of it: for Home Assistant that includes booting under the token wrapper (`agent/
 image whose s6 furniture moved would otherwise become a fleet incident rather than a failed
 promotion.
 
+## What an entry costs: `size` and `installedSize`
+
+Every entry declares two totals, measured once when the entry is made and signed with the rest:
+`size` is what a node **downloads** (the compressed layers of every container's image, summed)
+and `installedSize` is what the image store **holds** afterwards (the same layers uncompressed —
+two to four times more; Home Assistant is 622 MB down and 2.49 GB on disk). The first is the
+dashboard's progress bar; the second is the free-space check a node runs *before* the first byte
+moves. Two scalars rather than a layer table: the digest already commits to every layer, and
+podman's own store knows each finished layer's size. To measure a new entry:
+
+```sh
+skopeo copy docker://<image@digest> dir:/tmp/img            # then, in /tmp/img:
+jq '[.layers[].size] | add' manifest.json                     # size
+for l in $(jq -r '.layers[].digest' manifest.json); do gzip -dc "${l#sha256:}"; done | wc -c   # installedSize (gzip layers)
+```
+
 ## What is not in a manifest
 
 The schema deliberately cannot express host binds, privileges, host networking or a command line —

@@ -123,6 +123,8 @@ type installView struct {
 	Failed  bool
 	Detail  string
 	Since   string
+	// Progress is the pull so far ([V3b.31j]); nil when the host left no total to measure against.
+	Progress *progressView
 }
 
 // requestInstall is the button: one install in flight per service, the directive relayed in
@@ -175,5 +177,9 @@ func (a *app) installState(name string, routed bool) *installView {
 		delete(a.installs, name)
 		return nil
 	}
-	return &installView{Running: !st.Done, Failed: st.Failed, Detail: st.Detail, Since: st.Started.Format("15:04")}
+	v := &installView{Running: !st.Done, Failed: st.Failed, Detail: st.Detail, Since: st.Started.Format("15:04")}
+	if v.Running {
+		v.Progress = a.pullProgress(name)
+	}
+	return v
 }

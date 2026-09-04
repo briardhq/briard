@@ -69,7 +69,12 @@
   <div class="card">
     <h2>Home Assistant</h2>
     {{if and .Install .Install.Running}}
-      <p>Installing… the node is pulling about 2.4 GB, which takes a minute or two. This page refreshes itself.</p>
+      {{with .Install.Progress}}
+      <p>Installing… {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%). This page refreshes itself.</p>
+      <progress max="100" value="{{.Percent}}"></progress>
+      {{else}}
+      <p>Installing… the node is pulling the image, which takes a minute or two. This page refreshes itself.</p>
+      {{end}}
       <p class="muted">Started at {{.Install.Since}}.</p>
     {{else if and .Install .Install.Failed}}
       <p>Could not install Home Assistant: {{.Install.Detail}}</p>

@@ -44,6 +44,8 @@ type fakeInstaller struct {
 	// another service's manifest must not satisfy a read for this one ([V3b.3](b)).
 	prior        map[string]string
 	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
+	free         int64    // what storage.free reports as free (0 = plenty is NOT implied; tests set it)
+	freeErr      error    // storage.free failing: the gate logs and the install proceeds unmeasured
 	staleRemoved []string // unit files a render was told to remove: the collateral surface
 	manifests    []string
 	healthURL    string
@@ -1436,5 +1438,67 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
+	}
+}
+
+// The free-space gate and the pull record ([V3b.31j]), as the fake sees them.
+func (f *fakeInstaller) StorageFree(context.Context) (int64, int64, error) {
+	f.steps = append(f.steps, "storage.free")
+	return f.free, f.free + 4<<30, f.freeErr
+}
+func (f *fakeInstaller) SupportsStorageFree() bool { return !f.oldGuest }
+func (f *fakeInstaller) ServicePulling(_ context.Context, service string, size, installed int64) error {
+	f.steps = append(f.steps, fmt.Sprintf("pulling %s %d/%d", service, size, installed))
+	return nil
+}
+func (f *fakeInstaller) ServicePulled(_ context.Context, service string) error {
+	f.steps = append(f.steps, "pulled "+service)
+	return nil
+}
+func (f *fakeInstaller) SupportsServicePulling() bool { return !f.oldGuest }
+
+// THE FREE-SPACE GATE ([V3b.31j]): a manifest that says what it will hold, a guest that says
+// what it has, and a pull that could only end in a full disk refused BEFORE anything is
+// warmed, rendered or touched -- with both numbers in the sentence. Enough space installs and
+// leaves the pull record for the dashboard's bar, cleared on the way out; a guest that cannot
+// measure installs unmeasured; an entry without sizes gets no gate and no bar.
+func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
+	m := testManifest()
+	m.Size, m.InstalledSize = 600e6, 2500e6
+	f := &fakeInstaller{primary: true, active: true, healthy: true, free: 2000e6}
+	o := install(catalogFor(t, m), f)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not enough space") || !strings.Contains(o.Detail, "2.50 GB") || !strings.Contains(o.Detail, "2.00 GB") {
+		t.Fatalf("outcome = %+v, want a refusal naming what is needed and what is free", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	for _, forbidden := range []string{"warm", "render", "provision", "converge", "pulling"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("a refused install still ran %q: %v", forbidden, f.steps)
+		}
+	}
+	// 2.5 GB installed + 1 GiB headroom fits in 4 GB: installs, and the bar's record brackets
+	// the warm.
+	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4000e6}
+	if o := install(catalogFor(t, m), f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome with room = %+v", o)
+	}
+	joined = strings.Join(f.steps, ",")
+	pulling, warm, pulled := strings.Index(joined, "pulling "+m.Name+" 600000000/2500000000"), strings.Index(joined, "warm"), strings.Index(joined, "pulled "+m.Name)
+	if pulling < 0 || warm < 0 || pulled < 0 || !(pulling < warm && warm < pulled) {
+		t.Fatalf("the pull record does not bracket the warm: %v", f.steps)
+	}
+	// Cannot measure: installs, unmeasured.
+	f = &fakeInstaller{primary: true, active: true, healthy: true, freeErr: errors.New("df: no such file")}
+	if o := install(catalogFor(t, m), f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome when the store cannot be measured = %+v; want the install to proceed", o)
+	}
+	// No sizes in the entry: no gate, no record.
+	plain := testManifest()
+	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 1}
+	if o := install(catalogFor(t, plain), f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome for an unsized entry = %+v; want no gate", o)
+	}
+	if s := strings.Join(f.steps, ","); strings.Contains(s, "storage.free") || strings.Contains(s, "pulling") {
+		t.Fatalf("an unsized entry was measured or recorded: %v", f.steps)
 	}
 }

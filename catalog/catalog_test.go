@@ -142,3 +142,24 @@ func read(t *testing.T, name string) []byte {
 	}
 	return raw
 }
+
+// EVERY ENTRY SAYS WHAT IT COSTS ([V3b.31j]): the bytes a node downloads (`size`, the compressed
+// layers) and the bytes the image store holds afterwards (`installedSize`, uncompressed). The
+// first is a progress bar's denominator, the second the free-space gate's operand; a node can
+// learn neither until the pull is over. Measured with skopeo (copy, then sum the manifest's
+// layer sizes and the decompressed layers), 2026-09-04.
+func TestEveryEntryDeclaresItsSizes(t *testing.T) {
+	entries, _ := filepath.Glob("*.json")
+	for _, path := range entries {
+		m, _, err := manifest.Parse(read(t, path))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if m.Size <= 0 || m.InstalledSize <= 0 {
+			t.Errorf("%s: size=%d installedSize=%d; every published entry declares both", path, m.Size, m.InstalledSize)
+		}
+		if m.InstalledSize < m.Size {
+			t.Errorf("%s: installed %d < downloaded %d; swapped?", path, m.InstalledSize, m.Size)
+		}
+	}
+}

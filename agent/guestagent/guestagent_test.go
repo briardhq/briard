@@ -1787,3 +1787,56 @@ func TestDashboardHandoffIsWrittenPrivatelyThenMovedIn(t *testing.T) {
 		t.Error("a handoff with no code was accepted")
 	}
 }
+
+// service.pulling records a pull for the dashboard's bar and clears it; storage.free measures
+// the image store through df ([V3b.31j]). The guest keeps a number and measures a filesystem;
+// deciding is the host's.
+func TestServicePullingRecordsAndClearsTheBarsTotal(t *testing.T) {
+	x := &fakeExec{}
+	raw, _ := json.Marshal(servicePullingRequest{Service: "home-assistant", Size: 621628919, InstalledSize: 2486168064})
+	if _, err := dispatch(x)(context.Background(), verbServicePulling, raw); err != nil {
+		t.Fatal(err)
+	}
+	got := x.files[dashboard.PullPath("home-assistant")]
+	if !strings.Contains(got, `"size":621628919`) || !strings.Contains(got, `"installedSize":2486168064`) || !strings.Contains(got, `"started":"`) {
+		t.Errorf("recorded %q; want the two sizes and a start time", got)
+	}
+	if !reflect.DeepEqual(x.runs, [][]string{{"mkdir", "-p", "-m", "0700", dashboard.Dir}}) {
+		t.Errorf("runs = %v", x.runs)
+	}
+	// A name that is a path is refused before it becomes one.
+	raw, _ = json.Marshal(servicePullingRequest{Service: "../etc", Size: 1, InstalledSize: 1})
+	if _, err := dispatch(x)(context.Background(), verbServicePulling, raw); err == nil {
+		t.Error("a path-shaped service name was accepted")
+	}
+	// Done clears it -- rm -f, so an absent record is not an error.
+	x = &fakeExec{}
+	raw, _ = json.Marshal(servicePullingRequest{Service: "home-assistant", Done: true})
+	if _, err := dispatch(x)(context.Background(), verbServicePulling, raw); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(x.runs, [][]string{{"rm", "-f", dashboard.PullPath("home-assistant")}}) {
+		t.Errorf("runs = %v", x.runs)
+	}
+}
+
+func TestStorageFreeReadsDf(t *testing.T) {
+	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name != "df" || !reflect.DeepEqual(args, []string{"-B1", "--output=avail,size", storageRoot}) {
+			t.Errorf("ran %s %v", name, args)
+		}
+		return []byte("     Avail        Size\n9876543210 17179869184\n"), nil
+	}}
+	out, err := dispatch(x)(context.Background(), verbStorageFree, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := out.(storageFreeReply)
+	if !ok || r.Free != 9876543210 || r.Total != 17179869184 || r.Path != storageRoot {
+		t.Errorf("reply = %+v", out)
+	}
+	x = &fakeExec{output: []byte("df: /var/lib/containers/storage: No such file or directory"), err: errors.New("exit 1")}
+	if _, err := dispatch(x)(context.Background(), verbStorageFree, []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "No such file") {
+		t.Errorf("a failed df = %v; want the error with df's own words", err)
+	}
+}

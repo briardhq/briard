@@ -93,6 +93,17 @@ type Manifest struct {
 	// Containers is the pod, in the order they should be declared. Exactly one must be marked
 	// Primary (see Container.Primary).
 	Containers []Container `json:"containers"`
+	// Size is what a node DOWNLOADS to install this service: the compressed layers of every
+	// container's image, summed -- the number a progress bar is a fraction of ([V3b.31j]).
+	// InstalledSize is what the image store HOLDS once pulled: the same layers uncompressed --
+	// the number a free-space check is against, because compressed bytes understate disk by
+	// two to four times (Home Assistant 2026.7.1: 622 MB down, 2.49 GB on disk). Two scalars
+	// rather than a layer table: the digest above already commits to every layer, and podman's
+	// own store knows each finished layer's size; the totals are the only numbers a node cannot
+	// learn until the pull is over. Both or neither; zero means the entry predates the fields
+	// (no bar, no gate).
+	Size          int64 `json:"size,omitempty"`
+	InstalledSize int64 `json:"installedSize,omitempty"`
 	// Network is the pod's networking mode: "host" or "private". SILENCE MEANS PRIVATE, which is
 	// property 2 in the small: omission yields the LESS capable shape, so a manifest that says
 	// nothing about networking gets a pod that can reach nothing but itself and whatever the node
@@ -233,6 +244,16 @@ func (m Manifest) Validate() error {
 	}
 	if len(m.Containers) == 0 {
 		return fmt.Errorf("%w: service %q declares no containers", ErrInvalid, m.Name)
+	}
+	if m.Size < 0 || m.InstalledSize < 0 {
+		return fmt.Errorf("%w: service %q has a negative size", ErrInvalid, m.Name)
+	}
+	if (m.Size == 0) != (m.InstalledSize == 0) {
+		// Both or neither: a bar with no gate, or a gate with no bar, is an entry half-measured.
+		return fmt.Errorf("%w: service %q declares size and installedSize together or not at all", ErrInvalid, m.Name)
+	}
+	if m.InstalledSize < m.Size {
+		return fmt.Errorf("%w: service %q is smaller installed (%d) than downloaded (%d); the two are swapped", ErrInvalid, m.Name, m.InstalledSize, m.Size)
 	}
 	seen := make(map[string]bool, len(m.Containers))
 	primaries := 0

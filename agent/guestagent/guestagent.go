@@ -185,6 +185,14 @@ const (
 	// exactly the one path that needs it (Supports), which is the instrument service.warm already
 	// set the precedent for ([V3b.3](e1), no api.go change).
 	verbServiceInstalled = "service.installed" // read one named service's manifest from the volume, or ""
+	// service.pulling records (or clears) a service install's pull for the dashboard ([V3b.31j]):
+	// the manifest's sizes and the start time, on the dashboard's tmpfs -- written BEFORE the
+	// warm, because the manifest reaches the volume only after it, and a bar needs its total
+	// while the bytes move. The guest keeps a number; the host decided to pull.
+	verbServicePulling = "service.pulling"
+	// storage.free reports the image store's filesystem (free, total bytes): what the host's
+	// free-space gate reads before a pull starts ([V3b.31j]). The guest measures; the host refuses.
+	verbStorageFree = "storage.free"
 	// service.list NAMES the services the volume carries. It is what makes a converged node able
 	// to say what it runs: converge-at-promotion renders from the volume, so a survivor that never
 	// installed anything runs services the HOST was never told about -- and the host reports from
@@ -334,6 +342,7 @@ var guestCapabilities = []string{
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
+	verbServicePulling, verbStorageFree,
 	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -1237,6 +1246,54 @@ func dispatch(x Executor) dispatchFunc {
 				out = append(out, strings.TrimSuffix(n, ".json"))
 			}
 			return out, nil
+		case verbServicePulling:
+			var req servicePullingRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if err := safeUnitName(req.Service); err != nil { // the name becomes a path element
+				return nil, err
+			}
+			path := dashboard.PullPath(req.Service)
+			if req.Done {
+				// Absent is the state; a file that was never there is not an error.
+				if _, err := x.Run(ctx, "rm", "-f", path); err != nil {
+					return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
+				}
+				return nil, nil
+			}
+			raw, err := json.Marshal(dashboard.Pull{Service: req.Service, Size: req.Size, InstalledSize: req.InstalledSize, Started: time.Now().UTC()})
+			if err != nil {
+				return nil, err
+			}
+			if _, err := x.Run(ctx, "mkdir", "-p", "-m", "0700", dashboard.Dir); err != nil {
+				return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
+			}
+			if err := x.WriteFile(path, raw); err != nil {
+				return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
+			}
+			return nil, nil
+		case verbStorageFree:
+			// The image store's filesystem, in bytes, from df -- the one tool that answers the
+			// question the same way on every root filesystem the guest might have.
+			out, err := x.Run(ctx, "df", "-B1", "--output=avail,size", storageRoot)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verbStorageFree, err, strings.TrimSpace(string(out)))
+			}
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(lines) < 2 {
+				return nil, fmt.Errorf("%s: df said %q", verbStorageFree, strings.TrimSpace(string(out)))
+			}
+			f := strings.Fields(lines[len(lines)-1])
+			if len(f) != 2 {
+				return nil, fmt.Errorf("%s: df said %q", verbStorageFree, lines[len(lines)-1])
+			}
+			free, err1 := strconv.ParseInt(f[0], 10, 64)
+			total, err2 := strconv.ParseInt(f[1], 10, 64)
+			if err1 != nil || err2 != nil {
+				return nil, fmt.Errorf("%s: df said %q", verbStorageFree, lines[len(lines)-1])
+			}
+			return storageFreeReply{Free: free, Total: total, Path: storageRoot}, nil
 		case verbServiceInstalled:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2628,6 +2685,53 @@ func (g *Client) ServiceForget(ctx context.Context, name string) error {
 // SupportsServiceInstalled is the gate the install path checks first: a guest too old to
 // advertise this verb cannot tell one service's identity from another's, so it must be refused
 // rather than driven into overwriting the manifest of whatever it already runs.
+// storageRoot is podman's image store in the guest -- the filesystem a pull fills and the
+// free-space gate measures. Rootful podman's default; the guest image sets no other.
+const storageRoot = "/var/lib/containers/storage"
+
+// servicePullingRequest is service.pulling's argument: record a pull (its sizes), or with Done
+// clear the record.
+type servicePullingRequest struct {
+	Service       string `json:"service"`
+	Size          int64  `json:"size,omitempty"`
+	InstalledSize int64  `json:"installedSize,omitempty"`
+	Done          bool   `json:"done,omitempty"`
+}
+
+// storageFreeReply is storage.free's answer.
+type storageFreeReply struct {
+	Free  int64  `json:"free"`
+	Total int64  `json:"total"`
+	Path  string `json:"path"`
+}
+
+// ServicePulling records a service install's pull for the dashboard -- the manifest's sizes,
+// written before the first byte moves ([V3b.31j]).
+func (g *Client) ServicePulling(ctx context.Context, service string, size, installed int64) error {
+	return g.c.call(ctx, verbServicePulling, servicePullingRequest{Service: service, Size: size, InstalledSize: installed}, nil)
+}
+
+// ServicePulled clears that record: the image is present (or the pull is over either way).
+func (g *Client) ServicePulled(ctx context.Context, service string) error {
+	return g.c.call(ctx, verbServicePulling, servicePullingRequest{Service: service, Done: true}, nil)
+}
+
+// SupportsServicePulling reports whether the guest keeps the pull record; an older guest shows
+// the household an install with no bar, which is not a reason to refuse it.
+func (g *Client) SupportsServicePulling() bool { return g.Supports(verbServicePulling) }
+
+// StorageFree reports the image store's filesystem: free and total bytes ([V3b.31j]).
+func (g *Client) StorageFree(ctx context.Context) (free, total int64, err error) {
+	var r storageFreeReply
+	if err := g.c.call(ctx, verbStorageFree, struct{}{}, &r); err != nil {
+		return 0, 0, err
+	}
+	return r.Free, r.Total, nil
+}
+
+// SupportsStorageFree reports whether the guest can measure its image store.
+func (g *Client) SupportsStorageFree() bool { return g.Supports(verbStorageFree) }
+
 func (g *Client) ServiceInstalled(ctx context.Context, name string) (string, error) {
 	var s string
 	err := g.c.call(ctx, verbServiceInstalled, serviceInstalledRequest{Name: name}, &s)

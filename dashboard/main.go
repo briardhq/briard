@@ -63,9 +63,12 @@ func main() {
 	statePath := flag.String("state", "/var/lib/briard/dashboard", "device registry + the handed-over account (on the volume)")
 	tokenPath := flag.String("hass-token", hass.TokenPath, "the control channel's Home Assistant token")
 	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (a service install rides it)")
+	layersPath := flag.String("layers", defaultPullPaths.layers, "podman's layer store, for pull progress")
+	tmpPath := flag.String("pull-tmp", defaultPullPaths.tmp, "where the pull units' PrivateTmp roots live, for pull progress")
 	flag.Parse()
 	a := newApp(*routesPath, *handoffPath, *statePath, *tokenPath)
 	a.port = &serialPort{path: *adminPortPath}
+	a.pulls = pullPaths{records: dashboard.Dir, layers: *layersPath, tmp: *tmpPath}
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("dashboard: serving %s; routes from %s, state at %s", *listen, *routesPath, *statePath)
 	log.Fatalf("dashboard: %v", srv.ListenAndServe())
@@ -86,11 +89,14 @@ type app struct {
 	// service, from the click until the routes table lists the service.
 	port     adminPort
 	installs map[string]*install
+	// pulls is where a pull's progress is read from ([V3b.31j]): podman's layer store and the
+	// pull units' private tmp.
+	pulls pullPaths
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
-		pending: map[string]*pending{}, installs: map[string]*install{}, port: &serialPort{path: dashboard.AdminPortDev}}
+		pending: map[string]*pending{}, installs: map[string]*install{}, port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths}
 }
 
 const (

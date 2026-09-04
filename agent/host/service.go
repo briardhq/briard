@@ -58,6 +58,16 @@ type serviceInstaller interface {
 	// naming a version nothing is running.
 	ServiceConverge(ctx context.Context) ([]string, error)
 	SupportsServiceConverge() bool
+	// StorageFree measures the guest's image store ([V3b.31j]): the free-space gate reads it
+	// before a pull starts. An older guest that cannot measure gets no gate, not a refusal.
+	StorageFree(ctx context.Context) (free, total int64, err error)
+	SupportsStorageFree() bool
+	// ServicePulling / ServicePulled bracket the pull for the dashboard's bar: the manifest's
+	// sizes on the guest's tmpfs before the first byte, gone once the image is present. An older
+	// guest shows the install with no bar.
+	ServicePulling(ctx context.Context, service string, size, installed int64) error
+	ServicePulled(ctx context.Context, service string) error
+	SupportsServicePulling() bool
 	// ServiceForget removes one service's manifest from the volume -- what reverting a FRESH
 	// install requires, now that the volume is what every future promotion renders from.
 	ServiceForget(ctx context.Context, name string) error
@@ -207,6 +217,20 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		logf("service install %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
+	// THE FREE-SPACE GATE ([V3b.31j]), before the first byte moves: the manifest says what the
+	// image store will hold once pulled, the guest says what its store's filesystem has free,
+	// and a pull that could only end in a full disk is refused here with both numbers -- rather
+	// than at 90 % of the download with a unit that failed for a reason nobody can read. The
+	// margin is the headroom the guest OS itself needs to keep working next to the image.
+	if m.InstalledSize > 0 && g.SupportsStorageFree() {
+		free, total, err := g.StorageFree(ctx)
+		if err != nil {
+			logf("service install %s: cannot measure the image store (%v); installing unmeasured", d.Payload, err)
+		} else if free < m.InstalledSize+storageHeadroom {
+			return failed(fmt.Sprintf("not enough space on the node: %s needs %s installed and the image store has %s free of %s (keeping %s for the system)",
+				m.Name, gb(m.InstalledSize), gb(free), gb(total), gb(storageHeadroom)))
+		}
+	}
 	// No address: this render supplies unit names and image digests, and converge re-renders with
 	// the allocated one before anything starts (see Render).
 	rendered, err := quadlet.Render(m, "")
@@ -263,6 +287,20 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	//
 	// This is also the one point where an offline node legitimately fails: `briard service
 	// install` needs the network, while running an installed service never does.
+	//
+	// The pull record for the dashboard's bar ([V3b.31j]): the totals before the first byte,
+	// cleared after the last -- on every exit, because a stale record would draw a bar over an
+	// install that ended. Best-effort: a bar is a courtesy, never a gate on the install.
+	if m.Size > 0 && g.SupportsServicePulling() {
+		if err := g.ServicePulling(ctx, m.Name, m.Size, m.InstalledSize); err != nil {
+			logf("service install %s: pull record: %v (no progress bar)", m.Name, err)
+		}
+		defer func() {
+			if err := g.ServicePulled(context.WithoutCancel(ctx), m.Name); err != nil {
+				logf("service install %s: clear pull record: %v", m.Name, err)
+			}
+		}()
+	}
 	for _, u := range rendered.ImageUnits {
 		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
 		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
@@ -861,4 +899,19 @@ func (cfg Config) fetchManifest(ctx context.Context, name string) (manifest.Mani
 	cat := &manifest.Catalog{BaseURL: cfg.CatalogURL, Verifier: kr}
 	m, _, raw, err := cat.Fetch(ctx, name)
 	return m, raw, err
+}
+
+// storageHeadroom is what the free-space gate keeps for the guest OS itself: an image store
+// filled to the last byte takes the journal, the units and every next upgrade down with it.
+const storageHeadroom = 1 << 30
+
+// gb renders bytes for a sentence a household reads: two decimals of GB, MB below that.
+func gb(n int64) string {
+	switch {
+	case n >= 1e9:
+		return fmt.Sprintf("%.2f GB", float64(n)/1e9)
+	case n >= 1e6:
+		return fmt.Sprintf("%.0f MB", float64(n)/1e6)
+	}
+	return fmt.Sprintf("%d bytes", n)
 }

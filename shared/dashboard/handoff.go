@@ -75,3 +75,17 @@ const (
 	AdminPort    = "briard.admin"
 	AdminPortDev = "/dev/virtio-ports/" + AdminPort
 )
+
+// PullPath is where the host records a service install's pull for the dashboard ([V3b.31j]): the
+// manifest's Size and InstalledSize and when the pull started, written through `service.pulling`
+// before the first byte moves and removed once the image is present. The manifest itself lands on
+// the volume only AFTER the pull, so this is the one place a total exists while a bar is wanted.
+func PullPath(service string) string { return Dir + "/pull-" + service + ".json" }
+
+// Pull is that file's content.
+type Pull struct {
+	Service       string    `json:"service"`
+	Size          int64     `json:"size"`
+	InstalledSize int64     `json:"installedSize"`
+	Started       time.Time `json:"started"`
+}
