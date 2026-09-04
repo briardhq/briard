@@ -32,7 +32,6 @@ type fakeHA struct {
 	noMinter, noOwner bool
 	mintClient        string // the client_id the minter was asked for
 	mintBearer        string // the bearer it was asked with
-	password          string // what the reset set ([V3b.31e])
 }
 
 func newFakeHA() *fakeHA {
@@ -91,24 +90,6 @@ func (f *fakeHA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"auth_code": "code-for-the-owner"})
-	case "/api/briard/password":
-		if f.noMinter {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Header.Get("Authorization") != "Bearer sys-access" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
-		if f.noOwner {
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Home Assistant has no owner account", "code": "no_owner"})
-			return
-		}
-		f.password = body["password"]
-		json.NewEncoder(w).Encode(map[string]string{"username": f.user["username"]})
 	default:
 		http.NotFound(w, r)
 	}
@@ -290,23 +271,23 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if an != "Bearer sys-access" {
 		t.Errorf("analytics was marked with %q; want the control channel's token", an)
 	}
-	// The starting password is kept, and the card shows it -- never invented-and-hidden.
-	pw, err := os.ReadFile(filepath.Join(r.dir, "state", passwordFile))
-	must(t, err)
-	if string(pw) != u["password"] {
-		t.Errorf("kept password %q != the one HA got %q", pw, u["password"])
+	// The password is generated and FORGOTTEN ([V3b.31e]): nothing on the volume, nothing on the
+	// page. Every later open is minted, and the household sets its own in HA's People settings.
+	entries, _ := os.ReadDir(filepath.Join(r.dir, "state"))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "password") {
+			t.Errorf("a password is kept on the volume: %s", e.Name())
+		}
 	}
 	req, _ := http.NewRequest("GET", r.srv.URL+"/", nil)
 	req.AddCookie(c)
 	page, err := http.DefaultClient.Do(req)
 	must(t, err)
 	defer page.Body.Close()
-	var sb strings.Builder
 	buf := make([]byte, 64<<10)
 	n, _ := page.Body.Read(buf)
-	sb.Write(buf[:n])
-	if !strings.Contains(sb.String(), u["password"]) {
-		t.Error("the page does not show the starting password")
+	if strings.Contains(string(buf[:n]), u["password"]) {
+		t.Error("the page shows the generated password")
 	}
 	// User step done, the rest not: a code MINTED for the owner ([V3b.31d]), and the onboarding
 	// page resumes with it -- the same callback shape as the first open, no user created.
@@ -346,65 +327,6 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	page.Body.Close()
 	if !strings.Contains(string(buf[:n]), `<button type="submit">Open Home Assistant`) {
 		t.Error("the page on a set-up HA does not offer Open Home Assistant")
-	}
-}
-
-// RESET AND SHOW ONCE ([V3b.31e]): the reset sets a fresh password through the integration, shows
-// it in that one response with the username it belongs to, drops the stored starting password,
-// and the next page load shows nothing -- a copy briard cannot keep current is not kept.
-func TestResetPasswordIsShownOnceAndKeptNowhere(t *testing.T) {
-	r := newRig(t)
-	c := r.trust()
-	// The first open leaves a starting password on the volume.
-	r.do("POST", "/open/home-assistant", c, nil)
-	stored := filepath.Join(r.dir, "state", passwordFile)
-	if _, err := os.Stat(stored); err != nil {
-		t.Fatalf("no starting password after the first open: %v", err)
-	}
-	r.ha.mu.Lock()
-	for k := range r.ha.done {
-		r.ha.done[k] = true
-	}
-	r.ha.mu.Unlock()
-	req, _ := http.NewRequest("POST", r.srv.URL+"/reset/home-assistant-password", nil)
-	req.AddCookie(c)
-	resp, err := noRedirect.Do(req)
-	must(t, err)
-	page, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("reset = %d %s", resp.StatusCode, page)
-	}
-	r.ha.mu.Lock()
-	set := r.ha.password
-	r.ha.mu.Unlock()
-	if len(set) != 20 {
-		t.Fatalf("HA was given password %q; want 20 characters", set)
-	}
-	if !strings.Contains(string(page), "<code>"+set+"</code>") || !strings.Contains(string(page), "<code>kostas</code>") {
-		t.Errorf("the response does not show the new password and its username: %s", page)
-	}
-	if _, err := os.Stat(stored); !os.IsNotExist(err) {
-		t.Errorf("the starting password is still stored after a reset (stat: %v)", err)
-	}
-	req, _ = http.NewRequest("GET", r.srv.URL+"/", nil)
-	req.AddCookie(c)
-	again, err := http.DefaultClient.Do(req)
-	must(t, err)
-	page2, _ := io.ReadAll(again.Body)
-	again.Body.Close()
-	if strings.Contains(string(page2), set) || strings.Contains(string(page2), "starting password") {
-		t.Error("the reset password, or a starting password, is shown again on reload")
-	}
-	if !strings.Contains(string(page2), "Reset the password") {
-		t.Error("the page no longer offers a reset")
-	}
-	// Refused without a session, like every verb.
-	resp, err = noRedirect.Post(r.srv.URL+"/reset/home-assistant-password", "", nil)
-	must(t, err)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("reset with no session = %d; want 401", resp.StatusCode)
 	}
 }
 

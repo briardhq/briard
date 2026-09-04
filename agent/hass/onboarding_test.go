@@ -91,41 +91,6 @@ func TestMintLogin(t *testing.T) {
 	}
 }
 
-// The reset ([V3b.31e]): the new password reaches the integration with the control channel's
-// bearer, the owner's username comes back, and the refusals are the minter's.
-func TestResetPassword(t *testing.T) {
-	var got map[string]string
-	var bearer string
-	status := http.StatusOK
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/briard/password" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		bearer = r.Header.Get("Authorization")
-		json.NewDecoder(r.Body).Decode(&got)
-		w.WriteHeader(status)
-		if status == http.StatusOK {
-			json.NewEncoder(w).Encode(map[string]string{"username": "kostas"})
-		}
-	}))
-	defer srv.Close()
-	user, err := ResetPassword(context.Background(), srv.URL, "tok", "new-secret-20chars")
-	if err != nil || user != "kostas" {
-		t.Fatalf("ResetPassword = %q, %v", user, err)
-	}
-	if got["password"] != "new-secret-20chars" || bearer != "Bearer tok" {
-		t.Errorf("the integration was asked %v with %q", got, bearer)
-	}
-	status = http.StatusConflict
-	if _, err := ResetPassword(context.Background(), srv.URL, "tok", "x"); err != ErrNoOwner {
-		t.Errorf("409 -> %v; want ErrNoOwner", err)
-	}
-	if _, err := ResetPassword(context.Background(), srv.URL+"/elsewhere", "tok", "x"); err != ErrNoMinter {
-		t.Errorf("404 -> %v; want ErrNoMinter", err)
-	}
-}
-
 // LoginURL is HA's own end-of-onboarding redirect: the front page's auth callback with the same
 // state as the onboarding resume, plus storeToken so the tokens outlive the tab.
 func TestLoginURL(t *testing.T) {

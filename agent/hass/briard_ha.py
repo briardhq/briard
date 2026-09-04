@@ -26,7 +26,6 @@ from http import HTTPStatus
 import logging
 import socket
 
-from homeassistant.auth.providers import homeassistant as auth_ha
 from homeassistant.components.auth import create_auth_code
 from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.config_entries import SOURCE_USER
@@ -37,7 +36,6 @@ from homeassistant.helpers.start import async_at_started
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "briard"
-
 
 class LoginView(HomeAssistantView):
     """POST /api/briard/login — an auth code that logs a browser in as Home Assistant's OWNER.
@@ -81,49 +79,6 @@ class LoginView(HomeAssistantView):
             return self.json_message("the owner has no credential to log in with", HTTPStatus.CONFLICT, "no_credential")
         return self.json({"auth_code": create_auth_code(hass, client_id, credential)})
 
-
-class PasswordView(HomeAssistantView):
-    """POST /api/briard/password — set a new password on the OWNER's Home Assistant login.
-
-    "Reset and show once" ([V3b.31a](e), [V3b.31e]): the password briard chose at the first open
-    is a starting credential the household never typed, and a stored copy of it goes stale the
-    moment they change it in Home Assistant — which briard cannot see. So briard keeps no copy:
-    the dashboard generates a fresh one, sets it here, shows it once, and the companion app logs
-    in with it. HA's own `admin_change_password` is this exact call (`provider.async_change_
-    password`), and like it, it REVOKES NOTHING — the sessions the household holds keep working.
-
-    The same owner rule and the same admin gate as LoginView; the same refusals by name.
-    """
-
-    url = "/api/briard/password"
-    name = "api:briard:password"
-    requires_auth = True
-
-    async def post(self, request):
-        """Set the owner's password to the one given."""
-        if not request[KEY_HASS_USER].is_admin:
-            return self.json_message("admin only", HTTPStatus.FORBIDDEN)
-        try:
-            body = await request.json()
-        except ValueError:
-            return self.json_message("invalid JSON", HTTPStatus.BAD_REQUEST)
-        password = body.get("password") if isinstance(body, dict) else None
-        if not isinstance(password, str) or len(password) < 8:
-            return self.json_message("password required (8+ characters)", HTTPStatus.BAD_REQUEST)
-        hass = request.app[KEY_HASS]
-        owner = await hass.auth.async_get_owner()
-        if owner is None:
-            return self.json_message("Home Assistant has no owner account", HTTPStatus.CONFLICT, "no_owner")
-        provider = auth_ha.async_get_provider(hass)
-        username = next(
-            (c.data["username"] for c in owner.credentials if c.auth_provider_type == provider.type),
-            None,
-        )
-        if username is None:
-            return self.json_message("the owner has no password login to reset", HTTPStatus.CONFLICT, "no_credential")
-        await provider.async_change_password(username, password)
-        return self.json({"username": username})
-
 # The event the node fires on Home Assistant's own bus when something OUTSIDE Home Assistant
 # changed that this integration may want to act on — today, a broker that was installed next to an
 # HA already running ([B.131]). The other half of the contract is agent/hass/nudge.go's, and it is
@@ -137,7 +92,6 @@ EVENT_RECONSIDER = "briard_reconsider"
 # that one and a second copy here would be a second thing to keep in step with the catalog.
 BROKER_HOST = "127.0.0.1"
 BROKER_PORT = @MQTT_PORT@
-
 
 async def async_setup(hass, config):
     """Set up briard from its `briard:` line in configuration.yaml."""
@@ -168,10 +122,8 @@ async def async_setup(hass, config):
             return
         await _reconsider()
 
-    # The login minter and the password reset, from the moment HA serves: they need nothing
-    # loaded but the auth manager.
+    # The login minter, from the moment HA serves: it needs nothing loaded but the auth manager.
     hass.http.register_view(LoginView())
-    hass.http.register_view(PasswordView())
 
     # Started, not set-up: config entries are loaded by then, so "does an mqtt entry exist" has a
     # truthful answer, and starting a flow is not competing with the rest of the boot.
@@ -182,7 +134,6 @@ async def async_setup(hass, config):
     hass.bus.async_listen(EVENT_RECONSIDER, _nudged)
     return True
 
-
 def _broker_listening():
     """Is there actually a broker on the node? Blocking; called in the executor."""
     try:
@@ -190,7 +141,6 @@ def _broker_listening():
             return True
     except OSError:
         return False
-
 
 async def _wire_mqtt(hass):
     """Point Home Assistant at the node's broker, once, if nothing else has.
@@ -242,7 +192,6 @@ async def _wire_mqtt(hass):
         _LOGGER.warning("briard: Home Assistant did not accept the broker: %s", result.get("type"))
         return
     _LOGGER.info("briard: pointed Home Assistant at the node's MQTT broker")
-
 
 def _abort(hass, flow_id):
     """Drop a flow that is still in progress; a finished one is already gone."""

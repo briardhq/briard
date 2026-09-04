@@ -233,40 +233,6 @@ var ErrNoOwner = errors.New("hass: Home Assistant has no owner account")
 // Assistant it did not load on): the caller falls back to a plain link, and HA's login screen.
 var ErrNoMinter = errors.New("hass: the briard integration is not loaded in Home Assistant")
 
-// ResetPassword sets `password` on the owner's password login through the in-HA integration
-// ([V3b.31e]) and returns the username it belongs to. Revokes nothing, like HA's own
-// admin_change_password. The refusals are MintLogin's, by the same names.
-func ResetPassword(ctx context.Context, base, access, password string) (string, error) {
-	body, _ := json.Marshal(map[string]string{"password": password})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/briard/password", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("hass: build password request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+access)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("hass: reset password: %w", err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusNotFound:
-		return "", ErrNoMinter
-	case http.StatusConflict:
-		return "", ErrNoOwner
-	default:
-		return "", fmt.Errorf("hass: reset password: HTTP %d", resp.StatusCode)
-	}
-	var out struct {
-		Username string `json:"username"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("hass: decode password response: %w", err)
-	}
-	return out.Username, nil
-}
-
 // MintLogin asks the in-HA integration for an auth code that logs the browser in as HA's owner,
 // bound to `clientID` (the browser's origin with a trailing slash, as everywhere). `access` is
 // the control channel's; the integration requires an admin.

@@ -11,7 +11,6 @@
   .muted { color: var(--muted); }
   button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; cursor: pointer; }
   button[disabled] { opacity: .5; cursor: default; }
-  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-top: .5rem; }
   code { font-size: .95em; }
   a { color: var(--accent); }
 </style>{{end}}
@@ -36,17 +35,10 @@
     {{else if .HA.Onboarded}}
       <p>Set up and running at <a href="{{.HA.URL}}">{{.HA.Host}}</a>.</p>
       <form method="post" action="/open/home-assistant"><button type="submit">Open Home Assistant</button></form>
-      {{if .HA.Reset}}
-        <p>The password for <code>{{.HA.Username}}</code> is now <code>{{.HA.Password}}</code> — shown once, kept nowhere. The companion app logs in with it; this browser stays signed in.</p>
-      {{else if .HA.Password}}
-        <details><summary class="muted">Show the starting password</summary><p><code>{{.HA.Password}}</code> — the companion app logs in with it; change it from Home Assistant when you like.</p></details>
-      {{end}}
-      <form method="post" action="/reset/home-assistant-password"><button type="submit" class="quiet">Reset the password</button></form>
-      <p class="muted">A new password is set and shown once. Nothing is signed out.</p>
+      <p class="muted">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.HA.URL}}config/users">Settings → People</a>, your name, “Change password” — no old password is needed.</p>
     {{else}}
       <p>{{if .HA.Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>
       <form method="post" action="/open/home-assistant"><button type="submit"{{if not .HA.Running}} disabled{{end}}>Open Home Assistant</button></form>
-      {{if .HA.Password}}<details><summary class="muted">Show the starting password</summary><p><code>{{.HA.Password}}</code></p></details>{{end}}
     {{end}}
   </div>
   {{else}}
