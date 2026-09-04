@@ -1201,7 +1201,7 @@ in
         ExecStopPost = [
           "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target"
           "${config.systemd.package}/bin/systemctl daemon-reload"
-          "-${config.systemd.package}/bin/systemctl reset-failed briard-data.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-mdns.service briard-mdns-services.service"
+          "-${config.systemd.package}/bin/systemctl reset-failed briard-data.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-dashboard.service briard-mdns.service briard-mdns-services.service"
           # LAST, and the reason is FailureAction=reboot above: a node that reboots because it
           # could not release the resource must leave the reason on disk first, and the journal
           # is otherwise still in RAM when the reboot happens.
@@ -1647,7 +1647,10 @@ in
         # serving its own page over services it already runs.
         ExecStart = "${pkgs.reverse-proxy}/bin/reverse-proxy"
           + " -http :80 -listen :443"
-          + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem";
+          + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem"
+          # Every name the table does not route -- the bare IP, the node's own name -- goes to the
+          # dashboard ([V3b.31b]); the door has no page of its own.
+          + " -fallback http://127.0.0.1:8087";
         Restart = "on-failure";
         # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
         # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
@@ -1668,6 +1671,27 @@ in
       # that IS reachable, so a door would hand the resource on after ~10s of trying. That is eager
       # for one whose likeliest transient is losing the race for :80 to its own previous instance
       # during a failover, and it is the asymmetry [B.125](b) holds open.
+      unitConfig = chainMemberFailure // {
+        StartLimitIntervalSec = 300;
+        StartLimitBurst = 5;
+      };
+    };
+
+    # THE HOUSEHOLD DASHBOARD ([V3b.31b]): loopback only, behind the door, which forwards every
+    # name it does not route here. A chain member for the reason the door is one -- its device
+    # registry lives on the volume, and only the primary has it -- under the same [V3b.5](c)
+    # settings: RestartMode=direct so a transient crash is a restart in place, the hold on giving
+    # up. It reads the routing table converge wrote and Home Assistant's control token, both on
+    # /run; it writes only under /var/lib/briard/dashboard.
+    systemd.services.briard-dashboard = {
+      description = "Briard household dashboard (behind the front door)";
+      after = [ "briard-data.service" "briard-services.service" ];
+      serviceConfig = {
+        ExecStart = "${pkgs.dashboard}/bin/dashboard -listen 127.0.0.1:8087";
+        Restart = "on-failure";
+        RestartMode = "direct";
+        RestartSec = 2;
+      };
       unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;
         StartLimitBurst = 5;

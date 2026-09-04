@@ -1047,6 +1047,10 @@ if command -v systemctl >/dev/null 2>&1; then
 	else
 		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ -- it takes its address from your router, where it shows up as a \"briard-\" client -- $SERVICE_NOTE"
 	fi
+	# The dashboard's only door is a one-time link the agent mints ([V3b.31b]); the guest has to be
+	# up for it, and it is not yet, so the sentence says how rather than printing a link that
+	# would expire before the boot finished.
+	say "once it answers, get a one-time link to your dashboard with: sudo briard dashboard"
 else
 	# Belt, not the gate: the report card refuses a host that is not systemd-booted before anything
 	# is written (step 2). Reaching HERE means systemctl vanished between that check and this line,

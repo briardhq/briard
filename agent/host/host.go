@@ -1130,6 +1130,13 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applySync(ctx, e, d, logf)
 	}
+	if d.Kind == api.DirectiveDashboard {
+		h, ok := r.(handoffWriter)
+		if !ok {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot hand off a dashboard code"}
+		}
+		return cfg.applyDashboard(ctx, h, d, logf)
+	}
 	if d.Kind == api.DirectivePair {
 		// Runtime anchor pairing needs the guest client's mesh verbs
 		// (adjust/bring-up), not the narrow upgrader; r is that client.

@@ -21,8 +21,10 @@
 // manifest names a port, and what host answers on it is whatever the renderer wired the pod for.
 // So this process knows names and forwards; it never knows podman.
 //
-// It answers when NOTHING is routed — the shipped state of a fresh node — with Briard's own page,
-// and /healthz is ALWAYS its own: a node with nothing routed to it is *ready*, not sick, which is
+// It has NO PAGE OF ITS OWN ([V3b.31b]): a name it does not route — the bare IP, the node's own
+// `briard-<flock>.local`, a typo — is forwarded to the household dashboard (`-fallback`), which is a
+// separate guest unit precisely so that nothing of ours lives inside the door and the door itself
+// stays replaceable. /healthz is ALWAYS its own: a node with nothing routed to it is *ready*, not sick, which is
 // what keeps the host agent's health probe honest. That stays true with N services routed, and it
 // is a deliberate reversal of what one backend used to do (forward /healthz to it): with N
 // services there is no single answer to forward, and a service that is down must alert without
@@ -36,7 +38,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"html"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -56,7 +57,16 @@ func main() {
 	routesPath := flag.String("routes", routes.Path, "the routing table written by the guest's converge")
 	certPath := flag.String("cert", "/var/lib/briard/tls/fullchain.pem", "certificate chain PEM (on the DRBD volume)")
 	keyPath := flag.String("key", "/var/lib/briard/tls/key.pem", "private key PEM (on the DRBD volume)")
+	fallbackFlag := flag.String("fallback", "", "where a name this node does not route is forwarded: the household dashboard (empty answers 503)")
 	flag.Parse()
+	var fallback *url.URL
+	if *fallbackFlag != "" {
+		u, err := url.Parse(*fallbackFlag)
+		if err != nil {
+			log.Fatalf("reverse-proxy: -fallback %q: %v", *fallbackFlag, err)
+		}
+		fallback = u
+	}
 
 	r := &certReloader{certPath: *certPath, keyPath: *keyPath}
 	if _, err := r.load(); err != nil {
@@ -71,10 +81,10 @@ func main() {
 	// nothing — the shipped state — and refusing to start would replace "no service routed" with
 	// "no front door at all", which is the same node with nothing to tell the household.
 	if _, err := tbl.load(); err != nil {
-		log.Printf("reverse-proxy: no routing table yet (%v); serving Briard's page until one appears", err)
+		log.Printf("reverse-proxy: no routing table yet (%v); forwarding to the dashboard until one appears", err)
 	}
 
-	h := newFrontDoor(tbl.current)
+	h := newFrontDoor(tbl.current, fallback)
 	// Sane timeout so a stuck client can't pin a connection forever.
 	plain := &http.Server{Addr: *httpAddr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	tlsSrv := &http.Server{
@@ -95,7 +105,7 @@ func main() {
 }
 
 // frontDoor routes the VIP: /healthz is always Briard's own answer, a request whose Host names a
-// routed service goes to that service, and everything else gets Briard's page.
+// routed service goes to that service, and everything else is forwarded to the dashboard.
 //
 // Owning /healthz (rather than passing it through) is what kills the zombie state a fresh
 // node used to land in: the host agent probed the *payload's* port, so a node with nothing
@@ -103,8 +113,9 @@ func main() {
 // service. The probe target is stable across zero, one and N services — which is the whole
 // point of it not being a service's answer.
 type frontDoor struct {
-	routes func() *routing
-	proxy  http.Handler
+	routes   func() *routing
+	proxy    http.Handler
+	fallback *url.URL // the dashboard; nil answers 503 for a name nobody routes
 }
 
 // backendKey carries the resolved backend from ServeHTTP into the proxy's Rewrite hook. One
@@ -112,8 +123,8 @@ type frontDoor struct {
 // the header doctrine below is written once); the per-request target rides the context.
 type backendKey struct{}
 
-func newFrontDoor(current func() *routing) *frontDoor {
-	f := &frontDoor{routes: current}
+func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
+	f := &frontDoor{routes: current, fallback: fallback}
 	f.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(r.In.Context().Value(backendKey{}).(*url.URL))
@@ -128,6 +139,19 @@ func newFrontDoor(current func() *routing) *frontDoor {
 			// (Using Rewrite rather than Director is what makes this the default — Director
 			// appends X-Forwarded-For automatically.) Revisit when per-service trust is
 			// something the catalog can state and we can pair the header with it.
+			//
+			// THE ONE EXCEPTION IS OURS: the dashboard is not a service that never asked for a
+			// proxy, it is built for this door, and it needs the scheme the browser used -- a
+			// Secure cookie set over plain http would never come back, and the Home Assistant
+			// origin it hands the browser must match. So the door says https to the dashboard
+			// alone, on the forward the table did not choose.
+			if f.fallback != nil && r.Out.URL.Host == f.fallback.Host {
+				proto := "http"
+				if r.In.TLS != nil {
+					proto = "https"
+				}
+				r.Out.Header.Set("X-Forwarded-Proto", proto)
+			}
 		},
 	}
 	return f
@@ -147,9 +171,13 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			f.health(w, t)
 			return
 		}
-		// Nobody's name — the bare IP, a stale name, or a typo. Briard's page, which is where the
-		// household finds out what names this node DOES answer to.
-		f.page(w, req, t)
+		// Nobody's name — the bare IP, the node's own name, a stale name, a typo. The dashboard,
+		// which is where the household finds out what this node runs and gets into it.
+		if f.fallback == nil {
+			http.Error(w, "nothing answers at this name on this node\n", http.StatusServiceUnavailable)
+			return
+		}
+		f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, f.fallback)))
 		return
 	}
 	if r.to == nil {
@@ -182,47 +210,6 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // the guest.
 func (f *frontDoor) health(w http.ResponseWriter, t *routing) {
 	fmt.Fprintf(w, "ok: front door up, %s\n", t.describe())
-}
-
-// page is Briard's own page: what a bare IP gets, and what an unrecognised name gets.
-//
-// It is deliberately plain and self-contained (no assets to fetch, nothing to break on a node with
-// no internet), and it LISTS THE NAMES THIS NODE ANSWERS TO, because of who meets it — someone who
-// just ran `briard service install` and opened the address the docs gave them. The bare IP is
-// meant to become the local UI; until that exists, the honest minimum is telling the household
-// where their services actually are instead of asserting that nothing is here.
-func (f *frontDoor) page(w http.ResponseWriter, req *http.Request, t *routing) {
-	// The page belongs at the root, not under every URL a stranger mistypes.
-	if req.URL.Path != "/" {
-		http.NotFound(w, req)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	var b strings.Builder
-	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\"><title>Briard</title></head>\n<body>\n<h1>Briard</h1>\n")
-	if len(t.table.Services) == 0 {
-		b.WriteString("<p>This node is running. Nothing is installed on it yet.</p>\n")
-	} else {
-		b.WriteString("<p>This node is running. It serves:</p>\n<ul>\n")
-		for _, s := range t.table.Services {
-			b.WriteString("<li>" + html.EscapeString(s.Name))
-			switch {
-			case len(s.Hosts) == 0:
-				// No name yet: the flock has none, so neither does the service. Say that rather
-				// than print a URL that resolves nowhere.
-				b.WriteString(" — installed, not yet reachable by name")
-			case !hasNameRoute(s):
-				b.WriteString(" — " + html.EscapeString(s.Hosts[0]) + " (not served over HTTP)")
-			default:
-				u := "http://" + s.Hosts[0] + "/"
-				b.WriteString(` — <a href="` + html.EscapeString(u) + `">` + html.EscapeString(u) + "</a>")
-			}
-			b.WriteString("</li>\n")
-		}
-		b.WriteString("</ul>\n")
-	}
-	b.WriteString("</body>\n</html>\n")
-	w.Write([]byte(b.String()))
 }
 
 // routing is one loaded routing table, prepared for lookup: each name resolved to its destination
@@ -421,13 +408,4 @@ func (r *certReloader) load() (*tls.Certificate, error) {
 		r.keyTime = ki.ModTime()
 	}
 	return &cert, nil
-}
-
-// hasNameRoute reports whether this service is served under its own name on the shared front
-// door. The page asks it to tell "reachable at this URL" apart from "named, but nothing here
-// answers HTTP" — which is a real state a household should be told about rather than left to
-// discover by getting a 501.
-func hasNameRoute(s routes.Service) bool {
-	_, ok := s.Route(routes.ListenName)
-	return ok
 }

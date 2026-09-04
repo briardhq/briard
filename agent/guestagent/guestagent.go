@@ -24,6 +24,7 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
 	"briard.io/shared/backup"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
@@ -253,6 +254,9 @@ const (
 	// no-payload event on Home Assistant's bus. It cannot name an event, carry data, or reach any
 	// other service -- all three would have to be on the wire for that, and none of them is.
 	verbHassNudge = "service.home-assistant.nudge"
+	// dashboard.handoff writes the one-time code + OS account the host minted for the household
+	// dashboard, 0600 on tmpfs (shared/dashboard) -- the whole of its bootstrap auth ([V3b.31b]).
+	verbDashboardHandoff = "dashboard.handoff"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -334,6 +338,7 @@ var guestCapabilities = []string{
 	verbOSGC,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite,
+	verbDashboardHandoff,
 	verbResources,
 	verbBackupSave, verbBackupRestore,
 	verbFsSync,
@@ -1150,6 +1155,34 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, err
 			}
 			return true, nil
+		case verbDashboardHandoff:
+			var h dashboard.Handoff
+			if err := json.Unmarshal(payload, &h); err != nil {
+				return nil, err
+			}
+			if h.Code == "" {
+				return nil, fmt.Errorf("%s: no code", verbDashboardHandoff)
+			}
+			if out, err := x.Run(ctx, "mkdir", "-p", "-m", "0700", dashboard.Dir); err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
+			}
+			raw, err := json.Marshal(h)
+			if err != nil {
+				return nil, err
+			}
+			// Written beside its final name and moved in, so the dashboard never reads half a code;
+			// 0600 before the move, so no reader but root ever sees it at all.
+			tmp := dashboard.HandoffPath + ".new"
+			if err := x.WriteFile(tmp, raw); err != nil {
+				return nil, fmt.Errorf("%s: %w", verbDashboardHandoff, err)
+			}
+			if out, err := x.Run(ctx, "chmod", "0600", tmp); err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
+			}
+			if out, err := x.Run(ctx, "mv", "-f", tmp, dashboard.HandoffPath); err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
+			}
+			return nil, nil
 		case verbMosquittoProbe:
 			var req mosquittoProbeRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2538,6 +2571,13 @@ func (g *Client) HassNudge(ctx context.Context) (bool, error) {
 	var told bool
 	err := g.c.call(ctx, verbHassNudge, nil, &told)
 	return told, err
+}
+
+// DashboardHandoff hands the guest the one-time code the household dashboard admits a browser on,
+// with what the host knows about the OS account ([V3b.31b]). The guest writes it 0600 on tmpfs;
+// the dashboard consumes it once.
+func (g *Client) DashboardHandoff(ctx context.Context, h dashboard.Handoff) error {
+	return g.c.call(ctx, verbDashboardHandoff, h, nil)
 }
 
 // MosquittoProbe stores `token` in the broker's own retained state (when one is given) and returns

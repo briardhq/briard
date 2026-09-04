@@ -1,0 +1,48 @@
+{{define "style"}}<style>
+  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; }
+  }
+  body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1.25rem; }
+  main { max-width: 42rem; margin: 1.5rem auto 2rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 1rem; }
+  .card { background: var(--card); border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .card h2 { font-size: 1.15rem; margin: 0 0 .4rem; }
+  .muted { color: var(--muted); }
+  button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  code { font-size: .95em; }
+  a { color: var(--accent); }
+</style>{{end}}
+
+{{define "refused"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{template "style"}}</head>
+<body><main>
+  <h1>Briard</h1>
+  <p>This browser is not yet trusted by this home.</p>
+  <p class="muted">On the machine that runs Briard, run <code>sudo briard dashboard</code> and open the address it prints.</p>
+</main></body></html>{{end}}
+
+{{define "page"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{template "style"}}</head>
+<body><main>
+  <h1>Briard</h1>
+  {{if .HA}}
+  <div class="card">
+    <h2>Home Assistant</h2>
+    {{if not .HA.Reachable}}
+      <p class="muted">Starting…</p>
+    {{else if .HA.Onboarded}}
+      <p>Set up and running at <a href="{{.HA.URL}}">{{.HA.Host}}</a>.</p>
+      {{if .HA.Password}}<details><summary class="muted">Show the starting password</summary><p><code>{{.HA.Password}}</code> — the companion app logs in with it; change it from Home Assistant when you like.</p></details>{{end}}
+    {{else}}
+      <p>{{if .HA.Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>
+      <form method="post" action="/open/home-assistant"><button type="submit"{{if not .HA.Running}} disabled{{end}}>Open Home Assistant</button></form>
+      {{if .HA.Password}}<details><summary class="muted">Show the starting password</summary><p><code>{{.HA.Password}}</code></p></details>{{end}}
+    {{end}}
+  </div>
+  {{else}}
+  <div class="card"><h2>Home Assistant</h2><p class="muted">Not installed on this node yet.</p></div>
+  {{end}}
+  {{if .Services}}<p class="muted">Services on this node: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
+</main></body></html>{{end}}

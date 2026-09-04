@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 )
 
 // defaultSock mirrors ConfigFromEnv's ADMIN_SOCK default (agent/host/config.go). The literal is
@@ -99,6 +100,15 @@ var commands = []command{
 		detail: "For when you are about to take this machine away: the peer picks the work up, rather\n" +
 			"than the flock discovering the loss on its own.",
 		run: runHandover, probe: []string{"-h"},
+	},
+	{
+		name: "dashboard", group: groupEveryday,
+		synopsis: "print a one-time link that opens this home's dashboard, trusted",
+		detail: "The link is the dashboard's only door: the browser that opens it becomes a trusted\n" +
+			"device, and the code in it works once, for ten minutes. Run it again for a fresh link --\n" +
+			"that is also how a browser that lost its session gets back in. Home Assistant's first\n" +
+			"user is named after the account this runs under (-name, -user, -lang override).",
+		run: runDashboard, probe: []string{"-h"},
 	},
 	{
 		name: "rescue", group: groupRepair,
@@ -516,4 +526,68 @@ func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 		return zero, fmt.Errorf("reading the outcome: %w", err)
 	}
 	return o, nil
+}
+
+// runDashboard asks the agent for a one-time dashboard link ([V3b.31b]). The account details
+// ride along because THIS is where the OS account is visible: the agent is a service with no
+// SUDO_USER, and the guest knows nothing about the host's users at all.
+func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("briard dashboard", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	name := fs.String("name", accountName(), "the display name for Home Assistant's first user")
+	user := fs.String("user", accountUser(), "the username for Home Assistant's first user")
+	lang := fs.String("lang", accountLang(), "the language for Home Assistant's first user (two letters)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprint(stderr, "briard dashboard: takes no arguments\n")
+		return 2
+	}
+	payload, err := json.Marshal(map[string]string{"name": *name, "username": *user, "language": *lang})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveDashboard, Payload: string(payload)})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "briard: %s: %s\n", o.State, o.Detail)
+		return 1
+	}
+	fmt.Fprintf(stdout, "open this in a browser within %s (it works once):\n\n  %s\n\n", dashboard.TTL, o.Detail)
+	return 0
+}
+
+// The OS account the CLI runs under, as Home Assistant's first user would like it: the invoking
+// user through sudo rather than root, a capitalised display name, and the two-letter language
+// from LANG (en when it says nothing usable).
+func accountUser() string {
+	if u := os.Getenv("SUDO_USER"); u != "" {
+		return u
+	}
+	return os.Getenv("USER")
+}
+
+func accountName() string {
+	u := accountUser()
+	if u == "" {
+		return ""
+	}
+	return strings.ToUpper(u[:1]) + u[1:]
+}
+
+func accountLang() string {
+	l := os.Getenv("LANG")
+	if i := strings.IndexAny(l, "_."); i > 0 {
+		l = l[:i]
+	}
+	if len(l) != 2 {
+		return "en"
+	}
+	return strings.ToLower(l)
 }

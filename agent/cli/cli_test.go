@@ -340,6 +340,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"logs":      groupEveryday,
 		"service":   groupEveryday,
 		"handover":  groupEveryday,
+		"dashboard": groupEveryday,
 		"rescue":    groupRepair,
 		"os":        groupRepair,
 		"directive": groupRepair,
@@ -436,5 +437,18 @@ func TestServiceInstallPrintsWhereToReachIt(t *testing.T) {
 				t.Fatalf("stdout = %q, must NOT contain %q", out.String(), tc.absent)
 			}
 		})
+	}
+}
+
+func TestAccountLang(t *testing.T) {
+	for in, want := range map[string]string{"el_GR.UTF-8": "el", "C.UTF-8": "en", "": "en", "de": "de", "POSIX": "en"} {
+		t.Setenv("LANG", in)
+		if got := accountLang(); got != want {
+			t.Errorf("LANG=%q -> %q, want %q", in, got, want)
+		}
+	}
+	t.Setenv("SUDO_USER", "kostas")
+	if accountUser() != "kostas" || accountName() != "Kostas" {
+		t.Errorf("under sudo: user %q name %q", accountUser(), accountName())
 	}
 }

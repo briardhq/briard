@@ -98,6 +98,7 @@
         drbd-reactor = final.callPackage ./guest-image/pkgs/drbd-reactor { };
         dummy-service = final.callPackage ./nixosTest/dummy-service/package.nix { };
         reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # front door at the VIP
+        dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the door ([V3b.31b])
         # HA as a digest-pinned upstream OCI image — the real service.
         home-assistant-image = final.callPackage ./guest-image/pkgs/home-assistant-image { };
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =

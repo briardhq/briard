@@ -516,7 +516,7 @@ pkgs.testers.runNixOSTest {
     )
     print("re-wired in place, no restart: " + _zj.dumps(rewired[0]))
 
-    # ── (e) ONBOARDING BY API, RESUMABLE BY HA'S OWN FRONTEND ([V3b.31a](f)) ─────────
+    # ── (e) ONBOARDING THROUGH THE DASHBOARD, RESUMABLE BY HA'S OWN FRONTEND ([V3b.31a](f), [V3b.31b]) ──
     #
     # The install ends by handing the household a logged-in Home Assistant ([V3b.31a](d)): briard
     # creates the first user through HA's onboarding API and sends the browser to HA's OWN
@@ -548,14 +548,50 @@ pkgs.testers.runNixOSTest {
     # have taken the flag before the household's could.
     assert steps_done() == {"user": False, "core_config": False, "analytics": False, "integration": False}, steps_done()
 
-    # THE USER STEP. Name/username/language are what the installer derives from the OS account;
-    # the password is generated. The code that comes back is bound to client_id.
-    password = "briard-onboarding-test-password"
-    first = _zj.loads(door("/api/onboarding/users", post={
-        "name": "Kostas", "username": "kostas", "password": password,
-        "client_id": client_id, "language": "en",
-    }))
-    assert first.get("auth_code"), f"the user step returned no code: {first}"
+    # THE USER STEP RUNS THROUGH THE DASHBOARD ([V3b.31b]), the way the household's does. The
+    # host's one-time code is written here as the `dashboard.handoff` verb writes it (no host
+    # agent drives this rig; the verb has its own test), redeemed under the node's OWN name at the
+    # door -- which forwards every name it does not route to the dashboard -- and then "Open Home
+    # Assistant" does the user step and sends the browser on with the code.
+    node_name = "briard-brave-elf.local"
+    code0 = "c0ffee" * 10 + "0123"
+    issued = node1.succeed("date -u +%Y-%m-%dT%H:%M:%SZ").strip()
+    handoff = _zj.dumps({"code": code0, "name": "Kostas", "username": "kostas", "language": "en", "issued": issued})
+    node1.succeed("mkdir -p -m 0700 /run/briard/dashboard")
+    node1.succeed(f"printf %s {_sx.quote(handoff)} > /run/briard/dashboard/handoff.json && chmod 0600 /run/briard/dashboard/handoff.json")
+    # No session: refused, and the refusal says nothing about what is installed.
+    node1.fail(f"curl -fsS -H 'Host: {node_name}' http://192.168.1.100/")
+    # The code: one redemption, an HttpOnly cookie, and the handoff is gone.
+    headers = node1.succeed(f"curl -sS -D - -o /dev/null -H 'Host: {node_name}' 'http://192.168.1.100/?code={code0}'")
+    assert " 303 " in headers.splitlines()[0], headers
+    cookies = [l.split(":", 1)[1].split(";")[0].strip() for l in headers.splitlines() if l.lower().startswith("set-cookie: briard_session=")]
+    assert cookies and "HttpOnly" in headers, headers
+    cookie = cookies[0]
+    node1.fail("test -e /run/briard/dashboard/handoff.json")
+    node1.fail(f"curl -fsS -o /dev/null -H 'Host: {node_name}' 'http://192.168.1.100/?code={code0}'")
+    # Trusted: the page offers the first open -- the button is gated on RUNNING, not on HTTP.
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/ | grep -q 'Open Home Assistant'",
+        timeout=120,
+    )
+    # THE BUTTON: a 303 to HA's own onboarding page, under HA's name, carrying the code and the
+    # state HA's frontend checks -- hassUrl without the trailing slash, clientId with it.
+    from urllib.parse import urlparse as _up, parse_qs as _pq
+    import base64 as _b64
+    loc = node1.succeed(
+        f"curl -sS -o /dev/null -w '%{{redirect_url}}' -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' "
+        "http://192.168.1.100/open/home-assistant"
+    ).strip()
+    u = _up(loc)
+    assert (u.scheme, u.netloc, u.path) == ("http", host, "/onboarding.html"), loc
+    q = _pq(u.query)
+    assert q.get("auth_callback") == ["1"] and q.get("code"), loc
+    assert _zj.loads(_b64.b64decode(q["state"][0])) == {"hassUrl": origin, "clientId": client_id}, loc
+    first = {"auth_code": q["code"][0]}
+    # The starting password is kept on the volume and shown -- never invented-and-hidden.
+    node1.succeed("test -s /var/lib/briard/dashboard/home-assistant-password")
+    password = node1.succeed("cat /var/lib/briard/dashboard/home-assistant-password").strip()
+    node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/ | grep -qF {_sx.quote(password)}")
 
     # THE OWNER FLAG, read from the store on the volume rather than asked of HA: the household's
     # user holds it, alone, and our system user is still system_generated and not owner.
@@ -578,9 +614,10 @@ pkgs.testers.runNixOSTest {
     # ...and the page the browser lands on is served while onboarding is in progress.
     door("/onboarding.html")
 
-    # ANALYTICS IS MARKED DONE FIRST, out of order: preferences untouched means off, and the
-    # frontend resumes at the first UNDONE step (`_curStep`), so this is the page it skips.
-    door("/api/onboarding/analytics", bearer=human, post={})
+    # ANALYTICS WAS MARKED DONE BY THE DASHBOARD, out of order and with the CONTROL CHANNEL's
+    # token before the browser was sent on: preferences untouched means off, and the frontend
+    # resumes at the first UNDONE step (`_curStep`), so this is the page it skips. The browser's
+    # code was not spent on it -- it exchanged above.
     assert steps_done() == {"user": True, "core_config": False, "analytics": True, "integration": False}, steps_done()
 
     # CORE CONFIG -- the step HA's location page ends on. Marking it is what starts HA's four

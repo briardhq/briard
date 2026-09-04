@@ -21,6 +21,7 @@ import (
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
 	"briard.io/shared/backup"
+	"briard.io/shared/dashboard"
 )
 
 // fakeExec records writes/runs and returns canned output; stands in for the guest.
@@ -1758,5 +1759,31 @@ func TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService(t *testing
 	}
 	if told {
 		t.Fatal("a guest with no Home Assistant claimed it told one")
+	}
+}
+
+// dashboard.handoff writes the code the household dashboard admits a browser on ([V3b.31b]):
+// beside its final name, 0600 BEFORE the move, then moved in -- so the dashboard never reads half
+// a code and nothing but root ever sees one.
+func TestDashboardHandoffIsWrittenPrivatelyThenMovedIn(t *testing.T) {
+	x := &fakeExec{}
+	raw, _ := json.Marshal(dashboard.Handoff{Code: "abc", Name: "Kostas", Username: "kostas", Language: "el", Issued: time.Now()})
+	if _, err := dispatch(x)(context.Background(), verbDashboardHandoff, raw); err != nil {
+		t.Fatal(err)
+	}
+	tmp := dashboard.HandoffPath + ".new"
+	if got := x.files[tmp]; !strings.Contains(got, `"code":"abc"`) || !strings.Contains(got, `"username":"kostas"`) {
+		t.Errorf("written %q; want the handoff, code and account included", got)
+	}
+	want := [][]string{
+		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
+		{"chmod", "0600", tmp},
+		{"mv", "-f", tmp, dashboard.HandoffPath},
+	}
+	if !reflect.DeepEqual(x.runs, want) {
+		t.Errorf("runs = %v, want %v", x.runs, want)
+	}
+	if _, err := dispatch(x)(context.Background(), verbDashboardHandoff, []byte(`{"name":"x"}`)); err == nil {
+		t.Error("a handoff with no code was accepted")
 	}
 }

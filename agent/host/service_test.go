@@ -287,7 +287,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	// not a member of it, which is what makes a service crash unable to demote the node.
 	if !slices.Equal(cfg.Promoter, []string{
 		"briard-data.service", "briard-services.service", "briard-vip.service",
-		"briard-reverse-proxy.service", "briard-mdns.service", "briard-mdns-services.service",
+		"briard-reverse-proxy.service", "briard-dashboard.service", "briard-mdns.service", "briard-mdns-services.service",
 	}) {
 		t.Fatalf("install changed the promoter chain to %v — it must be static", cfg.Promoter)
 	}

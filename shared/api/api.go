@@ -399,6 +399,12 @@ const (
 	//                        exactly the moment something is already wrong. Refused outright on a
 	//                        disk with no backing image: that is not an overlay, it is the only copy
 	//                        of itself.
+	DirectiveDashboard = "dashboard" // Payload = a JSON {name, username, language} describing the OS account the
+	//                                  CLI ran under (all optional). The node mints a one-time code, hands
+	//                                  it to the guest with that account (shared/dashboard), and reports
+	//                                  the URL to open as the outcome Detail ([V3b.31b]). Local-door only
+	//                                  in practice: the code is for the person at the machine.
+
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place
 	//                        (keeps its data); a blank joiner (anchor/witness) brings up and resyncs

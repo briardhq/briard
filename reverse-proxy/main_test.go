@@ -81,28 +81,69 @@ func named(name, host, server string) routes.Service {
 }
 
 // fixed is a routing table that never reloads — the shape most tests want.
+// door is a front door with no dashboard behind it: the routing under test, nothing else.
+func door(current func() *routing) *frontDoor { return newFrontDoor(current, nil) }
+
+// dashboard stands in for the household dashboard: it records what it was handed.
+type dashboard struct {
+	srv   *httptest.Server
+	host  string
+	proto string
+	hits  int
+}
+
+func newDashboard(t *testing.T) *dashboard {
+	d := &dashboard{}
+	d.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.hits++
+		d.host, d.proto = r.Host, r.Header.Get("X-Forwarded-Proto")
+		fmt.Fprint(w, "dashboard")
+	}))
+	t.Cleanup(d.srv.Close)
+	return d
+}
+
+func (d *dashboard) url() *url.URL {
+	u, _ := url.Parse(d.srv.URL)
+	return u
+}
+
 func fixed(t routes.Table) func() *routing {
 	r := newRouting(t)
 	return func() *routing { return r }
 }
 
-// The shipped state of a fresh node: nothing installed. The VIP must still ANSWER — Briard's
-// own page at the root — and /healthz must say the node is ready rather than sick.
-// A node reporting unhealthy forever because no service was ever installed is the zombie
-// state this replaces.
+// The shipped state of a fresh node: nothing installed. The VIP must still ANSWER -- every name
+// the node does not route goes to the dashboard, which is where the household gets in -- and
+// /healthz must say the node is ready rather than sick. A node reporting unhealthy forever
+// because no service was ever installed is the zombie state this replaces.
 func TestZeroServiceFrontDoor(t *testing.T) {
-	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{})))
+	dash := newDashboard(t)
+	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{}), dash.url()))
 	defer srv.Close()
 
 	if code, body := get(t, srv.URL, "/healthz"); code != http.StatusOK || !strings.Contains(body, "no services routed") {
 		t.Errorf("/healthz with nothing routed = %d %q, want 200 saying so", code, body)
 	}
-	if code, body := get(t, srv.URL, "/"); code != http.StatusOK || !strings.Contains(body, "Nothing is installed") {
-		t.Errorf("/ with nothing routed = %d %q, want 200 and Briard's page", code, body)
+	if dash.hits != 0 {
+		t.Error("/healthz was forwarded; it is the node's own answer")
 	}
-	// The page belongs at the root, not under every URL a stranger mistypes.
-	if code, _ := get(t, srv.URL, "/nope"); code != http.StatusNotFound {
-		t.Errorf("/nope with nothing installed = %d, want 404", code)
+	// The bare IP and the node's own name both land on the dashboard, with the Host the browser
+	// typed and the scheme it used.
+	if code, body := getHost(t, srv.URL, "/", "briard-brave-elf.local"); code != http.StatusOK || body != "dashboard" {
+		t.Errorf("/ under the node's own name = %d %q, want the dashboard", code, body)
+	}
+	if dash.host != "briard-brave-elf.local" || dash.proto != "http" {
+		t.Errorf("the dashboard was handed Host %q proto %q; want the browser's name and http", dash.host, dash.proto)
+	}
+	if code, _ := get(t, srv.URL, "/nope"); code != http.StatusOK {
+		t.Errorf("/nope = %d; every path under an unrouted name is the dashboard's", code)
+	}
+	// A door with nothing behind it says so rather than pretending.
+	bare := httptest.NewServer(door(fixed(routes.Table{})))
+	defer bare.Close()
+	if code, _ := get(t, bare.URL, "/"); code != http.StatusServiceUnavailable {
+		t.Errorf("/ with no dashboard = %d, want 503", code)
 	}
 }
 
@@ -121,7 +162,7 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 	}))
 	defer mq.Close()
 
-	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
+	srv := httptest.NewServer(door(fixed(routes.Table{Services: []routes.Service{
 		fronted("home-assistant", "briard-brave-elf-home-assistant.local", ha.URL),
 		fronted("mosquitto", "briard-brave-elf-mosquitto.local", mq.URL),
 	}})))
@@ -143,11 +184,10 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 			t.Errorf("Host %q = %d %q, want 200 %q", host, code, body, want)
 		}
 	}
-	// A name we do not serve is not a service's 404: it is the bare-IP page, which is where the
-	// household reads which names this node DOES answer to.
-	code, body := getHost(t, srv.URL, "/", "192.168.1.100")
-	if code != http.StatusOK || !strings.Contains(body, "home-assistant") || !strings.Contains(body, "mosquitto") {
-		t.Errorf("the bare address = %d %q, want Briard's page listing both services", code, body)
+	// A name we do not serve is not a service's 404: it is the dashboard's, and this door has none
+	// behind it, so it says so.
+	if code, _ := getHost(t, srv.URL, "/", "192.168.1.100"); code != http.StatusServiceUnavailable {
+		t.Errorf("the bare address = %d, want 503 from a door with no dashboard", code)
 	}
 }
 
@@ -160,7 +200,7 @@ func TestHealthIsTheNodesOwnAnswerNotAServices(t *testing.T) {
 		http.Error(w, "wedged", http.StatusServiceUnavailable)
 	}))
 	defer dead.Close()
-	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
+	srv := httptest.NewServer(door(fixed(routes.Table{Services: []routes.Service{
 		fronted("home-assistant", "briard-brave-elf-home-assistant.local", dead.URL),
 	}})))
 	defer srv.Close()
@@ -190,7 +230,7 @@ func TestRoutedButNotFronted(t *testing.T) {
 		fmt.Fprint(w, "management-api")
 	}))
 	defer mgmt.Close()
-	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
+	srv := httptest.NewServer(door(fixed(routes.Table{Services: []routes.Service{
 		// A REACHABLE address, deliberately: the node can and does probe it (it is what the health
 		// floor GETs), so a test whose service had no address at all would prove only that the
 		// door cannot reach what does not exist.
@@ -205,22 +245,26 @@ func TestRoutedButNotFronted(t *testing.T) {
 	if reached {
 		t.Error("the door forwarded to a backend the table says it must not expose")
 	}
-	if _, body := get(t, srv.URL, "/"); !strings.Contains(body, "not served over HTTP") {
-		t.Errorf("Briard's page = %q, want it to say the service is not served over HTTP", body)
-	}
 }
 
 // A node whose flock has no minted name has no per-service names either (routes.HostName), so it
-// routes nothing — and must SAY the service is installed rather than pretend the node is empty.
+// routes nothing: every request is the dashboard's, which is where "installed but unnamed" is
+// said. The door must not reach the service under any name.
 func TestInstalledButUnnamed(t *testing.T) {
+	var reached bool
+	ha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { reached = true }))
+	defer ha.Close()
+	dash := newDashboard(t)
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
-		fronted("home-assistant", "", "http://127.0.0.1:8123"),
-	}})))
+		fronted("home-assistant", "", ha.URL),
+	}}), dash.url()))
 	defer srv.Close()
 
-	code, body := get(t, srv.URL, "/")
-	if code != http.StatusOK || !strings.Contains(body, "not yet reachable by name") {
-		t.Errorf("an unnamed service = %d %q, want the page to say it is installed but unnamed", code, body)
+	if code, body := getHost(t, srv.URL, "/", "briard-brave-elf-home-assistant.local"); code != http.StatusOK || body != "dashboard" {
+		t.Errorf("an unnamed service's would-be name = %d %q, want the dashboard", code, body)
+	}
+	if reached {
+		t.Error("the door forwarded to a service the table gives no name")
 	}
 }
 
@@ -257,7 +301,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 
 	// A door that starts before anything is installed: no file at all, and it still answers.
 	rr := &routeReloader{path: path}
-	srv := httptest.NewServer(newFrontDoor(rr.current))
+	srv := httptest.NewServer(door(rr.current))
 	defer srv.Close()
 	if code, body := get(t, srv.URL, "/healthz"); code != http.StatusOK || !strings.Contains(body, "no services routed") {
 		t.Fatalf("/healthz with no table = %d %q, want 200 saying nothing is routed", code, body)
@@ -280,8 +324,8 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 	// An UNINSTALL is an empty table, and it must take effect — "keep the last good one" is for a
 	// table that will not parse, never for one that parses and says less than it used to.
 	write(marshal(routes.Table{}), t0.Add(6*time.Second))
-	if code, _ := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusOK {
-		t.Errorf("after an uninstall = %d, want Briard's page", code)
+	if code, _ := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusServiceUnavailable {
+		t.Errorf("after an uninstall = %d, want 503: the name is nobody's and this door has no dashboard behind it", code)
 	}
 	if _, body := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); strings.Contains(body, "payload-ok") {
 		t.Errorf("after an uninstall the name still reaches the service: %q", body)
@@ -301,7 +345,7 @@ func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 		fmt.Fprint(w, "payload-ok")
 	}))
 	defer backend.Close()
-	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Services: []routes.Service{
+	srv := httptest.NewServer(door(fixed(routes.Table{Services: []routes.Service{
 		fronted("fixture", "home.example.test", backend.URL),
 	}})))
 	defer srv.Close()
@@ -387,7 +431,7 @@ func TestCertHotReloadAndProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: newFrontDoor(fixed(routes.Table{Services: []routes.Service{fronted("fixture", "briard-brave-elf-fixture.local", backend.URL)}})), TLSConfig: &tls.Config{GetCertificate: r.getCertificate}}
+	srv := &http.Server{Handler: door(fixed(routes.Table{Services: []routes.Service{fronted("fixture", "briard-brave-elf-fixture.local", backend.URL)}})), TLSConfig: &tls.Config{GetCertificate: r.getCertificate}}
 	go srv.ServeTLS(ln, "", "")
 	defer srv.Close()
 	addr := ln.Addr().String()

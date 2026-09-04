@@ -31,6 +31,7 @@ let
         "briard-services.service"
         "briard-vip.service"
         "briard-reverse-proxy.service"
+        "briard-dashboard.service"
         "briard-mdns.service"
         "briard-mdns-services.service"
       ];
