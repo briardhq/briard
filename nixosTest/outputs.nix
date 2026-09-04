@@ -440,6 +440,14 @@ in
       # `block()`/`crash()` cannot express, because nothing leaves the cluster — only the edge
       # between the two data nodes fails, and the witness stays reachable from both.
       drbd-link-split = import ./drbd-link-split.nix { inherit pkgs guestModule; };
+      # — **A STOPWATCH, NOT AN ASSERTION** ([B.56]). Measures how long a COLD converge holds the
+      # promotion when its pull is throttled to a crawl: [V3b.3](f) put a fetch on the promotion
+      # path and every chain rule we have was measured with an INSTANT failure. It runs its full
+      # observation window on purpose and prints a timeline, which is not a nightly shape.
+      cold-converge-pull = import ./cold-converge-pull.nix {
+        inherit pkgs guestModule;
+        quadletRender = quadletRenderPkg;
+      };
       # `netbird-selfhost`, `witness-proxy-gray` and `witness-proxy-fence` join this tag from
       # outputs-private.nix.
     };
