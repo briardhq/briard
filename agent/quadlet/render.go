@@ -268,6 +268,12 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// a household's link actually needs would never converge; it would re-download the same
 		// blob until something gave up for good. Tighter is not safer here, it is worse.
 		//
+		// SPLITTING THE IMAGE INTO LAYERS DOES NOT HELP, which is the obvious hope and was worth
+		// measuring rather than assuming: a 6-layer image interrupted at 54% cost 1.57x — a
+		// complete re-fetch, no better than the single-blob case. The mechanism is in the log:
+		// podman copies every layer CONCURRENTLY, so at any instant all of them are partial and
+		// none is complete. There is no such thing as a finished layer to keep.
+		//
 		// It also sits well clear of the faults that heal themselves. A 20 s outage mid-transfer
 		// was absorbed by TCP retransmission with no re-fetch at all (1.00x, a single
 		// `Copying blob` line spanning the break) — podman's own --retry never ran. A timeout that
