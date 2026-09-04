@@ -246,7 +246,9 @@ func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no device registry\n", http.StatusInternalServerError)
 		return
 	}
-	var kept []device
+	// An empty list, not null: the last device leaving must read as "no devices" to every
+	// consumer of the file, not as a registry that was never written.
+	kept := make([]device, 0, len(reg.Devices))
 	var gone *device
 	for i := range reg.Devices {
 		if reg.Devices[i].ID == id && gone == nil {

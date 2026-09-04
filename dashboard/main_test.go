@@ -555,8 +555,8 @@ func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 	if resp := r.do("GET", "/", phone, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("the signed-out phone = %d, want 401", resp.StatusCode)
 	}
-	if reg := r.registry(); len(reg.Devices) != 0 {
-		t.Errorf("registry after the last device left = %+v; want empty", reg.Devices)
+	if raw, _ := os.ReadFile(filepath.Join(r.dir, "state", devicesFile)); !strings.Contains(string(raw), `"devices": []`) {
+		t.Errorf("registry after the last device left = %s; want an empty list, not null", raw)
 	}
 	if c := r.reissue("curl/8.0"); r.do("GET", "/", c, nil).StatusCode != http.StatusOK {
 		t.Error("a fresh code does not trust a device again after the registry emptied")
