@@ -73,23 +73,39 @@ let
     config.Cmd = [ "/bin/true" ];
   };
 
-  # THE SAME PAYLOAD, SPLIT INTO LAYERS ([B.56], act 4). One store path per layer is how
-  # buildLayeredImage cuts them, so N padding derivations give N distinct blobs of a known size --
-  # and a real image is built this way, where acts 1-3's single 24 MiB blob is not.
-  layerCount = 6;
-  layerMiB = 4;
-  layerPads = builtins.genList (
+  # UNEVEN LAYERS ([B.56], act 4), and the unevenness is the whole point.
+  #
+  # The first cut of this act used SIX EQUAL 4 MiB layers and concluded "nothing is kept". That
+  # conclusion was not measured. podman copies every layer concurrently, so six equal layers
+  # progress in lockstep and all six cross any given percentage together: the registry log showed
+  # attempt 1 serving 3407872 / 3211264 / 2392064 / 2228224 / 2883584 / 3276800 bytes against a
+  # full layer of 4197350 -- every one partial, not one finished. There were no completed layers
+  # to discard, so the rig could not have seen them discarded.
+  #
+  # Real images are not shaped like that: a handful of small layers and one big one is the normal
+  # case, and the small ones finish long before the big one does. That is the only arrangement in
+  # which "are finished layers kept?" is a question with an observable answer.
+  smallLayers = 5;
+  smallMiB = 1;
+  bigMiB = 20;
+  unevenPads = builtins.genList (
     i:
-    pkgs.runCommand "layer-pad-${toString i}" { } ''
-      mkdir -p $out/layer${toString i}
-      head -c ${toString (layerMiB * 1024 * 1024)} /dev/urandom > $out/layer${toString i}/pad.bin
+    pkgs.runCommand "small-pad-${toString i}" { } ''
+      mkdir -p $out/small${toString i}
+      head -c ${toString (smallMiB * 1024 * 1024)} /dev/urandom > $out/small${toString i}/pad.bin
     ''
-  ) layerCount;
+  ) smallLayers
+  ++ [
+    (pkgs.runCommand "big-pad" { } ''
+      mkdir -p $out/big
+      head -c ${toString (bigMiB * 1024 * 1024)} /dev/urandom > $out/big/pad.bin
+    '')
+  ];
   layeredImage = pkgs.dockerTools.buildLayeredImage {
-    name = "briard-layered";
+    name = "briard-uneven";
     tag = "v0";
-    contents = layerPads;
-    maxLayers = layerCount + 4;
+    contents = unevenPads;
+    maxLayers = smallLayers + 5;
     config.Cmd = [ "/bin/true" ];
   };
 in
@@ -131,6 +147,8 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    import json
+    import re
     import time
 
     start_all()
@@ -148,12 +166,12 @@ pkgs.testers.runNixOSTest {
     print(f"published {ref}")
 
     zregistry.succeed(
-        "skopeo copy docker-archive:${layeredImage} docker://${registryHost}/briard-layered:v0"
+        "skopeo copy docker-archive:${layeredImage} docker://${registryHost}/briard-uneven:v0"
     )
     ldigest = zregistry.succeed(
-        "skopeo inspect docker://${registryHost}/briard-layered:v0 --format '{{.Digest}}'"
+        "skopeo inspect docker://${registryHost}/briard-uneven:v0 --format '{{.Digest}}'"
     ).strip()
-    print(f"published the layered image: ${registryHost}/briard-layered@{ldigest}")
+    print(f"published the uneven-layer image: ${registryHost}/briard-uneven@{ldigest}")
 
     def tx():
         return int(zregistry.succeed("cat /sys/class/net/eth1/statistics/tx_bytes").strip())
@@ -266,50 +284,89 @@ pkgs.testers.runNixOSTest {
     print(node1.succeed("journalctl -u pull-act3 --no-pager | tail -25"))
     print("=" * 78)
 
-    # === ACT 4: MANY LAYERS -- is completed work kept? ===
-    # Acts 1-3 used ONE 24 MiB layer, which measures resume WITHIN a blob and says nothing about
-    # an image made of several. That is the shape real images have, and the distinction decides
-    # how bad a timeout actually is: if finished layers are retained, a long pull makes monotonic
-    # progress across attempts even though the layer in flight is always lost, and the "never
-    # converges" worry applies only to an image whose SINGLE largest layer cannot fit in the
-    # window. If they are not retained, every attempt truly starts from zero.
-    lref = f"${registryHost}/briard-layered@{ldigest}"
-    node1.execute(f"podman rmi -f {lref}")
-    throttle(False)
-    d = tx()
-    node1.succeed(f"podman image pull {lref}")
-    lbaseline = tx() - d
-    print(f"ACT 4 layered baseline: {lbaseline / MiB:.1f} MiB across ${toString layerCount} layers")
+    # === ACT 4: ARE FINISHED LAYERS KEPT ACROSS A RESTART? ===
+    # This decides how bad the 45-minute bound actually is. If a completed layer survives, a long
+    # pull makes MONOTONIC progress across attempts -- only the layer in flight is lost each time
+    # -- and the "never converges" risk shrinks to a single question: can the image's LARGEST
+    # layer cross the household's link inside the window? If nothing survives, every attempt
+    # really does start from zero and the bound has to clear the whole image.
+    #
+    # AGGREGATE BYTES CANNOT ANSWER THIS, which is what the first cut got wrong. It compared
+    # totals and called a complete re-fetch "layers were discarded" -- but with six EQUAL layers
+    # copied concurrently, nothing had finished at the interrupt, so there was no retained layer
+    # to observe either way. The evidence has to be PER BLOB: which digests does the registry
+    # serve on the second attempt, and which does it never hear about again?
+    lref = f"${registryHost}/briard-uneven@{ldigest}"
+    raw = zregistry.succeed(
+        "skopeo inspect --raw docker://${registryHost}/briard-uneven:v0"
+    )
+    layer_size = {
+        l["digest"].split(":")[1]: l["size"] for l in json.loads(raw)["layers"]
+    }
+    print(f"ACT 4 layer sizes: {sorted((s // 1024, d[:12]) for d, s in layer_size.items())}")
 
-    node1.succeed(f"podman rmi -f {lref}")
+    def blob_gets(since):
+        """Which layer blobs the registry served since `since`, and how many bytes of each.
+        Read from the registry's OWN access log: a layer that is not re-requested does not appear,
+        which is direct evidence rather than an inference from a total."""
+        log = zregistry.succeed(
+            f"journalctl -u docker-registry --since @{since} --no-pager -o cat || true"
+        )
+        served = {}
+        for m in re.finditer(
+            r'GET /v2/briard-uneven/blobs/sha256:([0-9a-f]+) HTTP/1\.1" 200 ([0-9]+)', log
+        ):
+            d, n = m.group(1), int(m.group(2))
+            if d in layer_size:
+                served[d] = max(served.get(d, 0), n)
+        return served
+
+    node1.execute(f"podman rmi -f {lref}")
     throttle(True)
+    t_attempt1 = int(zregistry.succeed("date +%s").strip())
     e = tx()
     node1.succeed(f"systemd-run --unit=pull-act4 --collect podman image pull {lref}")
+    # Interrupt once the SMALL layers must be done but the big one cannot be: they share the
+    # throttled link, so ~12 MiB total is well past 5 x 1 MiB and nowhere near the 20 MiB layer.
     t0 = time.monotonic()
-    while tx() - e < int(lbaseline * 0.5) and time.monotonic() - t0 < 300:
+    while tx() - e < 12 * MiB and time.monotonic() - t0 < 300:
         node1.sleep(1)
-    lpartial = tx() - e
     node1.succeed("systemctl kill --signal=SIGTERM pull-act4 || true")
     node1.succeed("systemctl stop pull-act4 || true")
-    node1.sleep(2)
-    print(f"ACT 4 interrupted after {lpartial / MiB:.1f} MiB ({100 * lpartial / lbaseline:.0f}%)")
+    node1.sleep(3)
+    first = blob_gets(t_attempt1)
+    done1 = {d for d, n in first.items() if n >= layer_size[d]}
+    print(f"ACT 4 attempt 1 interrupted after {(tx() - e) / MiB:.1f} MiB; "
+          f"{len(done1)} of {len(layer_size)} layers had COMPLETED")
+    for d, n in sorted(first.items(), key=lambda kv: -layer_size[kv[0]]):
+        print(f"    {d[:12]}  {n:9d} / {layer_size[d]:9d}  {'complete' if d in done1 else 'partial'}")
+    # THE RIG'S OWN PRECONDITION: with nothing finished, this act cannot see retention and would
+    # repeat the first cut's mistake.
+    assert done1, "no layer completed before the interrupt — this act cannot answer its question"
+    assert len(done1) < len(layer_size), "every layer completed — the interrupt was too late"
 
     throttle(False)
+    t_attempt2 = int(zregistry.succeed("date +%s").strip())
     node1.succeed(f"podman image pull {lref}")
     node1.succeed(f"podman image exists {lref}")
-    ltotal = tx() - e
-    lratio = ltotal / lbaseline
+    second = blob_gets(t_attempt2)
+
+    refetched = sorted(done1 & set(second))
+    kept = sorted(done1 - set(second))
     print("=" * 78)
-    print(f"layered baseline          : {lbaseline / MiB:8.1f} MiB  (${toString layerCount} layers)")
-    print(f"interrupted then completed: {ltotal / MiB:8.1f} MiB   ({lratio:.2f}x)")
-    if lratio < 1.25:
-        print("VERDICT: COMPLETED LAYERS ARE KEPT -- only the layer in flight was re-fetched.")
-        print("  Progress across attempts is monotonic, so a bound is far less dangerous than")
-        print("  the single-layer measurement suggested: the risk narrows to an image whose")
-        print("  LARGEST SINGLE LAYER cannot cross the link inside the window.")
+    print(f"layers COMPLETED in attempt 1 : {len(done1)}")
+    print(f"  re-fetched in attempt 2     : {len(refetched)} {[d[:12] for d in refetched]}")
+    print(f"  never requested again       : {len(kept)} {[d[:12] for d in kept]}")
+    if kept and not refetched:
+        saved = sum(layer_size[d] for d in kept)
+        print("VERDICT: FINISHED LAYERS ARE KEPT. The retry asked only for what it had not")
+        print(f"  completed — {saved / MiB:.1f} MiB of finished work survived the interrupt. Progress")
+        print("  across attempts is monotonic, so the bound only has to clear the image's")
+        print("  LARGEST SINGLE LAYER, not the whole image.")
     else:
-        print("VERDICT: NOTHING IS KEPT -- the retry re-fetched layers it had already completed.")
-        print("  Every attempt starts from zero regardless of how the image is built.")
+        print("VERDICT: FINISHED LAYERS ARE DISCARDED. A completed layer was fetched again, so")
+        print("  every attempt starts from zero however the image is built, and the bound has to")
+        print("  clear the entire image on the household's slowest plausible link.")
     print("=" * 78)
 
     # === ACT 5: WHERE DO THE BYTES LIVE, AND WHEN ARE THEY SWEPT? ===
