@@ -166,11 +166,11 @@ pkgs.testers.runNixOSTest {
     image_unit = node1.succeed("cat /tmp/rendered/images").split()[0]
     print(f"the pre-warm unit converge will start: {image_unit}")
     node1.succeed("mkdir -p /var/lib/briard/.services")
-    node1.succeed(f"cp /tmp/manifest.json /var/lib/briard/.services/fixture.json")
+    node1.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json")
     node1.succeed("sync")
     # THE PREMISE, asserted rather than assumed: this node cannot serve without a pull.
     node1.fail(f"podman image exists {ref}")
-    print(f"manifest installed on the volume; the image is absent -- converge must fetch it")
+    print("manifest installed on the volume; the image is absent -- converge must fetch it")
 
     # === 4. throttle the registry's link ===
     # tbf on the registry's egress, so the bytes the node is waiting for arrive at ${rate}. The
@@ -226,7 +226,7 @@ pkgs.testers.runNixOSTest {
     tx_total = final["tx_kb"]
 
     print("=" * 78)
-    print(f"WINDOW: ${toString windowSecs}s at ${rate}")
+    print("WINDOW: ${toString windowSecs}s at ${rate}")
     print(f"BYTES PULLED: {tx_total} KB -- the transfer was {'PROGRESSING' if tx_total > 64 else 'NOT PROGRESSING'}")
     if settled is None:
         print("VERDICT: the converge start job NEVER completed inside the window.")
