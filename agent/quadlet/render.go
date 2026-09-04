@@ -268,11 +268,24 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// a household's link actually needs would never converge; it would re-download the same
 		// blob until something gave up for good. Tighter is not safer here, it is worse.
 		//
-		// SPLITTING THE IMAGE INTO LAYERS DOES NOT HELP, which is the obvious hope and was worth
-		// measuring rather than assuming: a 6-layer image interrupted at 54% cost 1.57x — a
-		// complete re-fetch, no better than the single-blob case. The mechanism is in the log:
-		// podman copies every layer CONCURRENTLY, so at any instant all of them are partial and
-		// none is complete. There is no such thing as a finished layer to keep.
+		// WHAT SURVIVES IS WHOLE LAYERS, and that is what makes 45 minutes enough rather than a
+		// guess about total image size. A layer that FINISHED before the interrupt is not fetched
+		// again: an image of 5x1 MiB plus one 20 MiB layer, interrupted with the small ones done
+		// and the big one at 8/20 MiB, re-requested none of the five on the next attempt — the
+		// registry never heard about them again (450 B of trivia aside). Only the layer in flight
+		// is lost, every time.
+		//
+		// So progress across attempts is MONOTONIC, and the bound does not have to clear the
+		// whole image on a household's worst link — it has to clear the image's LARGEST SINGLE
+		// LAYER. That is a far weaker requirement, and 45 minutes covers a several-hundred-MB
+		// layer at well under 2 Mbit/s.
+		//
+		// This corrects an earlier reading of the same rig, recorded because the mistake is easy
+		// to repeat: a first cut used six EQUAL layers, saw a full re-fetch, and concluded that
+		// nothing is kept. podman copies layers CONCURRENTLY, so equal layers advance in lockstep
+		// and all of them were partial at the interrupt — there were no finished layers to keep,
+		// which is not the same fact at all. Uneven layers are the shape real images have, and
+		// the only shape in which the question has an observable answer.
 		//
 		// It also sits well clear of the faults that heal themselves. A 20 s outage mid-transfer
 		// was absorbed by TCP retransmission with no re-fetch at all (1.00x, a single
