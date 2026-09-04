@@ -477,7 +477,7 @@ func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 
 	body := r.page(phone)
 	for _, want := range []string{"Firefox on Linux", "Safari on iPhone", `name="id" value="` + laptopID + `"`, `name="id" value="` + phoneID + `"`,
-		"/profile/security", `<a href="http://briard-brave-elf-home-assistant.local/profile/security">`} {
+		"/profile/security", `<a href="http://briard-brave-elf-home-assistant.local/profile/security" target="_blank" rel="noopener">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the phone's page lacks %q", want)
 		}
@@ -747,5 +747,31 @@ func TestQuickConnectExpiresAndIsBounded(t *testing.T) {
 	}
 	if len(r.registry().Devices) != 1 {
 		t.Error("asking registered a device")
+	}
+}
+
+// EVERY WAY INTO HOME ASSISTANT OPENS A NEW TAB, and the password pointer is the People page
+// (/config/person -- the short list of people, not /config/users, which also shows briard's own
+// system user). The dashboard stays open in its tab; Home Assistant is a separate app.
+func TestHomeAssistantOpensInANewTab(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	r.ha.mu.Lock()
+	for k := range r.ha.done {
+		r.ha.done[k] = true
+	}
+	r.ha.mu.Unlock()
+	body := r.page(c)
+	for _, want := range []string{
+		`action="/open/home-assistant" target="_blank"`,
+		`<a href="http://briard-brave-elf-home-assistant.local/" target="_blank" rel="noopener">`,
+		`<a href="http://briard-brave-elf-home-assistant.local/config/person" target="_blank" rel="noopener">Settings → People</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the set-up page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "config/users") {
+		t.Error("the page still points at /config/users")
 	}
 }

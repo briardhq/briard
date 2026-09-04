@@ -57,12 +57,12 @@
     {{if not .HA.Reachable}}
       <p class="muted">Starting…</p>
     {{else if .HA.Onboarded}}
-      <p>Set up and running at <a href="{{.HA.URL}}">{{.HA.Host}}</a>.</p>
-      <form method="post" action="/open/home-assistant"><button type="submit">Open Home Assistant</button></form>
-      <p class="muted">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.HA.URL}}config/users">Settings → People</a>, your name, “Change password” — no old password is needed.</p>
+      <p>Set up and running at <a href="{{.HA.URL}}" target="_blank" rel="noopener">{{.HA.Host}}</a>.</p>
+      <form method="post" action="/open/home-assistant" target="_blank"><button type="submit">Open Home Assistant</button></form>
+      <p class="muted">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.HA.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</p>
     {{else}}
       <p>{{if .HA.Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>
-      <form method="post" action="/open/home-assistant"><button type="submit"{{if not .HA.Running}} disabled{{end}}>Open Home Assistant</button></form>
+      <form method="post" action="/open/home-assistant" target="_blank"><button type="submit"{{if not .HA.Running}} disabled{{end}}>Open Home Assistant</button></form>
     {{end}}
   </div>
   {{else}}
@@ -101,6 +101,6 @@
       <input id="code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9 -]*" placeholder="123 456" required>
       <button type="submit">Approve</button>
     </form>
-    {{if .HA}}<p class="muted">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.HA.URL}}profile/security">your Home Assistant profile</a>.</p>{{end}}
+    {{if .HA}}<p class="muted">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.HA.URL}}profile/security" target="_blank" rel="noopener">your Home Assistant profile</a>.</p>{{end}}
   </div>
 </main></body></html>{{end}}
