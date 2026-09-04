@@ -106,6 +106,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.openHomeAssistant(w, r)
+	case r.URL.Path == "/reset/home-assistant-password" && r.Method == http.MethodPost:
+		if !a.trusted(r) {
+			a.refuse(w)
+			return
+		}
+		a.resetPassword(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -312,10 +318,18 @@ type haView struct {
 	Reachable bool   // answers HTTP
 	Running   bool   // HA's own RUNNING state -- the boundary an action may be taken on ([B.127])
 	Onboarded bool   // every onboarding step done
-	Password  string // the starting password, while the dashboard cannot mint a login (interim)
+	Password  string // the starting password (kept until the first reset), or a freshly reset one
+	Username  string // whose password Password is, when it was just reset
+	Reset     bool   // Password was reset on THIS request and is shown once ([V3b.31e])
 }
 
 func (a *app) render(w http.ResponseWriter, r *http.Request) {
+	a.renderWith(w, r, "", "")
+}
+
+// renderWith renders the page; a non-empty `reset` is a password set on this very request, shown
+// once and kept nowhere.
+func (a *app) renderWith(w http.ResponseWriter, r *http.Request, reset, username string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	v := view{}
@@ -337,7 +351,9 @@ func (a *app) render(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if raw, err := os.ReadFile(filepath.Join(a.statePath, passwordFile)); err == nil {
+		if reset != "" {
+			hv.Password, hv.Username, hv.Reset = reset, username, true
+		} else if raw, err := os.ReadFile(filepath.Join(a.statePath, passwordFile)); err == nil {
 			hv.Password = string(raw)
 		}
 		v.HA = hv
@@ -450,6 +466,49 @@ func (a *app) openAsOwner(ctx context.Context, w http.ResponseWriter, r *http.Re
 		return
 	}
 	http.Redirect(w, r, hass.OnboardingURL(origin, code), http.StatusSeeOther)
+}
+
+// resetPassword is "reset and show once" ([V3b.31a](e), [V3b.31e]): a fresh password, set on the
+// owner's login through the integration, rendered into this one response and kept nowhere -- the
+// stored starting password goes with it, because a copy briard cannot keep current is a copy
+// that lies. Sessions are untouched (HA's own change revokes nothing), so the browser doing
+// this stays logged in; it is the companion app and the login form that use the new one.
+func (a *app) resetPassword(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	ha := a.findHomeAssistant()
+	if ha == nil {
+		http.Error(w, "Home Assistant is not installed on this node\n", http.StatusNotFound)
+		return
+	}
+	origin := scheme(r) + "://" + ha.host
+	_, access, err := hass.SystemAccess(ctx, a.exec(), ha.port)
+	if err != nil {
+		http.Error(w, "Home Assistant's control channel is not up yet; try again in a moment\n", http.StatusServiceUnavailable)
+		return
+	}
+	pw, err := newPassword()
+	if err != nil {
+		http.Error(w, "could not generate a password\n", http.StatusInternalServerError)
+		return
+	}
+	username, err := hass.ResetPassword(ctx, ha.base, access, pw)
+	switch {
+	case errors.Is(err, hass.ErrNoOwner):
+		http.Error(w, "Home Assistant has no owner account with a password to reset; manage users at "+origin+"/config/users\n", http.StatusConflict)
+		return
+	case errors.Is(err, hass.ErrNoMinter):
+		http.Error(w, "this Home Assistant is not running the briard integration; change the password at "+origin+"/profile\n", http.StatusBadGateway)
+		return
+	case err != nil:
+		log.Printf("dashboard: reset password: %v", err)
+		http.Error(w, "Home Assistant did not accept a new password; change it at "+origin+"/profile\n", http.StatusBadGateway)
+		return
+	}
+	if err := os.Remove(filepath.Join(a.statePath, passwordFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("dashboard: drop the starting password: %v", err)
+	}
+	a.renderWith(w, r, pw, username)
 }
 
 // scheme is how the BROWSER reached us: the door terminates TLS and says so on its forward to

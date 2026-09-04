@@ -730,5 +730,34 @@ pkgs.testers.runNixOSTest {
         f"-d client_id={_sx.quote(client_id)} http://192.168.1.100/auth/token"
     )
     print("later open minted for the owner: " + owner_id)
+
+    # RESET AND SHOW ONCE ([V3b.31e]): the dashboard sets a fresh password on the owner's login
+    # through the integration, shows it in that response, and drops its stored copy. Proven the
+    # only way a password can be: HA's own login flow accepts the new one and refuses the old.
+    import re as _re
+    reset_page = node1.succeed(
+        f"curl -fsS -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/reset/home-assistant-password"
+    )
+    shown = _re.findall(r"<code>([a-z2-9]{20})</code>", reset_page)
+    assert len(shown) == 1 and "<code>kostas</code>" in reset_page, f"the reset page did not show one password for kostas: {reset_page}"
+    new_password = shown[0]
+    assert new_password != password, "the reset kept the starting password"
+    node1.fail("test -e /var/lib/briard/dashboard/home-assistant-password")
+    node1.fail(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/ | grep -qF {_sx.quote(new_password)}")
+    def login(pw):
+        """HA's own username/password flow, through the door; the flow's final result."""
+        flow = _zj.loads(door("/auth/login_flow", post={
+            "client_id": client_id, "handler": ["homeassistant", None], "redirect_uri": origin + "/",
+        }))
+        return _zj.loads(door(f"/auth/login_flow/{flow['flow_id']}", post={
+            "client_id": client_id, "username": "kostas", "password": pw,
+        }))
+    ok = login(new_password)
+    assert ok.get("type") == "create_entry" and ok.get("result"), f"the new password does not log in: {ok}"
+    old = login(password)
+    assert old.get("type") == "form" and old.get("errors"), f"the starting password still logs in: {old}"
+    # Nothing was signed out: the minted session's refresh token still exchanges.
+    door("/auth/token", form={"grant_type": "refresh_token", "refresh_token": landed_later["refresh_token"], "client_id": client_id})
+    print("password reset for the owner; the old one is refused and sessions held")
   '';
 }
