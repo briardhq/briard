@@ -448,6 +448,12 @@ in
         inherit pkgs guestModule;
         quadletRender = quadletRenderPkg;
       };
+      # — **THE OTHER HALF OF THE SAME QUESTION** ([B.56]). A bound on the pull is only half a
+      # strategy: what it buys is a RETRY, and that is worth having only if a retry keeps the
+      # bytes already fetched. Counts the registry's transmitted bytes across an uninterrupted
+      # pull and an interrupted-then-completed one; the two totals differ by a third or they do
+      # not. No product assertion — a measurement.
+      image-pull-resume = import ./image-pull-resume.nix { inherit pkgs; };
       # `netbird-selfhost`, `witness-proxy-gray` and `witness-proxy-fence` join this tag from
       # outputs-private.nix.
     };
