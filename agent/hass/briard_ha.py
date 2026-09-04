@@ -6,12 +6,13 @@ of. That is the right shape for exactly one thing — the token, which has to ex
 return channel — and the wrong shape for everything else. In here there is no waiting for HA to
 serve, no token to exchange and no flow API: `hass` is in hand.
 
-THE MINT STAYS OUTSIDE, deliberately. An integration can only mint once HA is up and loaded, so
-the value would arrive late and have to be pushed back out to the guest agent — the return
-channel the stopped-window mint exists to avoid. The split that dissolves the trade is that this
-side does not mint at all: it needs no credential to act, and the token goes on serving the
-consumers OUTSIDE HA (the readiness gate). One minter, one in-process actor, no second
-credential.
+THE CONTROL TOKEN'S MINT STAYS OUTSIDE, deliberately. An integration can only mint once HA is
+up and loaded, so that value would arrive late and have to be pushed back out to the guest
+agent — the return channel the stopped-window mint exists to avoid. This side needs no
+credential to act, and the token goes on serving the consumers OUTSIDE HA (the readiness gate).
+The one thing minted IN here is the other way round: the household's own LOGIN (`LoginView`),
+asked for over HTTP by a caller that is already holding the control token and waiting for the
+answer — no return channel, and a live auth manager, which is the thing no outside call has.
 
 FAILURE IS CONTAINED BY HOME ASSISTANT ITSELF, which is what makes code in here affordable on a
 fleet: a component's setup runs inside `(CancelledError, SystemExit, Exception)`, so HA logs a
@@ -21,9 +22,12 @@ logged and dropped, never raised at setup.
 """
 
 import asyncio
+from http import HTTPStatus
 import logging
 import socket
 
+from homeassistant.components.auth import create_auth_code
+from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.core import CoreState
 from homeassistant.data_entry_flow import FlowResultType
@@ -32,6 +36,49 @@ from homeassistant.helpers.start import async_at_started
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "briard"
+
+
+class LoginView(HomeAssistantView):
+    """POST /api/briard/login — an auth code that logs a browser in as Home Assistant's OWNER.
+
+    THE ONE THING THIS INTEGRATION MINTS, and why it may ([V3b.31a](e), [V3b.31d]): the household
+    dashboard has already authenticated the browser — a trusted device, by proof of access to the
+    `briard` CLI — so handing it a login to the Home Assistant it owns is delegated auth, not a
+    bypass. The shape is HA's own onboarding's: `create_auth_code` is what the user step calls,
+    and the code exchanges at /auth/token like any other, bound to the client_id given here.
+
+    ALWAYS THE OWNER, NEVER ANOTHER USER. HA's `is_owner` flag, not ours: stateless, and as true
+    of an adopted or restored HA as of one we set up. With no owner — the flag is deletable — this
+    REFUSES and says so; it never picks an admin instead, which would be asserting an identity
+    nobody authenticated ([V3b.31]).
+
+    Behind HA's own auth and gated on admin. The caller is the node's control channel, whose
+    system user is admin; that token already drives the whole HA API, so nothing here widens it.
+    """
+
+    url = "/api/briard/login"
+    name = "api:briard:login"
+    requires_auth = True
+
+    async def post(self, request):
+        """Mint a code for the owner, bound to the caller's client_id."""
+        if not request[KEY_HASS_USER].is_admin:
+            return self.json_message("admin only", HTTPStatus.FORBIDDEN)
+        try:
+            body = await request.json()
+        except ValueError:
+            return self.json_message("invalid JSON", HTTPStatus.BAD_REQUEST)
+        client_id = body.get("client_id") if isinstance(body, dict) else None
+        if not isinstance(client_id, str) or not client_id:
+            return self.json_message("client_id required", HTTPStatus.BAD_REQUEST)
+        hass = request.app[KEY_HASS]
+        owner = await hass.auth.async_get_owner()
+        if owner is None:
+            return self.json_message("Home Assistant has no owner account", HTTPStatus.CONFLICT, "no_owner")
+        credential = next(iter(owner.credentials), None)
+        if credential is None:
+            return self.json_message("the owner has no credential to log in with", HTTPStatus.CONFLICT, "no_credential")
+        return self.json({"auth_code": create_auth_code(hass, client_id, credential)})
 
 # The event the node fires on Home Assistant's own bus when something OUTSIDE Home Assistant
 # changed that this integration may want to act on — today, a broker that was installed next to an
@@ -76,6 +123,9 @@ async def async_setup(hass, config):
             _LOGGER.debug("briard: nudged during startup; the start hook will do this")
             return
         await _reconsider()
+
+    # The login minter, from the moment HA serves: it needs nothing loaded but the auth manager.
+    hass.http.register_view(LoginView())
 
     # Started, not set-up: config entries are loaded by then, so "does an mqtt entry exist" has a
     # truthful answer, and starting a flow is not competing with the rest of the boot.

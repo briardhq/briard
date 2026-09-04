@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +27,11 @@ type fakeHA struct {
 	state    string
 	user     map[string]string // what the user step received
 	analytic string            // the bearer analytics was marked with
+	// The in-HA integration's minter ([V3b.31d]): absent (404) when noMinter, refusing when
+	// noOwner, otherwise a code bound to the client_id it was given.
+	noMinter, noOwner bool
+	mintClient        string // the client_id the minter was asked for
+	mintBearer        string // the bearer it was asked with
 }
 
 func newFakeHA() *fakeHA {
@@ -69,6 +75,21 @@ func (f *fakeHA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"access_token": "sys-access", "expires_in": 1800})
 	case "/api/config":
 		json.NewEncoder(w).Encode(map[string]string{"state": f.state})
+	case "/api/briard/login":
+		if f.noMinter {
+			http.NotFound(w, r)
+			return
+		}
+		f.mintBearer = r.Header.Get("Authorization")
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mintClient = body["client_id"]
+		if f.noOwner {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Home Assistant has no owner account", "code": "no_owner"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"auth_code": "code-for-the-owner"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -268,20 +289,81 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if !strings.Contains(sb.String(), u["password"]) {
 		t.Error("the page does not show the starting password")
 	}
-	// User step done, the rest not: the button sends the browser to the onboarding page to resume.
+	// User step done, the rest not: a code MINTED for the owner ([V3b.31d]), and the onboarding
+	// page resumes with it -- the same callback shape as the first open, no user created.
 	resp = r.do("POST", "/open/home-assistant", c, nil)
-	if got := resp.Header.Get("Location"); resp.StatusCode != http.StatusSeeOther || got != "http://briard-brave-elf-home-assistant.local/onboarding.html" {
-		t.Errorf("open after the user step = %d %q; want 303 to the bare onboarding page", resp.StatusCode, got)
+	loc, _ = url.Parse(resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-brave-elf-home-assistant.local" || loc.Path != "/onboarding.html" || loc.Query().Get("code") != "code-for-the-owner" {
+		t.Errorf("open after the user step = %d %q; want 303 to the onboarding page with the minted code", resp.StatusCode, loc)
 	}
-	// Everything done: Home Assistant itself.
+	if r.ha.mintClient != "http://briard-brave-elf-home-assistant.local/" || r.ha.mintBearer != "Bearer sys-access" {
+		t.Errorf("the mint was asked for client %q with %q; want the browser's origin/ and the control channel's bearer", r.ha.mintClient, r.ha.mintBearer)
+	}
+	// Everything done: HA's own auth callback on its front page, with the tokens stored.
 	r.ha.mu.Lock()
 	for k := range r.ha.done {
 		r.ha.done[k] = true
 	}
 	r.ha.mu.Unlock()
 	resp = r.do("POST", "/open/home-assistant", c, nil)
-	if got := resp.Header.Get("Location"); resp.StatusCode != http.StatusSeeOther || got != "http://briard-brave-elf-home-assistant.local/" {
-		t.Errorf("open when onboarded = %d %q; want 303 to HA", resp.StatusCode, got)
+	loc, _ = url.Parse(resp.Header.Get("Location"))
+	q = loc.Query()
+	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-brave-elf-home-assistant.local" || loc.Path != "/" ||
+		q.Get("auth_callback") != "1" || q.Get("code") != "code-for-the-owner" || q.Get("storeToken") != "true" {
+		t.Errorf("open when onboarded = %d %q; want 303 to HA's front page with auth_callback, the minted code and storeToken", resp.StatusCode, loc)
+	}
+	stateRaw, _ = base64.StdEncoding.DecodeString(q.Get("state"))
+	state = struct{ HassURL, ClientID string }{}
+	must(t, json.Unmarshal(stateRaw, &state))
+	if state.HassURL != "http://briard-brave-elf-home-assistant.local" || state.ClientID != "http://briard-brave-elf-home-assistant.local/" {
+		t.Errorf("later-open state = %+v", state)
+	}
+	// The page offers the button on a set-up HA too: that IS the later open.
+	req, _ = http.NewRequest("GET", r.srv.URL+"/", nil)
+	req.AddCookie(c)
+	page, err = http.DefaultClient.Do(req)
+	must(t, err)
+	n, _ = page.Body.Read(buf)
+	page.Body.Close()
+	if !strings.Contains(string(buf[:n]), `<button type="submit">Open Home Assistant`) {
+		t.Error("the page on a set-up HA does not offer Open Home Assistant")
+	}
+}
+
+// THE MINTER MINTS FOR THE OWNER AND NOBODY ELSE ([V3b.31a](e)): with no owner it refuses, and the
+// dashboard SAYS SO with the plain address, rather than minting for some admin. A Home Assistant
+// our integration is not loaded on gets the same honesty and its own login screen.
+func TestOpenSurfacesARefusedMint(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	r.ha.mu.Lock()
+	for k := range r.ha.done {
+		r.ha.done[k] = true
+	}
+	r.ha.noOwner = true
+	r.ha.mu.Unlock()
+	open := func() (*http.Response, string) {
+		req, _ := http.NewRequest("POST", r.srv.URL+"/open/home-assistant", nil)
+		req.AddCookie(c)
+		resp, err := noRedirect.Do(req)
+		must(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(body)
+	}
+	resp, body := open()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "no owner") || !strings.Contains(body, "http://briard-brave-elf-home-assistant.local/") {
+		t.Errorf("open with no owner = %d %q; want 409 naming the missing owner and the address", resp.StatusCode, body)
+	}
+	if resp.Header.Get("Location") != "" {
+		t.Error("a refused mint must not redirect anywhere")
+	}
+	r.ha.mu.Lock()
+	r.ha.noOwner, r.ha.noMinter = false, true
+	r.ha.mu.Unlock()
+	resp, body = open()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "integration") || !strings.Contains(body, "http://briard-brave-elf-home-assistant.local/") {
+		t.Errorf("open with no minter = %d %q; want 502 naming the integration and the address", resp.StatusCode, body)
 	}
 }
 

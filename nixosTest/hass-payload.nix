@@ -548,6 +548,24 @@ pkgs.testers.runNixOSTest {
     # have taken the flag before the household's could.
     assert steps_done() == {"user": False, "core_config": False, "analytics": False, "integration": False}, steps_done()
 
+    # THE MINTER REFUSES WITH NO OWNER ([V3b.31d], [V3b.31a](e)): before the user step there is
+    # no owner -- only our system user, which never takes the flag -- and the integration's login
+    # view answers 409 rather than minting for whatever admin exists. This is the refuse-and-
+    # surface branch measured on a real Home Assistant, not on a fake; the control channel's own
+    # token is the caller, as the dashboard's would be.
+    mint_url = "http://192.168.1.100/api/briard/login"
+    mint_body = _sx.quote(_zj.dumps({"client_id": client_id}))
+    refused = node1.succeed(
+        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {host}' -H 'Authorization: Bearer {access}' "
+        f"-H 'Content-Type: application/json' -d {mint_body} {mint_url}"
+    ).strip()
+    assert refused == "409", f"the minter answered {refused} with no owner; want 409"
+    # And with no bearer at all it is HA's own 401: the view sits behind HA's auth, not beside it.
+    bare = node1.succeed(
+        f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {host}' -H 'Content-Type: application/json' -d {mint_body} {mint_url}"
+    ).strip()
+    assert bare == "401", f"the minter answered {bare} to an unauthenticated call; want 401"
+
     # THE USER STEP RUNS THROUGH THE DASHBOARD ([V3b.31b]), the way the household's does. The
     # host's one-time code is written here as the `dashboard.handoff` verb writes it (no host
     # agent drives this rig; the verb has its own test), redeemed under the node's OWN name at the
@@ -662,5 +680,47 @@ pkgs.testers.runNixOSTest {
         "http://192.168.1.100/api/onboarding/users"
     )
     print("onboarded by API: " + _zj.dumps(steps_done()))
+
+    # THE LATER OPEN ([V3b.31d]): on a set-up Home Assistant the button MINTS a login for the
+    # owner through the integration and lands the browser on HA's own auth callback -- the front
+    # page, auth_callback=1, the same state as the resume, storeToken so it outlives the tab.
+    def owner_tokens():
+        """HA's refresh tokens for the browser's client_id, and the owner they must belong to."""
+        store = _zj.loads(node1.succeed(f"cat {auth_store}"))["data"]
+        owner = [u["id"] for u in store["users"] if u.get("is_owner")][0]
+        return owner, [t for t in store["refresh_tokens"] if t.get("client_id") == client_id]
+    owner_id, before = owner_tokens()
+    later = node1.succeed(
+        f"curl -sS -o /dev/null -w '%{{redirect_url}}' -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' "
+        "http://192.168.1.100/open/home-assistant"
+    ).strip()
+    u = _up(later)
+    assert (u.scheme, u.netloc, u.path) == ("http", host, "/"), later
+    q = _pq(u.query)
+    assert q.get("auth_callback") == ["1"] and q.get("storeToken") == ["true"] and q.get("code"), later
+    assert _zj.loads(_b64.b64decode(q["state"][0])) == {"hassUrl": origin, "clientId": client_id}, later
+    minted = q["code"][0]
+    assert minted not in (first["auth_code"], final["auth_code"]), "the later open reused a code"
+    # The code exchanges, and what it logs in as is THE OWNER: HA's own refresh-token store names
+    # the user each token belongs to, and the new one belongs to the household's owner, not to
+    # our system user or anyone else.
+    landed_later = _zj.loads(door("/auth/token", form={
+        "grant_type": "authorization_code", "code": minted, "client_id": client_id,
+    }))
+    assert landed_later.get("refresh_token"), f"the minted code did not exchange: {landed_later}"
+    # (The store saves on a short delay; the earlier codes' tokens carry the same client_id, so
+    # the evidence is one MORE token, and every one of them the owner's.)
+    node1.wait_until_succeeds(
+        f"[ $(grep -c '\"client_id\": \"{client_id}\"' {auth_store}) -ge {len(before) + 1} ]", timeout=30
+    )
+    _, after = owner_tokens()
+    assert len(after) == len(before) + 1, f"tokens for {client_id}: {len(before)} -> {len(after)}"
+    assert all(t["user_id"] == owner_id for t in after), f"a token for {client_id} is not the owner's: {after}"
+    # Spent: the same code again is refused.
+    node1.fail(
+        f"curl -fsS -H 'Host: {host}' -X POST -d grant_type=authorization_code -d code={minted} "
+        f"-d client_id={_sx.quote(client_id)} http://192.168.1.100/auth/token"
+    )
+    print("later open minted for the owner: " + owner_id)
   '';
 }

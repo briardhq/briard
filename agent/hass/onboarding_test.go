@@ -56,6 +56,60 @@ func TestOnboardingStepsTreats404AsDone(t *testing.T) {
 	}
 }
 
+// The later open ([V3b.31d]): the minter is asked with the control channel's bearer and the
+// browser's client_id, and its answers map to the two refusals the dashboard surfaces by name.
+func TestMintLogin(t *testing.T) {
+	var got map[string]string
+	var bearer string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/briard/login" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		bearer = r.Header.Get("Authorization")
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			json.NewEncoder(w).Encode(map[string]string{"auth_code": "owner-code"})
+		}
+	}))
+	defer srv.Close()
+	code, err := MintLogin(context.Background(), srv.URL, "tok", "http://x/")
+	if err != nil || code != "owner-code" {
+		t.Fatalf("MintLogin = %q, %v", code, err)
+	}
+	if got["client_id"] != "http://x/" || bearer != "Bearer tok" {
+		t.Errorf("the minter was asked %v with %q", got, bearer)
+	}
+	status = http.StatusConflict
+	if _, err := MintLogin(context.Background(), srv.URL, "tok", "http://x/"); err != ErrNoOwner {
+		t.Errorf("409 -> %v; want ErrNoOwner", err)
+	}
+	if _, err := MintLogin(context.Background(), srv.URL+"/elsewhere", "tok", "http://x/"); err != ErrNoMinter {
+		t.Errorf("404 -> %v; want ErrNoMinter", err)
+	}
+}
+
+// LoginURL is HA's own end-of-onboarding redirect: the front page's auth callback with the same
+// state as the onboarding resume, plus storeToken so the tokens outlive the tab.
+func TestLoginURL(t *testing.T) {
+	u, err := url.Parse(LoginURL("http://briard-x-home-assistant.local", "abc"))
+	if err != nil || u.Path != "/" {
+		t.Fatalf("LoginURL = %v, %v", u, err)
+	}
+	q := u.Query()
+	if q.Get("auth_callback") != "1" || q.Get("code") != "abc" || q.Get("storeToken") != "true" {
+		t.Errorf("query = %v", q)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(q.Get("state"))
+	var state map[string]string
+	json.Unmarshal(raw, &state)
+	if state["hassUrl"] != "http://briard-x-home-assistant.local" || state["clientId"] != "http://briard-x-home-assistant.local/" {
+		t.Errorf("state = %v", state)
+	}
+}
+
 func TestCreateUserAndMarkAnalytics(t *testing.T) {
 	var got map[string]string
 	var bearer string

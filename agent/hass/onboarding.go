@@ -13,13 +13,15 @@ package hass
 // hand-off (marking analytics done, so the page is skipped and analytics stays off) is done with
 // the control channel's OWN token, never by spending the user's code -- measured in [V3b.31a](f):
 // the exchange pops the code, and there is no API that mints another for a user we hold a token
-// for. (The in-HA integration will mint on demand later; this path does not need it.)
+// for. Every LATER open is minted instead ([V3b.31d]): the in-HA integration issues a code for
+// HA's owner on request (MintLogin), and the browser lands on HA's own callback with it.
 
 import (
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -197,6 +199,20 @@ func SystemAccess(ctx context.Context, x Executor, port int) (base, access strin
 // and checks against the page's own origin under `limitHassInstance` -- hassUrl without the
 // trailing slash, clientId with it -- so it is built here, once, next to ClientID's rule.
 func OnboardingURL(origin, authCode string) string {
+	return origin + "/onboarding.html?" + callbackQuery(origin, authCode).Encode()
+}
+
+// LoginURL is where the browser goes with a minted code on a Home Assistant that is already set
+// up ([V3b.31a](d) "later opens"): HA's own auth callback on its front page, with `storeToken`
+// so the tokens outlive the tab -- exactly the URL HA's onboarding sends the browser to at its
+// own end.
+func LoginURL(origin, authCode string) string {
+	q := callbackQuery(origin, authCode)
+	q.Set("storeToken", "true")
+	return origin + "/?" + q.Encode()
+}
+
+func callbackQuery(origin, authCode string) url.Values {
 	state, _ := json.Marshal(struct {
 		HassURL  string `json:"hassUrl"`
 		ClientID string `json:"clientId"`
@@ -205,7 +221,53 @@ func OnboardingURL(origin, authCode string) string {
 	q.Set("auth_callback", "1")
 	q.Set("code", authCode)
 	q.Set("state", base64.StdEncoding.EncodeToString(state))
-	return origin + "/onboarding.html?" + q.Encode()
+	return q
+}
+
+// ErrNoOwner is MintLogin's answer when Home Assistant has no owner account: the minter mints for
+// the owner and nobody else ([V3b.31a](e)), and the owner can be deleted (measured, (f)4). The
+// caller says so; it never asks for a different user.
+var ErrNoOwner = errors.New("hass: Home Assistant has no owner account")
+
+// ErrNoMinter is MintLogin's answer when the integration is not answering at all (a Home
+// Assistant it did not load on): the caller falls back to a plain link, and HA's login screen.
+var ErrNoMinter = errors.New("hass: the briard integration is not loaded in Home Assistant")
+
+// MintLogin asks the in-HA integration for an auth code that logs the browser in as HA's owner,
+// bound to `clientID` (the browser's origin with a trailing slash, as everywhere). `access` is
+// the control channel's; the integration requires an admin.
+func MintLogin(ctx context.Context, base, access, clientID string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"client_id": clientID})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/briard/login", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("hass: build login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+access)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("hass: mint login: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return "", ErrNoMinter
+	case http.StatusConflict:
+		return "", ErrNoOwner
+	default:
+		return "", fmt.Errorf("hass: mint login: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		AuthCode string `json:"auth_code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("hass: decode login response: %w", err)
+	}
+	if out.AuthCode == "" {
+		return "", fmt.Errorf("hass: the minter returned no auth code")
+	}
+	return out.AuthCode, nil
 }
 
 // ClientID is HA's `genClientId()` for an origin: the origin with a trailing slash.

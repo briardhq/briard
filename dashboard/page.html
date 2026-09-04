@@ -34,6 +34,7 @@
       <p class="muted">Starting…</p>
     {{else if .HA.Onboarded}}
       <p>Set up and running at <a href="{{.HA.URL}}">{{.HA.Host}}</a>.</p>
+      <form method="post" action="/open/home-assistant"><button type="submit">Open Home Assistant</button></form>
       {{if .HA.Password}}<details><summary class="muted">Show the starting password</summary><p><code>{{.HA.Password}}</code> — the companion app logs in with it; change it from Home Assistant when you like.</p></details>{{end}}
     {{else}}
       <p>{{if .HA.Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>

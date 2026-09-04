@@ -349,17 +349,20 @@ func (a *app) render(w http.ResponseWriter, r *http.Request) {
 }
 
 // openHomeAssistant is the button. By HA's own onboarding state:
-//   - not started: create the first user from the account the host handed over, mark analytics
-//     done with the control channel's token (the user's code is single-use and belongs to the
-//     browser), and send the browser to HA's onboarding page with that code -- it resumes at the
-//     location step, then discovered devices, then logs in ([V3b.31a](d), measured in (f));
-//   - started but unfinished: HA's onboarding page, which resumes with the tokens the browser
-//     kept, or asks for the password the card shows;
-//   - done: Home Assistant itself. (A minted login for later opens is the in-HA integration's
-//     job, not this slice's.)
+//   - user step not done: create the first user from the account the host handed over, mark
+//     analytics done with the control channel's token (the user's code is single-use and
+//     belongs to the browser), and send the browser to HA's onboarding page with that code --
+//     it resumes at the location step, then discovered devices, then logs in ([V3b.31a](d),
+//     measured in (f));
+//   - user step done: MINT a login for HA's owner through the in-HA integration ([V3b.31d]) and
+//     send the browser to HA's own auth callback -- its front page once onboarding is done,
+//     the onboarding page (which resumes) while it is not. Minted at click time, so the code's
+//     ten minutes are never in play. Every trusted device is the owner: the unit is the device,
+//     not the person ([V3b.31a](a)).
 //
-// It refuses while HA is not RUNNING: a Home Assistant serving HTTP is not yet one that will act
-// on a user step, and the code it returned would be for a user in a store that is still loading.
+// The first open refuses while HA is not RUNNING: a Home Assistant serving HTTP is not yet one
+// that will act on a user step, and the code it returned would be for a user in a store that is
+// still loading. The mint needs only the auth manager and refuses on its own.
 func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -374,17 +377,13 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Home Assistant is not answering yet; try again in a moment\n", http.StatusServiceUnavailable)
 		return
 	}
-	if steps.Done() {
-		http.Redirect(w, r, origin+"/", http.StatusSeeOther)
-		return
-	}
-	if steps[hass.StepUser] {
-		http.Redirect(w, r, origin+"/onboarding.html", http.StatusSeeOther)
-		return
-	}
 	_, access, err := hass.SystemAccess(ctx, a.exec(), ha.port)
 	if err != nil {
 		http.Error(w, "Home Assistant's control channel is not up yet; try again in a moment\n", http.StatusServiceUnavailable)
+		return
+	}
+	if steps[hass.StepUser] {
+		a.openAsOwner(ctx, w, r, ha, origin, access, steps.Done())
 		return
 	}
 	if st, err := hass.CoreState(ctx, ha.base, access); err != nil || st != "RUNNING" {
@@ -420,6 +419,35 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 	if err := hass.MarkAnalytics(ctx, ha.base, access); err != nil {
 		// Not fatal: HA then shows its analytics page, whose toggles default to off.
 		log.Printf("dashboard: analytics step: %v (HA will ask; the defaults are off)", err)
+	}
+	http.Redirect(w, r, hass.OnboardingURL(origin, code), http.StatusSeeOther)
+}
+
+// openAsOwner is every open after the first: a code minted for HA's owner, and HA's own callback.
+// A refusal is SURFACED, with the plain address as the way in: the minter mints for the owner
+// and nobody else, so with no owner (deleted -- measured, [V3b.31a](f)4) the household logs in
+// by hand, and a Home Assistant our integration did not load on gets its own login screen.
+func (a *app) openAsOwner(ctx context.Context, w http.ResponseWriter, r *http.Request, ha *homeAssistant, origin, access string, done bool) {
+	landing := origin + "/onboarding.html"
+	if done {
+		landing = origin + "/"
+	}
+	code, err := hass.MintLogin(ctx, ha.base, access, hass.ClientID(origin))
+	switch {
+	case errors.Is(err, hass.ErrNoOwner):
+		http.Error(w, "Home Assistant has no owner account to log you in as; open "+landing+" and log in with a password\n", http.StatusConflict)
+		return
+	case errors.Is(err, hass.ErrNoMinter):
+		http.Error(w, "this Home Assistant is not running the briard integration; open "+landing+" and log in with a password\n", http.StatusBadGateway)
+		return
+	case err != nil:
+		log.Printf("dashboard: mint login: %v", err)
+		http.Error(w, "Home Assistant did not issue a login; open "+landing+" and log in with a password\n", http.StatusBadGateway)
+		return
+	}
+	if done {
+		http.Redirect(w, r, hass.LoginURL(origin, code), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, hass.OnboardingURL(origin, code), http.StatusSeeOther)
 }
