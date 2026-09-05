@@ -142,6 +142,16 @@ pkgs.testers.runNixOSTest {
     assert qemu_before == host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0], \
         "an unconfirmed rescue took the guest down anyway"
 
+    # WHERE THE SHUTDOWN STARTS IN THE CONSOLE, marked before it happens. The chardev APPENDS
+    # across launches (see GUEST_SERIAL above), so by the time the assertions below run the file
+    # ends with the REBUILT guest's boot -- a `tail` of it shows nsncd starting, not the stop that
+    # failed. Measured, by dumping a tail and getting exactly that. Marking the line count here and
+    # slicing from it is what makes the dump show the shutdown.
+    #
+    # Counted through the same `tr` the dump uses: collapsing carriage returns CHANGES the line
+    # count, so a mark taken any other way indexes into a different file.
+    console_mark = int(host.succeed("tr '\\r' '\\n' < /tmp/guest-console.log | wc -l").strip())
+
     host.succeed("${agent}/bin/briard-agent rescue -yes -sock /run/briard/admin.sock")
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'rescue: the guest was rebuilt and has re-converged'",
@@ -170,14 +180,46 @@ pkgs.testers.runNixOSTest {
         "journalctl -u briard-agent -o short-precise | grep -aE 'guest-stop|guest-shutdown|rescue:' || true"
     )
     print(stopleg)
+
+    # KEEP THE DURATION -- it is the field that says WHICH bug this is. systemd's progress line
+    # carries its own elapsed time and the job's timeout, "... (10s / 1min 30s)", and this capture
+    # used to cut the match at the opening paren. That threw away exactly what separates a unit
+    # stalling a few seconds under a loaded runner from one sitting there until it was SIGKILLed.
+    # Both trip the assertion below and they are not the same finding: the first is a race whose
+    # window load widened, the second is [B.28]'s deadlock back on the shutdown path. Every run had
+    # already recorded which of the two it was, on the console, and the regex discarded it.
+    #
+    # Matched up to the CLOSING paren rather than to end-of-line, because \r is stripped above and
+    # systemd REPRINTS this line as the job runs -- so several prints land on one physical line and
+    # a greedy `.*` would swallow them into one unreadable match. Per-print matches keep the
+    # successive elapsed times, and those are the evidence of how far the job actually got.
+    stuck = host.succeed(
+        "tr -d '\\r' < /tmp/guest-console.log | "
+        "grep -aoE 'A stop job is running for [^)]*\\)' | sort -u || true"
+    )
+    # THE DUMP COVERS BOTH ASSERTIONS, and is taken BEFORE either fires. They are two halves of one
+    # question -- did the clean route work, and if not, what inside the guest stopped it -- so
+    # whichever trips, the console is the evidence for it. Hanging the dump off the `stuck` half
+    # alone left the ACPI-fallback failure reporting a host-side log line and nothing at all from
+    # inside the guest, which is the side the answer is on; [B.85] was invisible in precisely that
+    # way until GUEST_SERIAL existed. Measured, not reasoned: the fallback half failed on a run
+    # while this was still one-sided, and the log could say nothing about why.
+    #
+    # \r -> \n rather than deleted: this is a progress console, and collapsing the carriage returns
+    # is what makes the surrounding lines readable instead of one long smear.
+    #
+    # Sliced FROM the mark taken before the rescue, not tailed: the console keeps growing through
+    # the rebuilt guest's boot, so a tail would print that boot and hide the shutdown entirely.
+    # Bounded, because a guest that fails to shut down can emit a lot before anyone gives up.
+    if "trying the power button" in stopleg or stuck.strip():
+        print(f"=== guest console from the rescue (line {console_mark} on) ===")
+        print(host.succeed(
+            f"tr '\\r' '\\n' < /tmp/guest-console.log | sed -n '{console_mark},{console_mark + 250}p'"
+        ))
+
     assert "trying the power button" not in stopleg, (
         "the guest agent's os.poweroff did not stop the machine and stopCleanly fell back to ACPI "
         f"-- [B.85] is back, and the clean route is not the route being taken:\n{stopleg}"
-    )
-
-    stuck = host.succeed(
-        "tr -d '\\r' < /tmp/guest-console.log | "
-        "grep -aoE 'A stop job is running for [^(]*' | sort -u || true"
     )
     assert not stuck.strip(), (
         f"the guest's shutdown had to wait on a unit, which is what [B.85] was:\n{stuck}"
