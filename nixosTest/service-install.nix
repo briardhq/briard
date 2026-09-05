@@ -298,10 +298,28 @@ pkgs.testers.runNixOSTest {
     # The bare address is still the node's, and it names what it routes.
     node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "1 service(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
-    # A name nobody serves is the node's page, not a service's 404: that is where a household
-    # reads which names this node does answer to.
-    page = primary.succeed("curl -fsS -H 'Host: briard-brave-elf-nope.local' http://192.168.1.100/")
-    assert "fixture" in page, f"the front door's page does not list what it serves: {page!r}"
+    # A name nobody serves still lands on the NODE's door rather than on some service's 404 --
+    # the fall-through is the property, and it is unchanged. What the door then says is not: since
+    # [V3b.31b] it forwards to the household dashboard, which refuses a browser with no session
+    # (401, one instruction, no inventory) because reaching the VIP is not authentication
+    # ([V3b.31a](a)). The half of the old claim that a household "reads which names this node
+    # answers to" HERE is therefore gone -- that reading needs a session now, and the
+    # unauthenticated version of it is /healthz, asserted just above.
+    #
+    # ⚠️ THIS IS THE NON-VACUOUS PLACE FOR THE NO-INVENTORY ASSERTION, which is why it is here and
+    # not only in install-macvtap.nix. That test refuses on a node with NOTHING installed, so
+    # "the refusal names no service" passes there even if the refusal happily rendered whatever it
+    # knew. A service IS installed and routed by this point, under a name composed two lines up --
+    # so a refusal that leaked the inventory would print it, and this fails.
+    refused = primary.succeed(
+        "curl -sS -o /tmp/vip.html -w '%{http_code}' "
+        "-H 'Host: briard-brave-elf-nope.local' http://192.168.1.100/"
+    ).strip()
+    page = primary.succeed("cat /tmp/vip.html")
+    assert refused == "401" and "not yet trusted" in page, f"the unrouted name served {refused}: {page!r}"
+    assert "fixture" not in page and host not in page, (
+        f"the refusal named the inventory to a browser with no session: {page!r}"
+    )
 
     # And the service's data really lands on the replicated subvolume.
     primary.wait_until_succeeds(f"test -s {dataroot}/app/state.json", timeout=60)

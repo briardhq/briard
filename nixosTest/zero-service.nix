@@ -87,9 +87,23 @@ pkgs.testers.runNixOSTest {
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "no services routed" in health, f"/healthz on an empty node said: {health!r}"
 
-    # And a human who opens the VIP sees Briard, not a connection refused.
-    page = primary.succeed("curl -fsS http://192.168.1.100/")
-    assert "Briard" in page and "Nothing is installed" in page, f"the VIP served: {page!r}"
+    # And a human who opens the VIP gets an ANSWER, not a connection refused -- but an answer that
+    # tells them nothing until they are trusted. The bare address is a name the front door does not
+    # route, so it forwards to the household dashboard ([V3b.31b]), which refuses a browser with no
+    # session: 401, one instruction, no inventory. Reaching the VIP is not authentication
+    # ([V3b.31a](a)).
+    #
+    # This used to assert the node's own page here ("Nothing is installed"), and that page is gone
+    # by design rather than by accident -- an unauthenticated reader learning what a node runs is
+    # the thing V3b.31a removed. `-f` is dropped because 401 is now the expected answer and would
+    # make curl itself fail; the code is asserted instead, so "the door is down" and "the door
+    # refused me" stay distinguishable, which is the whole content of the original claim.
+    refused = primary.succeed("curl -sS -o /tmp/vip.html -w '%{http_code}' http://192.168.1.100/").strip()
+    page = primary.succeed("cat /tmp/vip.html")
+    assert refused == "401" and "not yet trusted" in page, f"the VIP served {refused}: {page!r}"
+    # An empty node has nothing to leak, so this cannot pass by there being nothing to name. The
+    # inventory assertion that matters lives in service-install.nix, where a service IS installed.
+    assert "Nothing is installed" not in page, f"the refusal still renders the node's page: {page!r}"
 
     # The routing table exists and is EMPTY, which is not the same as absent ([B.48]): converge
     # writes it on every promotion, so "this node routes nothing" is something the node has said
