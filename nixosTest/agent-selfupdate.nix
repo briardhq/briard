@@ -9,6 +9,8 @@
 #   /var/lib/briard/briard-agent        committed binary ExecStart runs (seeded on install)
 #   /var/lib/briard/briard-agent.next   staged candidate on the SAME fs → commit = rename(2)
 #   /var/lib/briard/manifest.json       the committed release's signed manifest (+ .next beside it)
+#   /var/lib/briard/briard-net-wrap     the launch shim, cattle riding with the agent (+ .next)
+#   /var/lib/briard/qemu -> qemu-<rel>/ a LINK to the committed qemu tree (+ qemu.next, a link)
 #   /run/briard/update                  tmpfs flag: "an update is armed — trial .next this boot"
 #   /run/briard/trial                   tmpfs marker: "this boot IS a trial — commit on success"
 #   /run/briard/update-target|-result   the two messages between a trigger and the update unit
@@ -31,6 +33,12 @@
 # the mechanism testable without a nested guest; publish-release.sh verify refuses it on a real
 # channel. install-macvtap.nix proves the SHIPPED scripts and units on a real install.
 #
+# The HOST BUNDLE ([B.86b], scenarios 5, 8, 9): a release is {agent, net-wrap, qemu}, staged as
+# .next siblings and committed TOGETHER by briard-commit (qemu via `mv -T` of a link), with only
+# the entries whose hash changed fetched. The stub candidates send READY without a smoke test,
+# so this file proves the stage/commit/discard mechanics; the candidate's smoke test of a staged
+# qemu on a real tree is install-macvtap.nix's, on the real agent.
+#
 # Hermetic (one VM, TCG-friendly), so it rides the default `.#all`. Run one:
 #   nix build .#tests.agent-selfupdate -L
 { pkgs, stub, agent }:
@@ -39,6 +47,10 @@ let
   nextBin = "/var/lib/briard/briard-agent.next";
   manifest = "/var/lib/briard/manifest.json";
   nextManifest = "/var/lib/briard/manifest.json.next";
+  netWrap = "/var/lib/briard/briard-net-wrap";
+  nextNetWrap = "/var/lib/briard/briard-net-wrap.next";
+  qemuLink = "/var/lib/briard/qemu";
+  nextQemu = "/var/lib/briard/qemu.next";
   updateFlag = "/run/briard/update";
   trialMarker = "/run/briard/trial";
   targetMsg = "/run/briard/update-target";
@@ -79,6 +91,12 @@ let
         mv ${nextBin} ${agentBin}         # atomic same-fs commit
         if [ -e ${nextManifest} ]; then   # the candidate's manifest commits WITH it
             mv ${nextManifest} ${manifest}
+        fi
+        if [ -e ${nextNetWrap} ]; then    # the rest of the bundle, each existence-guarded ([B.86b])
+            mv -T ${nextNetWrap} ${netWrap}
+        fi
+        if [ -L ${nextQemu} ]; then       # -T: rename the LINK, never move it into the old tree
+            mv -T ${nextQemu} ${qemuLink}
         fi
         rm -f ${trialMarker}
     fi
@@ -137,7 +155,9 @@ pkgs.testers.runNixOSTest {
         "d /var/lib/briard 0755 root root -"
         "d /run/briard 0755 root root -"
       ];
-      environment.systemPackages = [ pkgs.curl ]; # the frozen update script's bootstrap pull
+      # curl: the frozen update script's bootstrap pull. tar + zstd: the test publishes a qemu
+      # bundle the way the release script does, and the update verb unpacks it with tar(1).
+      environment.systemPackages = [ pkgs.curl pkgs.gnutar pkgs.zstd ];
 
       # The FROZEN pivot: it does not self-update (changing it is a rare base-install update),
       # so bugs in the volatile agent can't touch the mechanism. Type=notify + ExecStartPost is
@@ -168,7 +188,9 @@ pkgs.testers.runNixOSTest {
       systemd.services.briard-update = {
         description = "briard update (the frozen unit below the agent)";
         wantedBy = [ ];
-        path = [ pkgs.curl ]; # the bootstrap pull; install.sh's unit sets an explicit PATH for the same reason
+        # curl: the bootstrap pull; tar: the verb unpacks the qemu bundle with tar(1). install.sh's
+        # unit sets an explicit PATH that reaches both for the same reason.
+        path = [ pkgs.curl pkgs.gnutar ];
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${briardUpdate}";
@@ -259,14 +281,26 @@ pkgs.testers.runNixOSTest {
     V4 = "v3.20260906.aaaaaaa"
     machine.succeed("mkdir -p /etc/briard /srv/host/latest/linux /srv/host/stable/linux")
     machine.succeed("${stubExe} keygen /root/release.key /etc/briard/keyring.pem")
+    # The rest of the host bundle ([B.86b]): a launch shim, and a qemu "bundle" -- a tree with a
+    # bin/qemu-system-x86_64 (a stand-in script; the stub candidates never run it) and a
+    # PROVENANCE file, tarred and compressed exactly the way publish-release.sh does, so the same
+    # bytes republish to the same hash (which is what the hash-skip in 8 and 9 rides on).
+    machine.succeed("printf '#!/bin/sh\\nexec \"$@\"\\n' > /root/net-wrap && chmod 755 /root/net-wrap")
+    def bundle(name, provenance):
+        machine.succeed(f"mkdir -p /root/{name}/bin && printf '#!/bin/sh\\necho QEMU\\n' > /root/{name}/bin/qemu-system-x86_64 && chmod 755 /root/{name}/bin/qemu-system-x86_64")
+        machine.succeed(f"printf '%s\\n' '{provenance}' > /root/{name}/PROVENANCE")
+        machine.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C /root/{name} . | zstd -q -3 -o /root/{name}.tar.zst")
+    bundle("bundle", "the first qemu")
+    bundle("bundle2", "a second qemu")
 
-    def publish(version, artifact, pointers=("latest", "stable")):
+    def publish(version, artifact, pointers=("latest", "stable"), qemu="bundle"):
         # One release of the host chain's linux arm, the way publish-release.sh lays it: the
-        # artifact under the versioned directory, a manifest written by the REAL writer, a
+        # artifacts under the versioned directory, a manifest written by the REAL writer, a
         # detached signature, and the pointers as byte-copies carrying the REAL agent as the
         # bootstrap (the one deliberate divergence, explained in the header).
         d = f"/srv/host/{version}/linux"
         machine.succeed(f"mkdir -p {d} && install -m755 {artifact} {d}/briard-agent")
+        machine.succeed(f"install -m755 /root/net-wrap {d}/briard-net-wrap && install -m644 /root/{qemu}.tar.zst {d}/qemu-bundle.tar.zst")
         machine.succeed(f"${realAgent} --stage-manifest {d} --chain host --platform linux --release {version}")
         machine.succeed(f"${stubExe} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         for p in pointers:
@@ -285,15 +319,22 @@ pkgs.testers.runNixOSTest {
     machine.fail("test -e ${targetMsg}")
     machine.succeed("systemctl start briard-update.service")   # blocks: a oneshot
     result = machine.succeed("cat ${resultMsg}").strip()
-    assert f"staged {V4}" in result and "armed" in result, f"unexpected result: {result!r}"
+    assert f"staged {V4} (agent, net-wrap, qemu), armed" in result, f"unexpected result: {result!r}"
     machine.succeed("test -e ${nextBin}")
     machine.succeed("cmp ${nextBin} ${readyV4}")             # the VERSIONED artifact, not the bootstrap
     machine.succeed(f"cmp ${nextManifest} /srv/host/{V4}/linux/manifest.json")  # its manifest beside it
+    # The rest of the bundle ([B.86b]), staged beside them: the shim as a file, qemu as a
+    # RELATIVE link to the tree the verb unpacked from the verified tarball.
+    machine.succeed("cmp ${nextNetWrap} /root/net-wrap")
+    assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V4}", "qemu.next does not link to this release's tree"
+    machine.succeed(f"test -x /var/lib/briard/qemu-{V4}/bin/qemu-system-x86_64")
+    machine.succeed(f"cmp /var/lib/briard/qemu-{V4}/PROVENANCE /root/bundle/PROVENANCE")
+    machine.fail("test -e ${qemuLink}")                       # nothing committed yet
     machine.succeed("test -e ${updateFlag}")                  # armed…
     assert invocation() == inv_before, "the update unit restarted the agent itself; it must only arm"
     machine.succeed("test ! -e ${targetMsg}")
-    machine.succeed("! ls -a /var/lib/briard | grep -q '^\\.update\\.'")  # the bootstrap temp dir is gone
-    print(f"5a) the unit staged + armed {V4} from stable without restarting anything")
+    machine.succeed("! ls -a /var/lib/briard | grep -q '^\\.update'")  # the bootstrap + unpack temp dirs are gone
+    print(f"5a) the unit staged + armed the whole bundle of {V4} from stable without restarting anything")
 
     # A second run while armed, young: left to the agent's safe point; nothing restarted.
     machine.succeed("rm -f ${resultMsg}")
@@ -314,7 +355,15 @@ pkgs.testers.runNixOSTest {
     machine.fail("test -e ${nextManifest}")
     machine.succeed(f"cmp ${manifest} /srv/host/{V4}/linux/manifest.json")  # committed WITH its manifest
     assert " v4" in committed(), f"the fetched release did NOT commit, committed={committed()!r}"
-    print(f"5b) young arm left alone, old arm forced, {V4} committed with its manifest")
+    # ...and the bundle committed in the same burst: the shim moved onto its name, the qemu LINK
+    # was renamed over (`mv -T`) rather than dropped inside a tree, and no .next survives.
+    machine.fail("test -e ${nextNetWrap}")
+    machine.succeed("cmp ${netWrap} /root/net-wrap")
+    machine.fail("test -e ${nextQemu}")
+    machine.succeed("test -L ${qemuLink}")
+    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "qemu was not committed as a link to the new tree"
+    machine.succeed("test -x ${qemuLink}/bin/qemu-system-x86_64")  # the public path resolves through it
+    print(f"5b) young arm left alone, old arm forced, {V4} committed with its manifest, shim and qemu link")
 
     # === 6) `briard update host` — the human trigger, on the REAL agent binary, through the
     #        same unit: a message in, the unit's verdict out, no admin socket. Up to date → a
@@ -359,10 +408,50 @@ pkgs.testers.runNixOSTest {
     machine.fail("test -e ${nextBin}")
     machine.succeed(f"cp /srv/host/{OLD}/linux/manifest.json /srv/host/{OLD}/linux/manifest.json.sig /srv/host/stable/linux/")
     out = machine.succeed(f"${realAgent} update host -to {OLD} -base /var/lib/briard -run /run/briard").strip()
-    assert f"staged {OLD}" in out, f"a pin at the moved floor was refused: {out!r}"
+    # DOWNLOAD ONLY WHAT CHANGED ([B.86b]): this release ships the same shim and qemu bytes the
+    # installed manifest ({V4}'s) pins, so neither is fetched or staged -- the agent alone moves.
+    assert f"staged {OLD} (agent), armed" in out, f"a pin at the moved floor was refused, or fetched more than changed: {out!r}"
     machine.succeed("cmp ${nextBin} ${realAgent}")
-    print("8) a pin below stable refused; accepted once stable moved to it (downgrade to the floor)")
+    machine.fail("test -e ${nextNetWrap}")
+    machine.fail("test -e ${nextQemu}")
+    machine.fail(f"test -e /var/lib/briard/qemu-{OLD}")
+    print("8) a pin below stable refused; accepted once stable moved to it (downgrade to the floor), and only the agent was fetched")
 
-    print("the frozen Type=notify pivot commits good updates and reverts broken or lost ones; the frozen unit below the agent fetches, verifies, stages, arms, forces late, and refuses tampered, unsigned or below-floor releases")
+    # === 9) A FAILED TRIAL LEAVES THE BUNDLE STAGED AND INERT, AND THE NEXT RELEASE DROPS IT
+    #        ([B.86b]): a release with a NEW qemu whose agent crashes reverts whole -- the committed
+    #        qemu link never moves, qemu.next and its tree stay -- and a later release that does
+    #        NOT change qemu discards that stale qemu.next before staging, so the commit that
+    #        follows can never pair this agent with that qemu. [[verification-assertions-must-fail]]
+    machine.succeed("rm -f ${nextBin} ${nextManifest} ${updateFlag}")  # un-arm scenario 8's pin
+    V9 = "v3.20260908.ddddddd"
+    publish(V9, "${crashCand}", pointers=("latest",), qemu="bundle2")
+    out = machine.succeed("${realAgent} update host -to latest -base /var/lib/briard -run /run/briard").strip()
+    assert f"staged {V9} (agent, qemu), armed" in out, f"unexpected: {out!r}"   # the shim is unchanged
+    assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V9}"
+    machine.succeed(f"cmp /var/lib/briard/qemu-{V9}/PROVENANCE /root/bundle2/PROVENANCE")
+    machine.succeed("systemctl restart briard-agent.service || true")  # the trial crashes
+    machine.wait_for_unit("briard-agent.service", timeout=60)
+    machine.wait_until_succeeds("grep -q ' v4' ${agentBin}", timeout=30)
+    assert " v4" in committed(), f"a crashing candidate committed: {committed()!r}"
+    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "the qemu link moved on a FAILED trial"
+    assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V9}", "the refused qemu did not stay staged"
+    machine.succeed(f"cmp ${manifest} /srv/host/{V4}/linux/manifest.json")
+    machine.fail("test -e ${updateFlag}")
+    print(f"9a) {V9}'s trial crashed: reverted whole, qemu link still {V4}'s, its qemu.next left inert")
+
+    V10 = "v3.20260909.eeeeeee"
+    publish(V10, "${readyV2}", pointers=("latest",))   # back on the FIRST bundle == the installed one
+    out = machine.succeed("${realAgent} update host -to latest -base /var/lib/briard -run /run/briard").strip()
+    assert f"staged {V10} (agent), armed" in out, f"unexpected: {out!r}"
+    machine.fail("test -e ${nextQemu}")     # the stale link is GONE before this release is armed
+    machine.succeed(f"test -d /var/lib/briard/qemu-{V9}")  # the tree is not the verb's to remove
+    machine.succeed("systemctl restart briard-agent.service")
+    machine.wait_for_unit("briard-agent.service")
+    machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
+    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "the commit paired this agent with a qemu it did not ship"
+    machine.succeed(f"cmp ${manifest} /srv/host/{V10}/linux/manifest.json")
+    print(f"9b) {V10} discarded the stale qemu.next and committed on {V4}'s qemu, as its manifest says")
+
+    print("the frozen Type=notify pivot commits good updates and reverts broken or lost ones; the frozen unit below the agent fetches, verifies, stages, arms, forces late, and refuses tampered, unsigned or below-floor releases; the host bundle stages and commits as one, fetching only what changed")
   '';
 }

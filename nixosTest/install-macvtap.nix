@@ -124,7 +124,9 @@ pkgs.testers.runNixOSTest {
         # assertion in this file still passed. A rig that leaves v6 enabled cannot tell those apart.
         boot.kernel.sysctl."net.ipv6.conf.all.disable_ipv6" = 1;
         boot.kernel.sysctl."net.ipv6.conf.default.disable_ipv6" = 1;
-        environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi ];
+        # tar + zstd: the [B.86b] section below re-publishes the qemu bundle with one file added,
+        # the way the release script builds it, and the shipped update verb unpacks it with tar(1).
+        environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi pkgs.gnutar pkgs.zstd ];
         # An mDNS resolver ON THE INSTALL HOST, which is what a desktop install actually is
         # ([V3b.19] was measured on one). It is here to make a dependency VISIBLE rather than to
         # flatter the result: resolving the guest's name from this machine needs the household's
@@ -1020,5 +1022,71 @@ pkgs.testers.runNixOSTest {
     host.fail("/opt/briard/agent/briard-agent update host -to v3.20990101.nothere")
     host.succeed("journalctl -u briard-update | grep -q 'could not fetch a bootstrap agent'")
     print("the shipped update unit, timer and CLI round-trip against the channel; an unknown pin fails loudly")
+
+    # ---- THE HOST BUNDLE ON THE SHIPPED LAYOUT ([B.86b]) ------------------------------------
+    # qemu is reached through a LINK: the public /opt/briard/qemu (baked into the bundle's ELF
+    # interpreter) is a fixed link onto /opt/briard/agent/qemu, which points at the installed
+    # release's tree inside the directory the frozen pivot commits in. The shipped commit script
+    # moves the link with `mv -T`, and the shipped unit's start window covers the smoke test.
+    host.succeed("test -L /opt/briard/qemu && test -L /opt/briard/agent/qemu")
+    assert host.succeed("readlink /opt/briard/qemu").strip() == "agent/qemu"
+    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V}", "the installed tree is not named by its release"
+    host.succeed(f"test -x /opt/briard/agent/qemu-{V}/bin/qemu-system-x86_64")
+    host.succeed("grep -q 'mv -T' /opt/briard/agent/briard-commit")
+    host.succeed("systemctl cat briard-agent.service | grep -q '^TimeoutStartSec=60'")
+    qpid_before = host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64").strip().split()[0]
+
+    # A release that CHANGES qemu -- the same bundle re-tarred with one file added, so the hash
+    # differs and the REAL agent must smoke-test a REAL qemu tree, through that tree's own loader
+    # (the binary's PT_INTERP names the committed prefix), before it commits. The agent bytes are
+    # the installed ones: what this proves is the bundle path, not a new agent.
+    def publish_pin(version, bundle_dir):
+        d = f"/srv/host/{version}/linux"
+        host.succeed(f"mkdir -p {d} && cp -L /srv/host/{V}/linux/briard-agent /srv/host/{V}/linux/briard-net-wrap {d}/")
+        host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {bundle_dir} . | zstd -q -3 -o {d}/qemu-bundle.tar.zst")
+        host.succeed(f"chmod 0644 {d}/qemu-bundle.tar.zst && {d}/briard-agent --stage-manifest {d} --chain host --platform linux --release {version}")
+        host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+    V2 = "v3.20991230.b86b0000"
+    host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/host/{V}/linux/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
+    host.succeed("echo b86b > /root/bundle2/PROVENANCE.b86b")
+    publish_pin(V2, "/root/bundle2")
+    out = host.succeed(f"/opt/briard/agent/briard-agent update host -to {V2}").strip()
+    assert f"staged {V2} (agent, qemu), armed" in out, f"briard update host said: {out!r}"   # net-wrap unchanged: not fetched
+    assert host.succeed("readlink /opt/briard/agent/qemu.next").strip() == f"qemu-{V2}"
+    host.succeed(f"test -e /opt/briard/agent/qemu-{V2}/PROVENANCE.b86b")
+    host.succeed("systemctl restart briard-agent.service")   # the trial: smoke test, READY, commit
+    host.wait_until_succeeds("test ! -e /opt/briard/agent/qemu.next", timeout=120)
+    host.succeed("systemctl is-active briard-agent.service")
+    host.succeed("journalctl -u briard-agent | grep -q 'scratch machine running'")
+    host.succeed("journalctl -u briard-agent | grep -q 'staged qemu passed its smoke test'")
+    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "the qemu link did not move on commit"
+    host.succeed("test -e /opt/briard/qemu/PROVENANCE.b86b")   # the public path follows the link
+    host.succeed(f"grep -q '\"version\":\"{V2}\"' /opt/briard/agent/manifest.json")
+    host.succeed(f"test -d /opt/briard/agent/qemu-{V}")        # N-1 stays until a guest LAUNCH prunes it
+    # The guest never noticed: the same qemu process, on the tree it was launched from, still serving.
+    assert host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64").strip().split()[0] == qpid_before, "the guest was relaunched by a qemu update"
+    client.succeed(f"curl -fsS http://{moved}/healthz")
+    print(f"{V2}: the real agent smoke-tested the staged qemu and committed the bundle; the guest kept serving")
+
+    # A release whose qemu does NOT run on this host refuses itself WHOLE: the trial fails before
+    # READY, the pivot reverts to the committed agent AND qemu (the tested pairing), the staged
+    # qemu stays inert, and the agent that comes back escalates what the trial wrote down.
+    # [[verification-assertions-must-fail]]: the smoke test must actually refuse, and be seen to.
+    V3 = "v3.20991231.b86bbad0"
+    host.succeed("mkdir -p /root/bundle3/bin && printf '#!/bin/sh\\nexit 1\\n' > /root/bundle3/bin/qemu-system-x86_64 && chmod 755 /root/bundle3/bin/qemu-system-x86_64")
+    publish_pin(V3, "/root/bundle3")
+    out = host.succeed(f"/opt/briard/agent/briard-agent update host -to {V3}").strip()
+    assert f"staged {V3} (agent, qemu), armed" in out, f"briard update host said: {out!r}"
+    host.succeed("systemctl restart briard-agent.service || true")   # the trial refuses; the start FAILS
+    host.wait_until_succeeds("systemctl is-active briard-agent.service", timeout=180)
+    host.succeed("journalctl -u briard-agent | grep -q 'refused on this host: qemu smoke test: -version'")
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'host bundle update to .* failed and rolled back'", timeout=60)
+    host.fail("test -e /run/briard/update-failure")             # taken by the agent that came back
+    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "a refused qemu was committed"
+    assert host.succeed("readlink /opt/briard/agent/qemu.next").strip() == f"qemu-{V3}", "the refused qemu did not stay staged"
+    host.succeed(f"grep -q '\"version\":\"{V2}\"' /opt/briard/agent/manifest.json")
+    host.fail("test -e /run/briard/trial && test -e /run/briard/update")
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
   '';
 }

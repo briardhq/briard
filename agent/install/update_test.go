@@ -1,6 +1,7 @@
 package install
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 
 	"briard.io/agent/selfupdate"
 )
@@ -127,7 +130,7 @@ func TestUpdateStagesAndArms(t *testing.T) {
 	if !l.Armed() {
 		t.Error("not armed")
 	}
-	// The other artifacts of the release were NOT fetched: the verb's scope is the agent alone.
+	// Artifacts the verb does not know (a guest image here, a plain tarball) are left alone.
 	for _, n := range []string{"nixos.qcow2", "qemu-bundle.tar"} {
 		if _, err := os.Stat(filepath.Join(l.Base, n)); !os.IsNotExist(err) {
 			t.Errorf("%s was fetched by the agent-only verb", n)
@@ -243,4 +246,250 @@ func TestUpdateRefusesAnUnknownPin(t *testing.T) {
 		t.Fatal("an unknown pin was accepted")
 	}
 	assertNothingStaged(t, l)
+}
+
+// bundleChannel is a release of the WHOLE host bundle: an agent, a net-wrap, and a real (tiny)
+// qemu-bundle.tar.zst whose tree holds bin/qemu-system-x86_64 and PROVENANCE.
+func bundleChannel(t *testing.T, provenance string) *channel {
+	t.Helper()
+	agent := []byte("the briard-agent static binary")
+	wrap := []byte("#!/bin/sh\nexec \"$@\"\n")
+	qemu := tarZst(t, map[string]string{"bin/qemu-system-x86_64": "#!/bin/sh\necho QEMU\n", "PROVENANCE": provenance})
+	arts := []Entry{
+		{Name: artifactAgent, SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
+		{Name: artifactNetWrap, SHA256: sha(wrap), Size: int64(len(wrap)), Mode: 0o755},
+		{Name: artifactQEMU, SHA256: sha(qemu), Size: int64(len(qemu))},
+	}
+	return newChannel(t, arts, map[string][]byte{artifactAgent: agent, artifactNetWrap: wrap, artifactQEMU: qemu})
+}
+
+// tarZst builds a `tar -C bundle .`-shaped archive (./bin/..., the way publish-release.sh lays
+// it) and compresses it the way the channel ships it.
+func tarZst(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var tb bytes.Buffer
+	tw := tar.NewWriter(&tb)
+	tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755})
+	tw.WriteHeader(&tar.Header{Name: "./bin/", Typeflag: tar.TypeDir, Mode: 0o755})
+	for _, name := range []string{"bin/qemu-system-x86_64", "PROVENANCE"} {
+		body := files[name]
+		mode := int64(0o644)
+		if strings.HasPrefix(name, "bin/") {
+			mode = 0o755
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "./" + name, Mode: mode, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		tw.Write([]byte(body))
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var zb bytes.Buffer
+	zw, err := zstd.NewWriter(&zb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw.Write(tb.Bytes())
+	zw.Close()
+	return zb.Bytes()
+}
+
+func assertBundleNotStaged(t *testing.T, l selfupdate.Layout) {
+	t.Helper()
+	if l.NextQEMUStaged() {
+		t.Error("qemu.next is staged")
+	}
+	if _, err := os.Lstat(l.NextNetWrapPath()); !os.IsNotExist(err) {
+		t.Error("briard-net-wrap.next is staged")
+	}
+}
+
+// The whole bundle ([B.86b]): with no installed manifest every artifact is fetched; the
+// net-wrap stages beside the agent, the qemu tarball is verified, expanded and extracted into
+// qemu-<version>/ and qemu.next links to it (relative), the manifest rides along, and the
+// result line names what was staged.
+func TestUpdateStagesTheWholeBundle(t *testing.T) {
+	c := bundleChannel(t, "prefix=/opt/briard/qemu")
+	u, l := updateFixture(t, c, nil)
+	line, err := u.Run(context.Background(), TargetLatest)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(line, "staged "+testVersion+" (agent, net-wrap, qemu), armed") {
+		t.Errorf("result line = %q", line)
+	}
+	if b, err := os.ReadFile(l.NextNetWrapPath()); err != nil || !strings.HasPrefix(string(b), "#!/bin/sh") {
+		t.Errorf("net-wrap.next = %q, %v", b, err)
+	}
+	if fi, _ := os.Stat(l.NextNetWrapPath()); fi == nil || fi.Mode().Perm() != 0o755 {
+		t.Errorf("net-wrap.next is not 0755: %v", fi)
+	}
+	tree, ok := l.NextQEMUTree()
+	if !ok || tree != l.QEMUTree(testVersion) {
+		t.Fatalf("qemu.next -> %q, %v; want %s", tree, ok, l.QEMUTree(testVersion))
+	}
+	if target, _ := os.Readlink(l.NextQEMUPath()); target != "qemu-"+testVersion {
+		t.Errorf("qemu.next target = %q, want the relative qemu-%s", target, testVersion)
+	}
+	if b, err := os.ReadFile(filepath.Join(tree, "PROVENANCE")); err != nil || string(b) != "prefix=/opt/briard/qemu" {
+		t.Errorf("extracted PROVENANCE = %q, %v", b, err)
+	}
+	if fi, err := os.Stat(filepath.Join(tree, "bin", "qemu-system-x86_64")); err != nil || fi.Mode().Perm()&0o111 == 0 {
+		t.Errorf("extracted qemu binary: %v, %v", fi, err)
+	}
+	if fi, _ := os.Stat(tree); fi.Mode().Perm() != 0o755 {
+		t.Errorf("tree mode = %o, want 0755", fi.Mode().Perm())
+	}
+	if !l.NextStaged() || !l.Armed() {
+		t.Error("agent not staged or not armed")
+	}
+	// The tarball itself does not linger anywhere under Base.
+	for _, n := range []string{artifactQEMU, strings.TrimSuffix(artifactQEMU, ".zst")} {
+		if _, err := os.Stat(filepath.Join(l.Base, n)); !os.IsNotExist(err) {
+			t.Errorf("%s left under Base", n)
+		}
+	}
+	assertNoOrphans(t, l)
+}
+
+// Download only what changed: an installed manifest pinning net-wrap and qemu at the SAME
+// hashes as the target means neither is fetched -- proven by making both 404, which the run
+// must never notice -- and neither is staged; the agent alone moves.
+func TestUpdateFetchesOnlyWhatChanged(t *testing.T) {
+	c := bundleChannel(t, "same")
+	var target Manifest
+	json.Unmarshal(c.bodies[pointerPath(ManifestName)], &target)
+	installed := target
+	installed.Version = "v3.20260101.0000000"
+	ib, _ := json.Marshal(installed)
+	c.missing[releasePath(artifactNetWrap)] = true
+	c.missing[releasePath(artifactQEMU)] = true
+	u, l := updateFixture(t, c, ib)
+	line, err := u.Run(context.Background(), TargetLatest)
+	if err != nil {
+		t.Fatalf("an unchanged net-wrap/qemu was fetched (or worse): %v", err)
+	}
+	if !strings.Contains(line, "staged "+testVersion+" (agent), armed") {
+		t.Errorf("result line = %q", line)
+	}
+	if !l.NextStaged() {
+		t.Error("agent not staged")
+	}
+	assertBundleNotStaged(t, l)
+	if _, err := os.Stat(l.QEMUTree(testVersion)); !os.IsNotExist(err) {
+		t.Error("a qemu tree was extracted for an unchanged qemu")
+	}
+}
+
+// A stale bundle candidate -- qemu.next and net-wrap.next left by a release whose trial
+// failed -- is dropped before a release that does NOT change them is staged; otherwise
+// briard-commit would pair this agent with that qemu, a combination nothing tested.
+func TestUpdateDropsAStaleBundleCandidate(t *testing.T) {
+	c := bundleChannel(t, "same")
+	var target Manifest
+	json.Unmarshal(c.bodies[pointerPath(ManifestName)], &target)
+	installed := target
+	installed.Version = "v3.20260101.0000000"
+	ib, _ := json.Marshal(installed)
+	u, l := updateFixture(t, c, ib)
+	stale := l.QEMUTree("v3.20260201.5ta1e00")
+	os.MkdirAll(stale, 0o755)
+	if err := l.StageNextQEMU(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.StageNextNetWrap(strings.NewReader("stale")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Run(context.Background(), TargetLatest); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	assertBundleNotStaged(t, l)
+	if _, err := os.Stat(stale); err != nil {
+		t.Error("the stale TREE was removed by the verb; pruning belongs to the agent at launch")
+	}
+}
+
+// A tree already extracted for this version (a failed trial's) is reused without a fetch, and
+// a qemu link already committed at this version stages nothing for qemu.
+func TestUpdateReusesAnExtractedQEMUTree(t *testing.T) {
+	c := bundleChannel(t, "fresh")
+	c.missing[releasePath(artifactQEMU)] = true // a fetch would fail loudly
+	u, l := updateFixture(t, c, nil)
+	tree := l.QEMUTree(testVersion)
+	os.MkdirAll(tree, 0o755)
+	os.WriteFile(filepath.Join(tree, "PROVENANCE"), []byte("from the failed trial"), 0o644)
+	line, err := u.Run(context.Background(), TargetLatest)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(line, "(agent, net-wrap, qemu)") {
+		t.Errorf("result line = %q", line)
+	}
+	if got, _ := l.NextQEMUTree(); got != tree {
+		t.Errorf("qemu.next -> %q, want the reused %s", got, tree)
+	}
+	if b, _ := os.ReadFile(filepath.Join(tree, "PROVENANCE")); string(b) != "from the failed trial" {
+		t.Error("the existing tree was replaced rather than reused")
+	}
+
+	// Committed at this version already (a node whose manifest was lost): qemu is left alone.
+	u2, l2 := updateFixture(t, c, nil)
+	os.MkdirAll(l2.QEMUTree(testVersion), 0o755)
+	os.Symlink("qemu-"+testVersion, l2.QEMUPath())
+	line, err = u2.Run(context.Background(), TargetLatest)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(line, "(agent, net-wrap)") || l2.NextQEMUStaged() {
+		t.Errorf("a committed qemu was re-staged: %q", line)
+	}
+}
+
+// Refuse-and-stay covers the bundle: a tampered qemu tarball (fetched AFTER the agent) leaves
+// no agent.next, no net-wrap.next, no qemu.next, no tree and no arm. And a tarball that
+// verifies but will not unpack is refused the same way.
+func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
+	c := bundleChannel(t, "x")
+	c.bodies[releasePath(artifactQEMU)] = []byte("not the signed bytes")
+	u, l := updateFixture(t, c, nil)
+	if _, err := u.Run(context.Background(), TargetLatest); !errors.Is(err, ErrArtifactMismatch) {
+		t.Fatalf("err = %v, want ErrArtifactMismatch", err)
+	}
+	assertNothingStaged(t, l)
+	assertBundleNotStaged(t, l)
+	if _, err := os.Stat(l.QEMUTree(testVersion)); !os.IsNotExist(err) {
+		t.Error("a tree was extracted from a tampered tarball")
+	}
+
+	// Signed but not a tarball: refused at unpack, nothing staged.
+	junk := []byte("this is not a tar")
+	var zb bytes.Buffer
+	zw, _ := zstd.NewWriter(&zb)
+	zw.Write(junk)
+	zw.Close()
+	c2 := bundleChannel(t, "y")
+	var m Manifest
+	json.Unmarshal(c2.bodies[pointerPath(ManifestName)], &m)
+	for i := range m.Artifacts {
+		if m.Artifacts[i].Name == artifactQEMU {
+			m.Artifacts[i].SHA256, m.Artifacts[i].Size = sha(zb.Bytes()), int64(zb.Len())
+		}
+	}
+	mb, _ := json.Marshal(m)
+	for _, p := range []string{pointerPath(ManifestName), releasePath(ManifestName)} {
+		c2.bodies[p] = mb
+		c2.bodies[p+sigSuffix] = ed25519.Sign(c2.priv, mb)
+	}
+	c2.bodies[releasePath(artifactQEMU)] = zb.Bytes()
+	u2, l2 := updateFixture(t, c2, nil)
+	_, err := u2.Run(context.Background(), TargetLatest)
+	if err == nil || !strings.Contains(err.Error(), "unpack") {
+		t.Fatalf("err = %v, want an unpack refusal", err)
+	}
+	assertNothingStaged(t, l2)
+	assertBundleNotStaged(t, l2)
+	if _, err := os.Stat(l2.QEMUTree(testVersion)); !os.IsNotExist(err) {
+		t.Error("a tree appeared from a tarball that would not unpack")
+	}
 }

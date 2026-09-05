@@ -3,10 +3,17 @@
 #
 # The agent launches the guest via `systemd-run`, i.e. through PID 1 -- so it cannot hand
 # qemu an inherited fd. A macvtap NIC has no ifname qemu can open; its datapath is the
-# /dev/tap<ifindex> chardev, attached as `-netdev tap,fd=N`. This dumb, agent-INDEPENDENT
-# shim (the briard-exec pattern) is the guest unit's ExecStart: for each macvtap NIC
-# it pins the device MAC (so it matches qemu's mac=), brings it up, opens the chardev on the
-# requested fd, then execs qemu -- which inherits those fds.
+# /dev/tap<ifindex> chardev, attached as `-netdev tap,fd=N`. This dumb shim is the guest
+# unit's ExecStart: for each macvtap NIC it pins the device MAC (so it matches qemu's mac=),
+# brings it up, opens the chardev on the requested fd, then execs qemu -- which inherits those
+# fds.
+#
+# It is CATTLE, not part of the frozen pivot, although it sits beside briard-exec/briard-commit
+# in $PREFIX/agent and looks like them. Those two are written once by install.sh and never
+# updated ([B.84]); this is a shipped artifact of the host bundle, staged as briard-net-wrap.next
+# and committed WITH the agent by briard-commit ([B.86b]) -- because its contract is with the
+# agent (the argv below, and the fd numbers both sides agree on), so the two must never
+# straddle a release boundary.
 #
 #   briard-net-wrap <dev> <mac> <fd> [<dev> <mac> <fd> ...] -- <qemu> <args...>
 #

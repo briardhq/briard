@@ -289,7 +289,7 @@ fi
 # ---- 3. the rest of the artifacts (cattle) -----------------------------------------
 # Lay down /opt/briard from the staging dir. The agent binary + qemu bundle + guest
 # image are the self-updating cattle; the base guest image is read-only backing.
-mkdir -p "$PREFIX/qemu" "$PREFIX/guest-image"
+mkdir -p "$PREFIX/guest-image"
 if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	# Now that the host is admitted, let the bootstrap fetch+verify the whole set (qemu bundle,
 	# guest image, and a fresh briard-agent) against the bundled release keyring, refusing any
@@ -318,14 +318,35 @@ if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	install -m0755 "$HOSTSRC/briard-agent" "$PREFIX/agent/briard-agent"
 fi
 # The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
-# ExecStart under NET_MODE=macvtap. Bundled alongside the agent; a dumb, versioned shell artifact.
+# ExecStart under NET_MODE=macvtap. Cattle that rides with the agent ([B.86b]): it lands here,
+# and an update stages briard-net-wrap.next beside it for briard-commit to move.
 NET_WRAP=""
 if [ -f "$HOSTSRC/briard-net-wrap" ]; then
 	install -m0755 "$HOSTSRC/briard-net-wrap" "$PREFIX/agent/briard-net-wrap"
 	NET_WRAP="$PREFIX/agent/briard-net-wrap"
 fi
-cp -a "$HOSTSRC/qemu/." "$PREFIX/qemu/"
-chmod -R u+w "$PREFIX/qemu"
+# THE QEMU TREE, REACHED THROUGH A LINK ([B.86b]). One extracted bundle per release lives at
+# $PREFIX/agent/qemu-<release>/ -- inside the directory the frozen pivot commits in -- and
+# $PREFIX/agent/qemu is a symlink to the current one. An update extracts the next release's
+# tree beside it and stages qemu.next as a link; briard-commit then commits qemu with ONE
+# rename of that link (\`mv -T\`), so no recursive delete ever runs near a frozen script and
+# the previous tree simply stays on disk until the agent prunes it at a guest launch.
+#
+# $PREFIX/qemu stays as the PUBLIC path, a fixed link onto that moving one: the bundle bakes
+# /opt/briard/qemu/lib/ld-linux... into its ELF interpreter (qemu-bundle.nix), so that path must
+# always resolve to the running tree, and QEMU= / QEMU_DATADIR= below point through it. Named by
+# the installed release when a manifest is present, so a later pin back to it reuses the tree;
+# the local staging path has no manifest and gets a fixed name.
+QEMU_REL=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$HOSTSRC/manifest.json" 2>/dev/null || true)
+QEMU_TREE="$PREFIX/agent/qemu-${QEMU_REL:-install}"
+rm -rf "$QEMU_TREE"
+mkdir -p "$QEMU_TREE"
+cp -a "$HOSTSRC/qemu/." "$QEMU_TREE/"
+chmod -R u+w "$QEMU_TREE"
+ln -sfnT "$(basename "$QEMU_TREE")" "$PREFIX/agent/qemu"
+# An install that predates the link laid a real directory here; a link cannot replace one.
+if [ -d "$PREFIX/qemu" ] && [ ! -L "$PREFIX/qemu" ]; then rm -rf "$PREFIX/qemu"; fi
+ln -sfnT agent/qemu "$PREFIX/qemu"
 cp -f "$GUESTSRC/nixos.qcow2" "$PREFIX/guest-image/nixos.qcow2"
 # THE INSTALLED MANIFESTS, one per chain, each beside what it describes: the exact signed bytes
 # that verified, so the node can say which release it is on -- and so the update path ([B.86b])
@@ -914,6 +935,17 @@ if [ -e $RUNDIR/trial ]; then
 	if [ -e $UPDATE_BASE/manifest.json.next ]; then
 		mv $UPDATE_BASE/manifest.json.next $UPDATE_BASE/manifest.json
 	fi
+	# The rest of the host bundle commits WITH the agent ([B.86b]), each existence-guarded: an
+	# update stages only what the release changed, so a partial set is the normal case. qemu is
+	# a LINK to a tree, and -T is load-bearing: without it, \`mv qemu.next qemu\` onto a link to a
+	# directory would move the staged link INSIDE that directory, silently. With it the commit is
+	# one rename(2) of the link; the previous tree stays until the agent prunes it.
+	if [ -e $UPDATE_BASE/briard-net-wrap.next ]; then
+		mv -T $UPDATE_BASE/briard-net-wrap.next $UPDATE_BASE/briard-net-wrap
+	fi
+	if [ -L $UPDATE_BASE/qemu.next ]; then
+		mv -T $UPDATE_BASE/qemu.next $UPDATE_BASE/qemu
+	fi
 	rm -f $RUNDIR/trial
 fi
 EOF
@@ -1002,11 +1034,14 @@ Environment=GOTRACEBACK=all
 Type=notify
 NotifyAccess=main
 # READY=1 means THE AGENT started -- config read, loop entered -- not that the node is healthy.
-# So this bounds a config read, not a bring-up, and 30s is generous for that. It deliberately does
-# NOT have to cover BringUpBudget: the agent signals ready before it brings the guest up, which is
-# what lets the watchdog cover bring-up and the recovery ladder instead of arming only after a
-# node first converges (an agent whose guest never converges would otherwise never arm one at all).
-TimeoutStartSec=30
+# It deliberately does NOT have to cover BringUpBudget: the agent signals ready before it brings
+# the guest up, which is what lets the watchdog cover bring-up and the recovery ladder instead of
+# arming only after a node first converges (an agent whose guest never converges would otherwise
+# never arm one at all). What it DOES cover, on a trial boot that staged a new qemu, is the
+# candidate's smoke test of that qemu ([B.86b]) -- a scratch machine booted and killed on first
+# sign of life, bounded by its own 20s so the agent can still write down WHY it refused before
+# the start fails; this window is sized to sit comfortably above that, not to a config read.
+TimeoutStartSec=60
 # The watchdog: systemd kills the unit if the agent stops sending WATCHDOG=1 for this long, and
 # Restart= brings it back. Sized by the longest GAP between pings, not by the longest thing the
 # agent legitimately does -- the agent beats between its bounded steps and takes a lease across the

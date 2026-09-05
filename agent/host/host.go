@@ -29,6 +29,7 @@ import (
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/selfupdate"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
@@ -452,6 +453,29 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			res.Name, len(res.Peers), spec.Witness != nil)
 		cfg.Resource, cfg.Mesh = res, spec
 	}
+	// THE TRIAL'S OWN GATE ([B.86b]): a candidate that brought a new qemu proves it runs on THIS
+	// host before it sends READY -- the binary execs, its libs resolve, the device models we
+	// depend on exist, a scratch machine reaches `running`. Only on a trial boot AND only with
+	// qemu.next staged: a refused qemu stays staged and inert, and must never make the committed
+	// agent's ordinary starts pay for (or fail) a boot. Failure is all-or-nothing by
+	// construction: no READY -> briard-commit never runs -> the pivot falls back to the old agent
+	// WITH the old qemu, a pairing that was tested; committing the agent alone would land on
+	// agent N + qemu N-1, which nobody ever tested. The question asked is not "is this qemu
+	// good" but "does release N work on this host" -- a missing lib, an old glibc, an absent
+	// device model -- and if the answer is no, refusing the release is right. The one line left
+	// behind is for the agent that comes back, which is the one that can still report.
+	layout := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir)
+	if layout.InTrial() && layout.NextQEMUStaged() {
+		tree, _ := layout.NextQEMUTree()
+		logf("trial boot with a staged qemu: smoke-testing %s before READY", tree)
+		if err := platform.SmokeTest(ctx, tree, cfg.Accel, cfg.CPUModel, logf); err != nil {
+			if werr := layout.WriteFailure(cfg.Version, err.Error()); werr != nil {
+				logf("could not leave the trial's failure message (%v)", werr)
+			}
+			return fmt.Errorf("host bundle %s refused on this host: %w", cfg.Version, err)
+		}
+		logf("staged qemu passed its smoke test; committing the bundle")
+	}
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
@@ -546,6 +570,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		if peers := len(cfg.Resource.Peers) - 1; peers > 0 {
 			alerter = newRedundancyAlerter(n, cfg.Node, peers, logf)
 		}
+	}
+	// A trial that refused its own release ([B.86b]) could not report it -- failing the start IS
+	// the mechanism -- so it left one line, and the agent that came back after the revert says
+	// so. Taken once. The staged bundle stays on disk, inert, until the channel moves past it.
+	if release, reason, ok := layout.TakeFailure(); ok {
+		escalate(ctx, n, logf, "briard-agent", "host bundle update", release, errors.New(reason))
 	}
 	// The one degradation the alerter above CANNOT report, because the same condition is what stops
 	// it being built: a guest replicating to peers this host has no record of. Checked once, here,
@@ -773,6 +803,14 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		var err error
 		if g, err = platform.Launch(bringup, qspec); err != nil {
 			return nil, nil, fmt.Errorf("host: launch guest: %w", err)
+		}
+		// A fresh launch is the one moment no qemu of ours runs from any tree but the one just
+		// launched: collect the bundles neither link names ([B.86b]; PruneQEMUTrees says why
+		// here and only here). Best-effort -- disk space, never bring-up, is what it protects.
+		if removed, err := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir).PruneQEMUTrees(); err != nil {
+			logf("pruning old qemu trees: %v", err)
+		} else if len(removed) > 0 {
+			logf("pruned old qemu trees %v", removed)
 		}
 	}
 

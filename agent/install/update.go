@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -23,8 +26,23 @@ import (
 // forcing after a grace is the backstop. That separation is what keeps "the case where forcing
 // is risky" and "the case where forcing happens" from ever overlapping.
 //
-// Scope is the agent binary alone ([B.86b] widens it to the bundle): the one thing whose
-// restart is transparent, because the guest lives in its own transient unit and is re-adopted.
+// Scope is the HOST BUNDLE ([B.86b]): the agent, the guest launch shim and the qemu tree move
+// as one release, staged as .next siblings and committed together by briard-commit. Only
+// entries whose sha256 differs from the installed manifest's are fetched -- a JSON compare, no
+// hashing of the 86 MB qemu tree -- which is what keeps a daily tick at the agent's ~9 MB
+// rather than the bundle's ~28 MB, and is safe by construction: an identical hash is an
+// identical artifact, so a skipped qemu is still the pairing the release was tested with.
+// A staged qemu is smoke-tested by the CANDIDATE before it sends READY (host.Run), so a
+// release that does not run on this host refuses itself whole and the pivot lands back on
+// the combination that was tested, never on agent N with qemu N-1.
+
+// The three artifacts of the host bundle, by the names the manifest (and install.sh) use.
+// Anything else a host manifest may one day carry is left to the release that knows it.
+const (
+	artifactAgent   = "briard-agent"
+	artifactNetWrap = "briard-net-wrap"
+	artifactQEMU    = "qemu-bundle.tar.zst"
+)
 
 // ErrBelowFloor is returned for an exact pin older than the current stable (or one whose floor
 // cannot be read): refused loudly, so a bad pin looks like one to whoever sent it.
@@ -117,7 +135,7 @@ func dateOf(id string) (int64, error) {
 }
 
 // Update is one run of the verb: resolve target on the fetcher's chain/platform, decide against
-// the installed manifest, and stage + arm the agent artifact when due.
+// the installed manifest, and stage + arm the changed parts of the host bundle when due.
 type Update struct {
 	Fetcher *Fetcher
 	Layout  selfupdate.Layout
@@ -157,32 +175,94 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 	logf("update: %s", d.Reason)
 
-	var agent *Entry
-	for i := range want.Artifacts {
-		if want.Artifacts[i].Name == "briard-agent" {
-			agent = &want.Artifacts[i]
-		}
-	}
-	if agent == nil {
-		return "", fmt.Errorf("%w: release %s ships no briard-agent", ErrManifest, want.Version)
-	}
-	// Into a private temp dir on the same filesystem as the candidate, then staged through the
-	// layout (write + fsync + rename) — verified bytes only ever reach agent.next whole.
+	// FETCH EVERYTHING FIRST, STAGE NOTHING UNTIL IT ALL VERIFIED. Into a private temp dir on
+	// the same filesystem as the candidates; a refusal anywhere (a tampered net-wrap, a qemu
+	// tarball whose hash disagrees) returns before any .next exists, so refuse-and-stay holds
+	// for the bundle as it did for the agent alone. The one thing that may outlive a refused
+	// run is an extracted qemu TREE, and that is deliberate: it is verified bytes under a
+	// name no link points at, inert until a run stages a link to it.
 	tmp, err := os.MkdirTemp(u.Layout.Base, ".update-")
 	if err != nil {
 		return "", fmt.Errorf("install: update temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmp)
-	if err := u.Fetcher.fetchArtifact(ctx, path.Join(u.Fetcher.Chain, want.Version, u.Fetcher.Platform), tmp, *agent); err != nil {
-		return "", err
+	from := path.Join(u.Fetcher.Chain, want.Version, u.Fetcher.Platform)
+	var agent, netWrap *Entry
+	qemuTree := ""
+	for i := range want.Artifacts {
+		a := &want.Artifacts[i]
+		switch a.Name {
+		case artifactAgent:
+			// Never hash-skipped: the candidate is what the trial RUNS, and its id is baked into
+			// it, so on a real release the skip could not fire anyway.
+			if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
+				return "", err
+			}
+			agent = a
+		case artifactNetWrap:
+			if unchanged(have, *a) {
+				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
+				continue
+			}
+			if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
+				return "", err
+			}
+			netWrap = a
+		case artifactQEMU:
+			if unchanged(have, *a) {
+				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
+				continue
+			}
+			tree := u.Layout.QEMUTree(want.Version)
+			if committed, ok := u.Layout.CommittedQEMUTree(); ok && committed == tree {
+				// No installed manifest to compare, but the link already names this release's
+				// tree (a node whose manifest was lost): nothing to stage for qemu.
+				logf("update: qemu tree %s is already the committed one", filepath.Base(tree))
+				continue
+			}
+			if _, err := os.Stat(tree); err == nil {
+				// Left by an earlier run of this same release (a failed trial, most likely):
+				// complete by construction, since a tree appears only by rename.
+				logf("update: reusing the extracted qemu tree %s", filepath.Base(tree))
+			} else {
+				if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
+					return "", err
+				}
+				// fetchArtifact expanded the verified .zst to the bare tarball beside it.
+				if err := extractTree(ctx, filepath.Join(tmp, strings.TrimSuffix(a.Name, compressedSuffix)), tree); err != nil {
+					return "", err
+				}
+			}
+			qemuTree = tree
+		default:
+			logf("update: %s is not part of the host bundle this agent knows; left alone", a.Name)
+		}
 	}
-	f, err := os.Open(tmp + "/briard-agent")
-	if err != nil {
-		return "", err
+	if agent == nil {
+		return "", fmt.Errorf("%w: release %s ships no %s", ErrManifest, want.Version, artifactAgent)
 	}
-	defer f.Close()
-	if err := u.Layout.StageNext(f); err != nil {
+
+	// STAGE. Whatever an earlier run staged of the bundle goes first, so the only .next
+	// siblings briard-commit can find are this release's; then each verified file lands whole
+	// (write + fsync + rename) beside the one it replaces.
+	if err := u.Layout.DiscardNextBundle(); err != nil {
+		return "", fmt.Errorf("install: discard stale candidates: %w", err)
+	}
+	staged := []string{"agent"}
+	if err := stageFile(filepath.Join(tmp, agent.Name), u.Layout.StageNext); err != nil {
 		return "", fmt.Errorf("install: stage candidate: %w", err)
+	}
+	if netWrap != nil {
+		if err := stageFile(filepath.Join(tmp, netWrap.Name), u.Layout.StageNextNetWrap); err != nil {
+			return "", fmt.Errorf("install: stage net-wrap: %w", err)
+		}
+		staged = append(staged, "net-wrap")
+	}
+	if qemuTree != "" {
+		if err := u.Layout.StageNextQEMU(qemuTree); err != nil {
+			return "", fmt.Errorf("install: stage qemu: %w", err)
+		}
+		staged = append(staged, "qemu")
 	}
 	if err := u.Layout.StageNextManifest(wantBytes); err != nil {
 		return "", fmt.Errorf("install: stage manifest: %w", err)
@@ -190,7 +270,56 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	if err := u.Layout.Arm(); err != nil {
 		return "", fmt.Errorf("install: arm: %w", err)
 	}
-	return fmt.Sprintf("staged %s, armed — the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)", want.Version), nil
+	return fmt.Sprintf("staged %s (%s), armed — the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)",
+		want.Version, strings.Join(staged, ", ")), nil
+}
+
+// unchanged reports whether the installed manifest pins a.Name at the same sha256 the target
+// does -- the whole of the "download only what changed" rule. No installed manifest, or none
+// naming this artifact, means fetch (the safe default).
+func unchanged(have *Manifest, a Entry) bool {
+	if have == nil {
+		return false
+	}
+	for _, h := range have.Artifacts {
+		if h.Name == a.Name {
+			return h.SHA256 == a.SHA256
+		}
+	}
+	return false
+}
+
+func stageFile(src string, stage func(io.Reader) error) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return stage(f)
+}
+
+// extractTree unpacks a verified qemu tarball into dest, which appears whole or not at all
+// (unpacked into a sibling temp dir, renamed into place). tar(1) rather than archive/tar:
+// install.sh unpacks this same tarball with it, and the update unit's PATH reaches it on
+// every host we install on -- one way to open the bundle, not two.
+func extractTree(ctx context.Context, tarball, dest string) error {
+	tmp, err := os.MkdirTemp(filepath.Dir(dest), ".update-tree-")
+	if err != nil {
+		return fmt.Errorf("install: qemu tree temp dir: %w", err)
+	}
+	if out, err := exec.CommandContext(ctx, "tar", "-xf", tarball, "-C", tmp).CombinedOutput(); err != nil {
+		os.RemoveAll(tmp)
+		return fmt.Errorf("install: unpack %s: %w: %s", filepath.Base(tarball), err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil { // MkdirTemp makes it 0700; a tree is an ordinary directory
+		os.RemoveAll(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		os.RemoveAll(tmp)
+		return fmt.Errorf("install: place qemu tree: %w", err)
+	}
+	return nil
 }
 
 // installed reads the committed release's manifest; nil (and a log line) when absent or
