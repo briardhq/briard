@@ -1005,7 +1005,11 @@ pkgs.testers.runNixOSTest {
     # node is already at the release it installed from. Not a no-op test: the same command with
     # a version the channel does not carry must fail through the same path.
     host.succeed("test -x /opt/briard/agent/briard-update")
-    host.succeed("systemctl is-enabled briard-update.timer")
+    # is-ACTIVE, not is-enabled: this install lands its units in /run/systemd/system (see the
+    # BRIARD_UNIT_DIR note above), where nothing can be enabled and install.sh starts the timer
+    # instead. Active is what both install modes promise, and what a persistent install gets
+    # from `enable --now`.
+    host.succeed("systemctl is-active briard-update.timer")
     host.succeed("systemctl cat briard-update.service | grep -q '^Type=oneshot'")
     host.succeed("test -s /opt/briard/agent/manifest.json && test -s /opt/briard/guest-image/manifest.json")
     host.succeed(f"grep -q '\"version\":\"{V}\"' /opt/briard/agent/manifest.json")
