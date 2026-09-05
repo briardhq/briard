@@ -1109,6 +1109,88 @@ func TestPowerOffOutlivesTheCancellationItCauses(t *testing.T) {
 	}
 }
 
+// signalledExec is the SECOND way the shutdown kills the command that asked for it, and the one
+// [B.132] does not cover. With the handler detached from the dispatch context, systemd is still
+// the one tearing the unit down: the default KillMode is control-group, so its SIGTERM reaches
+// `systemctl` directly and the child dies by SIGNAL rather than by cancellation. Nothing about
+// that is a refusal -- the machine really is going down, which is precisely WHY the signal came.
+//
+// The manager says so, and says it the awkward way: `is-system-running` prints `stopping` on
+// stdout and exits NON-ZERO, because it exits 0 only for `running`. Both halves are deliberate
+// here. A handler that reads the probe's STATUS instead of its OUTPUT sees a failed probe on top
+// of a failed command and reports a refusal -- the bug this fixture exists to catch.
+type signalledExec struct {
+	fakeExec
+	state string // what the manager reports: "stopping" for the real shutdown, "running" for a refusal
+}
+
+func (s *signalledExec) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	s.runs = append(s.runs, append([]string{name}, args...))
+	switch strings.Join(args, " ") {
+	case "poweroff --no-block":
+		// The live error text, byte for byte (run 33978948462): not a context error and not an
+		// exit status -- a signal, which is what makes it invisible to the [B.132] fix.
+		return nil, errors.New("signal: terminated")
+	case "is-system-running":
+		return []byte(s.state + "\n"), errors.New("exit status 1")
+	}
+	return nil, nil
+}
+
+func (s *signalledExec) asked(what string) bool {
+	for _, r := range s.runs {
+		if strings.Join(r, " ") == what {
+			return true
+		}
+	}
+	return false
+}
+
+// THE COMMAND DIED AND THE REQUEST WORKED, and only the manager can say so. This is [B.85]'s third
+// distinct cause: the host read `signal: terminated` as a refusal and pressed the ACPI button on a
+// guest already shutting down -- one sample in four on an idle L0, run 33978948462.
+//
+// Fails without the fix: the handler returns the command's error and PowerOff reports it.
+func TestPowerOffTrustsTheManagerNotTheExitStatus(t *testing.T) {
+	x := &signalledExec{state: "stopping"}
+	cconn, sconn := net.Pipe()
+	go Serve(context.Background(), sconn, x)
+	g := NewClient(cconn)
+	t.Cleanup(func() { g.Close() })
+
+	if err := g.PowerOff(context.Background()); err != nil {
+		t.Errorf("a command killed by the shutdown it started is not a refusal, got %v", err)
+	}
+	// It must have ASKED. Without this the test passes just as well for a handler that swallows
+	// every error unconditionally -- the other way to make it green, and the wrong one, since
+	// that reports a shutdown which never started with exactly as much confidence.
+	if !x.asked("systemctl is-system-running") {
+		t.Errorf("the verb decided the outcome without asking the manager: %v", x.runs)
+	}
+}
+
+// AND THE ALARM MUST SURVIVE. A machine that is not stopping is a refusal the host has to hear,
+// whatever the command did, and it has to keep the ORIGINAL text: "which route refused" is the
+// first thing anyone reading the escalation needs (TestStopCleanlyReportsAGuestThatWillNotGoDown
+// in agent/host pins the same property one level up).
+//
+// This is what stops the fix above from degenerating into "ignore every failure".
+func TestPowerOffStillRefusesWhenNothingIsStopping(t *testing.T) {
+	x := &signalledExec{state: "running"}
+	cconn, sconn := net.Pipe()
+	go Serve(context.Background(), sconn, x)
+	g := NewClient(cconn)
+	t.Cleanup(func() { g.Close() })
+
+	err := g.PowerOff(context.Background())
+	if err == nil {
+		t.Fatal("a guest that is not shutting down reported a clean poweroff")
+	}
+	if !strings.Contains(err.Error(), "signal: terminated") {
+		t.Errorf("the refusal lost the error that says why: %v", err)
+	}
+}
+
 // Arming never fetches: a closure that is not already in the store is refused
 // before the bootloader is touched, so a half-armed grub cannot outlive the mistake.
 func TestStageBootRefusesUnstagedClosure(t *testing.T) {

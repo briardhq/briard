@@ -151,6 +151,50 @@ const (
 // The gap to that backstop is asserted at compile time where the backstop is declared.
 const PowerOffGrace = 2 * time.Second
 
+// powerOffPollEvery paces the state probe below. Short relative to PowerOffGrace, because the gap
+// it covers -- systemd ACCEPTING the shutdown job, then the manager entering it -- is milliseconds
+// on a healthy machine and worth several attempts on a loaded one.
+const powerOffPollEvery = 100 * time.Millisecond
+
+// systemStopping answers the one question that settles `os.poweroff`: has the manager entered
+// shutdown? It exists because the command that asks for one is routinely killed BY the shutdown it
+// asks for, so its exit status reports a failure for a request that worked. Two mechanisms did
+// that, in sequence -- the dispatch context ([B.132]) and then systemd's own cgroup SIGTERM -- and
+// the second is what makes this the right shape rather than a third patch on the first: the verb
+// stops inferring its outcome from how a process died and observes the state it claims to cause.
+//
+// ⚠️ THE PROBE'S EXIT CODE IS NOT THE ANSWER EITHER, and it is the trap this function exists to
+// contain: `systemctl is-system-running` exits 0 ONLY for `running`. `stopping` -- the state being
+// looked for -- exits NON-ZERO, as do `degraded` and `starting`. Written as an ordinary success
+// check it would invert its own result and call a working shutdown a failure, which is the bug one
+// level up wearing a different hat. THE STDOUT IS THE ANSWER; the status is discarded on purpose.
+//
+// POLLED RATHER THAN READ ONCE, for two independent reasons. `--no-block` returns when the job is
+// ENQUEUED, which is not the instant the manager flips to `stopping`, so a single immediate read
+// can land in that gap. And this child sits in the same cgroup as the one whose death started all
+// this, so the probe can be signalled too -- a fix that loses to the race it settles is no fix.
+//
+// COST, since it is not free: a genuine refusal now takes the full grace to report instead of
+// returning at once, because "not stopping yet" and "never going to stop" look the same until the
+// window closes. Bounded by the caller's context, two seconds, against a host-side shutdown grace
+// measured in tens of them -- and the escalation it delays is the one this whole path exists to
+// avoid firing spuriously.
+func systemStopping(ctx context.Context, x Executor) bool {
+	for {
+		// Error deliberately dropped: a probe that was killed, or a manager that answers
+		// non-zero because it is not `running`, are both just "no answer yet, ask again".
+		out, _ := x.Run(ctx, "systemctl", "is-system-running")
+		if string(bytes.TrimSpace(out)) == "stopping" {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(powerOffPollEvery):
+		}
+	}
+}
+
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
 // whole-OS closure was never a property of the data. The data's identity is per-service — the
 // service manifest, here on the replicated volume — while a system
@@ -1496,9 +1540,32 @@ func dispatch(x Executor) dispatchFunc {
 			// the failure changed shape from a lost reply into a delivered error -- and why the
 			// fix belongs here rather than in the channel. The reply was never the problem; the
 			// command underneath it was.
+			// ⚠️ AND THE COMMAND'S EXIT STATUS IS STILL NOT THE ANSWER. Detaching the context
+			// stopped US killing the child; it does not stop SYSTEMD killing it. The unit's
+			// default KillMode is control-group, so the shutdown this verb starts SIGTERMs
+			// every process in the agent's cgroup -- `systemctl` included -- and the error
+			// changes shape again, from `context canceled` to `signal: terminated`. Measured on
+			// run 33978948462, one sample in four on an idle L0: the host read a request that
+			// had WORKED as a refusal and reached for the ACPI button, which is [B.85] going
+			// red for the third distinct reason.
+			//
+			// So stop inferring the outcome from how the command died and ASK THE MANAGER. Being
+			// signalled is not evidence the job was enqueued -- `--no-block` returns once systemd
+			// has accepted it, and a SIGTERM landing before that would have us report a shutdown
+			// that never started. `is-system-running` reporting `stopping` IS that evidence, and
+			// it is the same fact the verb claims to have caused, observed rather than guessed.
+			//
+			// The exit status is consulted first and only as a fast path: a command that returned
+			// cleanly needs no second question. Every non-`stopping` outcome keeps its ORIGINAL
+			// error, so a genuine refusal still reaches the host with the text that says why, and
+			// the host still escalates. What this removes is the false negative, not the alarm.
 			pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PowerOffGrace)
 			defer cancel()
-			return nil, runIn(pctx, "systemctl", "poweroff", "--no-block")
+			perr := runIn(pctx, "systemctl", "poweroff", "--no-block")
+			if perr == nil || systemStopping(pctx, x) {
+				return nil, nil
+			}
+			return nil, perr
 		case verbResources:
 			var req resourcesRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
