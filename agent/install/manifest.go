@@ -11,18 +11,20 @@ import (
 	"sort"
 )
 
-// notArtifacts are the channel files that describe or accompany the artifact set rather than
-// belong to it. install.sh is fetched by the one-liner before any verification exists (so it
-// cannot be under the signature it would be verifying), and the manifest cannot list itself.
+// notArtifacts are the channel files that describe the artifact set rather than belong to it:
+// the manifest cannot list itself, nor its signature. Nothing else is excluded, because nothing
+// else lives in a release directory -- install.sh sits at the channel root, outside every chain
+// ([B.86e]); a release directory holds exactly what its manifest names.
 var notArtifacts = map[string]bool{
 	ManifestName:             true,
 	ManifestName + sigSuffix: true,
-	"install.sh":             true,
-	"VERSION":                true,
 }
 
 // WriteManifest describes every artifact in dir and writes dir/manifest.json — the exact bytes
-// the release then signs and FetchVerified later reads.
+// the release then signs and FetchVerified later reads. chain names the release line the
+// directory belongs to (ChainHost, ChainGuest), platform the arm within it ("" for a chain
+// without that level) and version the release id; all go INSIDE the signed bytes, so a manifest
+// served from a pointer path can say which release it is and where its artifacts live.
 //
 // ⚠️ THIS EXISTS SO THERE IS ONE IMPLEMENTATION OF THE FORMAT. It used to be a printf loop in
 // scripts/publish-release.sh, hand-assembling JSON — including `"mode":493`, which is 0o755
@@ -35,12 +37,23 @@ var notArtifacts = map[string]bool{
 // Every regular file in dir is an artifact except the ones that describe the set (notArtifacts).
 // Entries are sorted by name so the same directory always produces the same bytes — the manifest
 // is signed, and a set that reordered itself would churn the signature for no reason.
-func WriteManifest(dir string) error {
+func WriteManifest(dir, chain, platform, version string) error {
+	if !validSegment(chain) {
+		return fmt.Errorf("install: bad chain name %q", chain)
+	}
+	if platform != "" && !validSegment(platform) {
+		return fmt.Errorf("install: bad platform name %q", platform)
+	}
+	// A version id that spells a pointer would make `<chain>/stable/` a release directory and a
+	// pointer at once; the tree has no way to say which it is.
+	if !validSegment(version) || version == TargetStable || version == TargetLatest {
+		return fmt.Errorf("install: bad release version %q", version)
+	}
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("install: read staging dir %s: %w", dir, err)
 	}
-	var man Manifest
+	man := Manifest{Chain: chain, Platform: platform, Version: version}
 	for _, e := range ents {
 		if e.IsDir() || notArtifacts[e.Name()] {
 			continue

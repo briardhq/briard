@@ -1,24 +1,62 @@
 #!/usr/bin/env bash
 #
-# publish-release.sh — build, sign and publish the release channel a stranger
-# installs from. The consumer already exists (agent/install/fetch.go + scripts/install.sh),
-# so this script has NO LATITUDE: it must emit exactly what the verifier reads, or installs
-# refuse. Everything below is read off that verifier rather than designed here.
+# publish-release.sh — build, sign and publish the release channel a stranger installs from
+# and a node updates from. The consumer already exists (agent/install/fetch.go +
+# scripts/install.sh), so this script has NO LATITUDE: it must emit exactly what the verifier
+# reads, or installs refuse. Everything below is read off that verifier rather than designed
+# here.
 #
-# THE CONTRACT, at <BRIARD_CHANNEL_URL> (default https://get.briard.io):
-#   manifest.json      {"artifacts":[{"name","sha256","size","mode"}]}, sha256 lowercase hex,
-#                      mode omitted => 0644
+# THE TREE, at <BRIARD_CHANNEL_URL> (default https://get.briard.io) — [B.86e]:
+#
+#   install.sh                          unsigned, outside every chain (see below)
+#   host/
+#     <version>/linux/                  manifest.json(+.sig), briard-agent, briard-net-wrap,
+#                                       qemu-bundle.tar.zst
+#     <version>/windows/                manifest.json(+.sig), qemu-bundle-windows.tar.zst
+#                                       (the Windows arm, [V3b.27](b); no consumer until v5)
+#     latest/{linux,windows}/           manifest.json(+.sig), briard-agent (linux)
+#     stable/{linux,windows}/           likewise
+#   guest/
+#     <version>/                        manifest.json(+.sig), nixos.qcow2.zst
+#     latest/ stable/                   manifest.json(+.sig)
+#
+# A CHAIN is a release line with its own version series: the host bundle moves as
+# `v3.<date>.<rev>`, the guest OS as `guest.<date>.<rev>` (same date and rev — both are staged
+# from one commit — but two chains, not two flavours of one release). The host chain has one
+# more level, the PLATFORM ARM, because a host bundle is built per host OS; the guest image is
+# the same VM on every host and has none. A POINTER is just a path serving a byte-copy of one
+# version's signed manifest: no pointer file, no second signature format, one verified hop. The
+# client resolves every artifact against the manifest's own `version` field
+# (<chain>/<version>[/<arm>]/<name>), never against the path it fetched the manifest from — so a
+# pointer costs a few KB, not a second 380 MB image. The ONE exception is `briard-agent`,
+# duplicated under the host pointers, because install.sh has to curl a bootstrap before anything
+# exists that can parse a manifest, and that bootstrap must come from the TARGET (a stale one
+# that cannot parse a newer manifest is the forward-compat bricking [B.86] exists to prevent).
+#
+#   manifest.json      {"chain","platform","version","artifacts":[{"name","sha256","size","mode"}]},
+#                      sha256 lowercase hex, mode omitted => 0644, platform omitted on the guest
 #   manifest.json.sig  a RAW 64-byte detached Ed25519 signature over the exact manifest bytes
 #                      (PureEdDSA over the whole file — no separate hash step)
-#   <name>             each artifact at the base URL: briard-agent (0755), briard-net-wrap
-#                      (0755), qemu-bundle.tar.zst, nixos.qcow2.zst — the big two travel
-#                      COMPRESSED and the agent expands them after verifying the signed hash,
-#                      so the manifest pins the compressed bytes (what the network carries).
-#                      The agent itself is never compressed: the bootstrap fetches it with curl
-#                      before anything exists that could decompress it.
+#   <name>             the big two travel COMPRESSED and the agent expands them after verifying
+#                      the signed hash, so the manifest pins the compressed bytes (what the
+#                      network carries). The agent itself is never compressed: the bootstrap
+#                      fetches it with curl before anything exists that could decompress it.
 #   install.sh         at the channel root, fetched by the one-liner before any verification
 #                      exists — which is why the repo being public and readable IS the answer
 #                      to the `curl | sh` objection.
+#
+# VERSIONED DIRECTORIES ARE IMMUTABLE. `publish` refuses a version the bucket already holds.
+# The guest image is not bit-reproducible (timestamps, filesystem UUIDs), so re-staging the same
+# commit yields different bytes under the same id — and a pointer copied from the old manifest
+# would then name bytes the versioned directory no longer serves. Recovery from a bad release is
+# therefore MOVING A POINTER (`promote` an older version), never re-publishing from the tag.
+#
+# `latest` moves on every publish; `stable` moves only on `promote`, and promotion is meant to
+# be evidence-driven (canary converged, fleet healthy for a real window) — never a release-day
+# action. The publish sequence in the operator skill tests a release at `latest` before anyone
+# promotes it. `promote` refuses a build whose date equals the currently promoted one: the
+# timer's stable path orders on the date field alone ([B.86a]), so a same-date promotion would
+# be invisible to it. A same-day fix-up takes the next day's number.
 #
 # SIGNING AND PUBLISHING ARE SEPARATE SUBCOMMANDS ON PURPOSE. `sign` needs the key and no
 # credential; `publish` needs the credential and no key. Either secret alone is inert — a
@@ -32,19 +70,27 @@
 # "re-derive this artifact from its tag", which a working directory can never satisfy.
 #
 # Subcommands:
-#   stage    [DIR]   build the artifacts, lay them out under DIR, write manifest.json
-#   sign     [DIR]   detached-sign DIR/manifest.json  (needs $RELEASE_SIGN_KEY, no credential)
-#   publish  [DIR]   upload DIR + install.sh to $RELEASE_WRITE  (needs the credential, no key)
-#   verify           fetch from the LIVE channel and check it the way a client does
+#   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests
+#   sign     [DIR]        detached-sign every manifest and lay the `latest` pointers
+#                         (needs $RELEASE_SIGN_KEY, no credential)
+#   publish  [DIR]        upload the versioned dirs, move `latest`, upload install.sh
+#                         (needs the credential, no key; refuses an already-published version)
+#   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm
+#                         (default: whatever host/latest names; refuses a same-date promotion)
+#   gc       [--keep V]…  archive versioned dirs no pointer names and nothing pins, older than
+#                         the 30-day floor, to $RELEASE_ARCHIVE — whole releases, never files
+#   verify                fetch stable + latest of every chain and arm from the LIVE channel and
+#                         check them the way a client does
 #
 # Env:
-#   BRIARD_CHANNEL_URL  public read base            (default https://get.briard.io)
-#   RELEASE_WRITE       write store URL — required by `publish`, e.g.
+#   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
+#   RELEASE_WRITE       write store URL — required by `publish`/`promote`/`gc`, e.g.
 #                       's3://get-briard-io?endpoint=<account>.r2.cloudflarestorage.com&region=auto'
+#   RELEASE_ARCHIVE     cold store URL for `gc` (same shape); refused unset — gc never deletes
 #   RELEASE_SIGN_KEY    PKCS8 PEM Ed25519 private key (sign mode; release secret store)
 #   RELEASE_PUBKEY      PKIX PEM public key, for `verify` (default: alongside the private key)
 #   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
-#   RELEASE_PURGE_TOKEN optional: bearer token for RELEASE_PURGE_URL (see `publish` for why)
+#   RELEASE_PURGE_TOKEN optional: bearer token for RELEASE_PURGE_URL (see purge_edge for why)
 #
 # Run from the repo root. See also scripts/publish-cache.sh — the OS-closure cache, a
 # DISTINCT trust root (nix's per-path narinfo signatures). The two keys are deliberately not
@@ -52,11 +98,16 @@
 # this one.
 set -euo pipefail
 
-# The artifact set lives under /release/; install.sh lives at the site root (the advertised
-# one-liner). SITE is DERIVED rather than a second knob -- one setting, one place to override.
-CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io/release}"
-SITE="${CHANNEL%/release}"
+CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
 STAGE_DEFAULT="./.release"
+CHAINS="host guest"
+# The platform arms of a chain. A chain without the level yields `-`, the FLAT arm, which every
+# loop below turns into "" (`arm=${a#-}`) so it runs once over "<chain>/<version>/" — a real
+# empty word would vanish from `for` and the chain would never be visited.
+arms_of() { case "$1" in host) echo "linux windows" ;; *) echo "-" ;; esac; }
+# Nothing younger than this is ever archived, whatever the pointers say, so `gc` can never
+# race a rollback or a fresh pin.
+GC_FLOOR_DAYS=30
 
 die() { echo "publish-release: $*" >&2; exit 1; }
 say() { echo ">>> $*"; }
@@ -67,6 +118,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "need $1 on PATH"; }
 ossl() {
 	if command -v openssl >/dev/null 2>&1; then openssl "$@"; else nix run nixpkgs#openssl -- "$@"; fi
 }
+aws() { nix run nixpkgs#awscli2 -- "$@"; }
 
 # The release id, and the dirty gate. Asked of the flake rather than recomputed here, so there
 # is exactly one definition of what a version is (flake.nix).
@@ -79,88 +131,124 @@ release_version() {
 	esac
 	echo "$v"
 }
+# The guest chain's id for a host id: same date and rev, its own series. One place, so the
+# installer's BRIARD_RELEASE=<host id> (which derives the guest id the same way) and this script
+# cannot disagree.
+guest_id() { echo "guest.${1#*.}"; }
+# The id a chain uses for the release named by a host id.
+chain_id() { case "$1" in guest) guest_id "$2" ;; *) echo "$2" ;; esac; }
+# The date field of an id — the ONLY thing the timer's stable path orders on.
+date_of() { echo "$1" | cut -d. -f2; }
+# A release directory's path below the chain: "<seg>" or "<seg>/<arm>".
+sub() { echo "$1${2:+/$2}"; }
+# The one versioned directory a staged chain holds.
+staged_version() {
+	local d
+	for d in "$1"/*/; do
+		d=$(basename "$d")
+		case "$d" in latest|stable) continue ;; esac
+		echo "$d"; return 0
+	done
+	return 1
+}
+# Read the bucket + endpoint out of a write URL.
+bucket_of() { echo "$1" | sed 's|^s3://\([^?]*\).*|s3://\1|'; }
+endpoint_of() { echo "https://$(echo "$1" | sed 's|.*endpoint=\([^&]*\).*|\1|')"; }
+# Does the bucket hold this key? (`s3 ls` prints nothing and exits 1 for a missing key.)
+have_key() { [ -n "$(aws s3 ls "$1" --endpoint-url "$2" 2>/dev/null)" ]; }
 
-out_of() { nix build --no-link --print-out-paths "$1"; }
+# Purge a list of URLs (stdin) at the edge. CDN-specific, so it rides behind two env vars —
+# but a publish without them warns loudly, because the alternative is a silently stale
+# channel: the CDN caches the artifacts (measured: max-age 14400 on the .zst files), and a
+# pointer that moved while the edge still serves its old bytes fails every install closed for
+# hours. Found live 2026-08-19; the first-ever publish went green only because nothing was
+# cached yet. Versioned directories are immutable, so only POINTER paths and install.sh ever
+# need purging.
+purge_edge() {
+	if [ -n "${RELEASE_PURGE_URL:-}" ] && [ -n "${RELEASE_PURGE_TOKEN:-}" ]; then
+		need curl; need jq
+		jq -R . | jq -s '{files: .}' |
+		curl -sf -X POST -H "Authorization: Bearer $RELEASE_PURGE_TOKEN" \
+			-H "Content-Type: application/json" "$RELEASE_PURGE_URL" --data @- |
+		jq -e '.success == true' >/dev/null ||
+			die "uploaded, but the edge purge FAILED -- the CDN may serve the previous pointer for hours; purge by hand, then verify"
+		say "edge cache purged"
+	else
+		cat >/dev/null
+		say "WARNING: RELEASE_PURGE_URL/RELEASE_PURGE_TOKEN unset -- the edge may serve the previous pointer for up to 4h (verify will rightly fail until it clears)"
+	fi
+}
+
+# The files a pointer directory carries, in the upload order that fails closed: the bootstrap
+# agent (if any) first, then the signature, then the manifest. A client racing the upload sees a
+# coherent old pair, a coherent new pair, or a manifest/signature mismatch it refuses — never a
+# manifest whose bytes are not there yet. (Observed on two consecutive publishes, 2026-08-19:
+# `sync --delete` emitted both an upload and a delete for the manifest in one run and the delete
+# won, so the live channel 404'd its manifest until a hand-run `cp` restored it. Pointers are
+# never synced, only cp'd, one file at a time.)
+POINTER_FILES="briard-agent briard-agent.exe manifest.json.sig manifest.json"
 
 case "${1:-}" in
 
 stage)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix; need sha256sum; need jq
-	V=$(release_version)
-	say "staging release $V into $DIR"
+	V=$(release_version); GV=$(guest_id "$V")
+	say "staging release $V (guest $GV) into $DIR"
 	rm -rf "$DIR"; mkdir -p "$DIR"
+	out_of() { nix build --no-link --print-out-paths "$1"; }
+	zst() { # in out — -19 not --ultra: 23s and 377 MB against gzip -9's 85s and 465 MB, on a
+	        # file published once and downloaded by every household. -T0 uses the release box's
+	        # cores; it does not change the output, so the manifest hash is unaffected by what
+	        # machine staged it.
+		nix run nixpkgs#zstd -- -19 -T0 -q --rm "$1" -o "$2" || die "compressing $1 failed"
+		chmod 0644 "$2"
+	}
+	# Deterministic tar: fixed mtime/owner and a sorted member order, or the same tree would
+	# produce a different sha256 on every run and the manifest would churn for no reason.
+	dtar() { tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$@"; }
 
-	# Copy, never symlink: the artifacts are uploaded as bytes, and a store symlink would
-	# publish a dangling link. `install -m` sets the mode the manifest then records.
-	install -m0755 "$(out_of .#artifacts.agent)/bin/briard-agent"        "$DIR/briard-agent"
-	install -m0755 "$(out_of .#artifacts.net-wrap)/bin/briard-net-wrap"  "$DIR/briard-net-wrap"
-	install -m0644 "$(out_of .#artifacts.guest-disk)/nixos.qcow2"        "$DIR/nixos.qcow2"
+	# THE HOST CHAIN, LINUX ARM: agent + net-wrap + qemu, one release ([B.86b]: they move as one
+	# bundle and commit as one, so they are published as one). Copy, never symlink: the artifacts
+	# are uploaded as bytes, and a store symlink would publish a dangling link. `install -m` sets
+	# the mode the manifest then records.
+	H="$DIR/host/$V/linux"; mkdir -p "$H"
+	install -m0755 "$(out_of .#artifacts.agent)/bin/briard-agent"        "$H/briard-agent"
+	install -m0755 "$(out_of .#artifacts.net-wrap)/bin/briard-net-wrap"  "$H/briard-net-wrap"
 	# qemu-bundle is a DIRECTORY in the store (bin/ lib/ share/ PROVENANCE) and the contract
-	# wants one file, so it is tarred here. Deterministically: fixed mtime/owner and a sorted
-	# member order, or the same tree would produce a different sha256 on every run and the
-	# manifest would churn for no reason.
-	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-	    -cf "$DIR/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .
-	chmod 0644 "$DIR/qemu-bundle.tar"
+	# wants one file, so it is tarred here.
+	dtar "$H/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .
+	zst "$H/qemu-bundle.tar" "$H/qemu-bundle.tar.zst"
+	# The manifest, written BY THE AGENT rather than by this script: the format is a contract
+	# between the publisher and every installing node, and it used to have two implementations
+	# (a printf loop here, hand-assembling `"mode":493`, and the struct in agent/install). The
+	# writer now shares its types with the reader, so the format cannot disagree with itself —
+	# and the binary used is the one STAGED IN THIS DIRECTORY, the exact agent this release
+	# ships, so the manifest is written by the same build that will later read it on a node.
+	[ -x "$H/briard-agent" ] || die "no staged briard-agent to write the manifests with"
+	"$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V" || die "writing the linux manifest failed"
 
-	# COMPRESS THE BIG TWO. Measured on the shipped set: the guest image 1178 -> 377 MB and the
-	# bundle 86 -> 19 MB, so an install goes from ~1273 MB on the wire to ~404 MB. The agent
-	# expands them after verifying the signed hash (agent/install/fetch.go).
-	#
-	# `briard-agent` and `briard-net-wrap` are deliberately left PLAIN. install.sh fetches the
-	# bootstrap agent with curl/wget before any agent exists to decompress anything -- compress it
-	# and the installer cannot open the tool whose job is opening things.
-	#
-	# -19 not --ultra: 23s and 377 MB against gzip -9's 85s and 465 MB, on a file published once
-	# and downloaded by every household. -T0 uses the release box's cores; it does not change the
-	# output, so the manifest hash is unaffected by what machine staged it.
-	#
-	# The manifest below then pins the COMPRESSED bytes, which is what the network carries and
-	# therefore what a signature has to cover.
-	for f in nixos.qcow2 qemu-bundle.tar; do
-		nix run nixpkgs#zstd -- -19 -T0 -q --rm "$DIR/$f" -o "$DIR/$f.zst" ||
-			die "compressing $f failed"
-		chmod 0644 "$DIR/$f.zst"
+	# THE WINDOWS ARM. `FetchVerified` downloads EVERY artifact a manifest names, so a
+	# Windows-only bundle in the Linux manifest would make every Linux install pull tens of MB it
+	# can never run. An arm of its own gives it the identical shape — a signed manifest, its
+	# signature, the artifacts it names, the two pointers — and a Windows installer will later
+	# name it the way the Linux one names `linux`. One path, run twice: no second protocol, no
+	# platform field on the wire beyond the manifest's own, and no client change on either side.
+	W="$DIR/host/$V/windows"; mkdir -p "$W"
+	dtar "$W/qemu-bundle-windows.tar" -C "$(out_of .#artifacts.qemu-bundle-windows)" .
+	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
+	"$H/briard-agent" --stage-manifest "$W" --chain host --platform windows --release "$V" || die "writing the windows manifest failed"
+
+	# THE GUEST CHAIN: the OS image, its own series, no platform level. Measured: 1178 -> 377 MB
+	# compressed, which is what a household link actually waits on.
+	G="$DIR/guest/$GV"; mkdir -p "$G"
+	install -m0644 "$(out_of .#artifacts.guest-disk)/nixos.qcow2" "$G/nixos.qcow2"
+	zst "$G/nixos.qcow2" "$G/nixos.qcow2.zst"
+	"$H/briard-agent" --stage-manifest "$G" --chain guest --release "$GV" || die "writing the guest manifest failed"
+
+	for m in "$H" "$W" "$G"; do
+		jq -e . "$m/manifest.json" >/dev/null || die "the manifest at $m is not valid JSON"
 	done
-
-	# The manifest, written BY THE AGENT rather than by this script.
-	#
-	# It used to be a printf loop right here, hand-assembling the JSON -- including `"mode":493`,
-	# which is 0o755 converted to decimal by a human and re-checked by nobody. That made the
-	# format a contract between a shell script and a Go struct with nothing holding the two in
-	# step: a renamed field, a mode that stopped being hand-converted, or a size that drifted from
-	# what the reader bounds on would have published a channel no agent could install, and neither
-	# side's tests could have caught it. The writer now shares its types with the reader
-	# (agent/install), so the round trip is testable in one language and the format cannot
-	# disagree with itself.
-	#
-	# The binary used is the one STAGED IN THIS DIRECTORY -- the exact agent this release ships,
-	# so the manifest is written by the same build that will later read it on a node.
-	[ -x "$DIR/briard-agent" ] || die "no staged briard-agent to write the manifest with"
-	"$DIR/briard-agent" --stage-manifest "$DIR" || die "writing the manifest failed"
-	jq -e . "$DIR/manifest.json" >/dev/null || die "the manifest we just wrote is not valid JSON"
-
-	# THE WINDOWS ARM, IN ITS OWN SUBDIRECTORY AND UNDER ITS OWN MANIFEST -- and the subdirectory
-	# IS the mechanism, not an organising whim. `FetchVerified` downloads EVERY artifact the
-	# manifest names, so putting a Windows-only bundle in the Linux manifest would make every
-	# Linux install download tens of MB it can never run. `WriteManifest` skips directories, so a
-	# subdir is invisible to the set above it, and a Windows installer will later point
-	# BRIARD_CHANNEL_URL at $CHANNEL/windows and get the identical shape: a signed manifest, its
-	# detached signature, and the artifacts it names. One path, run twice -- no second protocol,
-	# no platform field on the wire, and no client change on either side.
-	#
-	# There is no consumer yet: the Windows host agent is v5. It is published anyway so the path
-	# is exercised rather than assumed, which is the whole reason [V3b.27](b) exists.
-	mkdir -p "$DIR/windows"
-	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-	    -cf "$DIR/windows/qemu-bundle-windows.tar" -C "$(out_of .#artifacts.qemu-bundle-windows)" .
-	chmod 0644 "$DIR/windows/qemu-bundle-windows.tar"
-	nix run nixpkgs#zstd -- -19 -T0 -q --rm "$DIR/windows/qemu-bundle-windows.tar" \
-		-o "$DIR/windows/qemu-bundle-windows.tar.zst" || die "compressing the windows bundle failed"
-	chmod 0644 "$DIR/windows/qemu-bundle-windows.tar.zst"
-	"$DIR/briard-agent" --stage-manifest "$DIR/windows" || die "writing the windows manifest failed"
-	jq -e . "$DIR/windows/manifest.json" >/dev/null || die "the windows manifest is not valid JSON"
 
 	# install.sh, WITH THE RELEASE PUBKEY EMBEDDED. The source tree carries a placeholder, and
 	# the script dies on it by design ("the embedded key is a build placeholder") — so shipping
@@ -185,177 +273,292 @@ stage)
 		|| die "no public key landed in the staged install.sh"
 	sh -n "$DIR/install.sh" || die "the staged install.sh is not valid shell after substitution"
 
-	echo "$V" > "$DIR/VERSION" # not part of the contract; a human-readable marker for the operator
-	say "staged $V — $(jq -r '.artifacts|length' "$DIR/manifest.json") artifacts"
-	jq -r '.artifacts[] | "    \(.name)  \(.size) bytes  \(.sha256[0:16])…"' "$DIR/manifest.json"
+	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
+	say "staged $V:"
+	for c in $CHAINS; do
+		for a in $(arms_of "$c"); do arm=${a#-}
+			m="$DIR/$c/$(sub "$(chain_id "$c" "$V")" "$arm")/manifest.json"
+			echo "  $c/$(sub "$(jq -r .version "$m")" "$arm")"
+			jq -r '.artifacts[] | "    \(.name)  \(.size) bytes  \(.sha256[0:16])…"' "$m"
+		done
+	done
 	say "next: ./scripts/publish-release.sh sign $DIR"
 	;;
 
 sign)
 	DIR="${2:-$STAGE_DEFAULT}"
-	:
-	[ -f "$DIR/manifest.json" ] || die "no manifest at $DIR/manifest.json — run `stage` first"
 	[ -n "${RELEASE_SIGN_KEY:-}" ] || die "set RELEASE_SIGN_KEY to the PKCS8 PEM Ed25519 private key"
 	[ -e "$RELEASE_SIGN_KEY" ] || die "no signing key at $RELEASE_SIGN_KEY"
-	# -rawin is what makes this PureEdDSA over the whole file, which is what Verify does. Without
-	# it openssl would pre-hash and every signature would be rejected.
-	#
-	# EVERY manifest in the staged set, not just the top one: the windows/ subdirectory carries a
-	# manifest of its own (see `stage`), and an unsigned one is not merely useless -- the verifier
-	# refuses it, so it would publish a channel arm that cannot install. Looping is what keeps a
-	# future third arm from needing anyone to remember this.
-	for m in "$DIR/manifest.json" "$DIR"/*/manifest.json; do
-		[ -f "$m" ] || continue
-		ossl pkeyutl -sign -inkey "$RELEASE_SIGN_KEY" -rawin -in "$m" -out "$m.sig"
-		n=$(stat -c%s "$m.sig")
-		[ "$n" = 64 ] || die "$m.sig is $n bytes, want a raw 64 — the verifier rejects anything else"
-		say "signed $m (64-byte detached Ed25519)"
+	for c in $CHAINS; do
+		v=$(staged_version "$DIR/$c") || die "no staged version under $DIR/$c — run \`stage\` first"
+		rm -rf "$DIR/$c/latest"
+		for a in $(arms_of "$c"); do arm=${a#-}
+			rel=$(sub "$v" "$arm"); m="$DIR/$c/$rel/manifest.json"
+			[ -f "$m" ] || die "no manifest at $m"
+			# -rawin is what makes this PureEdDSA over the whole file, which is what Verify does.
+			# Without it openssl would pre-hash and every signature would be rejected.
+			ossl pkeyutl -sign -inkey "$RELEASE_SIGN_KEY" -rawin -in "$m" -out "$m.sig"
+			n=$(stat -c%s "$m.sig")
+			[ "$n" = 64 ] || die "$m.sig is $n bytes, want a raw 64 — the verifier rejects anything else"
+			say "signed $c/$rel (64-byte detached Ed25519)"
+			# THE `latest` POINTER, laid here rather than in `publish`: a pointer is a byte-copy
+			# of the signed manifest, so it exists the moment the signature does — and a staged
+			# tree that already carries it is served AS-IS by the publish gate
+			# (lab/vanilla-linux), which installs from `latest` before anything is uploaded.
+			p="$DIR/$c/$(sub latest "$arm")"; mkdir -p "$p"
+			cp "$m" "$m.sig" "$p/"
+			for b in briard-agent briard-agent.exe; do
+				if [ -f "$DIR/$c/$rel/$b" ]; then cp -p "$DIR/$c/$rel/$b" "$p/$b"; fi
+			done
+			# A chain without arms ran its one (empty) arm; a chain with arms must not run an
+			# extra empty one after them.
+		done
 	done
 	;;
 
 publish)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix
-	[ -f "$DIR/manifest.json.sig" ] || die "unsigned — run `sign` before publishing"
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 	[ -f "$DIR/install.sh" ] || die "no install.sh in $DIR — run \`stage\` (it embeds the keyring)"
-	bucket=$(echo "$RELEASE_WRITE" | sed 's|^s3://\([^?]*\).*|s3://\1|')
-	endpoint="https://$(echo "$RELEASE_WRITE" | sed 's|.*endpoint=\([^&]*\).*|\1|')"
+	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 
-	# THE ARTIFACT SET, under /release/, with --delete.
-	#
-	# ⚠️ `--delete` IS ONLY SAFE BECAUSE OF THE PREFIX, and the near-miss is worth recording: this
-	# bucket ALSO holds `catalog/` -- live runtime content the agent fetches for
-	# `briard service install`, uploaded by hand and produced by nothing in this repo -- plus
-	# install.sh at the root. A bare `--delete` against the bucket root would have removed the
-	# catalog on the next publish and broken service installs fleet-wide, silently, because
-	# nothing here knows the catalog exists. Scoped to the prefix a release owns, the flag can
-	# only remove things a release put there.
-	#
-	# What it buys: a RENAMED artifact cleans itself up. Overwrite-by-fixed-name leaves nothing
-	# behind, but a rename (nixos.qcow2 -> nixos.qcow2.zst) stranded the old key forever, and a
-	# 2.5 GB orphan that no signed manifest references is exactly the kind of thing that is
-	# still being served years later.
-	#
-	# install.sh is EXCLUDED here and uploaded to the root below -- it is the advertised
-	# one-liner and does not live in the release namespace.
-	#
-	# THE MANIFEST AND ITS SIGNATURE ARE ALSO EXCLUDED, and cp'd LAST. Observed live on two
-	# consecutive publishes (2026-08-19): `sync --delete` emitted BOTH an upload and a delete
-	# for release/manifest.json in a single run, in whichever order the parallel operations
-	# happened to land -- the second time the delete won and the live channel 404'd its
-	# manifest until a hand-run `cp` restored it. Taking the pair out of the sync removes the
-	# key from --delete's reach, and uploading it after the artifacts buys the right ordering
-	# for free: a client racing a publish now sees a coherent old set, a coherent new set, or
-	# a manifest/signature mismatch that fails closed -- never a manifest naming bytes that
-	# are not there yet.
-	nix run nixpkgs#awscli2 -- s3 sync "$DIR" "$bucket/release/" \
-		--endpoint-url "$endpoint" \
-		--delete --exclude VERSION --exclude install.sh \
-		--exclude manifest.json --exclude manifest.json.sig \
-		--exclude "*/manifest.json" --exclude "*/manifest.json.sig" --no-progress
-	# Every arm's manifest pair, uploaded after the bytes it names. The windows/ subdirectory
-	# needs the same treatment for the same reason, and its exclude patterns above need the `*/`
-	# form because an AWS CLI filter with no wildcard matches one exact relative key -- so a bare
-	# `--exclude manifest.json` would have left the windows manifest inside --delete's reach and
-	# inside the sync's ordering, which is the exact pair of properties this dance exists to avoid.
-	for m in "$DIR/manifest.json" "$DIR"/*/manifest.json; do
-		[ -f "$m" ] || continue
-		rel=${m#"$DIR/"}
-		for f in "$rel" "$rel.sig"; do
-			nix run nixpkgs#awscli2 -- s3 cp "$DIR/$f" "$bucket/release/$f" \
-				--endpoint-url "$endpoint" --no-progress
+	# IMMUTABILITY FIRST, across every chain, before a byte moves: a half-published release
+	# (host uploaded, guest refused) would leave `latest` naming a pair nobody tested together.
+	for c in $CHAINS; do
+		v=$(staged_version "$DIR/$c") || die "no staged version under $DIR/$c"
+		for a in $(arms_of "$c"); do arm=${a#-}
+			rel=$(sub "$v" "$arm")
+			[ -f "$DIR/$c/$rel/manifest.json.sig" ] || die "$c/$rel is unsigned — run \`sign\` before publishing"
+			[ -f "$DIR/$c/$(sub latest "$arm")/manifest.json" ] || die "$c has no latest pointer for $rel — run \`sign\`"
+			! have_key "$bucket/$c/$rel/manifest.json" "$endpoint" ||
+				die "$c/$rel is ALREADY PUBLISHED and versioned directories are immutable (see header) — to re-point, \`promote\`; to ship a fix, commit and stage again"
+		done
+	done
+
+	for c in $CHAINS; do
+		v=$(staged_version "$DIR/$c")
+		for a in $(arms_of "$c"); do arm=${a#-}
+			rel=$(sub "$v" "$arm")
+			# The versioned directory: artifacts first, manifest pair last (same ordering
+			# argument as the pointers). No --delete anywhere in this script any more: nothing is
+			# ever overwritten, so there is nothing to clean up — and the bucket ALSO holds
+			# `catalog/` (live runtime content the agent fetches for `briard service install`,
+			# produced by nothing in this repo), which a wide --delete would silently remove.
+			aws s3 sync "$DIR/$c/$rel" "$bucket/$c/$rel/" --endpoint-url "$endpoint" \
+				--exclude manifest.json --exclude manifest.json.sig --exclude "*/*" --no-progress
+			aws s3 cp "$DIR/$c/$rel/manifest.json.sig" "$bucket/$c/$rel/manifest.json.sig" --endpoint-url "$endpoint" --no-progress
+			aws s3 cp "$DIR/$c/$rel/manifest.json"     "$bucket/$c/$rel/manifest.json"     --endpoint-url "$endpoint" --no-progress
+			# ...and only now the pointer, so `latest` never names bytes that are not there yet.
+			p=$(sub latest "$arm")
+			for f in $POINTER_FILES; do
+				[ -f "$DIR/$c/$p/$f" ] || continue
+				aws s3 cp "$DIR/$c/$p/$f" "$bucket/$c/$p/$f" --endpoint-url "$endpoint" --no-progress
+			done
+			say "published $c/$rel, $p -> $v"
 		done
 	done
 
 	# ...and the installer itself, at the root the one-liner names.
-	nix run nixpkgs#awscli2 -- s3 cp "$DIR/install.sh" "$bucket/install.sh" \
-		--endpoint-url "$endpoint" --no-progress
+	aws s3 cp "$DIR/install.sh" "$bucket/install.sh" --endpoint-url "$endpoint" --no-progress
 
-	# PURGE THE EDGE, or a REpublish contradicts itself for hours. The CDN in front of the
-	# public URL caches the big artifacts (measured: the .zst files, max-age 14400; the small
-	# ones come back uncached) -- and `verify`'s own downloads are what prime it. So the second
-	# and every later publish serves the NEW manifest with the OLD image until expiry, and each
-	# install in that window fails closed on the hash check. Found live 2026-08-19; the
-	# first-ever publish went green only because nothing was cached yet. The purge list is read
-	# off the staged manifest so a renamed artifact cannot drift out of it. Purging is
-	# CDN-specific, so it rides behind two env vars -- but a publish without them warns loudly,
-	# because the alternative is a silently stale channel.
-	if [ -n "${RELEASE_PURGE_URL:-}" ] && [ -n "${RELEASE_PURGE_TOKEN:-}" ]; then
-		need curl; need jq
-		# Read off EVERY staged manifest, one arm per subdirectory, so a renamed artifact cannot
-		# drift out of the purge list and a new arm cannot be forgotten into staleness.
-		{
-			for m in "$DIR/manifest.json" "$DIR"/*/manifest.json; do
-				[ -f "$m" ] || continue
-				rel=${m#"$DIR/"}; base="$CHANNEL/${rel%manifest.json}"; base=${base%/}
-				jq -r --arg b "$base" '.artifacts[].name | $b+"/"+.' "$m"
-				echo "$base/manifest.json"; echo "$base/manifest.json.sig"
-			done
-			echo "$SITE/install.sh"
-		} | jq -R . | jq -s '{files: .}' |
-		curl -sf -X POST -H "Authorization: Bearer $RELEASE_PURGE_TOKEN" \
-			-H "Content-Type: application/json" "$RELEASE_PURGE_URL" --data @- |
-		jq -e '.success == true' >/dev/null ||
-			die "published, but the edge purge FAILED -- the CDN may serve the previous release for hours; purge by hand, then verify"
-		say "edge cache purged"
-	else
-		say "WARNING: RELEASE_PURGE_URL/RELEASE_PURGE_TOKEN unset -- the edge may serve the previous release's artifacts for up to 4h (verify will rightly fail until it clears)"
+	{
+		for c in $CHAINS; do
+			find "$DIR/$c/latest" -type f | sed "s|^$DIR/|$CHANNEL/|"
+		done
+		echo "$CHANNEL/install.sh"
+	} | purge_edge
+	say "published — now run: ./scripts/publish-release.sh verify   (then, once the evidence is in: promote)"
+	;;
+
+promote)
+	need nix; need curl; need jq
+	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
+	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+	V="${2:-}"
+	if [ -z "$V" ]; then
+		V=$(curl -fsS "$CHANNEL/host/latest/linux/manifest.json" | jq -r .version) || die "cannot read host/latest to default the version"
+		say "no version given — promoting what host/latest names: $V"
 	fi
-	say "published — now run: ./scripts/publish-release.sh verify"
+	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+	# Every chain and arm is checked before any of them moves: promotion is of the PAIR
+	# (host/stable + guest/stable is the tested pair by construction — there is no top-level
+	# install pointer, and this is the obligation that stands in for one).
+	for c in $CHAINS; do
+		v=$(chain_id "$c" "$V")
+		for a in $(arms_of "$c"); do arm=${a#-}
+			rel=$(sub "$v" "$arm"); p=$(sub stable "$arm"); tag="$c.${arm:-flat}"
+			have_key "$bucket/$c/$rel/manifest.json" "$endpoint" || die "$c/$rel is not published; nothing to promote"
+			if curl -fsS "$CHANNEL/$c/$p/manifest.json" -o "$tmp/$tag.stable.json" 2>/dev/null; then
+				cur=$(jq -r .version "$tmp/$tag.stable.json")
+				if [ "$cur" = "$v" ]; then
+					say "$c/$p already names $v"
+				else
+					# THE NO-SAME-DATE RULE ([B.86a]). The timer's stable path orders on the
+					# date field alone and deliberately has no same-date rule (one would make
+					# the timer revert a cloud pin that shares a date with stable). So the
+					# constraint sits here, in the layer we can fix: a build whose date equals
+					# the promoted one is invisible to the fleet, and promoting it would only
+					# LOOK like a release.
+					[ "$(date_of "$cur")" != "$(date_of "$v")" ] ||
+						die "$c/$p is $cur, same date as $v — the timer cannot tell them apart; a same-day fix-up needs the next day's number"
+				fi
+			else
+				say "$c/$p has no stable yet — this promotion creates it"
+			fi
+		done
+	done
+	for c in $CHAINS; do
+		v=$(chain_id "$c" "$V")
+		for a in $(arms_of "$c"); do arm=${a#-}
+			rel=$(sub "$v" "$arm"); p=$(sub stable "$arm"); tag="$c.${arm:-flat}"
+			if [ "$(jq -r .version "$tmp/$tag.stable.json" 2>/dev/null)" != "$v" ]; then
+				# Server-side copies, in POINTER_FILES order and for the same reason.
+				for f in $POINTER_FILES; do
+					have_key "$bucket/$c/$rel/$f" "$endpoint" || continue
+					aws s3 cp "$bucket/$c/$rel/$f" "$bucket/$c/$p/$f" --endpoint-url "$endpoint" --no-progress
+				done
+				say "promoted $c/$p -> $v"
+			fi
+		done
+	done
+	{
+		for c in $CHAINS; do
+			for a in $(arms_of "$c"); do arm=${a#-}
+				for f in $POINTER_FILES; do echo "$CHANNEL/$c/$(sub stable "$arm")/$f"; done
+			done
+		done
+	} | purge_edge
+	say "promoted $V — now run: ./scripts/publish-release.sh verify"
+	;;
+
+gc)
+	shift
+	need nix; need curl; need jq
+	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
+	# gc NEVER DELETES. Old releases are needed as upgrade targets for a pin, and as the bytes
+	# a rollback re-points to — rebuilding will not reproduce them (see the header). So they
+	# leave the SERVING tree and go cold, and the cold store is a required input rather than a
+	# default, because "archive to nowhere" is deletion with a nicer name.
+	[ -n "${RELEASE_ARCHIVE:-}" ] || die "set RELEASE_ARCHIVE to the cold store URL — gc archives, it does not delete"
+	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+	archive=$(bucket_of "$RELEASE_ARCHIVE")
+	# Pins live in the cloud's rollout state, which this script cannot see; the operator names
+	# them. A release that is pinned and not named here is archived, and the pinned node's next
+	# tick fails its fetch loudly (a failed directive, not a silent no-op) — recoverable by
+	# copying the release back, which is why the archive holds whole releases.
+	keep=""
+	while [ $# -gt 0 ]; do
+		case "$1" in --keep) keep="$keep $2"; shift 2 ;; *) die "gc: unknown argument $1" ;; esac
+	done
+	floor=$(date -u -d "-$GC_FLOOR_DAYS days" +%Y-%m-%d)
+	for c in $CHAINS; do
+		# The first arm (or the flat one) stands for the release: every arm of a version is
+		# published and promoted together, so one manifest's pointer and LastModified speak for all.
+		first=$(arms_of "$c" | cut -d' ' -f1); first=${first#-}
+		live=""
+		for p in stable latest; do
+			live="$live $(curl -fsS "$CHANNEL/$c/$(sub "$p" "$first")/manifest.json" 2>/dev/null | jq -r .version)"
+		done
+		aws s3 ls "$bucket/$c/" --endpoint-url "$endpoint" | awk '/ PRE /{print $2}' | tr -d / |
+		while read -r v; do
+			case "$v" in stable|latest) continue ;; esac
+			case " $live " in *" $v "*) echo "  keep  $c/$v (a pointer names it)"; continue ;; esac
+			pinned=""
+			for k in $keep; do
+				if [ "$(chain_id "$c" "$k")" = "$v" ]; then pinned=1; fi
+			done
+			if [ -n "$pinned" ]; then echo "  keep  $c/$v (pinned)"; continue; fi
+			# Age from the bucket's own clock (the manifest's LastModified), not the id's date:
+			# the id says when it was committed, the floor is about when it was published.
+			when=$(aws s3 ls "$bucket/$c/$(sub "$v" "$first")/manifest.json" --endpoint-url "$endpoint" | awk '{print $1}')
+			if [ -z "$when" ] || [ "$when" \> "$floor" ]; then
+				echo "  keep  $c/$v (published $when, inside the $GC_FLOOR_DAYS-day floor)"; continue
+			fi
+			# WHOLE RELEASES, NEVER FILES: a release directory is what a signed manifest names,
+			# and a partial one is a manifest whose bytes are gone — indistinguishable, to a
+			# client, from an attack. (The nix cache has the sharper version of this rule:
+			# `nix copy` remembers "the destination has it" for 30 days, so a path deleted by
+			# hand stays present to the next publish and is silently never re-uploaded —
+			# observed 2026-08-06. Whoever builds cache GC inherits that.)
+			say "archiving $c/$v (published $when) -> $archive/$c/$v/"
+			aws s3 mv "$bucket/$c/$v/" "$archive/$c/$v/" --recursive --endpoint-url "$endpoint" --no-progress
+		done
+	done
 	;;
 
 verify)
-	need curl; need sha256sum
+	need curl; need sha256sum; need jq
 	PUB="${RELEASE_PUBKEY:-${RELEASE_SIGN_KEY:-}}"
 	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-	# EVERY ARM, not just the Linux one. A channel arm is a base URL with a signed manifest under
-	# it (see `stage`), so verifying one is verifying all of them with the URL changed -- and an
-	# arm nobody verifies is an arm nobody knows is broken until a stranger runs into it.
-	for arm in "" "/windows"; do
-		base="$CHANNEL$arm"
-		curl -fsS "$base/manifest.json"     -o "$tmp/manifest.json"     || die "no manifest at $base"
-		curl -fsS "$base/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $base"
-		# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure here is the
-		# whole point of the check — an unsigned or re-signed channel must not read as green.
-		ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
-		        -in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
-			|| die "the live manifest at $base does NOT verify against $PUB"
-		say "manifest signature verifies: $base"
-		# ...and every artifact matches what the signed manifest claims. Checked by DOWNLOADING,
-		# not by trusting the manifest against itself.
-		jq -r '.artifacts[] | "\(.name) \(.sha256) \(.size)"' "$tmp/manifest.json" |
-		while read -r name sum size; do
-			curl -fsS "$base/$name" -o "$tmp/$name" || die "$name is in the $base manifest but not served"
-			got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
-			gotsize=$(stat -c%s "$tmp/$name")
-			[ "$got" = "$sum" ] || die "$name: sha256 $got != manifest $sum"
-			[ "$gotsize" = "$size" ] || die "$name: size $gotsize != manifest $size"
-			echo "    ok  $name  ($gotsize bytes)"
+	# EVERY CHAIN, EVERY ARM, BOTH POINTERS. A pointer is a manifest at a path, so verifying one
+	# is verifying all of them with the path changed — and a pointer nobody verifies is a pointer
+	# nobody knows is broken until a stranger (or the timer, fleet-wide) runs into it.
+	# `stable` may not exist yet on a fresh tree; that is said out loud rather than failed,
+	# because the first publish of the tree is the one run where it is expected.
+	for c in $CHAINS; do
+		for a in $(arms_of "$c"); do arm=${a#-}
+			for p in stable latest; do
+				rel=$(sub "$p" "$arm"); base="$CHANNEL/$c/$rel"
+				if ! curl -fsS "$base/manifest.json" -o "$tmp/manifest.json" 2>/dev/null; then
+					[ "$p" = stable ] && { say "WARNING: no $c/$rel yet — nothing promoted here"; continue; }
+					die "no manifest at $base"
+				fi
+				curl -fsS "$base/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $base"
+				# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure
+				# here is the whole point of the check — an unsigned or re-signed channel must
+				# not read as green.
+				ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
+				        -in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
+					|| die "the live manifest at $base does NOT verify against $PUB"
+				v=$(jq -r .version "$tmp/manifest.json")
+				ch=$(jq -r .chain "$tmp/manifest.json"); pl=$(jq -r '.platform // ""' "$tmp/manifest.json")
+				[ "$ch" = "$c" ] && [ "$pl" = "$arm" ] ||
+					die "$base serves a manifest for '$ch/$pl' — a crossed wire the client would refuse"
+				vdir="$c/$(sub "$v" "$arm")"
+				say "$c/$rel -> $v (signature verifies)"
+				# ...and every artifact matches what the signed manifest claims, fetched from
+				# WHERE THE MANIFEST SAYS (the versioned directory), by DOWNLOADING, not by
+				# trusting the manifest against itself. A version already checked under the
+				# other pointer is not downloaded twice.
+				if [ -f "$tmp/$c.${arm:-flat}.$v.ok" ]; then echo "    (artifacts of $vdir already verified)"; continue; fi
+				jq -r '.artifacts[] | "\(.name) \(.sha256) \(.size)"' "$tmp/manifest.json" |
+				while read -r name sum size; do
+					curl -fsS "$CHANNEL/$vdir/$name" -o "$tmp/$name" || die "$name is in the $c/$rel manifest but not served at $vdir/"
+					got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
+					gotsize=$(stat -c%s "$tmp/$name")
+					[ "$got" = "$sum" ] || die "$vdir/$name: sha256 $got != manifest $sum"
+					[ "$gotsize" = "$size" ] || die "$vdir/$name: size $gotsize != manifest $size"
+					echo "    ok  $vdir/$name  ($gotsize bytes)"
+					# The pointer's own bootstrap copy must be the SAME bytes the manifest pins,
+					# or install.sh runs a bootstrap that is not the release it then installs.
+					case "$name" in briard-agent|briard-agent.exe)
+						curl -fsS "$base/$name" -o "$tmp/$name.ptr" || die "$name is not served under $base (the bootstrap install.sh curls)"
+						[ "$(sha256sum "$tmp/$name.ptr" | cut -d' ' -f1)" = "$sum" ] || die "$base/$name differs from $vdir/$name"
+						echo "    ok  $c/$rel/$name  (bootstrap copy matches)"
+					esac
+				done
+				touch "$tmp/$c.${arm:-flat}.$v.ok"
+			done
 		done
 	done
-	# install.sh at the SITE root, not under the artifact prefix -- that is the URL the advertised
-	# one-liner names, so it is the one this must assert.
-	curl -fsS -o /dev/null "$SITE/install.sh" || die "install.sh is not served at $SITE/install.sh"
-	# The installer a stranger runs must agree with where the artifacts actually are. A published
-	# install.sh still defaulting to the old flat root would fetch nothing and fail closed, which
-	# is safe but silent -- and would not be caught by any check above, since every one of them
-	# uses $CHANNEL rather than what the script itself believes.
-	# Downloaded to a FILE and then grepped, never `curl … | grep -q`. `-q` exits on the first
-	# match, which closes the pipe under a curl that is still writing; curl then dies with
-	# "(23) Failure writing output to destination" and `||` reads that as the assertion failing.
-	# Measured on the first real run of this check: a correctly-published channel was reported as
-	# wrong. A verification step that cries wolf is worse than none, because the next person
-	# learns to skip it.
-	curl -fsS "$SITE/install.sh" -o "$tmp/install.sh" || die "install.sh is not fetchable at $SITE"
+	# install.sh at the channel root -- that is the URL the advertised one-liner names, so it
+	# is the one this must assert. The installer a stranger runs must agree with where the
+	# artifacts actually are: a published install.sh still defaulting to an old layout would
+	# fetch nothing and fail closed, which is safe but silent -- and would not be caught by any
+	# check above, since every one of them uses $CHANNEL rather than what the script believes.
+	# Downloaded to a FILE and then grepped, never `curl … | grep -q`: `-q` exits on the first
+	# match, which closes the pipe under a curl that is still writing; curl then dies with "(23)
+	# Failure writing output to destination" and `||` reads that as the assertion failing.
+	curl -fsS "$CHANNEL/install.sh" -o "$tmp/install.sh" || die "install.sh is not fetchable at $CHANNEL/install.sh"
 	grep -q "BRIARD_CHANNEL_URL:-$CHANNEL" "$tmp/install.sh" ||
-		die "the served install.sh does not default to $CHANNEL — it would look for artifacts in the wrong place"
-	say "$CHANNEL verifies end to end: signed manifest, every artifact matching, install.sh served at $SITE and pointing here"
+		die "the served install.sh does not default to $CHANNEL — it would look for the tree in the wrong place"
+	say "$CHANNEL verifies end to end: every pointer signed, every artifact matching, install.sh served at the root and pointing here"
 	;;
 
 *)
-	die "usage: publish-release.sh {stage|sign|publish|verify} [DIR]  (see header)"
+	die "usage: publish-release.sh {stage|sign|publish|promote|gc|verify} [ARGS]  (see header)"
 	;;
 esac

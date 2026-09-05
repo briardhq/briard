@@ -39,9 +39,50 @@ import (
 	"briard.io/agent/selfupdate"
 )
 
+// THE CHANNEL TREE ([B.86e]). The channel root serves one directory per release CHAIN, and under
+// each chain one directory per version plus two POINTERS; the host chain adds one more level, the
+// PLATFORM, because a host bundle is built per host OS while the guest image is the same VM on
+// every host:
+//
+//	<root>/host/<version>/<platform>/   manifest.json(+.sig) and every artifact it names
+//	<root>/host/stable/<platform>/      a byte-copy of one version's signed manifest (+ briard-agent)
+//	<root>/host/latest/<platform>/      likewise
+//	<root>/guest/<version>/             manifest.json(+.sig), nixos.qcow2.zst
+//	<root>/guest/{stable,latest}/       manifest.json(+.sig)
+//
+// A pointer is just a path serving a copy of a version's signed manifest: no pointer file, no
+// second signature format, one verified hop -- the signature verifies identically at any path,
+// and the manifest's own `version` says which release you got. So a fetch names a TARGET
+// (`stable`, `latest`, or an exact version id) to pick the manifest, and then resolves every
+// artifact against the manifest's `version`, never against the path it was fetched from. That
+// stops pointer paths from duplicating a 380 MB image, and it is an anti-substitution property: a
+// signed manifest says where its own artifacts live. (`briard-agent` is the one artifact ALSO
+// copied under the pointer paths, because install.sh has to curl a bootstrap before anything
+// exists that can parse a manifest.)
+//
+// The chains are release LINES, not flavours of one release: the host bundle (agent, qemu,
+// net-wrap) and the guest OS image move on different cadences and carry different version
+// series. The manifest names its chain and platform so a crossed wire -- a guest manifest served
+// where a host one was expected, a Windows bundle where the Linux one should be -- is refused by
+// the signature's own content rather than compared by eye. The chain is a FIELD rather than
+// something read off the version id's first token because that token is the epoch (`v3.`), which
+// moves forward over time; a series check keyed on it would refuse every update across an epoch
+// boundary, fleet-wide.
 const (
-	// ManifestName is the signed index served at <BaseURL>/manifest.json; its detached
-	// signature is served alongside at <BaseURL>/manifest.json.sig.
+	ChainHost  = "host"  // briard-agent, briard-net-wrap, qemu-bundle.tar.zst — per platform
+	ChainGuest = "guest" // nixos.qcow2.zst — no platform level
+
+	// PlatformLinux is the host platform this binary installs on; the Windows arm
+	// (`windows`) is published beside it ([V3b.27](b)) with no consumer until v5.
+	PlatformLinux = "linux"
+
+	// TargetStable and TargetLatest are the two pointer paths every chain serves. Anything else
+	// passed as a target is taken to be an exact version id.
+	TargetStable = "stable"
+	TargetLatest = "latest"
+
+	// ManifestName is the signed index served at <root>/<chain>/<target>/manifest.json; its
+	// detached signature is served alongside at manifest.json.sig.
 	ManifestName = "manifest.json"
 	sigSuffix    = ".sig"
 
@@ -68,16 +109,22 @@ const (
 // allow anything") — the same stance as selfupdate.ErrNoKeys.
 var ErrNoKeyring = errors.New("install: no release keyring — every artifact refused")
 
-// ErrManifest covers a malformed or empty manifest (verifies but describes nothing to fetch).
+// ErrManifest covers a malformed or empty manifest (verifies but describes nothing to fetch, or
+// names no chain/version to resolve it against).
 var ErrManifest = errors.New("install: manifest malformed or empty")
+
+// ErrWrongChain is returned when a verified manifest belongs to a different chain or platform
+// than the one asked for: the bytes are genuine, they are just not the release line this fetch
+// is about.
+var ErrWrongChain = errors.New("install: manifest is for a different chain or platform")
 
 // ErrArtifactMismatch is returned when a downloaded artifact's SHA-256 or size does not match
 // the signed manifest — a tampered or truncated blob, refused without being committed.
 var ErrArtifactMismatch = errors.New("install: artifact does not match the signed manifest")
 
 // Entry pins one artifact in the manifest: Name is both the URL path element
-// (<BaseURL>/<Name>) and the filename written under the staging dir; SHA256 is lowercase hex;
-// Mode is the file mode (0 → 0644; the agent binary ships 0755).
+// (<root>/<chain>/<version>/<Name>) and the filename written under the staging dir; SHA256 is
+// lowercase hex; Mode is the file mode (0 → 0644; the agent binary ships 0755).
 type Entry struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
@@ -85,26 +132,37 @@ type Entry struct {
 	Mode   uint32 `json:"mode,omitempty"`
 }
 
-// Manifest is the signed list of artifacts the release channel offers for this install.
+// Manifest is the signed list of artifacts one release of one chain offers. Chain and Version
+// sit INSIDE the signature: they are what lets a manifest fetched from a pointer path say which
+// release it is and where its artifacts live, and an unsigned sidecar could say anything.
 type Manifest struct {
+	Chain     string  `json:"chain"`
+	Platform  string  `json:"platform,omitempty"` // host chain only; the guest image has no platform
+	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
 }
 
-// Fetcher downloads and verifies the signed artifact set into a staging directory. BaseURL is
-// the release channel root (the manifest + artifacts sit directly under it); Keyring is the
+// Fetcher downloads and verifies one chain's signed artifact set into a staging directory.
+// BaseURL is the channel ROOT (the chains sit directly under it); Chain names the release line
+// and Platform the arm within it ("" for a chain without the platform level); Keyring is the
 // release trust root; Client/Logf are optional (nil → a bounded-timeout client / a discard log).
 type Fetcher struct {
-	BaseURL string
-	Keyring *selfupdate.Keyring
-	Client  *http.Client
-	Logf    func(string, ...any)
+	BaseURL  string
+	Chain    string
+	Platform string
+	Keyring  *selfupdate.Keyring
+	Client   *http.Client
+	Logf     func(string, ...any)
 }
 
-// FetchVerified downloads the signed manifest, verifies it against the keyring, then downloads
-// each listed artifact and checks its SHA-256 + size against the manifest. On full success the
-// staging dir is populated and atomically placed at dest; dest must not already exist. On ANY
-// failure dest is left untouched and no partial staging survives (refuse-and-stay).
-func (f *Fetcher) FetchVerified(ctx context.Context, dest string) error {
+// FetchVerified downloads <root>/<chain>/<target>[/<platform>]/manifest.json, verifies it
+// against the keyring and asserts it belongs to f.Chain and f.Platform, then downloads each
+// listed artifact from <root>/<chain>/<manifest.version>[/<platform>]/ and checks its SHA-256 +
+// size against the manifest. On full success the staging dir is populated -- the verified
+// manifest bytes beside the artifacts, as manifest.json -- and atomically placed at dest; dest
+// must not already exist. On ANY failure dest is left untouched and no partial staging survives
+// (refuse-and-stay).
+func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error {
 	logf := f.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -112,16 +170,26 @@ func (f *Fetcher) FetchVerified(ctx context.Context, dest string) error {
 	if f.Keyring == nil || f.Keyring.Len() == 0 {
 		return ErrNoKeyring // fail closed before touching the network
 	}
+	if !validSegment(f.Chain) {
+		return fmt.Errorf("install: bad chain name %q", f.Chain)
+	}
+	if f.Platform != "" && !validSegment(f.Platform) {
+		return fmt.Errorf("install: bad platform name %q", f.Platform)
+	}
+	if !validSegment(target) {
+		return fmt.Errorf("install: bad release target %q", target)
+	}
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("install: staging dest %s already exists", dest)
 	}
 
 	// 1. Fetch + verify the manifest — the trust root. Nothing else is trusted until this passes.
-	mBytes, err := f.get(ctx, ManifestName, maxManifestSize)
+	at := path.Join(f.Chain, target, f.Platform) // Join drops an empty platform
+	mBytes, err := f.get(ctx, path.Join(at, ManifestName), maxManifestSize)
 	if err != nil {
 		return fmt.Errorf("install: fetch manifest: %w", err)
 	}
-	sig, err := f.get(ctx, ManifestName+sigSuffix, ed25519.SignatureSize+1)
+	sig, err := f.get(ctx, path.Join(at, ManifestName+sigSuffix), ed25519.SignatureSize+1)
 	if err != nil {
 		return fmt.Errorf("install: fetch manifest signature: %w", err)
 	}
@@ -135,7 +203,15 @@ func (f *Fetcher) FetchVerified(ctx context.Context, dest string) error {
 	if len(man.Artifacts) == 0 {
 		return ErrManifest
 	}
-	logf("install: manifest verified — %d artifact(s) to fetch", len(man.Artifacts))
+	// The version is about to become a URL path element; a manifest that verifies but names
+	// something unusable there is malformed, not merely surprising.
+	if !validSegment(man.Version) {
+		return fmt.Errorf("%w: version %q", ErrManifest, man.Version)
+	}
+	if man.Chain != f.Chain || man.Platform != f.Platform {
+		return fmt.Errorf("%w: asked for %s, manifest says %q", ErrWrongChain, at, path.Join(man.Chain, man.Platform))
+	}
+	logf("install: %s manifest verified — release %s, %d artifact(s) to fetch", at, man.Version, len(man.Artifacts))
 
 	// 2. Stage into a private temp dir SIBLING of dest (same filesystem, so the final rename is
 	// atomic). Removed on every return unless step 3 renames it away.
@@ -149,11 +225,18 @@ func (f *Fetcher) FetchVerified(ctx context.Context, dest string) error {
 			os.RemoveAll(tmp)
 		}
 	}()
+	from := path.Join(f.Chain, man.Version, f.Platform)
 	for _, a := range man.Artifacts {
-		if err := f.fetchArtifact(ctx, tmp, a); err != nil {
+		if err := f.fetchArtifact(ctx, from, tmp, a); err != nil {
 			return err // any mismatch/fetch error aborts the whole set; tmp is cleaned up
 		}
 		logf("install: verified %s (%d bytes)", a.Name, a.Size)
+	}
+	// The verified manifest travels with the set it describes: it is what an installed node
+	// keeps beside its binaries to know which release it is on, and it is the exact bytes that
+	// verified, not a re-serialisation.
+	if err := os.WriteFile(filepath.Join(tmp, ManifestName), mBytes, 0o644); err != nil {
+		return fmt.Errorf("install: keep manifest: %w", err)
 	}
 
 	// 3. All artifacts verified against the signed manifest — publish atomically.
@@ -164,22 +247,22 @@ func (f *Fetcher) FetchVerified(ctx context.Context, dest string) error {
 	return nil
 }
 
-// FetchArtifact streams <BaseURL>/<a.Name> into dir/<a.Name>, computing its SHA-256 as it goes
-// and refusing the moment the byte count exceeds a.Size or the final hash disagrees with the
+// FetchArtifact streams <root>/<from>/<a.Name> into dir/<a.Name>, computing its SHA-256 as it
+// goes and refusing the moment the byte count exceeds a.Size or the final hash disagrees with the
 // signed manifest. The write is bounded by a.Size+1 so a longer-than-declared body is caught
 // rather than silently truncated.
-func (f *Fetcher) fetchArtifact(ctx context.Context, dir string, a Entry) error {
+func (f *Fetcher) fetchArtifact(ctx context.Context, from, dir string, a Entry) error {
 	if a.Size < 0 || a.Size > maxArtifactSize {
 		return fmt.Errorf("%w: %s declares out-of-range size %d", ErrArtifactMismatch, a.Name, a.Size)
 	}
 	// Guard against a manifest name that escapes the staging dir (path traversal from a
 	// compromised-but-somehow-signed manifest, or a plain mistake).
 	clean := filepath.Clean(a.Name)
-	if clean != a.Name || filepath.IsAbs(clean) || clean == ".." || filepath.Dir(clean) != "." {
+	if clean != a.Name || filepath.IsAbs(clean) || clean == ".." || filepath.Dir(clean) != "." || clean == ManifestName {
 		return fmt.Errorf("%w: unsafe artifact name %q", ErrArtifactMismatch, a.Name)
 	}
 
-	resp, err := f.do(ctx, a.Name)
+	resp, err := f.do(ctx, path.Join(from, a.Name))
 	if err != nil {
 		return fmt.Errorf("install: fetch %s: %w", a.Name, err)
 	}
@@ -268,10 +351,10 @@ func expand(src string, mode os.FileMode) error {
 	return nil
 }
 
-// Get fetches <BaseURL>/<name> and returns its body, refusing a non-200 or an over-limit
+// Get fetches <root>/<rel> and returns its body, refusing a non-200 or an over-limit
 // response. Used for the small manifest + signature; artifacts stream via fetchArtifact.
-func (f *Fetcher) get(ctx context.Context, name string, limit int64) ([]byte, error) {
-	resp, err := f.do(ctx, name)
+func (f *Fetcher) get(ctx context.Context, rel string, limit int64) ([]byte, error) {
+	resp, err := f.do(ctx, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -284,18 +367,18 @@ func (f *Fetcher) get(ctx context.Context, name string, limit int64) ([]byte, er
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%s exceeds %d bytes", name, limit)
+		return nil, fmt.Errorf("%s exceeds %d bytes", rel, limit)
 	}
 	return data, nil
 }
 
-// Do issues a bounded GET for <BaseURL>/<name>. The caller owns resp.Body.
-func (f *Fetcher) do(ctx context.Context, name string) (*http.Response, error) {
+// Do issues a bounded GET for <root>/<rel>. The caller owns resp.Body.
+func (f *Fetcher) do(ctx context.Context, rel string) (*http.Response, error) {
 	client := f.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Minute} // the guest image is large
 	}
-	u, err := joinURL(f.BaseURL, name)
+	u, err := joinURL(f.BaseURL, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -306,8 +389,9 @@ func (f *Fetcher) do(ctx context.Context, name string) (*http.Response, error) {
 	return client.Do(req)
 }
 
-// joinURL appends name as a single path element to base, preserving base's scheme/host.
-func joinURL(base, name string) (string, error) {
+// joinURL appends the relative path rel to base, preserving base's scheme/host and any path
+// prefix it carries (a channel served under a sub-path is still a channel).
+func joinURL(base, rel string) (string, error) {
 	if base == "" {
 		return "", errors.New("install: empty BaseURL")
 	}
@@ -315,5 +399,23 @@ func joinURL(base, name string) (string, error) {
 	if base[len(base)-1] == '/' {
 		sep = ""
 	}
-	return base + sep + path.Clean(name), nil
+	return base + sep + path.Clean(rel), nil
+}
+
+// validSegment reports whether s can stand as ONE path element of the channel tree -- a chain
+// name, a release target, a version id. The alphabet is what a version id is made of plus the
+// two pointer words; anything that could climb, split or hide (`..`, a slash, a leading dot, a
+// query character) is refused before it reaches a URL or a filesystem.
+func validSegment(s string) bool {
+	if s == "" || s[0] == '.' || len(s) > 128 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }

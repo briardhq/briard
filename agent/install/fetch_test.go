@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,8 +37,21 @@ func sha(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
+// The release every fixture publishes, and where the tree puts its pieces: the manifest is
+// served from the `latest` pointer (what a fetch names), the artifacts only from the versioned
+// directory (what the manifest names) -- the split the fetcher has to honour. The host chain
+// carries the platform level, so the fixture does too.
+const testVersion = "v3.20260905.abc1234"
+
+func pointerPath(name string) string {
+	return ChainHost + "/" + TargetLatest + "/" + PlatformLinux + "/" + name
+}
+func releasePath(name string) string {
+	return ChainHost + "/" + testVersion + "/" + PlatformLinux + "/" + name
+}
+
 // channel is a fake signed release channel: a keyring holding one signer, a set of served
-// bodies (manifest.json + its .sig + the artifacts), and an httptest server. Tests mutate the
+// bodies keyed by their path under the channel root, and an httptest server. Tests mutate the
 // bodies (tamper an artifact, resign a different manifest, drop a file) before serving.
 type channel struct {
 	t       *testing.T
@@ -49,8 +61,10 @@ type channel struct {
 	missing map[string]bool
 }
 
-// newChannel builds a channel whose signed manifest lists arts, serving bytesByName for each
-// artifact (and a valid signature over the marshalled manifest).
+// newChannel builds a channel whose signed manifest lists arts (as the host chain at
+// testVersion), serving bytesByName for each artifact under the versioned directory and the
+// signed manifest under both the versioned directory and the `latest` pointer -- the exact
+// shape `publish-release.sh sign` lays out.
 func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *channel {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -61,15 +75,20 @@ func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	mb, err := json.Marshal(Manifest{Artifacts: arts})
+	mb, err := json.Marshal(Manifest{Chain: ChainHost, Platform: PlatformLinux, Version: testVersion, Artifacts: arts})
 	if err != nil {
 		t.Fatal(err)
 	}
+	sig := ed25519.Sign(priv, mb)
 	bodies := map[string][]byte{
-		ManifestName:             mb,
-		ManifestName + sigSuffix: ed25519.Sign(priv, mb),
+		pointerPath(ManifestName):             mb,
+		pointerPath(ManifestName + sigSuffix): sig,
+		releasePath(ManifestName):             mb,
+		releasePath(ManifestName + sigSuffix): sig,
 	}
-	maps.Copy(bodies, bytesByName)
+	for name, b := range bytesByName {
+		bodies[releasePath(name)] = b
+	}
 	return &channel{t: t, priv: priv, kr: kr, bodies: bodies, missing: map[string]bool{}}
 }
 
@@ -92,7 +111,12 @@ func (c *channel) serve() string {
 }
 
 func (c *channel) fetcher() *Fetcher {
-	return &Fetcher{BaseURL: c.serve(), Keyring: c.kr}
+	return &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: c.kr}
+}
+
+// fetchLatest is what install.sh does: name the pointer, get whatever release it points at.
+func (c *channel) fetchLatest(dest string) error {
+	return c.fetcher().FetchVerified(context.Background(), TargetLatest, dest)
 }
 
 // goodChannel is the happy-path fixture: three artifacts (agent binary, a large-ish guest
@@ -142,7 +166,7 @@ func assertRefused(t *testing.T, dest string, err, want error) {
 func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 	c := goodChannel(t)
 	dest := stagedFresh(t)
-	if err := c.fetcher().FetchVerified(context.Background(), dest); err != nil {
+	if err := c.fetchLatest(dest); err != nil {
 		t.Fatalf("good channel: %v", err)
 	}
 	// Every artifact landed with the exact bytes and the declared mode.
@@ -168,6 +192,15 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, "nixos.qcow2")); err != nil {
 		t.Errorf("guest image not staged: %v", err)
 	}
+	// The verified manifest travels with the set -- the exact bytes that verified, so an
+	// installed node can keep it beside the binaries and know which release it is on.
+	kept, err := os.ReadFile(filepath.Join(dest, ManifestName))
+	if err != nil {
+		t.Fatalf("manifest not kept beside the artifacts: %v", err)
+	}
+	if !bytes.Equal(kept, c.bodies[pointerPath(ManifestName)]) {
+		t.Error("the kept manifest is not the bytes that verified")
+	}
 }
 
 // The load-bearing negatives (all failable, [[verification-assertions-must-fail]]): each one
@@ -176,35 +209,32 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 func TestFetchVerifiedRefusesTamperedArtifact(t *testing.T) {
 	c := goodChannel(t)
 	// Serve DIFFERENT bytes for the guest image than the (correctly signed) manifest pins.
-	c.bodies["nixos.qcow2"] = append(c.bodies["nixos.qcow2"], []byte("EVIL PAYLOAD")...)
+	c.bodies[releasePath("nixos.qcow2")] = append(c.bodies[releasePath("nixos.qcow2")], []byte("EVIL PAYLOAD")...)
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, ErrArtifactMismatch)
+	assertRefused(t, dest, c.fetchLatest(dest), ErrArtifactMismatch)
 }
 
 func TestFetchVerifiedRefusesTamperedManifest(t *testing.T) {
 	c := goodChannel(t)
 	// The manifest bytes were signed; now serve a DIFFERENT manifest body under the same name,
 	// so the (still-served) signature no longer verifies it.
-	c.bodies[ManifestName] = append(c.bodies[ManifestName], ' ')
+	c.bodies[pointerPath(ManifestName)] = append(c.bodies[pointerPath(ManifestName)], ' ')
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, selfupdate.ErrBadSignature)
+	assertRefused(t, dest, c.fetchLatest(dest), selfupdate.ErrBadSignature)
 }
 
 func TestFetchVerifiedRefusesUnsignedManifest(t *testing.T) {
 	c := goodChannel(t)
-	c.bodies[ManifestName+sigSuffix] = nil // empty signature
+	c.bodies[pointerPath(ManifestName+sigSuffix)] = nil // empty signature
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, selfupdate.ErrUnsigned)
+	assertRefused(t, dest, c.fetchLatest(dest), selfupdate.ErrUnsigned)
 }
 
 func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 	c := goodChannel(t)
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Keyring: nil} // no ring wired
-	assertRefused(t, dest, f.FetchVerified(context.Background(), dest), ErrNoKeyring)
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: nil} // no ring wired
+	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrNoKeyring)
 
 	// An EMPTY (but non-nil) ring is equally fail-closed.
 	empty, err := selfupdate.NewKeyring()
@@ -212,8 +242,39 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest2 := stagedFresh(t)
-	f2 := &Fetcher{BaseURL: c.serve(), Keyring: empty}
-	assertRefused(t, dest2, f2.FetchVerified(context.Background(), dest2), ErrNoKeyring)
+	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: empty}
+	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrNoKeyring)
+}
+
+// A genuine, correctly signed manifest for the OTHER chain is refused: the signature proves the
+// bytes are ours, the chain field proves they are the wrong release line, and a fetch that
+// accepted them would install a guest image where a host bundle was expected (or compare a
+// guest date against a host date and silently no-op, which is the failure [B.86a] names).
+func TestFetchVerifiedRefusesWrongChain(t *testing.T) {
+	c := goodChannel(t)
+	// Serve the host chain's (signed, chain:"host") manifest where the guest chain's would be.
+	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
+		c.bodies[ChainGuest+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
+	}
+	dest := stagedFresh(t)
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainGuest, Keyring: c.kr}
+	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
+}
+
+// The target is a URL path element chosen by whoever runs the installer; it must not be able
+// to climb the tree. Refused before any request is made, and nothing is staged.
+func TestFetchVerifiedRefusesUnsafeTarget(t *testing.T) {
+	c := goodChannel(t)
+	for _, target := range []string{"", "..", "../host", "a/b", ".hidden", "v3?x=1"} {
+		dest := stagedFresh(t)
+		err := c.fetcher().FetchVerified(context.Background(), target, dest)
+		if err == nil {
+			t.Errorf("target %q was accepted", target)
+		}
+		if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+			t.Errorf("target %q left a staging dir", target)
+		}
+	}
 }
 
 func TestFetchVerifiedRefusesWrongSize(t *testing.T) {
@@ -223,15 +284,14 @@ func TestFetchVerifiedRefusesWrongSize(t *testing.T) {
 	arts := []Entry{{Name: "briard-agent", SHA256: sha(agent), Size: int64(len(agent)) + 5}}
 	c := newChannel(t, arts, map[string][]byte{"briard-agent": agent})
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, ErrArtifactMismatch)
+	assertRefused(t, dest, c.fetchLatest(dest), ErrArtifactMismatch)
 }
 
 func TestFetchVerifiedRefusesMissingArtifact(t *testing.T) {
 	c := goodChannel(t)
-	c.missing["qemu-bundle.tar"] = true // 404 the third artifact
+	c.missing[releasePath("qemu-bundle.tar")] = true // 404 the third artifact
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
+	err := c.fetchLatest(dest)
 	if err == nil {
 		t.Fatal("a 404 artifact should abort the fetch")
 	}
@@ -243,8 +303,7 @@ func TestFetchVerifiedRefusesMissingArtifact(t *testing.T) {
 func TestFetchVerifiedRefusesEmptyManifest(t *testing.T) {
 	c := newChannel(t, nil, nil) // signs an empty artifact list
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, ErrManifest)
+	assertRefused(t, dest, c.fetchLatest(dest), ErrManifest)
 }
 
 func TestFetchVerifiedRefusesUnsafeArtifactName(t *testing.T) {
@@ -253,8 +312,7 @@ func TestFetchVerifiedRefusesUnsafeArtifactName(t *testing.T) {
 	arts := []Entry{{Name: "../escape", SHA256: sha(body), Size: int64(len(body))}}
 	c := newChannel(t, arts, map[string][]byte{"../escape": body})
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, ErrArtifactMismatch)
+	assertRefused(t, dest, c.fetchLatest(dest), ErrArtifactMismatch)
 }
 
 func TestFetchVerifiedRefusesPreexistingDest(t *testing.T) {
@@ -263,7 +321,7 @@ func TestFetchVerifiedRefusesPreexistingDest(t *testing.T) {
 	if err := os.Mkdir(dest, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.fetcher().FetchVerified(context.Background(), dest); err == nil {
+	if err := c.fetchLatest(dest); err == nil {
 		t.Fatal("FetchVerified into a pre-existing dest should error (never merge into it)")
 	}
 }
@@ -316,7 +374,7 @@ func compressedChannel(t *testing.T) (*channel, []byte) {
 func TestFetchVerifiedExpandsCompressedArtifacts(t *testing.T) {
 	c, guest := compressedChannel(t)
 	dest := stagedFresh(t)
-	if err := c.fetcher().FetchVerified(context.Background(), dest); err != nil {
+	if err := c.fetchLatest(dest); err != nil {
 		t.Fatalf("compressed channel: %v", err)
 	}
 	// The staging dir holds the names install.sh expects — which is why shipping these
@@ -349,13 +407,12 @@ func TestFetchVerifiedExpandsCompressedArtifacts(t *testing.T) {
 // is the test that fails.
 func TestFetchVerifiedRefusesTamperedCompressedArtifact(t *testing.T) {
 	c, _ := compressedChannel(t)
-	z := c.bodies["nixos.qcow2.zst"]
+	z := c.bodies[releasePath("nixos.qcow2.zst")]
 	tampered := append([]byte(nil), z...)
 	tampered[len(tampered)/2] ^= 0xff
-	c.bodies["nixos.qcow2.zst"] = tampered
+	c.bodies[releasePath("nixos.qcow2.zst")] = tampered
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
-	assertRefused(t, dest, err, ErrArtifactMismatch)
+	assertRefused(t, dest, c.fetchLatest(dest), ErrArtifactMismatch)
 }
 
 // A .zst whose hash matches but whose payload is not a zstd stream: a mis-built release, not an
@@ -368,7 +425,7 @@ func TestFetchVerifiedRefusesUndecodableCompressedArtifact(t *testing.T) {
 		{Name: "nixos.qcow2.zst", SHA256: sha(junk), Size: int64(len(junk))},
 	}, map[string][]byte{"briard-agent": agent, "nixos.qcow2.zst": junk})
 	dest := stagedFresh(t)
-	err := c.fetcher().FetchVerified(context.Background(), dest)
+	err := c.fetchLatest(dest)
 	if err == nil {
 		t.Fatal("undecodable .zst was accepted")
 	}
@@ -400,10 +457,8 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 	write("briard-agent", agent, 0o755)
 	write("nixos.qcow2.zst", zstdOf(t, guest), 0o644)
-	// Files that describe the set must NOT become artifacts of it.
-	write("install.sh", []byte("#!/bin/sh\n"), 0o755)
 
-	if err := WriteManifest(stage); err != nil {
+	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion); err != nil {
 		t.Fatalf("WriteManifest: %v", err)
 	}
 	mb, err := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -414,8 +469,11 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if err := json.Unmarshal(mb, &man); err != nil {
 		t.Fatalf("the manifest we just wrote does not parse: %v", err)
 	}
+	if man.Chain != ChainHost || man.Platform != PlatformLinux || man.Version != testVersion {
+		t.Errorf("chain/platform/version = %q/%q/%q, want %q/%q/%q", man.Chain, man.Platform, man.Version, ChainHost, PlatformLinux, testVersion)
+	}
 	if len(man.Artifacts) != 2 {
-		t.Fatalf("manifest lists %d artifacts, want 2 (install.sh must be excluded): %+v", len(man.Artifacts), man.Artifacts)
+		t.Fatalf("manifest lists %d artifacts, want 2: %+v", len(man.Artifacts), man.Artifacts)
 	}
 	// The mode round-trips as a NUMBER the reader applies, which is the thing the old
 	// hand-written "mode":493 got right only by luck.
@@ -427,6 +485,15 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 			t.Errorf("0644 artifact emitted a mode (%o); want omitted", a.Mode)
 		}
 	}
+	// Running the writer AGAIN over its own output must not list the manifest as an artifact
+	// of itself -- the one file a release directory holds that the manifest cannot name.
+	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion); err != nil {
+		t.Fatalf("WriteManifest (second pass): %v", err)
+	}
+	mb2, _ := os.ReadFile(filepath.Join(stage, ManifestName))
+	if !bytes.Equal(mb, mb2) {
+		t.Error("re-describing the same directory produced different manifest bytes")
+	}
 
 	// Now serve exactly those bytes and let the real fetcher consume them.
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -437,17 +504,20 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bodies := map[string][]byte{ManifestName: mb, ManifestName + sigSuffix: ed25519.Sign(priv, mb)}
+	bodies := map[string][]byte{
+		pointerPath(ManifestName):             mb,
+		pointerPath(ManifestName + sigSuffix): ed25519.Sign(priv, mb),
+	}
 	for _, a := range man.Artifacts {
 		b, err := os.ReadFile(filepath.Join(stage, a.Name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		bodies[a.Name] = b
+		bodies[releasePath(a.Name)] = b
 	}
 	c := &channel{t: t, priv: priv, kr: kr, bodies: bodies, missing: map[string]bool{}}
 	dest := stagedFresh(t)
-	if err := (&Fetcher{BaseURL: c.serve(), Keyring: kr}).FetchVerified(context.Background(), dest); err != nil {
+	if err := (&Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: kr}).FetchVerified(context.Background(), TargetLatest, dest); err != nil {
 		t.Fatalf("a manifest written by WriteManifest was refused by FetchVerified: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
@@ -466,48 +536,119 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 }
 
-// The channel lives under a PATH PREFIX (https://get.briard.io/release), not at a host root, so
-// the artifact set has a namespace of its own and the publish sync can be --delete. That makes
-// prefix preservation load-bearing: a joinURL that replaced the path instead of appending would
-// send every fetch to the site root, where it would find the catalog and install.sh and no
-// artifacts — failing closed, but for a reason nobody would guess from the error.
-func TestFetchVerifiedHonoursABaseURLPath(t *testing.T) {
-	c, guest := compressedChannel(t)
-	// Serve the whole channel one level down, exactly as the bucket does.
-	root := c.serve()
-	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: root + "/release", Keyring: c.kr}
-	// The prefixed server: /release/<name> serves what the flat one served at /<name>.
-	prefixed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/release/")
-		if name == r.URL.Path { // not under the prefix — the site root, which holds no artifacts
-			http.NotFound(w, r)
-			return
+// The writer refuses to describe a directory as a release whose id spells a pointer, or whose
+// chain/version cannot stand as a path element: the tree would have no way to tell such a
+// directory from the pointer it collides with.
+func TestWriteManifestRefusesUnusableIds(t *testing.T) {
+	stage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stage, "briard-agent"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range [][2]string{
+		{ChainHost, TargetStable}, {ChainHost, TargetLatest}, {ChainHost, ""}, {ChainHost, "../v3"},
+		{"", testVersion}, {"host/extra", testVersion}, {".host", testVersion},
+	} {
+		if err := WriteManifest(stage, tc[0], "", tc[1]); err == nil {
+			t.Errorf("WriteManifest(chain=%q, version=%q) was accepted", tc[0], tc[1])
 		}
-		b, ok := c.bodies[name]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Write(b)
-	}))
-	t.Cleanup(prefixed.Close)
-	f.BaseURL = prefixed.URL + "/release"
+	}
+	if _, err := os.Stat(filepath.Join(stage, ManifestName)); !os.IsNotExist(err) {
+		t.Error("a refused WriteManifest still wrote a manifest")
+	}
+}
 
-	if err := f.FetchVerified(context.Background(), dest); err != nil {
-		t.Fatalf("a channel under /release was not fetchable: %v", err)
+// Artifacts resolve against the manifest's own `version`, never against the path the manifest
+// was fetched from. A pointer path serves a manifest and nothing else (bar the bootstrap
+// agent), so this is what lets `stable/` be a 1 KB copy rather than a second 380 MB image --
+// and it is an anti-substitution property: a signed manifest says where its own bytes live.
+func TestFetchVerifiedResolvesArtifactsAgainstTheManifestVersion(t *testing.T) {
+	c, guest := compressedChannel(t)
+	// The channel as published: artifacts ONLY under the versioned directory. (The pointer
+	// serves the manifest, which is how the fixture is built.)
+	dest := stagedFresh(t)
+	if err := c.fetchLatest(dest); err != nil {
+		t.Fatalf("a channel with artifacts under <chain>/<version>/ was not fetchable: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
 	if err != nil {
-		t.Fatalf("guest image not staged from the prefixed channel: %v", err)
+		t.Fatalf("guest image not staged from the versioned directory: %v", err)
 	}
 	if !bytes.Equal(got, guest) {
-		t.Error("image fetched from the prefixed channel differs")
+		t.Error("image fetched from the versioned directory differs")
 	}
-	// The failable control: the SAME server at the site root serves no artifacts, so a fetcher
-	// that dropped the prefix must not accidentally pass.
-	bare := &Fetcher{BaseURL: prefixed.URL, Keyring: c.kr}
-	if err := bare.FetchVerified(context.Background(), stagedFresh(t)); err == nil {
-		t.Error("fetching from the site root succeeded; the prefix is not actually load-bearing in this test")
+
+	// The failable control: move every artifact to sit BESIDE the pointer's manifest and away
+	// from the versioned directory. A fetcher that resolved against the fetched path would now
+	// succeed; the real one must fail, because the manifest says the bytes live elsewhere.
+	moved := map[string][]byte{}
+	for name, b := range c.bodies {
+		if rest, ok := strings.CutPrefix(name, ChainHost+"/"+testVersion+"/"+PlatformLinux+"/"); ok {
+			moved[pointerPath(rest)] = b
+		} else {
+			moved[name] = b
+		}
+	}
+	c.bodies = moved
+	if err := c.fetchLatest(stagedFresh(t)); err == nil {
+		t.Error("artifacts served beside the pointer were accepted; resolution is not actually by manifest version")
+	}
+}
+
+// An exact version id is a target like any other: <chain>/<id>/ serves its own manifest.
+func TestFetchVerifiedAcceptsAnExactVersionTarget(t *testing.T) {
+	c := goodChannel(t)
+	dest := stagedFresh(t)
+	if err := c.fetcher().FetchVerified(context.Background(), testVersion, dest); err != nil {
+		t.Fatalf("exact version target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "briard-agent")); err != nil {
+		t.Errorf("agent not staged from the exact-version target: %v", err)
+	}
+}
+
+// The platform is the second half of the crossed-wire check: the Linux manifest (genuine,
+// signed, chain "host") served under the windows arm is refused, because the bundle it names
+// cannot run there and a host that installed it would find out at the next guest launch.
+func TestFetchVerifiedRefusesWrongPlatform(t *testing.T) {
+	c := goodChannel(t)
+	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
+		c.bodies[ChainHost+"/"+TargetLatest+"/windows/"+n] = c.bodies[pointerPath(n)]
+	}
+	dest := stagedFresh(t)
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: "windows", Keyring: c.kr}
+	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
+	// And a platform-less fetch of a platformed manifest, likewise (the guest chain's shape
+	// pointed at a host directory).
+	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
+		c.bodies[ChainHost+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
+	}
+	dest2 := stagedFresh(t)
+	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Keyring: c.kr}
+	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrWrongChain)
+}
+
+// A chain without the platform level (the guest) is served flat: no platform in the path, no
+// platform in the manifest, and the fetcher asked for none.
+func TestFetchVerifiedHandlesAPlatformlessChain(t *testing.T) {
+	c := goodChannel(t)
+	img := []byte("guest image bytes")
+	gv := "guest.20260905.abc1234"
+	mb, err := json.Marshal(Manifest{Chain: ChainGuest, Version: gv, Artifacts: []Entry{
+		{Name: "nixos.qcow2", SHA256: sha(img), Size: int64(len(img))},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.bodies[ChainGuest+"/"+TargetStable+"/"+ManifestName] = mb
+	c.bodies[ChainGuest+"/"+TargetStable+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
+	c.bodies[ChainGuest+"/"+gv+"/nixos.qcow2"] = img
+	dest := stagedFresh(t)
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainGuest, Keyring: c.kr}
+	if err := f.FetchVerified(context.Background(), TargetStable, dest); err != nil {
+		t.Fatalf("guest chain: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
+	if err != nil || !bytes.Equal(got, img) {
+		t.Fatalf("guest image not staged from guest/%s/: %v", gv, err)
 	}
 }

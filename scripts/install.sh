@@ -166,16 +166,20 @@ CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # 32 MiB
 NET_GUARD_SECS="${BRIARD_NET_GUARD_SECS:-45}"
 UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
 NET_PEER="${BRIARD_NET_PEER:-}"       # a LAN host to ping to confirm we kept our footing
-# The signed release channel base (network fetch). UNDER /release/ rather than at the site root,
-# so the release set has a namespace of its own: the bucket also serves `catalog/` (live runtime
-# content the agent fetches for `briard service install`) and THIS script at the root, and those
-# are three independent lifecycles that used to share one flat namespace. With the artifacts under
-# a prefix the publish sync can be `--delete` -- scoped to what a release owns -- which is what
-# makes a renamed artifact clean itself up instead of stranding the old key forever.
+# The signed release channel ROOT (network fetch). Under it, one directory per release CHAIN --
+# `host/` (agent, net-wrap, qemu) and `guest/` (the OS image) -- each holding one directory per
+# version plus the two pointers `stable` and `latest`, which are byte-copies of one version's
+# signed manifest ([B.86e]; the tree is spelled out in scripts/publish-release.sh). The bucket
+# also serves `catalog/` (live runtime content the agent fetches for `briard service install`)
+# and THIS script at the root: independent lifecycles, each in a namespace of its own.
 #
 # This script stays at the ROOT, because `curl -fsSL https://get.briard.io/install.sh | sudo sh`
 # is the advertised command and the one path that is not ours to move.
-CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io/release}"
+CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
+# WHICH release: `stable` (what strangers get, the tested pair by construction), `latest` (what
+# was published most recently -- how a release is proven before it is promoted), or an exact
+# host id (`v3.<date>.<rev>`; the guest counterpart is derived). One selector for both chains.
+RELEASE="${BRIARD_RELEASE:-stable}"
 KEYRING="${BRIARD_KEYRING:-$PREFIX/keyring.pem}"       # the bundled release public key (verify root)
 
 # The release signing public key(s), embedded at release time. install.sh is fetched over TLS from
@@ -227,6 +231,10 @@ if [ -n "${BRIARD_ARTIFACTS:-}" ]; then
 	[ -x "$src/briard-agent" ] || die "staging dir $src has no briard-agent"
 	install -m0755 "$src/briard-agent" "$PREFIX/agent/briard-agent"
 	CARD_AGENT="$PREFIX/agent/briard-agent"
+	# A local staging dir is FLAT (one directory, both chains' artifacts side by side); the
+	# network fetch below lays the two chains out separately. Both are named through these two
+	# so the install steps read one shape.
+	HOSTSRC="$src"; GUESTSRC="$src"
 else
 	# Signed network fetch (assertion e). Bootstrap a briard-agent over TLS -- the release channel's
 	# integrity anchors this FIRST binary -- then let it fetch+verify the whole set (qemu bundle,
@@ -239,13 +247,18 @@ else
 		*) die "no release keyring at $KEYRING (the embedded key is a build placeholder; set BRIARD_KEYRING)" ;;
 		esac
 	fi
-	say "bootstrapping the installer agent from $CHANNEL ..."
+	say "bootstrapping the installer agent from $CHANNEL (host/$RELEASE) ..."
 	# The bootstrap lands under $PREFIX, NOT $RUNDIR: Debian (and Ubuntu) mount /run `noexec`, so a
 	# bootstrap staged there cannot be executed at all -- the install died on `Permission denied`
 	# before it fetched a single artifact. $PREFIX is where the agent lives anyway, so if it is
 	# noexec the install has no home on this host regardless; /run has no claim to being executable.
+	#
+	# From the TARGET's path, never a fixed one: the bootstrap is the binary that parses the
+	# manifest, and a stale bootstrap that cannot parse a newer manifest is exactly the
+	# forward-compat bricking [B.86] exists to prevent. `briard-agent` is the one artifact the
+	# channel duplicates under its pointers for precisely this fetch.
 	boot="$PREFIX/bootstrap-agent"
-	fetch_url "$CHANNEL/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL"
+	fetch_url "$CHANNEL/host/$RELEASE/linux/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/host/$RELEASE/linux"
 	chmod +x "$boot"
 	# Fail with the REASON. A bootstrap that cannot exec (noexec mount, wrong arch, a dynamically
 	# linked binary whose interpreter this host lacks) is not a verification failure, and reporting
@@ -285,31 +298,41 @@ if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	# cattle.
 	src="$PREFIX/staging"
 	rm -rf "$src"
-	say "fetching + verifying the signed artifact set ..."
-	BRIARD_CHANNEL_URL="$CHANNEL" BRIARD_KEYRING="$KEYRING" \
+	say "fetching + verifying the signed artifact set (host/$RELEASE + guest) ..."
+	# Both chains, all-or-nothing: the agent stages host/ and guest/ under $src and only places
+	# $src once both have verified, so a host bundle never lands without the guest image it was
+	# published beside.
+	BRIARD_CHANNEL_URL="$CHANNEL" BRIARD_RELEASE="$RELEASE" BRIARD_KEYRING="$KEYRING" \
 		"$boot" --fetch-install "$src" || die "artifact verification failed; nothing installed"
+	HOSTSRC="$src/host"; GUESTSRC="$src/guest"
 	# The verified qemu bundle arrives as a tarball; expand it to the qemu/ tree the install step
 	# expects. Its bytes are already trusted (hash-checked against the signed manifest above).
 	# The tar is rooted at the bundle itself (bin/ lib/ share/ PROVENANCE), NOT at a qemu/ dir, so
 	# it must be extracted INTO one -- unpacking it beside the other artifacts scatters bin/ and
 	# lib/ across the staging dir and leaves the copy below with no qemu/ to find.
-	mkdir -p "$src/qemu"
-	tar -xf "$src/qemu-bundle.tar" -C "$src/qemu" && rm -f "$src/qemu-bundle.tar"
+	mkdir -p "$HOSTSRC/qemu"
+	tar -xf "$HOSTSRC/qemu-bundle.tar" -C "$HOSTSRC/qemu" && rm -f "$HOSTSRC/qemu-bundle.tar"
 	rm -f "$boot"
 	# The verified agent replaces the bootstrap one staged for the card.
-	[ -x "$src/briard-agent" ] || die "staging dir $src has no briard-agent"
-	install -m0755 "$src/briard-agent" "$PREFIX/agent/briard-agent"
+	[ -x "$HOSTSRC/briard-agent" ] || die "staging dir $HOSTSRC has no briard-agent"
+	install -m0755 "$HOSTSRC/briard-agent" "$PREFIX/agent/briard-agent"
 fi
 # The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
 # ExecStart under NET_MODE=macvtap. Bundled alongside the agent; a dumb, versioned shell artifact.
 NET_WRAP=""
-if [ -f "$src/briard-net-wrap" ]; then
-	install -m0755 "$src/briard-net-wrap" "$PREFIX/agent/briard-net-wrap"
+if [ -f "$HOSTSRC/briard-net-wrap" ]; then
+	install -m0755 "$HOSTSRC/briard-net-wrap" "$PREFIX/agent/briard-net-wrap"
 	NET_WRAP="$PREFIX/agent/briard-net-wrap"
 fi
-cp -a "$src/qemu/." "$PREFIX/qemu/"
+cp -a "$HOSTSRC/qemu/." "$PREFIX/qemu/"
 chmod -R u+w "$PREFIX/qemu"
-cp -f "$src/nixos.qcow2" "$PREFIX/guest-image/nixos.qcow2"
+cp -f "$GUESTSRC/nixos.qcow2" "$PREFIX/guest-image/nixos.qcow2"
+# THE INSTALLED MANIFESTS, one per chain, each beside what it describes: the exact signed bytes
+# that verified, so the node can say which release it is on -- and so the update path ([B.86b])
+# can diff the target's manifest against it and fetch only what changed. Absent on the local
+# staging path, which has no manifest to keep.
+[ -f "$HOSTSRC/manifest.json" ]  && install -m0644 "$HOSTSRC/manifest.json"  "$PREFIX/agent/manifest.json"
+[ -f "$GUESTSRC/manifest.json" ] && install -m0644 "$GUESTSRC/manifest.json" "$PREFIX/guest-image/manifest.json"
 # `briard` -- the operator CLI, which is a MODE of the agent binary rather than a second
 # one. Nothing under $PREFIX is on $PATH, so this symlink IS the CLI's existence as far as a user
 # is concerned. A symlink rather than a copy: self-update replaces the binary in place, and

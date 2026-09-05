@@ -50,22 +50,29 @@ let
   # writer (`briard-agent --stage-manifest`) -- the same binary that reads it back during the
   # install below. A format change that breaks that round trip now fails HERE instead of at a
   # stranger's first install.
+  #
+  # The layout is the TREE the channel publishes ([B.86e]): one directory per chain, one
+  # versioned directory under each. The pointers (`stable`) are laid at runtime beside the
+  # signatures, because a pointer is a byte-copy of a SIGNED manifest.
   channel = pkgs.runCommand "briard-test-channel" {
     nativeBuildInputs = [ pkgs.zstd pkgs.openssl pkgs.gnutar ];
   } ''
-    mkdir -p "$out"
-    install -m0755 ${agent}/bin/briard-agent        "$out/briard-agent"
-    install -m0755 ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
+    V=${agent.version}; GV="guest.''${V#*.}"
+    H="$out/host/$V/linux"; G="$out/guest/$GV"
+    mkdir -p "$H" "$G"
+    install -m0755 ${agent}/bin/briard-agent        "$H/briard-agent"
+    install -m0755 ${../scripts/briard-net-wrap.sh} "$H/briard-net-wrap"
     # Deterministic tar, same flags as the release script: the bundle is a directory in the store
     # and the channel contract wants one file.
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
         -cf qemu-bundle.tar -C ${qemuBundle} .
-    zstd -19 -q --rm qemu-bundle.tar -o "$out/qemu-bundle.tar.zst"
-    zstd -19 -q ${guestDisk}/nixos.qcow2 -o "$out/nixos.qcow2.zst"
-    chmod 0644 "$out"/*.zst
+    zstd -19 -q --rm qemu-bundle.tar -o "$H/qemu-bundle.tar.zst"
+    zstd -19 -q ${guestDisk}/nixos.qcow2 -o "$G/nixos.qcow2.zst"
+    chmod 0644 "$H"/*.zst "$G"/*.zst
     # The production writer, not a re-implementation in Nix -- which would have tested this file
     # against itself and proven nothing about what a release actually publishes.
-    "$out/briard-agent" --stage-manifest "$out"
+    "$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V"
+    "$H/briard-agent" --stage-manifest "$G" --chain guest                  --release "$GV"
   '';
   # ⚠️ THE CHANNEL IS SIGNED AT RUNTIME, NOT HERE, and that is a constraint rather than a
   # preference: a signing key committed to the repo trips `TestNoSecretMaterial` (internal/arch),
@@ -281,20 +288,34 @@ pkgs.testers.runNixOSTest {
     # the agent verifies is exactly what `--stage-manifest` emitted.
     stub = "${selfupdateStub}/bin/briard-selfupdate-stub"
     host.succeed(f"{stub} keygen /root/release.key /root/keyring.pem")
-    # A symlink farm over the read-only store: only the signature needs to be a real file here.
-    host.succeed("mkdir -p /srv && ln -sf ${channel}/* /srv/")
-    host.succeed(f"{stub} sign /root/release.key /srv/manifest.json | base64 -d > /srv/manifest.json.sig")
-    host.succeed("test -s /srv/manifest.json.sig")
+    # A symlink farm over the read-only store, one versioned directory per chain: only the
+    # signatures and the pointers need to be real files here. The pointer is what
+    # `publish-release.sh sign`/`promote` lay: a byte-copy of the signed manifest, plus the
+    # bootstrap agent on the host chain (install.sh curls it from the pointer path).
+    V = "${agent.version}"
+    GV = "guest." + V.split(".", 1)[1]
+    # The host chain carries the platform level (this is its linux arm); the guest is flat.
+    for chain, ver, ptr in (("host", V + "/linux", "stable/linux"), ("guest", GV, "stable")):
+        d = f"/srv/{chain}/{ver}"
+        host.succeed(f"mkdir -p {d} /srv/{chain}/{ptr} && ln -sf ${channel}/{chain}/{ver}/* {d}/")
+        host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+        host.succeed(f"test -s {d}/manifest.json.sig")
+        host.succeed(f"cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}/")
+    host.succeed(f"ln -sf ${channel}/host/{V}/linux/briard-agent /srv/host/stable/linux/briard-agent")
 
     host.succeed(
         f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
     )
-    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/manifest.json -o /dev/null", timeout=30)
-    # The manifest is SIGNED and the artifacts are COMPRESSED -- assert the shape before relying
-    # on it, so a channel that silently went back to loose plaintext files cannot pass as green.
-    host.succeed("curl -sf http://127.0.0.1:8099/manifest.json.sig -o /dev/null")
-    host.succeed("curl -sf http://127.0.0.1:8099/nixos.qcow2.zst -o /dev/null")
-    host.fail("curl -sf http://127.0.0.1:8099/nixos.qcow2 -o /dev/null")
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/host/stable/linux/manifest.json -o /dev/null", timeout=30)
+    # The manifests are SIGNED, the artifacts are COMPRESSED and live under the VERSIONED
+    # directories only -- assert the shape before relying on it, so a channel that silently went
+    # back to loose plaintext files, or grew a second image under a pointer, cannot pass as green.
+    host.succeed("curl -sf http://127.0.0.1:8099/host/stable/linux/manifest.json.sig -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/host/stable/linux/briard-agent -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/guest/stable/manifest.json.sig -o /dev/null")
+    host.succeed(f"curl -sf http://127.0.0.1:8099/guest/{GV}/nixos.qcow2.zst -o /dev/null")
+    host.fail(f"curl -sf http://127.0.0.1:8099/guest/{GV}/nixos.qcow2 -o /dev/null")
+    host.fail("curl -sf http://127.0.0.1:8099/guest/stable/nixos.qcow2.zst -o /dev/null")
 
     host.fail(
         "${channelEnv} BRIARD_NET_MODE=macvtap BRIARD_NIC=nope999 sh ${installScript}"

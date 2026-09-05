@@ -109,8 +109,11 @@ const drawTimeout = 60 * time.Second
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-agent", flag.ExitOnError)
 	reportCard := fs.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
-	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING)")
-	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer")
+	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release (host + guest chains) into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_RELEASE, BRIARD_KEYRING)")
+	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
+	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (host, guest)")
+	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux, windows; empty for the guest chain)")
+	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
 	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	drawSubnets := fs.Bool("draw-subnets", false, "draw this node's two private subnets, checked against this machine's own network, and print them as SYSTEM_SUBNET=/PRIV_SUBNET= -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
@@ -170,7 +173,7 @@ func runInternal(args []string) {
 	// already linked -- and runStageManifest is stubbed out of a `-tags guest` build, so the
 	// guest trim is unaffected.
 	if *stageManifest != "" {
-		if err := runStageManifest(*stageManifest); err != nil {
+		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease); err != nil {
 			log.Fatalf("stage-manifest: %v", err)
 		}
 		return
