@@ -124,6 +124,15 @@ var commands = []command{
 		run:      runOS, probe: []string{"upgrade", "-h"},
 	},
 	{
+		name: "update", args: "host", group: groupRepair,
+		synopsis: "update this node's agent from the release channel now",
+		detail: "Starts the same update unit the nightly timer and the cloud use, and prints how it\n" +
+			"ended: already at the target, staged and armed (the agent restarts itself at its next\n" +
+			"safe point; `systemctl restart briard-agent` applies it now), or refused and why. It\n" +
+			"resolves `latest` (-to changes that) and works even when the agent is down.",
+		run: runUpdate, probe: []string{"-h"},
+	},
+	{
 		name: "directive", args: "<kind> [payload]", group: groupRepair,
 		synopsis: "submit a directive to the local agent",
 		detail: "The primitive every other verb above is sugar over. Useful when a support answer names\n" +
@@ -215,8 +224,8 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `
   help [command]               this message, or one command's options
 
-`+"`alerts`"+` and `+"`logs`"+` read this node's logs and work even when the agent is down.
-The rest talk to the running briard-agent over its admin socket
+`+"`alerts`"+` and `+"`logs`"+` read this node's logs, and `+"`update`"+` starts a systemd unit; all three
+work even when the agent is down. The rest talk to the running briard-agent over its admin socket
 (`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
 
 This node does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`

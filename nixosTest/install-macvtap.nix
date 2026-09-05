@@ -295,13 +295,17 @@ pkgs.testers.runNixOSTest {
     V = "${agent.version}"
     GV = "guest." + V.split(".", 1)[1]
     # The host chain carries the platform level (this is its linux arm); the guest is flat.
-    for chain, ver, ptr in (("host", V + "/linux", "stable/linux"), ("guest", GV, "stable")):
+    # Both pointers name this one release: install.sh follows `stable`, `briard update host`
+    # follows `latest`, and the shipped update unit is exercised against both below.
+    for chain, ver, arm in (("host", V + "/linux", "/linux"), ("guest", GV, "")):
         d = f"/srv/{chain}/{ver}"
-        host.succeed(f"mkdir -p {d} /srv/{chain}/{ptr} && ln -sf ${channel}/{chain}/{ver}/* {d}/")
+        host.succeed(f"mkdir -p {d} && ln -sf ${channel}/{chain}/{ver}/* {d}/")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         host.succeed(f"test -s {d}/manifest.json.sig")
-        host.succeed(f"cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}/")
-    host.succeed(f"ln -sf ${channel}/host/{V}/linux/briard-agent /srv/host/stable/linux/briard-agent")
+        for ptr in ("stable", "latest"):
+            host.succeed(f"mkdir -p /srv/{chain}/{ptr}{arm} && cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}{arm}/")
+    for ptr in ("stable", "latest"):
+        host.succeed(f"ln -sf ${channel}/host/{V}/linux/briard-agent /srv/host/{ptr}/linux/briard-agent")
 
     host.succeed(
         f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
@@ -992,5 +996,25 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     host.succeed("rm -f /opt/briard/agent/briard-agent.next")
     print("the shipped unit commits a good agent update and reverts a broken one")
+
+    # THE SHIPPED UPDATE UNIT BELOW THE AGENT ([B.86a]). agent-selfupdate.nix proves the
+    # mechanism with stub candidates; this proves install.sh SHIPPED it: the frozen script, the
+    # oneshot, the enabled timer, the installed manifests the verb compares against, and one
+    # real round trip through `briard update host` on this very node -- which pulls the
+    # bootstrap from the test channel's pointer, verifies the manifest, compares, and says the
+    # node is already at the release it installed from. Not a no-op test: the same command with
+    # a version the channel does not carry must fail through the same path.
+    host.succeed("test -x /opt/briard/agent/briard-update")
+    host.succeed("systemctl is-enabled briard-update.timer")
+    host.succeed("systemctl cat briard-update.service | grep -q '^Type=oneshot'")
+    host.succeed("test -s /opt/briard/agent/manifest.json && test -s /opt/briard/guest-image/manifest.json")
+    host.succeed(f"grep -q '\"version\":\"{V}\"' /opt/briard/agent/manifest.json")
+    host.succeed(f"grep -q '\"version\":\"{GV}\"' /opt/briard/guest-image/manifest.json")
+    out = host.succeed("/opt/briard/agent/briard-agent update host").strip()
+    assert f"already at {V}" in out, f"briard update host said: {out!r}"
+    host.succeed("test ! -e /run/briard/update && test ! -e /run/briard/update-target && test ! -e /run/briard/update-result")
+    host.fail("/opt/briard/agent/briard-agent update host -to v3.20990101.nothere")
+    host.succeed("journalctl -u briard-update | grep -q 'could not fetch a bootstrap agent'")
+    print("the shipped update unit, timer and CLI round-trip against the channel; an unknown pin fails loudly")
   '';
 }

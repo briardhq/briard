@@ -964,8 +964,8 @@ func connectAndHandshake(ctx context.Context, sock string) (*guestagent.Client, 
 func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alerter *redundancyAlerter, n notify.Notifier, rep cloud.CloudClient, agg *metricsAggregator, tenant string, local <-chan localRequest, pending *[]api.DirectiveOutcome, logf func(string, ...any)) error {
 	t := time.NewTicker(cfg.StatusEvery)
 	defer t.Stop()
-	cr := &certRequester{}         // node-side CSR handshake state, lives for the observe loop
-	su := cfg.newSelfUpdater(logf) // signed host-agent self-update; nil when no keyring provisioned
+	cr := &certRequester{}     // node-side CSR handshake state, lives for the observe loop
+	su := cfg.newSelfUpdater() // the flag-watcher + trigger of the update unit below the agent ([B.86a])
 	// The host's own route to the VIP its guest holds, over the private link -- the one address
 	// macvtap hides from the machine running the guest and from nobody else ([V3b.19]). Lives for
 	// the observe loop because it remembers what it installed; see viproute.go.

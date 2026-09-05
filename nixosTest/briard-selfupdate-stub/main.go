@@ -1,5 +1,5 @@
 // Command briard-selfupdate-stub is a TEST-ONLY harness for the self-update pivot and the
-// Signed-fetch path (nixosTest/agent-selfupdate.nix), built by nixosTest/selfupdate-stub.nix.
+// signed-channel serving (nixosTest/agent-selfupdate.nix), built by nixosTest/selfupdate-stub.nix.
 // It is not shipped with the product — it exists only so the mechanism can be exercised
 // hermetically, without a full nested-VM guest bring-up.
 //
@@ -18,13 +18,9 @@
 //	keygen <privOut> <pubPemOut>          write an Ed25519 seed + the PKIX-PEM release keyring
 //	sign   <privPath> <artifactPath>      print base64(Ed25519 sign(artifact)) — the release signer
 //	serve  <addr> <dir>                   http.FileServer(dir) at addr — the release host
-//	fetch  <url> <sigB64> <keyringPem> <base> <runDir>
-//	                                      the real Fetcher: fetch+verify+stage+arm, exit non-zero
-//	                                      on a refusal (bad/absent signature) so the test can assert
 package main
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -35,7 +31,6 @@ import (
 	"os"
 	"time"
 
-	"briard.io/agent/selfupdate"
 	"briard.io/shared/sdnotify"
 )
 
@@ -52,8 +47,6 @@ func main() {
 		sign(args[1:])
 	case "serve":
 		serve(args[1:])
-	case "fetch":
-		fetch(args[1:])
 	default: // ready / crash / hang — the trial binary
 		trial(args)
 	}
@@ -120,32 +113,6 @@ func serve(a []string) {
 		fatal("serve <addr> <dir>")
 	}
 	must(http.ListenAndServe(a[0], http.FileServer(http.Dir(a[1]))))
-}
-
-// fetch drives the REAL selfupdate.Fetcher: fetch url, verify sig against the keyring, and — only
-// on a valid signature — stage+arm under the flat layout. It exits non-zero on any refusal, so the
-// test asserts refuse-and-stay end-to-end over real HTTP + real Ed25519 verification.
-func fetch(a []string) {
-	if len(a) != 5 {
-		fatal("fetch <url> <sigB64> <keyringPem> <base> <runDir>")
-	}
-	url, sigB64, krPath, base, runDir := a[0], a[1], a[2], a[3], a[4]
-	krPem, err := os.ReadFile(krPath)
-	must(err)
-	kr, err := selfupdate.NewKeyring(krPem)
-	must(err)
-	sig, err := base64.StdEncoding.DecodeString(sigB64)
-	must(err)
-	f := &selfupdate.Fetcher{
-		Layout:  selfupdate.New(base, runDir),
-		Keyring: kr,
-		Logf:    func(format string, v ...any) { fmt.Fprintf(os.Stderr, format+"\n", v...) },
-	}
-	if err := f.FetchAndStage(context.Background(), url, sig); err != nil {
-		fmt.Fprintln(os.Stderr, "fetch REFUSED:", err)
-		os.Exit(1)
-	}
-	fmt.Fprintln(os.Stderr, "fetch staged+armed")
 }
 
 // block sleeps forever — the healthy agent stays up; systemd's Restart=always never fires in

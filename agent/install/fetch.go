@@ -184,34 +184,11 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 	}
 
 	// 1. Fetch + verify the manifest — the trust root. Nothing else is trusted until this passes.
-	at := path.Join(f.Chain, target, f.Platform) // Join drops an empty platform
-	mBytes, err := f.get(ctx, path.Join(at, ManifestName), maxManifestSize)
+	man, mBytes, err := f.fetchManifest(ctx, target)
 	if err != nil {
-		return fmt.Errorf("install: fetch manifest: %w", err)
+		return err
 	}
-	sig, err := f.get(ctx, path.Join(at, ManifestName+sigSuffix), ed25519.SignatureSize+1)
-	if err != nil {
-		return fmt.Errorf("install: fetch manifest signature: %w", err)
-	}
-	if err := f.Keyring.Verify(mBytes, sig); err != nil {
-		return err // ErrUnsigned / ErrBadSignature / ErrNoKeys — refuse, touch nothing
-	}
-	var man Manifest
-	if err := json.Unmarshal(mBytes, &man); err != nil {
-		return fmt.Errorf("%w: %v", ErrManifest, err)
-	}
-	if len(man.Artifacts) == 0 {
-		return ErrManifest
-	}
-	// The version is about to become a URL path element; a manifest that verifies but names
-	// something unusable there is malformed, not merely surprising.
-	if !validSegment(man.Version) {
-		return fmt.Errorf("%w: version %q", ErrManifest, man.Version)
-	}
-	if man.Chain != f.Chain || man.Platform != f.Platform {
-		return fmt.Errorf("%w: asked for %s, manifest says %q", ErrWrongChain, at, path.Join(man.Chain, man.Platform))
-	}
-	logf("install: %s manifest verified — release %s, %d artifact(s) to fetch", at, man.Version, len(man.Artifacts))
+	logf("install: %s/%s manifest verified — release %s, %d artifact(s) to fetch", f.Chain, target, man.Version, len(man.Artifacts))
 
 	// 2. Stage into a private temp dir SIBLING of dest (same filesystem, so the final rename is
 	// atomic). Removed on every return unless step 3 renames it away.
@@ -245,6 +222,54 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 	}
 	committed = true
 	return nil
+}
+
+// fetchManifest downloads <root>/<chain>/<target>[/<platform>]/manifest.json and its detached
+// signature, verifies the signature against the keyring, and returns the parsed manifest with
+// the exact bytes that verified — after asserting it is non-empty, names a usable version and
+// belongs to the chain/platform asked for. Nothing else is trusted until this passes; nothing
+// touches disk here at all.
+func (f *Fetcher) fetchManifest(ctx context.Context, target string) (Manifest, []byte, error) {
+	var man Manifest
+	if f.Keyring == nil || f.Keyring.Len() == 0 {
+		return man, nil, ErrNoKeyring // fail closed before touching the network
+	}
+	if !validSegment(f.Chain) {
+		return man, nil, fmt.Errorf("install: bad chain name %q", f.Chain)
+	}
+	if f.Platform != "" && !validSegment(f.Platform) {
+		return man, nil, fmt.Errorf("install: bad platform name %q", f.Platform)
+	}
+	if !validSegment(target) {
+		return man, nil, fmt.Errorf("install: bad release target %q", target)
+	}
+	at := path.Join(f.Chain, target, f.Platform) // Join drops an empty platform
+	mBytes, err := f.get(ctx, path.Join(at, ManifestName), maxManifestSize)
+	if err != nil {
+		return man, nil, fmt.Errorf("install: fetch manifest: %w", err)
+	}
+	sig, err := f.get(ctx, path.Join(at, ManifestName+sigSuffix), ed25519.SignatureSize+1)
+	if err != nil {
+		return man, nil, fmt.Errorf("install: fetch manifest signature: %w", err)
+	}
+	if err := f.Keyring.Verify(mBytes, sig); err != nil {
+		return man, nil, err // ErrUnsigned / ErrBadSignature / ErrNoKeys — refuse, touch nothing
+	}
+	if err := json.Unmarshal(mBytes, &man); err != nil {
+		return man, nil, fmt.Errorf("%w: %v", ErrManifest, err)
+	}
+	if len(man.Artifacts) == 0 {
+		return man, nil, ErrManifest
+	}
+	// The version is about to become a URL path element; a manifest that verifies but names
+	// something unusable there is malformed, not merely surprising.
+	if !validSegment(man.Version) {
+		return man, nil, fmt.Errorf("%w: version %q", ErrManifest, man.Version)
+	}
+	if man.Chain != f.Chain || man.Platform != f.Platform {
+		return man, nil, fmt.Errorf("%w: asked for %s, manifest says %q", ErrWrongChain, at, path.Join(man.Chain, man.Platform))
+	}
+	return man, mBytes, nil
 }
 
 // FetchArtifact streams <root>/<from>/<a.Name> into dir/<a.Name>, computing its SHA-256 as it

@@ -1,14 +1,17 @@
 # The host-agent self-update PIVOT — a frozen, agent-independent commit/revert
-# mechanism gated purely by systemd `Type=notify`. This test proves the
-# mechanism itself, hermetically (a single VM, NO nested guest): it installs the frozen
-# briard-agent.service + the two dumb wrapper scripts, then drives stand-in trial binaries
-# (nixosTest/briard-selfupdate-stub) through it and asserts the commit-or-revert outcome.
+# mechanism gated purely by systemd `Type=notify` — and, since [B.86a], the frozen UPDATE UNIT
+# below the agent that feeds it. This test proves both hermetically (a single VM, NO nested
+# guest): it installs the frozen briard-agent.service + briard-update.service and the three dumb
+# wrapper scripts, then drives stand-in trial binaries (nixosTest/briard-selfupdate-stub) through
+# them and asserts the commit-or-revert outcome.
 #
-# The layout is flat — two on-disk binaries + ephemeral tmpfs decision flags:
+# The layout is flat — two on-disk binaries, their manifests, and ephemeral tmpfs flags/messages:
 #   /var/lib/briard/briard-agent        committed binary ExecStart runs (seeded on install)
 #   /var/lib/briard/briard-agent.next   staged candidate on the SAME fs → commit = rename(2)
+#   /var/lib/briard/manifest.json       the committed release's signed manifest (+ .next beside it)
 #   /run/briard/update                  tmpfs flag: "an update is armed — trial .next this boot"
 #   /run/briard/trial                   tmpfs marker: "this boot IS a trial — commit on success"
+#   /run/briard/update-target|-result   the two messages between a trigger and the update unit
 #
 # Why `Type=notify` IS the whole gate: the trial binary sends READY=1 only when healthy, so
 # systemd treats the start as "succeeded" only then → ExecStartPost/briard-commit runs only
@@ -17,22 +20,32 @@
 # implicit + timerless: the trigger is single-use, so the next start finds no flag and
 # briard-exec falls back to the committed binary.
 #
-# It also proves the signed-fetch path end-to-end (scenarios 5-6): a real
-# agent/selfupdate.Fetcher pulls a signed artifact over HTTP, verifies it against an Ed25519
-# keyring, and stages+arms it for the same pivot — a good signature commits, a tampered/unsigned
-# one is refused with the committed binary kept. Still hermetic (the release host is a local
-# http.FileServer in the stub; no nested guest — the guest-untouched half is the proof).
+# Why the FETCH lives below the agent (scenarios 5-8): the updater must not be shipped by the
+# thing it updates. briard-update.service pulls a FRESH agent from the channel's pointer and
+# lets THAT binary do the Ed25519-verified fetch (`--fetch-update`), stage and arm — so a fetch
+# bug in the committed binary cannot prevent its own replacement. Here the channel is the real
+# tree ([B.86e]) served by the stub's http.FileServer, the manifests are written by the REAL
+# `--stage-manifest`, the pointer's bootstrap is the REAL agent, and the artifact it stages is a
+# stub candidate (so the pivot can still be driven through crash/hang). That one divergence —
+# the pointer's briard-agent and the versioned briard-agent are different bytes — is what makes
+# the mechanism testable without a nested guest; publish-release.sh verify refuses it on a real
+# channel. install-macvtap.nix proves the SHIPPED scripts and units on a real install.
 #
 # Hermetic (one VM, TCG-friendly), so it rides the default `.#all`. Run one:
 #   nix build .#tests.agent-selfupdate -L
-{ pkgs, stub }:
+{ pkgs, stub, agent }:
 let
   agentBin = "/var/lib/briard/briard-agent";
   nextBin = "/var/lib/briard/briard-agent.next";
+  manifest = "/var/lib/briard/manifest.json";
+  nextManifest = "/var/lib/briard/manifest.json.next";
   updateFlag = "/run/briard/update";
   trialMarker = "/run/briard/trial";
-
+  targetMsg = "/run/briard/update-target";
+  resultMsg = "/run/briard/update-result";
   stubExe = "${stub}/bin/briard-selfupdate-stub";
+  realAgent = "${agent}/bin/briard-agent";
+  channel = "http://127.0.0.1:8099";
   # A "binary" on disk is a tiny script that execs the stub in a given mode/identity. The
   # frozen briard-exec just execs the path, so the mode has to live IN the file — and the
   # `exec` keeps the PID, so the stub's READY=1 comes from MAINPID (NotifyAccess=main, exactly
@@ -43,13 +56,13 @@ let
   readyV1 = candidate "ready" "v1"; # the initial committed binary
   readyV2 = candidate "ready" "v2"; # a good update
   readyV3 = candidate "ready" "v3"; # a good update used only in the power-loss case
-  readyV4 = candidate "ready" "v4"; # the signed artifact fetched over HTTP
-  evilCand = candidate "ready" "evil"; # different bytes, NOT signed by the release key (tamper)
+  readyV4 = candidate "ready" "v4"; # the artifact the channel's release ships
+  evilCand = candidate "ready" "evil"; # different bytes than the signed manifest pins (tamper)
   crashCand = candidate "crash" ""; # exits 1 immediately → start fails → revert
   hangCand = candidate "hang" ""; # blocks without READY → TimeoutStartSec → revert
-
-  # The two frozen wrappers — dumb shell, agent-INDEPENDENT (a bug in the volatile agent can
-  # never wedge the update mechanism), verbatim.
+  # The three frozen wrappers — dumb shell, agent-INDEPENDENT (a bug in the volatile agent can
+  # never wedge the update mechanism), verbatim the ones scripts/install.sh writes. Change one,
+  # change both.
   briardExec = pkgs.writeShellScript "briard-exec" ''
     set -eu
     if [ -e ${updateFlag} ]; then
@@ -64,8 +77,49 @@ let
     set -eu
     if [ -e ${trialMarker} ]; then
         mv ${nextBin} ${agentBin}         # atomic same-fs commit
+        if [ -e ${nextManifest} ]; then   # the candidate's manifest commits WITH it
+            mv ${nextManifest} ${manifest}
+        fi
         rm -f ${trialMarker}
     fi
+  '';
+  briardUpdate = pkgs.writeShellScript "briard-update" ''
+    set -eu
+    CHANNEL=${channel}
+    KEYRING=/etc/briard/keyring.pem
+    BASE=/var/lib/briard
+    RUN=/run/briard
+    GRACE=5400
+    report() { printf '%s\n' "$*" | tee "$RUN/update-result"; }
+    if [ -e "$RUN/update" ]; then
+        age=$(( $(date +%s) - $(stat -c %Y "$RUN/update") ))
+        if [ "$age" -ge "$GRACE" ]; then
+            systemctl restart briard-agent.service
+            report "forced the restart: an update had been armed for ''${age}s"
+        else
+            report "an update is already armed; the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)"
+        fi
+        exit 0
+    fi
+    target=stable
+    if [ -f "$RUN/update-target" ]; then
+        target=$(head -n1 "$RUN/update-target")
+        rm -f "$RUN/update-target"
+    fi
+    tmp=$(mktemp -d "$BASE/.update.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+    url="$CHANNEL/host/$target/linux/briard-agent"
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tmp/briard-agent"
+    elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp/briard-agent" "$url"
+    else report "need curl or wget to fetch $url"; exit 1; fi || { report "could not fetch a bootstrap agent from $url"; exit 1; }
+    chmod +x "$tmp/briard-agent"
+    set +e
+    out=$(BRIARD_CHANNEL_URL="$CHANNEL" BRIARD_KEYRING="$KEYRING" UPDATE_BASE="$BASE" UPDATE_RUN_DIR="$RUN" \
+        "$tmp/briard-agent" --fetch-update "$target" 2>&1)
+    rc=$?
+    set -e
+    printf '%s\n' "$out" >&2
+    report "$(printf '%s\n' "$out" | tail -n1)"
+    exit $rc
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -83,7 +137,7 @@ pkgs.testers.runNixOSTest {
         "d /var/lib/briard 0755 root root -"
         "d /run/briard 0755 root root -"
       ];
-      environment.systemPackages = [ pkgs.curl ]; # probe the release HTTP host is up
+      environment.systemPackages = [ pkgs.curl ]; # the frozen update script's bootstrap pull
 
       # The FROZEN pivot: it does not self-update (changing it is a rare base-install update),
       # so bugs in the volatile agent can't touch the mechanism. Type=notify + ExecStartPost is
@@ -96,19 +150,28 @@ pkgs.testers.runNixOSTest {
           NotifyAccess = "main"; # the trial binary signals READY from MAINPID, as the agent does
           # Production uses TimeoutStartSec=30, and it bounds a CONFIG READ rather than a
           # convergence: V3.32 moved READY to loop entry, because a supervisor's readiness is not
-          # the health of the thing it supervises. This comment used to say >=180 for exactly the
-          # reason that changed — READY once waited for the node to be healthy. Shortened further
-          # here so the up-but-unhealthy HANG assertion resolves in seconds; the mechanism it
-          # exercises (timeout trips → start fails → no commit) is identical at any value.
-          #
-          # The wrappers below are the pair install.sh now writes (B.84). Change one, change both
-          # — and install-macvtap.nix proves the SHIPPED pair, which this test structurally cannot.
+          # the health of the thing it supervises. Shortened further here so the up-but-unhealthy
+          # HANG assertion resolves in seconds; the mechanism it exercises (timeout trips → start
+          # fails → no commit) is identical at any value.
           TimeoutStartSec = 15;
           ExecStart = "${briardExec}"; # pick committed vs trial binary
           ExecStartPost = "${briardCommit}"; # runs ONLY after READY=1 → commit on success
           Restart = "always";
           RestartSec = 1;
           StartLimitIntervalSec = 0; # one failed trial then a revert must never latch as dead
+        };
+      };
+      # The FROZEN update unit ([B.86a]): a oneshot, not templated — `systemctl start` blocks on
+      # it and a start against a running job merges, so it is its own mutual exclusion. The
+      # timer that fires it nightly in production is not under test here; every trigger is a
+      # `systemctl start` of this unit, and that is what the script below receives.
+      systemd.services.briard-update = {
+        description = "briard update (the frozen unit below the agent)";
+        wantedBy = [ ];
+        path = [ pkgs.curl ]; # the bootstrap pull; install.sh's unit sets an explicit PATH for the same reason
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${briardUpdate}";
         };
       };
     };
@@ -120,10 +183,13 @@ pkgs.testers.runNixOSTest {
         return machine.succeed("cat ${agentBin}")
 
     def arm(candidate_store_path):
-        # Stage a candidate + arm the trigger, exactly as the proven old agent / helper does
+        # Stage a candidate + arm the trigger, exactly as the update verb does
         # (selfupdate.StageNext + Arm) — an atomic install then the tmpfs flag.
         machine.succeed(f"install -m755 {candidate_store_path} ${nextBin}")
         machine.succeed("touch ${updateFlag}")
+
+    def invocation():
+        return machine.succeed("systemctl show -p InvocationID --value briard-agent.service").strip()
 
     # Seed the committed binary (install-time) and start the frozen unit on it.
     machine.succeed("install -m755 ${readyV1} ${agentBin}")
@@ -182,54 +248,121 @@ pkgs.testers.runNixOSTest {
     machine.fail("grep -q ' v3' ${agentBin}")  # the armed-but-lost update never committed
     machine.succeed("test -e ${nextBin}")      # v3 stays inert on disk (safe direction)
     machine.fail("test -e ${trialMarker}")     # no trial marker → no revert code path ran
+    machine.succeed("rm -f ${nextBin}")
     print("4) power loss mid-arm ran committed v2, no commit, no revert code")
 
-    # === 5) END-TO-END: a SIGNED artifact fetched over HTTP is verified, staged, trialed
-    #        through the frozen pivot, and committed. The fetch+verify+stage+arm is the REAL
-    #        agent/selfupdate code (not a manual install), driven against a live HTTP release host
-    #        and a real Ed25519 keyring. ===
-    machine.succeed("mkdir -p /srv /etc/briard")
-    # A fresh release keypair; the public half becomes the node's trusted keyring.
+    # === 5) THE UPDATE UNIT BELOW THE AGENT ([B.86a]): with no target message (the timer's
+    #        case) the unit follows `stable`, pulls the FRESH bootstrap from the pointer, and
+    #        that binary verifies the manifest, fetches the artifact from the VERSIONED
+    #        directory, stages it beside its manifest and ARMS — and does not restart anything.
+    #        Then the forcing backstop: a young arm is left alone, an old one is forced. ===
+    V4 = "v3.20260906.aaaaaaa"
+    machine.succeed("mkdir -p /etc/briard /srv/host/latest/linux /srv/host/stable/linux")
     machine.succeed("${stubExe} keygen /root/release.key /etc/briard/keyring.pem")
-    # Publish the new agent artifact (a ready-v4 launcher) and sign its EXACT served bytes.
-    machine.succeed("cp ${readyV4} /srv/briard-agent")
-    sig = machine.succeed("${stubExe} sign /root/release.key /srv/briard-agent").strip()
-    machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
-    machine.wait_until_succeeds("curl -sf http://127.0.0.1:8099/briard-agent -o /dev/null", timeout=30)
-    # The agent fetches → verifies → stages → arms (real selfupdate.Fetcher).
+
+    def publish(version, artifact, pointers=("latest", "stable")):
+        # One release of the host chain's linux arm, the way publish-release.sh lays it: the
+        # artifact under the versioned directory, a manifest written by the REAL writer, a
+        # detached signature, and the pointers as byte-copies carrying the REAL agent as the
+        # bootstrap (the one deliberate divergence, explained in the header).
+        d = f"/srv/host/{version}/linux"
+        machine.succeed(f"mkdir -p {d} && install -m755 {artifact} {d}/briard-agent")
+        machine.succeed(f"${realAgent} --stage-manifest {d} --chain host --platform linux --release {version}")
+        machine.succeed(f"${stubExe} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+        for p in pointers:
+            machine.succeed(f"mkdir -p /srv/host/{p}/linux && cp {d}/manifest.json {d}/manifest.json.sig /srv/host/{p}/linux/")
+            machine.succeed(f"install -m755 ${realAgent} /srv/host/{p}/linux/briard-agent")
+
+    publish(V4, "${readyV4}")
+    # The node's installed release: an OLDER date, so stable is ahead of it.
     machine.succeed(
-        f"${stubExe} fetch http://127.0.0.1:8099/briard-agent '{sig}' /etc/briard/keyring.pem /var/lib/briard /run/briard"
+        "printf '%s' '{\"chain\":\"host\",\"platform\":\"linux\",\"version\":\"v3.20260101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
     )
-    machine.succeed("test -e ${nextBin}")    # verified → staged
-    machine.succeed("test -e ${updateFlag}") # and armed
-    # Trial it through the frozen pivot → commit.
-    machine.succeed("systemctl restart briard-agent.service")
+    machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
+    machine.wait_until_succeeds("curl -sf ${channel}/host/stable/linux/manifest.json -o /dev/null", timeout=30)
+
+    inv_before = invocation()
+    machine.fail("test -e ${targetMsg}")
+    machine.succeed("systemctl start briard-update.service")   # blocks: a oneshot
+    result = machine.succeed("cat ${resultMsg}").strip()
+    assert f"staged {V4}" in result and "armed" in result, f"unexpected result: {result!r}"
+    machine.succeed("test -e ${nextBin}")
+    machine.succeed("cmp ${nextBin} ${readyV4}")             # the VERSIONED artifact, not the bootstrap
+    machine.succeed(f"cmp ${nextManifest} /srv/host/{V4}/linux/manifest.json")  # its manifest beside it
+    machine.succeed("test -e ${updateFlag}")                  # armed…
+    assert invocation() == inv_before, "the update unit restarted the agent itself; it must only arm"
+    machine.succeed("test ! -e ${targetMsg}")
+    machine.succeed("! ls -a /var/lib/briard | grep -q '^\\.update\\.'")  # the bootstrap temp dir is gone
+    print(f"5a) the unit staged + armed {V4} from stable without restarting anything")
+
+    # A second run while armed, young: left to the agent's safe point; nothing restarted.
+    machine.succeed("rm -f ${resultMsg}")
+    machine.succeed("systemctl start briard-update.service")
+    result = machine.succeed("cat ${resultMsg}").strip()
+    assert "already armed" in result, f"unexpected result: {result!r}"
+    assert invocation() == inv_before, "a young arm was forced"
+    # Aged past the grace: forced. The stub agent has no safe point of its own, which is
+    # exactly the case the backstop exists for.
+    machine.succeed("touch -d '-2 hours' ${updateFlag}")
+    machine.succeed("systemctl start briard-update.service")
+    result = machine.succeed("cat ${resultMsg}").strip()
+    assert "forced the restart" in result, f"unexpected result: {result!r}"
     machine.wait_for_unit("briard-agent.service")
     machine.wait_until_succeeds("grep -q ' v4' ${agentBin}", timeout=30)
-    machine.fail("test -e ${nextBin}") # committed (renamed away)
-    assert " v4" in committed(), f"signed fetch did NOT commit, committed={committed()!r}"
-    print("5) signed artifact fetched over HTTP, verified, trialed, committed v4")
-
-    # === 6) REFUSE-AND-STAY end-to-end: a TAMPERED artifact (valid-looking but not signed
-    #        by the release key) and an UNSIGNED fetch are both refused — verify fails before any
-    #        disk write, so nothing stages and the committed binary is kept.
-    #        [[verification-assertions-must-fail]] — the refusal must actually fire. ===
-    machine.succeed("cp ${evilCand} /srv/briard-agent-evil")  # different bytes; the v4 sig won't match them
-    machine.fail(
-        f"${stubExe} fetch http://127.0.0.1:8099/briard-agent-evil '{sig}' /etc/briard/keyring.pem /var/lib/briard /run/briard"
-    )
-    machine.fail("test -e ${nextBin}")    # tampered → nothing staged
-    machine.fail("test -e ${updateFlag}") # nothing armed
-    assert " v4" in committed(), f"a refused fetch changed the committed binary, committed={committed()!r}"
-    # An UNSIGNED fetch (empty signature) is refused too. (Single-quoted Python string with a
-    # shell "" empty arg, to avoid an empty single-quote pair the Nix string would read as a close.)
-    machine.fail(
-        '${stubExe} fetch http://127.0.0.1:8099/briard-agent "" /etc/briard/keyring.pem /var/lib/briard /run/briard'
-    )
+    assert invocation() != inv_before, "the forced restart did not happen"
     machine.fail("test -e ${nextBin}")
-    assert " v4" in committed(), f"an unsigned fetch changed the committed binary, committed={committed()!r}"
-    print("6) tampered + unsigned artifacts refused over HTTP — committed v4 kept (refuse-and-stay)")
+    machine.fail("test -e ${nextManifest}")
+    machine.succeed(f"cmp ${manifest} /srv/host/{V4}/linux/manifest.json")  # committed WITH its manifest
+    assert " v4" in committed(), f"the fetched release did NOT commit, committed={committed()!r}"
+    print(f"5b) young arm left alone, old arm forced, {V4} committed with its manifest")
 
-    print("the frozen Type=notify pivot commits good updates (incl. signed HTTP fetch) and reverts/refuses broken, lost, or unsigned ones")
+    # === 6) `briard update host` — the human trigger, on the REAL agent binary, through the
+    #        same unit: a message in, the unit's verdict out, no admin socket. Up to date → a
+    #        no-op that says so and bounces nothing. ===
+    inv_before = invocation()
+    out = machine.succeed("${realAgent} update host -base /var/lib/briard -run /run/briard").strip()
+    assert f"already at {V4}" in out, f"unexpected CLI output: {out!r}"
+    machine.fail("test -e ${resultMsg}")   # the CLI consumed its result
+    machine.fail("test -e ${targetMsg}")   # and the unit consumed its target
+    machine.fail("test -e ${updateFlag}")
+    assert invocation() == inv_before, "an up-to-date `briard update host` bounced the agent"
+    print("6) briard update host: already at the target, nothing armed, nothing restarted")
+
+    # === 7) REFUSE-AND-STAY through the unit: a release whose served bytes differ from what
+    #        its signed manifest pins is refused by the fresh bootstrap's hash check — nothing
+    #        staged, nothing armed, the verdict names it, the CLI exits non-zero.
+    #        [[verification-assertions-must-fail]] — the refusal must actually fire. ===
+    V5 = "v3.20260907.bbbbbbb"
+    publish(V5, "${readyV4}", pointers=("latest",))
+    machine.succeed(f"install -m755 ${evilCand} /srv/host/{V5}/linux/briard-agent")  # tamper AFTER signing
+    machine.fail("${realAgent} update host -base /var/lib/briard -run /run/briard")
+    machine.succeed("journalctl -u briard-update | grep -q 'does not match the signed manifest'")
+    machine.fail("test -e ${nextBin}")
+    machine.fail("test -e ${updateFlag}")
+    assert " v4" in committed(), f"a refused update changed the committed binary, committed={committed()!r}"
+    # An UNSIGNED pointer (signature removed) is refused before anything is fetched.
+    machine.succeed("rm /srv/host/latest/linux/manifest.json.sig")
+    machine.fail("${realAgent} update host -base /var/lib/briard -run /run/briard")
+    machine.fail("test -e ${nextBin}")
+    assert " v4" in committed(), f"an unsigned manifest changed the committed binary, committed={committed()!r}"
+    print("7) tampered artifact + unsigned manifest refused through the unit — committed v4 kept")
+
+    # === 8) THE FLOOR: an exact pin OLDER than stable is refused loudly; the same pin is
+    #        accepted once stable is moved down to it (the failable control). ===
+    #        An EXACT target's bootstrap is pulled from its versioned directory (there is no
+    #        pointer to duplicate it under), so this release's artifact must be the real agent:
+    #        the stub divergence explained in the header only works through a pointer.
+    OLD = "v3.20260201.ccccccc"
+    publish(OLD, "${realAgent}", pointers=())
+    machine.fail(f"${realAgent} update host -to {OLD} -base /var/lib/briard -run /run/briard")
+    machine.succeed("journalctl -u briard-update | grep -q 'older than stable'")
+    machine.fail("test -e ${nextBin}")
+    machine.succeed(f"cp /srv/host/{OLD}/linux/manifest.json /srv/host/{OLD}/linux/manifest.json.sig /srv/host/stable/linux/")
+    out = machine.succeed(f"${realAgent} update host -to {OLD} -base /var/lib/briard -run /run/briard").strip()
+    assert f"staged {OLD}" in out, f"a pin at the moved floor was refused: {out!r}"
+    machine.succeed("cmp ${nextBin} ${realAgent}")
+    print("8) a pin below stable refused; accepted once stable moved to it (downgrade to the floor)")
+
+    print("the frozen Type=notify pivot commits good updates and reverts broken or lost ones; the frozen unit below the agent fetches, verifies, stages, arms, forces late, and refuses tampered, unsigned or below-floor releases")
   '';
 }

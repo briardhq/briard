@@ -908,6 +908,12 @@ cat > "$PREFIX/agent/briard-commit" <<EOF
 set -eu
 if [ -e $RUNDIR/trial ]; then
 	mv $UPDATE_BASE/briard-agent.next $UPDATE_BASE/briard-agent   # atomic same-fs commit
+	# The candidate's signed manifest commits WITH it ([B.86a]): it is what the next update run
+	# compares the channel against, so a binary that moved without its manifest would be
+	# re-staged on every tick. Existence-guarded so a candidate staged without one still commits.
+	if [ -e $UPDATE_BASE/manifest.json.next ]; then
+		mv $UPDATE_BASE/manifest.json.next $UPDATE_BASE/manifest.json
+	fi
 	rm -f $RUNDIR/trial
 fi
 EOF
@@ -1029,6 +1035,104 @@ TimeoutStopSec=600
 WantedBy=multi-user.target
 EOF
 
+# ---- the update unit BELOW the agent ([B.86a]) ------------------------------------------
+# The updater must not be shipped by the thing it updates. An agent that runs fine and has a bug
+# in fetch/verify/stage can never be replaced -- no reflex covers it, and it fails fleet-wide at
+# once. So the FETCH lives here, in a third frozen script and a oneshot, not in the agent:
+# every run pulls a FRESH briard-agent from the target's pointer over TLS and lets THAT binary
+# do the Ed25519-verified fetch (install.sh's own bootstrap pattern, on a timer). The script's
+# entire knowledge is the channel root, the artifact name, one flag on the fetched binary, the
+# pivot's on-disk contract and armed-at -- no product knowledge, so nothing in the product can
+# ever make it need a new release. It is the same outer layer the Windows warden will be.
+#
+# It arms and STOPS. The running agent restarts itself at its safe point (once outcomes have
+# drained -- announce-before-act); forcing is the backstop, and only for an arm the agent has
+# ignored for longer than the grace, so the case where forcing is risky and the case where it
+# happens never overlap. Three triggers, all \`systemctl start\` of this one unit: the cloud's
+# agent-update directive (writes the target first), the timer (daily, jittered into the small
+# hours, following stable -- the mass-converge path, and the only one that works when the agent
+# is dead), and \`briard update host\`. systemd merges a start into a running job, so the unit
+# is its own mutual exclusion. The target is a MESSAGE, read and unlinked; the result likewise.
+#
+# The timer runs EVERYWHERE, this free install included: an OSS node that never converges is
+# precisely the un-updatable fleet this exists to prevent. Updates are not the paid feature;
+# rollout control is. The off switch is \`systemctl disable briard-update.timer\` and nothing
+# else. The channel poll is an anonymous plain GET carrying no node id, flock name or version.
+cat > "$PREFIX/agent/briard-update" <<EOF
+#!/bin/sh
+# briard-update: converge this node's agent to the release channel. Frozen at install ([B.86a]).
+set -eu
+CHANNEL=$CHANNEL
+KEYRING=$KEYRING
+BASE=$UPDATE_BASE
+RUN=$RUNDIR
+GRACE=5400   # seconds an armed update may sit before the restart is forced (1.5h)
+report() { printf '%s\n' "\$*" | tee "\$RUN/update-result"; }
+# (1) Unfinished business: an update armed longer than the grace is forced; a younger one is
+#     left to the agent's own safe point. Never on the same run that armed -- see (3).
+if [ -e "\$RUN/update" ]; then
+	age=\$(( \$(date +%s) - \$(stat -c %Y "\$RUN/update") ))
+	if [ "\$age" -ge "\$GRACE" ]; then
+		systemctl restart briard-agent.service
+		report "forced the restart: an update had been armed for \${age}s"
+	else
+		report "an update is already armed; the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)"
+	fi
+	exit 0
+fi
+# (2) The target, as a message: stable | latest | an exact id. Absent means stable.
+target=stable
+if [ -f "\$RUN/update-target" ]; then
+	target=\$(head -n1 "\$RUN/update-target")
+	rm -f "\$RUN/update-target"
+fi
+# (3) A fresh agent FROM THE TARGET does the verified fetch. Under \$BASE, not /run: Debian mounts
+#     /run noexec. Its last stdout line is the verdict; its stderr goes to the journal.
+tmp=\$(mktemp -d "\$BASE/.update.XXXXXX"); trap 'rm -rf "\$tmp"' EXIT
+url="\$CHANNEL/host/\$target/linux/briard-agent"
+if command -v curl >/dev/null 2>&1; then curl -fsSL "\$url" -o "\$tmp/briard-agent"
+elif command -v wget >/dev/null 2>&1; then wget -qO "\$tmp/briard-agent" "\$url"
+else report "need curl or wget to fetch \$url"; exit 1; fi || { report "could not fetch a bootstrap agent from \$url"; exit 1; }
+chmod +x "\$tmp/briard-agent"
+set +e
+out=\$(BRIARD_CHANNEL_URL="\$CHANNEL" BRIARD_KEYRING="\$KEYRING" UPDATE_BASE="\$BASE" UPDATE_RUN_DIR="\$RUN" \\
+	"\$tmp/briard-agent" --fetch-update "\$target" 2>&1)
+rc=\$?
+set -e
+printf '%s\n' "\$out" >&2
+report "\$(printf '%s\n' "\$out" | tail -n1)"
+exit \$rc
+EOF
+chmod +x "$PREFIX/agent/briard-update"
+cat > "$UNIT_DIR/briard-update.service" <<EOF
+[Unit]
+Description=briard update: converge this node's agent to the release channel ([B.86a])
+After=network-online.target
+Wants=network-online.target
+[Service]
+# oneshot, NOT templated: \`systemctl start\` blocks on it (so a trigger gets the exit status for
+# free) and a start against a running job merges into it (so the unit is its own lock).
+Type=oneshot
+# The script shells out to curl/wget, stat, mktemp and systemctl by name; a unit's default PATH is
+# minimal and on NixOS it does not reach curl at all (same line, same reason, as briard-agent).
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
+ExecStart=$PREFIX/agent/briard-update
+# The bootstrap pull plus one artifact, on a household link. Generous; the timer retries daily.
+TimeoutStartSec=1800
+EOF
+cat > "$UNIT_DIR/briard-update.timer" <<EOF
+[Unit]
+Description=briard update check (daily, in the small hours, following stable)
+[Timer]
+# Local small hours, spread over three hours so a fleet does not hit the channel as one, and
+# Persistent so a node that was off at the time runs it when it comes back.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=3h
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+
 if command -v systemctl >/dev/null 2>&1; then
 	say "registering briard with systemd"
 	# The clock mark the closing wait reads the journal from: a reinstall's journal still holds
@@ -1038,12 +1142,13 @@ if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload
 	if [ "$UNIT_DIR" = /etc/systemd/system ]; then
 		# Persistent install: enable (survive reboot) + start now.
-		say "enabling briard-net + briard-agent"
+		say "enabling briard-net + briard-agent (+ the daily update timer)"
 		systemctl enable --now briard-net.service briard-agent.service
+		systemctl enable --now briard-update.timer
 	else
 		# Units in a non-persistent dir (e.g. /run) can't be enabled; just start them.
-		say "starting briard-net + briard-agent"
-		systemctl start briard-net.service briard-agent.service
+		say "starting briard-net + briard-agent (+ the daily update timer)"
+		systemctl start briard-net.service briard-agent.service briard-update.timer
 	fi
 	# Lead with the NAME and keep the address as the fallback. The name is the one that stays true
 	# if the address ever moves, and the address is the one that still works if a client's mDNS

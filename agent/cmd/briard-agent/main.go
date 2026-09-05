@@ -110,6 +110,7 @@ func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-agent", flag.ExitOnError)
 	reportCard := fs.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
 	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release (host + guest chains) into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_RELEASE, BRIARD_KEYRING)")
+	fetchUpdate := fs.String("fetch-update", "", "resolve <target> (stable, latest, or a release id) on the channel, stage + arm this node's agent if due, then exit -- the frozen update unit's verb (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING, UPDATE_BASE, UPDATE_RUN_DIR)")
 	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
 	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (host, guest)")
 	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux, windows; empty for the guest chain)")
@@ -199,6 +200,20 @@ func runInternal(args []string) {
 		if err := runFetchInstall(ctx, *fetchInstall); err != nil {
 			log.Fatalf("fetch-install: %v", err)
 		}
+		return
+	}
+
+	// The frozen update unit's verb ([B.86a]). The unit runs it on a FRESH binary it just
+	// pulled from the channel, never on the committed one -- so this is the suspect side doing
+	// the verified fetch, and the one line it prints last on stdout is the unit's verdict (the
+	// unit relays it to whoever started the run: the cloud's directive, the timer's journal, or
+	// `briard update host`). Host-only, like --fetch-install.
+	if *fetchUpdate != "" {
+		line, err := runFetchUpdate(ctx, *fetchUpdate)
+		if err != nil {
+			log.Fatalf("fetch-update: %v", err)
+		}
+		fmt.Fprintln(os.Stdout, line)
 		return
 	}
 

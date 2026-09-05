@@ -212,6 +212,7 @@ let
   agentSelfupdate = import ./agent-selfupdate.nix {
     inherit pkgs;
     stub = selfupdateStub;
+    agent = agentPkg; # the REAL agent: the bootstrap the update unit pulls, and `briard update host`
   };
 
   # The closure a guest must FETCH: the SHIPPED guest plus one marker file, so the delta is a

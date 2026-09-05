@@ -80,23 +80,24 @@ func (f *fakeUpgrader) WriteCert(_ context.Context, cert, key string) error {
 	return f.err
 }
 
-// fakeSelfUpdater records the agent-update the dispatch drives, without a real binary,
-// keyring, or systemd. staged records the offered update; armed/current are configurable.
+// fakeSelfUpdater records the agent-update the dispatch drives, without a real unit,
+// keyring, or systemd. triggered records the version handed to the update unit; armed/current
+// are configurable.
 type fakeSelfUpdater struct {
-	staged    *api.AgentUpdate
-	stageErr  error  // non-nil -> Stage refuses (a bad signature / failed fetch)
-	current   string // the running version, for the idempotency check
-	restarted bool
-	isArmed   bool
+	triggered  string
+	triggerErr error  // non-nil -> the unit refused (a bad pin / bad signature / failed fetch)
+	current    string // the running version, for the idempotency check
+	restarted  bool
+	isArmed    bool
 }
 
-func (s *fakeSelfUpdater) Stage(_ context.Context, u api.AgentUpdate) error {
-	if s.stageErr != nil {
-		return s.stageErr
+func (s *fakeSelfUpdater) Trigger(_ context.Context, version string) (string, error) {
+	if s.triggerErr != nil {
+		return s.triggerErr.Error(), s.triggerErr
 	}
-	s.staged = &u
+	s.triggered = version
 	s.isArmed = true
-	return nil
+	return "staged " + version + ", armed", nil
 }
 func (s *fakeSelfUpdater) Armed() bool                   { return s.isArmed }
 func (s *fakeSelfUpdater) Current() string               { return s.current }
@@ -298,34 +299,38 @@ func TestApplyDirectiveCertNoKeySkips(t *testing.T) {
 	}
 }
 
-// An agent-update directive drives the self-updater to fetch+verify+stage a signed
-// binary. A staged update reports done (the host loop then restarts to trial it); convergence
-// is confirmed later via NodeStatus.AgentVersion, not this outcome.
-func TestApplyDirectiveAgentUpdateStages(t *testing.T) {
+// An agent-update directive hands the offered version to the update unit below the agent. A
+// staged update reports done (the host loop then restarts to trial it); convergence is
+// confirmed later via NodeStatus.AgentVersion, not this outcome.
+func TestApplyDirectiveAgentUpdateTriggersTheUnit(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v1"}
-	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "https://rel/agent", Sig: "c2ln"})
+	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
 		nil, nil, nil, su, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("agent-update outcome = %+v, want done", o)
 	}
-	if su.staged == nil || su.staged.Version != "v2" || su.staged.URL != "https://rel/agent" {
-		t.Errorf("Stage got %+v, want the offered v2", su.staged)
+	if su.triggered != "v2" {
+		t.Errorf("the unit was handed %q, want the offered v2", su.triggered)
 	}
 }
 
-// The load-bearing negative: a refused update (bad signature / failed fetch) reports FAILED and
-// escalates -- and nothing was staged, so the running binary is kept. [[verification-assertions-must-fail]]
+// The load-bearing negative: a refused update (a pin below the floor, a bad signature, a failed
+// fetch) reports FAILED carrying the unit's own line, and escalates -- and nothing was staged,
+// so the running binary is kept. [[verification-assertions-must-fail]]
 func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
-	su := &fakeSelfUpdater{current: "v1", stageErr: fmt.Errorf("signature does not verify")}
+	su := &fakeSelfUpdater{current: "v1", triggerErr: fmt.Errorf("v0 is older than stable v1 — move stable to go there")}
 	fn := &fakeNotifier{}
-	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "https://rel/agent", Sig: "bad"})
+	payload, _ := json.Marshal(api.AgentUpdate{Version: "v0"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
 		nil, fn, nil, su, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeFailed {
 		t.Fatalf("a refused update outcome = %+v, want failed", o)
 	}
-	if su.staged != nil || su.isArmed {
+	if !strings.Contains(o.Detail, "older than stable") {
+		t.Errorf("the outcome does not carry the unit's verdict: %+v", o)
+	}
+	if su.triggered != "" || su.isArmed {
 		t.Error("a refused update staged/armed something -- refuse-and-stay violated")
 	}
 	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning {
@@ -333,24 +338,24 @@ func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
 	}
 }
 
-// A re-offer of the version already running is an idempotent no-op (done, no fetch) -- so a
+// A re-offer of the version already running is an idempotent no-op (done, no unit run) -- so a
 // re-delivered directive after the update committed doesn't loop the agent.
 func TestApplyDirectiveAgentUpdateIdempotent(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v2"}
-	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "https://rel/agent", Sig: "c2ln"})
+	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
 		nil, nil, nil, su, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("re-offer of the running version outcome = %+v, want done", o)
 	}
-	if su.staged != nil {
-		t.Error("a re-offer of the running version re-staged -- not idempotent")
+	if su.triggered != "" {
+		t.Error("a re-offer of the running version ran the unit -- not idempotent")
 	}
 }
 
-// A node with no self-updater wired (no keyring provisioned) refuses the directive -- fail closed.
+// A node with no self-updater wired refuses the directive -- fail closed.
 func TestApplyDirectiveAgentUpdateNoUpdaterRefuses(t *testing.T) {
-	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2", URL: "u", Sig: "s"})
+	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
 		nil, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
 	if o.State != api.OutcomeFailed {

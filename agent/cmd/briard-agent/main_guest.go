@@ -20,6 +20,12 @@ func runFetchInstall(context.Context, string) error {
 	return errors.New("agent: built with -tags guest (guest-only); fetch-install is host-only")
 }
 
+// runFetchUpdate is host-only for the same reason (install/net/http); the guest OS moves by
+// its own chain ([B.86d]), never by this verb.
+func runFetchUpdate(context.Context, string) (string, error) {
+	return "", errors.New("agent: built with -tags guest (guest-only); fetch-update is host-only")
+}
+
 // runGuestShutdown is host-only too (it pulls in platform/QEMU). Nothing inside the guest has a
 // monitor socket to talk to — it IS the VM being powered off.
 func runGuestShutdown(context.Context, string) error {

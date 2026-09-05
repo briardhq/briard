@@ -208,9 +208,10 @@ func ConfigFromEnv() Config {
 		ServiceCache:   env("SERVICE_CACHE", "/var/lib/briard/services"),
 		MeshCache:      env("MESH_CACHE", "/var/lib/briard/mesh.json"),
 		ReactorSnippet: os.Getenv("REACTOR_SNIPPET"),
-		// Host-agent self-update. UPDATE_KEYRING points at a PEM file of trusted
-		// Ed25519 release public keys; unset (or unreadable) -> self-update is OFF (an
-		// agent-update directive refuses, fail-closed). Base/RunDir/Unit default in
+		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
+		// the signed CATALOG (service install), not self-update any more: since [B.86a] the
+		// agent's own update is fetched and verified by the frozen unit below it, under the same
+		// keyring file, and the agent only watches the arm flag. Base/RunDir/Unit default in
 		// newSelfUpdater. Version is baked at build time (buildVersion), overridable by env for
 		// tests -- it is the running binary's own id, so a committed update reports the new one.
 		UpdateKeyring: readFileOrNil(os.Getenv("UPDATE_KEYRING")),

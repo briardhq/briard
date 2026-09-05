@@ -91,14 +91,16 @@ type upgrader interface {
 }
 
 // selfUpdater is the slice of the host-agent self-update the agent-update directive drives
-// -- narrow so the dispatch is unit-testable without a real binary/systemd. Stage fetches +
-// verifies + arms a signed agent binary (refuse-and-stay on a bad signature: current kept); the
-// host loop then triggers Restart once the outcome is acked, so the Type=notify pivot
-// trials it (Armed reports whether a trial is pending). Current is the running agent version, so
-// a re-offer of the same version is an idempotent no-op. nil on a node with no release keyring
-// provisioned -> the directive refuses.
+// -- narrow so the dispatch is unit-testable without a real binary/systemd. Trigger hands the
+// offered version to the frozen update unit BELOW the agent ([B.86a]) and blocks on its one-line
+// verdict: the unit pulls a fresh agent from the channel and lets that binary fetch, verify,
+// stage and arm (refuse-and-stay on a bad pin or signature: current kept, the line says why).
+// The host loop then triggers Restart once the outcome is acked, so the Type=notify pivot
+// trials it (Armed reports whether a trial is pending -- a flag the agent honours but did not
+// create). Current is the running agent version, so a re-offer of the same version is an
+// idempotent no-op.
 type selfUpdater interface {
-	Stage(ctx context.Context, u api.AgentUpdate) error
+	Trigger(ctx context.Context, version string) (string, error)
 	Armed() bool
 	Restart(ctx context.Context) error
 	Current() string
@@ -284,31 +286,38 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 		return done
 	case api.DirectiveAgentUpdate:
 		if su == nil || d.Payload == "" {
-			logf("directive kind=agent-update ignored (no self-updater/keyring/payload on this node)")
+			logf("directive kind=agent-update ignored (no self-updater/payload on this node)")
 			return failed("no self-updater on this node")
 		}
 		var u api.AgentUpdate
-		if err := json.Unmarshal([]byte(d.Payload), &u); err != nil {
+		if err := json.Unmarshal([]byte(d.Payload), &u); err != nil || u.Version == "" {
 			logf("directive agent-update: bad payload: %v", err)
 			return failed("bad payload")
 		}
-		if u.Version != "" && u.Version == su.Current() {
+		if u.Version == su.Current() {
 			logf("directive agent-update: already running %s; nothing to do", u.Version)
 			return done // idempotent: a re-offer of the running version is a no-op
 		}
-		// Bound the fetch+verify; staging is atomic, so a timeout here can't leave a torn slot.
+		// THE CLOUD TRIGGER ([B.86a]): write the target and start the frozen unit, which pulls a
+		// fresh agent from the channel and lets THAT binary fetch, verify, stage and arm -- so a
+		// fetch bug in this running binary cannot prevent its own replacement. `systemctl start`
+		// blocks on the oneshot, bounded here; staging is atomic, so a timeout can't leave a
+		// torn slot. The unit's one-line verdict IS this directive's outcome: a pin below the
+		// floor or a bad signature fails the run loudly and returns as a failed directive.
 		sctx, cancel := wd.budget(ctx, 10*time.Minute)
 		defer cancel()
-		logf("directive kind=agent-update: fetch+verify %s (%s)", u.Version, u.URL)
-		if err := su.Stage(sctx, u); err != nil {
-			// Refuse-and-stay: a bad/absent signature or a failed fetch keeps the running binary.
+		logf("directive kind=agent-update: converging to %s via the update unit", u.Version)
+		line, err := su.Trigger(sctx, u.Version)
+		if err != nil {
+			// Refuse-and-stay: the running binary is kept; the line says why.
 			logf("directive agent-update refused (current kept): %v", err)
 			escalate(ctx, n, logf, "briard-agent", "agent self-update", u.Version, err)
 			return failed(err.Error())
 		}
-		// Staged + armed. The host loop restarts the unit once this outcome is acked, so the
-		// The pivot trials it; convergence is confirmed via NodeStatus.AgentVersion, not here.
-		logf("directive agent-update: staged + armed %s (restart pending)", u.Version)
+		// Staged + armed (or already there). The host loop restarts the unit once this outcome
+		// is acked and the pivot trials it; convergence is confirmed via
+		// NodeStatus.AgentVersion, not here.
+		logf("directive agent-update: %s", line)
 		return done
 	default:
 		logf("directive kind=%q unhandled", d.Kind)

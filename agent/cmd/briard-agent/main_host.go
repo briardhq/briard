@@ -91,6 +91,36 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	return nil
 }
 
+// runFetchUpdate is the update unit's verb ([B.86a]): resolve target on the host chain, decide
+// against the installed manifest, stage + arm the agent if due, and return the one line the run
+// ended on. The layout comes from the same env the agent unit carries (UPDATE_BASE /
+// UPDATE_RUN_DIR), which the frozen unit passes through -- so the candidate lands exactly where
+// briard-exec looks for it.
+func runFetchUpdate(ctx context.Context, target string) (string, error) {
+	base := os.Getenv("BRIARD_CHANNEL_URL")
+	if base == "" {
+		return "", errors.New("BRIARD_CHANNEL_URL unset (the release channel root URL)")
+	}
+	keyPath := os.Getenv("BRIARD_KEYRING")
+	if keyPath == "" {
+		return "", errors.New("BRIARD_KEYRING unset (the release keyring PEM path)")
+	}
+	pemBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", fmt.Errorf("read keyring %s: %w", keyPath, err)
+	}
+	kr, err := selfupdate.NewKeyring(pemBytes)
+	if err != nil {
+		return "", err
+	}
+	u := &install.Update{
+		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainHost, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf},
+		Layout:  selfupdate.New(os.Getenv("UPDATE_BASE"), os.Getenv("UPDATE_RUN_DIR")),
+		Logf:    log.Printf,
+	}
+	return u.Run(ctx, target)
+}
+
 // chainTarget maps the ONE release selector an installer names onto each chain's target. The
 // pointer words are the same on every chain. An exact id is a host id (`v3.<date>.<rev>`), and
 // its guest counterpart is the same tree's guest release, `guest.<date>.<rev>` -- the two are

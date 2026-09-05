@@ -448,17 +448,18 @@ type CertBundle struct {
 	Cert string `json:"cert"` // full chain PEM
 }
 
-// AgentUpdate is the payload of a DirectiveAgentUpdate: a signed host-agent binary the
-// cloud offers a node for self-update. The node fetches URL, verifies the detached signature
-// Sig against its release keyring (Ed25519), and stages+arms it for the Type=notify trial
-// ONLY on a valid signature — a bad or absent signature is refused and the running binary is
-// kept ([[cloud-issues-certs-not-node]]'s sibling principle: the node validates, never trusts
-// the transport). Version is the offered release, echoed in NodeStatus.AgentVersion once it
-// commits, so the cloud can tell a canary converged before it offers the fleet.
+// AgentUpdate is the payload of a DirectiveAgentUpdate: the host-agent release the cloud asks a
+// node to converge to. It names a VERSION and nothing else ([B.86c]): the node resolves it
+// through the signed channel manifest — `stable`, `latest`, or an exact id, floored at stable —
+// so the cloud can no longer name an arbitrary URL, and everything that ever runs on a node is a
+// published signed release (canary builds included). The node verifies against its release
+// keyring and stages+arms the Type=notify trial only on a valid signature; a bad pin or a bad
+// signature is refused and the running binary kept ([[cloud-issues-certs-not-node]]'s sibling
+// principle: the node validates, never trusts the transport). Version is echoed in
+// NodeStatus.AgentVersion once it commits, so the cloud can tell a canary converged before it
+// offers the fleet.
 type AgentUpdate struct {
-	Version string `json:"version"` // the offered release id (idempotency + convergence signal)
-	URL     string `json:"url"`     // where to fetch the raw binary artifact
-	Sig     string `json:"sig"`     // base64 detached Ed25519 signature over the exact artifact bytes
+	Version string `json:"version"` // the release to converge to (idempotency + convergence signal)
 }
 
 // MeshPeer is one node's placement in a DRBD pairing mesh. The sender (the cloud, or a pairing test) computes the whole mesh and sends the same peer set to every node; each renders it

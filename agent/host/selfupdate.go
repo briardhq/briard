@@ -2,63 +2,52 @@ package host
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os/exec"
 
 	"briard.io/agent/selfupdate"
-	"briard.io/shared/api"
 )
 
-// hostSelfUpdater is the production selfUpdater: it fetches + verifies + arms a signed
-// agent binary via the selfupdate package, and restarts the systemd unit -- DETACHED -- to trial
-// the staged binary through the Type=notify pivot. Constructed only when a release keyring
-// is provisioned; otherwise self-update is off and an agent-update directive refuses.
+// hostSelfUpdater is the production selfUpdater. Since [B.86a] it is a FLAG-WATCHER plus a
+// trigger: the fetch, verify and stage happen below the agent, in the frozen update unit and the
+// fresh binary it pulls, so this type keeps only what the running agent must still do -- hand a
+// cloud directive's version to that unit, notice an armed candidate, and restart itself at its
+// safe point (DETACHED, through the Type=notify pivot).
+//
+// It is NO LONGER KEYRING-GATED, and that is a trust-boundary change rather than a relocation
+// ([B.86c]): the keyring now gates the unit's fetch, and the agent honours an arm flag it did
+// not create and cannot verify. That is correct -- verification already happened upstream, on
+// bytes the unit staged under the same keyring this agent used to hold -- and it is what lets
+// the timer path work on a node whose agent is wedged, which is the case the whole design exists
+// for. What the agent can still refuse is a directive naming a version it is already running.
 type hostSelfUpdater struct {
-	fetcher *selfupdate.Fetcher
 	layout  selfupdate.Layout
-	unit    string
+	unit    string // the agent's own unit, restarted to trial a candidate
+	update  string // the frozen update unit, started to fetch one
 	version string
 	restart func(ctx context.Context, unit string) error // overridable in tests
 }
 
-// NewSelfUpdater builds the host selfUpdater from config, or returns nil (self-update off) when
-// no keyring is provisioned or the keyring fails to parse -- fail closed, never fetch-and-trust.
-func (cfg Config) newSelfUpdater(logf func(string, ...any)) selfUpdater {
-	if len(cfg.UpdateKeyring) == 0 {
-		return nil // no trusted keys -> self-update off
-	}
-	kr, err := selfupdate.NewKeyring(cfg.UpdateKeyring)
-	if err != nil {
-		logf("self-update disabled: bad release keyring: %v", err)
-		return nil
-	}
-	if kr.Len() == 0 {
-		logf("self-update disabled: release keyring has no keys")
-		return nil
-	}
-	layout := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir)
+// newSelfUpdater builds the host selfUpdater from config. Never nil: with the fetch below the
+// agent there is no keyring to be missing here.
+func (cfg Config) newSelfUpdater() selfUpdater {
 	unit := cfg.UpdateUnit
 	if unit == "" {
 		unit = "briard-agent.service"
 	}
 	return &hostSelfUpdater{
-		fetcher: &selfupdate.Fetcher{Layout: layout, Keyring: kr, Logf: logf},
-		layout:  layout,
+		layout:  selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir),
 		unit:    unit,
+		update:  selfupdate.DefaultUpdateUnit,
 		version: cfg.Version,
 		restart: systemdRestart,
 	}
 }
 
-// Stage decodes the base64 signature and fetches+verifies+arms the offered artifact. A bad
-// base64 sig is a refusal like any other (never stages).
-func (h *hostSelfUpdater) Stage(ctx context.Context, u api.AgentUpdate) error {
-	sig, err := base64.StdEncoding.DecodeString(u.Sig)
-	if err != nil {
-		return fmt.Errorf("selfupdate: bad base64 signature: %w", err)
-	}
-	return h.fetcher.FetchAndStage(ctx, u.URL, sig)
+// Trigger is the cloud trigger of [B.86a]: the target as a message, one `systemctl start` of the
+// frozen unit, its one-line verdict back.
+func (h *hostSelfUpdater) Trigger(ctx context.Context, version string) (string, error) {
+	return h.layout.Trigger(ctx, h.update, version)
 }
 
 func (h *hostSelfUpdater) Armed() bool                       { return h.layout.Armed() }
