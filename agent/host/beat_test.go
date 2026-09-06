@@ -212,7 +212,7 @@ func TestServiceInstallKeepsTheWatchdogFed(t *testing.T) {
 	b, pinged := pingingBeat()
 	cfg.beat = b
 	f := &fakeInstaller{primary: true, active: true, healthy: true, hold: heldUntilPinged(pinged)}
-	if o := install(cfg, f); o.State != api.OutcomeDone {
+	if o := installService(cfg, f); o.State != api.OutcomeDone {
 		t.Fatalf("service install did not complete: %s", o.Detail)
 	}
 }

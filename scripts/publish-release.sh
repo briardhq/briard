@@ -1,4 +1,9 @@
-#!/usr/bin/env bash
+	# The closure the image boots, and the oldest host that tolerates this guest ([B.86d]): this
+	# very release's host, since both come from one commit. That is the tightest correct value --
+	# a node takes host/stable daily and guest/stable rarely, so it is at or past this by the
+	# time the guest is promoted; a node pinned to an older host is refused, which is the point.
+	"$H/briard-agent" --stage-manifest "$G" --chain guest --release "$GV" \
+		--system "$(out_of .#artifacts.guest-disk.system)" --min-host "$V" || die "writing the guest manifest failed"#!/usr/bin/env bash
 #
 # publish-release.sh — build, sign and publish the release channel a stranger installs from
 # and a node updates from. The consumer already exists (agent/install/fetch.go +

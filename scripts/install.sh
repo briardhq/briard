@@ -354,6 +354,11 @@ cp -f "$GUESTSRC/nixos.qcow2" "$PREFIX/guest-image/nixos.qcow2"
 # staging path, which has no manifest to keep.
 [ -f "$HOSTSRC/manifest.json" ]  && install -m0644 "$HOSTSRC/manifest.json"  "$PREFIX/agent/manifest.json"
 [ -f "$GUESTSRC/manifest.json" ] && install -m0644 "$GUESTSRC/manifest.json" "$PREFIX/guest-image/manifest.json"
+# The guest chain's node-local RECORD of the release this node runs ([B.86d]): pet state, beside
+# the identity, because the guest itself knows only a closure path and the stable path orders
+# on a release id. The copy under guest-image/ describes the IMAGE on disk; this one follows the
+# running OS as updates land. Same bytes today, and they part ways at the first guest update.
+[ -f "$GUESTSRC/manifest.json" ] && install -m0644 "$GUESTSRC/manifest.json" "$STATE/guest-release.json"
 # `briard` -- the operator CLI, which is a MODE of the agent binary rather than a second
 # one. Nothing under $PREFIX is on $PATH, so this symlink IS the CLI's existence as far as a user
 # is concerned. A symlink rather than a copy: self-update replaces the binary in place, and
@@ -1024,6 +1029,10 @@ $CONSOLE_ENV
 # would silently win here gates readiness, the OS health gate and a rollback.
 Environment=STATUS_EVERY=5s
 Environment=ASSIGNMENT_CACHE=$STATE/assignment.json
+# The release channel root, for the guest chain ([B.86d]): the agent resolves guest/<target>
+# here and applies the closure a release names. The host chain's fetch does not read this --
+# it lives in the frozen unit below, with the same root baked into its script.
+Environment=CHANNEL_URL=$CHANNEL
 # GOTRACEBACK=all is what makes the watchdog below worth having (V3.32). Its default signal is
 # SIGABRT, and Go answers SIGABRT by dumping goroutine stacks and dying -- so a trip leaves the
 # stack of every goroutine at the moment the agent wedged, which is the diagnosis for a bug whose

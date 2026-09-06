@@ -337,3 +337,37 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 	}
 	return &m
 }
+
+// DirectiveUpdateGuest is the LOCAL directive kind of the guest chain ([B.86d]): `briard update
+// guest` and the agent's own nightly timer submit it through the admin door; the payload is a
+// target (`latest`, `stable`, an exact guest id; "" is latest). It is deliberately NOT in
+// shared/api: the cloud names closures (`upgrade-system`) and the wire allowlist stays closed --
+// a kind that never crosses to the cloud does not belong in the contract that says what can.
+// It lives here rather than in agent/host so the CLI and the host share one spelling.
+const DirectiveUpdateGuest = "update-guest"
+
+// ErrHostTooOld is the min_host refusal: this host predates what a guest release tolerates.
+var ErrHostTooOld = errors.New("install: this host is older than the guest release requires")
+
+// HostSatisfies applies a guest release's min_host to this host's release id: nil when the host
+// is at or past it (ordered on the date field, as the stable path is), ErrHostTooOld otherwise.
+// An empty minHost places no requirement. The message names both remedies, because a host that
+// cannot update past the floor is a node outside its support window, and the answer there is
+// reinstall -- it must never drift silently ([B.86e]).
+func HostSatisfies(minHost, host string) error {
+	if minHost == "" {
+		return nil
+	}
+	need, err := dateOf(minHost)
+	if err != nil {
+		return err
+	}
+	have, err := dateOf(host)
+	if err != nil {
+		return fmt.Errorf("%w: this host's release id %q has no date to compare min_host %s against", ErrHostTooOld, host, minHost)
+	}
+	if have < need {
+		return fmt.Errorf("%w: host %s < min_host %s — update the host first (`briard update host`); a host that can no longer update is outside its support window and must be reinstalled", ErrHostTooOld, host, minHost)
+	}
+	return nil
+}

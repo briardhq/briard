@@ -141,6 +141,6 @@ func chainTarget(chain, release string) string {
 // described by the same code that installs them (agent/install.WriteManifest). Host-side for
 // the same reason as runFetchInstall: it lives in the install package, which the `-tags guest`
 // trim excludes.
-func runStageManifest(dir, chain, platform, version string) error {
-	return install.WriteManifest(dir, chain, platform, version)
+func runStageManifest(dir, chain, platform, version, system, minHost string) error {
+	return install.WriteManifest(dir, chain, platform, version, system, minHost)
 }

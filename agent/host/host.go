@@ -26,6 +26,7 @@ import (
 	"briard.io/agent/drbd"
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/install"
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
@@ -245,10 +246,17 @@ type Config struct {
 	BringUpBudget   time.Duration // bounds the launch -> converge phase
 	ControllerURL   string        // fleet controller base URL; "" -> don't report up (standalone)
 	ControllerToken string        // bearer presented on every seam call; "" -> no auth
-	AssignmentCache string        // where the cloud Assignment is cached for cold-boot; "" -> no persistence
-	NotifyURL       string        // alert endpoint (ntfy topic URL); "" -> log-only notifier
-	TelemetryPath   string        // where resource telemetry is written for the out-of-band soak collector; "" -> don't write
-	MetricsWindow   time.Duration // rollup bucket for the cloud aggregate pipeline; 0 -> 1h (production)
+	// ChannelURL is the signed release channel ROOT (install.sh's $CHANNEL): what the guest chain's
+	// resolver reads guest/<target>/manifest.json from ([B.86d]). The host chain's fetch lives in
+	// the frozen unit below the agent and reads the same root baked into its script.
+	ChannelURL string
+	// GuestReleaseCache is the node-local record of the last applied guest release -- the exact
+	// signed manifest, seeded by install.sh from the installed release ([B.86d]). "" -> no record.
+	GuestReleaseCache string
+	AssignmentCache   string        // where the cloud Assignment is cached for cold-boot; "" -> no persistence
+	NotifyURL         string        // alert endpoint (ntfy topic URL); "" -> log-only notifier
+	TelemetryPath     string        // where resource telemetry is written for the out-of-band soak collector; "" -> don't write
+	MetricsWindow     time.Duration // rollup bucket for the cloud aggregate pipeline; 0 -> 1h (production)
 	// UpgradeBudget bounds a whole-OS upgrade: stage, activate, health-gate, and — if the gate
 	// never passes — the wait before it reverts. It is therefore also THE NUMBER THAT DECIDES
 	// HOW LONG A BROKEN UPDATE LEAVES A NODE DEGRADED, which is why it is worth naming rather
@@ -610,6 +618,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// single observe() call, which is the whole point of an out-of-band admin surface.
 	local := make(chan localRequest)
 	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	// The guest chain's nightly timer ([B.86d]) -- a standalone node converging its OS to
+	// guest/stable through the same door; a no-op goroutine on a managed or paired node.
+	go cfg.guestUpdateTimer(ctx, local, n, logf)
 	// The guest's admin port feeds the same channel: a directive the household pressed a button
 	// for in the dashboard arrives here exactly as one the operator typed ([V3b.31i]).
 	go serveAdminPort(ctx, cfg.AdminPortSock, local, logf)
@@ -1159,6 +1170,12 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 			return cfg.applyServicePrewarm(ctx, i, d, logf)
 		}
 		return cfg.applyServiceInstall(ctx, i, d, logf)
+	}
+	if d.Kind == install.DirectiveUpdateGuest {
+		// The guest chain ([B.86d]): a release resolved on the channel, then the same OS upgrade
+		// the cloud's closure directive runs. Local-only, so it is routed here and not in the
+		// wire-directive switch below.
+		return cfg.applyGuestUpdate(ctx, d, r, up, n, logf)
 	}
 	if d.Kind == api.DirectiveHandover {
 		// A planned handover needs the guest's promoter verb, not the upgrader.

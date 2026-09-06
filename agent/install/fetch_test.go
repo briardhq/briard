@@ -458,7 +458,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	write("briard-agent", agent, 0o755)
 	write("nixos.qcow2.zst", zstdOf(t, guest), 0o644)
 
-	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion); err != nil {
+	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion, "", ""); err != nil {
 		t.Fatalf("WriteManifest: %v", err)
 	}
 	mb, err := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -487,7 +487,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 	// Running the writer AGAIN over its own output must not list the manifest as an artifact
 	// of itself -- the one file a release directory holds that the manifest cannot name.
-	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion); err != nil {
+	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion, "", ""); err != nil {
 		t.Fatalf("WriteManifest (second pass): %v", err)
 	}
 	mb2, _ := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -548,7 +548,7 @@ func TestWriteManifestRefusesUnusableIds(t *testing.T) {
 		{ChainHost, TargetStable}, {ChainHost, TargetLatest}, {ChainHost, ""}, {ChainHost, "../v3"},
 		{"", testVersion}, {"host/extra", testVersion}, {".host", testVersion},
 	} {
-		if err := WriteManifest(stage, tc[0], "", tc[1]); err == nil {
+		if err := WriteManifest(stage, tc[0], "", tc[1], "", ""); err == nil {
 			t.Errorf("WriteManifest(chain=%q, version=%q) was accepted", tc[0], tc[1])
 		}
 	}

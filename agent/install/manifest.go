@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
@@ -37,7 +38,11 @@ var notArtifacts = map[string]bool{
 // Every regular file in dir is an artifact except the ones that describe the set (notArtifacts).
 // Entries are sorted by name so the same directory always produces the same bytes — the manifest
 // is signed, and a set that reordered itself would churn the signature for no reason.
-func WriteManifest(dir, chain, platform, version string) error {
+//
+// system and minHost are the guest chain's two extra facts (Manifest.System / MinHost); both are
+// refused on any other chain, because a host manifest naming a closure would be a lie the reader
+// has no way to catch.
+func WriteManifest(dir, chain, platform, version, system, minHost string) error {
 	if !validSegment(chain) {
 		return fmt.Errorf("install: bad chain name %q", chain)
 	}
@@ -49,11 +54,20 @@ func WriteManifest(dir, chain, platform, version string) error {
 	if !validSegment(version) || version == TargetStable || version == TargetLatest {
 		return fmt.Errorf("install: bad release version %q", version)
 	}
+	if (system != "" || minHost != "") && chain != ChainGuest {
+		return fmt.Errorf("install: system/min_host are guest-chain facts, not %s's", chain)
+	}
+	if system != "" && !strings.HasPrefix(system, "/nix/store/") {
+		return fmt.Errorf("install: system %q is not a /nix/store path", system)
+	}
+	if minHost != "" && !validSegment(minHost) {
+		return fmt.Errorf("install: bad min_host %q", minHost)
+	}
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("install: read staging dir %s: %w", dir, err)
 	}
-	man := Manifest{Chain: chain, Platform: platform, Version: version}
+	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinHost: minHost}
 	for _, e := range ents {
 		if e.IsDir() || notArtifacts[e.Name()] {
 			continue

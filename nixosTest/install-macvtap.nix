@@ -72,7 +72,10 @@ let
     # The production writer, not a re-implementation in Nix -- which would have tested this file
     # against itself and proven nothing about what a release actually publishes.
     "$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V"
-    "$H/briard-agent" --stage-manifest "$G" --chain guest                  --release "$GV"
+    # The guest manifest names the closure the image boots and the oldest host that tolerates
+    # it -- this release's own ([B.86d]), as publish-release.sh stamps it.
+    "$H/briard-agent" --stage-manifest "$G" --chain guest                  --release "$GV" \
+        --system ${guestDisk.system} --min-host "$V"
   '';
   # ⚠️ THE CHANNEL IS SIGNED AT RUNTIME, NOT HERE, and that is a constraint rather than a
   # preference: a signing key committed to the repo trips `TestNoSecretMaterial` (internal/arch),
@@ -1088,5 +1091,30 @@ pkgs.testers.runNixOSTest {
     host.fail("test -e /run/briard/trial && test -e /run/briard/update")
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
+
+    # ---- THE GUEST CHAIN ON THE SHIPPED NODE ([B.86d]) ---------------------------------------
+    # The installed guest manifest names the closure the image boots; install.sh seeded the
+    # node-local record from it; the agent's unit carries the channel root. `briard update guest`
+    # resolves guest/latest on the channel, verifies it, compares min_host with this host and
+    # the closure with what the guest runs -- and says so: this node is already running it.
+    host.succeed("grep -q '\"system\":\"${guestDisk.system}\"' /opt/briard/guest-image/manifest.json")
+    host.succeed(f"grep -q '\"min_host\":\"{V}\"' /opt/briard/guest-image/manifest.json")
+    host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")
+    host.succeed("systemctl cat briard-agent.service | grep -q '^Environment=CHANNEL_URL=http://127.0.0.1:8099'")
+    out = host.succeed("/opt/briard/agent/briard-agent update guest").strip()
+    assert f"already running {GV}" in out, f"briard update guest said: {out!r}"
+    # A guest release this host is too OLD for is refused before anything is staged, and the
+    # refusal names the remedy -- the support window closing on a node must never be silent.
+    # [[verification-assertions-must-fail]]: the same command with an unknown pin fails too.
+    GNEW = "guest.20991231.b86d0000"
+    d = f"/srv/guest/{GNEW}"
+    host.succeed(f"mkdir -p {d} && echo not-an-image > {d}/nixos.qcow2.zst")  # a real file (the writer skips links); never fetched, the refusal comes first
+    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain guest --release {GNEW} --system ${guestDisk.system} --min-host v3.20991231.zzzzzzz")
+    host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+    host.fail(f"/opt/briard/agent/briard-agent update guest -to {GNEW}")
+    host.succeed("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the guest release requires'")
+    host.fail("/opt/briard/agent/briard-agent update guest -to guest.20990101.nothere")
+    host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
+    print("the shipped node resolves its guest chain: already running the installed release; a release needing a newer host is refused loudly")
   '';
 }

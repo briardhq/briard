@@ -493,3 +493,62 @@ func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
 		t.Error("a tree appeared from a tarball that would not unpack")
 	}
 }
+
+// min_host ([B.86d]): the guest chain's one-directional compatibility promise, ordered on the
+// date like everything else; a host id with no date cannot satisfy any requirement.
+func TestHostSatisfies(t *testing.T) {
+	for _, tc := range []struct {
+		minHost, host string
+		ok            bool
+	}{
+		{"", "v3.20260906.a", true},
+		{"v3.20260906.a", "v3.20260906.b", true},
+		{"v3.20260906.a", "v3.20260907.b", true},
+		{"v3.20260907.a", "v3.20260906.b", false},
+		{"v3.20260906.a", "dev", false},
+		{"v3.20260906.a", "", false},
+	} {
+		err := HostSatisfies(tc.minHost, tc.host)
+		if (err == nil) != tc.ok {
+			t.Errorf("HostSatisfies(%q, %q) = %v, want ok=%v", tc.minHost, tc.host, err, tc.ok)
+		}
+		if err != nil && !errors.Is(err, ErrHostTooOld) {
+			t.Errorf("HostSatisfies(%q, %q) = %v, want ErrHostTooOld", tc.minHost, tc.host, err)
+		}
+	}
+}
+
+// The guest manifest names its closure and min_host, round-tripped through the one writer and
+// reader; the host chain refuses them.
+func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
+	stage := t.TempDir()
+	os.WriteFile(filepath.Join(stage, "nixos.qcow2.zst"), []byte("img"), 0o644)
+	if err := WriteManifest(stage, ChainGuest, "", "guest.20260906.abc1234", "/nix/store/abc-nixos-system", "v3.20260906.abc1234"); err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	b, _ := os.ReadFile(filepath.Join(stage, ManifestName))
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.System != "/nix/store/abc-nixos-system" || m.MinHost != "v3.20260906.abc1234" {
+		t.Errorf("system/min_host = %q/%q", m.System, m.MinHost)
+	}
+	for _, bad := range [][]string{
+		{ChainHost, "/nix/store/x", ""},    // a host manifest naming a closure
+		{ChainGuest, "/tmp/not-store", ""}, // not a store path
+		{ChainGuest, "", "not a segment/"}, // an unusable min_host
+	} {
+		if err := WriteManifest(stage, bad[0], "", "guest.20260906.abc1234", bad[1], bad[2]); err == nil {
+			t.Errorf("WriteManifest(%v) accepted", bad)
+		}
+	}
+	// Omitted when empty, so a host manifest's bytes are unchanged by the fields' existence.
+	if err := WriteManifest(stage, ChainGuest, "", "guest.20260906.abc1234", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(filepath.Join(stage, ManifestName))
+	if bytes.Contains(b, []byte("system")) || bytes.Contains(b, []byte("min_host")) {
+		t.Errorf("empty guest facts were emitted: %s", b)
+	}
+}

@@ -115,6 +115,8 @@ func runInternal(args []string) {
 	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (host, guest)")
 	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux, windows; empty for the guest chain)")
 	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
+	stageSystem := fs.String("system", "", "with --stage-manifest --chain guest: the store path of the NixOS toplevel the image boots (Manifest.System)")
+	stageMinHost := fs.String("min-host", "", "with --stage-manifest --chain guest: the oldest host release this guest tolerates (Manifest.MinHost)")
 	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	drawSubnets := fs.Bool("draw-subnets", false, "draw this node's two private subnets, checked against this machine's own network, and print them as SYSTEM_SUBNET=/PRIV_SUBNET= -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
@@ -174,7 +176,7 @@ func runInternal(args []string) {
 	// already linked -- and runStageManifest is stubbed out of a `-tags guest` build, so the
 	// guest trim is unaffected.
 	if *stageManifest != "" {
-		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease); err != nil {
+		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinHost); err != nil {
 			log.Fatalf("stage-manifest: %v", err)
 		}
 		return

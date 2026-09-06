@@ -140,6 +140,15 @@ type Manifest struct {
 	Platform  string  `json:"platform,omitempty"` // host chain only; the guest image has no platform
 	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
+	// The guest chain names the CLOSURE, not just the image ([B.86d]): System is the store path of
+	// the NixOS toplevel the image boots -- the bytes still come from the binary cache and nix
+	// verifies them itself, so naming it adds no trust root, but it makes image and closure a PAIR
+	// (what an upgrade activates, and what a rescue must land on). MinHost is the oldest host
+	// release this guest tolerates: the host must tolerate old guests, the guest need never
+	// tolerate old hosts, and this field is what closes the one direction that can go wrong (an
+	// exact-pinned old host resolving guest/stable). Both are empty on the host chain.
+	System  string `json:"system,omitempty"`
+	MinHost string `json:"min_host,omitempty"`
 }
 
 // Fetcher downloads and verifies one chain's signed artifact set into a staging directory.
@@ -222,6 +231,13 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 	}
 	committed = true
 	return nil
+}
+
+// Manifest resolves target on the fetcher's chain: the verified manifest and the exact bytes
+// that verified, and nothing on disk -- what the guest chain's resolver needs ([B.86d]), since a
+// guest upgrade activates a closure from the cache rather than fetching an artifact.
+func (f *Fetcher) Manifest(ctx context.Context, target string) (Manifest, []byte, error) {
+	return f.fetchManifest(ctx, target)
 }
 
 // fetchManifest downloads <root>/<chain>/<target>[/<platform>]/manifest.json and its detached

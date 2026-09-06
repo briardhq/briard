@@ -204,10 +204,12 @@ func ConfigFromEnv() Config {
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; a service catalog is not a web page.
-		CatalogURL:     env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache:   env("SERVICE_CACHE", "/var/lib/briard/services"),
-		MeshCache:      env("MESH_CACHE", "/var/lib/briard/mesh.json"),
-		ReactorSnippet: os.Getenv("REACTOR_SNIPPET"),
+		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
+		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/services"),
+		MeshCache:         env("MESH_CACHE", "/var/lib/briard/mesh.json"),
+		ChannelURL:        env("CHANNEL_URL", "https://get.briard.io"),
+		GuestReleaseCache: env("GUEST_RELEASE_CACHE", "/var/lib/briard/guest-release.json"),
+		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
 		// the signed CATALOG (service install), not self-update any more: since [B.86a] the
 		// agent's own update is fetched and verified by the frozen unit below it, under the same

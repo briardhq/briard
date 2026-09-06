@@ -253,7 +253,7 @@ func testManifest() manifest.Manifest {
 	}
 }
 
-func install(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
+func installService(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 	return cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {})
 }
@@ -265,7 +265,7 @@ func install(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 func TestInstallOrdersTheSteps(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
 	cfg := catalogFor(t, testManifest())
-	if o := install(cfg, f); o.State != api.OutcomeDone {
+	if o := installService(cfg, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	// A fresh install: read the (empty) installed manifest, render+warm (which is also the
@@ -302,7 +302,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 // the install would REVERT a working service because a courtesy call did not connect.
 func TestAFailedNudgeDoesNotFailTheInstall(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, nudgeEr: errors.New("connection refused")}
-	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	if o := installService(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done — a refused nudge reverted a healthy install", o)
 	}
 }
@@ -330,7 +330,7 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 		t.Fatalf("an install that failed its health gate still nudged Home Assistant: %v", f.steps)
 	}
 	f = &fakeInstaller{primary: true, active: true, healthy: true, noHass: true}
-	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	if o := installService(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if !slices.Contains(f.steps, "nudge") {
@@ -349,7 +349,7 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 // volume is what every future promotion, on every node, renders from).
 func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, warmEr: errors.New("no route to host")}
-	o := install(catalogFor(t, testManifest()), f)
+	o := installService(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "warm image") {
 		t.Fatalf("outcome = %+v, want a failure naming the image warm", o)
 	}
@@ -371,7 +371,7 @@ func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 // concurrency at the moment the item narrowed it.
 func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: false, healthy: true}
-	o := install(catalogFor(t, testManifest()), f)
+	o := installService(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "already paused") {
 		t.Fatalf("outcome = %+v, want a failure naming the open bracket", o)
 	}
@@ -536,7 +536,7 @@ func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 // a secondary takes its units and stops. It must NOT touch the promoter — the primary owns that.
 func TestInstallOnSecondaryRendersButDoesNotProvision(t *testing.T) {
 	f := &fakeInstaller{primary: false, active: true, healthy: true}
-	o := install(catalogFor(t, testManifest()), f)
+	o := installService(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done (units rendered)", o)
 	}
@@ -557,7 +557,7 @@ func TestInstallRefusesAnUnsignedCatalog(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.UpdateKeyring = nil
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
-	if o := install(cfg, f); o.State != api.OutcomeFailed {
+	if o := installService(cfg, f); o.State != api.OutcomeFailed {
 		t.Fatalf("outcome = %+v, want a refusal with no keyring", o)
 	}
 	if len(f.steps) != 0 {
@@ -743,7 +743,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 func TestInstallSaysWhereToReachIt(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.FlockName = "picked-hornet"
-	o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	o := installService(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
@@ -760,7 +760,7 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 // to end. Asserted as an absence AND a presence: the port must be named, the URL must not appear.
 func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 	cfg := catalogFor(t, testManifest()) // FlockName left zero on purpose
-	o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	o := installService(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
@@ -887,7 +887,7 @@ func TestInstallAcceptsASecondServiceAndLeavesTheFirstAlone(t *testing.T) {
 	// prior, which is what made the second install destructive.
 	f := &fakeInstaller{primary: true, active: true, healthy: true,
 		prior: map[string]string{"mosquitto": string(manifestJSON("mosquitto", digestB))}}
-	o := install(cfg, f)
+	o := installService(cfg, f)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done: a node may now run more than one service", o)
 	}
@@ -916,7 +916,7 @@ func TestInstallOfTheSameServiceIsAnUpgrade(t *testing.T) {
 	}
 	cfg := catalogFor(t, testManifest())
 	cfg.ServiceCache = up
-	if o := install(cfg, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
+	if o := installService(cfg, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done: re-installing the same service is an upgrade", o)
 	}
 }
@@ -936,7 +936,7 @@ func TestInstallOfTheSameServiceIsAnUpgrade(t *testing.T) {
 // for exactly this reason ([V3b.3](e1)).
 func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
-	if o := install(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	if o := installService(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if len(f.warmedRefs) == 0 {
@@ -1127,7 +1127,7 @@ func TestPriorServiceReadsOnlyItsOwnService(t *testing.T) {
 func TestInstallRefusesAGuestThatCannotNameAService(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, oldGuest: true}
-	o := install(cfg, f)
+	o := installService(cfg, f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "service.installed") {
 		t.Fatalf("outcome = %+v, want a failure naming the missing verb", o)
 	}
@@ -1467,7 +1467,7 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	m := testManifest()
 	m.Size, m.InstalledSize = 600e6, 2500e6
 	f := &fakeInstaller{primary: true, active: true, healthy: true, free: 2000e6}
-	o := install(catalogFor(t, m), f)
+	o := installService(catalogFor(t, m), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not enough space") || !strings.Contains(o.Detail, "2.50 GB") || !strings.Contains(o.Detail, "2.00 GB") {
 		t.Fatalf("outcome = %+v, want a refusal naming what is needed and what is free", o)
 	}
@@ -1480,7 +1480,7 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	// 2.5 GB installed + 1 GiB headroom fits in 4 GB: installs, and the bar's record brackets
 	// the warm.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4000e6}
-	if o := install(catalogFor(t, m), f); o.State != api.OutcomeDone {
+	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome with room = %+v", o)
 	}
 	joined = strings.Join(f.steps, ",")
@@ -1490,13 +1490,13 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	}
 	// Cannot measure: installs, unmeasured.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, freeErr: errors.New("df: no such file")}
-	if o := install(catalogFor(t, m), f); o.State != api.OutcomeDone {
+	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome when the store cannot be measured = %+v; want the install to proceed", o)
 	}
 	// No sizes in the entry: no gate, no record.
 	plain := testManifest()
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 1}
-	if o := install(catalogFor(t, plain), f); o.State != api.OutcomeDone {
+	if o := installService(catalogFor(t, plain), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome for an unsized entry = %+v; want no gate", o)
 	}
 	if s := strings.Join(f.steps, ","); strings.Contains(s, "storage.free") || strings.Contains(s, "pulling") {

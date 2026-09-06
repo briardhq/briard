@@ -118,18 +118,13 @@ var commands = []command{
 		run: runRescue, probe: []string{"-h"},
 	},
 	{
-		name: "os", args: "upgrade <closure>", group: groupRepair,
-		synopsis: "switch this node to a system closure, health-gated",
-		detail:   "Takes a store path, so in practice this is driven by tooling rather than typed.",
-		run:      runOS, probe: []string{"upgrade", "-h"},
-	},
-	{
-		name: "update", args: "host", group: groupRepair,
-		synopsis: "update this node's agent from the release channel now",
-		detail: "Starts the same update unit the nightly timer and the cloud use, and prints how it\n" +
-			"ended: already at the target, staged and armed (the agent restarts itself at its next\n" +
-			"safe point; `systemctl restart briard-agent` applies it now), or refused and why. It\n" +
-			"resolves `latest` (-to changes that) and works even when the agent is down.",
+		name: "update", args: "<host|guest>", group: groupRepair,
+		synopsis: "update this node's agent, or its guest OS, from the release channel now",
+		detail: "Both resolve `latest` (-to changes that). host starts the same update unit the nightly\n" +
+			"timer and the cloud use and prints how it ended: already at the target, staged and armed\n" +
+			"(the agent restarts itself at its next safe point; `systemctl restart briard-agent`\n" +
+			"applies it now), or refused and why; it works even when the agent is down. guest asks the\n" +
+			"agent to move the OS to the release's closure, health-gated, and reports the outcome.",
 		run: runUpdate, probe: []string{"-h"},
 	},
 	{

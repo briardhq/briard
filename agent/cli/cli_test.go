@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"briard.io/agent/install"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
 )
@@ -201,59 +202,6 @@ func TestHandoverExitsNonZeroWhenRefused(t *testing.T) {
 	}
 }
 
-// `briard os upgrade` is the cloudless node's ONLY route to a new OS, and the operator's escape
-// hatch on a managed one -- the per-home upgrade window binds the cloud's pusher, never a human
-// at the machine.
-func TestOSUpgradeSubmitsTheClosure(t *testing.T) {
-	const closure = "/nix/store/abc-nixos-system"
-	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone})
-	var out, errOut bytes.Buffer
-	if code := Main(context.Background(), []string{"os", "upgrade", "-sock", sock, closure}, &out, &errOut); code != 0 {
-		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
-	}
-	ds := seen()
-	if len(ds) != 1 || ds[0].Kind != api.DirectiveUpgradeSystem || ds[0].Payload != closure {
-		t.Fatalf("agent saw %+v, want one upgrade-system for %s", ds, closure)
-	}
-}
-
-// A REFUSAL is not a failure, and the difference is what an operator most needs: on an HA pair a
-// serving node declines (moving it is a handover), and the node is untouched and still serving.
-// The exit code says "not applied"; the detail has to say which kind of not-applied.
-func TestOSUpgradeDistinguishesARefusalFromABreakage(t *testing.T) {
-	for _, c := range []struct{ state, detail, want string }{
-		{api.OutcomeRolledBack, "reboot needs a handover", "unchanged and serving"},
-		{api.OutcomeFailed, "staging failed", "upgrade failed"},
-	} {
-		sock, _ := fakeAgent(t, api.DirectiveOutcome{State: c.state, Detail: c.detail})
-		var out, errOut bytes.Buffer
-		code := Main(context.Background(), []string{"os", "upgrade", "-sock", sock, "/nix/store/x"}, &out, &errOut)
-		if code != 1 {
-			t.Errorf("%s exited %d, want 1", c.state, code)
-		}
-		if !strings.Contains(errOut.String(), c.want) || !strings.Contains(errOut.String(), c.detail) {
-			t.Errorf("%s stderr = %q, want %q and the detail", c.state, errOut.String(), c.want)
-		}
-	}
-}
-
-// A typo is caught before anything is submitted: the agent's own refusal would arrive after a
-// staging attempt, and "that is not a store path" is something a human should hear at once.
-func TestOSUpgradeUsageErrors(t *testing.T) {
-	for _, args := range [][]string{
-		{"os"},                              // no subcommand
-		{"os", "downgrade", "/nix/store/x"}, // not a verb
-		{"os", "upgrade"},                   // no closure
-		{"os", "upgrade", "/nix/store/a", "/nix/b"}, // two
-		{"os", "upgrade", "nixos-system"},           // not a store path
-	} {
-		var out, errOut bytes.Buffer
-		if code := Main(context.Background(), args, &out, &errOut); code != 2 {
-			t.Errorf("%v exited %d, want 2 (usage)", args, code)
-		}
-	}
-}
-
 // `briard rescue` WITHOUT -yes must not reach the agent. This is the only destructive verb in the
 // CLI -- everything else here is reversible or health-gated -- so the guard is asserted on the
 // wire, not on the exit code: a version that printed the warning and submitted anyway would still
@@ -342,7 +290,6 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"handover":  groupEveryday,
 		"dashboard": groupEveryday,
 		"rescue":    groupRepair,
-		"os":        groupRepair,
 		"update":    groupRepair,
 		"directive": groupRepair,
 		"run":       groupRepair,
@@ -451,5 +398,41 @@ func TestAccountLang(t *testing.T) {
 	t.Setenv("SUDO_USER", "kostas")
 	if accountUser() != "kostas" || accountName() != "Kostas" {
 		t.Errorf("under sudo: user %q name %q", accountUser(), accountName())
+	}
+}
+
+// `briard update guest` ([B.86d]) is the guest chain's human trigger: it submits the local
+// update-guest directive with the target, and reports the upgrade's outcome -- a refusal
+// (rolled back, node serving) distinguished from a breakage, as `os upgrade` once did.
+func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "now running guest.20260910.n"})
+	var out, errOut bytes.Buffer
+	if code := Main(context.Background(), []string{"update", "guest", "-sock", sock, "-to", "stable"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
+	}
+	ds := seen()
+	if len(ds) != 1 || ds[0].Kind != install.DirectiveUpdateGuest || ds[0].Payload != "stable" {
+		t.Fatalf("agent saw %+v, want one update-guest for stable", ds)
+	}
+	if !strings.Contains(out.String(), "now running guest.20260910.n") {
+		t.Errorf("stdout = %q", out.String())
+	}
+	for _, c := range []struct{ state, detail, want string }{
+		{api.OutcomeRolledBack, "reboot needs a handover", "unchanged and serving"},
+		{api.OutcomeFailed, "older than the guest release requires", "briard update guest:"},
+	} {
+		sock, _ := fakeAgent(t, api.DirectiveOutcome{State: c.state, Detail: c.detail})
+		var out, errOut bytes.Buffer
+		if code := Main(context.Background(), []string{"update", "guest", "-sock", sock}, &out, &errOut); code != 1 {
+			t.Errorf("%s exited %d, want 1", c.state, code)
+		}
+		if !strings.Contains(errOut.String(), c.want) || !strings.Contains(errOut.String(), c.detail) {
+			t.Errorf("%s stderr = %q, want %q and the detail", c.state, errOut.String(), c.want)
+		}
+	}
+	// `os upgrade` is gone: the primitive it was sugar over remains as `directive upgrade-system`.
+	var out2, errOut2 bytes.Buffer
+	if code := Main(context.Background(), []string{"os", "upgrade", "/nix/store/x"}, &out2, &errOut2); code == 0 {
+		t.Error("`briard os upgrade` still exists")
 	}
 }
