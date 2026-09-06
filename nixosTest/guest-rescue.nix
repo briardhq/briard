@@ -49,7 +49,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.diskSize = 10240;
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ]; # nested KVM
-      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl ];
+      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.e2fsprogs ]; # debugfs reads the state disk
     };
 
   testScript = ''
@@ -79,6 +79,9 @@ pkgs.testers.runNixOSTest {
     # of one environment.
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
+    # The state disk ([B.86g]): empty, sparse; the guest formats it on its first boot and the
+    # rescue below must NOT format it again -- that is the whole claim of the disk.
+    host.succeed("truncate -s 2G /tmp/state.img")
     backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
     assert "nixos.qcow2" in backing, f"the guest disk is not an overlay on the image; rescue would refuse:\n{backing}"
 
@@ -90,7 +93,7 @@ pkgs.testers.runNixOSTest {
         # is the point: the rig gets what the product gets ([V3b.19a]).
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
+        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=ADMIN_SOCK=/run/briard/admin.sock "
         "--setenv=NODE=guest --setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
@@ -103,7 +106,16 @@ pkgs.testers.runNixOSTest {
         "--setenv=GUEST_SERIAL=/tmp/guest-console.log "
         "${agent}/bin/briard-agent run"
     )
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
+    try:
+        host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
+    except Exception:
+        # A guest that never converged is diagnosable only from inside it: dump its console
+        # ([[guest-console-is-the-window]]) and the guest unit's own stderr before failing.
+        print("=== guest console (tail) ===")
+        print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -200 || true"))
+        print(host.succeed("journalctl -u briard-guest.service --no-pager | tail -40 || true"))
+        print(host.succeed("pgrep -af qemu-system-x86_64 || true; ls -la /run/briard/ /run/briard/qmp/ || true"))
+        raise
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
 
     # === What to look at before the rescue. ===
@@ -151,6 +163,10 @@ pkgs.testers.runNixOSTest {
     # Counted through the same `tr` the dump uses: collapsing carriage returns CHANGES the line
     # count, so a mark taken any other way indexes into a different file.
     console_mark = int(host.succeed("tr '\\r' '\\n' < /tmp/guest-console.log | wc -l").strip())
+    # The state disk's ext4 UUID (superblock at 1024, s_uuid at +0x68), before the rescue
+    # ([B.86g]): read from the host side, with no guest cooperation.
+    state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
+    assert state_uuid and state_uuid != "0" * 32, "the state disk carries no filesystem before the rescue -- the guest never formatted it"
 
     host.succeed("${agent}/bin/briard-agent rescue -yes -sock /run/briard/admin.sock")
     host.wait_until_succeeds(
@@ -264,5 +280,16 @@ pkgs.testers.runNixOSTest {
     assert "nixos.qcow2" in again, f"the rebuilt disk is not an overlay on the image:\n{again}"
 
     print("the guest was rebuilt from its backing image, kept its data disk, and re-converged")
+
+    # (5) THE STATE DISK SURVIVED ([B.86g]), and the guest is the same machine. The disk carried a
+    # filesystem before the rescue (the guest formatted it on its first boot), and its ext4 UUID,
+    # read from the host side, is the same after: the rescue's fresh OS found the disk and kept
+    # it. [[verification-assertions-must-fail]]: a reformat changes the UUID. (The mkfs itself
+    # never reaches the console -- systemd-makefs is silent there -- so a count of it is no proof.)
+    assert state_uuid == host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), \
+        "the state disk's filesystem UUID changed across the rescue -- it was reformatted"
+    NODE, STATE_IMG = "guest", "/tmp/state.img"
+
+    print("the state disk survived the rescue untouched, and the guest kept its machine identity")
   '';
 }

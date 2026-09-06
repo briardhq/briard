@@ -116,6 +116,7 @@ func ConfigFromEnv() Config {
 		Cores:       atoi(os.Getenv("CORES"), 2),
 		GuestDisk:   os.Getenv("GUEST_DISK"),
 		DataDisk:    os.Getenv("DATA_DISK"),
+		StateDisk:   os.Getenv("STATE_DISK"),
 		ControlSock: env("CONTROL_SOCK", "/run/briard-ctl.sock"),
 		// QEMU's own control channel -- the VM, not the guest OS inside it. Without
 		// it the host's only way to stop a guest is killing qemu, i.e. a power cut to the

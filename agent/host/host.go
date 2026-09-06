@@ -11,6 +11,7 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -125,6 +126,7 @@ type Config struct {
 	Cores       int
 	GuestDisk   string
 	DataDisk    string
+	StateDisk   string // the node-local state disk ([B.86g]); "" -> none
 	ControlSock string
 	// QMPSock is the host end of QEMU's monitor -- the channel to the VM itself, as opposed
 	// to ControlSock, which reaches the guest OS inside it. It is what makes a
@@ -693,6 +695,8 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 		Cores:         cfg.Cores,
 		DiskImage:     cfg.GuestDisk,
 		DataDisk:      cfg.DataDisk,
+		StateDisk:     cfg.StateDisk,
+		MachineUUID:   deriveUUID(cfg.Node),
 		ControlSock:   cfg.ControlSock,
 		AdminPortSock: cfg.AdminPortSock,
 		QMPSock:       cfg.QMPSock,
@@ -1693,4 +1697,18 @@ func (cfg Config) privDev() string {
 		return ""
 	}
 	return cfg.WitnessDev
+}
+
+// deriveUUID is the guest's DMI product UUID, a pure function of the node name ([B.86g]). systemd
+// initialises /etc/machine-id from the VM's product UUID when the OS disk carries none, so a
+// guest whose OS is disposable is still the SAME machine every boot -- one journal, one DHCP
+// identity -- without a byte of persisted state. Name-based (version 5 bits) so it is visibly
+// derived rather than random; keyed with a prefix so it can never collide with deriveMAC's
+// hash space even though nothing compares the two.
+func deriveUUID(node string) string {
+	h := sha256.Sum256([]byte("briard-machine-uuid:" + node))
+	b := h[:16]
+	b[6] = (b[6] & 0x0f) | 0x50 // version 5: name-based
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

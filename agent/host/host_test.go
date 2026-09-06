@@ -915,3 +915,21 @@ func TestRunTreatsACancellationDuringBringUpAsAShutdown(t *testing.T) {
 		t.Errorf("no 'shutting down during bring-up' line; the bring-up error was dropped silently.\ngot: %v", logged)
 	}
 }
+
+// The guest's machine UUID is a pure function of the node name ([B.86g]): stable across boots
+// with no persisted state, distinct per node, and a well-formed version-5 UUID.
+func TestDeriveUUID(t *testing.T) {
+	a, b := deriveUUID("briard-node-a1b2c3"), deriveUUID("briard-node-d4e5f6")
+	if a == b {
+		t.Fatal("two nodes derived the same machine UUID")
+	}
+	if a != deriveUUID("briard-node-a1b2c3") {
+		t.Fatal("the derivation is not stable")
+	}
+	if len(a) != 36 || a[8] != '-' || a[13] != '-' || a[14] != '5' || a[18] != '-' || a[23] != '-' {
+		t.Errorf("not a version-5 UUID: %s", a)
+	}
+	if v := a[19]; v != '8' && v != '9' && v != 'a' && v != 'b' {
+		t.Errorf("wrong variant nibble in %s", a)
+	}
+}

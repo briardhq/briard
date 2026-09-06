@@ -65,7 +65,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
-        "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
+        "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest --setenv=GUEST_SERIAL=/tmp/guest-console.log "
         # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
         # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV/SYSTEM_CIDR are
         # set, as they now are on a shipped single node too: eth1 carries this node's NODE IP, the
@@ -92,7 +92,14 @@ pkgs.testers.runNixOSTest {
 
     # The whole point: L1 reaches Briard's front door at the agent-claimed VIP. This boots the
     # SHIPPED disk, so what answers here is the node itself, not a workload baked in for the test.
-    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    try:
+        host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    except Exception:
+        # A front door that never answers is diagnosable only from inside the guest
+        # ([[guest-console-is-the-window]]): dump its console before failing.
+        print("=== guest console (tail) ===")
+        print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -250 || true"))
+        raise
     # ...and it reaches it THE WAY A REAL HOST DOES: over the private link, on a route the agent
     # put there. Asserted rather than inferred from the curl, because the curl passing is what a
     # rig-built shim used to buy too -- this is the line that tells the two apart ([V3b.19a]).

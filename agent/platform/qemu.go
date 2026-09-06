@@ -34,11 +34,21 @@ type QEMUSpec struct {
 	// query-cpu-model-expansion), but `host` HARD-FAILS without KVM ("CPU model 'host' requires
 	// KVM") and Accel is a fallback LIST -- kvm:tcg. A bare `host` would turn every no-virt host
 	// from slow-but-booting into not-booting, which is exactly the case the tcg fallback exists for.
-	CPUModel    string
-	MemoryMB    int
-	Cores       int
-	DiskImage   string // guest OS disk; empty in kernel/initrd boots
-	DataDisk    string // backing block device for the DRBD volume -> guest /dev/vdb
+	CPUModel  string
+	MemoryMB  int
+	Cores     int
+	DiskImage string // guest OS disk; empty in kernel/initrd boots
+	DataDisk  string // backing block device for the DRBD volume -> guest /dev/vdb
+	// StateDisk is the node-local STATE disk ([B.86g]): the one place the guest keeps what the
+	// host cannot push and a restart must not cost -- podman's storage, the journal, the deadman's
+	// backoff. Attached with a fixed serial so the guest finds it by id whatever the bus order.
+	// Empty = none (rigs that predate it; the guest's mounts are nofail).
+	StateDisk string
+	// MachineUUID is the VM's DMI product UUID, from which systemd derives the guest's
+	// machine-id when the OS disk carries none ([B.86g]: a disposable OS must still be the same
+	// machine each boot -- journal continuity, DHCP identity). Derived from the node name, so it
+	// needs no disk. Empty = qemu's random one.
+	MachineUUID string
 	ControlSock string // host end of the virtio-serial control channel
 	// AdminPortSock is the host end of the guest's admin port ([V3b.31i]): the second serial
 	// port, direction reversed -- the guest's dashboard writes a directive, the host answers.
@@ -94,8 +104,15 @@ const (
 	// apart (here and guest-image/disk-image.nix's extraConfig), so it is spelled out once
 	// here and quoted there.
 	BootSelectStaging = "briard_boot=staging"
+	// StateDriveID / StateDiskSerial name the state disk ([B.86g]): the drive id on the command
+	// line, and the serial the guest sees it by (/dev/disk/by-id/virtio-briard-state).
+	StateDriveID    = "briard-state"
+	StateDiskSerial = "briard-state"
 	// RootDriveID names the guest OS disk on the QEMU command line so QMP can address it.
 	RootDriveID = "briard-root"
+	// DataDriveID names the DRBD backing disk; nothing addresses it today, but every disk is an
+	// explicit device (see qemuArgs) and an explicit device wants a named drive.
+	DataDriveID = "briard-data"
 )
 
 // Net substrate modes for QEMUSpec.NetMode.
@@ -207,13 +224,31 @@ func qemuArgs(s QEMUSpec) []string {
 		// self-describing in a process list and under dmidecode.
 		args = append(args, "-smbios", "type=11,value="+BootSelectStaging)
 	}
+	// THE DISKS, EVERY ONE AS AN EXPLICIT DEVICE, IN THIS ORDER. `-drive if=virtio` shorthand and
+	// `-device virtio-blk-pci` do not mix: qemu realises the explicit devices FIRST and the
+	// shorthand drives last, so the first time a disk was added by -device (the state disk, which
+	// needs one because a serial is a device property) it took PCI slot 4 while the root disk
+	// landed at slot 6 -- SeaBIOS booted the blank state disk, grub's embedded prefix pointed at
+	// it, and the guest sat at a rescue prompt on a VGA nobody captures, with an empty serial
+	// console and a host that could only say "no handshake" (B.86g's first rig run). Explicit
+	// devices in command-line order keep the slots ascending root < data < state -- so the guest
+	// sees vda/vdb/vdc as it always has -- and bootindex=0 on the root says which one boots
+	// whatever else is ever attached. The drive ids are what QMP addresses (the snapshot work on
+	// RootDriveID); a serial is what the guest finds a disk by (/dev/disk/by-id/virtio-<serial>).
 	if s.DiskImage != "" {
-		// Id= is what a QMP command addresses the drive by (the snapshot work); the
-		// name is fixed rather than derived so both sides can hard-code it.
-		args = append(args, "-drive", "file="+s.DiskImage+",if=virtio,media=disk,id="+RootDriveID)
+		args = append(args, "-drive", "file="+s.DiskImage+",if=none,id="+RootDriveID,
+			"-device", "virtio-blk-pci,drive="+RootDriveID+",bootindex=0")
 	}
 	if s.DataDisk != "" {
-		args = append(args, "-drive", "file="+s.DataDisk+",if=virtio,format=raw")
+		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,id="+DataDriveID,
+			"-device", "virtio-blk-pci,drive="+DataDriveID)
+	}
+	if s.StateDisk != "" {
+		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,id="+StateDriveID,
+			"-device", "virtio-blk-pci,drive="+StateDriveID+",serial="+StateDiskSerial)
+	}
+	if s.MachineUUID != "" {
+		args = append(args, "-uuid", s.MachineUUID)
 	}
 	// Eth0 is a throwaway user-net so the tapped NICs enumerate predictably (the
 	// guest uses net.ifnames=0, so ethN follows -device order). The system/DRBD NIC

@@ -233,7 +233,7 @@ func TestQEMUArgsQMPSocket(t *testing.T) {
 // QMP addresses block devices by id, so the root drive must carry one.
 func TestQEMUArgsRootDriveID(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/var/lib/briard/guest.qcow2"}), " ")
-	if !strings.Contains(got, "file=/var/lib/briard/guest.qcow2,if=virtio,media=disk,id="+RootDriveID) {
+	if !strings.Contains(got, "file=/var/lib/briard/guest.qcow2,if=none,id="+RootDriveID) || !strings.Contains(got, "virtio-blk-pci,drive="+RootDriveID+",bootindex=0") {
 		t.Errorf("root drive missing id=%s:\n%s", RootDriveID, got)
 	}
 }
@@ -462,4 +462,44 @@ func borrowedInvocation(t *testing.T) (unit, id string) {
 	}
 	t.Skip("no running service with an InvocationID to borrow")
 	return "", ""
+}
+
+// The state disk ([B.86g]) is attached by SERIAL -- the guest mounts /dev/disk/by-id/virtio-
+// briard-state, never a bus position -- and the machine UUID rides -uuid; neither appears when
+// unset, so rigs that predate them launch exactly as before.
+func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
+	base := QEMUSpec{Accel: "tcg", ControlSock: "/s"}
+	without := strings.Join(qemuArgs(base), " ")
+	for _, absent := range []string{"briard-state", "-uuid"} {
+		if strings.Contains(without, absent) {
+			t.Errorf("%q rendered with no state disk / uuid: %s", absent, without)
+		}
+	}
+	base.StateDisk, base.MachineUUID = "/var/lib/briard/state.img", "0f7c1a2b-3c4d-5e6f-8a9b-0c1d2e3f4a5b"
+	with := strings.Join(qemuArgs(base), " ")
+	for _, want := range []string{
+		"-drive file=/var/lib/briard/state.img,if=none,format=raw,id=briard-state",
+		"-device virtio-blk-pci,drive=briard-state,serial=briard-state",
+		"-uuid 0f7c1a2b-3c4d-5e6f-8a9b-0c1d2e3f4a5b",
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("missing %q in %s", want, with)
+		}
+	}
+}
+
+// Disks are explicit devices in ascending order -- root, data, state -- with the root marked
+// bootable: mixing `-drive if=virtio` with `-device` put the state disk on a lower PCI slot than
+// the root and SeaBIOS booted the blank disk (B.86g). The guest's vda/vdb/vdc depend on this order.
+func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
+	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/r.qcow2", DataDisk: "/d.img", StateDisk: "/s.img"}), " ")
+	root := strings.Index(got, "virtio-blk-pci,drive=briard-root,bootindex=0")
+	data := strings.Index(got, "virtio-blk-pci,drive=briard-data")
+	state := strings.Index(got, "virtio-blk-pci,drive=briard-state,serial=briard-state")
+	if root < 0 || data < 0 || state < 0 || !(root < data && data < state) {
+		t.Fatalf("disk devices missing or out of order (root %d, data %d, state %d):\n%s", root, data, state, got)
+	}
+	if strings.Contains(got, "if=virtio") {
+		t.Errorf("a shorthand if=virtio drive survived; it would enumerate after every explicit device:\n%s", got)
+	}
 }

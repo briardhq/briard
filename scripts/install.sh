@@ -794,6 +794,17 @@ fi
 FLOCK_NAME="$(cat "$FLOCK_NAME_FILE")"
 [ -n "$FLOCK_NAME" ] || die "the flock name at $FLOCK_NAME_FILE is empty; remove it to regenerate"
 
+# THE STATE DISK ([B.86g]): node-local, beside the data disk and like it PET -- it holds the
+# guest's podman storage (the service images, content-addressed and worth every byte not
+# re-pulled), its journal and the deadman's backoff state; a reinstall or a rescue must not cost
+# those. Sparse, so the 8 GiB is a ceiling and not a charge against the report card's floor;
+# the guest formats it on first boot when it finds no filesystem, so no mkfs is needed here.
+STATE_DISK="$STATE/state.img"
+if [ ! -e "$STATE_DISK" ]; then
+	truncate -s 8G "$STATE_DISK" || die "could not create the state disk at $STATE_DISK"
+	chmod 0600 "$STATE_DISK"
+	say "created the guest's state disk at $STATE_DISK (formatted by the guest on first boot)"
+fi
 OVERLAY="$PREFIX/guest.qcow2"   # cattle: recreated each install, dropped by `rm -rf /opt/briard`
 say "creating the VM disk at $OVERLAY"
 rm -f "$OVERLAY"
@@ -981,6 +992,7 @@ Environment=ACCEL=kvm:tcg
 Environment=CPU=$CPU_MODEL
 Environment=GUEST_DISK=$OVERLAY
 Environment=DATA_DISK=$DATA
+Environment=STATE_DISK=$STATE_DISK
 Environment=CONTROL_SOCK=$RUNDIR/ctl.sock
 Environment=NODE=$NODE_NAME
 # Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (this node's node IP, and the DRBD NIC --

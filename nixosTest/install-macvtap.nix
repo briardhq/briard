@@ -1,4 +1,3 @@
-# The free-local `curl | sh` install on the MACVTAP substrate -- the DEFAULT substrate as of
 # the test that owns the WHOLE install chain end to end:
 #   report-card gate -> BUNDLED qemu (no distro qemu on the host) boots the guest -> single-node
 #   DRBD data volume -> service served at the VIP -> an OFF-BOX LAN client reaches it.
@@ -129,7 +128,7 @@ pkgs.testers.runNixOSTest {
         boot.kernel.sysctl."net.ipv6.conf.default.disable_ipv6" = 1;
         # tar + zstd: the [B.86b] section below re-publishes the qemu bundle with one file added,
         # the way the release script builds it, and the shipped update verb unpacks it with tar(1).
-        environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi pkgs.gnutar pkgs.zstd ];
+        environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.avahi pkgs.gnutar pkgs.zstd pkgs.e2fsprogs ];
         # An mDNS resolver ON THE INSTALL HOST, which is what a desktop install actually is
         # ([V3b.19] was measured on one). It is here to make a dependency VISIBLE rather than to
         # flatter the result: resolving the guest's name from this machine needs the household's
@@ -785,6 +784,11 @@ pkgs.testers.runNixOSTest {
     host.succeed("rm -rf /opt/briard")
     host.fail("test -e /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle really gone
     host.succeed("test -f /var/lib/briard/data.img")               # pet survives the wipe
+    host.succeed("test -f /var/lib/briard/state.img")              # so does the state disk ([B.86g])
+    # ...carrying the filesystem the first guest made (ext4 magic at 1080), whose UUID the
+    # reinstall's guest must find and keep rather than format again.
+    assert host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip() == "53ef", "the state disk carries no ext4 filesystem after the first install"
+    state_uuid = host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
     # The live macvtaps (kernel state) survive the cattle wipe just as the bridge did on the old
     # path -- net-up.sh is gone, but `ip link` state is not owned by /opt. And the host's own
     # address never moved in the first place, so there is nothing to restore.
@@ -807,6 +811,28 @@ pkgs.testers.runNixOSTest {
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched
+    # THE STATE DISK ([B.86g]) on the shipped install: created sparse by install.sh, handed to
+    # the agent by serial, formatted by the guest exactly once (the first boot of the FIRST
+    # install -- the reinstall's guest found it and kept it), and the guest is the same machine
+    # on both boots because its machine-id comes from the VM UUID the host derives from the node.
+    host.succeed("systemctl cat briard-agent.service | grep -q '^Environment=STATE_DISK=/var/lib/briard/state.img'")
+    host.succeed("pgrep -af qemu-system-x86_64 | grep -q 'serial=briard-state'")
+    host.succeed("pgrep -af qemu-system-x86_64 | grep -q -- '-uuid '")
+    assert state_uuid == host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), "the reinstall's guest reformatted the state disk"
+    NODE, STATE_IMG = host.succeed("cat /var/lib/briard/node-id").strip(), "/var/lib/briard/state.img"
+    # The guest's machine-id, read off the state disk (journald keeps the journal under
+    # /var/log/journal/<machine-id>/, which is /journal/<machine-id>/ on the disk): it must be
+    # the UUID the host derives from the node name (host.deriveUUID, mirrored here), which is
+    # what systemd.machine_id=firmware asks systemd to take from the VM's DMI product UUID.
+    # PID 1's "Initializing machine ID" line is kmsg-only and never reaches the console, so the
+    # value is the proof, not the log line.
+    import hashlib
+    _h = bytearray(hashlib.sha256(("briard-machine-uuid:" + NODE).encode()).digest()[:16])
+    _h[6] = (_h[6] & 0x0F) | 0x50
+    _h[8] = (_h[8] & 0x3F) | 0x80
+    want_id = _h.hex()
+    journals = host.succeed(f"debugfs -R 'ls -p /journal' {STATE_IMG} 2>/dev/null | cut -d/ -f6 | grep -E '^[0-9a-f]{{32}}$' || true").split()
+    assert journals == [want_id], f"the guest's journal on the state disk is under {journals}; want the machine-id derived from the node name, {want_id}"
     # [B.106] the repair landed on the device that was already up, not just on freshly created ones.
     host.succeed("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
     assert host.succeed("ip -6 addr show dev briard0").strip() == "", (

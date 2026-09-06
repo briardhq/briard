@@ -110,8 +110,80 @@ let
         device = "/dev/disk/by-label/nixos";
         fsType = "ext4";
       };
+      # THE STATE DISK ([B.86g]). The OS disk is disposable -- the host discards it at will, a
+      # rescue rebuilds it, [B.86h] swaps it for a new image -- so the guest keeps what a restart
+      # must not cost on a separate node-local disk the host attaches by serial. The list is
+      # CLOSED and short, and adding to it is a design decision: podman's storage (the service
+      # images, content-addressed and digest-pinned by the quadlets -- re-pulling gigabytes after
+      # every restart would be pointless), the journal (the guest's own forensics; the host's
+      # console capture covers the boot, not the day) and the deadman's backoff (which exists
+      # precisely to survive the reboots the deadman itself causes). Everything else the guest
+      # holds is re-derived from the host or the volume at bring-up.
+      #
+      # Formatted by the guest on first boot when it finds no filesystem, so the host needs no
+      # mkfs. `nofail`: a rig that predates the disk boots exactly as before, with the three
+      # paths on the OS disk; a production node always has it (install.sh creates it). The
+      # three paths are BIND-MOUNTED by one unit rather than listed in fstab, because a bind in
+      # fstab whose source is absent is a failed mount unit on every disk-less rig, while a
+      # unit conditioned on the disk being mounted is simply skipped. (A rig that bakes service
+      # images into /var/lib/containers AND attaches a state disk would hide them under the
+      # bind; none does, and the shipped image bakes nothing.)
+      fileSystems."/var/lib/briard-state" = {
+        device = "/dev/disk/by-id/virtio-briard-state";
+        fsType = "ext4";
+        autoFormat = true;
+        # 5s: on a node without the disk (a rig that predates it) this is what local-fs.target
+        # waits before the mount gives up and the layout unit below is skipped.
+        options = [ "nofail" "x-systemd.device-timeout=5s" ];
+      };
+      systemd.services.briard-state-layout = {
+        description = "Briard: put the guest's persistent paths on its state disk";
+        wantedBy = [ "local-fs.target" ];
+        after = [ "var-lib-briard\\x2dstate.mount" ];
+        requires = [ "var-lib-briard\\x2dstate.mount" ];
+        # Before the journal is flushed to /var/log/journal and before anything that uses
+        # podman or the deadman's state can start.
+        before = [ "local-fs.target" "systemd-journal-flush.service" "shutdown.target" ];
+        conflicts = [ "shutdown.target" ];
+        unitConfig = {
+          ConditionPathIsMountPoint = "/var/lib/briard-state";
+          # An EARLY-BOOT unit, and this line is load-bearing: a service with default
+          # dependencies is After=sysinit.target, sysinit is After=local-fs.target, and this
+          # unit is Before=local-fs.target -- an ordering cycle, which systemd breaks by deleting
+          # a job. Measured on the first rig run: the deleted job was systemd-tmpfiles-setup,
+          # avahi's runtime directory was never created, the mDNS chain member failed, the
+          # promotion failed, and the front door never answered. Nothing pointed at this unit.
+          DefaultDependencies = false;
+        };
+        path = [ pkgs.coreutils pkgs.util-linux ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -eu
+          for p in containers journal deadman; do
+            mkdir -p "/var/lib/briard-state/$p"
+          done
+          mkdir -p /var/lib/containers /var/log/journal /var/lib/briard-deadman
+          mount --bind /var/lib/briard-state/containers /var/lib/containers
+          mount --bind /var/lib/briard-state/journal /var/log/journal
+          mount --bind /var/lib/briard-state/deadman /var/lib/briard-deadman
+        '';
+      };
+      # The release this image IS ([B.86g]): the guest chain's id, derived from the agent version
+      # it was built with (`v3.<date>.<rev>` -> `guest.<date>.<rev>`, the way publish-release.sh
+      # names the chain). What the guest reports in the handshake once [B.86h] retires the
+      # closure path; a file rather than a flag so a human on the console can read it too.
+      environment.etc."briard-release".text =
+        "guest." + lib.concatStringsSep "." (lib.drop 1 (lib.splitString "." agentVersion)) + "\n";
       boot.kernelParams = [
         "console=ttyS0" # serial console for debugging
+        # The machine-id comes from the VM's DMI product UUID, which the host derives from the
+        # node name ([B.86g]): systemd no longer does that on its own (it fell back to a random
+        # id on the first rig run), so it is asked to. With no -uuid (a rig that predates it)
+        # qemu's all-zero UUID is rejected and systemd falls back to random, as before.
+        "systemd.machine_id=firmware"
         "net.ifnames=0" # predictable eth0/eth1 (the tapped service NIC -> eth1, the VIP)
       ];
       # Forward the journal to ttyS0 so the captured serial log shows systemd +
