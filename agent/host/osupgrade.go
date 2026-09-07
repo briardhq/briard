@@ -265,6 +265,11 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	if cl.Primary && cl.PeerCanTakeOver() {
 		return true, fmt.Errorf("%w (peers: %s)", ErrHandoverRequired, describePeers(cl))
 	}
+	// A serving node past that refusal is the LONE holder of the house: nobody could take the
+	// work, so after the reboot nobody else can be serving it. That node's gate therefore has
+	// to see it SERVING again -- Primary with its front door answering -- where a standby's
+	// gate is satisfied by the job it has (guest.OSReadyServing says what this closes).
+	mustServe := cl.Primary
 	backing := u.cfg.GuestImage
 	if backing == "" {
 		return true, errors.New("image-upgrade: no GUEST_IMAGE configured; this node's launch does not name the image its overlay is built on")
@@ -325,9 +330,16 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 		return u.restoreImage(ctx, qspec, backing, prev,
 			fmt.Errorf("booted %s, not %s's system %s", booted, rel.Version, rel.System))
 	}
-	u.logf("image-upgrade: booted %s, health-gating", rel.Version)
-	if e := mgr.AwaitOSReady(ctx); e != nil {
-		return u.restoreImage(ctx, qspec, backing, prev, e)
+	if mustServe {
+		u.logf("image-upgrade: booted %s, health-gating (it held the house alone, so it must serve again)", rel.Version)
+		if e := mgr.AwaitOSReadyServing(ctx); e != nil {
+			return u.restoreImage(ctx, qspec, backing, prev, e)
+		}
+	} else {
+		u.logf("image-upgrade: booted %s, health-gating", rel.Version)
+		if e := mgr.AwaitOSReady(ctx); e != nil {
+			return u.restoreImage(ctx, qspec, backing, prev, e)
+		}
 	}
 	if e := mgr.Assess(ctx, rd); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, e)

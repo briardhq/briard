@@ -592,3 +592,50 @@ func TestOSReadyUnreadableClusterIsNotReady(t *testing.T) {
 		t.Errorf("OSReady = (%v, %v), want not-ready with an error", ok, err)
 	}
 }
+
+// The lone holder of the house must come back SERVING, not merely unobliged. This is the row
+// OSReady passes vacuously and OSReadyServing must not: a node whose front door failed after
+// the boot and which its own failure handling has already demoted (measured 2026-09-07, lab
+// os-rollback: start-limit-hit -> OnFailure -> promotion hold -> Secondary, in 14 s, before the
+// gate looked). Nobody else could be serving, so a Secondary here is a dark house.
+func TestOSReadyServingRefusesADemotedHolder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cluster model.Cluster
+		doorOK  bool
+		plain   bool // OSReady's verdict, for contrast
+		serving bool // OSReadyServing's verdict
+	}{
+		{"primary serving", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, true, true, true},
+		{"primary with a dead front door", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false, false},
+		// The measured case: demoted by its own OnFailure, front door dead. OSReady passes it
+		// (a standby has no present obligation); the holder's gate must not.
+		{"demoted holder, front door dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true, false},
+		// Not yet promoted after the boot: not a pass either -- the gate polls until it is.
+		{"quorate, not yet primary, front door up", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, true, true, false},
+		{"primary but not UpToDate", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true}}, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.doorOK {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			defer srv.Close()
+			m := NewManager(&fakeControl{cluster: tc.cluster}, Config{Resource: "r0", HealthURL: srv.URL})
+			if got, err := m.OSReady(context.Background()); err != nil || got != tc.plain {
+				t.Errorf("OSReady = (%v, %v), want %v", got, err, tc.plain)
+			}
+			if got, err := m.OSReadyServing(context.Background()); err != nil || got != tc.serving {
+				t.Errorf("OSReadyServing = (%v, %v), want %v", got, err, tc.serving)
+			}
+		})
+	}
+	// An unreadable cluster is not a pass here either.
+	m := NewManager(&fakeControl{clusterErr: errors.New("drbdsetup: boom")}, Config{Resource: "r0", HealthURL: "http://unused.invalid/healthz"})
+	if ok, err := m.OSReadyServing(context.Background()); err == nil || ok {
+		t.Errorf("OSReadyServing = (%v, %v), want not-ready with an error", ok, err)
+	}
+}

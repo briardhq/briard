@@ -416,6 +416,18 @@ func (m *Manager) AwaitOSReady(ctx context.Context) error {
 	})
 }
 
+// AwaitOSReadyServing is AwaitOSReady for a node that HELD THE HOUSE when it went down and had
+// nobody to hand it to. The fact that let its reboot through -- no takeover-capable peer -- is
+// the same fact that makes "not Primary" a failure here rather than a vacuous pass: nobody else
+// can be serving, so a node that does not come back serving has left the house dark. See
+// OSReadyServing for the case that found this.
+func (m *Manager) AwaitOSReadyServing(ctx context.Context) error {
+	return m.await(ctx, func(c context.Context) bool {
+		ok, err := m.OSReadyServing(c)
+		return err == nil && ok
+	})
+}
+
 // Await is the shared poll loop. Both gates use it so the detachment above is stated and
 // enforced once; the only thing that varies is the question being asked.
 func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) error {
@@ -498,6 +510,31 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 // Readiness carries the pre-upgrade baseline from capture (before quiesce) to the
 // post-floor assessment. The zero value (no assessor, or a baseline that couldn't be
 // captured) makes assess a no-op — the floor + rollback window stand alone.
+// OSReadyServing is OSReady with the vacuous half closed: the node must be PRIMARY and its front
+// door must answer. For the lone holder of the house -- the only serving node an OS upgrade is
+// allowed to reboot ([B.54]: with a takeover-capable peer it refuses) -- "if I am serving, I am
+// serving" is not enough, because the node's own failure handling can make it stop serving
+// before the gate looks. Measured 2026-09-07 (lab os-rollback, a front door that fails
+// outright): the release booted, promoted, the front door hit its start limit at 14 s, OnFailure
+// demoted the node under a promotion hold -- and the gate, polling at that moment, saw a
+// Secondary with nothing to fail and COMMITTED a release that left the house dark. Nobody else
+// could have been serving, which is exactly why the reboot was allowed; so here not-Primary is
+// the failure, not a pass. The vacuous rows of OSReady stay right for every node that did NOT
+// hold the house: a standby is still certified only by the job it has.
+func (m *Manager) OSReadyServing(ctx context.Context) (bool, error) {
+	if m.cfg.Resource == "" {
+		return m.probeReady(ctx), nil
+	}
+	cl, err := m.ctl.Cluster(ctx, m.cfg.Resource)
+	if err != nil {
+		return false, err
+	}
+	if !cl.Primary || (cl.Diskful && cl.Quorate && !cl.UpToDate) {
+		return false, nil
+	}
+	return m.probeReady(ctx), nil
+}
+
 type Readiness struct {
 	base Baseline
 	on   bool
