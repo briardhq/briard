@@ -348,6 +348,18 @@ ln -sfnT "$(basename "$QEMU_TREE")" "$PREFIX/agent/qemu"
 # An install that predates the link laid a real directory here; a link cannot replace one.
 if [ -d "$PREFIX/qemu" ] && [ ! -L "$PREFIX/qemu" ]; then rm -rf "$PREFIX/qemu"; fi
 ln -sfnT agent/qemu "$PREFIX/qemu"
+# THE GUEST BUNDLE ([B.86j]): the briard binaries the guest runs, shipped in the host chain and
+# pushed into the guest by the agent at every bring-up. Same tree-and-link shape as qemu, same
+# commit (briard-commit moves guest.next with -T). Existence-guarded: the local staging path and
+# a channel that predates the bundle carry none, and the guest then runs the image's firmware.
+if [ -f "$HOSTSRC/guest-bundle.tar" ]; then
+	GUEST_TREE="$PREFIX/agent/guest-${QEMU_REL:-install}"
+	rm -rf "$GUEST_TREE"
+	mkdir -p "$GUEST_TREE"
+	tar -xf "$HOSTSRC/guest-bundle.tar" -C "$GUEST_TREE" && rm -f "$HOSTSRC/guest-bundle.tar"
+	chmod -R u+w "$GUEST_TREE"
+	ln -sfnT "$(basename "$GUEST_TREE")" "$PREFIX/agent/guest"
+fi
 cp -f "$GUESTSRC/nixos.qcow2" "$PREFIX/guest-image/nixos.qcow2"
 # THE INSTALLED MANIFESTS, one per chain, each beside what it describes: the exact signed bytes
 # that verified, so the node can say which release it is on -- and so the update path ([B.86b])
@@ -962,6 +974,10 @@ if [ -e $RUNDIR/trial ]; then
 	fi
 	if [ -L $UPDATE_BASE/qemu.next ]; then
 		mv -T $UPDATE_BASE/qemu.next $UPDATE_BASE/qemu
+	fi
+	# The guest bundle ([B.86j]): the same link-to-a-tree shape as qemu, the same -T.
+	if [ -L $UPDATE_BASE/guest.next ]; then
+		mv -T $UPDATE_BASE/guest.next $UPDATE_BASE/guest
 	fi
 	rm -f $RUNDIR/trial
 fi

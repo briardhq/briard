@@ -834,6 +834,12 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		} else if len(removed) > 0 {
 			logf("pruned old qemu trees %v", removed)
 		}
+		// ...and the guest bundle trees, the same way ([B.86j]).
+		if removed, err := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir).PruneGuestTrees(); err != nil {
+			logf("pruning old guest bundle trees: %v", err)
+		} else if len(removed) > 0 {
+			logf("pruned old guest bundle trees %v", removed)
+		}
 	}
 
 	spec := guestagent.BringUpSpec{
@@ -879,6 +885,13 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		} else {
 			logf("guest protocol v%d, %d capabilities", hello.Version, len(hello.Capabilities))
 		}
+	}
+	// DRESS THE GUEST ([B.86j]) before any real verb, on both paths: a fresh boot starts as
+	// firmware (the overlay is disposable), and an adopt after a host commit is where the new
+	// bundle meets a guest still running the old one. A push restarts the guest agent, so the
+	// channel is re-established here and the rest of bring-up talks to the dressed guest.
+	if err == nil {
+		client, err = cfg.dressAndRejoin(bringup, client, logf)
 	}
 	// Say what the VM actually got, now that qemu is provably up. See logAcceleration.
 	logAcceleration(bringup, g, qspec, logf)
@@ -1104,9 +1117,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			}
 			cancel()
 		}
-		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s%s",
+		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s bundle=%s%s",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
-			orDash(probe), orDash(serviceLog(st.Services)), resourceLog(res))
+			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res))
 		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		if rep != nil {
 			cfg.beat.Beat()
@@ -1460,6 +1473,19 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // not in any config file either, so the log is the only place a human can find it.
 func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (api.NodeStatus, model.Cluster, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, System: system, AgentVersion: cfg.Version}
+	// The guest bundle the guest reported in its handshake ([B.86j]), named by the RELEASE whose
+	// bundle it is. The tree a guest was dressed from keeps the id of the release that first
+	// fetched it -- an unchanged bundle is hash-skipped by later host updates, never re-pushed --
+	// so a guest on the committed tree runs THIS release's bundle and is reported as such; a
+	// guest on anything else (a trial that reverted, a firmware that could not be dressed) is
+	// reported as what it runs, and the cloud's convergence check reads the difference. A reader
+	// that predates the field (a test fake) reports nothing, like a firmware guest.
+	if b, ok := r.(interface{ Bundle() string }); ok {
+		st.GuestBundle = b.Bundle()
+		if st.GuestBundle != "" && st.GuestBundle == cfg.guestBundleRelease() {
+			st.GuestBundle = cfg.Version
+		}
+	}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cl, err := r.Cluster(rctx, cfg.Resource.Name)

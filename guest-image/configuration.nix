@@ -766,7 +766,7 @@ in
   # that the SAME slimming applies to the shipped disk and to every nixosTest that boots this
   # module -- a guest the tests exercise fatter than the one strangers install would prove nothing
   # about the one strangers install.
-  imports = [ ./slim.nix ];
+  imports = [ ./slim.nix ./pivot.nix ];
 
   # The agent binary this guest runs. It is an option rather than a callPackage here because
   # disk-image.nix already builds a VERSIONED one for briard-guest-agent + briard-deadman, and a
@@ -1607,7 +1607,12 @@ in
         # reloads the file on mtime anyway, so an install that lands later needs nothing from
         # systemd -- this ordering only spares a freshly-promoted node from a few seconds of
         # serving its own page over services it already runs.
-        ExecStart = "${pkgs.reverse-proxy}/bin/reverse-proxy"
+        # THROUGH THE PIVOT ([B.86j], pivot.nix): the picker runs the binary the host pushed when
+        # there is one, else this baked firmware copy; READY means "listening" (reverse-proxy
+        # says it after both binds), and the commit runs only after that.
+        Type = "notify";
+        ExecStartPost = "${config.briard.pivot.commit} briard-reverse-proxy";
+        ExecStart = "${config.briard.pivot.exec} briard-reverse-proxy ${pkgs.reverse-proxy}/bin/reverse-proxy"
           + " -http :80 -listen :443"
           + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem"
           # Every name the table does not route -- the bare IP, the node's own name -- goes to the

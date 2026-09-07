@@ -256,6 +256,11 @@ stage)
 	# wants one file, so it is tarred here.
 	dtar "$H/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .
 	zst "$H/qemu-bundle.tar" "$H/qemu-bundle.tar.zst"
+	# THE GUEST BUNDLE ([B.86j]): the briard binaries the guest runs ride the host chain and are
+	# pushed into the guest by the agent; the image only bakes firmware copies. Same shape as the
+	# qemu bundle (a tarred directory), hash-skipped by the update path when unchanged.
+	dtar "$H/guest-bundle.tar" -C "$(out_of .#artifacts.guest-bundle)" .
+	zst "$H/guest-bundle.tar" "$H/guest-bundle.tar.zst"
 	# The manifest, written BY THE AGENT rather than by this script: the format is a contract
 	# between the publisher and every installing node, and it used to have two implementations
 	# (a printf loop here, hand-assembling `"mode":493`, and the struct in agent/install). The

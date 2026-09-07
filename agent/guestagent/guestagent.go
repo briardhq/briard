@@ -396,6 +396,7 @@ var guestCapabilities = []string{
 	verbResources,
 	verbBackupSave, verbBackupRestore,
 	verbFsSync,
+	verbBinStage, verbBinActivate,
 }
 
 const (
@@ -765,10 +766,13 @@ func dispatch(x Executor) dispatchFunc {
 			// a guest the host refuses to drive, and no host has ever needed this field to
 			// drive one -- so an unreadable boot_id is reported as absent, not as an error.
 			hello := api.GuestHello{Version: api.GuestProtocol, Capabilities: guestCapabilities}
+			hello.Bundle = runningBundle()
 			if b, err := x.ReadFile(bootIDPath); err == nil {
 				hello.BootID = strings.TrimSpace(string(b))
 			}
 			return hello, nil
+		case verbBinStage, verbBinActivate:
+			return handleBin(ctx, x, verb, payload)
 		case verbSetHostname:
 			var req hostnameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2269,6 +2273,7 @@ type Client struct {
 	version int             // negotiated guest protocol version (0 until Handshake)
 	caps    map[string]bool // verbs the guest advertised (nil until Handshake)
 	bootID  string          // which BOOT of the guest answered (empty until Handshake, or from a guest too old to say)
+	bundle  string          // the guest bundle the guest runs ("" = the image's firmware), from the handshake ([B.86j])
 }
 
 // NewClient wraps a connection to the guest (virtio-serial in prod, net.Pipe in tests).
@@ -2293,6 +2298,7 @@ func (g *Client) Handshake(ctx context.Context) (api.GuestHello, error) {
 	}
 	g.version = h.Version
 	g.bootID = h.BootID
+	g.bundle = h.Bundle
 	g.caps = make(map[string]bool, len(h.Capabilities))
 	for _, c := range h.Capabilities {
 		g.caps[c] = true

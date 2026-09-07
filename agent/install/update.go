@@ -42,6 +42,7 @@ const (
 	artifactAgent   = "briard-agent"
 	artifactNetWrap = "briard-net-wrap"
 	artifactQEMU    = "qemu-bundle.tar.zst"
+	artifactGuest   = "guest-bundle.tar.zst" // the binaries the host dresses its guest with ([B.86j])
 )
 
 // ErrBelowFloor is returned for an exact pin older than the current stable (or one whose floor
@@ -188,6 +189,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	defer os.RemoveAll(tmp)
 	from := path.Join(u.Fetcher.Chain, want.Version, u.Fetcher.Platform)
 	var agent, netWrap *Entry
+	guestTree := ""
 	qemuTree := ""
 	for i := range want.Artifacts {
 		a := &want.Artifacts[i]
@@ -234,6 +236,29 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 				}
 			}
 			qemuTree = tree
+		case artifactGuest:
+			// The guest bundle rides exactly qemu's mechanics ([B.86j]): one extracted tree per
+			// release, a `.next` link the frozen commit moves, hash-skipped when unchanged.
+			if unchanged(have, *a) {
+				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
+				continue
+			}
+			tree := u.Layout.GuestTree(want.Version)
+			if committed, ok := u.Layout.CommittedGuestTree(); ok && committed == tree {
+				logf("update: guest tree %s is already the committed one", filepath.Base(tree))
+				continue
+			}
+			if _, err := os.Stat(tree); err == nil {
+				logf("update: reusing the extracted guest tree %s", filepath.Base(tree))
+			} else {
+				if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
+					return "", err
+				}
+				if err := extractTree(ctx, filepath.Join(tmp, strings.TrimSuffix(a.Name, compressedSuffix)), tree); err != nil {
+					return "", err
+				}
+			}
+			guestTree = tree
 		default:
 			logf("update: %s is not part of the host bundle this agent knows; left alone", a.Name)
 		}
@@ -263,6 +288,12 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 			return "", fmt.Errorf("install: stage qemu: %w", err)
 		}
 		staged = append(staged, "qemu")
+	}
+	if guestTree != "" {
+		if err := u.Layout.StageNextGuest(guestTree); err != nil {
+			return "", fmt.Errorf("install: stage guest bundle: %w", err)
+		}
+		staged = append(staged, "guest")
 	}
 	if err := u.Layout.StageNextManifest(wantBytes); err != nil {
 		return "", fmt.Errorf("install: stage manifest: %w", err)

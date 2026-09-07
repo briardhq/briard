@@ -34,7 +34,7 @@
 # Heavy (two nested guest boots + a multi-GB guest disk) -> rides the `install` nightly tag
 # alongside install-bridge, qemu-bundle + report-card. Run:
 #   nix build .#tests.install-macvtap -L
-{ pkgs, guestDisk, agent, qemuBundle, selfupdateStub }:
+{ pkgs, guestDisk, agent, qemuBundle, guestBundle, selfupdateStub }:
 let
   # THE RELEASE CHANNEL, BUILT THE WAY A RELEASE IS BUILT.
   #
@@ -66,6 +66,11 @@ let
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
         -cf qemu-bundle.tar -C ${qemuBundle} .
     zstd -19 -q --rm qemu-bundle.tar -o "$H/qemu-bundle.tar.zst"
+    # The guest bundle ([B.86j]): the guest's briard binaries, in the host chain, pushed into the
+    # guest at bring-up. Same shape as the qemu bundle.
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+        -cf guest-bundle.tar -C ${guestBundle} .
+    zstd -19 -q --rm guest-bundle.tar -o "$H/guest-bundle.tar.zst"
     zstd -19 -q ${guestDisk}/nixos.qcow2 -o "$G/nixos.qcow2.zst"
     chmod 0644 "$H"/*.zst "$G"/*.zst
     # The production writer, not a re-implementation in Nix -- which would have tested this file
@@ -725,7 +730,17 @@ pkgs.testers.runNixOSTest {
     print("a demoted node stops serving, seen from off-box")
 
     host.succeed("/opt/briard/agent/briard-agent handover -unmask")
-    client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=300)
+    try:
+        client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=300)
+    except Exception:
+        # The re-promotion is the first start of every chain member through the guest's pivot
+        # after a dress ([B.86j]); if the house does not come back, the guest's console is where
+        # the picker, the commit and the units say why.
+        print("=== re-promotion failed: the guest's units and pivot ===")
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-vip|drbd-reactor|drbd-promote|Control process|Failed|failed"))
+        print("=== re-promotion failed: the host's guest-bundle lines ===")
+        print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|reconnected|status node=' | tail -30"))
+        raise
     client.succeed("ip neigh flush dev eth1")
     client.wait_until_succeeds(f"ping -c1 -W2 {vip}")
     back = client.succeed(f"ip -4 neigh show {vip} dev eth1").split()
@@ -1069,11 +1084,17 @@ pkgs.testers.runNixOSTest {
     # differs and the REAL agent must smoke-test a REAL qemu tree, through that tree's own loader
     # (the binary's PT_INTERP names the committed prefix), before it commits. The agent bytes are
     # the installed ones: what this proves is the bundle path, not a new agent.
-    def publish_pin(version, bundle_dir):
+    def publish_pin(version, bundle_dir, guest_dir=None):
         d = f"/srv/host/{version}/linux"
         host.succeed(f"mkdir -p {d} && cp -L /srv/host/{V}/linux/briard-agent /srv/host/{V}/linux/briard-net-wrap {d}/")
         host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {bundle_dir} . | zstd -q -3 -o {d}/qemu-bundle.tar.zst")
-        host.succeed(f"chmod 0644 {d}/qemu-bundle.tar.zst && {d}/briard-agent --stage-manifest {d} --chain host --platform linux --release {version}")
+        # The guest bundle rides every host release ([B.86j]): the installed one's bytes unless a
+        # pin brings its own (the bad-bundle case below).
+        if guest_dir:
+            host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {guest_dir} . | zstd -q -3 -o {d}/guest-bundle.tar.zst")
+        else:
+            host.succeed(f"cp -L /srv/host/{V}/linux/guest-bundle.tar.zst {d}/")
+        host.succeed(f"chmod 0644 {d}/*.zst && {d}/briard-agent --stage-manifest {d} --chain host --platform linux --release {version} --guest {GV}")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     V2 = "v3.20991230.b86b0000"
     host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/host/{V}/linux/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
@@ -1117,6 +1138,84 @@ pkgs.testers.runNixOSTest {
     host.fail("test -e /run/briard/trial && test -e /run/briard/update")
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
+
+    # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ([B.86j]) --------------------------------------
+    # Every briard binary the guest runs rides the host chain: install.sh laid guest-<V>/bin/ and
+    # the `guest` link beside qemu's, and the FIRST bring-up dressed the guest -- the image booted
+    # on its firmware, the agent pushed the release's binaries over the control channel, the
+    # guest's own pivot trialled and committed them, and the next handshake reported the bundle.
+    # Both host updates above carried the same bundle bytes, hash-skipped (`staged (agent, qemu)`,
+    # no `guest`), so the guest still runs the tree the install laid -- and is REPORTED as running
+    # the current release's bundle, which is what it is.
+    def dressed_count(release):
+        return int(host.succeed(f"journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {release} (dressed)' || true").strip())
+    host.succeed("test -L /opt/briard/agent/guest")
+    assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V}", "the guest bundle tree is not named by its release"
+    host.succeed(f"test -x /opt/briard/agent/guest-{V}/bin/briard-guest-agent && test -x /opt/briard/agent/guest-{V}/bin/briard-reverse-proxy")
+    host.succeed("grep -q 'guest.next' /opt/briard/agent/briard-commit")
+    host.succeed(f"journalctl -u briard-agent | grep -q 'guest bundle: the guest runs its firmware; dressing it with {V}'")
+    assert dressed_count(V) >= 1, "the first bring-up never reported the guest dressed"
+    # Reported as the RUNNING agent's release: the status line names the bundle by the release
+    # whose bundle the guest runs, which is the host's own version when the guest is on the
+    # committed tree. This rig's pins re-use {V}'s agent bytes, so the agent -- and therefore the
+    # bundle it reports -- stays {V} across them; the tree name is what the update moved.
+    try:
+        host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
+    except Exception:
+        print("=== the guest's pivot and units ===")
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|Control process|Failed"))
+        print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=' | tail -12"))
+        raise
+    # ...and the pivot's own account agrees: every guest BOOT starts as firmware (the picker says
+    # `baked` once per boot, and this rig boots the guest several times -- the install, the cattle
+    # reinstall, the lease move), each of which the host dressed from firmware exactly once; and
+    # within a boot every restart of the guest agent ran the committed pushed binary, never the
+    # firmware. Read from the console, which holds every boot ([B.86g] appends).
+    boots = int(host.succeed("tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'briard-bin-exec: briard-guest-agent: baked' || true").strip())
+    firmware_dresses = int(host.succeed("journalctl -u briard-agent | grep -c 'guest bundle: the guest runs its firmware' || true").strip())
+    pushed_starts = int(host.succeed("tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'briard-bin-exec: briard-guest-agent: pushed' || true").strip())
+    commits = int(host.succeed("tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'briard-bin-commit: briard-guest-agent: committing' || true").strip())
+    if boots < 1 or firmware_dresses != boots or commits != boots or pushed_starts < 1:
+        print("=== the guest's pivot and units ===")
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|Control process|Failed"))
+        raise Exception(f"pivot account: {boots} boots, {firmware_dresses} dresses from firmware, {commits} commits, {pushed_starts} pushed starts -- want one dress and one commit per boot, and restarts on the pushed binary")
+    print(f"{boots} guest boots, each dressed from firmware once and committed in the guest; {pushed_starts} guest-agent restarts ran the pushed binary")
+
+    # A GUEST RELAUNCH LANDS ON FIRMWARE AND IS DRESSED AGAIN: the overlay is disposable, so nothing
+    # pushed survives it. STOPPED, not restarted: the host's recovery relaunches a stopped guest
+    # through its own bring-up, which rebuilds the overlay ([B.86g]) -- a `systemctl restart` of
+    # the unit reboots qemu on the SAME overlay, so the pushed binaries persist, the picker runs
+    # them, and the host rightly pushes nothing (measured: the first cut of this step waited 600 s
+    # for a dress the product had no reason to do).
+    before = dressed_count(V)
+    host.succeed("systemctl stop briard-guest.service")
+    host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {V} (dressed)') -gt {before} ]", timeout=600)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=600)
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    print("a restarted guest came up as firmware and was dressed again")
+
+    # A BUNDLE WHOSE GUEST AGENT DOES NOT START REVERTS IN THE GUEST, WITHOUT THE HOST. The pin
+    # carries a briard-guest-agent that exits 1: the host stages and activates it, the guest's
+    # pivot trials it, it never says READY, the unit's next start finds the flag consumed and runs
+    # the committed pushed agent -- and the handshake tells the host the trial reverted. The host
+    # committed its own bundle regardless ([V3.32]: the host's trial gate is "the agent started"),
+    # so the node is on V4 with a guest on V's binaries, and REPORTS that skew rather than converging.
+    V4 = "v3.20991231.b86jbad0"
+    host.succeed(f"mkdir -p /root/gbundle4/bin && cp /opt/briard/agent/guest-{V}/bin/briard-reverse-proxy /root/gbundle4/bin/ && printf '#!/bin/sh\\nexit 1\\n' > /root/gbundle4/bin/briard-guest-agent && chmod 755 /root/gbundle4/bin/*")
+    publish_pin(V4, "/root/bundle2", "/root/gbundle4")
+    out = host.succeed(f"/opt/briard/agent/briard-agent update host -to {V4}").strip()
+    assert f"staged {V4} (agent, guest), armed" in out, f"briard update host said: {out!r}"   # qemu unchanged since V2: not fetched
+    assert host.succeed("readlink /opt/briard/agent/guest.next").strip() == f"guest-{V4}"
+    host.succeed("systemctl restart briard-agent.service")
+    host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
+    assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V4}", "the guest link did not move on commit"
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q 'guest bundle: the guest runs {V}, the host holds {V4}; dressing it'", timeout=300)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REVERTED'", timeout=300)
+    host.succeed(f"journalctl -u briard-agent | grep 'PUSH REVERTED' | grep -q 'came back on {V}, not {V4}'")
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
+    host.succeed(f"grep -q '\"version\":\"{V4}\"' /opt/briard/agent/manifest.json")   # the host DID commit V4
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    print(f"{V4}: a guest agent that will not start reverted inside the guest; the node runs {V4} with the guest on {V}'s bundle and says so")
 
     # ---- THE GUEST CHAIN ON THE SHIPPED NODE ([B.86d]) ---------------------------------------
     # The installed guest manifest names the closure the image boots; install.sh seeded the

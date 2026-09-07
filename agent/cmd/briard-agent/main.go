@@ -321,6 +321,10 @@ func runGuest(ctx context.Context) error {
 
 	// ServeStamped bumps the deadman's contact stamp on each request; the deadman itself runs in
 	// its own process (briard-deadman → RunDeadman), decoupled from this connection lifecycle.
+	// READY at listen ([B.86j]): the unit is Type=notify under the guest's frozen pivot, and
+	// its ExecStartPost commits a pushed binary only after this. A pushed agent that cannot
+	// open the port never says it, and the next start falls back to the committed one.
+	_ = sdnotify.Ready()
 	if err := guestagent.ServeStamped(ctx, conn, guestagent.NewOSExecutor()); err != nil {
 		return err
 	}

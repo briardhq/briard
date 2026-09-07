@@ -42,6 +42,12 @@ type GuestHello struct {
 	Version      int      `json:"version"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	BootID       string   `json:"boot_id,omitempty"`
+	// Bundle is the guest bundle this agent RUNS ([B.86j]): the host release id whose
+	// pushed binaries it was started from, or "" when it runs the firmware baked into the
+	// image. The host compares it with the bundle it holds and dresses the guest when they
+	// differ -- at bring-up, after a host commit, after any guest restart (the overlay is
+	// disposable, so every boot starts as firmware).
+	Bundle string `json:"bundle,omitempty"`
 }
 
 // EnrollRequest asks an overlay provider to admit this node to the tenant network.
@@ -99,6 +105,13 @@ type NodeStatus struct {
 	// image its guest booted. Ground truth for the OS rollout -- the controller confirms the
 	// node reached the target release. Empty on a witness, or a node with no record.
 	System string `json:"system,omitempty"`
+	// GuestBundle is the guest bundle the guest RUNS -- the host release id its pushed binaries
+	// came from, "" while it runs the image's firmware ([B.86j]). Widening the closed allowlist by
+	// one field is a deliberate act, so here is the argument: the cloud's agent rollout converges
+	// on a node only when BOTH halves run the release -- without this a stuck guest (a pushed
+	// binary that reverted, a firmware without the push verbs) would read as converged the moment
+	// the host committed. It is a release id, nothing about the household.
+	GuestBundle string `json:"guest_bundle,omitempty"`
 	// Services is what this node has INSTALLED at runtime, one entry per service, ordered by
 	// name. It is the whole answer to "what is this node running", and widening the closed
 	// allowlist by a repeated field is a deliberate act, so here is the argument.

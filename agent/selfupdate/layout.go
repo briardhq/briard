@@ -84,6 +84,11 @@ const (
 	qemuLink     = "qemu"
 	nextQEMULink = "qemu.next"
 	qemuTree     = "qemu-" // + release id: one extracted bundle per release, beside the link
+	// The guest bundle ([B.86j]) -- the binaries the host dresses its guest with -- rides the
+	// same mechanics: one extracted tree per release, a link the frozen commit moves with -T.
+	guestLink     = "guest"
+	nextGuestLink = "guest.next"
+	guestTree     = "guest-"
 )
 
 // Layout resolves the self-update paths under a state base + a tmpfs run dir.
@@ -177,26 +182,60 @@ func (l Layout) StageNextNetWrap(src io.Reader) error {
 // layout stays addressable from Base alone. It does not check the tree's contents: that is the
 // trial's smoke test, run by the candidate agent before it sends READY.
 func (l Layout) StageNextQEMU(tree string) error {
-	if filepath.Dir(tree) != l.Base || !strings.HasPrefix(filepath.Base(tree), qemuTree) {
-		return fmt.Errorf("selfupdate: qemu tree %s is not a %s* directory under %s", tree, qemuTree, l.Base)
+	return l.stageTreeLink(tree, qemuTree, l.NextQEMUPath(), nextQEMULink)
+}
+
+// stageTreeLink points `link` at an extracted `<prefix><release>` tree under Base, atomically:
+// the link is made in a temp dir and renamed over any existing one. Shared by the qemu and the
+// guest bundle ([B.86j]); the frozen commit moves each `.next` link with `mv -T`.
+func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
+	if filepath.Dir(tree) != l.Base || !strings.HasPrefix(filepath.Base(tree), prefix) {
+		return fmt.Errorf("selfupdate: tree %s is not a %s* directory under %s", tree, prefix, l.Base)
 	}
 	if fi, err := os.Stat(tree); err != nil || !fi.IsDir() {
-		return fmt.Errorf("selfupdate: qemu tree %s is not a directory (%v)", tree, err)
+		return fmt.Errorf("selfupdate: tree %s is not a directory (%v)", tree, err)
 	}
-	tmp, err := os.MkdirTemp(l.Base, nextQEMULink+".*.tmp")
+	tmp, err := os.MkdirTemp(l.Base, linkName+".*.tmp")
 	if err != nil {
 		return err
 	}
-	link := filepath.Join(tmp, "link")
-	if err := os.Symlink(filepath.Base(tree), link); err != nil {
+	staged := filepath.Join(tmp, "link")
+	if err := os.Symlink(filepath.Base(tree), staged); err != nil {
 		os.RemoveAll(tmp)
 		return err
 	}
-	if err := os.Rename(link, l.NextQEMUPath()); err != nil { // replaces an existing link atomically
+	if err := os.Rename(staged, link); err != nil { // replaces an existing link atomically
 		os.RemoveAll(tmp)
 		return err
 	}
 	return os.Remove(tmp)
+}
+
+// The guest bundle's tree and links ([B.86j]): the same shape as qemu's, and the same commit --
+// briard-commit renames guest.next onto guest with -T after READY.
+func (l Layout) GuestPath() string                  { return filepath.Join(l.Base, guestLink) }
+func (l Layout) NextGuestPath() string              { return filepath.Join(l.Base, nextGuestLink) }
+func (l Layout) GuestTree(release string) string    { return filepath.Join(l.Base, guestTree+release) }
+func (l Layout) CommittedGuestTree() (string, bool) { return l.qemuTarget(l.GuestPath()) }
+func (l Layout) NextGuestTree() (string, bool)      { return l.qemuTarget(l.NextGuestPath()) }
+func (l Layout) StageNextGuest(tree string) error {
+	return l.stageTreeLink(tree, guestTree, l.NextGuestPath(), nextGuestLink)
+}
+
+// CommittedGuestRelease is the release id the committed guest tree carries in its name --
+// what the guest must report as its Bundle once dressed. "" when no tree is committed (an
+// install that predates the bundle, or a candidate not yet committed).
+func (l Layout) CommittedGuestRelease() string {
+	t, ok := l.CommittedGuestTree()
+	if !ok {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Base(t), guestTree)
+}
+
+// PruneGuestTrees removes guest-<release> trees neither link names, like PruneQEMUTrees.
+func (l Layout) PruneGuestTrees() ([]string, error) {
+	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree)
 }
 
 // NextQEMUStaged reports whether a qemu link is staged. The candidate agent runs its smoke test
@@ -230,7 +269,7 @@ func (l Layout) qemuTarget(link string) (string, bool) {
 // .next that may exist are the ones THIS release staged. The agent and manifest need no such
 // step; every run re-stages both.
 func (l Layout) DiscardNextBundle() error {
-	for _, p := range []string{l.NextNetWrapPath(), l.NextQEMUPath()} {
+	for _, p := range []string{l.NextNetWrapPath(), l.NextQEMUPath(), l.NextGuestPath()} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -245,11 +284,16 @@ func (l Layout) DiscardNextBundle() error {
 // process runs from must not be pulled out from under it. Keeping N-1 is therefore free; it is
 // N-2 and older this collects.
 func (l Layout) PruneQEMUTrees() ([]string, error) {
+	return l.pruneTrees(qemuTree, l.CommittedQEMUTree, l.NextQEMUTree)
+}
+
+// pruneTrees removes every `<prefix>*` directory under Base that neither link names.
+func (l Layout) pruneTrees(prefix string, committed, next func() (string, bool)) ([]string, error) {
 	keep := map[string]bool{}
-	if t, ok := l.CommittedQEMUTree(); ok {
+	if t, ok := committed(); ok {
 		keep[t] = true
 	}
-	if t, ok := l.NextQEMUTree(); ok {
+	if t, ok := next(); ok {
 		keep[t] = true
 	}
 	ents, err := os.ReadDir(l.Base)
@@ -258,7 +302,7 @@ func (l Layout) PruneQEMUTrees() ([]string, error) {
 	}
 	var removed []string
 	for _, e := range ents {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), qemuTree) {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
 			continue
 		}
 		p := filepath.Join(l.Base, e.Name())

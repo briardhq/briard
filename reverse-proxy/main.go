@@ -39,6 +39,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -49,6 +50,7 @@ import (
 	"time"
 
 	"briard.io/shared/routes"
+	"briard.io/shared/sdnotify"
 )
 
 func main() {
@@ -97,11 +99,23 @@ func main() {
 		*httpAddr, *listen, *certPath, *routesPath, tbl.current().describe())
 	// Either listener dying is fatal: the front door is promoter-owned, so systemd restarts
 	// it on the primary rather than leaving half a door open.
+	// Bind BEFORE saying READY ([B.86j]): the front door runs under the guest's frozen pivot
+	// (Type=notify, ExecStartPost commits the pushed binary only after READY), so READY must mean
+	// "listening", not "started". A pushed binary that cannot bind never reaches it and reverts.
+	plainLn, err := net.Listen("tcp", *httpAddr)
+	if err != nil {
+		log.Fatalf("reverse-proxy: listen %s: %v", *httpAddr, err)
+	}
+	tlsLn, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("reverse-proxy: listen %s: %v", *listen, err)
+	}
+	_ = sdnotify.Ready()
 	go func() {
-		// Cert/key come from TLSConfig.GetCertificate, so ListenAndServeTLS takes empty paths.
-		log.Fatalf("reverse-proxy: %v", tlsSrv.ListenAndServeTLS("", ""))
+		// Cert/key come from TLSConfig.GetCertificate, so ServeTLS takes empty paths.
+		log.Fatalf("reverse-proxy: %v", tlsSrv.ServeTLS(tlsLn, "", ""))
 	}()
-	log.Fatalf("reverse-proxy: %v", plain.ListenAndServe())
+	log.Fatalf("reverse-proxy: %v", plain.Serve(plainLn))
 }
 
 // frontDoor routes the VIP: /healthz is always Briard's own answer, a request whose Host names a

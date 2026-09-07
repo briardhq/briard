@@ -171,6 +171,17 @@ let
 
   driverPkg = pkgs.callPackage ./driver/package.nix { };
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + run --guest)
+  # THE GUEST BUNDLE ([B.86j]): every briard binary the guest runs, built with the HOST release's
+  # version because it ships in the host chain and is pushed by the host at every bring-up. The
+  # image bakes its own FIRMWARE copies (guestDisk, stamped with the image's build); these are
+  # what the guest actually runs once dressed. One directory, `bin/<name>`, the names the guest's
+  # pivot and the push verbs agree on (agent/guestagent/bin.go BinNames).
+  guestAgentPkg = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; version = agentVersion; };
+  guestBundle = pkgs.runCommand "briard-guest-bundle-${agentVersion}" { } ''
+    mkdir -p $out/bin
+    install -m0755 ${guestAgentPkg}/bin/briard-agent   $out/bin/briard-guest-agent
+    install -m0755 ${pkgs.reverse-proxy}/bin/reverse-proxy $out/bin/briard-reverse-proxy
+  '';
 
   # The macvtap fd-passing launch wrapper, installed +x (a bare store source file is 0444,
   # which systemd-run can't exec). Shared by every agent/driver-launched integration test that runs
@@ -302,7 +313,7 @@ let
   installMacvtap = import ./install-macvtap.nix {
     # selfupdateStub serves the signed release channel over HTTP so the install runs the REAL
     # network path (fetch + verify + expand) rather than the BRIARD_ARTIFACTS escape hatch.
-    inherit pkgs guestDisk selfupdateStub;
+    inherit pkgs guestDisk selfupdateStub guestBundle;
     agent = agentPkg;
     qemuBundle = qemuBundle.bundle;
   };
@@ -451,5 +462,6 @@ in
     # tier-4 Windows rig, not CI -- a Linux runner cannot run it.
     qemu-bundle-windows = qemuBundleWindows.bundle;
     net-wrap = netWrap; # macvtap launch wrapper; the fleet runs on it too
+    guest-bundle = guestBundle; # the guest's briard binaries, shipped in the host chain ([B.86j])
   };
 }
