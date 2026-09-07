@@ -1,9 +1,4 @@
-	# The closure the image boots, and the oldest host that tolerates this guest ([B.86d]): this
-	# very release's host, since both come from one commit. That is the tightest correct value --
-	# a node takes host/stable daily and guest/stable rarely, so it is at or past this by the
-	# time the guest is promoted; a node pinned to an older host is refused, which is the point.
-	"$H/briard-agent" --stage-manifest "$G" --chain guest --release "$GV" \
-		--system "$(out_of .#artifacts.guest-disk.system)" --min-host "$V" || die "writing the guest manifest failed"#!/usr/bin/env bash
+#!/usr/bin/env bash
 #
 # publish-release.sh — build, sign and publish the release channel a stranger installs from
 # and a node updates from. The consumer already exists (agent/install/fetch.go +
@@ -26,10 +21,17 @@
 #     latest/ stable/                   manifest.json(+.sig)
 #
 # A CHAIN is a release line with its own version series: the host bundle moves as
-# `v3.<date>.<rev>`, the guest OS as `guest.<date>.<rev>` (same date and rev — both are staged
-# from one commit — but two chains, not two flavours of one release). The host chain has one
-# more level, the PLATFORM ARM, because a host bundle is built per host OS; the guest image is
-# the same VM on every host and has none. A POINTER is just a path serving a byte-copy of one
+# `v3.<date>.<rev>` on every publish; the guest OS as `guest.<date>.<inputs>` and ONLY WHEN ITS
+# INPUTS CHANGE ([B.86i]). The guest image is a function of its inputs (flake.nix guestInputs:
+# the image recipe, the packages built into it, the Go packages the guest binary links, the
+# module files, the nixpkgs pin) and carries no commit-derived stamp, so `stage` asks the live
+# channel whether an image with these exact inputs is already published and, if so, REUSES that
+# release instead of staging a 400 MB image nobody would be able to tell from the last one. The
+# pairing therefore lives in the HOST manifest: `guest` names the guest release this host
+# release was staged beside, an installer fetches the host chain and then the guest it names,
+# and `promote` moves guest/stable to it. The host chain has one more level, the PLATFORM ARM,
+# because a host bundle is built per host OS; the guest image is the same VM on every host and
+# has none. A POINTER is just a path serving a byte-copy of one
 # version's signed manifest: no pointer file, no second signature format, one verified hop. The
 # client resolves every artifact against the manifest's own `version` field
 # (<chain>/<version>[/<arm>]/<name>), never against the path it fetched the manifest from — so a
@@ -97,10 +99,9 @@
 #   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
 #   RELEASE_PURGE_TOKEN optional: bearer token for RELEASE_PURGE_URL (see purge_edge for why)
 #
-# Run from the repo root. See also scripts/publish-cache.sh — the OS-closure cache, a
-# DISTINCT trust root (nix's per-path narinfo signatures). The two keys are deliberately not
-# shared: a compromised cache key is recoverable precisely because re-imaging is verified by
-# this one.
+# Run from the repo root. There is no second publish and no second trust root any more: the
+# guest OS travels as the signed image in this tree, verified by the release keyring the host
+# holds ([B.86i] retired the nix binary cache and its narinfo key with the closure path).
 set -euo pipefail
 
 CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
@@ -136,12 +137,27 @@ release_version() {
 	esac
 	echo "$v"
 }
-# The guest chain's id for a host id: same date and rev, its own series. One place, so the
-# installer's BRIARD_RELEASE=<host id> (which derives the guest id the same way) and this script
-# cannot disagree.
-guest_id() { echo "guest.${1#*.}"; }
+# The guest release a PUBLISHED host release pairs with, read off its live manifest ([B.86i]):
+# the one place the pairing is recorded, and the same field an installing node reads.
+guest_of() {
+	curl -fsS "$CHANNEL/host/$1/linux/manifest.json" | jq -er '.guest // empty' ||
+		die "host/$1 is not published, or names no guest release (published before [B.86i]?)"
+}
 # The id a chain uses for the release named by a host id.
-chain_id() { case "$1" in guest) guest_id "$2" ;; *) echo "$2" ;; esac; }
+chain_id() { case "$1" in guest) guest_of "$2" ;; *) echo "$2" ;; esac; }
+# The guest release the live channel serves for these image inputs, if any: `latest` first
+# (what the last publish paired with), then `stable`. Empty when neither matches or the channel
+# cannot be read -- in which case `stage` publishes a fresh image, which is always safe.
+live_guest_for_inputs() {
+	local p m
+	for p in latest stable; do
+		m=$(curl -fsS "$CHANNEL/guest/$p/manifest.json" 2>/dev/null) || continue
+		if [ "$(echo "$m" | jq -r '.inputs // ""')" = "$1" ]; then
+			echo "$m" | jq -r .version; return 0
+		fi
+	done
+	return 1
+}
 # The date field of an id — the ONLY thing the timer's stable path orders on.
 date_of() { echo "$1" | cut -d. -f2; }
 # A release directory's path below the chain: "<seg>" or "<seg>/<arm>".
@@ -198,9 +214,25 @@ case "${1:-}" in
 stage)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix; need sha256sum; need jq
-	V=$(release_version); GV=$(guest_id "$V")
-	say "staging release $V (guest $GV) into $DIR"
+	V=$(release_version)
+	# THE GUEST RELEASE THIS HOST RELEASE PAIRS WITH ([B.86i]). The image's inputs hash comes from
+	# the flake; if the live channel already serves an image with these exact inputs, that release
+	# is reused -- nothing of the guest chain is staged, and the host manifest names it -- else a
+	# new id is minted: the commit date (so the same commit always mints the same id, and the
+	# timer's stable path, which orders on the date, sees a real step) and the inputs' short hash.
+	INPUTS=$(nix eval --raw .#artifacts.guest-disk.inputs) || die "cannot read the guest image's inputs hash"
+	[ "${#INPUTS}" = 64 ] || die "the guest inputs hash is not a sha256 ($INPUTS)"
+	GUEST_REUSED=""
+	if GV=$(live_guest_for_inputs "$INPUTS"); then
+		GUEST_REUSED=1
+		say "staging release $V into $DIR -- the guest image is unchanged, pairing with the published $GV"
+	else
+		GV="guest.$(date_of "$V").${INPUTS:0:7}"
+		say "staging release $V (guest $GV, new image inputs ${INPUTS:0:12}) into $DIR"
+	fi
 	rm -rf "$DIR"; mkdir -p "$DIR"
+	echo "$GV" > "$DIR/GUEST"                                  # the pair, for sign/publish/promote
+	[ -z "$GUEST_REUSED" ] || touch "$DIR/GUEST_REUSED"         # ...and whether it is staged here
 	out_of() { nix build --no-link --print-out-paths "$1"; }
 	zst() { # in out — -19 not --ultra: 23s and 377 MB against gzip -9's 85s and 465 MB, on a
 	        # file published once and downloaded by every household. -T0 uses the release box's
@@ -231,7 +263,7 @@ stage)
 	# and the binary used is the one STAGED IN THIS DIRECTORY, the exact agent this release
 	# ships, so the manifest is written by the same build that will later read it on a node.
 	[ -x "$H/briard-agent" ] || die "no staged briard-agent to write the manifests with"
-	"$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V" || die "writing the linux manifest failed"
+	"$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V" --guest "$GV" || die "writing the linux manifest failed"
 
 	# THE WINDOWS ARM. `FetchVerified` downloads EVERY artifact a manifest names, so a
 	# Windows-only bundle in the Linux manifest would make every Linux install pull tens of MB it
@@ -242,16 +274,27 @@ stage)
 	W="$DIR/host/$V/windows"; mkdir -p "$W"
 	dtar "$W/qemu-bundle-windows.tar" -C "$(out_of .#artifacts.qemu-bundle-windows)" .
 	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
-	"$H/briard-agent" --stage-manifest "$W" --chain host --platform windows --release "$V" || die "writing the windows manifest failed"
+	"$H/briard-agent" --stage-manifest "$W" --chain host --platform windows --release "$V" --guest "$GV" || die "writing the windows manifest failed"
 
-	# THE GUEST CHAIN: the OS image, its own series, no platform level. Measured: 1178 -> 377 MB
-	# compressed, which is what a household link actually waits on.
-	G="$DIR/guest/$GV"; mkdir -p "$G"
-	install -m0644 "$(out_of .#artifacts.guest-disk)/nixos.qcow2" "$G/nixos.qcow2"
-	zst "$G/nixos.qcow2" "$G/nixos.qcow2.zst"
-	"$H/briard-agent" --stage-manifest "$G" --chain guest --release "$GV" || die "writing the guest manifest failed"
+	# THE GUEST CHAIN: the OS image, its own series, no platform level, and staged ONLY when its
+	# inputs changed (above). Measured: 1178 -> 377 MB compressed, which is what a household link
+	# actually waits on -- and what every household was re-downloading for a version string.
+	MANIFESTS="$H $W"
+	if [ -z "$GUEST_REUSED" ]; then
+		G="$DIR/guest/$GV"; mkdir -p "$G"
+		install -m0644 "$(out_of .#artifacts.guest-disk)/nixos.qcow2" "$G/nixos.qcow2"
+		zst "$G/nixos.qcow2" "$G/nixos.qcow2.zst"
+		# The closure the image boots, the oldest host that tolerates this guest ([B.86d]) -- this
+		# very release's host, the one it is built beside, and the tightest correct value: a node
+		# takes host/stable daily and guest/stable rarely, so it is at or past this by the time
+		# the guest is promoted -- and the inputs hash that makes "unchanged" decidable next time.
+		"$H/briard-agent" --stage-manifest "$G" --chain guest --release "$GV" \
+			--system "$(out_of .#artifacts.guest-disk.system)" --min-host "$V" --inputs "$INPUTS" \
+			|| die "writing the guest manifest failed"
+		MANIFESTS="$MANIFESTS $G"
+	fi
 
-	for m in "$H" "$W" "$G"; do
+	for m in $MANIFESTS; do
 		jq -e . "$m/manifest.json" >/dev/null || die "the manifest at $m is not valid JSON"
 	done
 
@@ -281,8 +324,11 @@ stage)
 	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
 	say "staged $V:"
 	for c in $CHAINS; do
+		if [ "$c" = guest ] && [ -n "$GUEST_REUSED" ]; then
+			echo "  guest/$GV  (published already; unchanged inputs -- paired, not staged)"; continue
+		fi
 		for a in $(arms_of "$c"); do arm=${a#-}
-			m="$DIR/$c/$(sub "$(chain_id "$c" "$V")" "$arm")/manifest.json"
+			m="$DIR/$c/$(sub "$([ "$c" = guest ] && echo "$GV" || echo "$V")" "$arm")/manifest.json"
 			echo "  $c/$(sub "$(jq -r .version "$m")" "$arm")"
 			jq -r '.artifacts[] | "    \(.name)  \(.size) bytes  \(.sha256[0:16])…"' "$m"
 		done
@@ -295,6 +341,9 @@ sign)
 	[ -n "${RELEASE_SIGN_KEY:-}" ] || die "set RELEASE_SIGN_KEY to the PKCS8 PEM Ed25519 private key"
 	[ -e "$RELEASE_SIGN_KEY" ] || die "no signing key at $RELEASE_SIGN_KEY"
 	for c in $CHAINS; do
+		if [ "$c" = guest ] && [ -f "$DIR/GUEST_REUSED" ]; then
+			say "guest chain: $(cat "$DIR/GUEST") is reused (unchanged inputs) -- nothing to sign"; continue
+		fi
 		v=$(staged_version "$DIR/$c") || die "no staged version under $DIR/$c — run \`stage\` first"
 		rm -rf "$DIR/$c/latest"
 		for a in $(arms_of "$c"); do arm=${a#-}
@@ -329,9 +378,20 @@ publish)
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 
+	# THE PAIR: which guest release this host release names, and whether it is staged here or
+	# already published (a reuse). A reused guest must actually BE in the bucket, or the host
+	# manifest would name a release no installer can fetch.
+	GV=$(cat "$DIR/GUEST" 2>/dev/null) || die "no $DIR/GUEST — run \`stage\` first"
+	GUEST_REUSED=""; [ ! -f "$DIR/GUEST_REUSED" ] || GUEST_REUSED=1
+	if [ -n "$GUEST_REUSED" ]; then
+		have_key "$bucket/guest/$GV/manifest.json" "$endpoint" ||
+			die "the host manifest names guest/$GV as its pair, but the bucket does not hold it — stage again against the live channel"
+	fi
+
 	# IMMUTABILITY FIRST, across every chain, before a byte moves: a half-published release
 	# (host uploaded, guest refused) would leave `latest` naming a pair nobody tested together.
 	for c in $CHAINS; do
+		[ "$c" = guest ] && [ -n "$GUEST_REUSED" ] && continue
 		v=$(staged_version "$DIR/$c") || die "no staged version under $DIR/$c"
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm")
@@ -343,6 +403,22 @@ publish)
 	done
 
 	for c in $CHAINS; do
+		if [ "$c" = guest ] && [ -n "$GUEST_REUSED" ]; then
+			# Nothing to upload, but `latest` must name the pair: a reuse of the STABLE image after
+			# a newer latest one would otherwise leave guest/latest and host/latest's `guest`
+			# disagreeing. Server-side copies, in POINTER_FILES order, only when it differs.
+			cur=$(curl -fsS "$CHANNEL/guest/latest/manifest.json" 2>/dev/null | jq -r .version || true)
+			if [ "$cur" = "$GV" ]; then
+				say "guest/latest already names $GV (reused, unchanged inputs)"
+			else
+				for f in $POINTER_FILES; do
+					have_key "$bucket/guest/$GV/$f" "$endpoint" || continue
+					aws s3 cp "$bucket/guest/$GV/$f" "$bucket/guest/latest/$f" --endpoint-url "$endpoint" --no-progress
+				done
+				say "guest/latest -> $GV (reused, unchanged inputs; nothing uploaded)"
+			fi
+			continue
+		fi
 		v=$(staged_version "$DIR/$c")
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm")
@@ -370,8 +446,10 @@ publish)
 
 	{
 		for c in $CHAINS; do
-			find "$DIR/$c/latest" -type f | sed "s|^$DIR/|$CHANNEL/|"
+			[ -d "$DIR/$c/latest" ] && find "$DIR/$c/latest" -type f | sed "s|^$DIR/|$CHANNEL/|"
 		done
+		# A reused guest moved (or kept) the live pointer by server-side copy; purge it the same.
+		[ -z "$GUEST_REUSED" ] || for f in manifest.json.sig manifest.json; do echo "$CHANNEL/guest/latest/$f"; done
 		echo "$CHANNEL/install.sh"
 	} | purge_edge
 	say "published — now run: ./scripts/publish-release.sh verify   (then, once the evidence is in: promote)"
@@ -548,6 +626,18 @@ verify)
 				touch "$tmp/$c.${arm:-flat}.$v.ok"
 			done
 		done
+	done
+	# THE PAIR HOLDS AT BOTH POINTERS ([B.86i]): what host/<p> names as its guest is what guest/<p>
+	# serves. This is the obligation "host/stable + guest/stable is the tested pair" now rests on,
+	# since the guest id is no longer derivable from the host id; a pointer moved by hand on one
+	# chain and not the other fails here, before an installer meets it.
+	for p in stable latest; do
+		hg=$(curl -fsS "$CHANNEL/host/$p/linux/manifest.json" 2>/dev/null | jq -r '.guest // ""') || hg=""
+		gv=$(curl -fsS "$CHANNEL/guest/$p/manifest.json" 2>/dev/null | jq -r .version) || gv=""
+		[ -n "$hg$gv" ] || continue # neither exists yet (a fresh tree's stable): said above
+		[ -n "$hg" ] || die "host/$p names no guest release — published before [B.86i]; stage and publish again"
+		[ "$hg" = "$gv" ] || die "host/$p pairs with guest/$hg but guest/$p serves $gv — the pointers disagree"
+		say "host/$p <-> guest/$p agree on $gv (the tested pair)"
 	done
 	# install.sh at the channel root -- that is the URL the advertised one-liner names, so it
 	# is the one this must assert. The installer a stranger runs must agree with where the

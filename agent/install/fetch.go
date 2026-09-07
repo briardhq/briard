@@ -149,6 +149,16 @@ type Manifest struct {
 	// exact-pinned old host resolving guest/stable). Both are empty on the host chain.
 	System  string `json:"system,omitempty"`
 	MinHost string `json:"min_host,omitempty"`
+	// The pair, named from the host side ([B.86i]): Guest is the guest release this host release
+	// was published beside -- what an installer fetches after the host chain, and what `promote`
+	// moves guest/stable to. The guest chain stopped deriving its id from the commit (its image
+	// is a function of its INPUTS and is re-published only when they change), so the host
+	// manifest is the only place the pairing can live. Empty on the guest chain.
+	Guest string `json:"guest,omitempty"`
+	// Inputs is the guest image's input hash (sha256 hex, flake.nix guestInputs): the fact that
+	// decides whether a stage re-publishes the guest chain or reuses the release that already
+	// serves these exact inputs. Empty on the host chain.
+	Inputs string `json:"inputs,omitempty"`
 }
 
 // Fetcher downloads and verifies one chain's signed artifact set into a staging directory.

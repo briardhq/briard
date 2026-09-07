@@ -30,8 +30,32 @@
         if self ? shortRev
         then "v3.${builtins.substring 0 8 self.lastModifiedDate}.${self.shortRev}"
         else "v3.dirty";
+      # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT ([B.86i]). The
+      # guest chain used to churn per commit -- every host release re-published a 400 MB image whose
+      # only change was the version string baked into it -- so `publish-release.sh stage` now asks
+      # whether the live channel already serves an image with THESE inputs and re-stages the guest
+      # chain only when they changed. The inputs are the paths that reach the image: the image
+      # recipe, the packages built into it, the Go packages the `-tags guest` binary links (listed
+      # by name; internal/arch asserts the list against `go list -deps -tags guest`, so a new
+      # import cannot silently fall outside the hash), the module files and the nixpkgs pin.
+      # `builtins.path` copies each into the store, and a store path's name IS its content hash --
+      # test files excluded, since they never reach the image.
+      guestInputPackages = [
+        "agent/cli" "agent/cmd/briard-agent" "agent/drbd" "agent/guestagent" "agent/hass"
+        "agent/install" "agent/mosquitto" "agent/quadlet" "agent/reportcard" "agent/selfupdate"
+        "agent/services" "agent/subnet" "shared"
+      ];
+      guestInputDirs = [ "guest-image" "reverse-proxy" "dashboard" ] ++ guestInputPackages;
+      noTests = path: type: !(lib.hasSuffix "_test.go" (baseNameOf path)) && baseNameOf path != "testdata";
+      inputPath = p: toString (builtins.path { path = ./. + "/${p}"; name = builtins.replaceStrings [ "/" ] [ "-" ] p; filter = noTests; });
+      guestInputs = builtins.hashString "sha256" (lib.concatStringsSep "\n" (
+        map inputPath guestInputDirs
+        ++ map (f: toString (builtins.path { path = ./. + "/${f}"; name = baseNameOf f; })) [ "go.mod" "go.sum" "vendor-hash.nix" "agent/package.nix" ]
+        ++ [ (nixpkgs.rev or "dirty") ]
+      ));
+      guestVersion = "guest-build." + builtins.substring 0 12 guestInputs;
       tests = import ./nixosTest/outputs.nix {
-        inherit nixpkgs agentVersion;
+        inherit nixpkgs agentVersion guestVersion guestInputs;
         pkgs = pkgsX;
         overlay = self.overlays.default;
       };

@@ -39,10 +39,11 @@ var notArtifacts = map[string]bool{
 // Entries are sorted by name so the same directory always produces the same bytes — the manifest
 // is signed, and a set that reordered itself would churn the signature for no reason.
 //
-// system and minHost are the guest chain's two extra facts (Manifest.System / MinHost); both are
+// system, minHost and inputs are the guest chain's extra facts (Manifest.System / MinHost / Inputs) and
+// guest is the host chain's ([B.86i]: the guest release this host release pairs with); each is
 // refused on any other chain, because a host manifest naming a closure would be a lie the reader
 // has no way to catch.
-func WriteManifest(dir, chain, platform, version, system, minHost string) error {
+func WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs string) error {
 	if !validSegment(chain) {
 		return fmt.Errorf("install: bad chain name %q", chain)
 	}
@@ -60,6 +61,18 @@ func WriteManifest(dir, chain, platform, version, system, minHost string) error 
 	if system != "" && !strings.HasPrefix(system, "/nix/store/") {
 		return fmt.Errorf("install: system %q is not a /nix/store path", system)
 	}
+	if guest != "" && chain != ChainHost {
+		return fmt.Errorf("install: guest names the host chain's pair, not %s's", chain)
+	}
+	if guest != "" && (!validSegment(guest) || guest == TargetStable || guest == TargetLatest) {
+		return fmt.Errorf("install: bad guest release %q", guest)
+	}
+	if inputs != "" && chain != ChainGuest {
+		return fmt.Errorf("install: inputs is a guest-chain fact, not %s's", chain)
+	}
+	if inputs != "" && !validHex(inputs) {
+		return fmt.Errorf("install: inputs %q is not a sha256 hex", inputs)
+	}
 	if minHost != "" && !validSegment(minHost) {
 		return fmt.Errorf("install: bad min_host %q", minHost)
 	}
@@ -67,7 +80,7 @@ func WriteManifest(dir, chain, platform, version, system, minHost string) error 
 	if err != nil {
 		return fmt.Errorf("install: read staging dir %s: %w", dir, err)
 	}
-	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinHost: minHost}
+	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinHost: minHost, Guest: guest, Inputs: inputs}
 	for _, e := range ents {
 		if e.IsDir() || notArtifacts[e.Name()] {
 			continue
@@ -120,4 +133,32 @@ func sha256File(path string) (string, error) {
 		return "", fmt.Errorf("install: hash %s: %w", filepath.Base(path), err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// validHex is a lowercase sha256 hex string, the shape Manifest.Inputs takes.
+func validHex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ReadManifest reads one manifest file back -- the bytes WriteManifest wrote, or the exact
+// signed bytes FetchVerified kept beside the artifacts. It does not verify: a caller that needs
+// the signature checked reads through the Fetcher; this is for a manifest that already did.
+func ReadManifest(path string) (Manifest, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		return Manifest{}, fmt.Errorf("install: parse manifest %s: %w", path, err)
+	}
+	return m, nil
 }

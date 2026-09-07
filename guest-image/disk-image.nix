@@ -151,12 +151,13 @@ let
       # guest deletes is given back to the host file only once something TRIMs it. Weekly is the
       # usual cadence; podman's churn is bursty and a sweep bounds the footprint at a week's peak.
       services.fstrim.enable = true;
-      # The release this image IS ([B.86g]): the guest chain's id, derived from the agent version
-      # it was built with (`v3.<date>.<rev>` -> `guest.<date>.<rev>`, the way publish-release.sh
-      # names the chain). What the guest reports in the handshake once [B.86h] retires the
-      # closure path; a file rather than a flag so a human on the console can read it too.
-      environment.etc."briard-release".text =
-        "guest." + lib.concatStringsSep "." (lib.drop 1 (lib.splitString "." agentVersion)) + "\n";
+      # The BUILD this image is, readable on the console. Since [B.86i] it is the version the
+      # image was built with: for the product image that is `guest-build.<inputs hash>` -- a
+      # function of the image's inputs, never of the commit, so an unchanged image is the same
+      # build -- and a rig's disk carries the rig's version. The RELEASE id (`guest.<date>.<rev>`) is a
+      # channel fact: the manifest names it and the node's record follows it; the image itself
+      # does not know which release it was published as, the way an OCI image does not know its tag.
+      environment.etc."briard-release".text = agentVersion + "\n";
       boot.kernelParams = [
         "console=ttyS0" # serial console for debugging
         # The machine-id comes from the VM's DMI product UUID, which the host derives from the

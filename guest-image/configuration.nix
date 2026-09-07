@@ -817,49 +817,11 @@ in
   config = {
     system.stateVersion = "26.05";
 
-    # Binary-cache substituters, the way a new OS closure reaches a
-    # field guest. Nix takes a *list*, ranks them by the `Priority` each serves in
-    # its nix-cache-info (lower wins), and fetches each path from the best one that
-    # has it: stock nixpkgs comes from the public CDN at 40, and only our overlaid
-    # paths (drbd/drbd-reactor/reverse-proxy/briard-agent/podman+crun) + this guest's
-    # own `toplevel` come from cache.briard.io at 100 — measured 140 MB of a 982 MB
-    # closure, the closure-*diff* effect, not a re-image. (Both numbers moved with
-    # [B.5]: the closure fell 1611 → 982 MB, while OUR share rose 74 → 140 MB,
-    # because slimming crun took podman off the public cache with it. A guest fetches
-    # far less overall and slightly more of it from us — stated here because the
-    # second half of that trade is the one nobody would notice.) Our cache
-    # actually HOLDS the whole closure (nix refuses to write a cache whose
-    # references it does not have — see scripts/publish-cache.sh); priority, not
-    # content, is what keeps the guest off it for stock paths. The upside of that
-    # forced choice: if cache.nixos.org is unreachable, ours alone can still
-    # complete an update. cache.briard.io is a trust root DISTINCT from the
-    # release keyring: nix's own per-path narinfo signatures, verified by the
-    # baked public key below. The matching private key signs at release time via
-    # scripts/publish-cache.sh and lives in the release secret store (never here).
-    # Baked, not a knob (CONTRIBUTING.md: no new flags). The split holds because
-    # flake.nix pins the `nixos-26.05` channel branch (only Hydra-built revs, so
-    # the public cache has everything) and the DRBD kernel module is stock.
-    # ⚠️ The key below is the ALPHA key, and it is provisional BY DECISION (2026-08-06, owner).
-    # It was generated on the development machine — which is also where the R2 publish
-    # credential lives, and it is that CO-LOCATION rather than the key's origin that is the real
-    # weakness: either secret alone is inert (a forged signature has nowhere to be served, and
-    # the bucket serves content that will not verify), but together they are arbitrary code into
-    # every guest. Accepted for the alpha because no guest exists in the field yet, so the blast
-    # radius is zero and rotation costs one line plus a rebuild — and it stops being cheap the
-    # moment a stranger has installed. ** is the item that retires it; its gate is
-    # advertising a beta in any way, not any particular version.**
-    # Rotating is a THREE-release roll, not an edit to this line: the list is baked into the
-    # closure, so the OLD key is what authorises the update that installs the new one (see
-    #(3) for the N / N+1 / N+2 sequence). The `-1` suffix is nix's own generation counter
-    # — it matches signatures by name, so the successor is `cache.briard.io-2`.
-    # cache.nixos.org + its key are the stock NixOS defaults (these lists merge),
-    # so we add only our cache and its key — the guest ends up trusting both.
-    nix.settings = {
-      substituters = [ "https://cache.briard.io" ];
-      trusted-public-keys = [
-        "cache.briard.io-1:HPewy0Rte7JoAP7SS6InoWeIy+MpFRicMCt0EUE6Jig=" # ALPHA key
-      ];
-    };
+    # No substituters and no baked cache key ([B.86i]): the guest has no nix (disk-image.nix,
+    # `nix.enable = false`), so nothing in it ever fetches a store path. An OS release reaches a
+    # node as a whole signed IMAGE over the guest chain, verified by the release keyring the HOST
+    # holds; the image is what a release IS, and cache.briard.io and its narinfo key retired with
+    # the closure path they served.
 
     # Answer the ACPI power button. systemd-logind is what listens for it, and
     # nothing on this appliance was starting it: it ships with no [Install] section and only

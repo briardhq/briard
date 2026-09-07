@@ -19,7 +19,10 @@
 { nixpkgs, pkgs, overlay
   # The release id stamped into the shipped agent + guest disk. Defaulted so a direct
   # import (no flake) still evaluates; flake.nix passes the real one, derived from `self`.
-, agentVersion ? "0.0.0-dev" }:
+, agentVersion ? "0.0.0-dev"
+# The guest image's own version and inputs hash ([B.86i], flake.nix): what the product image is
+# stamped with and what `.#artifacts.guest-disk.inputs` reports to the publish script.
+, guestVersion ? agentVersion, guestInputs ? "" }:
 let
   # THE GUEST AS SHIPPED, and now the only one the framework tests boot ([V3b.3](e2)). There used
   # to be two: this one, which zero-service alone used, and a `dummy-guest` that baked the fixture
@@ -164,7 +167,7 @@ let
   # THE SHIPPED ARTIFACT: the bootable disk `install.sh` lays down, running no service. This
   # is what `.#artifacts.guest-disk` publishes and what the agent-driven bring-up tests boot,
   # so the shape a stranger installs is the shape CI exercises.
-  guestDisk = import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay agentVersion; };
+  guestDisk = (import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay; agentVersion = guestVersion; }) // { inputs = guestInputs; };
 
   driverPkg = pkgs.callPackage ./driver/package.nix { };
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + run --guest)
@@ -183,7 +186,7 @@ let
   # so its toplevel -- what the manifest names and what the booted guest must report -- differs
   # from the shipped one while everything else is identical.
   nextGuestDisk = import ../guest-image/disk-image.nix {
-    inherit nixpkgs pkgs overlay agentVersion;
+    inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
     commonModules = [ { environment.etc."briard-os-version".text = "next\n"; } ];
   };
   # A guest-chain channel holding both releases, laid out as publish-release.sh lays it (the
@@ -205,7 +208,7 @@ let
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
   # a SHORT T_deadman so the reflex fires in seconds (baked into the guest-agent unit's env).
   deadmanGuestDisk = import ../guest-image/disk-image.nix {
-    inherit nixpkgs pkgs overlay agentVersion;
+    inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
     guestAgentEnv = {
       BRIARD_DEADMAN = "8s";
       BRIARD_DEADMAN_JITTER = "1s";

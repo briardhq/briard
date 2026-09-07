@@ -117,6 +117,8 @@ func runInternal(args []string) {
 	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
 	stageSystem := fs.String("system", "", "with --stage-manifest --chain guest: the store path of the NixOS toplevel the image boots (Manifest.System)")
 	stageMinHost := fs.String("min-host", "", "with --stage-manifest --chain guest: the oldest host release this guest tolerates (Manifest.MinHost)")
+	stageGuest := fs.String("guest", "", "with --stage-manifest --chain host: the guest release this host release is published beside ([B.86i])")
+	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain guest: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
 	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	drawSubnets := fs.Bool("draw-subnets", false, "draw this node's two private subnets, checked against this machine's own network, and print them as SYSTEM_SUBNET=/PRIV_SUBNET= -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
@@ -176,7 +178,7 @@ func runInternal(args []string) {
 	// already linked -- and runStageManifest is stubbed out of a `-tags guest` build, so the
 	// guest trim is unaffected.
 	if *stageManifest != "" {
-		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinHost); err != nil {
+		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinHost, *stageGuest, *stageInputs); err != nil {
 			log.Fatalf("stage-manifest: %v", err)
 		}
 		return

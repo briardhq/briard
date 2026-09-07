@@ -24,14 +24,10 @@
 !.env.example
 /.secrets/
 /token
-# Binary-cache signing keys. `publish-cache.sh keygen` defaults its PRIVATE key to
-# ./cache-priv-key.pem — i.e. THIS directory, which is the repo V3.7a publishes publicly, so
-# an unguarded `git add -A` right after keygen would commit the trust root for every guest's
-# OS updates. The real key belongs outside the tree entirely (point CACHE_SIGN_KEY at it);
-# this is a backstop for the default path, not the plan. [B.74]
+# Signing keys. The release key (RELEASE_SIGN_KEY, a PKCS8 PEM) belongs outside the tree
+# entirely; this is a backstop against an unguarded `git add -A` committing the trust root of
+# every node's updates, not the plan. [B.74]
 *.pem
-cache-priv-key
-cache-pub-key
 
 # The release staging directory `/publish-release` builds into: signed binaries, the guest
 # qcow2, the qemu bundles. ~430 MB of build output that is republished from source every time,

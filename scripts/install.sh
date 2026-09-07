@@ -178,7 +178,8 @@ NET_PEER="${BRIARD_NET_PEER:-}"       # a LAN host to ping to confirm we kept ou
 CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
 # WHICH release: `stable` (what strangers get, the tested pair by construction), `latest` (what
 # was published most recently -- how a release is proven before it is promoted), or an exact
-# host id (`v3.<date>.<rev>`; the guest counterpart is derived). One selector for both chains.
+# host id (`v3.<date>.<rev>`; its guest release is the one the host manifest names, [B.86i]). One
+# selector for both chains.
 RELEASE="${BRIARD_RELEASE:-stable}"
 KEYRING="${BRIARD_KEYRING:-$PREFIX/keyring.pem}"       # the bundled release public key (verify root)
 

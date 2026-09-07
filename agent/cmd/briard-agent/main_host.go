@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"briard.io/agent/host"
 	"briard.io/agent/install"
@@ -76,13 +75,25 @@ func runFetchInstall(ctx context.Context, dest string) error {
 			os.RemoveAll(tmp)
 		}
 	}()
-	// The host chain has a platform level and this binary installs the Linux arm; the guest
-	// image is the same VM on every host and has none.
-	for chain, platform := range map[string]string{install.ChainHost: install.PlatformLinux, install.ChainGuest: ""} {
-		f := &install.Fetcher{BaseURL: base, Chain: chain, Platform: platform, Keyring: kr, Logf: log.Printf}
-		if err := f.FetchVerified(ctx, chainTarget(chain, release), filepath.Join(tmp, chain)); err != nil {
-			return err
-		}
+	// The host chain first -- it has a platform level and this binary installs the Linux arm --
+	// and then the guest release ITS MANIFEST NAMES ([B.86i]): the guest image is a function of its
+	// inputs and is re-published only when they change, so its id is no longer derivable from the
+	// host id, and the host manifest is where the pairing lives. One selector still installs one
+	// tested pair; it is just the host side that resolves it.
+	hf := &install.Fetcher{BaseURL: base, Chain: install.ChainHost, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf}
+	if err := hf.FetchVerified(ctx, release, filepath.Join(tmp, install.ChainHost)); err != nil {
+		return err
+	}
+	hm, err := install.ReadManifest(filepath.Join(tmp, install.ChainHost, install.ManifestName))
+	if err != nil {
+		return fmt.Errorf("read the fetched host manifest: %w", err)
+	}
+	if hm.Guest == "" {
+		return fmt.Errorf("host release %s names no guest release -- published before [B.86i]; the alpha reinstalls from a current channel", hm.Version)
+	}
+	gf := &install.Fetcher{BaseURL: base, Chain: install.ChainGuest, Keyring: kr, Logf: log.Printf}
+	if err := gf.FetchVerified(ctx, hm.Guest, filepath.Join(tmp, install.ChainGuest)); err != nil {
+		return err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		return fmt.Errorf("place staging dir: %w", err)
@@ -121,26 +132,11 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 	return u.Run(ctx, target)
 }
 
-// chainTarget maps the ONE release selector an installer names onto each chain's target. The
-// pointer words are the same on every chain. An exact id is a host id (`v3.<date>.<rev>`), and
-// its guest counterpart is the same tree's guest release, `guest.<date>.<rev>` -- the two are
-// staged from one commit by publish-release.sh, which is what makes the swap well-defined. A
-// selector that does not fit either shape is passed through and fails at the fetch, loudly.
-func chainTarget(chain, release string) string {
-	if release == install.TargetStable || release == install.TargetLatest || chain == install.ChainHost {
-		return release
-	}
-	if _, rest, ok := strings.Cut(release, "."); ok {
-		return install.ChainGuest + "." + rest
-	}
-	return release
-}
-
 // runStageManifest writes dir/manifest.json describing the artifacts staged in dir as one
 // release of one chain -- the release pipeline's writer, so the bytes a release publishes are
 // described by the same code that installs them (agent/install.WriteManifest). Host-side for
 // the same reason as runFetchInstall: it lives in the install package, which the `-tags guest`
 // trim excludes.
-func runStageManifest(dir, chain, platform, version, system, minHost string) error {
-	return install.WriteManifest(dir, chain, platform, version, system, minHost)
+func runStageManifest(dir, chain, platform, version, system, minHost, guest, inputs string) error {
+	return install.WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs)
 }

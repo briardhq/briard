@@ -14,8 +14,7 @@ A NixOS system image, so it carries the Linux kernel, systemd and the rest of a 
 under their respective licenses (GPL-2.0 and others). **We build it from this repository**: the
 recipe is [`guest-image/`](guest-image/), and the exact nixpkgs revision every package comes from is
 pinned in [`flake.lock`](flake.lock). `nix build .#artifacts.guest-disk` rebuilds it; `nix build
-nixpkgs#<pkg>.src` against that same pin fetches any component's source. The build closure is also
-served at `cache.briard.io`.
+nixpkgs#<pkg>.src` against that same pin fetches any component's source.
 
 ## QEMU — GPL-2.0
 

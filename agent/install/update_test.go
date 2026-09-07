@@ -523,7 +523,7 @@ func TestHostSatisfies(t *testing.T) {
 func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 	stage := t.TempDir()
 	os.WriteFile(filepath.Join(stage, "nixos.qcow2.zst"), []byte("img"), 0o644)
-	if err := WriteManifest(stage, ChainGuest, "", "guest.20260906.abc1234", "/nix/store/abc-nixos-system", "v3.20260906.abc1234"); err != nil {
+	if err := WriteManifest(stage, ChainGuest, "", "guest.20260906.abc1234", "/nix/store/abc-nixos-system", "v3.20260906.abc1234", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var m Manifest
@@ -539,16 +539,50 @@ func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 		{ChainGuest, "/tmp/not-store", ""}, // not a store path
 		{ChainGuest, "", "not a segment/"}, // an unusable min_host
 	} {
-		if err := WriteManifest(stage, bad[0], "", "guest.20260906.abc1234", bad[1], bad[2]); err == nil {
+		if err := WriteManifest(stage, bad[0], "", "guest.20260906.abc1234", bad[1], bad[2], "", ""); err == nil {
 			t.Errorf("WriteManifest(%v) accepted", bad)
 		}
 	}
 	// Omitted when empty, so a host manifest's bytes are unchanged by the fields' existence.
-	if err := WriteManifest(stage, ChainGuest, "", "guest.20260906.abc1234", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainGuest, "", "guest.20260906.abc1234", "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(filepath.Join(stage, ManifestName))
 	if bytes.Contains(b, []byte("system")) || bytes.Contains(b, []byte("min_host")) {
 		t.Errorf("empty guest facts were emitted: %s", b)
+	}
+}
+
+// The pairing fields ([B.86i]): a host manifest names its guest release, a guest manifest its
+// inputs hash, and neither is accepted on the other chain -- a guest manifest naming a guest, or a
+// host manifest carrying an inputs hash, would be a lie the reader has no way to catch.
+func TestWriteManifestPairingFields(t *testing.T) {
+	stage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stage, "briard-agent"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inputs := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if err := WriteManifest(stage, ChainHost, PlatformLinux, "v3.20260907.abc1234", "", "", "guest.20260901.def5678", ""); err != nil {
+		t.Fatalf("host manifest naming its guest refused: %v", err)
+	}
+	m, err := ReadManifest(filepath.Join(stage, ManifestName))
+	if err != nil || m.Guest != "guest.20260901.def5678" || m.Inputs != "" {
+		t.Fatalf("host manifest read back as %+v (%v)", m, err)
+	}
+	if err := WriteManifest(stage, ChainGuest, "", "guest.20260901.def5678", "/nix/store/abc-sys", "v3.20260907.abc1234", "", inputs); err != nil {
+		t.Fatalf("guest manifest carrying its inputs refused: %v", err)
+	}
+	if m, err = ReadManifest(filepath.Join(stage, ManifestName)); err != nil || m.Inputs != inputs || m.Guest != "" {
+		t.Fatalf("guest manifest read back as %+v (%v)", m, err)
+	}
+	for _, bad := range [][]string{
+		{ChainGuest, "guest.20260901.def5678", ""}, // a guest naming a guest
+		{ChainHost, "", inputs},                    // a host carrying inputs
+		{ChainHost, "stable", ""},                  // a pointer word as the pair
+		{ChainGuest, "", "not-a-hash"},             // inputs that are not a sha256
+	} {
+		if err := WriteManifest(stage, bad[0], "", "v3.20260907.abc1234", "", "", bad[1], bad[2]); err == nil {
+			t.Errorf("WriteManifest(%v) accepted", bad)
+		}
 	}
 }

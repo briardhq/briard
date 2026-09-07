@@ -70,7 +70,7 @@ let
     chmod 0644 "$H"/*.zst "$G"/*.zst
     # The production writer, not a re-implementation in Nix -- which would have tested this file
     # against itself and proven nothing about what a release actually publishes.
-    "$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V"
+    "$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V" --guest "$GV"
     # The guest manifest names the closure the image boots and the oldest host that tolerates
     # it -- this release's own ([B.86d]), as publish-release.sh stamps it.
     "$H/briard-agent" --stage-manifest "$G" --chain guest                  --release "$GV" \

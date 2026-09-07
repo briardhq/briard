@@ -65,7 +65,6 @@ let
   # a link error rather than quietly.
   #
   # THE COST, stated because it is not free: overriding crun changes podman's hash, so podman and
-  # crun leave cache.nixos.org (both are there today) and move onto cache.briard.io -- about 58 MB
   # more for our cache to serve, against a closure that is 636 MB smaller. Rebuild cost is
   # negligible (measured 47s for podman; the Go vendor derivation is unaffected and still
   # substitutes). It does put the container runtime behind the alpha signing key, which is

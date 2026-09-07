@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -210,5 +211,63 @@ func TestNoDirectPromoteDemote(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The guest image's input hash ([B.86i], flake.nix guestInputPackages) must cover every Go
+// package the `-tags guest` binary links, or an edit to a package outside the list would ship a
+// changed guest binary under an unchanged inputs hash -- and `publish-release.sh stage` would
+// then REUSE the old image. `go list` is the truth; the flake carries a copy; this keeps them equal.
+func TestGuestInputsCoverTheGuestBinary(t *testing.T) {
+	root := moduleRoot(t)
+	cmd := exec.Command("go", "list", "-deps", "-tags", "guest", "./agent/cmd/briard-agent")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	want := map[string]bool{}
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if rest, ok := strings.CutPrefix(l, "briard.io/"); ok {
+			if strings.HasPrefix(rest, "shared/") {
+				rest = "shared" // the flake hashes the whole shared/ tree
+			}
+			want[rest] = true
+		}
+	}
+	flake, err := os.ReadFile(filepath.Join(root, "flake.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(flake)
+	i := strings.Index(s, "guestInputPackages = [")
+	if i < 0 {
+		t.Fatal("flake.nix has no guestInputPackages list")
+	}
+	body := s[i : i+strings.Index(s[i:], "];")]
+	have := map[string]bool{}
+	for _, q := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		have[q[1]] = true
+	}
+	// A listed DIRECTORY covers every package below it (the hash is of the tree), so a
+	// package is covered by an exact entry or by an ancestor.
+	covers := func(dir, pkg string) bool { return pkg == dir || strings.HasPrefix(pkg, dir+"/") }
+	for p := range want {
+		ok := false
+		for h := range have {
+			ok = ok || covers(h, p)
+		}
+		if !ok {
+			t.Errorf("guest binary links %s but flake.nix guestInputPackages does not hash it", p)
+		}
+	}
+	for h := range have {
+		ok := false
+		for p := range want {
+			ok = ok || covers(h, p)
+		}
+		if !ok {
+			t.Errorf("flake.nix guestInputPackages hashes %s, which the guest binary does not link (drop it, or the guest chain churns for nothing)", h)
+		}
 	}
 }
