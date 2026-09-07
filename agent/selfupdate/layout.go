@@ -233,9 +233,59 @@ func (l Layout) CommittedGuestRelease() string {
 	return strings.TrimPrefix(filepath.Base(t), guestTree)
 }
 
-// PruneGuestTrees removes guest-<release> trees neither link names, like PruneQEMUTrees.
+// PruneGuestTrees removes guest-<release> trees no link names -- committed, staged, or the last
+// GOOD one, which a refused release falls back to for as long as it is refused.
 func (l Layout) PruneGuestTrees() ([]string, error) {
-	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree)
+	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree, func() (string, bool) { return l.qemuTarget(l.GoodGuestPath()) })
+}
+
+// THE PERMANENT REVERT ([B.86j], owner 2026-09-07). The guest's own pivot falls back only until
+// its next launch (a fresh overlay knows nothing), so the host remembers two things beside the
+// committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, a link like the
+// others, so its tree survives pruning) and which release it REFUSED (`guest.reverted`, an id).
+// A refused release is never pushed again; the good tree is, on every launch, until a new host
+// commit brings a different tree -- at which point the refusal no longer names the committed
+// release and is simply ignored.
+const (
+	goodGuestLink = "guest.good"
+	guestReverted = "guest.reverted"
+)
+
+func (l Layout) GoodGuestPath() string     { return filepath.Join(l.Base, goodGuestLink) }
+func (l Layout) GuestRevertedPath() string { return filepath.Join(l.Base, guestReverted) }
+
+// GoodGuestRelease is the release of the last tree the guest ran after a push, "" if none yet.
+func (l Layout) GoodGuestRelease() string {
+	t, ok := l.qemuTarget(l.GoodGuestPath())
+	if !ok {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Base(t), guestTree)
+}
+
+// MarkGuestGood records `release`'s tree as the last one the guest ran: a link, replaced
+// atomically, so a later refusal has a tree to fall back to and the pruner keeps it.
+func (l Layout) MarkGuestGood(release string) error {
+	return l.stageTreeLink(l.GuestTree(release), guestTree, l.GoodGuestPath(), goodGuestLink)
+}
+
+// MarkGuestReverted records that the guest refused `release`'s bundle. Durable (Base, not the
+// run dir): the refusal must outlive the guest's launches, which is the whole point.
+func (l Layout) MarkGuestReverted(release string) error {
+	return atomicWrite(l.GuestRevertedPath(), 0o644, func(f *os.File) error {
+		_, err := f.WriteString(release + "\n")
+		return err
+	})
+}
+
+// GuestReverted is the refused release, if one is recorded.
+func (l Layout) GuestReverted() (string, bool) {
+	b, err := os.ReadFile(l.GuestRevertedPath())
+	if err != nil {
+		return "", false
+	}
+	r := strings.TrimSpace(string(b))
+	return r, r != ""
 }
 
 // NextQEMUStaged reports whether a qemu link is staged. The candidate agent runs its smoke test
@@ -287,14 +337,13 @@ func (l Layout) PruneQEMUTrees() ([]string, error) {
 	return l.pruneTrees(qemuTree, l.CommittedQEMUTree, l.NextQEMUTree)
 }
 
-// pruneTrees removes every `<prefix>*` directory under Base that neither link names.
-func (l Layout) pruneTrees(prefix string, committed, next func() (string, bool)) ([]string, error) {
+// pruneTrees removes every `<prefix>*` directory under Base that no given link names.
+func (l Layout) pruneTrees(prefix string, links ...func() (string, bool)) ([]string, error) {
 	keep := map[string]bool{}
-	if t, ok := committed(); ok {
-		keep[t] = true
-	}
-	if t, ok := next(); ok {
-		keep[t] = true
+	for _, link := range links {
+		if t, ok := link(); ok {
+			keep[t] = true
+		}
 	}
 	ents, err := os.ReadDir(l.Base)
 	if err != nil {

@@ -1217,6 +1217,25 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print(f"{V4}: a guest agent that will not start reverted inside the guest; the node runs {V4} with the guest on {V}'s bundle and says so")
 
+    # THE REVERT IS PERMANENT (owner, 2026-09-07). The guest's own fallback lasts one launch; the
+    # host's record outlives it: the refusal is written beside the tree, the last GOOD tree is
+    # linked, and a fresh launch is dressed with the good bundle -- never with {V4} again, and
+    # never left on the image's firmware. Alerted once. Proven by relaunching the guest.
+    host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V4}")
+    assert host.succeed("readlink /opt/briard/agent/guest.good").strip() == f"guest-{V}", "the last good tree is not linked"
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'Briard: guest bundle push failed'", timeout=60)
+    before = dressed_count(V)
+    reverts = int(host.succeed("journalctl -u briard-agent | grep -c 'PUSH REVERTED' || true").strip())
+    host.succeed("systemctl stop briard-guest.service")
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q '{V4} reverted before; dressing the guest with the last good bundle {V} instead'", timeout=600)
+    host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {V} (dressed)') -gt {before} ]", timeout=600)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=600)
+    assert int(host.succeed("journalctl -u briard-agent | grep -c 'PUSH REVERTED' || true").strip()) == reverts, "the refused bundle was pushed again after a relaunch"
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
+    host.succeed(f"test -d /opt/briard/agent/guest-{V}")   # the good tree survives the launch's prune
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    print(f"a relaunch after the refusal was dressed with the last good bundle {V}, not {V4} and not the firmware; the refusal was alerted once")
+
     # ---- THE GUEST CHAIN ON THE SHIPPED NODE ([B.86d]) ---------------------------------------
     # The installed guest manifest names the closure the image boots; install.sh seeded the
     # node-local record from it; the agent's unit carries the channel root. `briard update guest`

@@ -1039,6 +1039,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	defer t.Stop()
 	cr := &certRequester{}     // node-side CSR handshake state, lives for the observe loop
 	su := cfg.newSelfUpdater() // the flag-watcher + trigger of the update unit below the agent ([B.86a])
+	revertAlerted := ""        // the refused guest bundle already alerted on ([B.86j]; once per release)
 	// The host's own route to the VIP its guest holds, over the private link -- the one address
 	// macvtap hides from the machine running the guest and from nobody else ([V3b.19]). Lives for
 	// the observe loop because it remembers what it installed; see viproute.go.
@@ -1176,6 +1177,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
 			cfg.adoptInstalledServices(rq.d, o, logf)
 		case <-t.C:
+			cfg.alertGuestRevert(ctx, n, logf, &revertAlerted)
 		}
 	}
 }
