@@ -102,7 +102,7 @@ const verbSetHostname = "sys.hostname"
 // Upgrade/rollback verbs, driven by the host's guest.Manager. Data
 // snapshot/restore cut at the service's btrfs subvolume (per-service scope, not the
 // whole volume). os.system reads the code identity (the closure store path, node-
-// independent -- NOT a generation number); os.switch is the whole-VM code half.
+// independent -- NOT a generation number); the image the host boots is the whole-VM code half.
 //
 // The five service.* verbs below were spelled `payload.*` until the build-time payload slot was
 // deleted ([V3b.3](e2)) and they were left naming a mechanism no node has. They act on whichever
@@ -130,16 +130,11 @@ const (
 	verbDataSnapshot    = "data.snapshot" // btrfs subvolume snapshot -r <DataDir> <dest>
 	verbDataRestore     = "data.restore"  // replace the live subvolume with a snapshot
 	verbOSSystem        = "os.system"     // readlink -f /run/current-system -> closure store path
-	verbOSStage         = "os.stage"      // nix-store --realise: pull a closure INTO the store
-	verbOSComponents    = "os.components" // read a closure's boot-critical parts, for the reboot decision
-	verbOSSwitch        = "os.switch"     // point the system profile at a closure + activate it
-	verbOSStageBoot     = "os.stageboot"  // make a closure BOOTABLE without making it the default
 	verbOSPowerOff      = "os.poweroff"   // ask the guest OS to shut itself down cleanly
-	verbOSGC            = "os.gc"         // drop old profile generations, then collect the store
 )
 
 // PowerOffGrace bounds the one handler that runs DETACHED from the serve context. Every other
-// verb is cancelled when the agent is asked to stop, and that is correct -- `os.stage` fetching a
+// verb is cancelled when the agent is asked to stop, and that is correct -- a service pull fetching a
 // closure has nothing worth finishing once the machine is going down. `os.poweroff` is the
 // exception, and the reason is circular: the shutdown it asks for is what SIGTERMs this process,
 // so inheriting that cancellation means the verb is killed by its own success ([B.132]).
@@ -394,8 +389,7 @@ var guestCapabilities = []string{
 	verbDataSnapshot, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
-	verbOSSystem, verbOSStage, verbOSComponents, verbOSSwitch, verbOSStageBoot, verbOSPowerOff,
-	verbOSGC,
+	verbOSSystem, verbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite,
 	verbDashboardHandoff,
@@ -411,7 +405,7 @@ const (
 	// switch-only update moves out from under it. It is the honest reference for "would this
 	// take a reboot?": the kernel in the machine is the booted one.
 	bootedSystem = "/run/booted-system"
-	// SystemProfile is the profile os.switch repoints to roll the whole-VM generation.
+	// SystemProfile is the system profile (one generation: the image the host boots).
 	systemProfile = "/nix/var/nix/profiles/system"
 	// StagingProfile is where a REBOOT-path upgrade parks its target. It is a
 	// second system profile, NOT the system one: install-grub.pl globs
@@ -478,58 +472,6 @@ type serviceRequest struct {
 type snapshotRequest struct {
 	DataDir string `json:"data_dir"`
 	Path    string `json:"path"`
-}
-
-// systemRequest names a closure store path to switch the system to (os.switch).
-type systemRequest struct {
-	Path string `json:"path"`
-}
-
-// stageRequest names a closure to realise INTO the guest store (os.stage), and
-// optionally the one binary cache to realise it from.
-//
-// From/FromKey are empty in production: the guest substitutes from the caches baked
-// into its image (cache.nixos.org + cache.briard.io, guest-image/configuration.nix),
-// which is the whole point of the cache. When set, they OVERRIDE that list for this one
-// call — fetch only from From, and accept only narinfos signed by FromKey.
-//
-// Letting the host name the source grants it no authority it lacks: it already dictates
-// WHICH closure the guest activates (os.switch, Principle 8 — the host owns every
-// generation switch), so naming WHERE the bytes come from and WHOSE signature to accept
-// cannot widen that. What it must never do is *weaken* the check, so `require-sigs` is
-// never relaxed — an override swaps the trusted key, it does not remove the gate. The
-// nixosTest harness uses this to point a guest at a cache served inside the test; a future flock peer-cache (one node downloads, then serves the rest over the LAN) is the same shape.
-type stageRequest struct {
-	Path    string `json:"path"`
-	From    string `json:"from,omitempty"`
-	FromKey string `json:"from_key,omitempty"`
-}
-
-// SystemComponents are the parts of a system closure that a running kernel cannot be
-// talked out of: swapping them takes a boot, not a `switch-to-configuration switch`
-// . Every field is a resolved store path except KernelParams, which is the
-// literal command line — a params change is invisible in the store paths and still needs a
-// boot to take effect.
-//
-// This is FACTS, not a verdict: the guest reads, the host decides
-// ([[logic-on-host-by-default]]). That split is what makes the decision exhaustively
-// unit-testable on the host without a live guest, and it keeps the policy — which
-// differences are worth a reboot — in one place instead of baked into a guest binary that
-// updates on its own schedule.
-type SystemComponents struct {
-	Kernel        string `json:"kernel"`
-	Initrd        string `json:"initrd"`
-	KernelModules string `json:"kernel_modules"`
-	Systemd       string `json:"systemd"`
-	KernelParams  string `json:"kernel_params"`
-}
-
-// StageSource overrides where one Stage call fetches from: a binary cache URL and the
-// public key its narinfos must carry. The zero value means "use the guest's baked
-// caches", which is production. See stageRequest for why the host may name this.
-type StageSource struct {
-	URL string
-	Key string
 }
 
 // serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
@@ -1367,159 +1309,6 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, err
 			}
 			return strings.TrimSpace(string(out)), nil
-		case verbOSStage:
-			var req stageRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			if req.Path == "" {
-				return nil, fmt.Errorf("os.stage: empty system closure")
-			}
-			// The delivery half of, and the only verb that pulls bytes: realise the
-			// closure into the local store, substituting whatever is missing. Everything
-			// downstream (os.switch and os.stageboot's staged checks, a promoting peer's converge)
-			// assumes the closure is ALREADY local -- the failover path must never fetch
-			// -- so this is what makes that assumption true ahead of time.
-			//
-			// Idempotent: a closure already present realises to a no-op, so re-staging the
-			// running system costs nothing and a retry after a partial fetch resumes.
-			args := []string{"--realise", req.Path}
-			if req.From != "" {
-				// Override, not extend: fetch ONLY from the named cache. Extending would
-				// leave the baked caches in the list, and in a hermetic test they are
-				// unreachable -- so nix would stall on them before trying the one cache
-				// that actually has the closure.
-				args = append(args, "--option", "substituters", req.From)
-				if req.FromKey != "" {
-					args = append(args, "--option", "trusted-public-keys", req.FromKey)
-				}
-			}
-			if err := run("nix-store", args...); err != nil {
-				return nil, err
-			}
-			// Make what was just staged DURABLE, not merely written. Nix registers the paths
-			// with a synced db transaction but does not fsync their data (fsync-store-paths
-			// defaults off), so for a window after staging the store db says "valid" about
-			// files whose pages exist only in memory. Anything that captures the disk in that
-			// window — the switch path's crash-consistent SnapshotCreateLive moments from now,
-			// or a host power cut — then restores a REGISTERED-but-TORN closure, which nix
-			// will never re-fetch. Measured ([B.65]): a restored target's kernel-params read
-			// back empty, flipping the activation verdict to reboot for a switch-only pair.
-			return nil, run("sync")
-		case verbOSComponents:
-			req, err := systemReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			// Empty path = the BOOTED generation, the reference the host diffs against.
-			root := req.Path
-			if root == "" {
-				root = bootedSystem
-			}
-			var c SystemComponents
-			for _, f := range []struct {
-				name string
-				out  *string
-			}{
-				{"kernel", &c.Kernel},
-				{"initrd", &c.Initrd},
-				{"kernel-modules", &c.KernelModules},
-				{"systemd", &c.Systemd},
-			} {
-				out, err := x.Run(ctx, "readlink", "-f", root+"/"+f.name)
-				if err != nil {
-					return nil, fmt.Errorf("os.components: %s/%s: %w", root, f.name, err)
-				}
-				*f.out = strings.TrimSpace(string(out))
-			}
-			// Kernel-params is a FILE, not a link: the command line is not a store path, so a
-			// params-only change leaves every other field identical while still needing a boot.
-			out, err := x.Run(ctx, "cat", root+"/kernel-params")
-			if err != nil {
-				return nil, fmt.Errorf("os.components: %s/kernel-params: %w", root, err)
-			}
-			c.KernelParams = strings.TrimSpace(string(out))
-			// An empty read is damage, never a value. No bootable generation has an empty
-			// command line (ours always carry console/root/loglevel), but a closure whose
-			// data pages were lost to a crash-consistent capture reads exactly this way —
-			// registered in the store db, symlinks intact, file content gone ([B.65]: a
-			// restored rollback snapshot). Returning "" would hand the caller a diffable
-			// value, and ActivationFor would then route a switch-only change down the reboot
-			// path — into the very generation whose files are torn. Refuse instead, naming
-			// the likely cause, so the directive fails diagnosably.
-			if c.KernelParams == "" {
-				return nil, fmt.Errorf("os.components: %s/kernel-params read EMPTY — the closure's data is damaged (torn snapshot restore or power cut after staging?)", root)
-			}
-			return c, nil
-		case verbOSSwitch:
-			req, err := systemReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			// The closure must ALREADY be staged, and this guard is load-bearing rather
-			// than defensive: with substituters configured `nix-env --set` will
-			// happily substitute a missing closure, so without it a switch could silently
-			// fetch -- breaking's "converge is select, never build" in the one place
-			// that cannot afford to wait on a network. os.stage is what puts it there, and
-			// os.stageboot carries the same guard for the same reason. (It lived on os.pin
-			// once the code pin was removed, and belonged here all along: the rule is
-			// about switching, not about recording.)
-			if err := run("test", "-e", req.Path); err != nil {
-				return nil, fmt.Errorf("os.switch: system %s not staged: %w", req.Path, err)
-			}
-			// Point the profile at the closure (a new generation -- a roll-forward even
-			// when reverting) then activate it.
-			if err := run("nix-env", "-p", systemProfile, "--set", req.Path); err != nil {
-				return nil, err
-			}
-			return nil, run(req.Path+"/bin/switch-to-configuration", "switch")
-		case verbOSStageBoot:
-			req, err := systemReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			if req.Path == "" {
-				return nil, fmt.Errorf("os.stageboot: empty system closure")
-			}
-			// Same warm-standby rule as os.switch: the closure must ALREADY be local. This verb
-			// arms a boot; it never fetches. os.stage is what puts it there.
-			if err := run("test", "-e", req.Path); err != nil {
-				return nil, fmt.Errorf("os.stageboot: system %s not staged: %w", req.Path, err)
-			}
-			// Register the closure as a generation of the `staging` profile. This both
-			// materialises it as a gcroot and gets it a grub submenu of its own, and it is
-			// the ONLY write -- the bootloader default still points at the running system.
-			if err := run("mkdir", "-p", stagingProfileDir); err != nil {
-				return nil, err
-			}
-			if err := run("nix-env", "-p", stagingProfile, "--set", req.Path); err != nil {
-				return nil, err
-			}
-			// Regenerate grub.cfg from the RUNNING system, not the staged one. This is the
-			// whole trick: install-grub.pl takes its default entry from the toplevel whose
-			// switch-to-configuration invoked it ($defaultConfig = $ARGV[1]), so running the
-			// current system's copy lists staging while leaving the default on current.
-			// (`nixos-rebuild boot --profile-name staging` runs the STAGED system's copy and
-			// would hand the default over -- the exact thing this must not do.) Nothing on
-			// disk selects staging; only the host's SMBIOS flag at launch does.
-			if err := run(currentSystem+"/bin/switch-to-configuration", "boot"); err != nil {
-				return nil, err
-			}
-			// Flush it. The next thing that happens to this guest is a shutdown, and the
-			// staging entry is worthless if it is still in page cache when the VM stops.
-			return nil, run("sync")
-		case verbOSGC:
-			// Delete old generations of every profile, then collect. Both halves matter and
-			// the first is the one that does the work: each /nix/var/nix/profiles/system-N-link
-			// is itself a gcroot pinning a whole closure, so a bare `nix-collect-garbage`
-			// frees nothing however many have piled up. -d does the generation sweep first,
-			// recursing into system-profiles/ so the reboot path's `staging` profile is
-			// included (nix-collect-garbage.cc's removeOldGenerations walks subdirectories).
-			//
-			// It never deletes what the node might need: nix keeps each profile's CURRENT
-			// generation (profiles.cc deleteOldGenerations skips curGen), and NixOS roots
-			// current-system + booted-system. os.hold covers the one case those miss.
-			return nil, run("nix-collect-garbage", "-d")
 		case verbOSPowerOff:
 			// The FIRST-CHOICE clean shutdown: ask the guest OS directly, over the channel
 			// the host already has, instead of rattling its virtual power button and hoping
@@ -2474,12 +2263,6 @@ func snapshotReq(payload json.RawMessage) (snapshotRequest, error) {
 	return req, err
 }
 
-func systemReq(payload json.RawMessage) (systemRequest, error) {
-	var req systemRequest
-	err := json.Unmarshal(payload, &req)
-	return req, err
-}
-
 // Client is the host end: typed calls to the guest agent over the channel.
 type Client struct {
 	c       *conn
@@ -2945,52 +2728,6 @@ func (g *Client) SystemPath(ctx context.Context) (string, error) {
 	return path, err
 }
 
-// Stage realises closure into the guest's nix store, substituting whatever is missing --
-// the delivery half of, and the ONLY call that pulls bytes. Everything after
-// it (Switch's and StageBoot's staged checks, a promoting peer's converge) requires the closure
-// to be local already, because the failover path must never fetch.
-//
-// src is the zero StageSource in production, where the guest uses the caches baked into
-// its image; a caller sets it to override that for one call (see StageSource).
-func (g *Client) Stage(ctx context.Context, closure string, src StageSource) error {
-	return g.c.call(ctx, verbOSStage, stageRequest{Path: closure, From: src.URL, FromKey: src.Key}, nil)
-}
-
-// Components reads a closure's boot-critical parts. An empty closure reads the
-// BOOTED generation -- the reference to diff a staged target against, since that is the
-// kernel actually running. The host compares the two and picks the activation method;
-// this call has no opinion.
-func (g *Client) Components(ctx context.Context, closure string) (SystemComponents, error) {
-	var c SystemComponents
-	err := g.c.call(ctx, verbOSComponents, systemRequest{Path: closure}, &c)
-	return c, err
-}
-
-// Switch points the system profile at closure (a store path) and activates it -- the
-// whole-VM code half of an upgrade/rollback. Reverting is the same call with an
-// earlier closure (a roll-forward). The closure must already be in the store -- Stage
-// is what puts it there.
-func (g *Client) Switch(ctx context.Context, closure string) error {
-	return g.c.call(ctx, verbOSSwitch, systemRequest{Path: closure}, nil)
-}
-
-// StageBoot makes closure bootable without making it the default: it registers the closure
-// as a generation of the `staging` system profile and reinstalls the bootloader from the
-// RUNNING system, so grub gains a staging submenu while its default entry does not move
-// . Nothing on the guest's disk then decides which of the two boots -- the host
-// does, per launch, with the SMBIOS selector (platform.QEMUSpec.BootStaging).
-//
-// That split is deliberate: the arming lives OUTSIDE the disk, so an OS-disk snapshot taken
-// after this call contains nothing armed, and restoring it cannot re-run the generation the
-// restore was undoing. (The rejected alternative, `grub-reboot`, writes the arming into the
-// guest's own grubenv -- inside the snapshot.) It also fails safe: an unset or unrecognised
-// selector leaves grub on its default, so a bug boots the OLD system.
-//
-// The closure must already be staged; this call never fetches.
-func (g *Client) StageBoot(ctx context.Context, closure string) error {
-	return g.c.call(ctx, verbOSStageBoot, systemRequest{Path: closure}, nil)
-}
-
 // PowerOff asks the guest OS to shut itself down cleanly. It returns as soon as the request
 // is accepted -- the shutdown then proceeds without us, and the control channel dies with
 // it, which is expected rather than an error. Confirm completion by watching the VM stop
@@ -3002,14 +2739,6 @@ func (g *Client) StageBoot(ctx context.Context, closure string) error {
 // ACPI one is what remains when the agent is the thing that died.
 func (g *Client) PowerOff(ctx context.Context) error {
 	return g.c.call(ctx, verbOSPowerOff, nil, nil)
-}
-
-// CollectGarbage drops old generations of the guest's profiles and collects the store
-// -- the counterweight to incremental updates, which add a closure per release and
-// never removed one. Host-scheduled and never inside a maintenance bracket; see the observe
-// loop, where being on the same goroutine as the upgrade dispatch makes that structural.
-func (g *Client) CollectGarbage(ctx context.Context) error {
-	return g.c.call(ctx, verbOSGC, nil, nil)
 }
 
 // ReactorPause suspends drbd-reactor's promoter for a snippet (maintenance mode):

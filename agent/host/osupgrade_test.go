@@ -73,85 +73,6 @@ func newTestUpgrade(t *testing.T, fixture string) *osUpgrade {
 	return newOSUpgrade(cfg, nil, dialStatus(t, fixture), guest.Config{}, func(string, ...any) {})
 }
 
-// The handover gate. A reboot is a failover on an HA pair, and scheduling a failover is the cloud's
-// job -- so a node that would hand its work to a peer declines instead of demoting itself.
-func TestRebootUpgradeDeclinesWhenAPeerCanTakeOver(t *testing.T) {
-	u := newTestUpgrade(t, "status-primary.json") // node2 is connected, diskful, UpToDate
-
-	back, err := u.RebootUpgrade(context.Background(), "/nix/store/target")
-	if !errors.Is(err, ErrHandoverRequired) {
-		t.Fatalf("want ErrHandoverRequired, got %v", err)
-	}
-	if !back {
-		t.Error("a declined upgrade leaves the node on its previous generation, so rolledBack must be true")
-	}
-	// The refusal has to name the successor, or a human reading the log has to reproduce the
-	// state to learn why their upgrade did not happen.
-	if !strings.Contains(err.Error(), "node2") || !strings.Contains(err.Error(), "CAN take over") {
-		t.Errorf("the refusal should name the peer it declined for; got %v", err)
-	}
-	// ...and it must NOT have been the witness that decided it: a diskless peer is quorate
-	// company, not a successor.
-	if !strings.Contains(err.Error(), "witness[Secondary connected=true diskful=false") {
-		t.Errorf("the witness should be reported as unable to take over; got %v", err)
-	}
-}
-
-// The other half, and the one that makes the test above mean something: a node with no possible
-// successor is exactly where a local reboot upgrade IS allowed, because it stays Primary
-// throughout and the service-shaped health gate is then the right question.
-//
-// status-lone-anchor is the case that pins the predicate down. A sole diskful anchor beside a
-// connected witness is Primary AND fully quorate AND has nobody to take over -- so it is the one
-// fixture where "quorate without me" and "someone can take over" disagree. Swap the gate to the
-// quorum-shaped test this gate warns against, and this test goes red while every other one
-// stays green:
-// the node would sail through, reboot, and take the house down to install an update.
-func TestRebootUpgradeProceedsWithNoSuccessor(t *testing.T) {
-	for _, fixture := range []string{
-		"status-noquorum.json",    // peers unreachable: no quorum and no successor
-		"status-lone-anchor.json", // quorate, and still no successor
-	} {
-		t.Run(fixture, func(t *testing.T) {
-			u := newTestUpgrade(t, fixture)
-
-			_, err := u.RebootUpgrade(context.Background(), "/nix/store/target")
-			if errors.Is(err, ErrHandoverRequired) {
-				t.Fatalf("a node with no possible successor must not be declined: %v", err)
-			}
-			// It fails, of course -- statusExec answers nothing else -- and that failure is the
-			// proof it got past the gate and into the sequence.
-			if err == nil {
-				t.Fatal("want the sequence to proceed (and then fail on the refusing guest), got success")
-			}
-		})
-	}
-}
-
-// A node that cannot read its own cluster state declines too. Not knowing whether a peer would
-// take over is not the same as knowing none would, and the two answers are a reboot apart.
-func TestRebootUpgradeDeclinesWhenTheClusterIsUnreadable(t *testing.T) {
-	cconn, sconn := net.Pipe()
-	// A guest whose drbdsetup fails: every verb errors, including the status read.
-	go guestagent.Serve(context.Background(), sconn, &statusExec{status: []byte("not json")})
-	c := guestagent.NewClient(cconn)
-	t.Cleanup(func() { c.Close() })
-	cfg := Config{}
-	cfg.Resource.Name = "r0"
-	u := newOSUpgrade(cfg, nil, c, guest.Config{}, func(string, ...any) {})
-
-	back, err := u.RebootUpgrade(context.Background(), "/nix/store/target")
-	if err == nil {
-		t.Fatal("want a refusal when the cluster cannot be read")
-	}
-	if !strings.Contains(err.Error(), "read cluster") {
-		t.Errorf("the refusal should say the read is what failed; got %v", err)
-	}
-	if !back {
-		t.Error("nothing moved, so the node is still on its previous generation")
-	}
-}
-
 // THE SWITCH METHOD. What these two tests are for is less the sequence than the
 // shape gave it: an OS upgrade that does not touch the workload, and one rollback for
 // both methods. Both are things the code can lose silently, so both are asserted directly --
@@ -314,82 +235,6 @@ func newSwitchUpgrade(t *testing.T, healthy bool) (*osUpgrade, *recExec, *fakeQM
 		Logf:           t.Logf,
 	}, t.Logf)
 	return u, x, q
-}
-
-// The commit leg, and the principle it has to hold to: the new OS runs the same containers on
-// the same data, so the sequence takes a rollback point, activates, gates on the front door,
-// collects and drops the point -- and says nothing to the workload at any step.
-func TestSwitchUpgradeCommitsWithoutTouchingTheWorkload(t *testing.T) {
-	u, x, q := newSwitchUpgrade(t, true)
-
-	back, err := u.Upgrade(context.Background(), "/nix/store/target")
-	if err != nil {
-		t.Fatalf("a healthy switch upgrade must commit: %v", err)
-	}
-	if back {
-		t.Error("nothing rolled back, so rolledBack must be false")
-	}
-
-	if !x.ran("/nix/store/target/bin/switch-to-configuration switch") {
-		t.Errorf("the target was never activated: %q", x.all())
-	}
-	// Phases A and C: the point is taken live before the switch and dropped at commit, and it
-	// is the ONLY thing this path asks of QEMU.
-	if got := q.got(); len(got) != 2 ||
-		got[0] != "blockdev-snapshot-internal-sync" || got[1] != "blockdev-snapshot-delete-internal-sync" {
-		t.Errorf("want the rollback point taken then dropped, got %q", got)
-	}
-	if !x.ran("nix-collect-garbage") {
-		t.Error("the displaced generation was never collected (commit is GC's trigger)")
-	}
-	// The quiesce is the promoter hold, and nothing else.
-	if !x.ran("systemctl stop drbd-reactor.service") || !x.ran("systemctl start drbd-reactor.service") {
-		t.Errorf("the promoter must be held across the switch and released after: %q", x.all())
-	}
-	assertLeftTheWorkloadAlone(t, x)
-	// The gate asked the front door and nothing else. A unit-shaped conjunct would have found
-	// "inactive" above and never passed -- so this run reaching commit is itself the proof, and
-	// the explicit check names what would have caused it.
-	if x.ran("is-active") {
-		t.Errorf("the OS gate asked a unit whether it was running; it must ask the front door alone: %q", x.all())
-	}
-}
-
-// The failing leg. Two claims: the gate still trips (the sequence did not simply stop gating),
-// and the rollback goes through the DISK -- one path for both methods -- rather than switching
-// back in band the way the retired guest-side sequence did.
-func TestSwitchUpgradeRollsBackThroughTheDiskNotAnInBandSwitchBack(t *testing.T) {
-	u, x, q := newSwitchUpgrade(t, false) // the front door never comes back green
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, err := u.Upgrade(ctx, "/nix/store/target")
-	if err == nil {
-		t.Fatal("a gate that never passes must not commit")
-	}
-	// It went to the rollback leg. That leg then fails here, because a unit test has no disk to
-	// restore -- proving it was ATTEMPTED is the assertion this rig can carry; the lab demo (f) proves
-	// it works, on the shipped artifact.
-	if !strings.Contains(err.Error(), "rollback") {
-		t.Errorf("a tripped gate must go to the rollback leg; got %v", err)
-	}
-	// Exactly one activation, and it is the target. The retired shape activated twice -- target,
-	// then back to prev -- so a second one here would mean the in-band ladder had come back.
-	if n := x.count("switch-to-configuration"); n != 1 {
-		t.Errorf("want exactly one activation (the target), got %d: %q", n, x.all())
-	}
-	if x.ran("/nix/store/prev/bin/switch-to-configuration") {
-		t.Error("the switch path rolled back in band; the rollback point is the OS disk, for both methods")
-	}
-	// The rollback point was taken and NOT dropped: the upgrade did not commit, and the tag's
-	// presence is what tells a restarting agent an upgrade was in flight (snapshot.go).
-	if got := q.got(); len(got) != 1 || got[0] != "blockdev-snapshot-internal-sync" {
-		t.Errorf("want the rollback point taken and left standing, got %q", got)
-	}
-	if x.ran("nix-collect-garbage") {
-		t.Error("a rolled-back upgrade must not collect: the generation it would be free to drop is the one the node is going back to")
-	}
-	assertLeftTheWorkloadAlone(t, x)
 }
 
 // assertLeftTheWorkloadAlone is as a check: no service lifecycle, no service data. It
@@ -610,29 +455,5 @@ func TestStopCleanlyReportsAGuestThatWillNotGoDown(t *testing.T) {
 	// refused", and which route refused is the first thing anyone reading it needs.
 	if !strings.Contains(err.Error(), "refusing systemctl poweroff") || !strings.Contains(err.Error(), "dial QMP") {
 		t.Errorf("want both the agent and the power-button failure in the error, got %v", err)
-	}
-}
-
-// A node that is NOT SERVING has nothing to hand over, so the gate must let it through.
-// The gate's own doc says the refusal is for "this node is serving, a peer could take the work" —
-// but the predicate only ever asked about PEERS, never about this node's own role, so a Secondary
-// (and even the diskless witness, which holds nothing at all) was declined too.
-//
-// That matters for the two ordinary update shapes: a single node, and — the common one — rolling
-// an HA pair by upgrading the SECONDARY first. Both are exactly where a reboot is safe: the peer
-// stays up, so the rebooting node comes back to two visible storage nodes and re-quorates.
-func TestRebootUpgradeProceedsWhenThisNodeIsNotServing(t *testing.T) {
-	// Status-witness.json: this node is Secondary (a diskless witness), with a healthy anchor peer
-	// that "can take over" — the condition that used to decline the upgrade.
-	u := newTestUpgrade(t, "status-witness.json")
-
-	_, err := u.RebootUpgrade(context.Background(), "/nix/store/target")
-	if errors.Is(err, ErrHandoverRequired) {
-		t.Fatalf("a node that is not Primary hands nothing over; it must not be declined: %v", err)
-	}
-	// It still fails afterwards — statusExec answers nothing else — and that failure is the proof
-	// it got past the gate rather than being refused by it.
-	if err == nil {
-		t.Fatal("want the sequence to proceed (and then fail on the refusing guest), got success")
 	}
 }

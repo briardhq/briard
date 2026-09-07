@@ -78,19 +78,8 @@ type QEMUSpec struct {
 	// NetMacvtap: systemd-run starts the guest via PID 1, so the agent cannot hand qemu an
 	// inherited macvtap fd. Empty in NetBridge mode (qemu opens taps by name).
 	NetWrapBin string
-	// BootStaging arms the boot selector for THIS launch: it hands the guest's
-	// firmware an SMBIOS type-11 OEM string that the guest's grub reads and, on a match,
-	// uses to boot the `staging` profile instead of its default entry (see
-	// guest-image/disk-image.nix and guestagent's os.stageboot).
-	//
-	// The arming is a property of the LAUNCH, not of the disk -- which is the point. An
-	// OS-disk snapshot taken before the reboot therefore contains nothing armed, so
-	// restoring it cannot re-run the generation the restore was undoing; and the rollback
-	// is simply not passing the flag next launch. Unrecognised or absent, grub keeps its
-	// default -- a bug boots the OLD system.
-	BootStaging bool
-	SerialLog   string // if set, capture the guest serial console (ttyS0) to this file; empty = discard
-	Unit        string // transient systemd unit name for the guest; empty = GuestUnit
+	SerialLog  string // if set, capture the guest serial console (ttyS0) to this file; empty = discard
+	Unit       string // transient systemd unit name for the guest; empty = GuestUnit
 	// DataDir is qemu's firmware/BIOS blob directory, passed as `-L`. Empty = qemu's
 	// compiled-in default (correct when qemu is a distro/Nix package). The relocatable
 	// bundle sets it to <prefix>/share/qemu: that qemu's built-in datadir is a /nix/store path
@@ -99,11 +88,6 @@ type QEMUSpec struct {
 }
 
 const (
-	// BootSelectStaging is the SMBIOS OEM string QEMUSpec.BootStaging passes and the guest's
-	// grub matches on, verbatim. Its two halves are written in two repos-worth of places
-	// apart (here and guest-image/disk-image.nix's extraConfig), so it is spelled out once
-	// here and quoted there.
-	BootSelectStaging = "briard_boot=staging"
 	// StateDriveID / StateDiskSerial name the state disk ([B.86g]): the drive id on the command
 	// line, and the serial the guest sees it by (/dev/disk/by-id/virtio-briard-state).
 	StateDriveID    = "briard-state"
@@ -214,15 +198,6 @@ func qemuArgs(s QEMUSpec) []string {
 		// than the log could still show.
 		args = append(args, "-chardev", "file,id=serial0,path="+s.SerialLog+",append=on",
 			"-serial", "chardev:serial0")
-	}
-	if s.BootStaging {
-		// The boot selector. QEMU emits this as an SMBIOS type-11 (OEM Strings)
-		// structure; the guest's grub reads it back with `smbios --type 11 --get-string 4`
-		// -- offset 4 is type 11's Count byte, and grub interprets the byte at the given
-		// offset as a string NUMBER, so it resolves to the last (here: only) OEM string.
-		// The full "briard_boot=staging" text is what grub matches, so the flag stays
-		// self-describing in a process list and under dmidecode.
-		args = append(args, "-smbios", "type=11,value="+BootSelectStaging)
 	}
 	// THE DISKS, EVERY ONE AS AN EXPLICIT DEVICE, IN THIS ORDER. `-drive if=virtio` shorthand and
 	// `-device virtio-blk-pci` do not mix: qemu realises the explicit devices FIRST and the

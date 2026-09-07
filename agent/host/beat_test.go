@@ -192,7 +192,6 @@ func TestLongDirectivesKeepTheWatchdogFed(t *testing.T) {
 		d    api.Directive
 	}{
 		{"rescue", api.Directive{Kind: api.DirectiveRescue}},
-		{"os upgrade", api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, pinged := pingingBeat()

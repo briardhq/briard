@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -487,35 +489,6 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	}
 }
 
-// CurrentSystem reports the guest's running closure, and "" for a witness or a read
-// error -- ground truth for the whole-OS rollout across a failover.
-//
-// The zero-service case is the one that matters and the one this test used to get wrong: it
-// asserted an anchor with no service reports "", calling that config "witness". It is not a
-// witness, it is the SHIPPED state -- what install.sh leaves behind and what the whole free tier
-// runs -- and reporting "" for it made the cloud's systemTargets skip the node forever ([V3b.3](d)).
-// A witness is diskless; that is now what the code and this test both say.
-func TestCurrentSystem(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{{Name: "dummy"}}}
-	if got := cfg.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "/nix/store/v1" {
-		t.Errorf("currentSystem = %q, want the running /nix/store/v1", got)
-	}
-	if got := cfg.currentSystem(context.Background(), fakeStatus{sysErr: errors.New("down")}); got != "" {
-		t.Errorf("read error: currentSystem = %q, want empty", got)
-	}
-	// The shipped zero-service anchor. It runs a closure like any other node, so it must SAY so
-	// -- a node the rollout cannot see is a node the rollout cannot update.
-	shipped := Config{}
-	if got := shipped.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "/nix/store/v1" {
-		t.Errorf("zero-service anchor: currentSystem = %q, want /nix/store/v1 -- the shipped node must be visible to an OS roll", got)
-	}
-	// A real witness: diskless, no guest of its own to read a closure from.
-	witness := Config{Diskless: true}
-	if got := witness.currentSystem(context.Background(), fakeStatus{system: "/nix/store/v1"}); got != "" {
-		t.Errorf("witness currentSystem = %q, want empty", got)
-	}
-}
-
 // Observe returns ErrChannelDown so Run re-dials — the fix for the older gap
 // where a single dropped channel blinded the host forever.
 func TestObserveReturnsOnChannelDown(t *testing.T) {
@@ -591,7 +564,7 @@ func TestObserveNoCloudNoPlannedOp(t *testing.T) {
 	if err := cfg.observe(ctx, fakeStatus{}, up, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
-	if up.sysCalled {
+	if up.imageTarget.Version != "" || up.rescued {
 		t.Errorf("no cloud reachable -> no planned op, but the upgrader ran: %+v", up)
 	}
 }
@@ -931,5 +904,27 @@ func TestDeriveUUID(t *testing.T) {
 	}
 	if v := a[19]; v != '8' && v != '9' && v != 'a' && v != 'b' {
 		t.Errorf("wrong variant nibble in %s", a)
+	}
+}
+
+// NodeStatus.System is the guest RELEASE this node runs ([B.86h]): the record the host keeps of
+// the release whose image it booted -- not something read from the guest, which knows only a
+// closure. The shipped zero-service anchor reports it like any node (a node the rollout cannot
+// see is a node it cannot update); a witness, diskless, has no guest and reports nothing; a
+// node with no record reports nothing rather than guessing.
+func TestCurrentSystem(t *testing.T) {
+	rec := filepath.Join(t.TempDir(), "guest-release.json")
+	os.WriteFile(rec, []byte(`{"chain":"guest","version":"guest.20260906.abc1234","system":"/nix/store/x","artifacts":[{"name":"nixos.qcow2.zst"}]}`), 0o644)
+	shipped := Config{GuestReleaseCache: rec}
+	if got := shipped.currentSystem(context.Background(), fakeStatus{}); got != "guest.20260906.abc1234" {
+		t.Errorf("zero-service anchor: currentSystem = %q, want the recorded release", got)
+	}
+	witness := Config{Diskless: true, GuestReleaseCache: rec}
+	if got := witness.currentSystem(context.Background(), fakeStatus{}); got != "" {
+		t.Errorf("witness currentSystem = %q, want empty", got)
+	}
+	none := Config{GuestReleaseCache: filepath.Join(t.TempDir(), "absent.json")}
+	if got := none.currentSystem(context.Background(), fakeStatus{}); got != "" {
+		t.Errorf("no record: currentSystem = %q, want empty", got)
 	}
 }

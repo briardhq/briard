@@ -1,11 +1,7 @@
 package platform
 
 import (
-	"context"
-	"fmt"
-	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 // Snapshots of the guest's OS disk -- the rollback point the reboot half of an OS upgrade
@@ -40,11 +36,6 @@ import (
 // pre-snapshot contents, the backing chain survives, and reverting a tag that does not exist
 // exits non-zero rather than silently succeeding.
 
-// UpgradeSnapshot is the tag the OS-upgrade rollback point is stored under. Fixed, not
-// caller-supplied: a recognisable name is what lets `qemu-img snapshot -l` answer "was an
-// upgrade in flight when this agent died?" without any state kept beside the disk.
-const UpgradeSnapshot = "briard-preupgrade"
-
 // qemuImg locates the qemu-img binary beside the configured qemu-system binary. Both the Nix
 // package and the relocatable bundle ship them in the same bin/ directory, so deriving
 // the path keeps the pair consistent -- picking qemu-img off $PATH could pair a bundled qemu
@@ -56,69 +47,4 @@ func (s QEMUSpec) qemuImg() string {
 		return "qemu-img"
 	}
 	return filepath.Join(dir, "qemu-img")
-}
-
-// SnapshotCmd runs one `qemu-img snapshot` verb against the guest's OS disk.
-func (s QEMUSpec) snapshotCmd(ctx context.Context, flag, tag string) error {
-	if s.DiskImage == "" {
-		return fmt.Errorf("platform: no guest disk configured to snapshot")
-	}
-	out, err := exec.CommandContext(ctx, s.qemuImg(), "snapshot", flag, tag, s.DiskImage).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("platform: qemu-img snapshot %s %s %s: %w: %s",
-			flag, tag, s.DiskImage, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// SnapshotCreate takes the pre-upgrade rollback point. The guest MUST be stopped: qemu-img
-// refuses an image QEMU holds open, so a caller that forgets gets an error rather than a
-// crash-consistent snapshot it would later mistake for a clean one.
-func (s QEMUSpec) SnapshotCreate(ctx context.Context) error {
-	return s.snapshotCmd(ctx, "-c", UpgradeSnapshot)
-}
-
-// SnapshotRestore rolls the OS disk back to the point SnapshotCreate took. This is the whole
-// rollback of the reboot path: the staged closure is still in the restored store (so the
-// retry costs no re-download), and the boot selector was never written to the disk, so the
-// next launch simply does not pass it and comes up on the old generation.
-func (s QEMUSpec) SnapshotRestore(ctx context.Context) error {
-	return s.snapshotCmd(ctx, "-a", UpgradeSnapshot)
-}
-
-// SnapshotDelete drops the rollback point once the upgrade has been committed. Deleting it
-// is what ends the upgrade window, so it is also what makes SnapshotExists a truthful answer
-// to "is an upgrade in flight?".
-func (s QEMUSpec) SnapshotDelete(ctx context.Context) error {
-	return s.snapshotCmd(ctx, "-d", UpgradeSnapshot)
-}
-
-// SnapshotExists reports whether the rollback point is present -- i.e. whether an upgrade was
-// in flight. An agent that restarts mid-upgrade asks the disk this instead of consulting a
-// marker it would have had to keep in sync with reality.
-func (s QEMUSpec) SnapshotExists(ctx context.Context) (bool, error) {
-	if s.DiskImage == "" {
-		return false, fmt.Errorf("platform: no guest disk configured to snapshot")
-	}
-	out, err := exec.CommandContext(ctx, s.qemuImg(), "snapshot", "-l", s.DiskImage).CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("platform: qemu-img snapshot -l %s: %w: %s",
-			s.DiskImage, err, strings.TrimSpace(string(out)))
-	}
-	return hasSnapshotTag(string(out), UpgradeSnapshot), nil
-}
-
-// hasSnapshotTag parses `qemu-img snapshot -l` output for a tag. The listing is a header line
-// ("Snapshot list:"), a column header, then one row per snapshot: ID, TAG, VM_SIZE, DATE... .
-// Matching the TAG *column* rather than substring-searching the whole blob keeps a tag from
-// being found in, say, a date or another snapshot's name. An image with no snapshots prints
-// nothing at all, which is the common case and correctly reads as absent.
-func hasSnapshotTag(listing, tag string) bool {
-	for line := range strings.SplitSeq(listing, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[1] == tag {
-			return true
-		}
-	}
-	return false
 }

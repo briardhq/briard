@@ -816,6 +816,12 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		logf("re-adopting running guest (%s)", platform.GuestUnit)
 		g = platform.Adopt(qspec)
 	} else {
+		// A FRESH OS DISK AT EVERY LAUNCH ([B.86h]): the overlay is discarded and rebuilt on the
+		// image before the guest boots, which is where the guest's disposability comes from. What a
+		// restart must not cost lives on the state disk; everything else the host pushes again.
+		if _, err := qspec.RebuildOverlay(bringup); err != nil {
+			return nil, nil, fmt.Errorf("host: fresh guest disk: %w", err)
+		}
 		var err error
 		if g, err = platform.Launch(bringup, qspec); err != nil {
 			return nil, nil, fmt.Errorf("host: launch guest: %w", err)
@@ -1176,10 +1182,11 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applyServiceInstall(ctx, i, d, logf)
 	}
-	if d.Kind == install.DirectiveUpdateGuest {
-		// The guest chain ([B.86d]): a release resolved on the channel, then the same OS upgrade
-		// the cloud's closure directive runs. Local-only, so it is routed here and not in the
-		// wire-directive switch below.
+	if d.Kind == install.DirectiveUpdateGuest || d.Kind == api.DirectiveUpgradeSystem {
+		// The guest chain: a release resolved on the channel, then the image swap ([B.86d]/[B.86h]).
+		// The cloud's `upgrade-system` and the local `update-guest` are the same operation with
+		// two spellings of the target -- an exact release id from the cloud, a target word or
+		// an id from the CLI and the timer -- so they are one path here.
 		return cfg.applyGuestUpdate(ctx, d, r, up, n, logf)
 	}
 	if d.Kind == api.DirectiveHandover {
@@ -1621,32 +1628,6 @@ func serviceLog(svcs []api.ServiceStatus) string {
 	return strings.Join(parts, ",")
 }
 
-// CurrentSystem reports the NixOS system closure this node is running (readlink -f
-// /run/current-system, via the guest) -- ground truth for the whole-OS rollout, correct
-// across a failover (a converged survivor reports the switched-to closure). Empty for a
-// witness (no guest to read) or on a read hiccup; the rollout just re-reads next cycle.
-//
-// The gate is DISKLESS, not "has a service", and the difference is the whole of [V3b.3](d).
-// A system closure is a property of the NODE; what happens to run on top of it cannot decide
-// whether the node can describe itself. Gating on the service name meant every shipped
-// zero-service anchor -- the free tier, the state install.sh leaves behind -- reported System
-// "", and the cloud reads that as "has never reported a system" and SKIPS the node in
-// systemTargets: never offered the closure, never seen as behind. Exactly the trap the
-// upgrader's own construction hit and fixed (see newOSUpgrade's comment above), on the
-// reporting side instead of the constructing side.
-func (cfg Config) currentSystem(ctx context.Context, r guestReader) string {
-	if cfg.Diskless {
-		return "" // witness: no guest of its own to read a closure from
-	}
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	sys, err := r.SystemPath(rctx)
-	if err != nil {
-		return ""
-	}
-	return sys
-}
-
 // probeHealth GETs the health endpoint; a 200 is healthy, anything else
 // (including any error) is not.
 func probeHealth(ctx context.Context, url string) bool {
@@ -1712,4 +1693,20 @@ func deriveUUID(node string) string {
 	b[6] = (b[6] & 0x0f) | 0x50 // version 5: name-based
 	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// currentSystem reports the guest RELEASE this node runs (`guest.<date>.<rev>`), what
+// NodeStatus.System carries since [B.86h]: the OS moves only by swapping the image, so the host
+// is the authority on which release its guest boots, and the record it rewrites when an image
+// commits (the release's signed manifest, seeded by install.sh) is the truth. Empty for a
+// witness (no guest) or a node with no record; the cloud reads that as "never reported" and
+// leaves the node out of a rollout, which is the safe reading.
+func (cfg Config) currentSystem(context.Context, guestReader) string {
+	if cfg.Diskless {
+		return ""
+	}
+	if m := cfg.cachedGuestRelease(func(string, ...any) {}); m != nil {
+		return m.Version
+	}
+	return ""
 }

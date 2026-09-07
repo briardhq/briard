@@ -328,53 +328,6 @@ func (g *Guest) WaitStopped(ctx context.Context, grace time.Duration) error {
 	}
 }
 
-// SnapshotCreateLive takes the OS-upgrade rollback point on a RUNNING guest's root disk --
-// the switch path's half of what QEMUSpec.SnapshotCreate does for the reboot path.
-//
-// Going through QEMU is not a preference here: an in-band activation keeps the VM up, that
-// being the whole definition of switch-only, and qemu-img refuses an image QEMU holds open.
-//
-// The snapshot it takes is therefore CRASH-CONSISTENT, and there is no alternative on this
-// path. That is an accepted residual rather than an oversight: (c1) only routes a target here
-// when it touches no kernel, initrd, module or boot parameter, so what can go wrong is
-// userland, and a restore is the fallback for the rarer case where it goes wrong in a way that
-// also disturbed state outside the closure.
-//
-// Unlike its siblings below, a guest that is not there is an ERROR, not a no-op. The two read
-// alike and are opposites: "nothing to stop" and "nothing to drop" are true statements about a
-// missing VM, while returning nil here would tell the caller it holds a rollback point it does
-// not have -- and the caller's next act is to replace the running system.
-func (g *Guest) SnapshotCreateLive(ctx context.Context) error {
-	if g == nil || g.unit == "" {
-		return fmt.Errorf("platform: no running guest to snapshot")
-	}
-	_, err := qmpExecute(ctx, g.QMPSock, "blockdev-snapshot-internal-sync",
-		map[string]any{"device": RootDriveID, "name": UpgradeSnapshot})
-	return err
-}
-
-// SnapshotDropLive deletes the OS-upgrade rollback point from a RUNNING guest's root disk.
-//
-// It exists because of where the reboot path ends up: the upgrade is committed only once the
-// guest has booted the new generation and passed its health-gate, so at the moment the
-// snapshot becomes garbage the VM is up and must stay up. qemu-img cannot touch an image QEMU
-// holds open, so the delete has to go through QEMU itself. This and QEMUSpec.SnapshotDelete
-// are two ways to reach one snapshot rather than two mechanisms, and which applies is settled
-// entirely by whether the VM is running: the rollback leg has already stopped it, the commit
-// leg has not.
-//
-// Leaving the snapshot behind is the cost of not having this: its fixed tag's presence IS the
-// answer to "was an upgrade in flight?" (snapshot.go), so an undeleted one tells every later
-// restart it interrupted an upgrade.
-func (g *Guest) SnapshotDropLive(ctx context.Context) error {
-	if g == nil || g.unit == "" {
-		return nil
-	}
-	_, err := qmpExecute(ctx, g.QMPSock, "blockdev-snapshot-delete-internal-sync",
-		map[string]any{"device": RootDriveID, "name": UpgradeSnapshot})
-	return err
-}
-
 // Reset forces an immediate VM reset -- the hard reboot for a guest that is wedged past
 // talking to (its agent unreachable, ACPI ignored). It is the fallback path, not the reboot
 // mechanism: a planned reboot shuts down cleanly and relaunches, because only a relaunch can

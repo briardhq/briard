@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"briard.io/agent/guest"
-	"briard.io/agent/guestagent"
 	"briard.io/agent/install"
 	"briard.io/shared/api"
 	"briard.io/shared/notify"
@@ -24,59 +22,14 @@ const testUpgradeBudget = time.Minute
 
 // fakeUpgrader records the upgrade call a directive drives.
 type fakeUpgrader struct {
-	hold              func() error // blocks inside the budget (see beat_test.go)
-	target            string       // Upgrade's system closure (whole-OS)
-	rescued           bool         // RescueGuest was called (B.10)
-	certCert          string       // WriteCert's cert PEM
-	certKey           string       // WriteCert's key PEM
-	err               error
-	sysCalled         bool
-	activation        guest.Activation // ActivationMethod's verdict; "" -> switch
-	activationReasons []string
-	activationErr     error
-	activationFor     string                 // the closure ActivationMethod was asked about
-	staged            string                 // Stage's closure
-	stagedFrom        guestagent.StageSource // zero in production
-	stageErr          error                  // when set, staging fails and nothing may switch
-	rebootTarget      string                 // RebootUpgrade's closure
-	imageTarget       install.Manifest       // ImageUpgrade's release ([B.86h])
-	imageErr          error
-	imageRolledBack   bool
-	rebootErr         error // when set, the reboot upgrade fails
-	rebootRolledBack  bool  // ...and whether it got the node back
-	sysRolledBack     bool  // ...and the same answer for the switch method
-}
-
-// Neither OS-upgrade method takes a ServiceSpec: there is nothing an OS upgrade
-// has to say to a workload, so there is nothing here for the fake to record.
-func (f *fakeUpgrader) Upgrade(_ context.Context, target string) (bool, error) {
-	f.sysCalled, f.target = true, target
-	return f.sysRolledBack, f.err
-}
-
-func (f *fakeUpgrader) Stage(_ context.Context, closure string, src guestagent.StageSource) error {
-	if f.hold != nil {
-		if err := f.hold(); err != nil {
-			return err
-		}
-	}
-	f.staged, f.stagedFrom = closure, src
-	return f.stageErr
-}
-
-// Defaults to a switch when unset, so tests about other things don't all have to opt into
-// an activation method; the reboot/error cases set it explicitly.
-func (f *fakeUpgrader) ActivationMethod(_ context.Context, target string) (guest.Activation, []string, error) {
-	f.activationFor = target
-	if f.activation == "" && f.activationErr == nil {
-		return guest.ActivateSwitch, nil, nil
-	}
-	return f.activation, f.activationReasons, f.activationErr
-}
-
-func (f *fakeUpgrader) RebootUpgrade(_ context.Context, target string) (bool, error) {
-	f.rebootTarget = target
-	return f.rebootRolledBack, f.rebootErr
+	hold            func() error // blocks inside the budget (see beat_test.go)
+	rescued         bool         // RescueGuest was called (B.10)
+	certCert        string       // WriteCert's cert PEM
+	certKey         string       // WriteCert's key PEM
+	err             error
+	imageTarget     install.Manifest // ImageUpgrade's release ([B.86h])
+	imageErr        error
+	imageRolledBack bool
 }
 
 func (f *fakeUpgrader) WriteCert(_ context.Context, cert, key string) error {
@@ -118,155 +71,6 @@ func TestApplyDirective(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("logs missing %q\ngot:\n%s", want, joined)
 		}
-	}
-}
-
-// An upgrade-system directive drives Manager.Upgrade with the target system closure
-// (the whole-OS switch); Upgrade derives its own rollback point from the guest.
-func TestApplyDirectiveUpgradeSystem(t *testing.T) {
-	up := &fakeUpgrader{}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}, up, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if !up.sysCalled || up.target != "/nix/store/abc-nixos-system" {
-		t.Errorf("Upgrade call = %+v, want the OS switch to the target closure", up)
-	}
-}
-
-// The OS switch stages the closure first, and stages the SAME closure it is about
-// to switch to. Production passes no source, so the guest uses the caches baked into its
-// image — a non-zero StageSource here would mean a test-shaped override leaked into the
-// product path.
-func TestApplyDirectiveUpgradeSystemStagesFirst(t *testing.T) {
-	up := &fakeUpgrader{}
-	const target = "/nix/store/abc-nixos-system"
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target}, up, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if up.staged != target {
-		t.Errorf("staged %q, want the switch target %q", up.staged, target)
-	}
-	if (up.stagedFrom != guestagent.StageSource{}) {
-		t.Errorf("staged from %+v, want the zero source (the guest's own baked caches)", up.stagedFrom)
-	}
-}
-
-// If the bytes never arrive, nothing switches. The node is left exactly as it was
-// -- so this reports FAILED, not rolled-back: no snapshot was taken and no generation was
-// touched, and calling it a rollback would claim a recovery that never ran.
-func TestApplyDirectiveUpgradeSystemStageFailureDoesNotSwitch(t *testing.T) {
-	up := &fakeUpgrader{stageErr: fmt.Errorf("substituter unreachable")}
-	fn := &fakeNotifier{}
-	o := applyDirective(context.Background(), api.Directive{ID: "9", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc-nixos-system"}, up, fn, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if up.sysCalled {
-		t.Error("switched despite a failed stage — the closure is not in the store")
-	}
-	if o.State != api.OutcomeFailed {
-		t.Errorf("outcome = %+v, want failed (nothing was touched, so it is not a rollback)", o)
-	}
-	if len(fn.alerts) != 1 {
-		t.Errorf("a failed stage must escalate once, got %+v", fn.alerts)
-	}
-}
-
-// The activation method is decided BEFORE anything is touched, and against the
-// closure about to be activated. Ordering matters as much as the verdict — deciding after
-// the switch would be deciding after the point of no return.
-func TestApplyDirectiveUpgradeSystemDecidesActivationFirst(t *testing.T) {
-	up := &fakeUpgrader{}
-	const target = "/nix/store/abc-nixos-system"
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target}, up, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if up.activationFor != target {
-		t.Errorf("activation checked for %q, want the target %q", up.activationFor, target)
-	}
-	if !up.sysCalled {
-		t.Error("a switch-only target must still upgrade")
-	}
-}
-
-// V3.17c1/c2: a target needing a reboot takes the reboot path, and must NEVER take the switch
-// one — switching a kernel/initrd change in band would leave the guest running userland from
-// one generation on a kernel from another, the exact mismatch a reboot exists to avoid. The
-// three outcomes are separated because the cloud acts on them differently: the node is on the
-// target, back on its old code, or somewhere a human has to look.
-func TestApplyDirectiveUpgradeSystemRebootTarget(t *testing.T) {
-	const target = "/nix/store/abc-nixos-system"
-	for _, tc := range []struct {
-		name      string
-		err       error
-		back      bool
-		want      string
-		wantAlert int
-	}{
-		{name: "booted and gated", want: api.OutcomeDone},
-		{name: "gate tripped, node recovered", err: fmt.Errorf("health-gate"), back: true, want: api.OutcomeRolledBack, wantAlert: 1},
-		{name: "no clean rollback", err: fmt.Errorf("disk not restored"), want: api.OutcomeFailed, wantAlert: 1},
-		// A peer can take over, so the reboot would be a failover and the node declines.
-		// wantAlert is 0, and that zero IS the assertion rather than an omission -- an HA pair
-		// would otherwise mail its owner on every OS release, about a node serving perfectly.
-		{name: "declined, needs a scheduled handover", err: fmt.Errorf("gate: %w", ErrHandoverRequired),
-			back: true, want: api.OutcomeRolledBack, wantAlert: 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			up := &fakeUpgrader{
-				activation: guest.ActivateReboot, activationReasons: []string{"kernel", "initrd"},
-				rebootErr: tc.err, rebootRolledBack: tc.back,
-			}
-			fn := &fakeNotifier{}
-			o := applyDirective(context.Background(), api.Directive{ID: "7", Kind: api.DirectiveUpgradeSystem, Payload: target}, up, fn, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-			if up.sysCalled {
-				t.Error("switched a reboot-only target — that is the switch-then-maybe-reboot the rule forbids")
-			}
-			if up.rebootTarget != target {
-				t.Errorf("reboot upgrade drove %q, want the target %q", up.rebootTarget, target)
-			}
-			if o.State != tc.want {
-				t.Errorf("outcome = %+v, want %s", o, tc.want)
-			}
-			if len(fn.alerts) != tc.wantAlert {
-				t.Errorf("escalations = %+v, want %d", fn.alerts, tc.wantAlert)
-			}
-		})
-	}
-}
-
-// The staging half must still gate the reboot path: a closure that never arrived cannot be
-// booted into, and reporting a rollback for bytes that never landed would claim a recovery
-// that never ran.
-func TestApplyDirectiveUpgradeSystemRebootNeedsStagingFirst(t *testing.T) {
-	up := &fakeUpgrader{
-		activation: guest.ActivateReboot, activationReasons: []string{"kernel"},
-		stageErr: fmt.Errorf("no route to cache"),
-	}
-	o := applyDirective(context.Background(), api.Directive{ID: "9", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, &fakeNotifier{}, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if up.rebootTarget != "" {
-		t.Errorf("rebooted into %q after staging failed", up.rebootTarget)
-	}
-	if o.State != api.OutcomeFailed {
-		t.Errorf("outcome = %+v, want failed (nothing was touched, so nothing rolled back)", o)
-	}
-}
-
-// If the method can't be determined at all, refuse too: an unknown answer is not a licence
-// to guess the cheap one.
-func TestApplyDirectiveUpgradeSystemRefusesOnActivationError(t *testing.T) {
-	up := &fakeUpgrader{activationErr: fmt.Errorf("guest unreachable")}
-	o := applyDirective(context.Background(), api.Directive{ID: "8", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, &fakeNotifier{}, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if up.sysCalled || o.State != api.OutcomeFailed {
-		t.Errorf("switched=%v outcome=%+v, want no switch and failed", up.sysCalled, o)
-	}
-}
-
-// A failed upgrade (rolled back — including a wedged, timed-out rollback) escalates via
-// the notifier: upgrades are rare, so this is a real signal, not fatigue.
-func TestApplyDirectiveUpgradeEscalates(t *testing.T) {
-	up := &fakeUpgrader{err: fmt.Errorf("health-gate tripped -> rolled back"), sysRolledBack: true}
-	fn := &fakeNotifier{}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, fn, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning {
-		t.Fatalf("a failed upgrade must escalate one warning, got %+v", fn.alerts)
-	}
-	// A successful upgrade must NOT escalate.
-	up2, fn2 := &fakeUpgrader{}, &fakeNotifier{}
-	applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up2, fn2, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if len(fn2.alerts) != 0 {
-		t.Errorf("a successful upgrade must not escalate, got %+v", fn2.alerts)
 	}
 }
 
@@ -375,51 +179,8 @@ func TestApplyDirectiveOutcome(t *testing.T) {
 	if o := applyDirective(context.Background(), api.Directive{ID: "1", Kind: api.DirectiveNoop}, nil, nil, nil, nil, nolog, testUpgradeBudget, nil); o.ID != "1" || o.State != api.OutcomeDone {
 		t.Errorf("noop outcome = %+v, want done id=1", o)
 	}
-	up := &fakeUpgrader{}
-	if o := applyDirective(context.Background(), api.Directive{ID: "2", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, up, nil, nil, nil, nolog, testUpgradeBudget, nil); o.State != api.OutcomeDone {
-		t.Errorf("upgrade outcome = %+v, want done", o)
-	}
-	upErr := &fakeUpgrader{err: fmt.Errorf("gate tripped"), sysRolledBack: true}
-	if o := applyDirective(context.Background(), api.Directive{ID: "3", Kind: api.DirectiveUpgradeSystem, Payload: "/nix/store/abc"}, upErr, &fakeNotifier{}, nil, nil, nolog, testUpgradeBudget, nil); o.State != api.OutcomeRolledBack {
-		t.Errorf("failed-upgrade outcome = %+v, want rolled-back", o)
-	}
 	if o := applyDirective(context.Background(), api.Directive{ID: "4", Kind: "weird"}, nil, nil, nil, nil, nolog, testUpgradeBudget, nil); o.State != api.OutcomeFailed {
 		t.Errorf("unhandled outcome = %+v, want failed", o)
-	}
-}
-
-// The SHIPPED node -- a fresh install with nothing on it -- must accept an OS upgrade.
-// The old guard also required spec.Name, so a zero ServiceSpec made the directive come back
-// "failed" without the node ever staging or switching anything. That is the state install.sh
-// leaves every free-tier island in, which makes it the population the guard broke for.
-func TestApplyDirectiveUpgradeSystemOnAZeroServiceNode(t *testing.T) {
-	up := &fakeUpgrader{}
-	const target = "/nix/store/abc-nixos-system"
-	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: target},
-		up, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-
-	if o.State != api.OutcomeDone {
-		t.Errorf("outcome = %q (%s), want done -- a node with no service is still a node", o.State, o.Detail)
-	}
-	if !up.sysCalled || up.target != target {
-		t.Errorf("Upgrade call = %+v, want the OS switch to %s", up, target)
-	}
-	if up.staged != target {
-		t.Errorf("staged %q, want %s -- delivery does not depend on a service", up.staged, target)
-	}
-}
-
-// The guard that remains: no TARGET is still refused. Without this, "loosen the guard" could
-// have been satisfied by removing it entirely.
-func TestApplyDirectiveUpgradeSystemStillRefusesAnEmptyTarget(t *testing.T) {
-	up := &fakeUpgrader{}
-	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: ""},
-		up, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
-	if o.State == api.OutcomeDone {
-		t.Error("an upgrade-system with no target must not report done")
-	}
-	if up.sysCalled {
-		t.Error("nothing should have been upgraded")
 	}
 }
 

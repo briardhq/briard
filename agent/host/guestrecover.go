@@ -423,87 +423,6 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 	}
 }
 
-// RescueGuest rebuilds this node's guest from the verified image under its overlay: stop the VM,
-// discard the OS disk, lay down a fresh overlay on the same backing file, bring it up, re-converge.
-// The replicated DATA disk is never touched, so the node's identity, its DRBD replica and the
-// service manifest pinned on it all survive -- what comes back is the same node with a factory
-// code half, not a new node.
-//
-// B.10's last rung, and the ONLY one that is not a reflex. Everything above it (relaunch, reboot,
-// the cadence) fires on its own; this fires when a human, or later the cloud, has read the logs and
-// decided. The reasoning is in platform/overlay.go: the remedy is drastic, its result uncertain,
-// and the rebuilt guest must re-pull its OCI images over the WAN at the worst possible moment.
-// Automating it against an unknown fault would be a coin flip that can deepen the outage.
-//
-// It is a method on osUpgrade for the reason recover() is: a rebuild replaces the VM, the channel
-// and the Manager together, and one place knows how to put all three back.
-//
-// STOPPING IS CLEAN FIRST, FORCED AS THE FALLBACK -- the same order and the same reason as the
-// rollback leg, and it matters MORE here, not less. The data disk is where DRBD keeps its
-// metadata, and a clean stop is what lets it record MDF_HAVE_QUORUM + prev_members on the way
-// down. Forcing would hand the rebuilt guest a stranded replica to come back to, which on the one
-// node whose code half was just discarded is exactly the wrong pairing.
-func (u *osUpgrade) RescueGuest(ctx context.Context) error {
-	qspec := u.cfg.guestSpec()
-
-	// Refuse BEFORE stopping anything. A node whose disk cannot be rebuilt should keep running the
-	// guest it has, and finding that out after the VM is down would turn a refusal into an outage.
-	backing, err := qspec.BackingFile(ctx)
-	if err != nil {
-		return fmt.Errorf("rescue: read the guest disk's backing image: %w", err)
-	}
-	if backing == "" {
-		return fmt.Errorf("rescue: %s is not an overlay (no backing image), so there is nothing to "+
-			"rebuild it from; this node was not laid down by install.sh's overlay path", qspec.DiskImage)
-	}
-	// A PAIRED NODE IS RESCUABLE, as of [V3b.16b]. There was a second refusal here: rebuilding
-	// discards the guest's `.res`, "and the host does not keep a copy -- applyPair unmarshals the
-	// cloud's MeshSpec, applies it, and forgets it", so a rescue returned a paired node un-meshed
-	// and only the cloud could re-pair it.
-	//
-	// The host keeps a copy now, durably (cacheMesh), and re-pushes it at exactly the bring-up this
-	// verb performs -- along with the promoter snippet, the hostname and the witness hop, none of
-	// which survive on the guest any more either. So the refusal was guarding a door into a room
-	// with no floor left: everything it protected is now rebuilt by the thing it was blocking.
-	//
-	// The safety property it stood for is kept, and moved to where it belongs. "This node is in a
-	// mesh the host cannot re-push" is a defect wherever it is noticed -- such a node un-meshes
-	// itself on its NEXT GUEST REBOOT whether or not anyone ever runs rescue -- so it is now
-	// detected and alerted at bring-up (warnIfMeshForgotten), on every start, rather than only in
-	// the one verb a human happens to reach for.
-	u.logf("rescue: rebuilding the guest from %s (the data disk is not touched)", backing)
-
-	if platform.Running(ctx, qspec) {
-		if e := stopCleanly(ctx, u.vm, u.client, u.logf); e != nil {
-			u.logf("rescue: could not stop the guest cleanly, forcing (%v)", e)
-			if e := u.vm.Stop(); e != nil {
-				return fmt.Errorf("rescue: stop the guest: %w", e)
-			}
-		} else {
-			u.logf("rescue: stopped the guest cleanly")
-		}
-	}
-
-	if _, e := qspec.RebuildOverlay(ctx); e != nil {
-		return fmt.Errorf("rescue: %w", e)
-	}
-	u.logf("rescue: overlay rebuilt; bringing the guest up")
-
-	// Detached, like every other recovery path here: this IS the recovery and must not inherit a
-	// deadline only to find there is no time left to finish it. Past this point the old disk is
-	// gone, so a bring-up that fails leaves a node that needs another rescue, not a rollback.
-	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget)
-	defer cancel()
-	g, client, e := u.cfg.bringUp(rb, qspec, u.logf)
-	if e != nil {
-		return fmt.Errorf("rescue: bring the rebuilt guest up: %w", e)
-	}
-	u.vm = g
-	u.rebind(client)
-	u.logf("rescue: the guest was rebuilt and has re-converged")
-	return nil
-}
-
 // converge brings the guest to the state the host means it to be in, and is the ONE place that
 // does: bringUp launches a stopped guest and adopts a running one (it decides from
 // platform.Running), then drives the same hostname -> addresses -> DRBD -> quorate sequence
@@ -657,4 +576,33 @@ func (u *osUpgrade) rebootGuest(ctx context.Context) (*guestagent.Client, error)
 // way round -- see fireAlert, which both alert emitters on this side share.
 func (u *osUpgrade) fire(ctx context.Context, n notify.Notifier, al notify.Alert) {
 	fireAlert(ctx, n, u.logf, al)
+}
+
+// RescueGuest is a RESTART ([B.86h]): stop the guest and bring it up again, which lays a fresh
+// OS disk on the image (bringUp rebuilds the overlay at every launch) and pushes everything the
+// guest is dressed with. The data disk and the state disk are not touched. It used to be the
+// one rung that discarded state a restart kept; with the OS disk disposable by construction
+// there is nothing left for it to discard, and the verb survives as the name of the gesture.
+func (u *osUpgrade) RescueGuest(ctx context.Context) error {
+	qspec := u.cfg.guestSpec()
+	if platform.Running(ctx, qspec) {
+		if e := stopCleanly(ctx, u.vm, u.client, u.logf); e != nil {
+			u.logf("rescue: could not stop the guest cleanly, forcing (%v)", e)
+			if e := u.vm.Stop(); e != nil {
+				return fmt.Errorf("rescue: stop the guest: %w", e)
+			}
+		} else {
+			u.logf("rescue: stopped the guest cleanly")
+		}
+	}
+	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget)
+	defer cancel()
+	g, client, e := u.cfg.bringUp(rb, qspec, u.logf)
+	if e != nil {
+		return fmt.Errorf("rescue: bring the guest up on a fresh OS disk: %w", e)
+	}
+	u.vm = g
+	u.rebind(client)
+	u.logf("rescue: the guest was rebuilt and has re-converged")
+	return nil
 }

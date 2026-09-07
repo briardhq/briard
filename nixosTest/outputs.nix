@@ -166,14 +166,6 @@ let
   # so the shape a stranger installs is the shape CI exercises.
   guestDisk = import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay agentVersion; };
 
-  # Boot-select's disk: shipped + one extra baked generation. `.v1System`'s delta from
-  # the running system is a single /etc file, so both grub entries boot the identical kernel and
-  # the only thing that can distinguish them is which menu entry was chosen — which is the whole
-  # proof. Rides `debug`, so this image is not a nightly cost.
-  bootSelectGuestDisk = import ../guest-image/disk-image.nix {
-    inherit nixpkgs pkgs overlay agentVersion;
-    stageSystemModule = { environment.etc."briard-generation".text = "v1"; };
-  };
   driverPkg = pkgs.callPackage ./driver/package.nix { };
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + run --guest)
 
@@ -236,37 +228,6 @@ let
     agent = agentPkg; # the REAL agent: the bootstrap the update unit pulls, and `briard update host`
   };
 
-  # The closure a guest must FETCH: the SHIPPED guest plus one marker file, so the delta is a
-  # handful of paths — the shape of a real incremental release rather than a whole second system.
-  # Testing delivery against the artifact a stranger installs is the point; what the node happens
-  # to be serving has nothing to do with it.
-  #
-  # It is baked nowhere, which is the entire point: staging something already on the disk would be
-  # satisfied from the local store and prove nothing.
-  #
-  # Taking `.v1System` off a disk-image import builds only that toplevel, never the qcow2: the
-  # variant's `image` attr is simply not forced, so this costs no second disk build.
-  stagedSystem =
-    (import ../guest-image/disk-image.nix {
-      inherit nixpkgs pkgs overlay agentVersion;
-      stageSystemModule = {
-        environment.etc."briard-staged".text = "staged";
-      };
-    }).v1System;
-  osStage = import ./os-stage.nix {
-    inherit pkgs netWrap stagedSystem guestDisk;
-    driver = driverPkg;
-  };
-
-  # The boot selector. Unlike os-stage this needs a second generation that IS on
-  # the disk — the question is which of two bootable entries grub picks, not how bytes get
-  # there — so it takes a disk that bakes one, and no service.
-  bootSelect = import ./boot-select.nix {
-    inherit pkgs;
-    guestDisk = bootSelectGuestDisk;
-    stagingSystem = bootSelectGuestDisk.v1System;
-    driver = driverPkg;
-  };
 
   # The maintenance-mode contract suite — the FULL pause/poke/resume contract
   # (non-destructive, promoter-inert-while-paused, mount survives, clean resume). Nightly.
@@ -416,13 +377,6 @@ in
       # this one is init's job rather than ours.
       agent-watchdog = agentWatchdog;
       guest-rescue = guestRescue;
-      os-stage = osStage; # a closure the guest does NOT have, fetched over a cache
-      # The boot selector. Promoted back from `debug` once the premise that demoted it turned
-      # out to be false: an L2 guest under nesting DOES complete a clean shutdown, by BOTH
-      # triggers. This sequence needs the guest stopped cleanly between launches, and it now is
-      # -- so the power cut that hung the next boot about half the time no longer happens, and
-      # the test ASSERTS the clean stop rather than tolerating its absence.
-      boot-select = bootSelect;
     };
 
     # The frozen host-agent self-update pivot (Type=notify commit/revert gate).

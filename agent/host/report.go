@@ -9,13 +9,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	"briard.io/agent/guest"
-	"briard.io/agent/guestagent"
 	"briard.io/agent/install"
 	"briard.io/shared/api"
 	"briard.io/shared/notify"
@@ -79,12 +75,8 @@ func (cr *certRequester) keyFor(name string) string {
 // not touch services, and a signature with nothing to name a service with is a
 // separation the compiler keeps rather than one a reader has to.
 type upgrader interface {
-	Upgrade(ctx context.Context, target string) (rolledBack bool, err error)
-	RebootUpgrade(ctx context.Context, target string) (rolledBack bool, err error)
-	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error)     // [B.86h]: the guest chain's release, image already staged
-	Stage(ctx context.Context, closure string, src guestagent.StageSource) error             //b: pull the closure in BEFORE anything switches to it
-	ActivationMethod(ctx context.Context, target string) (guest.Activation, []string, error) // V3.17c1: switch-only or reboot-only, decided before activating
-	WriteCert(ctx context.Context, cert, key string) error                                   //: apply a renewed cert to the vol
+	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // [B.86h]: the guest chain's release, image already staged
+	WriteCert(ctx context.Context, cert, key string) error                               //: apply a renewed cert to the vol
 	// RescueGuest rebuilds the guest from the verified image under its overlay (B.10) -- the one
 	// recovery rung that is never a reflex. It is on this interface rather than beside it because
 	// it performs the same VM+channel+Manager swap the upgrade legs do, and a second owner of that
@@ -150,19 +142,6 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 		}
 		logf("directive rescue applied: the guest was rebuilt and re-converged")
 		return done
-	case api.DirectiveUpgradeSystem:
-		// An OS upgrade needs a TARGET and an UPGRADER -- not a service. The old guard also
-		// required spec.Name, which silently made the SHIPPED node un-upgradable: a fresh
-		// install has the zero ServiceSpec, so every OS update it was ever offered came back
-		// "failed". That condition dates from when every anchor carried a service and
-		// "no service" once meant "nothing to upgrade"; zero services is the shipped state
-		// and the two stopped being the same statement. The system closure is a property of
-		// the NODE, so what happens to run on top of it cannot be a precondition for updating it.
-		if up == nil || d.Payload == "" {
-			logf("directive kind=upgrade-system ignored (no target/upgrader on this node)")
-			return failed("no target/upgrader on this node")
-		}
-		return applySystemUpgrade(ctx, d.ID, d.Payload, up, n, logf, upgradeBudget, wd)
 	case api.DirectiveCertRequest:
 		if up == nil || d.Payload == "" || cr == nil {
 			logf("directive kind=cert-request ignored (no payload/target on this node)")
@@ -268,104 +247,4 @@ func escalate(ctx context.Context, n notify.Notifier, logf func(string, ...any),
 	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_ = n.Notify(nctx, al)
-}
-
-// applySystemUpgrade is the OS upgrade to one closure, by whichever method the closure needs --
-// the body of the upgrade-system directive, shared with the guest chain's update-guest, which
-// resolves a release to a closure and then does exactly this ([B.86d]). One upgrade path, two
-// ways of naming its target.
-func applySystemUpgrade(ctx context.Context, id, closure string, up upgrader, n notify.Notifier, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
-	done := api.DirectiveOutcome{ID: id, State: api.OutcomeDone}
-	failed := func(detail string) api.DirectiveOutcome {
-		return api.DirectiveOutcome{ID: id, State: api.OutcomeFailed, Detail: detail}
-	}
-	rolledBack := func(detail string) api.DirectiveOutcome {
-		return api.DirectiveOutcome{ID: id, State: api.OutcomeRolledBack, Detail: detail}
-	}
-	// The whole-OS switch is heavier than a service install (activation, service
-	// restarts), so give it a longer bound. The same bound covers staging, which is
-	// the one part that goes to the network (tens of MB).
-	//
-	// It is ALSO the wait a node spends degraded when the gate never passes, because
-	// AwaitOSReady polls until this context ends — so the number is a product property
-	// rather than a timeout detail. Config.UpgradeBudget carries that reasoning and the
-	// bounds on lowering it.
-	uctx, cancel := wd.budget(ctx, upgradeBudget)
-	defer cancel()
-	// Pull the closure in first. This is deliberately OUTSIDE the upgrade:
-	// a stage failure means the bytes never arrived, so nothing was quiesced,
-	// snapshotted or switched — the node keeps running what it ran, and the directive
-	// reports failed rather than rolled-back. Folding the fetch into Upgrade would
-	// dress a download error up as a failed upgrade and put a healthy node through a
-	// rollback it never needed.
-	logf("directive kind=upgrade-system: staging %s", closure)
-	if err := up.Stage(uctx, closure, guestagent.StageSource{}); err != nil {
-		logf("directive upgrade-system: staging failed, not switching (node unchanged): %v", err)
-		escalate(ctx, n, logf, "this node", "OS stage", closure, err)
-		return failed(err.Error())
-	}
-	// Decide HOW to activate before touching anything. Committing
-	// up front is the whole rule: a switch that discovers halfway through that it needed
-	// a boot has already replaced the running services, leaving no honest rollback point
-	// and a health-gate judging a state that is neither generation.
-	method, reasons, err := up.ActivationMethod(uctx, closure)
-	if err != nil {
-		logf("directive upgrade-system: could not determine activation method, not switching: %v", err)
-		escalate(ctx, n, logf, "this node", "OS activation check", closure, err)
-		return failed(err.Error())
-	}
-	if method != guest.ActivateSwitch {
-		// A kernel/initrd/systemd/params change cannot be applied in band -- doing so
-		// would leave the guest running userland from one generation on a kernel from
-		// another -- so it goes the heavy way: stage the boot, stop cleanly, snapshot
-		// the OS disk, come back up on the target, and gate the fresh boot.
-		logf("directive kind=upgrade-system: reboot into %s (%s changed)", closure, strings.Join(reasons, ", "))
-		back, err := up.RebootUpgrade(uctx, closure)
-		switch {
-		case errors.Is(err, ErrHandoverRequired):
-			// Not an incident: the node looked, saw a peer that could take the work, and
-			// declined to fail itself over unattended. Nothing moved, so there is
-			// nothing for an owner to do and no alert -- an HA pair would otherwise mail
-			// them on every OS release. The cloud is the audience here: it holds the flock
-			// view and is what schedules the handover.
-			//
-			// Reported as rolled-back because that is the closest TRUE thing in the existing
-			// outcome set (the node is healthy on its old code) and shared/api is a closed
-			// allowlist, not a place to add an enum value in passing. A distinct "declined"
-			// state is the honest shape and belongs with the cloud work that will read it.
-			logf("directive upgrade-system DECLINED, node untouched and serving: %v", err)
-			return rolledBack(err.Error())
-		case err != nil && back:
-			logf("directive upgrade-system rolled back: %v", err)
-			escalate(ctx, n, logf, "this node", "OS upgrade (reboot)", closure, err)
-			return rolledBack(err.Error())
-		case err != nil:
-			// The node did NOT come back on the target and was not returned to where it
-			// started -- the one outcome that needs a human, so do not dress it up as a
-			// rollback the way a switch failure is allowed to.
-			logf("directive upgrade-system FAILED without a clean rollback: %v", err)
-			escalate(ctx, n, logf, "this node", "OS upgrade (reboot)", closure, err)
-			return failed(err.Error())
-		}
-		logf("directive upgrade-system applied: rebooted into %s", closure)
-		return done
-	}
-	logf("directive kind=upgrade-system: switch to %s", closure)
-	// Same three outcomes as the reboot method, for the same reason: since the
-	// switch path's rollback also goes through the OS disk, "it failed and the node is back
-	// on its old code" and "it failed and the node needs a human" are once again different
-	// answers, and this used to report both as a rollback.
-	back, err := up.Upgrade(uctx, closure)
-	switch {
-	case err != nil && back:
-		logf("directive upgrade-system rolled back: %v", err)
-		escalate(ctx, n, logf, "this node", "OS upgrade", closure, err)
-		return rolledBack(err.Error())
-	case err != nil:
-		logf("directive upgrade-system FAILED without a clean rollback: %v", err)
-		escalate(ctx, n, logf, "this node", "OS upgrade", closure, err)
-		return failed(err.Error())
-	}
-	logf("directive upgrade-system applied: now running %s", closure)
-	return done
 }

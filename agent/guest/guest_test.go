@@ -5,11 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 	"time"
 
-	"briard.io/agent/guestagent"
 	"briard.io/shared/model"
 )
 
@@ -20,22 +18,17 @@ type fakeControl struct {
 	activeErr               error
 	system                  string   // current system path (SystemPath)
 	switches                []string // closures passed to Switch, in order
-	switchErr               error    // Switch returns this (converge can't reach the staged closure)
 	stagedBoot              []string // closures passed to StageBoot, in order
 	stageBootErr            error
 	snapDataDir, snapTo     string
 	snapErr                 error
 	restoreFrom, restoreDir string
 	restored                bool
-	startErr                error                                  // ServiceStart returns this (to trigger a rollback)
-	components              map[string]guestagent.SystemComponents // keyed by closure ("" = booted), V3.17c1
-	componentsFor           []string                               // closures Components was asked about, in order
+	startErr                error    // ServiceStart returns this (to trigger a rollback)
+	componentsFor           []string // closures Components was asked about, in order
 	componentsErr           error
 	collected               int // CollectGarbage calls
 	collectErr              error
-	staged                  []string // closures passed to Stage, in order
-	stagedFrom              []guestagent.StageSource
-	stageErr                error
 	certs                   []string // cert|key pairs passed to WriteCert, in order
 	ops                     []string // ordered log of maintenance/lifecycle ops (for sequencing)
 	paused, resumed         int
@@ -74,27 +67,6 @@ func (f *fakeControl) ServiceHealth(_ context.Context, url string) (bool, error)
 }
 func (f *fakeControl) VIP(_ context.Context, _ string) (string, error) { return f.vip, f.vipErr }
 func (f *fakeControl) SystemPath(context.Context) (string, error)      { return f.system, nil }
-func (f *fakeControl) Components(_ context.Context, closure string) (guestagent.SystemComponents, error) {
-	f.componentsFor = append(f.componentsFor, closure)
-	return f.components[closure], f.componentsErr
-}
-func (f *fakeControl) Stage(_ context.Context, closure string, src guestagent.StageSource) error {
-	f.staged = append(f.staged, closure)
-	f.stagedFrom = append(f.stagedFrom, src)
-	f.ops = append(f.ops, "stage")
-	return f.stageErr
-}
-func (f *fakeControl) Switch(_ context.Context, closure string) error {
-	f.switches = append(f.switches, closure)
-	f.ops = append(f.ops, "switch")
-	return f.switchErr
-}
-func (f *fakeControl) StageBoot(_ context.Context, closure string) error {
-	f.stagedBoot = append(f.stagedBoot, closure)
-	f.ops = append(f.ops, "stageboot")
-	return f.stageBootErr
-}
-
 func (f *fakeControl) WriteCert(_ context.Context, cert, key string) error {
 	f.certs = append(f.certs, cert+"|"+key)
 	f.ops = append(f.ops, "cert")
@@ -119,14 +91,6 @@ func (f *fakeControl) ReactorResume(context.Context, string) error {
 	f.resumed++
 	f.ops = append(f.ops, "resume")
 	return nil
-}
-
-// "storegc", not "gc": the nix store and a btrfs snapshot are different things, and this log
-// is read by eye.
-func (f *fakeControl) CollectGarbage(context.Context) error {
-	f.collected++
-	f.ops = append(f.ops, "storegc")
-	return f.collectErr
 }
 
 // Cluster is what OSReady asks about this node. Every pre-existing test leaves
@@ -407,98 +371,6 @@ func TestAssessVerdicts(t *testing.T) {
 				t.Errorf("Assess got baseline %v, want the token Baseline returned", tc.a.baseline)
 			}
 		})
-	}
-}
-
-// Every boot-critical component, one at a time, must force a reboot — the table
-// is exhaustive over the struct on purpose. A
-// field added to SystemComponents without a case here is the drift this guards against:
-// it would silently be treated as switch-safe, which is the one wrong answer that cannot
-// be recovered from, since by the time it matters the running system is already replaced.
-func TestActivationForEachComponentForcesReboot(t *testing.T) {
-	base := guestagent.SystemComponents{
-		Kernel:        "/nix/store/aaa-linux/bzImage",
-		Initrd:        "/nix/store/bbb-initrd/initrd",
-		KernelModules: "/nix/store/ccc-modules",
-		Systemd:       "/nix/store/ddd-systemd",
-		KernelParams:  "console=ttyS0 loglevel=4",
-	}
-	for _, tc := range []struct {
-		name  string
-		mutit func(*guestagent.SystemComponents)
-	}{
-		{"kernel", func(c *guestagent.SystemComponents) { c.Kernel = "/nix/store/zzz-linux/bzImage" }},
-		{"initrd", func(c *guestagent.SystemComponents) { c.Initrd = "/nix/store/zzz-initrd/initrd" }},
-		{"kernel-modules", func(c *guestagent.SystemComponents) { c.KernelModules = "/nix/store/zzz-modules" }},
-		{"systemd", func(c *guestagent.SystemComponents) { c.Systemd = "/nix/store/zzz-systemd" }},
-		{"kernel-params", func(c *guestagent.SystemComponents) { c.KernelParams = "console=ttyS0 loglevel=7" }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			target := base
-			tc.mutit(&target)
-			method, reasons := ActivationFor(base, target)
-			if method != ActivateReboot {
-				t.Errorf("%s changed but method = %q, want reboot", tc.name, method)
-			}
-			if !reflect.DeepEqual(reasons, []string{tc.name}) {
-				t.Errorf("reasons = %v, want [%s] (the decision must say what forced it)", reasons, tc.name)
-			}
-		})
-	}
-}
-
-// An identical target is a switch. This is the assertion that keeps the reboot rule from
-// being vacuously "always reboot", which would pass every test above while making every
-// update an outage on a single-node green.
-func TestActivationForIdenticalIsSwitch(t *testing.T) {
-	c := guestagent.SystemComponents{Kernel: "/nix/store/aaa", Initrd: "/nix/store/bbb", KernelModules: "/nix/store/ccc", Systemd: "/nix/store/ddd", KernelParams: "quiet"}
-	method, reasons := ActivationFor(c, c)
-	if method != ActivateSwitch || reasons != nil {
-		t.Errorf("identical components = %q %v, want switch with no reasons", method, reasons)
-	}
-}
-
-// A real incremental release — new units, new etc, same kernel — is a switch. This is the
-// common case an OS update delivers (measured 74 MB of a 1.6 GB closure), so if it ever reads
-// as a reboot then every routine update costs a boot.
-func TestActivationForUserlandOnlyChangeIsSwitch(t *testing.T) {
-	booted := guestagent.SystemComponents{Kernel: "/nix/store/aaa", Initrd: "/nix/store/bbb", KernelModules: "/nix/store/ccc", Systemd: "/nix/store/ddd", KernelParams: "quiet"}
-	target := booted // the toplevel/etc/units differ, but none of THESE do
-	method, _ := ActivationFor(booted, target)
-	if method != ActivateSwitch {
-		t.Errorf("userland-only change = %q, want switch", method)
-	}
-}
-
-// Several at once (a nixpkgs bump) reports all of them, not just the first — the log has
-// to be honest about the size of the change it is about to make.
-func TestActivationForReportsEveryReason(t *testing.T) {
-	booted := guestagent.SystemComponents{Kernel: "a", Initrd: "b", KernelModules: "c", Systemd: "d", KernelParams: "p"}
-	target := guestagent.SystemComponents{Kernel: "A", Initrd: "B", KernelModules: "C", Systemd: "d", KernelParams: "p"}
-	method, reasons := ActivationFor(booted, target)
-	if method != ActivateReboot || !reflect.DeepEqual(reasons, []string{"kernel", "initrd", "kernel-modules"}) {
-		t.Errorf("= %q %v, want reboot [kernel initrd kernel-modules]", method, reasons)
-	}
-}
-
-// ActivationMethod diffs the target against the BOOTED generation, not the current one —
-// asserted by which closures it asks about, since after a switch-only update the two differ
-// and only the booted one describes the kernel actually running.
-func TestActivationMethodDiffsAgainstBooted(t *testing.T) {
-	f := &fakeControl{components: map[string]guestagent.SystemComponents{
-		"":             {Kernel: "a", Initrd: "b", KernelModules: "c", Systemd: "d", KernelParams: "p"},
-		"/nix/store/t": {Kernel: "a", Initrd: "b", KernelModules: "c", Systemd: "d", KernelParams: "p"},
-	}}
-	m := newManager(f, "")
-	method, _, err := m.ActivationMethod(context.Background(), "/nix/store/t")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if method != ActivateSwitch {
-		t.Errorf("method = %q, want switch", method)
-	}
-	if !reflect.DeepEqual(f.componentsFor, []string{"", "/nix/store/t"}) {
-		t.Errorf("asked about %v, want [\"\" target] — \"\" is the booted generation", f.componentsFor)
 	}
 }
 

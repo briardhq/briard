@@ -296,7 +296,7 @@ func TestHandshake(t *testing.T) {
 	if g.ProtocolVersion() != api.GuestProtocol {
 		t.Errorf("ProtocolVersion = %d, want %d", g.ProtocolVersion(), api.GuestProtocol)
 	}
-	if !g.Supports(verbOSSwitch) {
+	if !g.Supports(verbOSSystem) {
 		t.Error("guest should advertise os.switch after the handshake")
 	}
 	if g.Supports("bogus.verb") {
@@ -944,108 +944,6 @@ func TestSystemPathReadsCurrentSystem(t *testing.T) {
 	}
 }
 
-// Os.stage realises the closure into the store. In production it passes no
-// substituter options at all -- the guest uses the caches baked into its image
-// (cache.nixos.org + cache.briard.io), so an --option here would mean the host had
-// silently taken over a decision that belongs to the image.
-func TestStageRealisesClosureFromBakedCaches(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	closure := "/nix/store/abc123-nixos-system-guest-26.05"
-	if err := g.Stage(context.Background(), closure, StageSource{}); err != nil {
-		t.Fatal(err)
-	}
-	// The trailing sync is load-bearing, not hygiene: nix registers the staged paths durably
-	// but not their DATA, so without it a crash-consistent capture taken moments later (the
-	// switch path's live snapshot, a power cut) restores a registered-but-torn closure that
-	// nix will never re-fetch ([B.65]).
-	want := [][]string{{"nix-store", "--realise", closure}, {"sync"}}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want %v (no --option: the image's own substituters)", f.runs, want)
-	}
-}
-
-// A StageSource overrides both the cache and the key it must be signed by, for that one
-// call. The key travels with the URL deliberately: pointing a guest at a cache without
-// saying whose signature to accept would either fail (the baked keys don't cover it) or
-// tempt someone to relax require-sigs, which is the one thing this must never do.
-func TestStageFromOverridesCacheAndKey(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	closure := "/nix/store/abc123-nixos-system-guest-26.05"
-	src := StageSource{URL: "http://192.168.1.1:8080", Key: "briard-test-1:AAAA="}
-	if err := g.Stage(context.Background(), closure, src); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{{
-		"nix-store", "--realise", closure,
-		"--option", "substituters", src.URL,
-		"--option", "trusted-public-keys", src.Key,
-	}, {"sync"}}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want %v", f.runs, want)
-	}
-}
-
-// A failed realise must not sync: the sync exists to make a SUCCESSFUL stage durable, and
-// running it after a failure would only blur whose error the caller sees.
-func TestStageSkipsSyncWhenRealiseFails(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, _ []string) ([]byte, error) {
-		if name == "nix-store" {
-			return nil, errors.New("substituter unreachable")
-		}
-		return nil, nil
-	}}
-	g := dial(t, f)
-	if err := g.Stage(context.Background(), "/nix/store/abc123-nixos-system-guest-26.05", StageSource{}); err == nil {
-		t.Fatal("a failed realise must fail the stage")
-	}
-	for _, r := range f.runs {
-		if r[0] == "sync" {
-			t.Errorf("sync ran after a failed realise: %v", f.runs)
-		}
-	}
-}
-
-// An empty closure is refused before anything runs: `nix-store --realise` with no path
-// exits 0 having done nothing, so without this guard a caller that lost its target would
-// see a successful stage and go on to switch to "".
-func TestStageRefusesEmptyClosure(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	if err := g.Stage(context.Background(), "", StageSource{}); err == nil {
-		t.Fatal("staging an empty closure must fail")
-	}
-	if len(f.runs) != 0 {
-		t.Errorf("ran %v, want nothing", f.runs)
-	}
-}
-
-// Os.stageboot makes a closure BOOTABLE without making it the default. The exact
-// commands are the assertion, because two of them are easy to write in a way that looks
-// identical and is wrong: the profile must be `staging` (not the system profile, which
-// would hand over the default), and switch-to-configuration must be run from
-// /run/current-system (not from the staged closure, whose copy passes ITSELF as
-// install-grub.pl's default entry -- the `nixos-rebuild boot --profile-name` trap).
-func TestStageBootArmsStagingWithoutMovingTheDefault(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	closure := "/nix/store/abc123-nixos-system-guest-26.05"
-	if err := g.StageBoot(context.Background(), closure); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"test", "-e", closure},
-		{"mkdir", "-p", "/nix/var/nix/profiles/system-profiles"},
-		{"nix-env", "-p", "/nix/var/nix/profiles/system-profiles/staging", "--set", closure},
-		{"/run/current-system/bin/switch-to-configuration", "boot"},
-		{"sync"},
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v,\nwant %v", f.runs, want)
-	}
-}
-
 // Os.poweroff must return BEFORE the machine goes down, or the reply races the
 // shutdown and the host sees a dead channel -- indistinguishable from a guest that crashed,
 // which is the one thing a clean-shutdown path must never look like. --no-block is what
@@ -1188,147 +1086,6 @@ func TestPowerOffStillRefusesWhenNothingIsStopping(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "signal: terminated") {
 		t.Errorf("the refusal lost the error that says why: %v", err)
-	}
-}
-
-// Arming never fetches: a closure that is not already in the store is refused
-// before the bootloader is touched, so a half-armed grub cannot outlive the mistake.
-func TestStageBootRefusesUnstagedClosure(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, _ []string) ([]byte, error) {
-		if name == "test" {
-			return nil, errors.New("no such path")
-		}
-		return nil, nil
-	}}
-	g := dial(t, f)
-	if err := g.StageBoot(context.Background(), "/nix/store/missing"); err == nil {
-		t.Fatal("stageboot on an absent closure must fail")
-	}
-	if len(f.runs) != 1 {
-		t.Errorf("ran %v after the presence check failed; want nothing further", f.runs[1:])
-	}
-}
-
-// Os.components resolves the four boot-critical symlinks and reads kernel-params
-// as a FILE. An empty closure means the BOOTED generation — not /run/current-system, which
-// a switch-only update moves out from under the running kernel.
-func TestComponentsReadsBootedByDefault(t *testing.T) {
-	f := &fakeExec{output: []byte("/nix/store/xxx\n")}
-	g := dial(t, f)
-	if _, err := g.Components(context.Background(), ""); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"readlink", "-f", "/run/booted-system/kernel"},
-		{"readlink", "-f", "/run/booted-system/initrd"},
-		{"readlink", "-f", "/run/booted-system/kernel-modules"},
-		{"readlink", "-f", "/run/booted-system/systemd"},
-		{"cat", "/run/booted-system/kernel-params"},
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v,\nwant %v", f.runs, want)
-	}
-}
-
-// A named closure is read from that closure, and the values come back in the right fields —
-// a transposition here would silently compare a kernel against an initrd and read as
-// "changed", turning every update into a reboot.
-func TestComponentsReadsNamedClosureIntoFields(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "cat" {
-			return []byte("console=ttyS0 quiet\n"), nil
-		}
-		return []byte("/resolved" + args[len(args)-1] + "\n"), nil
-	}}
-	g := dial(t, f)
-	c, err := g.Components(context.Background(), "/nix/store/tgt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := SystemComponents{
-		Kernel:        "/resolved/nix/store/tgt/kernel",
-		Initrd:        "/resolved/nix/store/tgt/initrd",
-		KernelModules: "/resolved/nix/store/tgt/kernel-modules",
-		Systemd:       "/resolved/nix/store/tgt/systemd",
-		KernelParams:  "console=ttyS0 quiet",
-	}
-	if c != want {
-		t.Errorf("components = %+v,\nwant %+v", c, want)
-	}
-}
-
-// An EMPTY kernel-params is damage, never a value: no bootable generation has an empty
-// command line, but a closure whose data pages were lost to a crash-consistent capture
-// reads exactly this way — registered, symlinks intact, file content gone ([B.65]: the
-// restored rollback snapshot). Handing "" back as a diffable value routed a switch-only
-// change down the reboot path, into the very generation whose files are torn.
-func TestComponentsRefusesEmptyKernelParams(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "cat" {
-			return []byte("\n"), nil // torn file: exists, content gone
-		}
-		return []byte("/resolved" + args[len(args)-1] + "\n"), nil
-	}}
-	g := dial(t, f)
-	if _, err := g.Components(context.Background(), "/nix/store/tgt"); err == nil {
-		t.Fatal("an empty kernel-params read must fail, not diff")
-	}
-}
-
-func TestSwitchSetsProfileAndActivates(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	closure := "/nix/store/def456-nixos-system-guest-25.05"
-	if err := g.Switch(context.Background(), closure); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"test", "-e", closure},
-		{"nix-env", "-p", "/nix/var/nix/profiles/system", "--set", closure},
-		{closure + "/bin/switch-to-configuration", "switch"},
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want %v", f.runs, want)
-	}
-}
-
-// A failed profile --set aborts before activation.
-func TestSwitchStopsOnProfileError(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, _ []string) ([]byte, error) {
-		if name == "nix-env" {
-			return nil, errors.New("nix-env boom")
-		}
-		return nil, nil // the staged check passes; the profile set is what fails
-	}}
-	g := dial(t, f)
-	if err := g.Switch(context.Background(), "/nix/store/x"); err == nil {
-		t.Fatal("expected error")
-	}
-	if len(f.runs) != 2 { // the staged check, then the failed --set, then stop
-		t.Errorf("switch should stop after a failed --set, ran %v", f.runs)
-	}
-}
-
-// An unstaged closure is refused before anything is touched, and this guard is load-bearing
-// rather than defensive: with substituters configured `nix-env --set` would happily
-// SUBSTITUTE a missing closure, so a switch on the failover path could go to the network --
-// breaking's "converge is select, never build" exactly where it cannot afford to wait.
-// (It moved here from os.pin when the code pin was removed; the rule always belonged to
-// switching rather than to recording.)
-func TestSwitchRefusesUnstagedClosure(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, _ []string) ([]byte, error) {
-		if name == "test" {
-			return nil, errors.New("not found")
-		}
-		return nil, nil
-	}}
-	if err := dial(t, f).Switch(context.Background(), "/nix/store/missing"); err == nil {
-		t.Fatal("expected a refusal for an unstaged closure")
-	}
-	for _, r := range f.runs {
-		if len(r) > 0 && r[0] == "nix-env" {
-			t.Errorf("must not touch the system profile for an unstaged closure, ran %v", f.runs)
-		}
 	}
 }
 
@@ -1584,22 +1341,6 @@ func TestBringUpRendersNothingWithNoInstalledService(t *testing.T) {
 		if strings.HasPrefix(path, quadletDir+"/") {
 			t.Errorf("a node with no installed service wrote a quadlet unit: %s", path)
 		}
-	}
-}
-
-// Os.gc must delete old profile GENERATIONS, not merely collect. Each
-// system-N-link is itself a gcroot pinning a whole closure, so a bare nix-collect-garbage
-// frees nothing however many have accumulated -- -d is what does the work, and asserting
-// the exact argv is what keeps that from being silently dropped.
-func TestCollectGarbageDeletesOldGenerations(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	if err := g.CollectGarbage(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{{"nix-collect-garbage", "-d"}}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want %v -- without -d this collects nothing", f.runs, want)
 	}
 }
 

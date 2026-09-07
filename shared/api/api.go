@@ -94,10 +94,10 @@ type NodeStatus struct {
 	// tenant to the node's identity is the cloud's job, so the controller keys storage on its own
 	// tenant, not this self-asserted value. Empty on a node that hasn't registered.
 	Tenant string `json:"tenant,omitempty"`
-	// System is the NixOS system closure this node is currently running (whole-OS
-	// rolling update): the store path of /run/current-system. Ground truth for the OS
-	// rollout -- the controller confirms the serving node switched to the target closure.
-	// Empty on a witness (or when unread).
+	// System is the guest RELEASE this node runs (`guest.<date>.<rev>`, [B.86h]): the OS moves
+	// only by swapping the image, so the host is the authority and reports the release whose
+	// image its guest booted. Ground truth for the OS rollout -- the controller confirms the
+	// node reached the target release. Empty on a witness, or a node with no record.
 	System string `json:"system,omitempty"`
 	// Services is what this node has INSTALLED at runtime, one entry per service, ordered by
 	// name. It is the whole answer to "what is this node running", and widening the closed
@@ -334,9 +334,11 @@ const (
 const (
 	DirectiveNoop          = "noop"           // acknowledge only -- proves the round-trip
 	DirectiveLog           = "log"            // agent logs Payload -- push a marker/instruction to a node
-	DirectiveUpgradeSystem = "upgrade-system" // Payload = target system closure store path; the
-	//                              Agent runs guest.Manager.Upgrade (whole-OS switch, health-gated,
-	//                              auto-rollback), pinning it so a failover converges.
+	DirectiveUpgradeSystem = "upgrade-system" // Payload = a GUEST RELEASE id (`guest.<date>.<rev>`) on the
+	//                              release channel ([B.86h]). The node fetches and verifies that
+	//                              release's image, swaps it under a fresh OS disk, proves the boot
+	//                              against the signed manifest, health-gates, and swaps back on
+	//                              failure. The OS moves only by image; nothing is switched in band.
 	DirectiveCert = "cert" // Payload = a JSON CertBundle (cert-only); the agent pairs it with the
 	//                        Key it holds and writes both to the DRBD volume, where the TLS
 	//                        terminator hot-reloads it (renewal, cloud-scheduled).

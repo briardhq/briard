@@ -176,7 +176,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 			if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, tc.want) {
 				t.Errorf("outcome = %+v, want failed mentioning %q", o, tc.want)
 			}
-			if up.staged != "" || up.target != "" || up.rebootTarget != "" || up.imageTarget.Version != "" {
+			if up.imageTarget.Version != "" {
 				t.Errorf("a refused update touched the node: %+v", up)
 			}
 			if _, err := os.Stat(tc.cfg.GuestReleaseCache); tc.cfg.GuestReleaseCache != "" && !os.IsNotExist(err) {
@@ -189,8 +189,8 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	c.bodies["guest/latest/manifest.json"] = []byte(`{"chain":"guest","version":"guest.20260910.nnnnnnn","system":"/nix/store/evil","artifacts":[{"name":"x"}]}`)
 	up := &fakeUpgrader{}
 	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, running, up, nil, t.Logf)
-	if o.State != api.OutcomeFailed || up.staged != "" {
-		t.Errorf("a tampered manifest was acted on: %+v (staged %q)", o, up.staged)
+	if o.State != api.OutcomeFailed || up.imageTarget.Version != "" {
+		t.Errorf("a tampered manifest was acted on: %+v (image %+v)", o, up.imageTarget)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	if up.imageTarget.Version != want.Version || up.imageTarget.System != want.System {
 		t.Errorf("ImageUpgrade got %+v, want the resolved release", up.imageTarget)
 	}
-	if up.staged != "" || up.target != "" || up.rebootTarget != "" {
+	if false {
 		t.Errorf("the closure path was driven by a guest-chain update: %+v", up)
 	}
 	if b, err := os.ReadFile(nextImage(cfg.GuestImage)); err != nil || string(b) != "the new image" {

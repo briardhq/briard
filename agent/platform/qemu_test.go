@@ -197,25 +197,6 @@ func TestLaunchExecMacvtap(t *testing.T) {
 	}
 }
 
-// The boot selector is per-launch and OFF by default. The default matters more
-// than the arming does -- every ordinary launch, including the one that rolls a failed
-// upgrade back, is the one that must NOT carry the flag.
-func TestQEMUArgsBootStaging(t *testing.T) {
-	off := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/d.qcow2"}), " ")
-	if strings.Contains(off, "-smbios") {
-		t.Errorf("BootStaging unset must pass no -smbios (that IS the rollback):\n%s", off)
-	}
-	on := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/d.qcow2", BootStaging: true}), " ")
-	if !strings.Contains(on, "-smbios type=11,value="+BootSelectStaging) {
-		t.Errorf("BootStaging should render the type-11 OEM string:\n%s", on)
-	}
-	// The guest's grub matches this string verbatim (guest-image/disk-image.nix); changing
-	// it on one side only silently stops selecting, and a silent no-select just boots old.
-	if BootSelectStaging != "briard_boot=staging" {
-		t.Errorf("BootSelectStaging = %q; the guest grub snippet expects briard_boot=staging", BootSelectStaging)
-	}
-}
-
 // The monitor is opt-in per launch: a guest that never needs stopping or
 // resetting should carry no total-control socket at all, so empty renders nothing.
 func TestQEMUArgsQMPSocket(t *testing.T) {

@@ -45,9 +45,8 @@
 # would widen the delta between them, which the reboot demo asserts is exactly one kernel
 # parameter. (Distinct from mkGuest's own `extraModules`, which is per-generation and is what
 # MAKES each target differ.)
-{ nixpkgs, pkgs, overlay, stageImages ? [ ], stageSystemModule ? null
-, rebootSystemModule ? null, guestAgentEnv ? { }
-, bakeTargets ? true, commonModules ? [ ]
+{ nixpkgs, pkgs, overlay, stageImages ? [ ], guestAgentEnv ? { }
+, commonModules ? [ ]
   # The release id stamped into the guest's agent. Defaulted so every existing caller (the
   # lab fleet disks, the test variants) keeps building unchanged; flake.nix passes the real one.
 , agentVersion ? "0.0.0-dev" }:
@@ -64,46 +63,23 @@ let
     {
       imports = [ "${modulesPath}/profiles/qemu-guest.nix" ]; # virtio_blk/pci/console in initrd
       networking.hostName = "guest"; # DRBD .res on-block name (matches the driver's NODE)
+      # THE GUEST IS AN APPLIANCE IMAGE ([B.86h]): one generation, no nix at runtime. The OS
+      # moves only by the host swapping this image for the next release's, so nothing in here
+      # ever stages, switches or collects a closure -- `nix` itself is not installed, which
+      # also takes the daemon, the store tooling and their closure out of every household.
+      # The store paths are still a NixOS system; only the machinery to CHANGE them is gone.
+      nix.enable = false;
       boot.loader.grub = {
         enable = lib.mkForce true;
         device = "/dev/vda";
-        # The boot selector: the host says which generation this launch boots, and
-        # says it OUTSIDE the disk. A reboot-path OS upgrade parks its target in the
-        # `staging` system profile (os.stageboot) WITHOUT moving grub's default; the host
-        # then passes `-smbios type=11,value=briard_boot=staging` for exactly the one launch
-        # that should come up on it. Nothing on this disk is ever armed, so an OS-disk
-        # snapshot taken before the reboot cannot re-run the bad generation when restored --
-        # the reason `grub-reboot` (which writes into the guest's own grubenv) was rejected.
-        #
-        # Every step fails safe onto the existing default, i.e. onto the OLD system: no
-        # smbios.mod, no type-11 structure, an unreadable string or a renamed submenu all
-        # leave `default` untouched. A bug here costs an upgrade, never a boot.
-        #
-        # Mechanics, each verified against the pinned nixpkgs/grub rather than assumed:
-        #   - grub reads the byte at the given offset as a string NUMBER (smbios.c). Type 11
-        #     is OEM Strings: its only such byte is offset 4 (Count), which resolves to the
-        #     last string -- the single one we pass.
-        #   - install-grub.pl globs /nix/var/nix/profiles/system-profiles/* at run time and
-        #     emits a submenu per profile, titled "<distro> - Profile '<name>'".
-        #   - "title>0" is a submenu path: grub matches the title up to the '>' and then
-        #     re-parses the remainder inside the submenu (menu.c), where 0 is the newest
-        #     generation (profile generations are listed newest-first).
-        #   - extraConfig lands AFTER `set default=` and BEFORE the menuentries, so this is
-        #     an override through a supported option, not a patch.
+        # Let grub speak on ttyS0, the guest's only console (boot.kernelParams already points
+        # the kernel there): a bootloader that fails silently is a node that is simply "down"
+        # with no evidence. There is exactly one generation to boot, so grub has no decision
+        # to make -- the boot selector that once lived here went with the closure path.
         extraConfig = ''
-          # Let grub speak on ttyS0, the guest's only console (boot.kernelParams already
-          # points the kernel there). Until V3.17c2 grub had no decision to make and its
-          # VGA-only output cost nothing; now that a launch can select a generation, a
-          # bootloader that fails silently is a node that is simply "down" with no evidence.
           insmod serial
           serial --unit=0 --speed=115200
           terminal_output --append serial
-
-          insmod smbios
-          smbios --type 11 --get-string 4 --set briard_boot
-          if [ "$briard_boot" = "briard_boot=staging" ]; then
-            set default="${config.system.nixos.distroName} - Profile 'staging'>0"
-          fi
         '';
       };
       fileSystems."/" = lib.mkForce {
@@ -349,32 +325,12 @@ let
       ] ++ commonModules ++ extraModules;
     };
 
-  # An optional distinct upgrade-target generation (the running system + a delta), staged
-  # for the whole-OS rolling-update demo. Content-addressed => identical fleet-wide.
-  v1System =
-    if stageSystemModule == null then null else (mkGuest [ stageSystemModule ]).config.system.build.toplevel;
-
-  # The reboot-only upgrade target. Same treatment, different promise: this one must
-  # NOT be reachable by an in-band switch, which is what makes it a proof rather than a repeat.
-  rebootSystem =
-    if rebootSystemModule == null then null else (mkGuest [ rebootSystemModule ]).config.system.build.toplevel;
-
-  # The good (running) generation, with any staged upgrade-target closures kept in its
-  # closure so they're present on the disk for an offline `os.switch`, and any pre-staged
-  # upgrade-target service images baked in + warmed at boot.
-  #
-  # BAKING A TARGET IS THE OLD WAY, and it is being unwound. It existed because the
-  # guest had no substituter, so the only way a closure could ever reach it was at image-build
-  # time — the very gap the binary cache closes. Each baked target is a WHOLE SECOND OS CLOSURE in
-  # the image, so this list is what made the fixture disk expensive, not the ~8 MB service image.
-  # A test target belongs on a real (in-test) binary cache instead — cheaper, and a truer
-  # rehearsal of how a field node receives every generation. `v1System`/`rebootSystem` are the
-  # last two still baked, and go the same way.
+  # The one generation this image boots, with any pre-staged service images baked in and
+  # warmed at boot. There is no second OS generation any more, baked or fetched: a different OS
+  # is a different IMAGE ([B.86h]), built by importing this file with a different
+  # `commonModules` delta.
   sys = mkGuest [
     {
-      system.extraDependencies = lib.optionals bakeTargets (
-        lib.optional (v1System != null) v1System
-        ++ lib.optional (rebootSystem != null) rebootSystem);
       briard.stagedImages = stageImages;
       # One agent derivation for all three units that need it (briard-guest-agent,
       # briard-deadman, and briard-services' converge). configuration.nix defaults this to an
@@ -442,16 +398,11 @@ let
     label = "nixos";
   };
 in
-# Surface each upgrade target's store path alongside the image (passthru attrs on the
-# derivation, via //, so `${guestDisk}/nixos.qcow2` and `nix build` still work), for a test to
-# hand to os.stage / os.switch.
-#
-# `system` is the RUNNING generation's toplevel — the closure a field guest actually
-# boots, and therefore the one the binary cache must serve. It is deliberately
-# not `nixosConfigurations.guest`: that is the framework-boot variant (no bootloader, no
-# briard-agent units), so a cache published from it would omit the agent and ship an
-# initrd/etc no guest runs. Building this attr builds only the toplevel, not the qcow2.
+# `system` is the image's toplevel, surfaced beside it (a passthru via //, so
+# `${guestDisk}/nixos.qcow2` and `nix build` still work): what the guest manifest names as the
+# closure this image boots, and what the host proves the booted guest against after an image
+# swap ([B.86d]/[B.86h]). It is deliberately not `nixosConfigurations.guest`: that is the
+# framework-boot variant (no bootloader, no briard-agent units), a closure no field guest ever
+# runs. Building this attr builds only the toplevel, not the qcow2.
 image
 // { system = sys.config.system.build.toplevel; }
-// lib.optionalAttrs (v1System != null) { inherit v1System; }
-// lib.optionalAttrs (rebootSystem != null) { inherit rebootSystem; }

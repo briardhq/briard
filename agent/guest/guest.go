@@ -31,8 +31,7 @@ type GuestManager interface {
 	Health(ctx context.Context, spec model.ServiceSpec) (Health, error)
 	Snapshot(ctx context.Context, spec model.ServiceSpec) (SnapshotRef, error)
 	Restore(ctx context.Context, ref SnapshotRef) error
-	SystemPath(ctx context.Context) (string, error)   // current code identity (closure store path)
-	Switch(ctx context.Context, closure string) error // switch the whole-VM system closure
+	SystemPath(ctx context.Context) (string, error) // current code identity (closure store path)
 }
 
 // Health is the guest's health-gate signal.
@@ -100,11 +99,6 @@ type control interface {
 	Snapshot(ctx context.Context, dataDir, dest string) error
 	Restore(ctx context.Context, dataDir, src string) error
 	SystemPath(ctx context.Context) (string, error)
-	Stage(ctx context.Context, closure string, src guestagent.StageSource) error
-	Components(ctx context.Context, closure string) (guestagent.SystemComponents, error)
-	Switch(ctx context.Context, closure string) error
-	StageBoot(ctx context.Context, closure string) error
-	CollectGarbage(ctx context.Context) error
 	WriteCert(ctx context.Context, cert, key string) error
 	ReactorPause(ctx context.Context, snippet string) error
 	ReactorResume(ctx context.Context, snippet string) error
@@ -248,122 +242,6 @@ func (m *Manager) WriteCert(ctx context.Context, cert, key string) error {
 	return m.ctl.WriteCert(ctx, cert, key)
 }
 
-func (m *Manager) Switch(ctx context.Context, closure string) error {
-	return m.ctl.Switch(ctx, closure)
-}
-
-// Stage pulls closure into the guest's store before anything needs it there. It is separate from Switch — rather than folded into it — because the two
-// have opposite network contracts: staging is the one step that may fetch, and switching
-// (like rollback, and like a promoting peer's converge) must work with no network at all.
-// Keeping them apart is what lets every node hold the code warm and a failover stay local.
-//
-// src is the zero StageSource in production. Errors are the caller's to interpret: the
-// upgrade path treats a stage failure as "do not proceed", which leaves the node running
-// what it ran before — a refusal, not a rollback, since nothing was touched yet.
-func (m *Manager) Stage(ctx context.Context, closure string, src guestagent.StageSource) error {
-	return m.ctl.Stage(ctx, closure, src)
-}
-
-// StageBoot makes a staged closure BOOTABLE without making it the default: it
-// registers the closure in a `staging` system profile and reinstalls the bootloader from
-// the *running* system, so grub gains an entry while its default entry does not move.
-//
-// This is the reboot path's counterpart to Switch, and the asymmetry is the safety: after
-// StageBoot the disk still boots what it booted before, and which generation actually comes
-// up is decided per-launch by the host (QEMUSpec.BootStaging). So the rollback is to not
-// pass a flag, and nothing armed on disk can survive into a snapshot restore.
-func (m *Manager) StageBoot(ctx context.Context, closure string) error {
-	return m.ctl.StageBoot(ctx, closure)
-}
-
-// CollectGarbage drops old profile generations and collects the guest store.
-//
-// Its trigger is COMMIT -- the end of a health-green upgrade -- and that placement is the
-// whole safety argument, not a scheduling preference. An upgrade is the
-// only thing that adds a closure, so collecting where one was just committed is exactly
-// proportional; and because commit IS the bracket closing, "never inside a maintenance
-// bracket" holds by construction. It also means a GC can never run while a rollback is
-// possible: by the time it fires, the gate has passed and the way back is spent.
-func (m *Manager) CollectGarbage(ctx context.Context) error {
-	return m.ctl.CollectGarbage(ctx)
-}
-
-// Activation is how a staged generation must be brought into service.
-type Activation string
-
-const (
-	// ActivateSwitch: `switch-to-configuration switch`, in band, no downtime.
-	ActivateSwitch Activation = "switch"
-	// ActivateReboot: install as boot default and reboot. The guest keeps serving until
-	// the reboot, so this is not "worse" -- it is a different, heavier shape, and on an HA
-	// pair it is a failover rather than an outage.
-	ActivateReboot Activation = "reboot"
-)
-
-// ActivationFor decides how a target must be activated by diffing it against the BOOTED
-// generation, and returns the component names that forced a reboot (empty for a switch) so
-// the decision explains itself in a log rather than being a bare verdict.
-//
-// The rule this implements is "commit to ONE method before activating, never
-// switch-then-maybe-reboot". A switch that discovers halfway through that it
-// needed a boot has already replaced the running system's services; there is no honest
-// rollback point left, and the health-gate would be judging a state that is neither
-// generation. Deciding first means rollback robustness scales with the change: a cheap
-// change gets an in-band switch-back, a kernel change gets a real prior boot.
-//
-// The reference is the BOOTED generation, not the current one: after a switch-only update
-// they differ, and it is the booted kernel that is actually running. (Our own policy keeps
-// them consistent -- a switch-only update never changes the kernel -- so today the two
-// agree; comparing against booted is right for the reason, not just the result.)
-//
-// systemd counts. NixOS itself re-execs PID 1 rather than demanding a boot, and we are
-// deliberately stricter: a re-exec'd init is a third state, neither generation as-booted,
-// and the health-gate's verdict is only meaningful about a state we can return to.
-func ActivationFor(booted, target guestagent.SystemComponents) (Activation, []string) {
-	var reasons []string
-	for _, d := range []struct {
-		name          string
-		before, after string
-	}{
-		{"kernel", booted.Kernel, target.Kernel},
-		{"initrd", booted.Initrd, target.Initrd},
-		{"kernel-modules", booted.KernelModules, target.KernelModules},
-		{"systemd", booted.Systemd, target.Systemd},
-		{"kernel-params", booted.KernelParams, target.KernelParams},
-	} {
-		if d.before != d.after {
-			reasons = append(reasons, d.name)
-		}
-	}
-	if len(reasons) > 0 {
-		return ActivateReboot, reasons
-	}
-	return ActivateSwitch, nil
-}
-
-// ActivationMethod reads both sides over the control channel and applies ActivationFor:
-// the target's components against the booted generation's.
-func (m *Manager) ActivationMethod(ctx context.Context, target string) (Activation, []string, error) {
-	booted, err := m.ctl.Components(ctx, "") // "" = the booted generation
-	if err != nil {
-		return "", nil, fmt.Errorf("read booted components: %w", err)
-	}
-	want, err := m.ctl.Components(ctx, target)
-	if err != nil {
-		return "", nil, fmt.Errorf("read target components %s: %w", target, err)
-	}
-	method, reasons := ActivationFor(booted, want)
-	if method != ActivateSwitch {
-		// Say what the verdict was READ FROM, not merely which field disagreed. A reboot is a
-		// failover on a serving node, so "why did this node reboot?" has to stay answerable from
-		// the log afterwards, and a reason NAME cannot distinguish a genuine kernel bump from a
-		// misread. is exactly that case: this decision was seen flipping to reboot for a
-		// pair whose closures have byte-identical kernel-params.
-		m.cfg.Logf("activation: reboot forced by %v; booted %+v; target %+v", reasons, booted, want)
-	}
-	return method, reasons, nil
-}
-
 // VIPReader is the one call health resolution needs from the guest: the address a device
 // ACTUALLY holds. Satisfied by *guestagent.Client, and by the host's own guest reader — which
 // is why it is exported: the readiness gate and the observe loop must resolve by the same
@@ -495,18 +373,6 @@ func (m *Manager) Restore(ctx context.Context, ref SnapshotRef) error {
 // entirely: {manifest + data} rolling back together is still the whole point, but a service is
 // installed from a runtime manifest now, so that sequence lives host-side with the manifest
 // ([V3b.3](e1)/(e2)) and this package's payload upgrade is gone.
-
-// CollectStore drops the generation this upgrade displaced, at commit.
-// Best-effort and deliberately last: the node is healthy on the new code either way, and a
-// store that is one generation fuller is not worth failing a good upgrade over.
-//
-// Only the OS path calls it. A service upgrade adds nothing to the
-// nix store, so there is nothing there for it to collect.
-func (m *Manager) CollectStore(ctx context.Context) {
-	if err := m.ctl.CollectGarbage(ctx); err != nil {
-		m.cfg.Logf("store gc after commit failed (harmless, retried next upgrade): %v", err)
-	}
-}
 
 // EnterMaintenance holds the promoter for the service's resource, if configured.
 func (m *Manager) EnterMaintenance(ctx context.Context) error {
