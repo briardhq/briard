@@ -1506,7 +1506,19 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 		//
 		// Nor does the front door offer a way out of the distinction: it is partOf
 		// briard-vip.service, so on a secondary it is not running to answer a /healthz at all.
-		st.Healthy = !cl.Primary && cl.Quorate && cl.UpToDate
+		//
+		// ...AND A SECONDARY IS ONLY STANDING BY IF THERE IS SOMEONE TO STAND BY FOR. Measured
+		// 2026-09-07 (lab os-rollback, a release whose front door fails outright, on a lone
+		// anchor beside a diskless witness): the node's own OnFailure demoted it under a
+		// promotion hold, and from then on it reported healthy=true every five seconds, by this
+		// rule, while the house was dark -- nobody else could hold it. The fact that separates
+		// that node from a pair's standby is the one the OS gate already uses ([B.54]): whether
+		// a peer could take the work. A standby beside a connected, diskful, up-to-date peer is
+		// doing its whole job; a not-Primary anchor with no such peer is a house nobody holds,
+		// and that is the free-tier owner's whole picture, so it must read unhealthy. (A guest
+		// that reports no peers at all falls on the unhealthy side; the alpha ships host and
+		// guest together, so that is not a shape to be soft on.)
+		st.Healthy = !cl.Primary && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
 	} else {
 		probe = url
 		// Prefer the in-guest probe (the service-health verb) so the health signal survives a substrate

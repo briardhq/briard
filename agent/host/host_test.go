@@ -66,6 +66,7 @@ func TestOverlayStatus_downOnError(t *testing.T) {
 // a live control channel.
 type fakeStatus struct {
 	qs        model.QuorumState
+	peers     []model.PeerState // Cluster.Peers: who else is in the house (empty = a guest that reports none)
 	err       error
 	system    string // SystemPath return (running system closure)
 	sysErr    error
@@ -97,10 +98,11 @@ type fakeStatus struct {
 }
 
 // The fake answers the whole-cluster read the snapshot makes. Its peer list stays empty: these
-// tests are about the node's own quorum/health fields, and an empty list is a real reading (a
+// tests are about the node's own quorum/health fields; `peers` is set only where the rule under test
+// reads it, and an empty list is a real reading (a
 // guest too old to report peers) rather than an unset one.
 func (f fakeStatus) Cluster(context.Context, string) (model.Cluster, error) {
-	return model.Cluster{QuorumState: f.qs}, f.err
+	return model.Cluster{QuorumState: f.qs, Peers: f.peers}, f.err
 }
 
 func (f fakeStatus) MDNSPublished(context.Context) (string, error) { return f.mdns, f.mdnsErr }
@@ -666,8 +668,10 @@ func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T) {
 	cfg := Config{Node: "n2", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	participating := model.QuorumState{Primary: false, Quorate: true, Diskful: true, UpToDate: true}
+	// ...beside the anchor that HOLDS the house: standing by is a job only while someone serves.
+	holder := []model.PeerState{{Name: "n1", Connected: true, Role: "Primary", Diskful: true, UpToDate: true}}
 
-	st, _, probe, _ := cfg.snapshot(context.Background(), fakeStatus{qs: participating, vip: ""}, "")
+	st, _, probe, _ := cfg.snapshot(context.Background(), fakeStatus{qs: participating, peers: holder, vip: ""}, "")
 	if !st.Healthy {
 		t.Error("a quorate, up-to-date secondary is doing its whole job and must read healthy")
 	}
@@ -680,14 +684,14 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	// to ask a Secondary); health must not be softer than the gate.
 	syncing := participating
 	syncing.UpToDate = false
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: syncing, vip: ""}, ""); st.Healthy {
+	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: syncing, peers: holder, vip: ""}, ""); st.Healthy {
 		t.Error("a secondary still syncing must not read healthy")
 	}
 
 	// Non-quorate is the partitioned survivor: participating in nothing.
 	isolated := participating
 	isolated.Quorate = false
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: isolated, vip: ""}, ""); st.Healthy {
+	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: isolated, peers: holder, vip: ""}, ""); st.Healthy {
 		t.Error("a non-quorate secondary must not read healthy")
 	}
 }
@@ -926,5 +930,29 @@ func TestCurrentSystem(t *testing.T) {
 	none := Config{GuestReleaseCache: filepath.Join(t.TempDir(), "absent.json")}
 	if got := none.currentSystem(context.Background(), fakeStatus{}); got != "" {
 		t.Errorf("no record: currentSystem = %q, want empty", got)
+	}
+}
+
+// A not-Primary anchor with nobody to stand by for is not a standby, it is a house nobody holds.
+// Measured 2026-09-07 (lab os-rollback): a lone anchor beside a diskless witness booted a release
+// whose front door failed, was demoted by its own OnFailure, and then reported healthy=true every
+// five seconds by the participation rule -- the free-tier owner's whole picture, and wrong.
+func TestSnapshot_LoneAnchorThatIsNotPrimaryIsUnhealthy(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
+	demoted := model.QuorumState{Primary: false, Quorate: true, Diskful: true, UpToDate: true}
+	for name, peers := range map[string][]model.PeerState{
+		"no peers reported":       nil,
+		"only a diskless witness": {{Name: "w", Connected: true, Role: "Secondary", Diskful: false}},
+		"peer down":               {{Name: "n2", Connected: false, Role: "Unknown", Diskful: true, UpToDate: true}},
+		"peer still syncing":      {{Name: "n2", Connected: true, Role: "Secondary", Diskful: true, UpToDate: false}},
+	} {
+		if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: demoted, peers: peers, vip: ""}, ""); st.Healthy {
+			t.Errorf("%s: a not-Primary anchor with no peer able to hold the house read healthy", name)
+		}
+	}
+	// The same node beside a peer that can hold the house is an ordinary standby.
+	holder := []model.PeerState{{Name: "n2", Connected: true, Role: "Primary", Diskful: true, UpToDate: true}}
+	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: demoted, peers: holder, vip: ""}, ""); !st.Healthy {
+		t.Error("a quorate, up-to-date standby beside a capable peer must read healthy")
 	}
 }
