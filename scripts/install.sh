@@ -991,6 +991,7 @@ Environment=QEMU_DATADIR=$QEMU_DATADIR
 Environment=ACCEL=kvm:tcg
 Environment=CPU=$CPU_MODEL
 Environment=GUEST_DISK=$OVERLAY
+Environment=GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
 Environment=DATA_DISK=$DATA
 Environment=STATE_DISK=$STATE_DISK
 Environment=CONTROL_SOCK=$RUNDIR/ctl.sock

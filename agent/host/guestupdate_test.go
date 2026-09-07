@@ -1,10 +1,13 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -15,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"briard.io/agent/install"
 	"briard.io/shared/api"
@@ -142,38 +147,6 @@ func guestCfg(t *testing.T, c *guestChannel, key []byte) Config {
 	}
 }
 
-// The directive end to end: a signed guest release resolved on the channel, its closure staged
-// and switched through the existing upgrade path, the node-local record written with the exact
-// signed bytes -- and, once there, a no-op that says so. [[verification-assertions-must-fail]]:
-// the closure the upgrader saw is the manifest's, not something the test handed it.
-func TestUpdateGuestResolvesAndUpgrades(t *testing.T) {
-	c, key := newGuestChannel(t)
-	want := guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20260906.aaaaaaa")
-	raw := c.publish(t, want, install.TargetLatest, install.TargetStable)
-	cfg := guestCfg(t, c, key)
-	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{ID: "d1", Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
-	if o.State != api.OutcomeDone || o.ID != "d1" {
-		t.Fatalf("outcome = %+v, want done", o)
-	}
-	if up.staged != want.System || up.target != want.System {
-		t.Errorf("staged %q, switched %q; want the manifest's closure %q", up.staged, up.target, want.System)
-	}
-	if !strings.Contains(o.Detail, "now running "+want.Version) {
-		t.Errorf("detail = %q", o.Detail)
-	}
-	if b, err := os.ReadFile(cfg.GuestReleaseCache); err != nil || string(b) != string(raw) {
-		t.Errorf("record = %q, %v; want the exact signed manifest", b, err)
-	}
-
-	// Now running it: a no-op that names the release, and nothing is staged again.
-	up2 := &fakeUpgrader{}
-	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest, Payload: install.TargetStable}, stubSystem{want.System}, up2, nil, t.Logf)
-	if o.State != api.OutcomeDone || !strings.Contains(o.Detail, "already running "+want.Version) || up2.staged != "" {
-		t.Errorf("second run: %+v (staged %q)", o, up2.staged)
-	}
-}
-
 // Refusals that must leave the node untouched: a host below min_host (escalated -- it is the
 // support window closing), a release the channel does not carry, a tampered manifest, no
 // keyring, and an exact pin below stable.
@@ -203,7 +176,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 			if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, tc.want) {
 				t.Errorf("outcome = %+v, want failed mentioning %q", o, tc.want)
 			}
-			if up.staged != "" || up.target != "" || up.rebootTarget != "" {
+			if up.staged != "" || up.target != "" || up.rebootTarget != "" || up.imageTarget.Version != "" {
 				t.Errorf("a refused update touched the node: %+v", up)
 			}
 			if _, err := os.Stat(tc.cfg.GuestReleaseCache); tc.cfg.GuestReleaseCache != "" && !os.IsNotExist(err) {
@@ -218,32 +191,6 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, running, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || up.staged != "" {
 		t.Errorf("a tampered manifest was acted on: %+v (staged %q)", o, up.staged)
-	}
-}
-
-// A guest that runs the record's closure but was moved by the cloud since is upgraded rather
-// than reported as already there; a guest already on the release's closure with a stale record
-// gets the record corrected without an upgrade.
-func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
-	c, key := newGuestChannel(t)
-	want := guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", "")
-	raw := c.publish(t, want, install.TargetLatest)
-	cfg := guestCfg(t, c, key)
-	os.WriteFile(cfg.GuestReleaseCache, raw, 0o644) // the record says: at want
-	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/moved-by-cloud"}, up, nil, t.Logf)
-	if o.State != api.OutcomeDone || up.target != want.System {
-		t.Errorf("a stale record suppressed the upgrade: %+v (switched %q)", o, up.target)
-	}
-
-	cfg2 := guestCfg(t, c, key) // no record, guest already on the closure
-	up2 := &fakeUpgrader{}
-	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{want.System}, up2, nil, t.Logf)
-	if o.State != api.OutcomeDone || up2.staged != "" {
-		t.Fatalf("outcome = %+v, staged %q", o, up2.staged)
-	}
-	if b, _ := os.ReadFile(cfg2.GuestReleaseCache); string(b) != string(raw) {
-		t.Error("the record was not corrected to the release the guest runs")
 	}
 }
 
@@ -266,5 +213,138 @@ func TestNextGuestUpdateTick(t *testing.T) {
 		if got.Sub(now) > 27*time.Hour {
 			t.Errorf("tick %s is more than a day past %s", got, now)
 		}
+	}
+}
+
+// A guest release with a real (tiny) image: the manifest pins the compressed bytes; the
+// expanded bytes are what must land at nextImage().
+func withImage(t *testing.T, c *guestChannel, m install.Manifest, contents string) install.Manifest {
+	t.Helper()
+	var zb bytes.Buffer
+	zw, err := zstd.NewWriter(&zb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw.Write([]byte(contents))
+	zw.Close()
+	sum := sha256.Sum256(zb.Bytes())
+	m.Artifacts = []install.Entry{{Name: guestImageArtifact, SHA256: hex.EncodeToString(sum[:]), Size: int64(zb.Len())}}
+	c.bodies["guest/"+m.Version+"/"+guestImageArtifact] = zb.Bytes()
+	return m
+}
+
+// The directive end to end ([B.86h]): a signed guest release resolved on the channel, its
+// image fetched, verified, expanded and staged beside the one in use, the swap handed to the
+// upgrader with the release it must prove, the node-local record written with the exact
+// signed bytes -- and, once there, a no-op that says so. [[verification-assertions-must-fail]]:
+// the staged image is the manifest's expanded artifact, byte for byte.
+func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
+	c, key := newGuestChannel(t)
+	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20260906.aaaaaaa"), "the new image")
+	raw := c.publish(t, want, install.TargetLatest, install.TargetStable)
+	cfg := guestCfg(t, c, key)
+	cfg.GuestImage = filepath.Join(t.TempDir(), "guest-image", "nixos.qcow2")
+	os.MkdirAll(filepath.Dir(cfg.GuestImage), 0o755)
+	up := &fakeUpgrader{}
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{ID: "d1", Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
+	if o.State != api.OutcomeDone || o.ID != "d1" || !strings.Contains(o.Detail, "now running "+want.Version) {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if up.imageTarget.Version != want.Version || up.imageTarget.System != want.System {
+		t.Errorf("ImageUpgrade got %+v, want the resolved release", up.imageTarget)
+	}
+	if up.staged != "" || up.target != "" || up.rebootTarget != "" {
+		t.Errorf("the closure path was driven by a guest-chain update: %+v", up)
+	}
+	if b, err := os.ReadFile(nextImage(cfg.GuestImage)); err != nil || string(b) != "the new image" {
+		t.Errorf("staged image = %q, %v; want the expanded artifact", b, err)
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(cfg.GuestImage)); len(ents) != 1 {
+		t.Errorf("the image dir holds %d entries; want only the staged image (no temp dir)", len(ents))
+	}
+	if b, err := os.ReadFile(cfg.GuestReleaseCache); err != nil || string(b) != string(raw) {
+		t.Errorf("record = %q, %v; want the exact signed manifest", b, err)
+	}
+
+	// Now running it: a no-op that names the release; nothing staged again.
+	up2 := &fakeUpgrader{}
+	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest, Payload: install.TargetStable}, stubSystem{want.System}, up2, nil, t.Logf)
+	if o.State != api.OutcomeDone || !strings.Contains(o.Detail, "already running "+want.Version) || up2.imageTarget.Version != "" {
+		t.Errorf("second run: %+v (image %+v)", o, up2.imageTarget)
+	}
+
+	// A rolled-back swap reports rolled back and leaves the record where it was.
+	c2, key2 := newGuestChannel(t)
+	w2 := withImage(t, c2, guestMan("guest.20260911.rrrrrrr", "/nix/store/r-nixos-system", ""), "img")
+	c2.publish(t, w2, install.TargetLatest)
+	cfg2 := guestCfg(t, c2, key2)
+	cfg2.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
+	up3 := &fakeUpgrader{imageRolledBack: true, imageErr: errors.New("booted the wrong system")}
+	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up3, nil, t.Logf)
+	if o.State != api.OutcomeRolledBack || !strings.Contains(o.Detail, "wrong system") {
+		t.Errorf("rolled-back swap reported %+v", o)
+	}
+	if _, err := os.Stat(cfg2.GuestReleaseCache); !os.IsNotExist(err) {
+		t.Error("a rolled-back upgrade wrote the release record")
+	}
+}
+
+// A tampered image is refused by its hash before anything is staged or stopped; a release with
+// no image cannot be applied at all.
+func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
+	c, key := newGuestChannel(t)
+	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "the new image")
+	c.publish(t, want, install.TargetLatest)
+	c.bodies["guest/"+want.Version+"/"+guestImageArtifact] = []byte("not the signed bytes")
+	cfg := guestCfg(t, c, key)
+	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
+	up := &fakeUpgrader{}
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "does not match the signed manifest") {
+		t.Errorf("outcome = %+v", o)
+	}
+	if up.imageTarget.Version != "" {
+		t.Error("a tampered image reached the upgrader")
+	}
+	if _, err := os.Stat(nextImage(cfg.GuestImage)); !os.IsNotExist(err) {
+		t.Error("a tampered image was staged")
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(cfg.GuestImage)); len(ents) != 0 {
+		t.Errorf("a refused stage left %d entries behind", len(ents))
+	}
+
+	noImage := guestMan("guest.20260912.iiiiiii", "/nix/store/i-nixos-system", "")
+	noImage.Artifacts = []install.Entry{{Name: "README"}} // a release that ships no image at all
+	c.publish(t, noImage, install.TargetLatest)
+	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "ships no "+guestImageArtifact) {
+		t.Errorf("outcome = %+v", o)
+	}
+}
+
+// A guest that runs the record's closure but was moved by the cloud since is upgraded rather
+// than reported as already there; a guest already on the release's closure with a stale record
+// gets the record corrected without an upgrade.
+func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
+	c, key := newGuestChannel(t)
+	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "img")
+	raw := c.publish(t, want, install.TargetLatest)
+	cfg := guestCfg(t, c, key)
+	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
+	os.WriteFile(cfg.GuestReleaseCache, raw, 0o644) // the record says: at want
+	up := &fakeUpgrader{}
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/moved-by-cloud"}, up, nil, t.Logf)
+	if o.State != api.OutcomeDone || up.imageTarget.Version != want.Version {
+		t.Errorf("a stale record suppressed the upgrade: %+v (image %+v)", o, up.imageTarget)
+	}
+
+	cfg2 := guestCfg(t, c, key) // no record, guest already on the closure
+	up2 := &fakeUpgrader{}
+	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{want.System}, up2, nil, t.Logf)
+	if o.State != api.OutcomeDone || up2.imageTarget.Version != "" {
+		t.Fatalf("outcome = %+v, image %+v", o, up2.imageTarget)
+	}
+	if b, _ := os.ReadFile(cfg2.GuestReleaseCache); string(b) != string(raw) {
+		t.Error("the record was not corrected to the release the guest runs")
 	}
 }

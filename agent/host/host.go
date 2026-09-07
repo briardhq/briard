@@ -125,6 +125,7 @@ type Config struct {
 	MemoryMB    int
 	Cores       int
 	GuestDisk   string
+	GuestImage  string // the image the guest disk is an overlay on ([B.86h]): what an OS update swaps; "" -> none
 	DataDisk    string
 	StateDisk   string // the node-local state disk ([B.86g]); "" -> none
 	ControlSock string

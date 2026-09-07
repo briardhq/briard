@@ -171,6 +171,10 @@ let
           mount --bind /var/lib/briard-state/deadman /var/lib/briard-deadman
         '';
       };
+      # A weekly fstrim: the state disk (and the overlay) are attached discard=unmap, so what the
+      # guest deletes is given back to the host file only once something TRIMs it. Weekly is the
+      # usual cadence; podman's churn is bursty and a sweep bounds the footprint at a week's peak.
+      services.fstrim.enable = true;
       # The release this image IS ([B.86g]): the guest chain's id, derived from the agent version
       # it was built with (`v3.<date>.<rev>` -> `guest.<date>.<rev>`, the way publish-release.sh
       # names the chain). What the guest reports in the handshake once [B.86h] retires the

@@ -115,6 +115,7 @@ func ConfigFromEnv() Config {
 		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
 		Cores:       atoi(os.Getenv("CORES"), 2),
 		GuestDisk:   os.Getenv("GUEST_DISK"),
+		GuestImage:  os.Getenv("GUEST_IMAGE"),
 		DataDisk:    os.Getenv("DATA_DISK"),
 		StateDisk:   os.Getenv("STATE_DISK"),
 		ControlSock: env("CONTROL_SOCK", "/run/briard-ctl.sock"),

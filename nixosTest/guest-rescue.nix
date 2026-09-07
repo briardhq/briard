@@ -36,7 +36,7 @@
 #
 # Heavy (a nested VM + the shipped guest disk) -> the `integration` tag. Run on the L0:
 #   gh workflow run vm-test.yml -f test=guest-rescue
-{ pkgs, guestDisk, agent, netWrap }:
+{ pkgs, guestDisk, agent, netWrap, stub, channel, nextSystem }:
 pkgs.testers.runNixOSTest {
   name = "guest-rescue";
   skipTypeCheck = true; # systemd-run + dynamic asserts
@@ -46,7 +46,7 @@ pkgs.testers.runNixOSTest {
     {
       virtualisation.memorySize = 4096;
       virtualisation.cores = 4;
-      virtualisation.diskSize = 10240;
+      virtualisation.diskSize = 16384; # the image copy, a staged image and a set-aside one coexist during an upgrade ([B.86h])
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ]; # nested KVM
       environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.e2fsprogs ]; # debugfs reads the state disk
@@ -77,11 +77,17 @@ pkgs.testers.runNixOSTest {
     # This test hit that on its own final assertion after the fix had landed in the product, which
     # is a small piece of evidence that the fix was addressing something real rather than a quirk
     # of one environment.
-    host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
+    # A WRITABLE copy of the image, because [B.86h] swaps the file the overlay backs onto and
+    # the store is read-only; install.sh lays the image down as a copy too.
+    host.succeed("cp ${guestDisk}/nixos.qcow2 /tmp/nixos.qcow2 && chmod 0644 /tmp/nixos.qcow2")
+    host.succeed("qemu-img create -f qcow2 -b /tmp/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
     # The state disk ([B.86g]): empty, sparse; the guest formats it on its first boot and the
     # rescue below must NOT format it again -- that is the whole claim of the disk.
     host.succeed("truncate -s 2G /tmp/state.img")
+    # The release keyring the agent verifies guest releases against ([B.86h]) is read at agent
+    # START, so it is minted before the launch and used by the channel section below.
+    host.succeed("${stub}/bin/briard-selfupdate-stub keygen /root/release.key /root/keyring.pem")
     backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
     assert "nixos.qcow2" in backing, f"the guest disk is not an overlay on the image; rescue would refuse:\n{backing}"
 
@@ -93,7 +99,9 @@ pkgs.testers.runNixOSTest {
         # is the point: the rig gets what the product gets ([V3b.19a]).
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
+        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
+        # The guest chain ([B.86h]): the channel this rig serves, the keyring it mints, the record.
+        "--setenv=CHANNEL_URL=http://127.0.0.1:8099 --setenv=UPDATE_KEYRING=/root/keyring.pem --setenv=GUEST_RELEASE_CACHE=/tmp/guest-release.json "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=ADMIN_SOCK=/run/briard/admin.sock "
         "--setenv=NODE=guest --setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
@@ -291,5 +299,60 @@ pkgs.testers.runNixOSTest {
     NODE, STATE_IMG = "guest", "/tmp/state.img"
 
     print("the state disk survived the rescue untouched, and the guest kept its machine identity")
+
+    # === (6) THE OS MOVES BY IMAGE ([B.86h]). The guest chain's release is a whole image; the
+    #        agent fetches and verifies it, stages it beside the one in use, stops the guest,
+    #        swaps the file, rebuilds the overlay, boots, proves the booted closure is the one the
+    #        signed manifest names, health-gates, and drops the old image. Then the failable
+    #        control: a release whose manifest names a closure its image does NOT boot is put
+    #        back -- same file swapped the other way -- and the node is serving what it served.
+    V = "${agent.version}"
+    GV = "guest." + V.split(".", 1)[1]
+    GV2 = "guest.20991230.next0000"
+    host.succeed("mkdir -p /srv/guest && cp -r ${channel}/guest/. /srv/guest/ && chmod -R u+w /srv/guest")
+    def sign_and_point(ver, pointers):
+        d = f"/srv/guest/{ver}"
+        host.succeed(f"${stub}/bin/briard-selfupdate-stub sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+        for p in pointers:
+            host.succeed(f"mkdir -p /srv/guest/{p} && cp {d}/manifest.json {d}/manifest.json.sig /srv/guest/{p}/")
+    sign_and_point(GV, ("stable",))
+    sign_and_point(GV2, ("latest",))
+    host.succeed("systemd-run --unit=guest-channel --collect ${stub}/bin/briard-selfupdate-stub serve 127.0.0.1:8099 /srv")
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/guest/latest/manifest.json -o /dev/null", timeout=30)
+    qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
+
+    out = host.succeed("${agent}/bin/briard-agent update guest -sock /run/briard/admin.sock -to latest").strip()
+    assert f"now running {GV2}" in out, f"briard update guest said: {out!r}"
+    host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: booted {GV2}, health-gating'")
+    host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: {GV2} committed'")
+    # The guest runs the NEXT image's closure (the manifest named it; the boot proved it), on a
+    # fresh overlay over the swapped file, the previous image dropped after the gate.
+    host.succeed(f"grep -q '\"version\":\"{GV2}\"' /tmp/guest-release.json")
+    host.succeed("grep -q '\"system\":\"${nextSystem}\"' /tmp/guest-release.json")
+    host.fail("test -e /tmp/nixos.qcow2.prev"); host.fail("test -e /tmp/nixos.qcow2.next")
+    backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
+    assert "/tmp/nixos.qcow2" in backing, f"the overlay is not on the swapped image:\n{backing}"
+    assert host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0] != qemu_before, "the guest was never restarted"
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
+    assert state_uuid == host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), \
+        "the state disk was reformatted across the image upgrade"
+    print(f"the OS moved from {GV} to {GV2} by swapping the image; state disk kept; guest serving")
+
+    # THE FAILABLE CONTROL: a release whose signed manifest names a closure its image does not
+    # boot. Same image bytes as GV2, manifest lying about the system -> the boot does not prove
+    # the target -> the swap is undone and the node is back on GV2, serving.
+    GV3 = "guest.20991231.liar0000"
+    host.succeed(f"mkdir -p /srv/guest/{GV3} && cp /srv/guest/{GV2}/nixos.qcow2.zst /srv/guest/{GV3}/")
+    host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/guest/{GV3} --chain guest --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-host {V}")
+    sign_and_point(GV3, ("latest",))
+    host.fail("${agent}/bin/briard-agent update guest -sock /run/briard/admin.sock -to latest")
+    host.succeed(f"journalctl -u briard-agent | grep -q \"not {GV3}'s system\"")
+    host.succeed("journalctl -u briard-agent | grep -q 'OS upgrade rolled back to'")
+    host.succeed(f"grep -q '\"version\":\"{GV2}\"' /tmp/guest-release.json")  # the record never moved
+    host.fail("test -e /tmp/nixos.qcow2.prev"); host.fail("test -e /tmp/nixos.qcow2.next")
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
+    host.succeed("journalctl -u briard-agent | grep -q 'guest OS upgrade failed'")  # the owner heard
+    print(f"a release that boots something its manifest does not name was put back; the node serves {GV2}")
   '';
 }

@@ -187,7 +187,28 @@ let
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # host restarts a wedged guest
   agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # V3.32: init restarts a wedged AGENT
-  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # B.10: rebuild the guest from its image, keep the data
+  # The image the guest chain moves a node TO ([B.86h]): the shipped disk plus one /etc file,
+  # so its toplevel -- what the manifest names and what the booted guest must report -- differs
+  # from the shipped one while everything else is identical.
+  nextGuestDisk = import ../guest-image/disk-image.nix {
+    inherit nixpkgs pkgs overlay agentVersion;
+    commonModules = [ { environment.etc."briard-os-version".text = "next\n"; } ];
+  };
+  # A guest-chain channel holding both releases, laid out as publish-release.sh lays it (the
+  # manifests by the REAL writer, naming each image's closure and this host as min_host);
+  # signed at runtime by the rig, like install-macvtap's. zstd -3 rather than the release
+  # script's -19: the format is what is under test, not the ratio, and two 1.2 GB images at
+  # -19 would cost the rig minutes for nothing.
+  guestChannel = pkgs.runCommand "briard-test-guest-channel" { nativeBuildInputs = [ pkgs.zstd ]; } ''
+    V=${agentVersion}; GV="guest.''${V#*.}"; GV2="guest.20991230.next0000"
+    A="$out/guest/$GV"; B="$out/guest/$GV2"; mkdir -p "$A" "$B"
+    zstd -3 -q ${guestDisk}/nixos.qcow2     -o "$A/nixos.qcow2.zst"
+    zstd -3 -q ${nextGuestDisk}/nixos.qcow2 -o "$B/nixos.qcow2.zst"
+    chmod 0644 "$A"/*.zst "$B"/*.zst
+    ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain guest --release "$GV"  --system ${guestDisk.system}     --min-host "$V"
+    ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain guest --release "$GV2" --system ${nextGuestDisk.system} --min-host "$V"
+  '';
+  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # B.10: rebuild the guest from its image, keep the data; B.86h: move it to a new image
 
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
   # a SHORT T_deadman so the reflex fires in seconds (baked into the guest-agent unit's env).

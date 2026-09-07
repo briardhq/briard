@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/install"
 	"briard.io/agent/platform"
 	"briard.io/shared/model"
 )
@@ -545,4 +547,152 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 		return errors.Join(perr, err)
 	}
 	return nil
+}
+
+// IMAGE-LEVEL OS UPGRADE ([B.86h]). The guest chain's release is an IMAGE, and moving the node
+// to it is the reboot method with the file swap where the snapshot used to be: stop cleanly,
+// rename the image the overlay is built on (the old one kept beside it), rebuild the overlay
+// on the new one, bring the guest up, prove the booted closure is the one the release's
+// signed manifest names, health-gate, then drop the old image or put it back. No generation,
+// no boot selector, no in-guest step: the guest is an appliance and the host holds the file.
+//
+// It coexists with the closure path (Upgrade / RebootUpgrade) until [B.86h]'s second half
+// retires it together with the lab and cloud demos that still drive closures; a node with a
+// cloud sees the closure directive, an OSS node the image path.
+
+// nextImage / prevImage name the staged and the superseded image beside the one in use. The
+// staged one is written by the update (decompressed, so the swap is a rename); the previous one
+// is kept until the gate passes, and is what a restore renames back.
+func nextImage(backing string) string { return backing + ".next" }
+func prevImage(backing string) string { return backing + ".prev" }
+
+// ImageUpgrade moves THIS node to the guest release rel, whose image is already staged at
+// nextImage(backing) by the caller. rolledBack says where the node ended up, err what went
+// wrong -- the same three outcomes as RebootUpgrade, for the same reasons.
+func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) {
+	mgr := u.Manager
+	qspec := u.cfg.guestSpec()
+	if rel.System == "" {
+		return true, fmt.Errorf("image-upgrade: release %s names no system closure; nothing to prove the boot against", rel.Version)
+	}
+	// The same refusal as the reboot method, for the same reason: a serving node with a
+	// takeover-capable peer is a failover to schedule, not a node's decision about itself.
+	cl, err := u.client.Cluster(ctx, u.cfg.Resource.Name)
+	if err != nil {
+		return true, fmt.Errorf("read cluster before image upgrade: %w", err)
+	}
+	if cl.Primary && cl.PeerCanTakeOver() {
+		return true, fmt.Errorf("%w (peers: %s)", ErrHandoverRequired, describePeers(cl))
+	}
+	backing := u.cfg.GuestImage
+	if backing == "" {
+		return true, errors.New("image-upgrade: no GUEST_IMAGE configured; this node's launch does not name the image its overlay is built on")
+	}
+	// The overlay must really be built on that file: a rename under an overlay that backs onto
+	// something else would leave the guest on the wrong image and the swap a lie.
+	if got, err := qspec.BackingFile(ctx); err != nil {
+		return true, fmt.Errorf("image-upgrade: read the guest disk's backing image: %w", err)
+	} else if got != backing {
+		return true, fmt.Errorf("image-upgrade: %s is an overlay on %q, not on GUEST_IMAGE %s", qspec.DiskImage, got, backing)
+	}
+	if _, err := os.Stat(nextImage(backing)); err != nil {
+		return true, fmt.Errorf("image-upgrade: no staged image at %s: %w", nextImage(backing), err)
+	}
+	prev, err := mgr.SystemPath(ctx)
+	if err != nil {
+		return true, fmt.Errorf("read current system: %w", err)
+	}
+	u.logf("image-upgrade: %s (%s) -> %s (%s)", prev, backing, rel.Version, rel.System)
+	rd := mgr.CaptureBaseline(ctx)
+	if e := mgr.EnterMaintenance(ctx); e != nil {
+		return true, fmt.Errorf("enter maintenance: %w", e)
+	}
+	if e := stopCleanly(ctx, u.vm, u.client, u.logf); e != nil {
+		if re := u.resume(ctx); re != nil {
+			return false, fmt.Errorf("clean shutdown refused AND could not restore the node: %w", errors.Join(e, re))
+		}
+		return true, fmt.Errorf("clean shutdown refused, node left running %s: %w", prev, e)
+	}
+	// THE SWAP: two renames on one filesystem. The previous image stays until the gate passes,
+	// so a restore is the same two renames the other way.
+	if e := os.Remove(prevImage(backing)); e != nil && !os.IsNotExist(e) {
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("clear %s: %w", prevImage(backing), e))
+	}
+	if e := os.Rename(backing, prevImage(backing)); e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("set aside the running image: %w", e))
+	}
+	if e := os.Rename(nextImage(backing), backing); e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("place the new image: %w", e))
+	}
+	if _, e := qspec.RebuildOverlay(ctx); e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("fresh overlay on %s: %w", rel.Version, e))
+	}
+	g, client, e := u.cfg.bringUp(ctx, qspec, u.logf)
+	if e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("boot %s: %w", rel.Version, e))
+	}
+	u.vm = g
+	u.rebind(client)
+	mgr = u.Manager
+	booted, e := mgr.SystemPath(ctx)
+	switch {
+	case e != nil:
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("read booted system: %w", e))
+	case booted != rel.System:
+		// The image booted SOMETHING else than its manifest says it is: a mis-published
+		// release, or a swap that did not take. Either way not the release we were asked for.
+		return u.restoreImage(ctx, qspec, backing, prev,
+			fmt.Errorf("booted %s, not %s's system %s", booted, rel.Version, rel.System))
+	}
+	u.logf("image-upgrade: booted %s, health-gating", rel.Version)
+	if e := mgr.AwaitOSReady(ctx); e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, e)
+	}
+	if e := mgr.Assess(ctx, rd); e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, e)
+	}
+	if e := os.Remove(prevImage(backing)); e != nil {
+		u.logf("image-upgrade: WARNING committed %s but could not drop the previous image %s: %v", rel.Version, prevImage(backing), e)
+	}
+	u.logf("image-upgrade: %s committed", rel.Version)
+	return false, nil
+}
+
+// restoreImage puts the previous image back and boots it: the image path's restore(). Where
+// the swap had not happened yet (the previous image is not set aside) it only rebuilds the
+// overlay, which is still on the image in use. The rejected image is removed -- the channel
+// still has it, and a release that failed its gate is not something to keep a copy of.
+func (u *osUpgrade) restoreImage(ctx context.Context, qspec platform.QEMUSpec, backing, prev string, cause error) (bool, error) {
+	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget+3*shutdownGrace)
+	defer cancel()
+	u.cfg.beat.Lease(rb)
+	u.logf("image-upgrade: rolling back to %s (%v)", prev, cause)
+	errs := []error{cause}
+	if platform.Running(rb, qspec) {
+		if e := stopCleanly(rb, u.vm, u.client, u.logf); e != nil {
+			errs = append(errs, fmt.Errorf("rollback could not stop the guest cleanly, forcing (%w)", e))
+			if e := u.vm.Stop(); e != nil {
+				errs = append(errs, fmt.Errorf("rollback stop: %w", e))
+			}
+		}
+	}
+	if _, e := os.Stat(prevImage(backing)); e == nil {
+		if e := os.Remove(backing); e != nil && !os.IsNotExist(e) {
+			return false, fmt.Errorf("rollback FAILED, guest left stopped: %w", errors.Join(append(errs, e)...))
+		}
+		if e := os.Rename(prevImage(backing), backing); e != nil {
+			return false, fmt.Errorf("rollback FAILED, guest left stopped: %w", errors.Join(append(errs, e)...))
+		}
+	}
+	_ = os.Remove(nextImage(backing))
+	if _, e := qspec.RebuildOverlay(rb); e != nil {
+		return false, fmt.Errorf("rollback FAILED to rebuild the overlay on %s: %w", backing, errors.Join(append(errs, e)...))
+	}
+	g, client, e := u.cfg.bringUp(rb, qspec, u.logf)
+	if e != nil {
+		return false, fmt.Errorf("rollback FAILED to boot %s: %w", prev, errors.Join(append(errs, e)...))
+	}
+	u.vm = g
+	u.rebind(client)
+	return true, fmt.Errorf("OS upgrade rolled back to %s: %w", prev, errors.Join(errs...))
 }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"briard.io/agent/install"
@@ -111,13 +113,72 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		}
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: dec.Reason}
 	}
-	logf("directive update-guest: %s — upgrading to %s", dec.Reason, want.System)
-	o := applySystemUpgrade(ctx, d.ID, want.System, up, n, logf, cfg.UpgradeBudget, cfg.beat)
-	if o.State == api.OutcomeDone {
-		cfg.rememberGuestRelease(raw, logf)
-		o.Detail = "now running " + want.Version
+	logf("directive update-guest: %s — staging %s's image", dec.Reason, want.Version)
+	// THE IMAGE, STAGED BEFORE ANYTHING STOPS ([B.86h]): fetched and verified into a private
+	// dir beside the image in use (same filesystem, so the swap is a rename), expanded, and
+	// placed at nextImage(). A fetch or hash failure returns here with the node untouched.
+	uctx, cancel := cfg.beat.budget(ctx, cfg.UpgradeBudget)
+	defer cancel()
+	if err := cfg.stageGuestImage(uctx, f, want, logf); err != nil {
+		logf("directive update-guest: staging failed, node unchanged: %v", err)
+		escalate(ctx, n, logf, "this node", "guest OS image stage", want.Version, err)
+		return failed(err.Error())
 	}
-	return o
+	back, err := up.ImageUpgrade(uctx, want)
+	switch {
+	case errors.Is(err, ErrHandoverRequired):
+		logf("directive update-guest DECLINED, node untouched and serving: %v", err)
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: err.Error()}
+	case err != nil && back:
+		logf("directive update-guest rolled back: %v", err)
+		escalate(ctx, n, logf, "this node", "guest OS upgrade", want.Version, err)
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: err.Error()}
+	case err != nil:
+		logf("directive update-guest FAILED without a clean rollback: %v", err)
+		escalate(ctx, n, logf, "this node", "guest OS upgrade", want.Version, err)
+		return failed(err.Error())
+	}
+	cfg.rememberGuestRelease(raw, logf)
+	logf("directive update-guest applied: now running %s", want.Version)
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "now running " + want.Version}
+}
+
+// guestImageArtifact is the guest chain's image as the manifest names it (compressed; the
+// fetcher expands it to nixos.qcow2 after verifying the bytes the release signed).
+const guestImageArtifact = "nixos.qcow2.zst"
+
+// stageGuestImage fetches and verifies rel's image and places it, expanded, at
+// nextImage(cfg.GuestImage) -- the exact file ImageUpgrade renames into place. A staged image
+// left by an earlier run is replaced. Refuse-and-stay: on any error nothing under the image
+// directory has changed except that the temp dir is gone.
+func (cfg Config) stageGuestImage(ctx context.Context, f *install.Fetcher, rel install.Manifest, logf func(string, ...any)) error {
+	if cfg.GuestImage == "" {
+		return errors.New("no GUEST_IMAGE configured: this node's launch does not name the image its overlay is built on")
+	}
+	var art *install.Entry
+	for i := range rel.Artifacts {
+		if rel.Artifacts[i].Name == guestImageArtifact {
+			art = &rel.Artifacts[i]
+		}
+	}
+	if art == nil {
+		return fmt.Errorf("%w: release %s ships no %s", install.ErrManifest, rel.Version, guestImageArtifact)
+	}
+	dir := filepath.Dir(cfg.GuestImage)
+	tmp, err := os.MkdirTemp(dir, ".stage-")
+	if err != nil {
+		return fmt.Errorf("stage dir beside %s: %w", cfg.GuestImage, err)
+	}
+	defer os.RemoveAll(tmp)
+	if err := f.Artifact(ctx, rel.Version, tmp, *art); err != nil {
+		return err
+	}
+	expanded := filepath.Join(tmp, strings.TrimSuffix(guestImageArtifact, ".zst"))
+	if err := os.Rename(expanded, nextImage(cfg.GuestImage)); err != nil {
+		return fmt.Errorf("place the staged image: %w", err)
+	}
+	logf("guest update: %s's image staged at %s", rel.Version, nextImage(cfg.GuestImage))
+	return nil
 }
 
 // decideGuest is the guest chain's comparison, pure so it can be enumerated. Order matters:

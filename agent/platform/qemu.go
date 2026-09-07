@@ -236,7 +236,11 @@ func qemuArgs(s QEMUSpec) []string {
 	// whatever else is ever attached. The drive ids are what QMP addresses (the snapshot work on
 	// RootDriveID); a serial is what the guest finds a disk by (/dev/disk/by-id/virtio-<serial>).
 	if s.DiskImage != "" {
-		args = append(args, "-drive", "file="+s.DiskImage+",if=none,id="+RootDriveID,
+		// discard=unmap on the overlay and the state disk: a guest TRIM punches the range out of
+		// the host file (qcow2 cluster or sparse-raw hole), so deleting in the guest gives space
+		// back to the host. Without it a sparse disk only ever grows toward its ceiling, however
+		// little the guest keeps ([B.86h]; the guest runs fstrim weekly).
+		args = append(args, "-drive", "file="+s.DiskImage+",if=none,discard=unmap,id="+RootDriveID,
 			"-device", "virtio-blk-pci,drive="+RootDriveID+",bootindex=0")
 	}
 	if s.DataDisk != "" {
@@ -244,7 +248,7 @@ func qemuArgs(s QEMUSpec) []string {
 			"-device", "virtio-blk-pci,drive="+DataDriveID)
 	}
 	if s.StateDisk != "" {
-		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,id="+StateDriveID,
+		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,discard=unmap,id="+StateDriveID,
 			"-device", "virtio-blk-pci,drive="+StateDriveID+",serial="+StateDiskSerial)
 	}
 	if s.MachineUUID != "" {

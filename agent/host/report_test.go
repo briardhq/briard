@@ -12,6 +12,7 @@ import (
 
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/install"
 	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
@@ -38,9 +39,12 @@ type fakeUpgrader struct {
 	stagedFrom        guestagent.StageSource // zero in production
 	stageErr          error                  // when set, staging fails and nothing may switch
 	rebootTarget      string                 // RebootUpgrade's closure
-	rebootErr         error                  // when set, the reboot upgrade fails
-	rebootRolledBack  bool                   // ...and whether it got the node back
-	sysRolledBack     bool                   // ...and the same answer for the switch method
+	imageTarget       install.Manifest       // ImageUpgrade's release ([B.86h])
+	imageErr          error
+	imageRolledBack   bool
+	rebootErr         error // when set, the reboot upgrade fails
+	rebootRolledBack  bool  // ...and whether it got the node back
+	sysRolledBack     bool  // ...and the same answer for the switch method
 }
 
 // Neither OS-upgrade method takes a ServiceSpec: there is nothing an OS upgrade
@@ -467,4 +471,9 @@ func TestApplyDirectiveRescueSurfacesTheReason(t *testing.T) {
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not an overlay") {
 		t.Errorf("outcome = %+v, want failed carrying the node's reason", o)
 	}
+}
+
+func (f *fakeUpgrader) ImageUpgrade(_ context.Context, rel install.Manifest) (bool, error) {
+	f.imageTarget = rel
+	return f.imageRolledBack, f.imageErr
 }

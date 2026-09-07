@@ -16,6 +16,7 @@ import (
 
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/install"
 	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
@@ -80,6 +81,7 @@ func (cr *certRequester) keyFor(name string) string {
 type upgrader interface {
 	Upgrade(ctx context.Context, target string) (rolledBack bool, err error)
 	RebootUpgrade(ctx context.Context, target string) (rolledBack bool, err error)
+	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error)     // [B.86h]: the guest chain's release, image already staged
 	Stage(ctx context.Context, closure string, src guestagent.StageSource) error             //b: pull the closure in BEFORE anything switches to it
 	ActivationMethod(ctx context.Context, target string) (guest.Activation, []string, error) // V3.17c1: switch-only or reboot-only, decided before activating
 	WriteCert(ctx context.Context, cert, key string) error                                   //: apply a renewed cert to the vol

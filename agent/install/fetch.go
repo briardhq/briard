@@ -460,3 +460,12 @@ func validSegment(s string) bool {
 	}
 	return true
 }
+
+// Artifact fetches one entry of version's release into dir, verified against the manifest that
+// named it -- the guest chain's image, for the host to stage beside the one in use ([B.86h]).
+func (f *Fetcher) Artifact(ctx context.Context, version, dir string, a Entry) error {
+	if !validSegment(version) {
+		return fmt.Errorf("install: bad release version %q", version)
+	}
+	return f.fetchArtifact(ctx, path.Join(f.Chain, version, f.Platform), dir, a)
+}
