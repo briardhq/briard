@@ -327,6 +327,10 @@ let
       modules = [
         { nixpkgs.overlays = [ overlay ]; }
         ./configuration.nix
+        # The denylisted module tree ([B.136]) is an IMAGE fact: it pins the initrd to what this
+        # qemu machine has (virtio disks, NICs, console) and drops what it cannot have. Test VMs
+        # that build configuration.nix on their own hardware do not import it.
+        ./modules.nix
         bootModule
       ] ++ commonModules ++ extraModules;
     };

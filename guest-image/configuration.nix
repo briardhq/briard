@@ -766,6 +766,10 @@ in
   # that the SAME slimming applies to the shipped disk and to every nixosTest that boots this
   # module -- a guest the tests exercise fatter than the one strangers install would prove nothing
   # about the one strangers install.
+  # modules.nix (the denylisted module tree, [B.136]) is NOT imported here: it pins the initrd to
+  # the virtio set the IMAGE boots with, and the nixosTests that build this module into test VMs
+  # mount their store over virtiofs (measured: three nodes panicked in the initrd). It joins in
+  # disk-image.nix, where the machine is known.
   imports = [ ./slim.nix ./pivot.nix ];
 
   # The agent binary this guest runs. It is an option rather than a callPackage here because

@@ -21,11 +21,14 @@
 #   - `environment.defaultPackages = []` (perl/rsync/strace). Measured 4.8 MB -- perl stays for the
 #     activation script regardless -- and it costs `strace` on a node somebody is trying to debug in
 #     a stranger's house. Not a trade worth 5 MB.
-#   - Trimming the kernel's module tree, which at 148.7 MB is now the largest single path in the
-#     closure (15%). A virtio-only `structuredExtraConfig` would plausibly reach ~20 MB, but it means
-#     we build and own the kernel: it leaves cache.nixos.org, our cache serves it on every update,
-#     DRBD 9.2 rebuilds against our config, and we inherit a kernel-config security obligation.
-#     Evaluated and declined -- 130 MB is not worth becoming a kernel distributor.
+#   - Trimming the KERNEL to a virtio-only `structuredExtraConfig`. Its module tree was 148.7 MB,
+#     the largest single path in the closure, and a trimmed kernel would plausibly reach ~20 MB --
+#     but it means we build and own the kernel: DRBD 9.2 rebuilds against our config and we inherit
+#     a kernel-config security obligation. Evaluated and declined -- not worth becoming a kernel
+#     distributor. What IS here instead, since [B.136], is modules.nix: the upstream kernel byte for
+#     byte, with the module TREE copied minus the hardware families a virtio guest cannot have.
+#     Same saving in the download (the modules are pre-compressed .ko.xz, so they were 141 MB of
+#     the 358 MB image), none of the ownership; the measured numbers are in that file's header.
 { config, lib, pkgs, ... }:
 let
   # crun without the two subsystems this product cannot reach.
