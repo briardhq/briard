@@ -1207,8 +1207,17 @@ pkgs.testers.runNixOSTest {
     before = dressed_count(V)
     host.succeed("systemctl stop briard-guest.service")
     host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {V} (dressed)') -gt {before} ]", timeout=600)
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=600)
-    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    # CONVERGED is already in the journal from the install, so a bare grep for it proves nothing
+    # about THIS promotion ([[verification-assertions-must-fail]]): count past what is there.
+    converges = int(host.succeed("journalctl -u briard-agent | grep -c CONVERGED || true").strip())
+    host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c CONVERGED) -gt {converges} ]", timeout=600)
+    try:
+        client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    except Exception:
+        print("=== the re-dressed guest: pivot, doors and chain ===")
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-dashboard|briard-vip|briard-services|drbd-reactor|drbd-promote|promotion-hold|masked|Failed|failed"))
+        print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=|CONVERGED' | tail -20"))
+        raise
     print("a restarted guest came up as firmware and was dressed again")
 
     # THE CHEAP GATE ([B.138]): a staged copy that fails its own --test-launch refuses the dress

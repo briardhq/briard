@@ -203,14 +203,54 @@ func (s *systemctlFake) run(name string, args []string) ([]byte, error) {
 			s.mark(bin, "pushed")
 			return nil, nil
 		}
-		s.mark(bin, "trial")
+		s.mark(bin, s.pick(bin)) // the picker chooses by the arm flag, staged or committed
 	}
 	return nil, nil
 }
 
+// mark models what restarting a promoter chain member actually does: that member AND everything
+// ordered after it go down and come back in the same transaction, each through its own picker.
+// A fake without this cannot show why restarting the doors in the wrong order cancels a start
+// job -- which is the demote this item measured.
 func (s *systemctlFake) mark(bin, what string) {
-	if s.run_ != "" {
-		_ = os.WriteFile(filepath.Join(s.run_, bin+".ran"), []byte(what+"\n"), 0o644)
+	if s.run_ == "" {
+		return
+	}
+	carried := false
+	for _, n := range doorNames {
+		if n == bin {
+			carried = true
+			s.write(n, what)
+			continue
+		}
+		if carried {
+			// A member carried by the restart goes through its OWN picker, which chooses by the
+			// arm flag: staged while one is there (consuming it), committed once it is gone.
+			s.write(n, s.pick(n))
+		}
+	}
+}
+
+// pick is the picker's choice for a carried unit, and consumes the single-use arm flag exactly
+// as the real one does.
+func (s *systemctlFake) pick(n string) string {
+	if err := os.Remove(filepath.Join(s.run_, n+".update")); err == nil {
+		return "trial"
+	}
+	return "pushed"
+}
+
+func (s *systemctlFake) write(n, what string) {
+	_ = os.WriteFile(filepath.Join(s.run_, n+".ran"), []byte(what+"\n"), 0o644)
+}
+
+// clearMarkers wipes what the pickers left, as the commit or a fresh boot would.
+func clearMarkers(t *testing.T, run string) {
+	t.Helper()
+	for _, n := range doorNames {
+		if err := os.Remove(filepath.Join(run, n+".ran")); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -224,9 +264,19 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "RELEASE.next"), []byte("v3.20260908.trial000\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.trial"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Armed, as bin.activate leaves things: every name of the set, single-use. Each door's picker
+	// consumes its own on the start that carries it.
+	arm := func() {
+		for _, n := range doorNames {
+			if err := os.WriteFile(filepath.Join(run, n+".update"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	arm()
 	logf := func(string, ...any) {}
 
 	// A secondary: no door is running, the verdict is immediate, nothing is restarted.
@@ -243,50 +293,42 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("a passing verdict discarded the set: %v", got)
 	}
 
-	// A FULL START BUDGET BEFORE EACH DOOR IS TRIALLED, and this is the whole of "a failed
-	// upgrade never demotes": the hook fires on an exhausted start limit, never on one failed
-	// start, and a trial costs up to three of the five. `reset-failed` must therefore come BEFORE
-	// the restart of that same door, not after and not for some other unit.
-	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
-	if err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf); err != nil {
-		t.Fatalf("primary: %v", err)
-	}
-	for _, unit := range []string{"briard-dashboard.service", "briard-reverse-proxy.service"} {
-		reset, restart := -1, -1
-		for i, r := range s.runs {
-			if len(r) < 3 || r[len(r)-1] != unit {
-				continue
-			}
-			if r[1] == "reset-failed" && reset < 0 {
-				reset = i
-			}
-			if r[1] == "try-restart" && restart < 0 {
-				restart = i
-			}
-		}
-		if reset < 0 || restart < 0 || reset > restart {
-			t.Errorf("%s: reset-failed at %d, try-restart at %d; the budget must be cleared before the trial spends it", unit, reset, restart)
-		}
-	}
-
-	// The primary, both doors running and both taking the staged copy: verdict pass, each door
-	// restarted once, in set order.
+	// THE PRIMARY, both doors running and both taking the staged copy. ONE restart, at the
+	// EARLIEST member of the chain: restarting it carries everything ordered after it in the same
+	// transaction, so the dashboard is verified where it stands rather than restarted again. Two
+	// restarts across an ordered chain are how a start job gets cancelled, and a cancelled start
+	// job fires OnFailure= -- which demoted a node mid-upgrade when this loop ran dashboard-first
+	// (install-macvtap, [B.138]). And the budget reset must precede the restart it pays for.
+	clearMarkers(t, run)
+	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
 	if err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf); err != nil {
 		t.Fatalf("primary: %v", err)
 	}
 	var restarted []string
-	for _, r := range s.runs {
+	reset, restart := -1, -1
+	for i, r := range s.runs {
 		if r[1] == "try-restart" {
 			restarted = append(restarted, r[len(r)-1])
+			if restart < 0 && r[len(r)-1] == "briard-reverse-proxy.service" {
+				restart = i
+			}
+		}
+		if r[1] == "reset-failed" && r[len(r)-1] == "briard-reverse-proxy.service" && reset < 0 {
+			reset = i
 		}
 	}
-	if !reflect.DeepEqual(restarted, []string{"briard-dashboard.service", "briard-reverse-proxy.service"}) {
-		t.Errorf("restarted %v, want both doors in set order", restarted)
+	if !reflect.DeepEqual(restarted, []string{"briard-reverse-proxy.service"}) {
+		t.Errorf("restarted %v, want the earliest chain member alone", restarted)
+	}
+	if reset < 0 || restart < 0 || reset > restart {
+		t.Errorf("reset-failed at %d, try-restart at %d; the budget must be cleared before the trial spends it", reset, restart)
 	}
 
 	// The primary, the door's real launch fails: the verdict is a refusal that names it, and
 	// the trial agent leaves the set alone (the committed agent's start is what cleans up).
+	clearMarkers(t, run)
+	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}, fail: "briard-reverse-proxy.service"}
 	err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf)
 	if err == nil || !strings.Contains(err.Error(), "REFUSED") || !strings.Contains(err.Error(), "briard-reverse-proxy failed its real launch") {
@@ -300,6 +342,8 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	// the unit back on the committed binary, and the restart job reports SUCCESS -- active, exit
 	// 0. Only the picker's marker says the door is running what it ran before, and the verdict
 	// must refuse on it, or the set commits a door that has already reverted.
+	clearMarkers(t, run)
+	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}, reverts: "briard-reverse-proxy.service"}
 	err = BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf)
 	if err == nil || !strings.Contains(err.Error(), "REFUSED") || !strings.Contains(err.Error(), "running the pushed binary") {
@@ -333,7 +377,7 @@ func TestRunningBundlePrefersTheTrialledRelease(t *testing.T) {
 	if got := runningBundle(); got != "v3.20260901.old00000" {
 		t.Errorf("an ordinary start reports %q, want the committed release", got)
 	}
-	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.trial"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got := runningBundle(); got != "v3.20260908.new00000" {
@@ -362,14 +406,24 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Both doors are running the STAGED copies the dead trial left them on, which is what the
+	// aftermath has to undo.
+	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
+	s.mark("briard-reverse-proxy", "trial")
+	s.runs = nil
 	if err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf); err != nil {
 		t.Fatalf("aftermath: %v", err)
 	}
+	// ONE restart, at the earliest chain member. It carries the dashboard with it, and the loop
+	// stops there rather than restarting the dashboard too -- a second restart across an ordered
+	// chain is what cancelled a start job and demoted a node mid-upgrade.
 	want := [][]string{
-		{"systemctl", "reset-failed", "briard-dashboard.service"},
-		{"systemctl", "try-restart", "--no-block", "briard-dashboard.service"},
+		{"systemctl", "is-active", "briard-reverse-proxy.service"},
 		{"systemctl", "reset-failed", "briard-reverse-proxy.service"},
-		{"systemctl", "try-restart", "--no-block", "briard-reverse-proxy.service"},
+		{"systemctl", "try-restart", "briard-reverse-proxy.service"},
+		// The dashboard is looked at and left alone: the door's restart carried it back, so its
+		// marker no longer says it is on a staged copy.
+		{"systemctl", "is-active", "briard-dashboard.service"},
 	}
 	if !reflect.DeepEqual(s.runs, want) {
 		t.Errorf("aftermath ran %v, want %v", s.runs, want)
@@ -377,8 +431,15 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
 		t.Errorf("the staged set survived the aftermath: %v", ents)
 	}
-	if ents, _ := os.ReadDir(run); len(ents) != 0 {
-		t.Errorf("flags survived the aftermath: %v", ents)
+	// Nothing is armed any more, and BOTH doors are back on their committed binaries -- the
+	// dashboard because the door's restart carried it.
+	for _, n := range doorNames {
+		if _, err := os.Stat(filepath.Join(run, n+".update")); !os.IsNotExist(err) {
+			t.Errorf("%s is still armed after the aftermath", n)
+		}
+		if got := pickerRan(n); got != "pushed" {
+			t.Errorf("%s ran %q after the aftermath, want the committed binary", n, got)
+		}
 	}
 }
 

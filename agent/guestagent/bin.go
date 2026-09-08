@@ -97,8 +97,17 @@ var BinNames = []string{"briard-dashboard", "briard-reverse-proxy", selfBin}
 // selfBin is this agent's own binary: activating the set restarts the unit serving the activation.
 const selfBin = "briard-guest-agent"
 
-// doorNames are the set minus the agent: the chain members the trial agent try-restarts.
-var doorNames = []string{"briard-dashboard", "briard-reverse-proxy"}
+// doorNames are the set minus the agent: the chain members the trial agent try-restarts, in
+// PROMOTER CHAIN ORDER (agent/host/config.go promoterUnits: ... vip -> reverse-proxy ->
+// dashboard -> the publishers), and the order is load-bearing. reactor writes each member
+// `Requires=`/`After=` the previous one, so a restart of the door tears down and rebuilds
+// everything after it. Restarting the dashboard FIRST and the door second therefore cancels the
+// dashboard's in-flight start job -- and a member whose start job fails that way fires
+// `OnFailure=` exactly like one that failed on its own (the same trap configuration.nix's
+// chainMemberFailure note records for a lost promotion race), so the node demoted in the middle
+// of an upgrade. Measured on install-macvtap, [B.138]. Earliest first, and a door the earlier
+// one's restart already carried is verified rather than restarted again.
+var doorNames = []string{"briard-reverse-proxy", "briard-dashboard"}
 
 // TestLaunchFlag is the argv every briard guest binary accepts as its cheap self-test: start,
 // check what can be checked without touching the real ports or the data volume (on a primary
@@ -127,8 +136,7 @@ const (
 	releaseFile      = "RELEASE"
 	nextSuffix       = ".next"
 	partSuffix       = ".part"
-	updateSuffix     = ".update" // the picker consumes this into .trial
-	trialSuffix      = ".trial"  // "this start IS a trial"
+	updateSuffix     = ".update" // armed for a trial; the picker DELETES it as it execs (single-use)
 	ranSuffix        = ".ran"    // what the picker exec'd on the last start: trial | pushed | baked
 )
 
@@ -245,7 +253,9 @@ func discardStaged() {
 		os.Remove(filepath.Join(dir, n+nextSuffix))
 		os.Remove(filepath.Join(dir, n+partSuffix))
 		os.Remove(filepath.Join(run, n+updateSuffix))
-		os.Remove(filepath.Join(run, n+trialSuffix))
+		// NOT the `.ran` markers: they describe what each unit is RUNNING, which discarding a
+		// staged set does not change. The aftermath reads them right after this to decide which
+		// doors still need putting back, and the picker rewrites each as its unit restarts.
 	}
 	os.Remove(filepath.Join(dir, releaseFile+nextSuffix))
 }
@@ -324,27 +334,38 @@ func activate(ctx context.Context, x Executor, a BinActivation) error {
 // port is opened -- the host reconnects the moment the port opens and reads the release this
 // process runs, so the port must not open until that answer is decided.
 //
-// A TRIAL start (the picker consumed this agent's flag) is the verdict on the whole set: each
-// door unit that is running is try-restarted -- blocking, so systemctl's exit IS the outcome of
-// a Type=notify unit's start -- and must be active afterwards. Any failure returns an error and
-// the caller exits 1 without opening the port; the door that failed has already reverted itself
-// (its auto-restart finds its flag consumed). A passing verdict returns nil, the caller opens
-// the port and says READY, and the unit's ExecStartPost commits the set.
+// A TRIAL start -- the picker's own marker says it ran the staged copy -- is the verdict on the
+// whole set: each door unit that is running is try-restarted (blocking, so systemctl's exit IS
+// the outcome of a Type=notify unit's start) and must be active afterwards AND still on its
+// staged copy. Any failure returns an error and the caller exits 1 without opening the port; the
+// door that failed has already reverted itself, its arm flag consumed and its marker no longer
+// saying trial. A passing verdict returns nil, the caller opens the port and says READY, and the
+// unit's ExecStartPost commits the set.
 //
 // A NON-TRIAL start with staged files present is the aftermath of a failed trial (the invariant:
 // staged files exist only between a stage and its verdict): the set is discarded and both doors
 // are try-restarted onto the committed files, whichever of the three actually failed.
 func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) error {
-	run := binRunDir()
-	if _, err := os.Stat(filepath.Join(run, selfBin+trialSuffix)); err == nil {
+	if pickerRan(selfBin) == "trial" {
 		return trialVerdict(ctx, x, logf)
 	}
 	if staged := stagedSet(); len(staged) > 0 {
 		logf("bin: a staged set (%s) was left behind by a trial that did not commit: discarding it and putting both doors back on the committed binaries", strings.Join(staged, ", "))
 		discardStaged()
+		// ONE restart, at the EARLIEST door in chain order, blocking -- the same rule the trial
+		// follows, and for the same reason: everything ordered after a member comes back with it
+		// in one transaction, so one call suffices, and a second overlapping one would cancel the
+		// start jobs the first had queued (a cancelled start job fires `OnFailure=`; measured on
+		// install-macvtap, [B.138], when this restarted the dashboard first and the door second).
+		// The staged files are already gone, so every picker in that transaction lands on the
+		// committed binary. A door the transaction did not reach still reads `trial` and is
+		// restarted by the next turn of this loop.
 		for _, n := range doorNames {
+			if !unitActive(ctx, x, binUnits[n]) || pickerRan(n) != "trial" {
+				continue // not running here, or already carried back by an earlier member
+			}
 			_, _ = x.Run(ctx, "systemctl", "reset-failed", binUnits[n])
-			if out, err := x.Run(ctx, "systemctl", "try-restart", "--no-block", binUnits[n]); err != nil {
+			if out, err := x.Run(ctx, "systemctl", "try-restart", binUnits[n]); err != nil {
 				logf("bin: try-restart %s after the failed trial: %v: %s", binUnits[n], err, strings.TrimSpace(string(out)))
 			}
 		}
@@ -354,23 +375,32 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 
 // trialVerdict is the trial agent's half of BinStartup.
 //
-// A FAILED UPGRADE MUST NEVER DEMOTE (owner, 2026-09-08), and the whole of what that takes is
-// the two `reset-failed` calls below. systemd's rule: an auto-restart under `RestartMode=direct`
-// skips failed/inactive and skips `OnFailure=` -- for a start that FAILED exactly as for a crash
-// while running, since `Restart=` covers both -- so a door whose staged copy exits 1 fires no
-// hook at all, it just comes back on the committed binary. What fires the hook is a member with
-// no restart LEFT: `StartLimitBurst` spent inside `StartLimitIntervalSec` (5 in 300 s here). A
-// trial spends up to three of those five (the trial start, its auto-restart, the aftermath's
-// restart), so the only way an upgrade could demote is by landing on a door that had already
-// burned starts for unrelated reasons. Zeroing the counter first (reset-failed resets the start
-// rate limit and the restart counter -- systemctl(1)) makes that arithmetic impossible, with no
-// new rule anywhere else: the owner's call, over a guard that made the demote hook conditional
-// and had a flag lifetime of its own to get wrong.
+// A FAILED UPGRADE MUST NEVER DEMOTE (owner, 2026-09-08), and what that takes is ONE RESTART
+// TRANSACTION AT A TIME, walked in chain order. Three separate things have to be true, and the
+// loop below is arranged around them:
 //
-// (The demote measured on the first full install-macvtap run of [B.138] was neither of these:
-// the blind verdict had COMMITTED a door binary that exits 1, so every later start failed, the
-// budget went in ~10 s, and briard-promotion-hold fired CORRECTLY on a member that genuinely
-// could not start. Fixing the verdict removed that cause.)
+//  1. A door whose staged copy exits 1 fires NO hook. systemd's rule: an auto-restart under
+//     `RestartMode=direct` skips failed/inactive and skips `OnFailure=`, for a start that FAILED
+//     exactly as for a crash while running (`Restart=` covers both). It just comes back on the
+//     committed binary. So the failure this trial deliberately provokes is free.
+//  2. What DOES fire the hook, besides a member with no restart left, is a member whose START JOB
+//     IS CANCELLED. Restarting a chain member stops everything ordered after it and enqueues
+//     their restarts in the same transaction; a SECOND restart issued while that is in flight
+//     tears down what the first just started, and the cancelled start job is a job-level failure
+//     -- `RestartMode=direct` does not cover it and no start limit is involved. configuration.nix
+//     records the same trap for a lost promotion race: a member whose start job fails with result
+//     `dependency` fires `OnFailure=` exactly like one that failed on its own. This is what
+//     demoted a node mid-upgrade when the loop restarted the dashboard first and the door second
+//     (install-macvtap, [B.138]). Hence: earliest member first, blocking, and a door the earlier
+//     restart already carried is verified rather than restarted again.
+//  3. The start budget, the ordinary way the hook fires: `StartLimitBurst` inside
+//     `StartLimitIntervalSec`, 5 in 300 s here. A trial spends up to three, so it clears the
+//     counter first (`reset-failed` zeroes the start rate limit and the restart counter --
+//     systemctl(1)) and cannot land a door that had already burned starts over the limit.
+//
+// (The very first demote this item measured was none of these: the blind verdict had COMMITTED a
+// door binary that exits 1, so every later start failed, the budget went in ~10 s, and
+// briard-promotion-hold fired CORRECTLY on a member that genuinely could not start.)
 func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) error {
 	release := "?"
 	if b, err := os.ReadFile(filepath.Join(binDir(), releaseFile+nextSuffix)); err == nil {
@@ -382,17 +412,27 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 			logf("bin: trial of %s: %s is not running here (not the primary); its staged file commits on the cheap gate alone", release, n)
 			continue
 		}
-		// A FULL START BUDGET BEFORE THE TRIAL, which is the whole of "a failed upgrade never
-		// demotes" (see above). Best-effort: a reset that fails leaves the budget as it was, and
-		// the trial is worth attempting on a door that has not been failing anyway.
-		if out, err := x.Run(ctx, "systemctl", "reset-failed", unit); err != nil {
-			logf("bin: trial of %s: could not clear %s's start budget first (%v: %s); trialling anyway", release, n, err, strings.TrimSpace(string(out)))
-		}
-		tctx, cancel := context.WithTimeout(ctx, doorTrialTimeout)
-		out, err := x.Run(tctx, "systemctl", "try-restart", unit)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("bin: trial of %s REFUSED: %s failed its real launch (%v: %s); it has reverted to the committed binary by its own restart, and this agent exits so the committed agent comes back", release, n, err, strings.TrimSpace(string(out)))
+		// RESTART ONLY WHAT IS STILL ARMED, which in the ordinary case is the FIRST door alone.
+		// The arm flag is single-use and consumed by the picker, so a door still holding one has
+		// not started since the activation; a door whose flag is gone was carried by the restart
+		// of the member before it (chain propagation, above) and is already on its staged copy.
+		// Restarting such a door again would find no flag, run the COMMITTED copy, and refuse a
+		// trial that is passing -- besides being the second transaction that cancels start jobs.
+		if !armed(n) {
+			logf("bin: trial of %s: %s came up with the member before it; verifying where it stands", release, n)
+		} else {
+			// A FULL START BUDGET FIRST. Best-effort: a reset that fails leaves the budget as it
+			// was, and the trial is worth attempting on a door that has not been failing anyway.
+			if out, err := x.Run(ctx, "systemctl", "reset-failed", unit); err != nil {
+				logf("bin: trial of %s: could not clear %s's start budget first (%v: %s); trialling anyway", release, n, err, strings.TrimSpace(string(out)))
+			}
+			// BLOCKING: the next member is not touched until this transaction has finished.
+			tctx, cancel := context.WithTimeout(ctx, doorTrialTimeout)
+			out, err := x.Run(tctx, "systemctl", "try-restart", unit)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("bin: trial of %s REFUSED: %s failed its real launch (%v: %s); it has reverted to the committed binary by its own restart, and this agent exits so the committed agent comes back", release, n, err, strings.TrimSpace(string(out)))
+			}
 		}
 		if !unitActive(ctx, x, unit) {
 			return fmt.Errorf("bin: trial of %s REFUSED: %s is not active after its restart", release, n)
@@ -409,6 +449,14 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 	}
 	logf("bin: trial of %s: verdict PASS; opening the port, and the commit follows READY", release)
 	return nil
+}
+
+// armed reports whether n still holds its single-use arm flag: it has not started since the
+// activation. The picker consumes the flag as it execs, so this is also "has NOT been carried by
+// an earlier chain member's restart".
+func armed(name string) bool {
+	_, err := os.Stat(filepath.Join(binRunDir(), name+updateSuffix))
+	return err == nil
 }
 
 // pickerRan is what the picker exec'd on a unit's last start -- "trial", "pushed", "baked", or
@@ -450,7 +498,7 @@ func runningBundle() string {
 		return ""
 	}
 	order := []string{releaseFile, releaseFile + nextSuffix}
-	if _, err := os.Stat(filepath.Join(binRunDir(), selfBin+trialSuffix)); err == nil {
+	if pickerRan(selfBin) == "trial" {
 		order = []string{releaseFile + nextSuffix, releaseFile}
 	}
 	for _, f := range order {

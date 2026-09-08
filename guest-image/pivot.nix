@@ -15,12 +15,15 @@
 #
 #   <bin>/<name>.next    a pushed binary, verified by the agent (sha256 over the whole file) and
 #                        proven by its own --test-launch before anything is armed
-#   <run>/<name>.update  "trial <name>.next on the next start" -- single-use: the picker renames
-#                        it to .trial, so a crashing candidate cannot re-trial forever
-#   <run>/<name>.trial   "this start IS a trial"
-#   <run>/<name>.ran     what the picker exec'd on this start: trial | pushed | baked -- the
-#                        trial agent's verdict reads it, because a failed start is invisible to
-#                        `systemctl try-restart` once systemd's auto-restart has succeeded
+#   <run>/<name>.update  "trial <name>.next on the next start" -- single-use: the picker DELETES
+#                        it as it execs, so a crashing candidate cannot re-trial forever
+#   <run>/<name>.ran     what the picker exec'd on this start: trial | pushed | baked. It answers
+#                        both questions the rest of this asks -- "is this start a trial" (ran =
+#                        trial) and "what is this unit actually running" -- the second because a
+#                        failed start is invisible to `systemctl try-restart` once systemd's
+#                        auto-restart has succeeded. There used to be a separate `.trial` flag
+#                        saying the first; two files carrying one fact are two files that can
+#                        disagree, so the marker absorbed it (owner, 2026-09-08)
 #   <bin>/<name>         the PUSHED, committed binary; absent on a fresh boot
 #   <baked>              the firmware, the guest agent only; `-` for the doors (none)
 #   <bin>/RELEASE        the host release id the committed set came from (the handshake's Bundle)
@@ -61,21 +64,22 @@ let
     name=$1; baked=$2; shift 2
     # Each choice is said on stderr (the journal, forwarded to the console): a rig that watches a
     # dress go wrong reads the pivot's own account rather than inferring it from a handshake.
+    # WHAT THIS START RAN, written on every branch below ([B.138]). It is the ONLY record: it says
+    # both "this start is a trial" (which the commit needs) and "this unit is running the staged
+    # copy" (which the trial agent's verdict needs, because `systemctl try-restart` alone is not
+    # enough -- a staged copy that exits 1 fails its start, systemd's own auto-restart brings the
+    # unit back on the COMMITTED binary seconds later, and the restart JOB then succeeds, so
+    # systemctl reports nothing wrong; measured on the first install-macvtap run of this item, where
+    # the verdict passed and committed a door that had already reverted). Overwriting it IS the
+    # revert: a failed trial's auto-restart lands below and the marker stops saying trial.
     if [ -e ${runDir}/$name.update ]; then
-      mv ${runDir}/$name.update ${runDir}/$name.trial   # consume SINGLE-USE
+      rm -f ${runDir}/$name.update                       # consume SINGLE-USE: a crashing candidate cannot re-trial
       echo "briard-bin-exec: $name: TRIAL of ${binDir}/$name.next" >&2
       echo trial > ${runDir}/$name.ran
       exec ${binDir}/$name.next "$@"
     fi
-    rm -f ${runDir}/$name.trial                          # a failed trial's marker: this IS the revert
     if [ -x ${binDir}/$name ]; then
       echo "briard-bin-exec: $name: pushed ${binDir}/$name" >&2
-      # WHAT THIS START ACTUALLY RAN ([B.138]), for the trial agent's verdict. `systemctl
-      # try-restart` alone is NOT enough: a staged copy that exits 1 fails its start, systemd's
-      # own auto-restart brings the unit back on the COMMITTED binary seconds later, and the
-      # restart JOB then succeeds -- so systemctl reports nothing wrong (measured on the first
-      # install-macvtap run of this item: the verdict passed and committed a door that had
-      # already reverted). The picker is the only thing that knows which file it exec'd.
       echo pushed > ${runDir}/$name.ran
       exec ${binDir}/$name "$@"
     fi
@@ -93,7 +97,7 @@ let
   # their start budget back -- the trial spent one of it where a door was running.
   commit = pkgs.writeShellScript "briard-bin-commit" ''
     set -eu
-    if [ -e ${runDir}/briard-guest-agent.trial ]; then
+    if [ "$(cat ${runDir}/briard-guest-agent.ran 2>/dev/null || true)" = trial ]; then
       set=""
       for name in ${lib.concatStringsSep " " names}; do
         if [ -e ${binDir}/$name.next ]; then
@@ -108,7 +112,7 @@ let
       systemctl reset-failed ${doorUnits} || true
     fi
     for name in ${lib.concatStringsSep " " names}; do
-      rm -f ${runDir}/$name.trial ${runDir}/$name.update ${runDir}/$name.ran
+      rm -f ${runDir}/$name.update ${runDir}/$name.ran
     done
   '';
   cfg = config.briard.pivot;
