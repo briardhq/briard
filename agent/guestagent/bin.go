@@ -363,14 +363,25 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 
 // trialVerdict is the trial agent's half of BinStartup.
 //
-// It holds the DEMOTE HOOK OFF for as long as it is restarting doors (owner, 2026-09-08: a
-// procedure designed to be controllable must never demote). A staged copy that exits 1 fails an
-// explicitly requested start, which puts the unit in `failed` -- RestartMode=direct spares only
-// the auto-restart path -- so `OnFailure=briard-promotion-hold` fires, the node demotes, the
-// promoter target is masked, and nothing can promote it again. Measured on the first full
-// install-macvtap run of [B.138]. The flag is what briard-promotion-hold's ExecCondition reads
-// (guest-image/configuration.nix); it is on tmpfs and cleared at every agent start below, so the
-// worst a crash here can cost is one restart's worth of a node that will not hand the house on.
+// It holds the DEMOTE HOOK OFF while it is restarting doors (owner, 2026-09-08: a procedure
+// designed to be controllable must never demote), and the reason is the START BUDGET, not the
+// failure itself. systemd's rule: an auto-restart under `RestartMode=direct` skips failed and
+// inactive and skips `OnFailure=` -- for a start that failed exactly as for a crash while running
+// -- so ONE failed trial start demotes nothing. What fires the hook is a member with no restart
+// left: the start limit (5 in 300 s for the doors) exhausted. A trial spends real budget on a
+// chain member -- the trial start, its auto-restart, and the aftermath's restart, up to three of
+// the five -- so a door that had already burned starts for unrelated reasons could cross the
+// limit DURING an upgrade and hand the house on for it. This flag makes that impossible for the
+// seconds it is up; the commit also gives the doors their budget back (pivot.nix reset-failed).
+//
+// (The demote measured on the first full install-macvtap run of [B.138] was NOT this: the blind
+// verdict had committed a door binary that exits 1, so every later start of it failed, the budget
+// went in ~10 s, and the hold then fired correctly on a member that genuinely could not start.
+// Fixing the verdict removed that cause; this guard is the narrower one above.)
+//
+// The flag is what briard-promotion-hold's ExecCondition reads (guest-image/configuration.nix);
+// it is on tmpfs and cleared at every agent start below, so the worst a crash here can cost is
+// one restart's worth of a node that will not hand the house on.
 func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) error {
 	release := "?"
 	if b, err := os.ReadFile(filepath.Join(binDir(), releaseFile+nextSuffix)); err == nil {

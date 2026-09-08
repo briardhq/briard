@@ -1144,16 +1144,23 @@ in
         #
         # ⚠️ AND ONLY IF THIS IS NOT A DRESS TRIAL ([B.138]; owner: "certainly don't demote as a
         # result of a procedure we design to be controllable"). The trial restarts the front door
-        # and the dashboard onto the pushed binaries to see whether they really start, and a
-        # staged copy that exits 1 fails an EXPLICITLY REQUESTED start -- which lands the unit in
-        # `failed`, because `RestartMode=direct` spares only the auto-restart path, not this one.
-        # So `OnFailure=` fired, a controlled upgrade demoted the node and masked the target, and
-        # nothing could promote it again (measured: install-macvtap, the first full run of
-        # [B.138]). The trial raises this flag for the few seconds it is restarting the doors, and
-        # the failure it deliberately provokes is answered by the pivot instead: the door reverts
-        # to the committed binary by its own auto-restart, the trial is refused, the house keeps
-        # serving. The flag is on tmpfs and every guest-agent start clears it (guestagent/bin.go),
-        # so no crash can leave this node unable to hand the house on past one restart.
+        # and the dashboard onto pushed binaries to see whether they really start, and it is the
+        # START BUDGET this protects, not the failure. An auto-restart under `RestartMode=direct`
+        # skips failed/inactive and skips `OnFailure=` -- for a start that failed exactly as for a
+        # crash while running -- so one failed trial start reaches this unit not at all. What
+        # reaches it is a member with no restart left: StartLimitBurst spent inside
+        # StartLimitIntervalSec. A trial spends up to three of the doors' five (the trial start,
+        # its auto-restart, the aftermath's restart), so a door that had already burned starts for
+        # unrelated reasons could cross the limit DURING an upgrade and hand the house on for it.
+        # The flag makes that impossible while it is up, and the commit gives the doors their
+        # budget back (pivot.nix `reset-failed`). It is on tmpfs and every guest-agent start
+        # clears it (guestagent/bin.go), so no crash can leave this node unable to hand the house
+        # on past one restart.
+        #
+        # (The demote measured on the first full install-macvtap run of [B.138] was NOT this
+        # window: a blind verdict had committed a door binary that exits 1, so every later start
+        # failed, the budget went in ~10 s, and this unit then fired CORRECTLY on a member that
+        # genuinely could not start. That verdict is fixed; this guard is the narrower case.)
         ExecCondition = [
           "${pkgs.writeShellScript "briard-hold-not-during-a-dress-trial" ''
             if [ -e /run/briard-bin/trial-in-progress ]; then
