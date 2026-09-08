@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 )
 
 // fakeDresser is a guest as dressGuest sees it: what it reports, what it accepts.
@@ -59,7 +59,7 @@ func guestTree(t *testing.T, base, release string) {
 	if err := os.MkdirAll(filepath.Join(tree, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range guestagent.BinNames {
+	for _, n := range guestfirmware.BinNames {
 		if err := os.WriteFile(filepath.Join(tree, "bin", n), []byte("#!/bin/sh\n# "+n+" "+release+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -80,15 +80,15 @@ func TestDressGuestPushesWhenTheBundleDiffers(t *testing.T) {
 	if got := cfg.dressGuest(context.Background(), g, logf); got != dressPushed {
 		t.Fatalf("firmware guest: outcome %v, want pushed", got)
 	}
-	for _, n := range guestagent.BinNames {
+	for _, n := range guestfirmware.BinNames {
 		if string(g.staged[n]) != "#!/bin/sh\n# "+n+" v3.20260907.abc1234\n" {
 			t.Errorf("%s staged as %q", n, g.staged[n])
 		}
 	}
-	if g.release != "v3.20260907.abc1234" || len(g.activate) != len(guestagent.BinNames) || g.activate[len(g.activate)-1] != "briard-guest-agent" {
+	if g.release != "v3.20260907.abc1234" || len(g.activate) != len(guestfirmware.BinNames) || g.activate[len(g.activate)-1] != "briard-guest-agent" {
 		t.Errorf("activated %v as %q; the guest agent must be last", g.activate, g.release)
 	}
-	if len(g.tested) != len(guestagent.BinNames) {
+	if len(g.tested) != len(guestfirmware.BinNames) {
 		t.Errorf("bin.test was asked to prove %v, want the whole set", g.tested)
 	}
 

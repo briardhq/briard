@@ -1,4 +1,4 @@
-package guestagent
+package guestfirmware
 
 import (
 	"context"
@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// Wire is guestagent's private framing for the host<->guest control channel
-// Wire is the framing: length-prefixed JSON request/response over any io.ReadWriteCloser
-// -- a net.Pipe in tests, a virtio-serial port in the guest. It is the guest
-// link's only transport, so it stays unexported; the public surface is
-// Client / Serve / Executor.
+// The framing of the host<->guest control channel: length-prefixed JSON request/response over
+// any io.ReadWriteCloser -- a net.Pipe in tests, a virtio-serial port in the guest. It is the
+// guest link's only transport, and it lives in the FIRMWARE because the firmware is the half of
+// the protocol the image bakes ([B.139]): the pushed agent layers its own verbs on this framing
+// and never redefines it.
 
 const maxFrame = 8 << 20 // 8 MiB cap so a corrupt length prefix can't allocate wildly
 
@@ -42,7 +42,7 @@ func writeFrame(w io.Writer, v any) error {
 		return err
 	}
 	if len(b) > maxFrame {
-		return fmt.Errorf("guestagent: frame too large (%d bytes)", len(b))
+		return fmt.Errorf("guestfirmware: frame too large (%d bytes)", len(b))
 	}
 	// One Write for header+payload: two Writes could tear a frame if the ctx watcher
 	// closes the channel between them, byte-desyncing the peer (which frame-level resync
@@ -62,7 +62,7 @@ func readFrame(r io.Reader, v any) error {
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
 	if n > maxFrame {
-		return fmt.Errorf("guestagent: frame too large (%d bytes)", n)
+		return fmt.Errorf("guestfirmware: frame too large (%d bytes)", n)
 	}
 	b := make([]byte, n)
 	if _, err := io.ReadFull(r, b); err != nil {
@@ -71,15 +71,15 @@ func readFrame(r io.Reader, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// conn is the host end: synchronous, serialized calls over the single stream
+// Conn is the host end: synchronous, serialized calls over the single stream
 // .
-type conn struct {
+type Conn struct {
 	mu     sync.Mutex
 	rw     io.ReadWriteCloser
 	nextID uint64
 }
 
-// newConn wraps a stream in a host-side conn. Request ids start from the WALL CLOCK, not
+// NewConn wraps a stream in a host-side Conn. Request ids start from the WALL CLOCK, not
 // from 1, because the stream OUTLIVES the process at both ends: QEMU keeps the guest port
 // open across a host re-dial, so an agent killed mid-call leaves its reply sitting in the
 // channel for its successor to read. Handshake resyncs past such a frame BY ID, which
@@ -87,24 +87,24 @@ type conn struct {
 // collide on the one frame every session has, the reply to its hello [V3b.17]. A clock
 // base makes a later session's ids strictly greater than an earlier session's, so a
 // leftover frame is decidably stale rather than coincidentally distinguishable.
-func newConn(rw io.ReadWriteCloser) *conn {
-	return &conn{rw: rw, nextID: uint64(time.Now().UnixNano())}
+func NewConn(rw io.ReadWriteCloser) *Conn {
+	return &Conn{rw: rw, nextID: uint64(time.Now().UnixNano())}
 }
 
-func (c *conn) call(ctx context.Context, verb string, arg, reply any) error {
-	return c.callResync(ctx, verb, arg, reply, false)
+func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
+	return c.CallResync(ctx, verb, arg, reply, false)
 }
 
-// CallResync is call with an optional resync: when resync is set, it skips stale
+// CallResync is Call with an optional resync: when resync is set, it skips stale
 // reply frames -- ones whose id != our request id, left in the stream by a *previous*,
 // dropped session -- up to maxResyncSkips, until the matching reply arrives. Over
 // virtio-serial QEMU keeps the guest port open across a host reconnect, so a re-dial can
 // find the previous session's in-flight reply ahead of ours; every frame readFrame yields
 // is complete + well-framed (it ReadFulls the declared length), so the stale one is
-// skippable by id -- and newConn's per-session id base is what keeps those ids apart.
+// skippable by id -- and NewConn's per-session id base is what keeps those ids apart.
 // Only Handshake -- the first call after a (re)connect -- sets resync; a *mid-session*
 // id mismatch stays a hard desync error (ErrChannelDown -> re-dial).
-func (c *conn) callResync(ctx context.Context, verb string, arg, reply any, resync bool) error {
+func (c *Conn) CallResync(ctx context.Context, verb string, arg, reply any, resync bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func (c *conn) callResync(ctx context.Context, verb string, arg, reply any, resy
 	}
 }
 
-func (c *conn) close() error { return c.rw.Close() }
+func (c *Conn) Close() error { return c.rw.Close() }
 
 // ctxOr prefers the context's error (cancel/deadline) over the I/O error it caused
 // -- e.g. the "closed pipe" from the watcher closing the channel on timeout.
@@ -180,13 +180,13 @@ func ctxOr(ctx context.Context, err error) error {
 // error and keep using the connection. A mid-call deadline wraps *both* ErrChannelDown and
 // context.DeadlineExceeded, so a bounded op still detects its timeout while the observe
 // loop still detects the dead channel.
-var ErrChannelDown = errors.New("guestagent: control channel down")
+var ErrChannelDown = errors.New("guestfirmware: control channel down")
 
 func channelDown(ctx context.Context, err error) error {
 	return fmt.Errorf("%w: %w", ErrChannelDown, ctxOr(ctx, err))
 }
 
-// serve is the guest end: read requests, dispatch to d, write responses, until
+// ServeFrames is the guest end: read requests, dispatch to d, write responses, until
 // the connection closes (returns nil on EOF) or ctx is done.
 //
 // ⚠️ CANCELLATION CLOSES THE CONNECTION HERE, AND ONLY BETWEEN REPLIES. The blocking read on a
@@ -203,7 +203,7 @@ func channelDown(ctx context.Context, err error) error {
 // above returns before reading another request, so this can hold up the close by one handler and
 // never by two. The caller's own exit deadline remains the backstop for a handler that never
 // returns.
-func serve(ctx context.Context, rw io.ReadWriteCloser, d dispatchFunc) error {
+func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) error {
 	var replying sync.Mutex
 	done := make(chan struct{})
 	defer close(done)
@@ -249,5 +249,5 @@ func serve(ctx context.Context, rw io.ReadWriteCloser, d dispatchFunc) error {
 	}
 }
 
-// dispatchFunc handles one request verb and returns a result to marshal back.
-type dispatchFunc func(ctx context.Context, verb string, payload json.RawMessage) (any, error)
+// DispatchFunc handles one request verb and returns a result to marshal back.
+type DispatchFunc func(ctx context.Context, verb string, payload json.RawMessage) (any, error)

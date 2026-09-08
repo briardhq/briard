@@ -1,4 +1,4 @@
-package guestagent
+package guestfirmware
 
 import (
 	"context"
@@ -27,13 +27,13 @@ func echoDispatch(_ context.Context, verb string, payload json.RawMessage) (any,
 	}
 }
 
-// wirePair wires a host conn to a serve(echoDispatch) over an in-memory pipe.
-func wirePair(t *testing.T) *conn {
+// wirePair wires a host conn to a ServeFrames(echoDispatch) over an in-memory pipe.
+func wirePair(t *testing.T) *Conn {
 	t.Helper()
 	cc, sc := net.Pipe()
-	go serve(context.Background(), sc, echoDispatch)
-	c := newConn(cc)
-	t.Cleanup(func() { c.close() })
+	go ServeFrames(context.Background(), sc, echoDispatch)
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
 	return c
 }
 
@@ -41,7 +41,7 @@ func TestWireRoundTripAndSequentialIDs(t *testing.T) {
 	c := wirePair(t)
 	for _, w := range []string{"ab", "c", "def"} {
 		var out string
-		if err := c.call(context.Background(), "echo", w, &out); err != nil {
+		if err := c.Call(context.Background(), "echo", w, &out); err != nil {
 			t.Fatal(err)
 		}
 		if out != w+w {
@@ -52,7 +52,7 @@ func TestWireRoundTripAndSequentialIDs(t *testing.T) {
 
 func TestWireHandlerErrorPropagates(t *testing.T) {
 	c := wirePair(t)
-	err := c.call(context.Background(), "boom", nil, nil)
+	err := c.Call(context.Background(), "boom", nil, nil)
 	if err == nil || err.Error() != "kaboom" {
 		t.Errorf("err = %v, want kaboom", err)
 	}
@@ -63,7 +63,7 @@ func TestWireHandlerErrorPropagates(t *testing.T) {
 	}
 	// The stream survives a handler error — the next call still works.
 	var out string
-	if err := c.call(context.Background(), "echo", "z", &out); err != nil || out != "zz" {
+	if err := c.Call(context.Background(), "echo", "z", &out); err != nil || out != "zz" {
 		t.Errorf("post-error call: out=%q err=%v", out, err)
 	}
 }
@@ -72,16 +72,16 @@ func TestWireHandlerErrorPropagates(t *testing.T) {
 // error which leaves the channel usable.
 func TestWireChannelDownOnDeadConn(t *testing.T) {
 	cc, _ := net.Pipe()
-	c := newConn(cc)
+	c := NewConn(cc)
 	cc.Close()
-	if err := c.call(context.Background(), "echo", "a", nil); !errors.Is(err, ErrChannelDown) {
+	if err := c.Call(context.Background(), "echo", "a", nil); !errors.Is(err, ErrChannelDown) {
 		t.Errorf("call on a closed conn = %v, want ErrChannelDown", err)
 	}
 }
 
 func TestWireUnknownVerb(t *testing.T) {
 	c := wirePair(t)
-	err := c.call(context.Background(), "nope", nil, nil)
+	err := c.Call(context.Background(), "nope", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown verb") {
 		t.Errorf("err = %v, want unknown verb", err)
 	}
@@ -91,7 +91,7 @@ func TestWireContextCancelled(t *testing.T) {
 	c := wirePair(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := c.call(ctx, "echo", "a", nil); !errors.Is(err, context.Canceled) {
+	if err := c.Call(ctx, "echo", "a", nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestWireContextCancelled(t *testing.T) {
 func TestServeEndsOnClose(t *testing.T) {
 	cc, sc := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- serve(context.Background(), sc, echoDispatch) }()
+	go func() { done <- ServeFrames(context.Background(), sc, echoDispatch) }()
 	cc.Close()
 	if err := <-done; err != nil {
 		t.Errorf("serve after close = %v, want nil", err)
@@ -112,13 +112,13 @@ func TestServeEndsOnClose(t *testing.T) {
 func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 	cconn, sconn := net.Pipe()
 	go io.Copy(io.Discard, sconn) // drain requests, never respond
-	g := NewClient(cconn)
+	g := NewConn(cconn)
 	defer g.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- g.Up(ctx, "r0") }()
+	go func() { done <- g.Call(ctx, VerbHello, nil, nil) }()
 
 	select {
 	case err := <-done:
@@ -156,7 +156,7 @@ func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 		<-ctx.Done() // the cancellation lands while this reply is owed
 		return "pong", nil
 	}
-	go serve(ctx, sconn, d)
+	go ServeFrames(ctx, sconn, d)
 
 	go func() {
 		<-handling
@@ -173,5 +173,34 @@ func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 	}
 	if resp.ID != 1 || string(resp.Payload) != `"pong"` {
 		t.Errorf("resp = %+v, want ID 1 payload \"pong\"", resp)
+	}
+}
+
+// On a reconnect the still-open virtio-serial stream can carry a stale in-flight reply from the
+// *dropped* session ahead of the handshake reply (QEMU keeps the guest port open across a host
+// re-dial). A resyncing call must skip such stale frames, not fail on the id mismatch --
+// otherwise a reconnect never recovers (the observed agent-bringup freeze/thaw failure). Only
+// the first call after a (re)connect resyncs, which is the handshake (guestagent's Handshake).
+func TestCallResyncsPastStaleFrame(t *testing.T) {
+	cc, sc := net.Pipe()
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
+	go func() {
+		var req request
+		if err := readFrame(sc, &req); err != nil { // read the hello request
+			return
+		}
+		// A leftover reply from the previous session (an unrelated id), THEN the real
+		// handshake reply. The caller must skip the first and match the second.
+		hello, _ := json.Marshal(Hello{Version: GuestProtocol, Capabilities: []string{VerbHello}})
+		_ = writeFrame(sc, response{ID: req.ID + 42, Payload: json.RawMessage(`"stale reply from a dropped session"`)})
+		_ = writeFrame(sc, response{ID: req.ID, Payload: hello})
+	}()
+	var h Hello
+	if err := c.CallResync(context.Background(), VerbHello, nil, &h, true); err != nil {
+		t.Fatalf("a resyncing call must skip a stale frame, got: %v", err)
+	}
+	if h.Version != GuestProtocol {
+		t.Errorf("version = %d, want %d (resynced to the real reply)", h.Version, GuestProtocol)
 	}
 }

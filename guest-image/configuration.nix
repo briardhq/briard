@@ -772,22 +772,20 @@ in
   # disk-image.nix, where the machine is known.
   imports = [ ./slim.nix ./pivot.nix ];
 
-  # The agent binary this guest runs. It is an option rather than a callPackage here because
-  # disk-image.nix already builds a VERSIONED one for briard-guest-agent + briard-deadman, and a
-  # second instantiation with different arguments would put TWO agent derivations in the shipped
-  # image's closure. Setting it there means the same store path serves all three units.
+  # THE GUEST AGENT BUILD A TEST NODE IS PRE-DRESSED WITH ([B.139]). No unit in the SHIPPED image
+  # names it: the image bakes the firmware alone, and every unit that needs the agent reaches it
+  # at its committed path under the pivot's binDir, where the host's dress put it. A nixosTest
+  # machine has no host to dress it, so nixosTest/lib.nix links this build in as if one had
+  # (briard.pivot.preDressed) -- which is what makes those tests converge with the product's own
+  # code rather than a harness stand-in.
   #
-  # It exists at all because briard-services (converge-at-promotion, [V3b.3](f)) is defined HERE:
-  # it is a promoter chain member, so it has to live in the same module as briard-data and
-  # briard-vip — naming a unit the guest does not define fails the whole ordered chain. The
-  # default is what makes the nixosTests work unchanged: a test node gets a guest-tagged agent
-  # without every test having to hand one in, and converges with the product's own code rather
-  # than a harness stand-in.
+  # It stays an option rather than a bare callPackage so a caller that wants a VERSIONED build,
+  # or a stand-in, hands one in instead of getting a second agent derivation alongside the first.
   options.briard.agentPackage = lib.mkOption {
     type = lib.types.package;
     default = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; };
     defaultText = lib.literalExpression "the briard-guest-agent build";
-    description = "The briard-guest-agent build this guest's units invoke.";
+    description = "The briard-guest-agent build a test node is pre-dressed with, and that its shells invoke.";
   };
 
   # Image tarballs baked into this disk's closure and loaded into podman at boot. A NODE fact,
@@ -1149,7 +1147,7 @@ in
         # `OnFailure=`, for a start that failed as much as for a crash while running. What reaches
         # here is a member with no restart LEFT, the start limit spent. A trial costs up to three
         # of the doors' five starts, so the trial CLEARS the counter before it begins
-        # (`systemctl reset-failed`, agent/guestagent/bin.go) and the arithmetic cannot reach the
+        # (`systemctl reset-failed`, agent/guestfirmware/bin.go) and the arithmetic cannot reach the
         # limit. An earlier cut made this unit's ExecCondition conditional on a
         # "trial-in-progress" flag instead; the owner removed it (2026-09-08): the upgrade path is
         # already intricate, and a rule that makes the demote hook itself conditional -- with a
@@ -1343,8 +1341,13 @@ in
         RestartSec = 2;
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${config.briard.agentPackage}/bin/briard-guest-agent --converge";
-        ExecStop = "${config.briard.agentPackage}/bin/briard-guest-agent --converge-stop";
+        # THE PUSHED AGENT, BY ITS COMMITTED PATH ([B.139]) -- not the firmware, which serves the
+        # push protocol alone, and not through the picker, whose arm flag is keyed by binary name
+        # and belongs to the agent's own unit. This member runs only at promotion, and the host
+        # dresses the guest before rejoin, so the binary is always there by the time drbd-reactor
+        # reaches this rung.
+        ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --converge";
+        ExecStop = "${config.briard.pivot.binDir}/briard-guest-agent --converge-stop";
       };
       unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;

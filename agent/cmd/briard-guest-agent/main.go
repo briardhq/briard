@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/shared/sdnotify"
 )
 
@@ -103,7 +104,7 @@ func runInternal(args []string) {
 		// kernel and libc (we are here), its flags parse (they did), and the control port device
 		// the real start will open exists. The running agent holds the port, so opening it is
 		// not part of the test.
-		if _, err := os.Stat(guestagent.ControlPortDev); err != nil {
+		if _, err := os.Stat(guestfirmware.ControlPortDev); err != nil {
 			fmt.Fprintf(os.Stderr, "briard-guest-agent: test launch: %v\n", err)
 			os.Exit(1)
 		}
@@ -127,7 +128,7 @@ func runInternal(args []string) {
 		if *convergeStop {
 			run, what = guestagent.ConvergeStop, "converge-stop"
 		}
-		if err := run(ctx, guestagent.NewOSExecutor()); err != nil {
+		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("%s: %v", what, err)
 		}
 		return
@@ -148,11 +149,11 @@ func runGuest(ctx context.Context) error {
 	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
 	// verdict exits here, port never opened, so the host's reconnect meets the committed agent
 	// and reads the old release. A non-trial start with a staged set left behind discards it.
-	x := guestagent.NewOSExecutor()
-	if err := guestagent.BinStartup(ctx, x, log.Printf); err != nil {
+	x := guestfirmware.NewOSExecutor()
+	if err := guestfirmware.BinStartup(ctx, x, log.Printf); err != nil {
 		return err
 	}
-	conn, err := os.OpenFile(guestagent.ControlPortDev, os.O_RDWR, 0)
+	conn, err := os.OpenFile(guestfirmware.ControlPortDev, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
@@ -192,4 +193,4 @@ const hostAbsentPause = 5 * time.Second
 // before the process that carries it is killed ([B.132]).
 const guestStopGrace = 5 * time.Second
 
-const _ = uint(guestStopGrace - guestagent.PowerOffGrace)
+const _ = uint(guestStopGrace - guestfirmware.PowerOffGrace)

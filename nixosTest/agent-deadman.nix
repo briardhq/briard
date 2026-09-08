@@ -23,7 +23,7 @@
 #
 # Heavy (nested VM) → the `integration` tag. Run on the self-hosted L0:
 #   gh workflow run vm-test.yml -f test=agent-deadman
-{ pkgs, guestDisk, agent, netWrap }:
+{ pkgs, guestDisk, agent, netWrap, dressBase }:
 pkgs.testers.runNixOSTest {
   name = "agent-deadman";
   skipTypeCheck = true; # dynamic asserts, backgrounded poller
@@ -51,6 +51,10 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_DISK = "/tmp/guest.qcow2";
+          # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it: the
+          # image bakes only the firmware, so the deadman's own binary arrives by the dress
+          # ([B.139]) and a host holding no tree could never start it.
+          UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
@@ -103,6 +107,9 @@ pkgs.testers.runNixOSTest {
     )
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
+    # The bundle tree install.sh lays on every install, copied out of the store because the host
+    # writes `guest.good` beside it ([B.138], [B.139]).
+    host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     # Boot + converge (the agent launches the guest, drives bring-up).
     host.succeed("systemctl start briard-agent")

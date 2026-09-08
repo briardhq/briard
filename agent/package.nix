@@ -1,7 +1,7 @@
 # The Briard agent binary, built from the repo's Go module. External deps are
 # kept minimal (CONTRIBUTING.md: new dependencies default to no); currently lego (ACME DNS-01) + its tree,
-# vendored via vendorHash. Two mains share the module: the host agent, and the guest agent that
-# serves the host over the virtio-serial channel (agent/cmd/briard-guest-agent).
+# vendored via vendorHash. Three mains share the module: the host agent, the guest agent that
+# serves the host over the virtio-serial channel, and the guest FIRMWARE the image bakes.
 #
 # vendorHash lives in ../vendor-hash.nix, which every Go package here imports -- it used to be
 # copied into eight files kept in step by comments, so adding one dependency meant editing eight
@@ -9,8 +9,10 @@
 # unaffected by build tags (the vendor dir carries every dep; tags only change what links).
 #
 # subPackage: which main to build. `agent/cmd/briard-agent` is the HOST agent (and the `briard`
-# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent ([B.137]) -- its own main, so what
-# it links is an import graph the arch tests fence rather than a build tag.
+# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent ([B.137]), which the host PUSHES; and
+# `agent/cmd/briard-guest-firmware` is the push protocol alone ([B.139]), the ONE binary the guest
+# image bakes. Each is its own main, so what each links is an import graph the arch tests fence
+# rather than a build tag.
 #
 # version: the release id stamped into the binary. Shape `<epoch>.<commit-date>.<short-rev>`
 # — e.g. `v3.20260806.92d4eee` — computed in flake.nix from `self`, i.e. DERIVED FROM THE TREE and

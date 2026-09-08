@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/shared/dashboard"
 )
 
@@ -161,10 +161,10 @@ func qemuArgs(s QEMUSpec) []string {
 		"-no-reboot",
 		"-display", "none",
 		// The host<->guest control channel: a virtio-serial port named
-		// guestagent.ControlPort, backed by a host unix socket QEMU serves.
+		// guestfirmware.ControlPort, backed by a host unix socket QEMU serves.
 		"-device", "virtio-serial-pci",
 		"-chardev", "socket,id=briardctl,path="+s.ControlSock+",server=on,wait=off",
-		"-device", "virtserialport,chardev=briardctl,name="+guestagent.ControlPort,
+		"-device", "virtserialport,chardev=briardctl,name="+guestfirmware.ControlPort,
 	)
 	if s.AdminPortSock != "" {
 		// The guest's admin port ([V3b.31i]): the same shape as the control channel with the

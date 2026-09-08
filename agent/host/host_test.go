@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
-	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
@@ -498,8 +498,8 @@ func TestObserveReturnsOnChannelDown(t *testing.T) {
 	cfg.Resource.Name = "r0"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // safety net
 	defer cancel()
-	err := cfg.observe(ctx, fakeStatus{err: guestagent.ErrChannelDown}, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {})
-	if !errors.Is(err, guestagent.ErrChannelDown) {
+	err := cfg.observe(ctx, fakeStatus{err: guestfirmware.ErrChannelDown}, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {})
+	if !errors.Is(err, guestfirmware.ErrChannelDown) {
 		t.Errorf("observe = %v, want ErrChannelDown (to trigger reconnect)", err)
 	}
 }

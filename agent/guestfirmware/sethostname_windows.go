@@ -1,4 +1,4 @@
-package guestagent
+package guestfirmware
 
 import "errors"
 

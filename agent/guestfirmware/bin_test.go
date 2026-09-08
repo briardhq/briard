@@ -1,9 +1,7 @@
-package guestagent
+package guestfirmware
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,33 +16,6 @@ func binDirs(t *testing.T) (string, string) {
 	t.Setenv("BRIARD_BIN_DIR", dir)
 	t.Setenv("BRIARD_BIN_RUN", run)
 	return dir, run
-}
-
-// A binary larger than the frame cap streams in chunks and lands as <name>.next, verified
-// against the digest the LAST chunk carries, executable.
-func TestBinStageStreamsAndVerifies(t *testing.T) {
-	dir, _ := binDirs(t)
-	want := make([]byte, 9<<20+123) // three chunks, the last one partial
-	if _, err := rand.Read(want); err != nil {
-		t.Fatal(err)
-	}
-	g := dial(t, &fakeExec{})
-	if err := g.BinStage(context.Background(), "briard-guest-agent", bytes.NewReader(want)); err != nil {
-		t.Fatalf("BinStage: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(dir, "briard-guest-agent.next"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("staged bytes differ (%d vs %d)", len(got), len(want))
-	}
-	if fi, _ := os.Stat(filepath.Join(dir, "briard-guest-agent.next")); fi.Mode().Perm()&0o111 == 0 {
-		t.Error("the staged binary is not executable")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "briard-guest-agent.part")); !os.IsNotExist(err) {
-		t.Error("the .part file was left behind")
-	}
 }
 
 // The name table is closed, and a digest that does not match leaves no .next behind.
@@ -81,21 +52,21 @@ func TestBinActivateArmsTheSetAndRestartsTheAgentAlone(t *testing.T) {
 	dir, run := binDirs(t)
 	fx := &fakeExec{}
 	g := dial(t, fx)
-	if err := g.BinActivate(context.Background(), "v3.20260907.abc1234", BinNames); err == nil {
+	if err := g.Call(context.Background(), VerbBinActivate, BinActivation{Release: "v3.20260907.abc1234", Names: BinNames}, nil); err == nil {
 		t.Fatal("activated with nothing staged")
 	}
 	if len(fx.runs) != 0 {
 		t.Fatalf("restarted units for an unstaged set: %v", fx.runs)
 	}
 	stageSet(t, dir)
-	if err := g.BinActivate(context.Background(), "v3.20260907.abc1234", []string{"briard-dashboard", "briard-reverse-proxy"}); err == nil {
+	if err := g.Call(context.Background(), VerbBinActivate, BinActivation{Release: "v3.20260907.abc1234", Names: []string{"briard-dashboard", "briard-reverse-proxy"}}, nil); err == nil {
 		t.Fatal("a set without the guest agent was activated -- nothing would trial it")
 	}
 	if len(fx.runs) != 0 {
 		t.Fatalf("restarted units for an agent-less set: %v", fx.runs)
 	}
-	if err := g.BinActivate(context.Background(), "v3.20260907.abc1234", BinNames); err != nil {
-		t.Fatalf("BinActivate: %v", err)
+	if err := g.Call(context.Background(), VerbBinActivate, BinActivation{Release: "v3.20260907.abc1234", Names: BinNames}, nil); err != nil {
+		t.Fatalf("bin.activate: %v", err)
 	}
 	want := [][]string{
 		{"systemd-run", "--quiet", "--collect", "--on-active=1", "--timer-property=AccuracySec=100ms", "systemctl", "restart", "briard-guest-agent.service"},
@@ -111,7 +82,7 @@ func TestBinActivateArmsTheSetAndRestartsTheAgentAlone(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "RELEASE.next")); string(b) != "v3.20260907.abc1234\n" {
 		t.Errorf("RELEASE.next = %q", b)
 	}
-	if err := g.BinActivate(context.Background(), "bad id/", BinNames); err == nil {
+	if err := g.Call(context.Background(), VerbBinActivate, BinActivation{Release: "bad id/", Names: BinNames}, nil); err == nil {
 		t.Error("a release id with a slash was accepted")
 	}
 }
@@ -123,12 +94,12 @@ func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 	dir, _ := binDirs(t)
 	fx := &fakeExec{}
 	g := dial(t, fx)
-	if err := g.BinTest(context.Background(), BinNames); err == nil {
+	if err := g.Call(context.Background(), VerbBinTest, BinTest{Names: BinNames}, nil); err == nil {
 		t.Fatal("tested with nothing staged")
 	}
 	stageSet(t, dir)
-	if err := g.BinTest(context.Background(), BinNames); err != nil {
-		t.Fatalf("BinTest: %v", err)
+	if err := g.Call(context.Background(), VerbBinTest, BinTest{Names: BinNames}, nil); err != nil {
+		t.Fatalf("bin.test: %v", err)
 	}
 	want := [][]string{
 		{filepath.Join(dir, "briard-dashboard.next"), "--test-launch"},
@@ -152,9 +123,9 @@ func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 		}
 		return nil, nil
 	}
-	err := g.BinTest(context.Background(), BinNames)
+	err := g.Call(context.Background(), VerbBinTest, BinTest{Names: BinNames}, nil)
 	if err == nil || !strings.Contains(err.Error(), "briard-reverse-proxy failed its test launch") || !strings.Contains(err.Error(), "no such device") {
-		t.Fatalf("BinTest error = %v; want the door named, with its output", err)
+		t.Fatalf("bin.test error = %v; want the door named, with its output", err)
 	}
 	if got := stagedSet(); got != nil {
 		t.Errorf("a failed test left staged files: %v", got)
@@ -440,17 +411,5 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 		if got := pickerRan(n); got != "pushed" {
 			t.Errorf("%s ran %q after the aftermath, want the committed binary", n, got)
 		}
-	}
-}
-
-// The handshake advertises both verbs, so a host can tell a dressable guest from a firmware
-// that predates the protocol.
-func TestHandshakeAdvertisesBinPush(t *testing.T) {
-	g := dial(t, &fakeExec{})
-	if _, err := g.Handshake(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !g.SupportsBinPush() {
-		t.Error("bin.stage/bin.activate are not advertised")
 	}
 }

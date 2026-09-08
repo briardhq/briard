@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -19,10 +18,10 @@ import (
 
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent/deadman"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
-	"briard.io/shared/api"
 	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
@@ -30,13 +29,14 @@ import (
 	"briard.io/shared/telemetry"
 )
 
-// ControlPort is the virtio-serial port name for the host<->guest channel;
-// the guest device is ControlPortDev. The host launches QEMU with a virtserialport
-// of this name; the guest agent opens ControlPortDev.
-const (
-	ControlPort    = "briard.control"
-	ControlPortDev = "/dev/virtio-ports/" + ControlPort
-)
+// THE PROTOCOL THIS PACKAGE SPEAKS IS THE FIRMWARE'S ([B.139]). The framing, the handshake, the
+// three push verbs and the Executor they shell out through live in agent/guestfirmware -- the
+// one Go package the guest IMAGE bakes, and therefore the only one whose change has to move the
+// guest chain. Everything here is what the host PUSHES on top of it as `briard-guest-agent`.
+//
+// Executor is aliased rather than re-declared: two names for one interface is how the baked half
+// and the pushed half would drift into two interfaces.
+type Executor = guestfirmware.Executor
 
 // DefaultPollInterval is how often BringUpGuest polls for convergence.
 const DefaultPollInterval = 500 * time.Millisecond
@@ -108,12 +108,12 @@ const verbSetHostname = "sys.hostname"
 // deleted ([V3b.3](e2)) and they were left naming a mechanism no node has. They act on whichever
 // unit the host names, which is always a runtime-installed service's.
 //
-// ⚠️ RENAMING THEM WAS A PROTOCOL BREAK, and it is why api.MinGuestProtocol is 2. The guest
-// advertises its verb set in the handshake, so a rolled host meeting an un-rolled guest finds
-// none of them; without the bump that is five silent verb failures, with it the handshake refuses
-// up front and the node defers safely. Taken on the owner's call under the alpha reinstall-only
-// policy ([[alpha-reinstall-only-policy]]) — every node re-runs the installer, so there is no
-// fleet to strand and no compat path to build. This is the expensive instrument the
+// ⚠️ RENAMING THEM WAS A PROTOCOL BREAK, and it is why guestfirmware.MinGuestProtocol is 2. The
+// guest advertises its verb set in the handshake, so a rolled host meeting an un-rolled guest
+// finds none of them; without the bump that is five silent verb failures, with it the handshake
+// refuses up front and the node defers safely. Taken on the owner's call under the alpha
+// reinstall-only policy ([[alpha-reinstall-only-policy]]) — every node re-runs the installer, so
+// there is no fleet to strand and no compat path to build. This is the expensive instrument the
 // service.installed note below describes; it is affordable exactly while that policy holds.
 const (
 	verbServiceStart  = "service.start"  // systemctl start <unit>
@@ -130,72 +130,7 @@ const (
 	verbDataSnapshot    = "data.snapshot" // btrfs subvolume snapshot -r <DataDir> <dest>
 	verbDataRestore     = "data.restore"  // replace the live subvolume with a snapshot
 	verbOSSystem        = "os.system"     // readlink -f /run/current-system -> closure store path
-	verbOSPowerOff      = "os.poweroff"   // ask the guest OS to shut itself down cleanly
 )
-
-// PowerOffGrace bounds the one handler that runs DETACHED from the serve context. Every other
-// verb is cancelled when the agent is asked to stop, and that is correct -- a service pull fetching a
-// closure has nothing worth finishing once the machine is going down. `os.poweroff` is the
-// exception, and the reason is circular: the shutdown it asks for is what SIGTERMs this process,
-// so inheriting that cancellation means the verb is killed by its own success ([B.132]).
-//
-// Detached, it needs a ceiling of its own -- nothing else can stop it, and the handler holds the
-// serve loop's reply lock, which holds the control port open. Sized far above what the command
-// actually costs (~100ms: `--no-block` returns once systemd has ENQUEUED the job, not run it) and
-// far below the caller's exit backstop, so the reply is always written before the process ends.
-// The gap to that backstop is asserted at compile time where the backstop is declared.
-const PowerOffGrace = 2 * time.Second
-
-// powerOffPollEvery paces the state probe below. Short relative to PowerOffGrace, because the gap
-// it covers -- systemd ACCEPTING the shutdown job, then the manager entering it -- is milliseconds
-// on a healthy machine and worth several attempts on a loaded one.
-const powerOffPollEvery = 100 * time.Millisecond
-
-// systemStopping answers the one question that settles `os.poweroff`: has the manager entered
-// shutdown? It exists because the command that asks for one is routinely killed BY the shutdown it
-// asks for, so its exit status reports a failure for a request that worked. Two mechanisms did
-// that, in sequence -- the dispatch context ([B.132]) and then systemd's own cgroup SIGTERM -- and
-// the second is what makes this the right shape rather than a third patch on the first: the verb
-// stops inferring its outcome from how a process died and observes the state it claims to cause.
-//
-// ⚠️ THE PROBE'S EXIT CODE IS NOT THE ANSWER EITHER, and it is the trap this function exists to
-// contain: `systemctl is-system-running` exits 0 ONLY for `running`. `stopping` -- the state being
-// looked for -- exits NON-ZERO, as do `degraded` and `starting`. Written as an ordinary success
-// check it would invert its own result and call a working shutdown a failure, which is the bug one
-// level up wearing a different hat. THE STDOUT IS THE ANSWER; the status is discarded on purpose.
-//
-// POLLED RATHER THAN READ ONCE, for two independent reasons. `--no-block` returns when the job is
-// ENQUEUED, which is not the instant the manager flips to `stopping`, so a single immediate read
-// can land in that gap. And this child sits in the same cgroup as the one whose death started all
-// this, so the probe can be signalled too -- a fix that loses to the race it settles is no fix.
-//
-// COST, since it is not free: a genuine refusal now takes the full grace to report instead of
-// returning at once, because "not stopping yet" and "never going to stop" look the same until the
-// window closes. Bounded by the caller's context, two seconds, against a host-side shutdown grace
-// measured in tens of them -- and the escalation it delays is the one this whole path exists to
-// avoid firing spuriously.
-func systemStopping(ctx context.Context, x Executor) bool {
-	// STRICT ON PURPOSE about everything that is not the word `stopping`. A shutdown far enough
-	// along that the manager no longer answers reports `offline`, or nothing at all, and a machine
-	// genuinely going down can reach that inside this window. Not read as success: "too far gone to
-	// answer" and "never started" are indistinguishable from in here, and guessing between them is
-	// the habit this function exists to break. Being wrong costs a bounded, already-budgeted
-	// escalation -- the host presses the ACPI button and then asks the question that does settle
-	// it, whether the VM is still there (host.stopCleanly, [B.98]).
-	for {
-		// Error deliberately dropped: a probe that was killed, or a manager that answers
-		// non-zero because it is not `running`, are both just "no answer yet, ask again".
-		out, _ := x.Run(ctx, "systemctl", "is-system-running")
-		if string(bytes.TrimSpace(out)) == "stopping" {
-			return true
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(powerOffPollEvery):
-		}
-	}
-}
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
 // whole-OS closure was never a property of the data. The data's identity is per-service — the
@@ -356,7 +291,6 @@ const (
 	verbReactorResume = "reactor.resume" // systemctl start drbd-reactor.service
 	verbReactorActive = "reactor.active" // systemctl is-active drbd-reactor.service -> bool (interim guard)
 	verbReactorEvict  = "reactor.evict"  // drbd-reactorctl evict: hand the work to a peer
-	verbHello         = "hello"          // protocol handshake: version + capabilities
 	verbCertWrite     = "cert.write"     // write a renewed cert/key to the DRBD volume
 	verbResources     = "sys.resources"  // read appliance resource telemetry
 	verbBackupSave    = "backup.save"    // tar+age-encrypt .storage/config to an off-site path
@@ -371,13 +305,6 @@ const (
 // knows where it lives.
 const dataMountRoot = "/var/lib/briard"
 
-// bootIDPath is the kernel's per-boot identifier, which the handshake reports so the host can
-// recognise a guest that rebooted underneath it ([B.102]). The kernel mints it once per boot and
-// it survives every in-guest agent restart, which is exactly the line the host needs drawn --
-// and unlike a hostname or an address it is not something bring-up sets, so it cannot be
-// confused with the convergence it is used to trigger.
-const bootIDPath = "/proc/sys/kernel/random/boot_id"
-
 // guestCapabilities is the verb set the guest advertises in its handshake -- the honest
 // capability list a host negotiates against (Client.Supports). Keep in sync with the
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
@@ -389,14 +316,14 @@ var guestCapabilities = []string{
 	verbDataSnapshot, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
-	verbOSSystem, verbOSPowerOff,
+	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite,
 	verbDashboardHandoff,
 	verbResources,
 	verbBackupSave, verbBackupRestore,
 	verbFsSync,
-	verbBinStage, verbBinTest, verbBinActivate,
+	guestfirmware.VerbHello, guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate,
 }
 
 const (
@@ -724,20 +651,8 @@ type resourceService struct {
 	Unit string `json:"unit"`
 }
 
-// Executor runs commands and writes files inside the guest. The real impl shells
-// out (NewOSExecutor); tests supply a fake.
-type Executor interface {
-	Run(ctx context.Context, name string, args ...string) ([]byte, error)
-	WriteFile(path string, data []byte) error
-	// ReadFile returns a file's contents. A MISSING file must come back as an error the caller
-	// can recognise with os.IsNotExist rather than as empty content: "no name is published" and
-	// "the name is the empty string" are different answers, and only one of them is normal.
-	ReadFile(path string) ([]byte, error)
-	Sethostname(name string) error
-}
-
 // dispatch is the guest-side verb switch: verb -> Executor calls (+ ParseStatus).
-func dispatch(x Executor) dispatchFunc {
+func dispatch(x Executor) guestfirmware.DispatchFunc {
 	return func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
 		// RunIn executes a guest command whose output is only wanted on failure, and
 		// wraps a non-zero exit with the command + its output -- otherwise the host
@@ -757,22 +672,13 @@ func dispatch(x Executor) dispatchFunc {
 		// the agent that was asked to stop.
 		run := func(name string, args ...string) error { return runIn(ctx, name, args...) }
 		switch verb {
-		case verbHello:
-			// Report our protocol version + capabilities so the host can negotiate/refuse
-			//. No side effects; safe to call before anything else.
-			//
-			// The boot_id rides along because the host cannot otherwise tell a bounced agent
-			// from a rebooted guest ([B.102]). Read best-effort: a hello that FAILED would be
-			// a guest the host refuses to drive, and no host has ever needed this field to
-			// drive one -- so an unreadable boot_id is reported as absent, not as an error.
-			hello := api.GuestHello{Version: api.GuestProtocol, Capabilities: guestCapabilities}
-			hello.Bundle = runningBundle()
-			if b, err := x.ReadFile(bootIDPath); err == nil {
-				hello.BootID = strings.TrimSpace(string(b))
-			}
-			return hello, nil
-		case verbBinStage, verbBinTest, verbBinActivate:
-			return handleBin(ctx, x, verb, payload)
+		case guestfirmware.VerbHello:
+			// The dressed agent's answer: the same handshake the firmware serves, with the FULL
+			// verb set in place of the firmware's five. Which list comes back is how the host
+			// tells a dressed guest from an undressed one.
+			return guestfirmware.HelloReply(x, guestCapabilities), nil
+		case guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate:
+			return guestfirmware.HandleBin(ctx, x, verb, payload)
 		case verbSetHostname:
 			var req hostnameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -1313,59 +1219,13 @@ func dispatch(x Executor) dispatchFunc {
 				return nil, err
 			}
 			return strings.TrimSpace(string(out)), nil
-		case verbOSPowerOff:
-			// The FIRST-CHOICE clean shutdown: ask the guest OS directly, over the channel
-			// the host already has, instead of rattling its virtual power button and hoping
-			// something inside is listening. QMP's ACPI path (platform.Guest.Shutdown) stays
-			// as the fallback for a guest whose agent is gone -- the two fail independently,
-			// which is the whole reason to have both.
-			//
-			// --no-block because the reply must be written BEFORE systemd starts tearing the
-			// machine down: without it the shutdown races the response and the host sees a
-			// dead channel, which is indistinguishable from a guest that crashed. The host
-			// confirms the outcome by watching the VM disappear, not by this return value
-			// (platform.Guest.WaitStopped).
-			//
-			// ⚠️ DETACHED FROM THE DISPATCH CONTEXT, because this verb is cancelled by its own
-			// success. `--no-block` returns once systemd has enqueued the shutdown, but PID 1
-			// begins stopping units as soon as it holds the job -- and nothing orders this
-			// agent's unit late, so its SIGTERM can land while `systemctl` is still exiting.
-			// That cancels the dispatch context, exec.CommandContext kills the child, and Wait
-			// reports `context canceled` for a request that WORKED. The host reads that as "the
-			// agent route failed" and reaches for the ACPI power button -- the [B.85] regression
-			// guest-rescue greps for, seen live on the nightly 2026-09-03 ([B.132]).
-			//
-			// [B.127] fixed the neighbouring half: the serve loop now holds the control port
-			// open until this reply is written, so the answer does reach the host. That is why
-			// the failure changed shape from a lost reply into a delivered error -- and why the
-			// fix belongs here rather than in the channel. The reply was never the problem; the
-			// command underneath it was.
-			// ⚠️ AND THE COMMAND'S EXIT STATUS IS STILL NOT THE ANSWER. Detaching the context
-			// stopped US killing the child; it does not stop SYSTEMD killing it. The unit's
-			// default KillMode is control-group, so the shutdown this verb starts SIGTERMs
-			// every process in the agent's cgroup -- `systemctl` included -- and the error
-			// changes shape again, from `context canceled` to `signal: terminated`. Measured on
-			// run 33978948462, one sample in four on an idle L0: the host read a request that
-			// had WORKED as a refusal and reached for the ACPI button, which is [B.85] going
-			// red for the third distinct reason.
-			//
-			// So stop inferring the outcome from how the command died and ASK THE MANAGER. Being
-			// signalled is not evidence the job was enqueued -- `--no-block` returns once systemd
-			// has accepted it, and a SIGTERM landing before that would have us report a shutdown
-			// that never started. `is-system-running` reporting `stopping` IS that evidence, and
-			// it is the same fact the verb claims to have caused, observed rather than guessed.
-			//
-			// The exit status is consulted first and only as a fast path: a command that returned
-			// cleanly needs no second question. Every non-`stopping` outcome keeps its ORIGINAL
-			// error, so a genuine refusal still reaches the host with the text that says why, and
-			// the host still escalates. What this removes is the false negative, not the alarm.
-			pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PowerOffGrace)
-			defer cancel()
-			perr := runIn(pctx, "systemctl", "poweroff", "--no-block")
-			if perr == nil || systemStopping(pctx, x) {
-				return nil, nil
-			}
-			return nil, perr
+		case guestfirmware.VerbOSPowerOff:
+			// The FIRST-CHOICE clean shutdown, and the FIRMWARE's ([B.139]): the host may have
+			// to stop a guest it has never dressed, so the verb lives with the half the image
+			// bakes. Everything the answer turns on -- why it is detached from the dispatch
+			// context, and why the command's exit status is not the answer -- is at
+			// guestfirmware.PowerOff.
+			return nil, guestfirmware.PowerOff(ctx, x)
 		case verbResources:
 			var req resourcesRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -1713,7 +1573,7 @@ func dispatch(x Executor) dispatchFunc {
 
 // Serve runs the guest dispatch loop over conn until it closes or ctx is done.
 func Serve(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
-	return serve(ctx, conn, dispatch(x))
+	return guestfirmware.ServeFrames(ctx, conn, dispatch(x))
 }
 
 // ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every
@@ -1735,7 +1595,7 @@ func ServeStamped(ctx context.Context, conn io.ReadWriteCloser, x Executor) erro
 		touchStamp(ContactStampPath) // the host agent just talked to us — freshen the deadman's stamp
 		return d(ctx, verb, payload)
 	}
-	return serve(ctx, conn, hooked)
+	return guestfirmware.ServeFrames(ctx, conn, hooked)
 }
 
 // touchStamp bumps path's mtime to now (creating it, and its dir, if absent). Best-effort: a
@@ -1780,7 +1640,7 @@ const deadmanStatePath = "/var/lib/briard-deadman/episode.json"
 // host its guard, while exiting here would cost the node its reflex entirely.
 func RunDeadman(ctx context.Context) error {
 	node, _ := os.Hostname()
-	x := NewOSExecutor()
+	x := guestfirmware.NewOSExecutor()
 	gate := &deadman.Gate{
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, "briard-deadman: "+f+"\n", a...) },
 	}
@@ -2269,7 +2129,7 @@ func snapshotReq(payload json.RawMessage) (snapshotRequest, error) {
 
 // Client is the host end: typed calls to the guest agent over the channel.
 type Client struct {
-	c       *conn
+	c       *guestfirmware.Conn
 	version int             // negotiated guest protocol version (0 until Handshake)
 	caps    map[string]bool // verbs the guest advertised (nil until Handshake)
 	bootID  string          // which BOOT of the guest answered (empty until Handshake, or from a guest too old to say)
@@ -2277,7 +2137,7 @@ type Client struct {
 }
 
 // NewClient wraps a connection to the guest (virtio-serial in prod, net.Pipe in tests).
-func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: newConn(rw)} }
+func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: guestfirmware.NewConn(rw)} }
 
 // Handshake negotiates the host<->guest protocol: it reads the guest's version +
 // capabilities and refuses a guest the host can't drive (version outside
@@ -2285,16 +2145,16 @@ func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: newConn(rw)} }
 // fails rather than the host sending verbs a skewed guest might misinterpret. On success
 // the version + capabilities are recorded (see ProtocolVersion / Supports). The host
 // should call this once, right after connecting (and after any reconnect).
-func (g *Client) Handshake(ctx context.Context) (api.GuestHello, error) {
-	var h api.GuestHello
+func (g *Client) Handshake(ctx context.Context) (guestfirmware.Hello, error) {
+	var h guestfirmware.Hello
 	// Resync=true: on a reconnect, a stale in-flight reply from the dropped session can sit
 	// ahead of ours in the still-open virtio-serial stream -- skip it, don't fail.
-	if err := g.c.callResync(ctx, verbHello, nil, &h, true); err != nil {
+	if err := g.c.CallResync(ctx, guestfirmware.VerbHello, nil, &h, true); err != nil {
 		return h, fmt.Errorf("guestagent: handshake: %w", err)
 	}
 	if !compatibleGuest(h.Version) {
 		return h, fmt.Errorf("guestagent: incompatible guest protocol v%d (host drives v%d..v%d)",
-			h.Version, api.MinGuestProtocol, api.GuestProtocol)
+			h.Version, guestfirmware.MinGuestProtocol, guestfirmware.GuestProtocol)
 	}
 	g.version = h.Version
 	g.bootID = h.BootID
@@ -2309,7 +2169,7 @@ func (g *Client) Handshake(ctx context.Context) (api.GuestHello, error) {
 // compatibleGuest reports whether the host can drive a guest speaking protocol v. Newer
 // than the host knows, or older than it still supports, is refused.
 func compatibleGuest(v int) bool {
-	return v >= api.MinGuestProtocol && v <= api.GuestProtocol
+	return v >= guestfirmware.MinGuestProtocol && v <= guestfirmware.GuestProtocol
 }
 
 // Supports reports whether the guest advertised verb in its handshake. Before a handshake
@@ -2333,7 +2193,7 @@ func (g *Client) BootID() string { return g.bootID }
 // SetHostname renames the guest to this node's name so DRBD's `on <name>` matching
 // works (see verbSetHostname). Idempotent.
 func (g *Client) SetHostname(ctx context.Context, name string) error {
-	return g.c.call(ctx, verbSetHostname, hostnameRequest{Name: name}, nil)
+	return g.c.Call(ctx, verbSetHostname, hostnameRequest{Name: name}, nil)
 }
 
 // ConfigureNet sets a static CIDR on a guest NIC (the system/DRBD NIC) and brings
@@ -2342,7 +2202,7 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 // "" leaves the guest's baked default. vipAddr does the same for the address itself, in
 // CIDR form -- the LAN decides it, so it cannot be baked. Idempotent.
 func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
-	return g.c.call(ctx, verbNetConfigure, netConfigureRequest{
+	return g.c.Call(ctx, verbNetConfigure, netConfigureRequest{
 		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
 		PrivDev: n.PrivDev, PrivCIDR: n.PrivCIDR,
 		PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
@@ -2356,7 +2216,7 @@ func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 // nothing. Idempotent, and deliberately independent of ConfigureNet -- a rename must never be an
 // addressing call.
 func (g *Client) SetMDNSName(ctx context.Context, name string) error {
-	return g.c.call(ctx, verbNetMDNSName, mdnsNameRequest{Name: name}, nil)
+	return g.c.Call(ctx, verbNetMDNSName, mdnsNameRequest{Name: name}, nil)
 }
 
 // MDNSPublished reports the name avahi actually established, bare and without the `.local`
@@ -2367,7 +2227,7 @@ func (g *Client) SetMDNSName(ctx context.Context, name string) error {
 // depends on who probed first. See verbNetMDNSPublished.
 func (g *Client) MDNSPublished(ctx context.Context) (string, error) {
 	var name string
-	if err := g.c.call(ctx, verbNetMDNSPublished, struct{}{}, &name); err != nil {
+	if err := g.c.Call(ctx, verbNetMDNSPublished, struct{}{}, &name); err != nil {
 		return "", err
 	}
 	return name, nil
@@ -2379,7 +2239,7 @@ func (g *Client) MDNSPublished(ctx context.Context) (string, error) {
 // because the host asks every cycle and a Secondary answering "" is the normal case, not a fault.
 func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
 	var cidr string
-	if err := g.c.call(ctx, verbNetVIP, netVIPRequest{Dev: dev}, &cidr); err != nil {
+	if err := g.c.Call(ctx, verbNetVIP, netVIPRequest{Dev: dev}, &cidr); err != nil {
 		return "", err
 	}
 	return cidr, nil
@@ -2391,13 +2251,13 @@ func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
 // persisted replica). ReactorConfig is dropped regardless (idempotent).
 func (g *Client) Provision(ctx context.Context, req ProvisionRequest) (ProvisionResult, error) {
 	var res ProvisionResult
-	err := g.c.call(ctx, verbProvision, req, &res)
+	err := g.c.Call(ctx, verbProvision, req, &res)
 	return res, err
 }
 
 // Up starts drbd@<res>.target (attach + connect; leaves the node Secondary).
 func (g *Client) Up(ctx context.Context, resource string) error {
-	return g.c.call(ctx, verbUp, resourceRequest{Resource: resource}, nil)
+	return g.c.Call(ctx, verbUp, resourceRequest{Resource: resource}, nil)
 }
 
 // Adjust rewrites the resource config and runs `drbdadm adjust` -- apply a peer-set change to the
@@ -2405,18 +2265,18 @@ func (g *Client) Up(ctx context.Context, resource string) error {
 // primary to add a joining anchor/witness; the joining nodes come up via Provision+Up
 // (FreshInit=false) and resync. No create-md here, so the primary's disk is never touched.
 func (g *Client) Adjust(ctx context.Context, req ProvisionRequest) error {
-	return g.c.call(ctx, verbAdjust, req, nil)
+	return g.c.Call(ctx, verbAdjust, req, nil)
 }
 
 // InitUpToDate declares a brand-new resource's data current (skips the initial
 // sync). One-time, first-init only -- never on an existing resource.
 func (g *Client) InitUpToDate(ctx context.Context, resource string) error {
-	return g.c.call(ctx, verbInitUUID, resourceRequest{Resource: resource}, nil)
+	return g.c.Call(ctx, verbInitUUID, resourceRequest{Resource: resource}, nil)
 }
 
 // ReactorStart starts drbd-reactor, which then drives promotion (not us).
 func (g *Client) ReactorStart(ctx context.Context, resource string) error {
-	return g.c.call(ctx, verbReactor, resourceRequest{Resource: resource}, nil)
+	return g.c.Call(ctx, verbReactor, resourceRequest{Resource: resource}, nil)
 }
 
 // Status reads the guest's DRBD/quorum ground truth into a QuorumState — the
@@ -2431,20 +2291,20 @@ func (g *Client) Status(ctx context.Context, resource string) (model.QuorumState
 // Stays home — the peer half never rides the cloud wire.
 func (g *Client) Cluster(ctx context.Context, resource string) (model.Cluster, error) {
 	var c model.Cluster
-	err := g.c.call(ctx, verbStatus, resourceRequest{Resource: resource}, &c)
+	err := g.c.Call(ctx, verbStatus, resourceRequest{Resource: resource}, &c)
 	return c, err
 }
 
 // ServiceStart starts the service's systemd unit inside the guest.
 func (g *Client) ServiceStart(ctx context.Context, unit string) error {
-	return g.c.call(ctx, verbServiceStart, unitRequest{Unit: unit}, nil)
+	return g.c.Call(ctx, verbServiceStart, unitRequest{Unit: unit}, nil)
 }
 
 // ServiceRender writes the host-rendered quadlet source into the guest's /run and reloads
 // systemd, so the generated units exist. Node-local: run this on EVERY node, or a
 // survivor has nothing to start. Stale names the outgoing service's files, removed first.
 func (g *Client) ServiceRender(ctx context.Context, files map[string]string, stale []string) error {
-	return g.c.call(ctx, verbServiceRender, serviceRenderRequest{Files: files, Stale: stale}, nil)
+	return g.c.Call(ctx, verbServiceRender, serviceRenderRequest{Files: files, Stale: stale}, nil)
 }
 
 // ServiceProvision creates the service's data subvolume + per-container subdirectories and
@@ -2452,14 +2312,14 @@ func (g *Client) ServiceRender(ctx context.Context, files map[string]string, sta
 // Idempotent: an existing subvolume is reused, never re-created, so a re-install keeps the data.
 func (g *Client) ServiceProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error {
 	req := serviceProvisionRequest{Name: name, DataDir: dataDir, Subdirs: subdirs, Manifest: manifest}
-	return g.c.call(ctx, verbServiceProvision, req, nil)
+	return g.c.Call(ctx, verbServiceProvision, req, nil)
 }
 
 // ServiceWarm ensures `ref` is present in the guest's image store, starting `unit` (its .image
 // warm unit) ONLY if it is missing. The distinction is the whole point: starting the unit is a
 // registry pull, so an unconditional warm makes every path that calls it require WAN.
 func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
-	return g.c.call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
+	return g.c.Call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
 }
 
 // HassReadiness samples Home Assistant's per-config-entry setup states from inside the guest --
@@ -2473,7 +2333,7 @@ func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
 // it then ignored would be the same lie the verb's old name told.
 func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, error) {
 	var out []hass.Entry
-	err := g.c.call(ctx, verbHassReadiness, hassReadinessRequest{Port: port}, &out)
+	err := g.c.Call(ctx, verbHassReadiness, hassReadinessRequest{Port: port}, &out)
 	return out, err
 }
 
@@ -2489,7 +2349,7 @@ func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, err
 // before this verb -- Home Assistant picks the change up at its next start.
 func (g *Client) HassNudge(ctx context.Context) (bool, error) {
 	var told bool
-	err := g.c.call(ctx, verbHassNudge, nil, &told)
+	err := g.c.Call(ctx, verbHassNudge, nil, &told)
 	return told, err
 }
 
@@ -2497,7 +2357,7 @@ func (g *Client) HassNudge(ctx context.Context) (bool, error) {
 // with what the host knows about the OS account ([V3b.31b]). The guest writes it 0600 on tmpfs;
 // the dashboard consumes it once.
 func (g *Client) DashboardHandoff(ctx context.Context, h dashboard.Handoff) error {
-	return g.c.call(ctx, verbDashboardHandoff, h, nil)
+	return g.c.Call(ctx, verbDashboardHandoff, h, nil)
 }
 
 // MosquittoProbe stores `token` in the broker's own retained state (when one is given) and returns
@@ -2508,7 +2368,7 @@ func (g *Client) DashboardHandoff(ctx context.Context, h dashboard.Handoff) erro
 // exactly what the gate is asked to notice. Errors here are the probe itself failing.
 func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error) {
 	var out mosquitto.Sample
-	err := g.c.call(ctx, verbMosquittoProbe, mosquittoProbeRequest{Token: token}, &out)
+	err := g.c.Call(ctx, verbMosquittoProbe, mosquittoProbeRequest{Token: token}, &out)
 	return out, err
 }
 
@@ -2527,7 +2387,7 @@ func (g *Client) ServiceConverge(ctx context.Context) ([]string, error) {
 	var skipped []string
 	// A guest built before converge reported anything answers with no value at all, which decodes
 	// to an empty list -- correctly, since such a guest also has nothing that can be skipped.
-	err := g.c.call(ctx, verbServiceConverge, nil, &skipped)
+	err := g.c.Call(ctx, verbServiceConverge, nil, &skipped)
 	return skipped, err
 }
 
@@ -2538,7 +2398,7 @@ func (g *Client) SupportsServiceConverge() bool { return g.Supports(verbServiceC
 // install must do, because under converge the volume is what every future promotion renders from.
 // Idempotent: an absent manifest is the end state this asks for.
 func (g *Client) ServiceForget(ctx context.Context, name string) error {
-	return g.c.call(ctx, verbServiceForget, serviceInstalledRequest{Name: name}, nil)
+	return g.c.Call(ctx, verbServiceForget, serviceInstalledRequest{Name: name}, nil)
 }
 
 // ServiceInstalled reads the manifest recorded on the replicated volume for ONE service, or ""
@@ -2571,12 +2431,12 @@ type storageFreeReply struct {
 // ServicePulling records a service install's pull for the dashboard -- the manifest's sizes,
 // written before the first byte moves ([V3b.31j]).
 func (g *Client) ServicePulling(ctx context.Context, service string, size, installed int64) error {
-	return g.c.call(ctx, verbServicePulling, servicePullingRequest{Service: service, Size: size, InstalledSize: installed}, nil)
+	return g.c.Call(ctx, verbServicePulling, servicePullingRequest{Service: service, Size: size, InstalledSize: installed}, nil)
 }
 
 // ServicePulled clears that record: the image is present (or the pull is over either way).
 func (g *Client) ServicePulled(ctx context.Context, service string) error {
-	return g.c.call(ctx, verbServicePulling, servicePullingRequest{Service: service, Done: true}, nil)
+	return g.c.Call(ctx, verbServicePulling, servicePullingRequest{Service: service, Done: true}, nil)
 }
 
 // SupportsServicePulling reports whether the guest keeps the pull record; an older guest shows
@@ -2586,7 +2446,7 @@ func (g *Client) SupportsServicePulling() bool { return g.Supports(verbServicePu
 // StorageFree reports the image store's filesystem: free and total bytes ([V3b.31j]).
 func (g *Client) StorageFree(ctx context.Context) (free, total int64, err error) {
 	var r storageFreeReply
-	if err := g.c.call(ctx, verbStorageFree, struct{}{}, &r); err != nil {
+	if err := g.c.Call(ctx, verbStorageFree, struct{}{}, &r); err != nil {
 		return 0, 0, err
 	}
 	return r.Free, r.Total, nil
@@ -2597,7 +2457,7 @@ func (g *Client) SupportsStorageFree() bool { return g.Supports(verbStorageFree)
 
 func (g *Client) ServiceInstalled(ctx context.Context, name string) (string, error) {
 	var s string
-	err := g.c.call(ctx, verbServiceInstalled, serviceInstalledRequest{Name: name}, &s)
+	err := g.c.Call(ctx, verbServiceInstalled, serviceInstalledRequest{Name: name}, &s)
 	return s, err
 }
 
@@ -2612,7 +2472,7 @@ func (g *Client) SupportsServiceInstalled() bool { return g.Supports(verbService
 // the volume at promotion, so on a survivor the volume is the only place the truth exists.
 func (g *Client) ServiceList(ctx context.Context) ([]string, error) {
 	var names []string
-	err := g.c.call(ctx, verbServiceList, nil, &names)
+	err := g.c.Call(ctx, verbServiceList, nil, &names)
 	return names, err
 }
 
@@ -2639,7 +2499,7 @@ func (g *Client) Resources(ctx context.Context, services map[string]string, data
 	for _, name := range names {
 		req.Services = append(req.Services, resourceService{Name: name, Unit: services[name]})
 	}
-	err := g.c.call(ctx, verbResources, req, &r)
+	err := g.c.Call(ctx, verbResources, req, &r)
 	return r, err
 }
 
@@ -2647,32 +2507,32 @@ func (g *Client) Resources(ctx context.Context, services map[string]string, data
 // hot-reloads it -- so a cloud-scheduled renewal is applied with no restart. Replicated +
 // synced, so a failover serves the same cert.
 func (g *Client) WriteCert(ctx context.Context, cert, key string) error {
-	return g.c.call(ctx, verbCertWrite, certWriteRequest{Cert: cert, Key: key}, nil)
+	return g.c.Call(ctx, verbCertWrite, certWriteRequest{Cert: cert, Key: key}, nil)
 }
 
 // BackupSave has the guest seal the home's sacred config (base/includes) to an
 // encrypted blob at dest, using the household's age public recipient. The guest
 // does the tar+encrypt locally and writes the blob itself — no bulk over the channel.
 func (g *Client) BackupSave(ctx context.Context, base string, includes []string, recipient, dest string) error {
-	return g.c.call(ctx, verbBackupSave, backupSaveRequest{Base: base, Includes: includes, Recipient: recipient, Dest: dest}, nil)
+	return g.c.Call(ctx, verbBackupSave, backupSaveRequest{Base: base, Includes: includes, Recipient: recipient, Dest: dest}, nil)
 }
 
 // BackupRestore has the guest decrypt the blob at src with the household identity and
 // extract it into base. A recovery op; the caller supplies the private key.
 func (g *Client) BackupRestore(ctx context.Context, base, src, identity string) error {
-	return g.c.call(ctx, verbBackupRestore, backupRestoreRequest{Base: base, Src: src, Identity: identity}, nil)
+	return g.c.Call(ctx, verbBackupRestore, backupRestoreRequest{Base: base, Src: src, Identity: identity}, nil)
 }
 
 // ServiceStop stops the service's unit -- the quiesce step before a snapshot.
 func (g *Client) ServiceStop(ctx context.Context, unit string) error {
-	return g.c.call(ctx, verbServiceStop, unitRequest{Unit: unit}, nil)
+	return g.c.Call(ctx, verbServiceStop, unitRequest{Unit: unit}, nil)
 }
 
 // ServiceActive reports whether the service's unit is active (the Running half of the
 // health-gate; readiness is probed host-side against the service's health endpoint).
 func (g *Client) ServiceActive(ctx context.Context, unit string) (bool, error) {
 	var active bool
-	err := g.c.call(ctx, verbServiceActive, unitRequest{Unit: unit}, &active)
+	err := g.c.Call(ctx, verbServiceActive, unitRequest{Unit: unit}, &active)
 	return active, err
 }
 
@@ -2683,7 +2543,7 @@ func (g *Client) ServiceActive(ctx context.Context, unit string) (bool, error) {
 // returns an error (an unknown-verb error from a guest built before this verb existed).
 func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 	var ok bool
-	err := g.c.call(ctx, verbServiceHealth, healthRequest{URL: url}, &ok)
+	err := g.c.Call(ctx, verbServiceHealth, healthRequest{URL: url}, &ok)
 	return ok, err
 }
 
@@ -2699,7 +2559,7 @@ func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 // "it is broken" by a gate that reverts installs.
 func (g *Client) ServiceHealthOf(ctx context.Context, service string) (bool, error) {
 	var ok bool
-	err := g.c.call(ctx, verbServiceHealthOf, serviceRequest{Service: service}, &ok)
+	err := g.c.Call(ctx, verbServiceHealthOf, serviceRequest{Service: service}, &ok)
 	return ok, err
 }
 
@@ -2709,20 +2569,20 @@ func (g *Client) ServiceHealthOf(ctx context.Context, service string) (bool, err
 // bouncing it (the contract's no-restart check).
 func (g *Client) ServiceActiveSince(ctx context.Context, unit string) (uint64, error) {
 	var usec uint64
-	err := g.c.call(ctx, verbServiceSince, unitRequest{Unit: unit}, &usec)
+	err := g.c.Call(ctx, verbServiceSince, unitRequest{Unit: unit}, &usec)
 	return usec, err
 }
 
 // Snapshot takes a read-only btrfs snapshot of dataDir at dest (a subvolume on the
 // same DRBD volume, so it replicates with it).
 func (g *Client) Snapshot(ctx context.Context, dataDir, dest string) error {
-	return g.c.call(ctx, verbDataSnapshot, snapshotRequest{DataDir: dataDir, Path: dest}, nil)
+	return g.c.Call(ctx, verbDataSnapshot, snapshotRequest{DataDir: dataDir, Path: dest}, nil)
 }
 
 // Restore replaces the live dataDir subvolume with a fresh rw snapshot of src. The
 // caller must have stopped the service first (bind released).
 func (g *Client) Restore(ctx context.Context, dataDir, src string) error {
-	return g.c.call(ctx, verbDataRestore, snapshotRequest{DataDir: dataDir, Path: src}, nil)
+	return g.c.Call(ctx, verbDataRestore, snapshotRequest{DataDir: dataDir, Path: src}, nil)
 }
 
 // SystemPath reads the guest's current system closure store path -- the code identity
@@ -2730,7 +2590,7 @@ func (g *Client) Restore(ctx context.Context, dataDir, src string) error {
 // data roll back together.
 func (g *Client) SystemPath(ctx context.Context) (string, error) {
 	var path string
-	err := g.c.call(ctx, verbOSSystem, nil, &path)
+	err := g.c.Call(ctx, verbOSSystem, nil, &path)
 	return path, err
 }
 
@@ -2744,14 +2604,14 @@ func (g *Client) SystemPath(ctx context.Context) (string, error) {
 // being subscribed to a virtual button. Keep both -- this one needs a live agent, and the
 // ACPI one is what remains when the agent is the thing that died.
 func (g *Client) PowerOff(ctx context.Context) error {
-	return g.c.call(ctx, verbOSPowerOff, nil, nil)
+	return g.c.Call(ctx, guestfirmware.VerbOSPowerOff, nil, nil)
 }
 
 // ReactorPause suspends drbd-reactor's promoter for a snippet (maintenance mode):
 // the resource stays Primary and its services keep running, but the promoter stops
 // reacting -- so a planned service stop isn't mistaken for a failure.
 func (g *Client) ReactorPause(ctx context.Context, snippet string) error {
-	return g.c.call(ctx, verbReactorPause, reactorRequest{Snippet: snippet}, nil)
+	return g.c.Call(ctx, verbReactorPause, reactorRequest{Snippet: snippet}, nil)
 }
 
 // ReactorEvict hands this node's work to a peer -- a PLANNED handover, the thing an upgrade
@@ -2760,7 +2620,7 @@ func (g *Client) ReactorPause(ctx context.Context, snippet string) error {
 // nothing. It reports only that the eviction RAN: which peer took over is drbd-reactor's
 // election, so a caller that cares must read the roles afterwards.
 func (g *Client) ReactorEvict(ctx context.Context, keepMasked, unmask bool) error {
-	return g.c.call(ctx, verbReactorEvict, evictRequest{KeepMasked: keepMasked, Unmask: unmask}, nil)
+	return g.c.Call(ctx, verbReactorEvict, evictRequest{KeepMasked: keepMasked, Unmask: unmask}, nil)
 }
 
 // ReactorActive reports whether the promoter daemon is running — false meaning someone has it
@@ -2769,7 +2629,7 @@ func (g *Client) ReactorEvict(ctx context.Context, keepMasked, unmask bool) erro
 // construction, since a pause can still land between this answer and the caller's own.
 func (g *Client) ReactorActive(ctx context.Context) (bool, error) {
 	var active bool
-	err := g.c.call(ctx, verbReactorActive, struct{}{}, &active)
+	err := g.c.Call(ctx, verbReactorActive, struct{}{}, &active)
 	return active, err
 }
 
@@ -2778,14 +2638,14 @@ func (g *Client) ReactorActive(ctx context.Context) (bool, error) {
 // "skipped: ..." on a node with nothing mounted — a Secondary answering honestly, not failing).
 func (g *Client) FsSync(ctx context.Context) (string, error) {
 	var detail string
-	err := g.c.call(ctx, verbFsSync, struct{}{}, &detail)
+	err := g.c.Call(ctx, verbFsSync, struct{}{}, &detail)
 	return detail, err
 }
 
 // ReactorResume re-adopts the promoter (drbd-reactor enable); it re-runs the initial
 // target start, which is a no-op on an already-Primary node with services up.
 func (g *Client) ReactorResume(ctx context.Context, snippet string) error {
-	return g.c.call(ctx, verbReactorResume, reactorRequest{Snippet: snippet}, nil)
+	return g.c.Call(ctx, verbReactorResume, reactorRequest{Snippet: snippet}, nil)
 }
 
 // BringUpSpec is one DRBD resource to bring up on this node.
@@ -2925,7 +2785,7 @@ func (g *Client) waitStatus(ctx context.Context, resource string, interval time.
 }
 
 // Close closes the underlying channel.
-func (g *Client) Close() error { return g.c.close() }
+func (g *Client) Close() error { return g.c.Close() }
 
 // BringUpGuest is the host-side entry point once the guest VM is running: dial its
 // control socket (the virtio-serial chardev's host end), bring the resource up, and
@@ -2941,27 +2801,4 @@ func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 		return err
 	}
 	return g.WaitPrimary(ctx, spec.Resource.Name, DefaultPollInterval)
-}
-
-// osExecutor is the real guest Executor: shell out + write files.
-type osExecutor struct{}
-
-// NewOSExecutor returns the production Executor used by `briard-guest-agent run --guest`.
-func NewOSExecutor() Executor { return osExecutor{} }
-
-func (osExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
-}
-
-func (osExecutor) WriteFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
-}
-
-func (osExecutor) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
-
-func (osExecutor) Sethostname(name string) error {
-	return setHostname(name)
 }

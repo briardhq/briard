@@ -170,12 +170,13 @@ let
   guestDisk = (import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay; agentVersion = guestVersion; }) // { inputs = guestInputs; };
 
   driverPkg = pkgs.callPackage ./driver/package.nix { };
-  agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + run --guest)
+  agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (the host agent)
   # THE GUEST BUNDLE ([B.86j]): every briard binary the guest runs, built with the HOST release's
   # version because it ships in the host chain and is pushed by the host at every bring-up. The
-  # image bakes ONE firmware copy, the guest agent ([B.138]: it receives the first push); the door
-  # and the dashboard exist in the guest only once pushed. One directory, `bin/<name>`, the names
-  # the guest's pivot and the push verbs agree on (agent/guestagent/bin.go BinNames).
+  # image bakes ONE binary, briard-guest-firmware ([B.139]: the push protocol alone, which is what
+  # receives the first push); the AGENT, the door and the dashboard exist in the guest only once
+  # pushed. One directory, `bin/<name>`, the names the guest's pivot and the push verbs agree on
+  # (agent/guestfirmware/bin.go BinNames).
   guestAgentPkg = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; version = agentVersion; };
   guestBundle = pkgs.runCommand "briard-guest-bundle-${agentVersion}" { } ''
     mkdir -p $out/bin
@@ -242,7 +243,7 @@ let
     };
   };
   agentDeadman = import ./agent-deadman.nix {
-    inherit pkgs netWrap;
+    inherit pkgs netWrap dressBase;
     agent = agentPkg;
     guestDisk = deadmanGuestDisk;
   };

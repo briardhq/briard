@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/internal/testsock"
-	"briard.io/shared/api"
 	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
 )
@@ -290,11 +290,11 @@ func TestHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Version != api.GuestProtocol {
-		t.Errorf("version = %d, want %d", h.Version, api.GuestProtocol)
+	if h.Version != guestfirmware.GuestProtocol {
+		t.Errorf("version = %d, want %d", h.Version, guestfirmware.GuestProtocol)
 	}
-	if g.ProtocolVersion() != api.GuestProtocol {
-		t.Errorf("ProtocolVersion = %d, want %d", g.ProtocolVersion(), api.GuestProtocol)
+	if g.ProtocolVersion() != guestfirmware.GuestProtocol {
+		t.Errorf("ProtocolVersion = %d, want %d", g.ProtocolVersion(), guestfirmware.GuestProtocol)
 	}
 	if !g.Supports(verbOSSystem) {
 		t.Error("guest should advertise os.switch after the handshake")
@@ -304,37 +304,8 @@ func TestHandshake(t *testing.T) {
 	}
 }
 
-// On a reconnect the still-open virtio-serial stream can carry a stale in-flight reply
-// from the *dropped* session ahead of the handshake reply (QEMU keeps the guest port open
-// across a host re-dial). Handshake must resync past such stale frames, not fail on
-// the id mismatch -- otherwise a reconnect never recovers (the observed agent-bringup
-// freeze/thaw failure).
-func TestHandshakeResyncsPastStaleFrame(t *testing.T) {
-	cc, sc := net.Pipe()
-	g := NewClient(cc)
-	t.Cleanup(func() { g.Close() })
-	go func() {
-		var req request
-		if err := readFrame(sc, &req); err != nil { // read the verbHello request
-			return
-		}
-		// A leftover reply from the previous session (an unrelated id), THEN the real
-		// handshake reply. The host must skip the first and match the second.
-		hello, _ := json.Marshal(api.GuestHello{Version: api.GuestProtocol, Capabilities: []string{verbHello}})
-		_ = writeFrame(sc, response{ID: req.ID + 42, Payload: json.RawMessage(`"stale reply from a dropped session"`)})
-		_ = writeFrame(sc, response{ID: req.ID, Payload: hello})
-	}()
-	h, err := g.Handshake(context.Background())
-	if err != nil {
-		t.Fatalf("Handshake must resync past a stale frame, got: %v", err)
-	}
-	if h.Version != api.GuestProtocol {
-		t.Errorf("version = %d, want %d (resynced to the real reply)", h.Version, api.GuestProtocol)
-	}
-}
-
 // The successor of an agent that died MID-CALL re-attaches to the same channel with the
-// dead session's reply still in it, and the resync above separates the two sessions BY
+// dead session's reply still in it, and guestfirmware's resync separates the two sessions BY
 // ID -- so the frame that decides it is the one every session has in common: the reply
 // to its first request, the hello. Two real sessions over one BUFFERED stream, which is
 // what QEMU's chardev is (the guest port stays open, so bytes outlive the host process
@@ -342,12 +313,12 @@ func TestHandshakeResyncsPastStaleFrame(t *testing.T) {
 func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 	host, guest := socketPair(t)
 	taken := make(chan struct{}, 2) // buffered: session 2's signal is never read
-	go serve(context.Background(), guest, func(_ context.Context, verb string, _ json.RawMessage) (any, error) {
-		if verb != verbHello {
+	go guestfirmware.ServeFrames(context.Background(), guest, func(_ context.Context, verb string, _ json.RawMessage) (any, error) {
+		if verb != guestfirmware.VerbHello {
 			return nil, nil
 		}
 		taken <- struct{}{} // the request is read; its reply is written next
-		return api.GuestHello{Version: api.GuestProtocol, Capabilities: []string{verbHello, verbUp}}, nil
+		return guestfirmware.Hello{Version: guestfirmware.GuestProtocol, Capabilities: []string{guestfirmware.VerbHello, verbUp}}, nil
 	})
 
 	// Session 1 dies with its hello on the wire: the guest answers into a stream nobody
@@ -422,13 +393,13 @@ func TestSupportsBeforeHandshakeIsOptimistic(t *testing.T) {
 // The version gate refuses a guest newer than the host knows or older than it supports --
 // a safe deferral rather than driving a skewed guest.
 func TestCompatibleGuest(t *testing.T) {
-	if !compatibleGuest(api.GuestProtocol) {
+	if !compatibleGuest(guestfirmware.GuestProtocol) {
 		t.Error("the current protocol must be compatible")
 	}
-	if compatibleGuest(api.GuestProtocol + 1) {
+	if compatibleGuest(guestfirmware.GuestProtocol + 1) {
 		t.Error("a guest newer than the host must be refused")
 	}
-	if compatibleGuest(api.MinGuestProtocol - 1) {
+	if compatibleGuest(guestfirmware.MinGuestProtocol - 1) {
 		t.Error("a guest older than the host's minimum must be refused")
 	}
 }
@@ -1418,7 +1389,7 @@ func TestFirstCIDRParsesOnlyInet(t *testing.T) {
 // handshake has to carry it end to end -- read in the guest, over the wire, onto the Client
 // ([B.102]).
 func TestHandshakeReportsBootID(t *testing.T) {
-	f := &fakeExec{files: map[string]string{bootIDPath: "0f9c2b1e-3d4a-4c5b-8e7f-1a2b3c4d5e6f\n"}}
+	f := &fakeExec{files: map[string]string{"/proc/sys/kernel/random/boot_id": "0f9c2b1e-3d4a-4c5b-8e7f-1a2b3c4d5e6f\n"}}
 	g := dial(t, f)
 	h, err := g.Handshake(context.Background())
 	if err != nil {
@@ -1446,8 +1417,8 @@ func TestHandshakeWithoutBootIDStillSucceeds(t *testing.T) {
 	if h.BootID != "" || g.BootID() != "" {
 		t.Errorf("boot id = %q/%q, want empty", h.BootID, g.BootID())
 	}
-	if h.Version != api.GuestProtocol {
-		t.Errorf("version = %d, want %d", h.Version, api.GuestProtocol)
+	if h.Version != guestfirmware.GuestProtocol {
+		t.Errorf("version = %d, want %d", h.Version, guestfirmware.GuestProtocol)
 	}
 }
 

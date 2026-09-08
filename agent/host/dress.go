@@ -9,18 +9,21 @@ import (
 	"time"
 
 	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/notify"
 )
 
-// DRESSING THE GUEST ([B.86j], re-cut by [B.138]). Every briard binary the guest runs rides the
-// HOST bundle: the committed tree at <base>/guest -> guest-<release>/bin/{briard-dashboard,
-// briard-reverse-proxy,briard-guest-agent}. The image bakes ONE firmware binary, the guest agent
-// (what receives the first push); the guest's overlay is disposable, so every launch starts as
-// firmware with no door at all; the host compares the bundle the guest reports in its handshake
-// with the tree it holds and pushes when they differ -- at bring-up (BEFORE rejoin, so nothing
-// can promote an undressed node), after a host commit, after any guest relaunch. A convergence
-// the committed agent performs, the same way it pushes the hostname and the addresses: not a
+// DRESSING THE GUEST ([B.86j], re-cut by [B.138] and [B.139]). Every briard binary the guest runs
+// rides the HOST bundle: the committed tree at <base>/guest ->
+// guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}. The image bakes
+// ONE binary, briard-guest-firmware -- the push protocol alone, which is what receives the first
+// push; the guest AGENT has no baked copy either. The guest's overlay is disposable, so every
+// launch starts as firmware with no door and no agent at all; the host compares the bundle the
+// guest reports in its handshake with the tree it holds and pushes when they differ -- at
+// bring-up (BEFORE rejoin, so nothing can promote an undressed node), after a host commit, after
+// any guest relaunch. A convergence
+// the committed HOST agent performs, the same way it pushes the hostname and the addresses: not a
 // third update mechanism.
 //
 // THE SET COMMITS AS ONE, OR NOT AT ALL (owner, 2026-09-08). The push is stage, prove, arm:
@@ -35,7 +38,7 @@ import (
 // A failed door has already reverted itself by its own auto-restart (flag consumed), one start
 // out of its budget -- a failed upgrade never demotes; the refused agent exits without opening
 // the port, the committed agent comes back, discards the staged set and puts both doors on the
-// committed files. (guest-image/pivot.nix, agent/guestagent/bin.go.)
+// committed files. (guest-image/pivot.nix, agent/guestfirmware/bin.go.)
 //
 // The host's own trial gate stays "the agent started"; a host update never waits for its guest
 // to be dressed ([V3.32]: a host update may be what fixes the guest). The host learns the outcome
@@ -136,7 +139,7 @@ func (cfg Config) dressGuest(ctx context.Context, g dresser, logf func(string, .
 		}
 	}
 	started := time.Now()
-	for _, name := range guestagent.BinNames {
+	for _, name := range guestfirmware.BinNames {
 		f, err := os.Open(filepath.Join(tree, "bin", name))
 		if err != nil {
 			logf("guest bundle: %s has no %s (%v); the guest stays on %s", want, name, err, orFirmware(have))
@@ -149,11 +152,11 @@ func (cfg Config) dressGuest(ctx context.Context, g dresser, logf func(string, .
 			return dressFailed
 		}
 	}
-	if err := g.BinTest(ctx, guestagent.BinNames); err != nil {
+	if err := g.BinTest(ctx, guestfirmware.BinNames); err != nil {
 		logf("guest bundle: PUSH REFUSED -- %s's set failed the guest's test launch (%v); nothing was armed, the guest stays on %s, and %s will not be pushed again", want, err, orFirmware(have), want)
 		return dressRefused
 	}
-	if err := g.BinActivate(ctx, want, guestagent.BinNames); err != nil {
+	if err := g.BinActivate(ctx, want, guestfirmware.BinNames); err != nil {
 		logf("guest bundle: activating %s failed (%v); the guest stays on %s", want, err, orFirmware(have))
 		return dressFailed
 	}

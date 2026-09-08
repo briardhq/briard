@@ -1139,11 +1139,12 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
 
-    # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ([B.86j], [B.138]) ------------------------------
+    # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ([B.86j], [B.138], [B.139]) ----------------------
     # Every briard binary the guest runs rides the host chain: install.sh laid guest-<V>/bin/ and
     # the `guest` link beside qemu's, and the FIRST bring-up dressed the guest -- the image booted
-    # on its firmware (the guest AGENT, the one binary it bakes; the door and the dashboard exist
-    # in the guest only once pushed), the host staged the release's set, PROVED each staged copy
+    # on its firmware -- briard-guest-firmware, the push protocol and the ONE binary the image
+    # bakes ([B.139]); the guest AGENT, the door and the dashboard exist in the guest only once
+    # pushed -- the host staged the release's set, PROVED each staged copy
     # with its own --test-launch, armed the set and restarted the agent, whose trial start is the
     # verdict on the doors -- and the next handshake reported the bundle.
     # Both host updates above carried the same bundle bytes, hash-skipped (`staged (agent, qemu)`,
@@ -1173,12 +1174,13 @@ pkgs.testers.runNixOSTest {
         print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=' | tail -12"))
         raise
     # ...and the pivot's own account agrees: every guest BOOT starts as firmware (the picker says
-    # `baked` once per boot for the AGENT, the only baked binary -- and this rig boots the guest
+    # `baked` once per boot for the agent's unit, and the baked path it names is
+    # briard-guest-firmware -- the only binary in the image ([B.139]) -- and this rig boots the guest
     # several times: the install, the cattle reinstall, the lease move), each of which the host
     # dressed from firmware exactly once, and each of which committed the whole set ONCE, naming
     # every binary in it. Within a boot every restart of the guest agent ran the committed pushed
     # binary, never the firmware. Read from the console, which holds every boot ([B.86g] appends).
-    boots = console_count("briard-bin-exec: briard-guest-agent: baked")
+    boots = console_count("briard-bin-exec: briard-guest-agent: baked .*briard-guest-firmware")
     firmware_dresses = int(host.succeed("journalctl -u briard-agent | grep -c 'guest bundle: the guest runs its firmware' || true").strip())
     pushed_starts = console_count("briard-bin-exec: briard-guest-agent: pushed")
     commits = console_count("briard-bin-commit: committed")
@@ -1196,7 +1198,7 @@ pkgs.testers.runNixOSTest {
         assert console_count(f"briard-bin-exec: {name}: baked") == 0, f"{name} ran a baked copy: the image is not supposed to have one"
         assert console_count(f"briard-bin-exec: {name}: NOT DRESSED YET") == 0, f"{name} started before the guest was dressed"
         assert console_count(f"briard-bin-exec: {name}: pushed") >= 1, f"{name} never ran a pushed copy"
-    print("the door and the dashboard ran only pushed copies -- the image bakes the guest agent alone")
+    print("the door and the dashboard ran only pushed copies -- the image bakes the firmware alone")
 
     # A GUEST RELAUNCH LANDS ON FIRMWARE AND IS DRESSED AGAIN: the overlay is disposable, so nothing
     # pushed survives it. STOPPED, not restarted: the host's recovery relaunches a stopped guest

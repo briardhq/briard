@@ -214,13 +214,20 @@ func TestNoDirectPromoteDemote(t *testing.T) {
 	}
 }
 
-// The guest image's input hash ([B.86i], flake.nix guestInputPackages) must cover every Go
-// package the guest binary (agent/cmd/briard-guest-agent) links, or an edit outside the list would ship a
-// changed guest binary under an unchanged inputs hash -- and `publish-release.sh stage` would
-// then REUSE the old image. `go list` is the truth; the flake carries a copy; this keeps them equal.
-func TestGuestInputsCoverTheGuestBinary(t *testing.T) {
+// THE FENCE THAT MAKES THE GUEST CHAIN STAND STILL ([B.86i], [B.139]). The guest image's input
+// hash (flake.nix guestInputPackages) must cover every Go package the FIRMWARE
+// (agent/cmd/briard-guest-firmware) links, or an edit outside the list would ship a changed baked
+// binary under an unchanged inputs hash -- and `publish-release.sh stage` would then REUSE the old
+// image. `go list` is the truth; the flake carries a copy; this keeps them equal, in both
+// directions: a package the firmware does not link must not be hashed either, or the chain churns
+// for nothing.
+//
+// And the firmware must not link agent/guestagent. That is the whole point of the split: the
+// agent is PUSHED, so an edit to it has no business rebuilding a 400 MB image. Listing it would
+// satisfy the equality above and lose the property, so it is refused by name.
+func TestGuestInputsCoverTheFirmware(t *testing.T) {
 	root := moduleRoot(t)
-	cmd := exec.Command("go", "list", "-deps", "./agent/cmd/briard-guest-agent")
+	cmd := exec.Command("go", "list", "-deps", "./agent/cmd/briard-guest-firmware")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
@@ -229,8 +236,8 @@ func TestGuestInputsCoverTheGuestBinary(t *testing.T) {
 	want := map[string]bool{}
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if rest, ok := strings.CutPrefix(l, "briard.io/"); ok {
-			if strings.HasPrefix(rest, "shared/") {
-				rest = "shared" // the flake hashes the whole shared/ tree
+			if rest == "agent/guestagent" || strings.HasPrefix(rest, "agent/guestagent/") {
+				t.Errorf("the firmware links %s -- the pushed agent is not the image's business ([B.139])", rest)
 			}
 			want[rest] = true
 		}
@@ -258,7 +265,7 @@ func TestGuestInputsCoverTheGuestBinary(t *testing.T) {
 			ok = ok || covers(h, p)
 		}
 		if !ok {
-			t.Errorf("guest binary links %s but flake.nix guestInputPackages does not hash it", p)
+			t.Errorf("the firmware links %s but flake.nix guestInputPackages does not hash it", p)
 		}
 	}
 	for h := range have {
@@ -267,7 +274,7 @@ func TestGuestInputsCoverTheGuestBinary(t *testing.T) {
 			ok = ok || covers(h, p)
 		}
 		if !ok {
-			t.Errorf("flake.nix guestInputPackages hashes %s, which the guest binary does not link (drop it, or the guest chain churns for nothing)", h)
+			t.Errorf("flake.nix guestInputPackages hashes %s, which the firmware does not link (drop it, or the guest chain churns for nothing)", h)
 		}
 	}
 }

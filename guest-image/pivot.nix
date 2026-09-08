@@ -1,20 +1,21 @@
-# THE GUEST'S FROZEN PIVOT ([B.86j], re-cut by [B.138]): how the set of briard binaries pushed by
-# the host takes over from what the guest runs, and how it falls back.
+# THE GUEST'S FROZEN PIVOT ([B.86j], re-cut by [B.138] and [B.139]): how the set of briard
+# binaries pushed by the host takes over from what the guest runs, and how it falls back.
 #
-# Every briard binary the guest runs rides the HOST bundle. The image bakes ONE firmware binary,
-# the guest agent -- rebuilt only with the image ([B.86i]), and the thing that receives the first
-# push -- and the host dresses the guest with the release's set over the control channel
-# (`bin.stage` / `bin.test` / `bin.activate`, agent/guestagent/bin.go) at every bring-up: the
+# Every briard binary the guest runs rides the HOST bundle. The image bakes ONE binary,
+# `briard-guest-firmware` -- the push protocol and nothing else ([B.139]: the handshake, the three
+# push verbs, os.poweroff), rebuilt only with the image ([B.86i]), and the thing that receives the
+# first push. The host dresses the guest with the release's set over the control channel
+# (`bin.stage` / `bin.test` / `bin.activate`, agent/guestfirmware/bin.go) at every bring-up: the
 # overlay the guest boots on is disposable, so every boot starts as firmware and nothing pushed
-# survives a restart. The front door and the dashboard have NO firmware copy: before the first
-# dress their units have nothing to exec and say so; the host dresses before rejoin, so nothing
-# can promote a node that has not been dressed.
+# survives a restart. The guest AGENT, the front door and the dashboard have no baked copy at all;
+# before the first dress the doors' units have nothing to exec and say so, and the host dresses
+# before rejoin, so nothing can promote a node that has not been dressed.
 #
 # This module is the guest-side half of that, the SAME shape as the host's own pivot
 # (scripts/install.sh briard-exec / briard-commit, [B.84]), with ONE commit for the whole set:
 #
-#   <bin>/<name>.next    a pushed binary, verified by the agent (sha256 over the whole file) and
-#                        proven by its own --test-launch before anything is armed
+#   <bin>/<name>.next    a pushed binary, verified by the firmware (sha256 over the whole file)
+#                        and proven by its own --test-launch before anything is armed
 #   <run>/<name>.update  "trial <name>.next on the next start" -- single-use: the picker DELETES
 #                        it as it execs, so a crashing candidate cannot re-trial forever
 #   <run>/<name>.ran     what the picker exec'd on this start: trial | pushed | baked. It answers
@@ -25,7 +26,7 @@
 #                        saying the first; two files carrying one fact are two files that can
 #                        disagree, so the marker absorbed it (owner, 2026-09-08)
 #   <bin>/<name>         the PUSHED, committed binary; absent on a fresh boot
-#   <baked>              the firmware, the guest agent only; `-` for the doors (none)
+#   <baked>              the firmware, for the agent's unit alone; `-` for the doors (none)
 #   <bin>/RELEASE        the host release id the committed set came from (the handshake's Bundle)
 #
 # ExecStart is the picker: trial -> pushed -> baked. bin.activate arms EVERY name's flag and
@@ -39,22 +40,25 @@
 # mode) finds the flag consumed and execs the committed file. One failed start out of the unit's
 # budget -- the promotion hold fires on start-limit exhaustion only (configuration.nix,
 # chainMemberFailure), so a failed upgrade NEVER demotes. The trial agent exits 1, its own picker
-# brings the committed agent back, and that agent's start discards the staged set and puts both
-# doors on the committed files (bin.go BinStartup), whichever of the three actually failed.
-# No channel, no timer, no memory of what to undo beyond "staged files present".
+# brings the committed agent back -- or, when the FIRST dress is what failed and there is no
+# committed agent yet, the firmware -- and that start discards the staged set and puts both doors
+# on the committed files (agent/guestfirmware/bin.go BinStartup), whichever of the three actually
+# failed. No channel, no timer, no memory of what to undo beyond "staged files present".
 #
 # Frozen in the sense that matters: a pushed binary can change everything about itself except the
-# picker it is started by, --test-launch, and the three verbs it is reached through -- those are
-# the contract the firmware keeps, versioned additively.
+# picker it is started by, --test-launch, and the verbs it is reached through -- those are the
+# contract the firmware keeps, versioned additively. That contract is now also the image's
+# CHANGE CONDITION: the firmware's import graph is the guest chain's input hash ([B.139]), so the
+# guest image moves when the protocol does and not when the agent does.
 { lib, pkgs, config, ... }:
 let
   # On the overlay ROOT, disposable by design -- and NOT under /var/lib/briard, which in the guest
   # is the replicated data volume: mounted only while promoted (files put there before vanish under
-  # the mount) and unmountable while a binary runs from it (agent/guestagent/bin.go says how that
+  # the mount) and unmountable while a binary runs from it (agent/guestfirmware/bin.go says how that
   # was measured).
   binDir = "/var/lib/briard-bin";
   runDir = "/run/briard-bin"; # tmpfs: the single-use flags
-  # The set, in commit order -- the same names as bin.go BinNames, and the units the doors run
+  # The set, in commit order -- the same names as guestfirmware/bin.go BinNames, and the units the doors run
   # under. The agent's own name is the one whose trial flag its picker consumes.
   names = [ "briard-dashboard" "briard-reverse-proxy" "briard-guest-agent" ];
   doorUnits = "briard-dashboard.service briard-reverse-proxy.service";
@@ -141,9 +145,9 @@ in
       default = { };
       description = ''
         TEST NODES ONLY: binaries linked into the pushed directory at boot as if a host had
-        dressed this guest, name -> store path. The shipped image sets none: its doors exist
-        only once pushed, and nixosTest machines built from configuration.nix alone have no host
-        to push them (nixosTest/lib.nix).
+        dressed this guest, name -> store path. The shipped image sets none: only the firmware is
+        baked, and nixosTest machines built from configuration.nix alone have no host to push
+        them the rest (nixosTest/lib.nix).
       '';
     };
   };

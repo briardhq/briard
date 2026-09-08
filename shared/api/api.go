@@ -6,49 +6,11 @@ import (
 	"briard.io/shared/model"
 )
 
-// Host<->guest control protocol versioning. The host and guest agents
-// version this wire protocol so they can evolve on independent cadences and so the host
-// detects skew during a rolling update/failover -- a survivor's guest may run a newer OS
-// generation (thus a newer guest agent) than the host was built against. The host
-// handshakes on connect and refuses a guest whose protocol it can't speak: a safe
-// deferral (bring-up/upgrade fails -> rollback / no promotion) beats silent misbehaviour.
-//
-// VERSION 2 (2026-08-29) renamed five verbs from `payload.*` to `service.*`
-// (agent/guestagent, and see the note at that const block). A rename is the one change a
-// capability handshake cannot absorb -- the guest advertises names, so a rolled host meeting a
-// v1 guest finds none of them -- which is precisely what MinGuestProtocol is for: refuse at the
-// handshake rather than fail five verbs in a row. Raising the FLOOR, not just the ceiling, is
-// deliberate and is affordable only under the alpha reinstall-only policy
-// ([[alpha-reinstall-only-policy]]): every node re-runs the installer, so there is no fleet to
-// strand. Note what it costs when that policy ends -- the host agent self-updates independently
-// of the guest OS closure ([V3.4]), so a floor raise makes every host refuse every not-yet-rolled
-// guest fleet-wide and its own health gate then reverts the self-update.
-const (
-	GuestProtocol    = 2 // the current host<->guest wire protocol version
-	MinGuestProtocol = 2 // the oldest guest protocol this host can still drive
-)
-
-// GuestHello is the guest's handshake reply: its protocol version plus the verbs it
-// supports (fine-grained capability negotiation on top of the coarse version gate), and
-// which BOOT of the guest is answering.
-//
-// BootID is the guest kernel's boot_id, and it is the host's only way to tell "the in-guest
-// agent bounced" from "the guest rebooted underneath me" -- two events that look identical
-// on the channel and need opposite responses ([B.102]). The agent serves one connection then
-// exits, so a handshake re-running proves nothing; the boot_id is stable across that and
-// changes only across an actual boot. Empty from a guest too old to send it, which reads as
-// "no evidence" rather than "a new boot" -- the host must not re-converge on silence.
-type GuestHello struct {
-	Version      int      `json:"version"`
-	Capabilities []string `json:"capabilities,omitempty"`
-	BootID       string   `json:"boot_id,omitempty"`
-	// Bundle is the guest bundle this agent RUNS ([B.86j]): the host release id whose
-	// pushed binaries it was started from, or "" when it runs the firmware baked into the
-	// image. The host compares it with the bundle it holds and dresses the guest when they
-	// differ -- at bring-up, after a host commit, after any guest restart (the overlay is
-	// disposable, so every boot starts as firmware).
-	Bundle string `json:"bundle,omitempty"`
-}
+// The host<->guest control protocol -- its version gate and the handshake that carries it --
+// lives in agent/guestfirmware, not here. Two reasons, both standing: the guest IMAGE's inputs
+// hash covers whole directories, so anything in shared/ that the guest links republishes a
+// 400 MB guest chain for every unrelated edit ([B.139]); and nothing on that channel leaves the
+// house, so this file's audited allowlist is not the register it belongs in.
 
 // EnrollRequest asks an overlay provider to admit this node to the tenant network.
 type EnrollRequest struct {

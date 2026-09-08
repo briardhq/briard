@@ -30,21 +30,25 @@
         if self ? shortRev
         then "v3.${builtins.substring 0 8 self.lastModifiedDate}.${self.shortRev}"
         else "v3.dirty";
-      # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT ([B.86i]). The
-      # guest chain used to churn per commit -- every host release re-published a 400 MB image whose
-      # only change was the version string baked into it -- so `publish-release.sh stage` now asks
-      # whether the live channel already serves an image with THESE inputs and re-stages the guest
-      # chain only when they changed. The inputs are the paths that reach the image: the image
-      # recipe, the packages built into it, the Go packages the guest binary links (listed by name;
-      # internal/arch asserts the list against `go list -deps ./agent/cmd/briard-guest-agent`, so a new
-      # import cannot silently fall outside the hash), the module files and the nixpkgs pin.
-      # `builtins.path` copies each into the store, and a store path's name IS its content hash --
-      # test files excluded, since they never reach the image.
+      # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT ([B.86i]), AND
+      # ITS INPUTS ARE THE PUSH PROTOCOL ([B.139]). `publish-release.sh stage` asks whether the
+      # live channel already serves an image with THESE inputs and re-stages the 400 MB guest
+      # chain only when they changed; what makes that condition honest is that the image bakes
+      # ONE binary, briard-guest-firmware, whose graph is the protocol and nothing else. An edit
+      # to the pushed agent -- DRBD, services, converge, telemetry, the deadman -- does not reach
+      # this list, because it does not reach the image.
+      #
+      # The inputs are the paths that reach the image: the image recipe, the packages built into
+      # it, the Go packages the FIRMWARE links (listed by name; internal/arch asserts the list
+      # against `go list -deps ./agent/cmd/briard-guest-firmware`, so a new import cannot silently
+      # fall outside the hash), the module files and the nixpkgs pin. A toolchain bump still
+      # counts, correctly: go.mod/go.sum/vendor-hash and nixpkgs can change the bytes the
+      # firmware runs. `builtins.path` copies each into the store, and a store path's name IS its
+      # content hash -- test files excluded, since they never reach the image.
       guestInputPackages = [
-        "agent/cmd/briard-guest-agent" "agent/drbd" "agent/guestagent" "agent/hass" "agent/mosquitto"
-        "agent/quadlet" "agent/services" "shared"
+        "agent/cmd/briard-guest-firmware" "agent/guestfirmware" "shared/sdnotify"
       ];
-      guestInputDirs = [ "guest-image" ] ++ guestInputPackages; # the door and the dashboard are pushed, not baked ([B.138])
+      guestInputDirs = [ "guest-image" ] ++ guestInputPackages; # every other briard binary is pushed, not baked ([B.138], [B.139])
       noTests = path: type: !(lib.hasSuffix "_test.go" (baseNameOf path)) && baseNameOf path != "testdata";
       inputPath = p: toString (builtins.path { path = ./. + "/${p}"; name = builtins.replaceStrings [ "/" ] [ "-" ] p; filter = noTests; });
       guestInputs = builtins.hashString "sha256" (lib.concatStringsSep "\n" (

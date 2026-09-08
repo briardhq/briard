@@ -28,7 +28,7 @@ import (
 	"strconv"
 
 	"briard.io/agent/guest/entrygate"
-	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 )
 
@@ -61,7 +61,7 @@ func sample(port string) {
 		fmt.Fprintf(os.Stderr, "sample: port %q: %v\n", port, err)
 		os.Exit(2)
 	}
-	entries, err := hass.Readiness(context.Background(), guestagent.NewOSExecutor(), p)
+	entries, err := hass.Readiness(context.Background(), guestfirmware.NewOSExecutor(), p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sample: %v\n", err)
 		os.Exit(1)

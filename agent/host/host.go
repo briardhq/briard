@@ -27,6 +27,7 @@ import (
 	"briard.io/agent/drbd"
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/install"
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
@@ -507,7 +508,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		//
 		// It cannot be done by inspecting the error instead. Bring-up tags its channel failures
 		// errNoChannel on the dial branch and NOT on the handshake branch beside it, and the
-		// cancellation arrives wrapped in guestagent.ErrChannelDown — a different sentinel from
+		// cancellation arrives wrapped in guestfirmware.ErrChannelDown — a different sentinel from
 		// this package's errNoChannel. Asking the context "were we asked to stop?" needs no
 		// wrapping discipline from anything below it.
 		//
@@ -653,7 +654,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if !errors.Is(err, guestagent.ErrChannelDown) {
+		if !errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // observe only returns nil (handled above) or ErrChannelDown
 		}
 		// How long the channel that just died had been up is the only evidence available for
@@ -1073,7 +1074,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// follow ground truth.
 		cfg.beat.Beat()
 		vr.reconcile(ctx, r, logf)
-		if errors.Is(err, guestagent.ErrChannelDown) {
+		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
 		// A node that has just PROMOTED may be running services it was never told about: converge

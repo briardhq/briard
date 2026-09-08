@@ -47,14 +47,15 @@
 # MAKES each target differ.)
 { nixpkgs, pkgs, overlay, stageImages ? [ ], guestAgentEnv ? { }
 , commonModules ? [ ]
-  # The release id stamped into the guest's agent. Defaulted so every existing caller (the
+  # The release id stamped into the guest's firmware. Defaulted so every existing caller (the
   # lab fleet disks, the test variants) keeps building unchanged; flake.nix passes the real one.
 , agentVersion ? "0.0.0-dev" }:
 let
   lib = nixpkgs.lib;
-  # The in-guest agent: its own main ([B.137]), so the shipped guest closure links only what the
-  # guest runs -- no channel fetcher, no self-update layout, no CLI, no QEMU launcher.
-  briardAgent = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; version = agentVersion; };
+  # THE ONE BRIARD BINARY THIS IMAGE BAKES ([B.139]): the push protocol, and nothing else. The
+  # guest AGENT is pushed by the host like the doors are, so an edit to it does not move this
+  # image's inputs hash and does not republish a 400 MB guest chain (flake.nix guestInputPackages).
+  briardFirmware = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-firmware"; version = agentVersion; };
 
   # Common bootable-guest modules, shared by the good and broken generations so the
   # broken one is a minimal, honest delta (only the service env differs).
@@ -255,7 +256,7 @@ let
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
         # then Serve() returns nil on the clean EOF when the host disconnects (wire.go)
-        # -- so `briard run --guest` exits 0. The reconnect design (host.go) needs it
+        # -- so `run --guest` exits 0. The reconnect design (host.go) needs it
         # back on the port for the *next* host connection, which a genuine disconnect
         # (host-agent restart -> self-update; or a re-adopt) produces. `on-failure`
         # would NOT restart a clean exit, leaving the port dead and the new host's
@@ -269,13 +270,14 @@ let
         # unchanged, and correct; what was wrong was the assumption that made it free.
         startLimitIntervalSec = 0; # [Unit] section: never permanently give up on this channel
         serviceConfig = {
-          # THROUGH THE PIVOT ([B.86j], [B.138], pivot.nix): the binary the host pushed when there is one,
-          # else the baked firmware -- the agent is the ONE binary the image bakes ([B.138]). READY
-          # only after the trial verdict and at listen (main.go), and
-          # the ONE commit of the whole pushed set only after that -- this unit is the one an
-          # activation restarts, and its start is the verdict on the doors.
+          # THROUGH THE PIVOT ([B.86j], [B.138], [B.139], pivot.nix): the agent the host pushed
+          # when there is one, else the baked firmware -- which is the ONE binary this image
+          # carries, and serves only the handshake, the three push verbs and os.poweroff. READY
+          # only after the trial verdict and at listen (the mains), and the ONE commit of the
+          # whole pushed set only after that -- this unit is the one an activation restarts, and
+          # its start is the verdict on the doors.
           Type = "notify";
-          ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardAgent}/bin/briard-guest-agent run --guest";
+          ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardFirmware}/bin/briard-guest-firmware run --guest";
           ExecStartPost = config.briard.pivot.commit;
           Restart = "always";
           RestartSec = 1;
@@ -308,13 +310,22 @@ let
         wantedBy = [ "multi-user.target" ];
         after = [ "systemd-tmpfiles-setup.service" "network-online.target" ];
         wants = [ "network-online.target" ];
+        startLimitIntervalSec = 0; # [Unit] section: it retries until the first dress lands the binary
         path = [
           pkgs.drbd # drbdsetup, for the reboot gate
           pkgs.systemd # systemctl reboot
         ];
         environment = { BRIARD_GATE_ADDR = ":7790"; } // guestAgentEnv;
+        # ⚠️ IT RUNS THE PUSHED AGENT, NOT THE FIRMWARE ([B.139]), and NOT through the picker:
+        # the picker's arm flag and `.ran` marker are keyed by BINARY NAME, so a second unit
+        # going through it would consume the flag the trial belongs to. The committed path is
+        # named directly, which means this unit cannot start until the guest has been dressed --
+        # correct, and self-healing: `Restart=always` with no start limit retries every 2 s from
+        # boot until the first commit lands the binary, and the deadman is disarmed before the
+        # host's first contact anyway (deadman.Monitor: no contact yet this boot never fires), so
+        # there is nothing it could have done in the meantime.
         serviceConfig = {
-          ExecStart = "${briardAgent}/bin/briard-guest-agent run --deadman";
+          ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent run --deadman";
           Restart = "always";
           RestartSec = 2;
         };
@@ -343,11 +354,6 @@ let
   sys = mkGuest [
     {
       briard.stagedImages = stageImages;
-      # One agent derivation for all three units that need it (briard-guest-agent,
-      # briard-deadman, and briard-services' converge). configuration.nix defaults this to an
-      # UNVERSIONED guest build for the nixosTests; letting that default stand here would put a
-      # second agent in the shipped image's closure.
-      briard.agentPackage = briardAgent;
     }
   ];
 
