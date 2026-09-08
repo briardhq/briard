@@ -7,7 +7,7 @@
 # rather than going blind. Heavy (a nested VM + a multi-GB guest disk), so it rides the
 # `integration` tag; `nix flake check` boots no VM tests. Run:
 #   nix build .#tests.agent-bringup -L   (or the whole tag: nix build .#integration)
-{ pkgs, guestDisk, agent, netWrap }:
+{ pkgs, guestDisk, agent, netWrap, dressBase }:
 pkgs.testers.runNixOSTest {
   name = "agent-bringup";
   skipTypeCheck = true; # systemd-run + backgrounded driver, dynamic asserts
@@ -56,6 +56,11 @@ pkgs.testers.runNixOSTest {
     # Run the product agent (host mode = plain `run`): boots the guest, drives the
     # ordered bring-up (data -> VIP, no service -- the shipped disk runs none), then holds it in
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
+    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the image
+    # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
+    # because the host writes `guest.good` beside the tree.
+    host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
+
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
@@ -64,6 +69,8 @@ pkgs.testers.runNixOSTest {
         # is the point: the rig gets what the product gets ([V3b.19a]).
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
+        # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+        "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest --setenv=GUEST_SERIAL=/tmp/guest-console.log "
         # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,

@@ -1139,21 +1139,27 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
 
-    # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ([B.86j]) --------------------------------------
+    # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ([B.86j], [B.138]) ------------------------------
     # Every briard binary the guest runs rides the host chain: install.sh laid guest-<V>/bin/ and
     # the `guest` link beside qemu's, and the FIRST bring-up dressed the guest -- the image booted
-    # on its firmware, the agent pushed the release's binaries over the control channel, the
-    # guest's own pivot trialled and committed them, and the next handshake reported the bundle.
+    # on its firmware (the guest AGENT, the one binary it bakes; the door and the dashboard exist
+    # in the guest only once pushed), the host staged the release's set, PROVED each staged copy
+    # with its own --test-launch, armed the set and restarted the agent, whose trial start is the
+    # verdict on the doors -- and the next handshake reported the bundle.
     # Both host updates above carried the same bundle bytes, hash-skipped (`staged (agent, qemu)`,
     # no `guest`), so the guest still runs the tree the install laid -- and is REPORTED as running
     # the current release's bundle, which is what it is.
     def dressed_count(release):
         return int(host.succeed(f"journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {release} (dressed)' || true").strip())
+    def console_count(pattern):
+        return int(host.succeed(f"tr -d '\\r' < /var/log/briard-guest-console.log | grep -acE '{pattern}' || true").strip())
     host.succeed("test -L /opt/briard/agent/guest")
     assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V}", "the guest bundle tree is not named by its release"
-    host.succeed(f"test -x /opt/briard/agent/guest-{V}/bin/briard-guest-agent && test -x /opt/briard/agent/guest-{V}/bin/briard-reverse-proxy")
+    for b in ["briard-guest-agent", "briard-reverse-proxy", "briard-dashboard"]:
+        host.succeed(f"test -x /opt/briard/agent/guest-{V}/bin/{b}")
     host.succeed("grep -q 'guest.next' /opt/briard/agent/briard-commit")
     host.succeed(f"journalctl -u briard-agent | grep -q 'guest bundle: the guest runs its firmware; dressing it with {V}'")
+    host.succeed(f"journalctl -u briard-agent | grep -q 'guest bundle: {V} staged, proven and activated'")
     assert dressed_count(V) >= 1, "the first bring-up never reported the guest dressed"
     # Reported as the RUNNING agent's release: the status line names the bundle by the release
     # whose bundle the guest runs, which is the host's own version when the guest is on the
@@ -1163,23 +1169,34 @@ pkgs.testers.runNixOSTest {
         host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
     except Exception:
         print("=== the guest's pivot and units ===")
-        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|Control process|Failed"))
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-dashboard|Control process|Failed"))
         print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=' | tail -12"))
         raise
     # ...and the pivot's own account agrees: every guest BOOT starts as firmware (the picker says
-    # `baked` once per boot, and this rig boots the guest several times -- the install, the cattle
-    # reinstall, the lease move), each of which the host dressed from firmware exactly once; and
-    # within a boot every restart of the guest agent ran the committed pushed binary, never the
-    # firmware. Read from the console, which holds every boot ([B.86g] appends).
-    boots = int(host.succeed("tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'briard-bin-exec: briard-guest-agent: baked' || true").strip())
+    # `baked` once per boot for the AGENT, the only baked binary -- and this rig boots the guest
+    # several times: the install, the cattle reinstall, the lease move), each of which the host
+    # dressed from firmware exactly once, and each of which committed the whole set ONCE, naming
+    # every binary in it. Within a boot every restart of the guest agent ran the committed pushed
+    # binary, never the firmware. Read from the console, which holds every boot ([B.86g] appends).
+    boots = console_count("briard-bin-exec: briard-guest-agent: baked")
     firmware_dresses = int(host.succeed("journalctl -u briard-agent | grep -c 'guest bundle: the guest runs its firmware' || true").strip())
-    pushed_starts = int(host.succeed("tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'briard-bin-exec: briard-guest-agent: pushed' || true").strip())
-    commits = int(host.succeed("tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'briard-bin-commit: briard-guest-agent: committing' || true").strip())
-    if boots < 1 or firmware_dresses != boots or commits != boots or pushed_starts < 1:
+    pushed_starts = console_count("briard-bin-exec: briard-guest-agent: pushed")
+    commits = console_count("briard-bin-commit: committed")
+    set_commits = console_count("briard-bin-commit: committed .*briard-dashboard.*briard-reverse-proxy.*briard-guest-agent")
+    if boots < 1 or firmware_dresses != boots or commits != boots or set_commits != commits or pushed_starts < 1:
         print("=== the guest's pivot and units ===")
-        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|Control process|Failed"))
-        raise Exception(f"pivot account: {boots} boots, {firmware_dresses} dresses from firmware, {commits} commits, {pushed_starts} pushed starts -- want one dress and one commit per boot, and restarts on the pushed binary")
-    print(f"{boots} guest boots, each dressed from firmware once and committed in the guest; {pushed_starts} guest-agent restarts ran the pushed binary")
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-dashboard|Control process|Failed"))
+        raise Exception(f"pivot account: {boots} boots, {firmware_dresses} dresses from firmware, {commits} commits ({set_commits} of the whole set), {pushed_starts} pushed starts -- want one dress and one whole-set commit per boot, and restarts on the pushed binary")
+    print(f"{boots} guest boots, each dressed from firmware once and committed as ONE set in the guest; {pushed_starts} guest-agent restarts ran the pushed binary")
+
+    # THE DOORS HAVE NO FIRMWARE ([B.138]): the front door and the dashboard run the pushed copies
+    # and nothing else -- the picker never said `baked` for either, and never had to say NOT
+    # DRESSED YET, because the host dresses before the node can promote.
+    for name in ["briard-reverse-proxy", "briard-dashboard"]:
+        assert console_count(f"briard-bin-exec: {name}: baked") == 0, f"{name} ran a baked copy: the image is not supposed to have one"
+        assert console_count(f"briard-bin-exec: {name}: NOT DRESSED YET") == 0, f"{name} started before the guest was dressed"
+        assert console_count(f"briard-bin-exec: {name}: pushed") >= 1, f"{name} never ran a pushed copy"
+    print("the door and the dashboard ran only pushed copies -- the image bakes the guest agent alone")
 
     # A GUEST RELAUNCH LANDS ON FIRMWARE AND IS DRESSED AGAIN: the overlay is disposable, so nothing
     # pushed survives it. STOPPED, not restarted: the host's recovery relaunches a stopped guest
@@ -1194,47 +1211,142 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print("a restarted guest came up as firmware and was dressed again")
 
-    # A BUNDLE WHOSE GUEST AGENT DOES NOT START REVERTS IN THE GUEST, WITHOUT THE HOST. The pin
-    # carries a briard-guest-agent that exits 1: the host stages and activates it, the guest's
-    # pivot trials it, it never says READY, the unit's next start finds the flag consumed and runs
-    # the committed pushed agent -- and the handshake tells the host the trial reverted. The host
-    # committed its own bundle regardless ([V3.32]: the host's trial gate is "the agent started"),
-    # so the node is on V4 with a guest on V's binaries, and REPORTS that skew rather than converging.
-    V4 = "v3.20991231.b86jbad0"
-    host.succeed(f"mkdir -p /root/gbundle4/bin && cp /opt/briard/agent/guest-{V}/bin/briard-reverse-proxy /root/gbundle4/bin/ && printf '#!/bin/sh\\nexit 1\\n' > /root/gbundle4/bin/briard-guest-agent && chmod 755 /root/gbundle4/bin/*")
+    # THE CHEAP GATE ([B.138]): a staged copy that fails its own --test-launch refuses the dress
+    # BEFORE anything is armed. The pin carries a briard-dashboard that fails the test launch (and
+    # nothing else): the host stages the set, `bin.test` runs each copy, the dashboard's exits 1,
+    # the guest discards the WHOLE staged set, nothing is armed, no unit is restarted, and the
+    # house keeps serving on the set it had. The host records the refusal like any other.
+    V4 = "v3.20991231.b138gate"
+    host.succeed(f"mkdir -p /root/gbundle4/bin && cp /opt/briard/agent/guest-{V}/bin/briard-guest-agent /opt/briard/agent/guest-{V}/bin/briard-reverse-proxy /root/gbundle4/bin/")
+    host.succeed("printf '#!/bin/sh\\necho \"dashboard: test launch: no\" >&2\\nexit 1\\n' > /root/gbundle4/bin/briard-dashboard && chmod 755 /root/gbundle4/bin/*")
     publish_pin(V4, "/root/bundle2", "/root/gbundle4")
+    trials_before = console_count("briard-bin-exec: briard-guest-agent: TRIAL")
     out = host.succeed(f"/opt/briard/agent/briard-agent update host -to {V4}").strip()
     assert f"staged {V4} (agent, guest), armed" in out, f"briard update host said: {out!r}"   # qemu unchanged since V2: not fetched
-    assert host.succeed("readlink /opt/briard/agent/guest.next").strip() == f"guest-{V4}"
     host.succeed("systemctl restart briard-agent.service")
     host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
-    assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V4}", "the guest link did not move on commit"
-    host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q 'guest bundle: the guest runs {V}, the host holds {V4}; dressing it'", timeout=300)
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REVERTED'", timeout=300)
-    host.succeed(f"journalctl -u briard-agent | grep 'PUSH REVERTED' | grep -q 'came back on {V}, not {V4}'")
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REFUSED'", timeout=300)
+    host.succeed("journalctl -u briard-agent | grep 'PUSH REFUSED' | grep -q 'briard-dashboard failed its test launch'")
+    host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V4}")
+    assert console_count("briard-bin-exec: briard-guest-agent: TRIAL") == trials_before, "the refused set was armed and trialled anyway"
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
-    host.succeed(f"grep -q '\"version\":\"{V4}\"' /opt/briard/agent/manifest.json")   # the host DID commit V4
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-    print(f"{V4}: a guest agent that will not start reverted inside the guest; the node runs {V4} with the guest on {V}'s bundle and says so")
+    print(f"{V4}: a staged binary that failed its test launch refused the dress with nothing armed; the house kept serving on {V}'s set")
+
+    # THE TRIAL VERDICT ([B.138]): a copy that PASSES the cheap gate and fails its real launch is
+    # caught by the trial agent, on the node where it matters -- the primary, which a single node
+    # always is. The pin's briard-reverse-proxy answers --test-launch 0 and exits 1 otherwise: the
+    # set is staged, proven and armed, the agent restarts as a trial, try-restarts the door, the
+    # door's start fails, the agent exits 1 without opening the port, and the committed agent comes
+    # back. The door reverted itself by its own auto-restart (its flag consumed), the returning
+    # agent discards the staged set, and NOTHING DEMOTED: one failed start is well inside the
+    # unit's budget, and briard-promotion-hold never fired.
+    V5 = "v3.20991231.b138door"
+    # The baseline for "nothing masked the promoter target": this rig has ALREADY masked it once
+    # on purpose, with `handover -keep-masked` above, and that line stays in the console for the
+    # rest of the run. Counting the whole log would fail on the rig's own earlier act.
+    masked_before = console_count("drbd-services@r0.target is masked")
+    # ...and the same for "the door came back on the committed binary": it has run pushed copies
+    # all run long, so only an INCREASE across the trial says anything.
+    door_pushed_before = console_count("briard-bin-exec: briard-reverse-proxy: pushed")
+    host.succeed(f"mkdir -p /root/gbundle5/bin && cp /opt/briard/agent/guest-{V}/bin/briard-guest-agent /opt/briard/agent/guest-{V}/bin/briard-dashboard /root/gbundle5/bin/")
+    host.succeed("printf '#!/bin/sh\\ncase \"$1\" in --test-launch) echo ok; exit 0;; esac\\necho \"door: not today\" >&2\\nexit 1\\n' > /root/gbundle5/bin/briard-reverse-proxy && chmod 755 /root/gbundle5/bin/*")
+    publish_pin(V5, "/root/bundle2", "/root/gbundle5")
+    out = host.succeed(f"/opt/briard/agent/briard-agent update host -to {V5}").strip()
+    assert f"staged {V5} (agent, guest), armed" in out, f"briard update host said: {out!r}"
+    host.succeed("systemctl restart briard-agent.service")
+    host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
+    assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V5}", "the guest link did not move on commit"
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q 'guest bundle: {V5} staged, proven and activated'", timeout=300)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REVERTED'", timeout=300)
+    host.succeed(f"journalctl -u briard-agent | grep 'PUSH REVERTED' | grep -q 'came back on {V}, not {V5}'")
+    host.succeed(f"grep -q '\"version\":\"{V5}\"' /opt/briard/agent/manifest.json")   # the host DID commit V5
+    # The guest's own account: the trial ran, the door refused it, and the returning agent cleaned
+    # up. EITHER refusal wording counts, and which one appears is a race the product handles both
+    # ways: if the restart job reports the failed start, the verdict says "failed its real
+    # launch"; if systemd's auto-restart repaired the unit first, the job SUCCEEDS and only the
+    # picker's marker gives it away ("running the pushed binary, not the staged one"). The second
+    # is what this rig has measured; asserting only the first was a rig that would pass on one
+    # timing and fail on the other.
+    try:
+        # `grep -c`, never `grep -q`, on this file: -q ends grep at the first hit and the `tr`
+        # feeding it dies on the closed pipe, which the shell reports as a failed command even
+        # though the line is there (measured on this rig, twice).
+        host.wait_until_succeeds("[ $(tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'trial of .* REFUSED: briard-reverse-proxy' || true) -gt 0 ]", timeout=120)
+        host.wait_until_succeeds("[ $(tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'a staged set .* was left behind by a trial that did not commit' || true) -gt 0 ]", timeout=120)
+        # ...and the set did NOT commit: no commit line names the refused release.
+        assert console_count(f"briard-bin-commit: committed {V5}") == 0, f"{V5} committed despite a refused trial"
+    except Exception:
+        print(guest_console("briard-bin|trial|briard-guest-agent|briard-reverse-proxy|briard-dashboard|Failed"))
+        raise
+    # A FAILED UPGRADE NEVER DEMOTES (owner, 2026-09-08), and this is the assertion that says so.
+    # The first cut of it counted the string 'promotion hold' in the HOST's journal -- a unit that
+    # lives in the GUEST, so it could never have appeared and the check passed while the node was
+    # busy demoting itself ([[verification-assertions-must-fail]]). Read the guest instead, and
+    # assert the POSITIVE: OnFailure did fire (a failed start enters `failed`, RestartMode=direct
+    # or not), the hold ran, and its ExecCondition declined BECAUSE a dress was trialling the
+    # doors. Then the negative that follows from it: nothing masked the promoter target.
+    # Assert the OUTCOME, not the mechanism. Whether the demote hook even fires depends on
+    # systemd's mood about a failed start under RestartMode=direct -- measured both ways on this
+    # rig: once the hold ran and masked the promoter target (the node demoted and could never take
+    # the house back), and once the unit went straight to its auto-restart and the hook stayed
+    # silent. The guard in the guest ([B.138]: the trial holds the hook off) makes the first
+    # harmless; what this rig asserts is what the owner actually asked for -- the node still holds
+    # the house after a failed upgrade. An earlier cut of this counted a GUEST unit's name in the
+    # HOST's journal and could never have failed ([[verification-assertions-must-fail]]).
+    try:
+        assert console_count("drbd-services@r0.target is masked") == masked_before, "a failed guest upgrade masked the promoter target -- the node demoted and cannot take the house back"
+        host.succeed("journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'primary=true'")
+        # The door is back on the COMMITTED binary, by its own restart: a new `pushed` line since
+        # the baseline above. (Counted, not `grep -q`: a bare grep -q on this file matched nothing
+        # here while the very same pattern counted fine -- an early match ends grep, and the `tr`
+        # feeding it dies on the closed pipe.)
+        assert console_count("briard-bin-exec: briard-reverse-proxy: pushed") > door_pushed_before, "the door never came back on the committed binary after the refused trial"
+    except Exception:
+        print("=== what the guest did around the refused trial ===")
+        print(host.succeed(
+            "tr -d '\\r' < /var/log/briard-guest-console.log 2>/dev/null | "
+            "grep -aE 'briard-promotion-hold|promotion hold|masked|Condition|drbd-promote|drbd-services|demote|briard-reverse-proxy|briard-dashboard|briard-vip|briard-services|trial|briard-bin' "
+            "| tail -120 || true"
+        ))
+        raise
+    # THE HOUSE KEPT SERVING: the door is back on the committed binary and answering at the VIP.
+    # This is the assertion the whole item is for, so its failure prints the guest's own account
+    # of the units rather than only a timed-out curl.
+    try:
+        client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    except Exception:
+        print("=== the guest's pivot, units and chain after the refused trial ===")
+        print(guest_console("briard-bin|trial|briard-guest-agent|briard-reverse-proxy|briard-dashboard|briard-vip|briard-services|drbd-reactor|drbd-promote|Failed|failed|start-limit"))
+        print("=== the host's account ===")
+        print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=|CONVERGED|promotion' | tail -25"))
+        raise
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
+    print(f"{V5}: a door that passed the cheap gate and failed its real launch refused the trial; the door reverted itself, the node never demoted, and the house served throughout")
 
     # THE REVERT IS PERMANENT (owner, 2026-09-07). The guest's own fallback lasts one launch; the
     # host's record outlives it: the refusal is written beside the tree, the last GOOD tree is
-    # linked, and a fresh launch is dressed with the good bundle -- never with {V4} again, and
+    # linked, and a fresh launch is dressed with the good bundle -- never with {V5} again, and
     # never left on the image's firmware. Alerted once. Proven by relaunching the guest.
-    host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V4}")
+    host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V5}")
     assert host.succeed("readlink /opt/briard/agent/guest.good").strip() == f"guest-{V}", "the last good tree is not linked"
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'Briard: guest bundle push failed'", timeout=60)
+    # ALERTED, AND THE ALERT NAMES THIS REFUSAL. Not "two alerts, one per refused release": the
+    # alert is raised from the observe loop off the durable record, so a refusal that is
+    # superseded before the loop next ticks -- V4's was, seconds later, by V5's -- is never
+    # announced, and that is right, since what the household needs told is the state it is in.
+    # A bare grep for the alert text would equally be satisfied by V4's, so match the release.
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'Briard: guest bundle push failed' | tail -1 | grep -q '{V5}'", timeout=60)
     before = dressed_count(V)
     reverts = int(host.succeed("journalctl -u briard-agent | grep -c 'PUSH REVERTED' || true").strip())
     host.succeed("systemctl stop briard-guest.service")
-    host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q '{V4} reverted before; dressing the guest with the last good bundle {V} instead'", timeout=600)
+    host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q '{V5} reverted before; dressing the guest with the last good bundle {V} instead'", timeout=600)
     host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {V} (dressed)') -gt {before} ]", timeout=600)
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=600)
     assert int(host.succeed("journalctl -u briard-agent | grep -c 'PUSH REVERTED' || true").strip()) == reverts, "the refused bundle was pushed again after a relaunch"
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
     host.succeed(f"test -d /opt/briard/agent/guest-{V}")   # the good tree survives the launch's prune
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-    print(f"a relaunch after the refusal was dressed with the last good bundle {V}, not {V4} and not the firmware; the refusal was alerted once")
+    print(f"a relaunch after the refusal was dressed with the last good bundle {V}, not {V5} and not the firmware; the refusal was alerted once")
 
     # ---- THE GUEST CHAIN ON THE SHIPPED NODE ([B.86d]) ---------------------------------------
     # The installed guest manifest names the closure the image boots; install.sh seeded the

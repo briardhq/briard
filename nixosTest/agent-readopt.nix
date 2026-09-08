@@ -10,7 +10,7 @@
 #
 # Heavy (nested VM), so it rides the `integration` tag. Run:
 #   nix build .#tests.agent-readopt -L
-{ pkgs, guestDisk, agent, netWrap }:
+{ pkgs, guestDisk, agent, netWrap, dressBase }:
 pkgs.testers.runNixOSTest {
   name = "agent-readopt";
   skipTypeCheck = true; # dynamic asserts, backgrounded poller
@@ -45,6 +45,8 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_DISK = "/tmp/guest.qcow2";
+          # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+          UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
@@ -94,6 +96,10 @@ pkgs.testers.runNixOSTest {
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Boot: the agent launches the guest as a transient service and drives bring-up.
+    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the
+    # image bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the
+    # store because the host writes `guest.good` beside the tree.
+    host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
     host.succeed("systemctl start briard-agent")
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)

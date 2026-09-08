@@ -23,7 +23,7 @@
 #
 # Heavy (a nested VM + the shipped guest disk), so it rides the `integration` tag. Run:
 #   nix build .#tests.agent-recover -L
-{ pkgs, guestDisk, agent, netWrap }:
+{ pkgs, guestDisk, agent, netWrap, dressBase }:
 pkgs.testers.runNixOSTest {
   name = "agent-recover";
   skipTypeCheck = true; # systemd-run + dynamic asserts
@@ -65,6 +65,11 @@ pkgs.testers.runNixOSTest {
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
+    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the image
+    # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
+    # because the host writes `guest.good` beside the tree.
+    host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
+
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
@@ -73,6 +78,8 @@ pkgs.testers.runNixOSTest {
         # is the point: the rig gets what the product gets ([V3b.19a]).
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
+        # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+        "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         # The guest console, because this test's failure mode is "the guest never answered" and
         # everything else here observes from OUTSIDE the VM. agent-readopt/deadman/watchdog all

@@ -396,7 +396,7 @@ var guestCapabilities = []string{
 	verbResources,
 	verbBackupSave, verbBackupRestore,
 	verbFsSync,
-	verbBinStage, verbBinActivate,
+	verbBinStage, verbBinTest, verbBinActivate,
 }
 
 const (
@@ -771,7 +771,7 @@ func dispatch(x Executor) dispatchFunc {
 				hello.BootID = strings.TrimSpace(string(b))
 			}
 			return hello, nil
-		case verbBinStage, verbBinActivate:
+		case verbBinStage, verbBinTest, verbBinActivate:
 			return handleBin(ctx, x, verb, payload)
 		case verbSetHostname:
 			var req hostnameRequest

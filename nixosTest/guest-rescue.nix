@@ -36,7 +36,7 @@
 #
 # Heavy (a nested VM + the shipped guest disk) -> the `integration` tag. Run on the L0:
 #   gh workflow run vm-test.yml -f test=guest-rescue
-{ pkgs, guestDisk, agent, netWrap, stub, channel, nextSystem }:
+{ pkgs, guestDisk, agent, netWrap, dressBase, stub, channel, nextSystem }:
 pkgs.testers.runNixOSTest {
   name = "guest-rescue";
   skipTypeCheck = true; # systemd-run + dynamic asserts
@@ -91,6 +91,11 @@ pkgs.testers.runNixOSTest {
     backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
     assert "nixos.qcow2" in backing, f"the guest disk is not an overlay on the image; rescue would refuse:\n{backing}"
 
+    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the image
+    # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
+    # because the host writes `guest.good` beside the tree.
+    host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
+
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
@@ -99,6 +104,8 @@ pkgs.testers.runNixOSTest {
         # is the point: the rig gets what the product gets ([V3b.19a]).
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
+        # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+        "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         # The guest chain ([B.86h]): the channel this rig serves, the keyring it mints, the record.
         "--setenv=CHANNEL_URL=http://127.0.0.1:8099 --setenv=UPDATE_KEYRING=/root/keyring.pem --setenv=GUEST_RELEASE_CACHE=/tmp/guest-release.json "

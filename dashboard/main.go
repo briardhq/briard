@@ -38,6 +38,7 @@ import (
 	"html/template"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,6 +50,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
+	"briard.io/shared/sdnotify"
 )
 
 //go:embed page.html
@@ -65,13 +67,36 @@ func main() {
 	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (a service install rides it)")
 	layersPath := flag.String("layers", defaultPullPaths.layers, "podman's layer store, for pull progress")
 	tmpPath := flag.String("pull-tmp", defaultPullPaths.tmp, "where the pull units' PrivateTmp roots live, for pull progress")
+	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): exec, parse, bind-and-release a loopback port, exit 0")
 	flag.Parse()
+	if *testLaunch {
+		// A staged copy proving itself before it is trialled ([B.138]): it execs here, its flags
+		// parsed, the page template compiled (a package-level Must), and the network stack it
+		// links can bind -- on an ephemeral loopback port, never the real one (in use on a
+		// primary). The state directory is on the volume and may be absent; the real start
+		// creates it, so it is not part of the test.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			log.Fatalf("dashboard: test launch: %v", err)
+		}
+		ln.Close()
+		fmt.Println("dashboard: test launch ok")
+		return
+	}
 	a := newApp(*routesPath, *handoffPath, *statePath, *tokenPath)
 	a.port = &serialPort{path: *adminPortPath}
 	a.pulls = pullPaths{records: dashboard.Dir, layers: *layersPath, tmp: *tmpPath}
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("dashboard: serving %s; routes from %s, state at %s", *listen, *routesPath, *statePath)
-	log.Fatalf("dashboard: %v", srv.ListenAndServe())
+	// Listen, THEN say READY ([B.138]): the unit is Type=notify under the guest's pivot, and a
+	// trial agent reads this unit's start as its verdict on the pushed copy -- so READY means
+	// "the port is bound", never "the process exists".
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("dashboard: listen %s: %v", *listen, err)
+	}
+	_ = sdnotify.Ready()
+	log.Fatalf("dashboard: %v", srv.Serve(ln))
 }
 
 // app is the dashboard: four files it reads and one directory it owns.

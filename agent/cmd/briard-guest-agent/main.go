@@ -13,6 +13,8 @@
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
 //	briard-guest-agent --converge       render, warm and start every service the volume names
 //	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
+//	briard-guest-agent --test-launch    the cheap self-test a staged copy passes before it is
+//	                                    trialled ([B.138]): execs, parses, sees the port device
 package main
 
 import (
@@ -93,7 +95,21 @@ func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent", flag.ExitOnError)
 	converge := fs.Bool("converge", false, "render, warm and start every service the replicated volume names, then exit -- briard-services.service's ExecStart")
 	convergeStop := fs.Bool("converge-stop", false, "stop the service units this node converged to -- briard-services.service's ExecStop")
+	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
 	_ = fs.Parse(args)
+
+	if *testLaunch {
+		// What a staged agent can prove without the running agent's port: it execs on this
+		// kernel and libc (we are here), its flags parse (they did), and the control port device
+		// the real start will open exists. The running agent holds the port, so opening it is
+		// not part of the test.
+		if _, err := os.Stat(guestagent.ControlPortDev); err != nil {
+			fmt.Fprintf(os.Stderr, "briard-guest-agent: test launch: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("briard-guest-agent: test launch ok")
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -128,6 +144,14 @@ func runInternal(args []string) {
 // guestStopGrace bounds the case where even that is not enough -- the host's clean-shutdown
 // timing ([B.51], [B.127]) depends on this process actually ending.
 func runGuest(ctx context.Context) error {
+	// THE PUSH PROTOCOL'S START-TIME DUTY ([B.138]), before the port: a trial start is the
+	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
+	// verdict exits here, port never opened, so the host's reconnect meets the committed agent
+	// and reads the old release. A non-trial start with a staged set left behind discards it.
+	x := guestagent.NewOSExecutor()
+	if err := guestagent.BinStartup(ctx, x, log.Printf); err != nil {
+		return err
+	}
 	conn, err := os.OpenFile(guestagent.ControlPortDev, os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -143,7 +167,7 @@ func runGuest(ctx context.Context) error {
 	// ExecStartPost commits a pushed binary only after this. A pushed agent that cannot open the
 	// port never says it, and the next start falls back to the committed one.
 	_ = sdnotify.Ready()
-	if err := guestagent.ServeStamped(ctx, conn, guestagent.NewOSExecutor()); err != nil {
+	if err := guestagent.ServeStamped(ctx, conn, x); err != nil {
 		return err
 	}
 

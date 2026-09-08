@@ -1141,9 +1141,30 @@ in
         #
         # ExecCondition rather than ExecStartPre: 1..254 SKIPS the unit and does NOT mark it
         # failed, so a Secondary quietly declines instead of failing into FailureAction=reboot.
-        ExecCondition = "${pkgs.writeShellScript "briard-hold-only-if-primary" ''
-          ${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'
-        ''}";
+        #
+        # ⚠️ AND ONLY IF THIS IS NOT A DRESS TRIAL ([B.138]; owner: "certainly don't demote as a
+        # result of a procedure we design to be controllable"). The trial restarts the front door
+        # and the dashboard onto the pushed binaries to see whether they really start, and a
+        # staged copy that exits 1 fails an EXPLICITLY REQUESTED start -- which lands the unit in
+        # `failed`, because `RestartMode=direct` spares only the auto-restart path, not this one.
+        # So `OnFailure=` fired, a controlled upgrade demoted the node and masked the target, and
+        # nothing could promote it again (measured: install-macvtap, the first full run of
+        # [B.138]). The trial raises this flag for the few seconds it is restarting the doors, and
+        # the failure it deliberately provokes is answered by the pivot instead: the door reverts
+        # to the committed binary by its own auto-restart, the trial is refused, the house keeps
+        # serving. The flag is on tmpfs and every guest-agent start clears it (guestagent/bin.go),
+        # so no crash can leave this node unable to hand the house on past one restart.
+        ExecCondition = [
+          "${pkgs.writeShellScript "briard-hold-not-during-a-dress-trial" ''
+            if [ -e /run/briard-bin/trial-in-progress ]; then
+              echo "briard-promotion-hold: a guest dress is trialling the doors; a member that fails its trial reverts in place, so this node is NOT demoting" >&2
+              exit 1
+            fi
+          ''}"
+          "${pkgs.writeShellScript "briard-hold-only-if-primary" ''
+            ${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'
+          ''}"
+        ];
         # 1. refuse promotion, 2. stop the chain (this IS the demote), 3. confirm we really are
         #    Secondary or escalate. Each is its own ExecStartPre so a failure names its own step.
         #
@@ -1611,12 +1632,12 @@ in
         # reloads the file on mtime anyway, so an install that lands later needs nothing from
         # systemd -- this ordering only spares a freshly-promoted node from a few seconds of
         # serving its own page over services it already runs.
-        # THROUGH THE PIVOT ([B.86j], pivot.nix): the picker runs the binary the host pushed when
-        # there is one, else this baked firmware copy; READY means "listening" (reverse-proxy
-        # says it after both binds), and the commit runs only after that.
+        # THROUGH THE PIVOT ([B.86j], [B.138], pivot.nix): the picker runs the copy the host pushed,
+        # and nothing else -- the image bakes no door. READY means "listening" (reverse-proxy says it
+        # after both binds), which is what a trial agent reads as its verdict on the pushed copy;
+        # the commit is the agent unit's, for the whole set.
         Type = "notify";
-        ExecStartPost = "${config.briard.pivot.commit} briard-reverse-proxy";
-        ExecStart = "${config.briard.pivot.exec} briard-reverse-proxy ${pkgs.reverse-proxy}/bin/reverse-proxy"
+        ExecStart = "${config.briard.pivot.exec} briard-reverse-proxy -"
           + " -http :80 -listen :443"
           + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem"
           # Every name the table does not route -- the bare IP, the node's own name -- goes to the
@@ -1635,6 +1656,9 @@ in
         # must not hold the volume.
         RestartMode = "direct";
         RestartSec = 2;
+        # A staged copy that execs but never says READY must fail inside the trial agent's watch
+        # ([B.138]); the real one says READY at listen within milliseconds, so 10 s is generous.
+        TimeoutStartSec = 10;
       };
       # The same budget as the publishers, deliberately identical -- see briard-mdns above for the
       # semantics and why the number is a judgement ([B.125]). It matters more here than the shape
@@ -1658,10 +1682,17 @@ in
       description = "Briard household dashboard (behind the front door)";
       after = [ "briard-data.service" "briard-services.service" ];
       serviceConfig = {
-        ExecStart = "${pkgs.dashboard}/bin/dashboard -listen 127.0.0.1:8087";
+        # THROUGH THE PIVOT ([B.138], pivot.nix): the copy the host pushed, and nothing else -- the
+        # image bakes no dashboard. Type=notify, READY at listen, so a trial agent reads this
+        # unit's start as its verdict on the pushed copy.
+        Type = "notify";
+        ExecStart = "${config.briard.pivot.exec} briard-dashboard - -listen 127.0.0.1:8087";
         Restart = "on-failure";
         RestartMode = "direct";
         RestartSec = 2;
+        # A staged copy that execs but never says READY must fail inside the trial agent's watch
+        # ([B.138]); the real one says READY at listen within milliseconds, so 10 s is generous.
+        TimeoutStartSec = 10;
       };
       unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;

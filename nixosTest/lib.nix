@@ -281,6 +281,11 @@ let
     { config, ... }:
     {
       imports = [ guestModule ];
+      # No host pushes the doors into a nixosTest machine ([B.138]): link them in as if dressed.
+      briard.pivot.preDressed = {
+        briard-reverse-proxy = "${pkgs.reverse-proxy}/bin/reverse-proxy";
+        briard-dashboard = "${pkgs.dashboard}/bin/dashboard";
+      };
       virtualisation.emptyDiskImages = mkIf (!diskless) [ 256 ];
       networking.interfaces.eth1.ipv4.addresses = [
         {

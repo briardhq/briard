@@ -60,7 +60,21 @@ func main() {
 	certPath := flag.String("cert", "/var/lib/briard/tls/fullchain.pem", "certificate chain PEM (on the DRBD volume)")
 	keyPath := flag.String("key", "/var/lib/briard/tls/key.pem", "private key PEM (on the DRBD volume)")
 	fallbackFlag := flag.String("fallback", "", "where a name this node does not route is forwarded: the household dashboard (empty answers 503)")
+	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): exec, parse, bind-and-release a loopback port, exit 0")
 	flag.Parse()
+	if *testLaunch {
+		// A staged copy proving itself before it is trialled ([B.138]): it execs here, its flags
+		// parsed, and the network stack it links can bind -- on an ephemeral loopback port,
+		// never the real ones (in use on a primary). The cert and the table are allowed to be
+		// absent, as they are on a secondary; the real start tolerates both.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			log.Fatalf("reverse-proxy: test launch: %v", err)
+		}
+		ln.Close()
+		fmt.Println("reverse-proxy: test launch ok")
+		return
+	}
 	var fallback *url.URL
 	if *fallbackFlag != "" {
 		u, err := url.Parse(*fallbackFlag)

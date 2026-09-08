@@ -44,7 +44,7 @@
         "agent/cmd/briard-guest-agent" "agent/drbd" "agent/guestagent" "agent/hass" "agent/mosquitto"
         "agent/quadlet" "agent/services" "shared"
       ];
-      guestInputDirs = [ "guest-image" "reverse-proxy" "dashboard" ] ++ guestInputPackages;
+      guestInputDirs = [ "guest-image" ] ++ guestInputPackages; # the door and the dashboard are pushed, not baked ([B.138])
       noTests = path: type: !(lib.hasSuffix "_test.go" (baseNameOf path)) && baseNameOf path != "testdata";
       inputPath = p: toString (builtins.path { path = ./. + "/${p}"; name = builtins.replaceStrings [ "/" ] [ "-" ] p; filter = noTests; });
       guestInputs = builtins.hashString "sha256" (lib.concatStringsSep "\n" (

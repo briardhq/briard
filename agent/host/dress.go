@@ -13,39 +13,55 @@ import (
 	"briard.io/shared/notify"
 )
 
-// DRESSING THE GUEST ([B.86j]). Every briard binary the guest runs rides the HOST bundle: the
-// committed tree at <base>/guest -> guest-<release>/bin/{briard-guest-agent,briard-reverse-proxy}.
-// The image bakes a FIRMWARE copy of each, and the guest's overlay is disposable, so every launch
-// starts as firmware; the host compares the bundle the guest reports in its handshake with the
-// tree it holds and pushes when they differ -- at bring-up, after a host commit, after any guest
-// relaunch. A convergence the committed agent performs, the same way it pushes the hostname and
-// the addresses: not a third update mechanism.
+// DRESSING THE GUEST ([B.86j], re-cut by [B.138]). Every briard binary the guest runs rides the
+// HOST bundle: the committed tree at <base>/guest -> guest-<release>/bin/{briard-dashboard,
+// briard-reverse-proxy,briard-guest-agent}. The image bakes ONE firmware binary, the guest agent
+// (what receives the first push); the guest's overlay is disposable, so every launch starts as
+// firmware with no door at all; the host compares the bundle the guest reports in its handshake
+// with the tree it holds and pushes when they differ -- at bring-up (BEFORE rejoin, so nothing
+// can promote an undressed node), after a host commit, after any guest relaunch. A convergence
+// the committed agent performs, the same way it pushes the hostname and the addresses: not a
+// third update mechanism.
 //
-// The pivot commits the FILES, not the delivery. The host's own trial gate stays "the agent
-// started"; a host update never waits for its guest to be dressed ([V3.32]: a host update may be
-// what fixes the guest). What the guest does with the push is its own frozen pivot's business
-// (guest-image/pivot.nix): trial -> pushed -> baked, READY at listen, a pushed binary that will
-// not start reverts on its next start with no channel and no timer. The host learns the outcome
-// from the next handshake: the new id means done, the old one means the trial reverted.
+// THE SET COMMITS AS ONE, OR NOT AT ALL (owner, 2026-09-08). The push is stage, prove, arm:
+// every file staged, then `bin.test` runs each staged copy's --test-launch in the guest -- the
+// cheap gate; a failure names the binary, the guest discards the whole staged set, nothing is
+// armed, and the dress is REFUSED here and now -- then `bin.activate` arms every name and
+// restarts the guest agent's unit alone. That agent's start is the verdict on the rest: where a
+// door is running (the primary; a single node is always the primary, which is where there is no
+// peer to fall back on) it try-restarts it onto the staged copy and reads READY or failure; on a
+// secondary the doors are not running and the cheap gate was the only one. Only a passing
+// verdict opens the port, and its ExecStartPost commits the set plus the release id together.
+// A failed door has already reverted itself by its own auto-restart (flag consumed), one start
+// out of its budget -- a failed upgrade never demotes; the refused agent exits without opening
+// the port, the committed agent comes back, discards the staged set and puts both doors on the
+// committed files. (guest-image/pivot.nix, agent/guestagent/bin.go.)
+//
+// The host's own trial gate stays "the agent started"; a host update never waits for its guest
+// to be dressed ([V3.32]: a host update may be what fixes the guest). The host learns the outcome
+// from the next handshake: the new id means the set took, the old one means it was refused --
+// and because the port opens only after the verdict, there is no handshake in between.
 //
 // THE REVERT IS PERMANENT, and the host is what makes it so (owner, 2026-09-07). The guest's own
 // fallback only lasts until its next launch -- a fresh overlay knows nothing, so the next boot
-// would trial the same bad bundle again and, failing, fall back to the image's FIRMWARE, which
-// may be months older than what the guest ran yesterday. So the host keeps two facts beside the
-// committed tree: `guest.good`, a link to the last tree a dress was JUDGED to have taken (the
-// guest came back reporting it), and `guest.reverted`, the release id of a tree the guest refused.
-// A refused release is never pushed again; the good tree is pushed instead, on every launch,
-// until a new host commit brings a new tree. Host and guest are then on different releases, and
-// the status line says so (GuestBundle names the good tree) -- the ordinary transient every
-// rollout passes through, held for one release rather than papered over. No joint host+guest
-// commit: that would have to answer what a host does when its guest is down, and the answer is
-// this: it commits its own bundle and converges the guest when it can.
+// would trial the same bad bundle again. So the host keeps two facts beside the committed tree:
+// `guest.good`, a link to the last tree a dress was JUDGED to have taken (the guest came back
+// reporting it), and `guest.reverted`, the release id of a tree the guest refused -- at the
+// cheap gate or at the trial, the record is the same. A refused release is never pushed again;
+// the good tree is pushed instead, on every launch, until a new host commit brings a new tree.
+// Host and guest are then on different releases, and the status line says so (GuestBundle names
+// the good tree) -- the ordinary transient every rollout passes through, held for one release
+// rather than papered over. No joint host+guest commit: that would have to answer what a host
+// does when its guest is down, and the answer is this: it commits its own bundle and converges
+// the guest when it can. Since the guest commits as a whole, a host tree and the guest's set
+// always correspond.
 
-// dresser is what dressGuest needs of a guest: the handshake facts and the two push verbs.
+// dresser is what dressGuest needs of a guest: the handshake facts and the three push verbs.
 type dresser interface {
 	SupportsBinPush() bool
 	Bundle() string
 	BinStage(ctx context.Context, name string, r io.Reader) error
+	BinTest(ctx context.Context, names []string) error
 	BinActivate(ctx context.Context, release string, names []string) error
 }
 
@@ -54,7 +70,8 @@ type dressOutcome int
 
 const (
 	dressUnchanged dressOutcome = iota // the guest already runs the bundle the host wants it on (or there is none)
-	dressPushed                        // the bundle was staged and activated; the channel is about to drop
+	dressPushed                        // the set was staged, proven and activated; the channel is about to drop
+	dressRefused                       // a staged copy failed its test launch; nothing armed, the guest untouched, the release recorded as refused
 	dressFirmware                      // the guest predates the push protocol; left on its firmware
 	dressFailed                        // a push verb failed; the guest is untouched and serving
 )
@@ -85,8 +102,9 @@ func (cfg Config) guestWant() (release string, skippedReverted bool) {
 // dressGuest compares what the guest runs with what the host wants it on and pushes when they
 // differ. It returns dressPushed when the activation was accepted -- the guest agent's unit is
 // restarting, so the caller must reconnect and handshake again before using the channel -- and
-// never fails bring-up: a guest that cannot be dressed is a guest on its firmware, which serves,
-// and the mismatch stays visible in the status line for the cloud to act on.
+// dressRefused when the guest's cheap gate rejected a staged copy (recorded by the caller). It
+// never fails bring-up: a guest that cannot be dressed is a guest on what it ran before, and the
+// mismatch stays visible in the status line for the cloud to act on.
 func (cfg Config) dressGuest(ctx context.Context, g dresser, logf func(string, ...any)) dressOutcome {
 	want, skipped := cfg.guestWant()
 	have := g.Bundle()
@@ -106,7 +124,7 @@ func (cfg Config) dressGuest(ctx context.Context, g dresser, logf func(string, .
 		return dressUnchanged
 	}
 	if !g.SupportsBinPush() {
-		logf("guest bundle: the guest runs its firmware and cannot be dressed (no bin.stage/bin.activate); host holds %s", want)
+		logf("guest bundle: the guest runs its firmware and cannot be dressed (no bin.stage/bin.test/bin.activate); host holds %s", want)
 		return dressFirmware
 	}
 	tree := cfg.layout().GuestTree(want)
@@ -131,11 +149,15 @@ func (cfg Config) dressGuest(ctx context.Context, g dresser, logf func(string, .
 			return dressFailed
 		}
 	}
+	if err := g.BinTest(ctx, guestagent.BinNames); err != nil {
+		logf("guest bundle: PUSH REFUSED -- %s's set failed the guest's test launch (%v); nothing was armed, the guest stays on %s, and %s will not be pushed again", want, err, orFirmware(have), want)
+		return dressRefused
+	}
 	if err := g.BinActivate(ctx, want, guestagent.BinNames); err != nil {
 		logf("guest bundle: activating %s failed (%v); the guest stays on %s", want, err, orFirmware(have))
 		return dressFailed
 	}
-	logf("guest bundle: %s staged and activated in %s; the guest agent restarts on it", want, time.Since(started).Round(time.Millisecond))
+	logf("guest bundle: %s staged, proven and activated in %s; the guest agent restarts on it and its start is the verdict", want, time.Since(started).Round(time.Millisecond))
 	return dressPushed
 }
 
@@ -148,9 +170,10 @@ func orFirmware(bundle string) string {
 
 // judgeDress reads the handshake AFTER a push of `pushed`: that release means the guest took it
 // -- recorded as the good tree, so a later refusal has something to fall back to -- and anything
-// else means the trial reverted: the pushed binary never said READY and the guest's own pivot
-// fell back. The refusal is recorded durably so the release is never pushed again, and said once
-// here; the observe loop raises the alert, which is where a notifier is in scope.
+// else means the trial was refused: a door failed its real launch or the agent never reached
+// READY, and the guest's own pivot fell back on the whole set. The refusal is recorded durably so
+// the release is never pushed again, and said once here; the observe loop raises the alert, which
+// is where a notifier is in scope.
 func (cfg Config) judgeDress(g dresser, pushed string, logf func(string, ...any)) (dressed bool) {
 	have := g.Bundle()
 	l := cfg.layout()
@@ -162,22 +185,34 @@ func (cfg Config) judgeDress(g dresser, pushed string, logf func(string, ...any)
 		}
 		return true
 	}
-	if err := l.MarkGuestReverted(pushed); err != nil {
-		logf("guest bundle: recording the refusal of %s failed: %v", pushed, err)
-	}
-	logf("guest bundle: PUSH REVERTED -- the guest came back on %s, not %s: the pushed binary never reached READY and its own pivot fell back; %s will not be pushed again, and the guest is dressed with the last good bundle from here on", orFirmware(have), pushed, pushed)
+	cfg.recordRefusal(pushed, logf)
+	logf("guest bundle: PUSH REVERTED -- the guest came back on %s, not %s: the trial did not pass (a door failed its real launch, or the pushed agent never reached READY) and the guest's own pivot fell back on the whole set; %s will not be pushed again, and the guest is dressed with the last good bundle from here on", orFirmware(have), pushed, pushed)
 	return false
 }
 
-// dressAndRejoin runs one dressing attempt and, when a bundle was pushed, waits for the guest
+// recordRefusal writes the durable record that makes a refusal permanent ([B.86j]).
+func (cfg Config) recordRefusal(release string, logf func(string, ...any)) {
+	if err := cfg.layout().MarkGuestReverted(release); err != nil {
+		logf("guest bundle: recording the refusal of %s failed: %v", release, err)
+	}
+}
+
+// dressAndRejoin runs one dressing attempt and, when a set was pushed, waits for the guest
 // agent to come back on the pushed (or reverted) binary, judges the handshake, and -- if the
-// push was refused -- dresses the guest with the last good bundle in the same breath, so the
-// house never runs its firmware for want of a good bundle it has. The returned client is the
-// one to keep using; after a push it is a new one.
+// push was refused, at the cheap gate or at the trial -- dresses the guest with the last good
+// bundle in the same breath, so the house never runs its firmware for want of a good bundle it
+// has. The returned client is the one to keep using; after a push it is a new one.
 func (cfg Config) dressAndRejoin(ctx context.Context, client *guestagent.Client, logf func(string, ...any)) (*guestagent.Client, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		want, _ := cfg.guestWant()
-		if cfg.dressGuest(ctx, client, logf) != dressPushed {
+		switch cfg.dressGuest(ctx, client, logf) {
+		case dressRefused:
+			// The guest discarded the set and is untouched; the channel is intact. Record it,
+			// and the next iteration wants the good tree (if any) and pushes it.
+			cfg.recordRefusal(want, logf)
+			continue
+		case dressPushed:
+		default:
 			return client, nil
 		}
 		_ = client.Close()
@@ -189,7 +224,7 @@ func (cfg Config) dressAndRejoin(ctx context.Context, client *guestagent.Client,
 		if cfg.judgeDress(client, want, logf) {
 			return client, nil
 		}
-		// Refused: the next iteration wants the good tree (if any) and pushes it.
+		// Refused at the trial: the next iteration wants the good tree (if any) and pushes it.
 	}
 	return client, nil
 }
@@ -203,6 +238,6 @@ func (cfg Config) alertGuestRevert(ctx context.Context, n notify.Notifier, logf 
 	}
 	*alerted = rev
 	good := cfg.layout().GoodGuestRelease()
-	cause := fmt.Errorf("the guest refused %s's bundle (its pushed binary never reached READY); the guest runs %s and the node will not read as converged until the next host release", rev, orFirmware(good))
+	cause := fmt.Errorf("the guest refused %s's bundle (a staged copy failed its test launch, or the trial did not pass); the guest runs %s and the node will not read as converged until the next host release", rev, orFirmware(good))
 	escalate(ctx, n, logf, "this node", "guest bundle push", rev, cause)
 }

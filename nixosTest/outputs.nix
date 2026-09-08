@@ -173,14 +173,29 @@ let
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (host + run --guest)
   # THE GUEST BUNDLE ([B.86j]): every briard binary the guest runs, built with the HOST release's
   # version because it ships in the host chain and is pushed by the host at every bring-up. The
-  # image bakes its own FIRMWARE copies (guestDisk, stamped with the image's build); these are
-  # what the guest actually runs once dressed. One directory, `bin/<name>`, the names the guest's
-  # pivot and the push verbs agree on (agent/guestagent/bin.go BinNames).
+  # image bakes ONE firmware copy, the guest agent ([B.138]: it receives the first push); the door
+  # and the dashboard exist in the guest only once pushed. One directory, `bin/<name>`, the names
+  # the guest's pivot and the push verbs agree on (agent/guestagent/bin.go BinNames).
   guestAgentPkg = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; version = agentVersion; };
   guestBundle = pkgs.runCommand "briard-guest-bundle-${agentVersion}" { } ''
     mkdir -p $out/bin
     install -m0755 ${guestAgentPkg}/bin/briard-guest-agent $out/bin/briard-guest-agent
     install -m0755 ${pkgs.reverse-proxy}/bin/reverse-proxy $out/bin/briard-reverse-proxy
+    install -m0755 ${pkgs.dashboard}/bin/dashboard $out/bin/briard-dashboard
+  '';
+
+  # THE LAYOUT A RIG'S HOST DRESSES FROM ([B.138]). install.sh lays this on every install, so a
+  # host without it is not a product state -- and since the image bakes no door, a guest launched
+  # by a host that holds no bundle tree can never serve. The five rigs that launch a REAL guest
+  # (agent-bringup/readopt/recover/watchdog, guest-rescue) copy this to UPDATE_BASE and let the
+  # host dress the guest exactly as the product does; before [B.138] they leaned on the image's
+  # baked door instead, which is why they needed nothing. Copied, not linked: the host writes
+  # `guest.good` beside the tree.
+  rigGuestRelease = "v3.20260908.rig00000";
+  dressBase = pkgs.runCommand "briard-rig-dress-base" { } ''
+    mkdir -p $out/guest-${rigGuestRelease}
+    cp -r ${guestBundle}/bin $out/guest-${rigGuestRelease}/bin
+    ln -s guest-${rigGuestRelease} $out/guest
   '';
 
   # The macvtap fd-passing launch wrapper, installed +x (a bare store source file is 0444,
@@ -189,10 +204,10 @@ let
   netWrap = pkgs.runCommand "briard-net-wrap" { } ''
     install -Dm0755 ${../scripts/briard-net-wrap.sh} $out/bin/briard-net-wrap
   '';
-  agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; };
-  agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # restart transparent to guest
-  agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # host restarts a wedged guest
-  agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; }; # V3.32: init restarts a wedged AGENT
+  agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; };
+  agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # restart transparent to guest
+  agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # host restarts a wedged guest
+  agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # V3.32: init restarts a wedged AGENT
   # The image the guest chain moves a node TO ([B.86h]): the shipped disk plus one /etc file,
   # so its toplevel -- what the manifest names and what the booted guest must report -- differs
   # from the shipped one while everything else is identical.
@@ -214,7 +229,7 @@ let
     ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain guest --release "$GV"  --system ${guestDisk.system}     --min-host "$V"
     ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain guest --release "$GV2" --system ${nextGuestDisk.system} --min-host "$V"
   '';
-  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # B.10: rebuild the guest from its image, keep the data; B.86h: move it to a new image
+  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # B.10: rebuild the guest from its image, keep the data; B.86h: move it to a new image
 
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
   # a SHORT T_deadman so the reflex fires in seconds (baked into the guest-agent unit's env).

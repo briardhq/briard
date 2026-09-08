@@ -58,7 +58,7 @@
 #
 # Heavy (nested VM), so it rides the `integration` tag. Run:
 #   nix build .#tests.agent-watchdog -L
-{ pkgs, guestDisk, agent, netWrap }:
+{ pkgs, guestDisk, agent, netWrap, dressBase }:
 pkgs.testers.runNixOSTest {
   name = "agent-watchdog";
   skipTypeCheck = true; # dynamic asserts
@@ -98,6 +98,8 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_DISK = "/tmp/guest.qcow2";
+          # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+          UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
@@ -159,6 +161,10 @@ pkgs.testers.runNixOSTest {
     # the guest converges (that takes minutes). Gated on first healthy convergence, as it was
     # before V3.32, systemd would kill this unit at TimeoutStartSec=30 instead.
     t0 = int(host.succeed("date +%s").strip())
+    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the
+    # image bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the
+    # store because the host writes `guest.good` beside the tree.
+    host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
     host.succeed("systemctl start briard-agent")
     t1 = int(host.succeed("date +%s").strip())
     started = t1 - t0

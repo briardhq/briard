@@ -18,6 +18,17 @@ type fakeDresser struct {
 	activate []string
 	release  string
 	stageErr error
+	testErr  error    // what bin.test answers; the guest has discarded the staged set by then
+	tested   []string // the names bin.test was asked to prove
+}
+
+func (f *fakeDresser) BinTest(_ context.Context, names []string) error {
+	f.tested = names
+	if f.testErr != nil {
+		f.staged = nil
+		return f.testErr
+	}
+	return nil
 }
 
 func (f *fakeDresser) SupportsBinPush() bool { return f.push }
@@ -76,6 +87,17 @@ func TestDressGuestPushesWhenTheBundleDiffers(t *testing.T) {
 	}
 	if g.release != "v3.20260907.abc1234" || len(g.activate) != len(guestagent.BinNames) || g.activate[len(g.activate)-1] != "briard-guest-agent" {
 		t.Errorf("activated %v as %q; the guest agent must be last", g.activate, g.release)
+	}
+	if len(g.tested) != len(guestagent.BinNames) {
+		t.Errorf("bin.test was asked to prove %v, want the whole set", g.tested)
+	}
+
+	// THE CHEAP GATE ([B.138]): a staged copy that fails its test launch refuses the dress before
+	// anything is armed -- and the refusal is recorded like a trial's, so the release is never
+	// pushed again and the good tree (none here) is what a later launch gets.
+	g = &fakeDresser{push: true, bundle: "v3.20260901.old0000", testErr: io.ErrUnexpectedEOF}
+	if got := cfg.dressGuest(context.Background(), g, logf); got != dressRefused || g.activate != nil {
+		t.Errorf("failed test launch: outcome %v, activated %v", got, g.activate)
 	}
 
 	// A guest already on the bundle is left alone.

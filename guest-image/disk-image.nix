@@ -269,13 +269,14 @@ let
         # unchanged, and correct; what was wrong was the assumption that made it free.
         startLimitIntervalSec = 0; # [Unit] section: never permanently give up on this channel
         serviceConfig = {
-          # THROUGH THE PIVOT ([B.86j], pivot.nix): the binary the host pushed when there is one,
-          # else the baked firmware. READY at listen (main.go), and the commit only after it --
-          # with --release, because the guest agent is the LAST binary an activation restarts,
-          # so its commit is what makes the handshake report the new bundle.
+          # THROUGH THE PIVOT ([B.86j], [B.138], pivot.nix): the binary the host pushed when there is one,
+          # else the baked firmware -- the agent is the ONE binary the image bakes ([B.138]). READY
+          # only after the trial verdict and at listen (main.go), and
+          # the ONE commit of the whole pushed set only after that -- this unit is the one an
+          # activation restarts, and its start is the verdict on the doors.
           Type = "notify";
           ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardAgent}/bin/briard-guest-agent run --guest";
-          ExecStartPost = "${config.briard.pivot.commit} briard-guest-agent --release";
+          ExecStartPost = config.briard.pivot.commit;
           Restart = "always";
           RestartSec = 1;
         };
