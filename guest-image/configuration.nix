@@ -1142,36 +1142,22 @@ in
         # ExecCondition rather than ExecStartPre: 1..254 SKIPS the unit and does NOT mark it
         # failed, so a Secondary quietly declines instead of failing into FailureAction=reboot.
         #
-        # ⚠️ AND ONLY IF THIS IS NOT A DRESS TRIAL ([B.138]; owner: "certainly don't demote as a
-        # result of a procedure we design to be controllable"). The trial restarts the front door
-        # and the dashboard onto pushed binaries to see whether they really start, and it is the
-        # START BUDGET this protects, not the failure. An auto-restart under `RestartMode=direct`
-        # skips failed/inactive and skips `OnFailure=` -- for a start that failed exactly as for a
-        # crash while running -- so one failed trial start reaches this unit not at all. What
-        # reaches it is a member with no restart left: StartLimitBurst spent inside
-        # StartLimitIntervalSec. A trial spends up to three of the doors' five (the trial start,
-        # its auto-restart, the aftermath's restart), so a door that had already burned starts for
-        # unrelated reasons could cross the limit DURING an upgrade and hand the house on for it.
-        # The flag makes that impossible while it is up, and the commit gives the doors their
-        # budget back (pivot.nix `reset-failed`). It is on tmpfs and every guest-agent start
-        # clears it (guestagent/bin.go), so no crash can leave this node unable to hand the house
-        # on past one restart.
-        #
-        # (The demote measured on the first full install-macvtap run of [B.138] was NOT this
-        # window: a blind verdict had committed a door binary that exits 1, so every later start
-        # failed, the budget went in ~10 s, and this unit then fired CORRECTLY on a member that
-        # genuinely could not start. That verdict is fixed; this guard is the narrower case.)
-        ExecCondition = [
-          "${pkgs.writeShellScript "briard-hold-not-during-a-dress-trial" ''
-            if [ -e /run/briard-bin/trial-in-progress ]; then
-              echo "briard-promotion-hold: a guest dress is trialling the doors; a member that fails its trial reverts in place, so this node is NOT demoting" >&2
-              exit 1
-            fi
-          ''}"
-          "${pkgs.writeShellScript "briard-hold-only-if-primary" ''
-            ${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'
-          ''}"
-        ];
+        # ⚠️ AND NOTHING ABOUT DRESS TRIALS HERE, deliberately ([B.138]). A dress restarts the
+        # front door and the dashboard onto pushed binaries to see whether they really start, so
+        # it can provoke exactly the failure this unit answers -- but a single failed start never
+        # reaches here: an auto-restart under `RestartMode=direct` skips failed/inactive and skips
+        # `OnFailure=`, for a start that failed as much as for a crash while running. What reaches
+        # here is a member with no restart LEFT, the start limit spent. A trial costs up to three
+        # of the doors' five starts, so the trial CLEARS the counter before it begins
+        # (`systemctl reset-failed`, agent/guestagent/bin.go) and the arithmetic cannot reach the
+        # limit. An earlier cut made this unit's ExecCondition conditional on a
+        # "trial-in-progress" flag instead; the owner removed it (2026-09-08): the upgrade path is
+        # already intricate, and a rule that makes the demote hook itself conditional -- with a
+        # flag lifetime to get wrong -- buys a rarely-exercised branch where a budget reset with
+        # plain semantics does the same job.
+        ExecCondition = "${pkgs.writeShellScript "briard-hold-only-if-primary" ''
+          ${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'
+        ''}";
         # 1. refuse promotion, 2. stop the chain (this IS the demote), 3. confirm we really are
         #    Secondary or escalate. Each is its own ExecStartPre so a failure names its own step.
         #

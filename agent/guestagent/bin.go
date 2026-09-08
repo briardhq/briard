@@ -130,10 +130,6 @@ const (
 	updateSuffix     = ".update" // the picker consumes this into .trial
 	trialSuffix      = ".trial"  // "this start IS a trial"
 	ranSuffix        = ".ran"    // what the picker exec'd on the last start: trial | pushed | baked
-	// trialInProgress holds the demote hook off while the trial restarts the doors ([B.138]).
-	// Read by briard-promotion-hold's ExecCondition (guest-image/configuration.nix); the NAME is
-	// part of that contract, like the flags above.
-	trialInProgress = "trial-in-progress"
 )
 
 func binDir() string {
@@ -343,11 +339,6 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 	if _, err := os.Stat(filepath.Join(run, selfBin+trialSuffix)); err == nil {
 		return trialVerdict(ctx, x, logf)
 	}
-	// Whatever else this start is, the demote hook is live again: only a trial in progress may
-	// hold it off, and a trial that died without tidying up must not outlive its own process.
-	if err := os.Remove(filepath.Join(run, trialInProgress)); err == nil {
-		logf("bin: a previous trial left the demote hook held off; released")
-	}
 	if staged := stagedSet(); len(staged) > 0 {
 		logf("bin: a staged set (%s) was left behind by a trial that did not commit: discarding it and putting both doors back on the committed binaries", strings.Join(staged, ", "))
 		discardStaged()
@@ -363,43 +354,39 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 
 // trialVerdict is the trial agent's half of BinStartup.
 //
-// It holds the DEMOTE HOOK OFF while it is restarting doors (owner, 2026-09-08: a procedure
-// designed to be controllable must never demote), and the reason is the START BUDGET, not the
-// failure itself. systemd's rule: an auto-restart under `RestartMode=direct` skips failed and
-// inactive and skips `OnFailure=` -- for a start that failed exactly as for a crash while running
-// -- so ONE failed trial start demotes nothing. What fires the hook is a member with no restart
-// left: the start limit (5 in 300 s for the doors) exhausted. A trial spends real budget on a
-// chain member -- the trial start, its auto-restart, and the aftermath's restart, up to three of
-// the five -- so a door that had already burned starts for unrelated reasons could cross the
-// limit DURING an upgrade and hand the house on for it. This flag makes that impossible for the
-// seconds it is up; the commit also gives the doors their budget back (pivot.nix reset-failed).
+// A FAILED UPGRADE MUST NEVER DEMOTE (owner, 2026-09-08), and the whole of what that takes is
+// the two `reset-failed` calls below. systemd's rule: an auto-restart under `RestartMode=direct`
+// skips failed/inactive and skips `OnFailure=` -- for a start that FAILED exactly as for a crash
+// while running, since `Restart=` covers both -- so a door whose staged copy exits 1 fires no
+// hook at all, it just comes back on the committed binary. What fires the hook is a member with
+// no restart LEFT: `StartLimitBurst` spent inside `StartLimitIntervalSec` (5 in 300 s here). A
+// trial spends up to three of those five (the trial start, its auto-restart, the aftermath's
+// restart), so the only way an upgrade could demote is by landing on a door that had already
+// burned starts for unrelated reasons. Zeroing the counter first (reset-failed resets the start
+// rate limit and the restart counter -- systemctl(1)) makes that arithmetic impossible, with no
+// new rule anywhere else: the owner's call, over a guard that made the demote hook conditional
+// and had a flag lifetime of its own to get wrong.
 //
-// (The demote measured on the first full install-macvtap run of [B.138] was NOT this: the blind
-// verdict had committed a door binary that exits 1, so every later start of it failed, the budget
-// went in ~10 s, and the hold then fired correctly on a member that genuinely could not start.
-// Fixing the verdict removed that cause; this guard is the narrower one above.)
-//
-// The flag is what briard-promotion-hold's ExecCondition reads (guest-image/configuration.nix);
-// it is on tmpfs and cleared at every agent start below, so the worst a crash here can cost is
-// one restart's worth of a node that will not hand the house on.
+// (The demote measured on the first full install-macvtap run of [B.138] was neither of these:
+// the blind verdict had COMMITTED a door binary that exits 1, so every later start failed, the
+// budget went in ~10 s, and briard-promotion-hold fired CORRECTLY on a member that genuinely
+// could not start. Fixing the verdict removed that cause.)
 func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) error {
 	release := "?"
 	if b, err := os.ReadFile(filepath.Join(binDir(), releaseFile+nextSuffix)); err == nil {
 		release = strings.TrimSpace(string(b))
 	}
-	if err := os.WriteFile(filepath.Join(binRunDir(), trialInProgress), []byte(release+"\n"), 0o644); err != nil {
-		return fmt.Errorf("bin: trial of %s REFUSED: cannot hold the demote hook off (%w); a door that failed its trial would demote this node", release, err)
-	}
-	// NOT cleared here, on purpose. `OnFailure=` is a JOB systemd queues when the unit enters
-	// failed, and our own try-restart does not return until the unit has finished being
-	// auto-restarted -- so the hold can start AFTER the verdict is in. The flag is cleared by the
-	// commit (guest-image/pivot.nix, the passing path) or by the next agent start (BinStartup,
-	// the refused path), both of which are seconds away and neither of which races the hook.
 	for _, n := range doorNames {
 		unit := binUnits[n]
 		if !unitActive(ctx, x, unit) {
 			logf("bin: trial of %s: %s is not running here (not the primary); its staged file commits on the cheap gate alone", release, n)
 			continue
+		}
+		// A FULL START BUDGET BEFORE THE TRIAL, which is the whole of "a failed upgrade never
+		// demotes" (see above). Best-effort: a reset that fails leaves the budget as it was, and
+		// the trial is worth attempting on a door that has not been failing anyway.
+		if out, err := x.Run(ctx, "systemctl", "reset-failed", unit); err != nil {
+			logf("bin: trial of %s: could not clear %s's start budget first (%v: %s); trialling anyway", release, n, err, strings.TrimSpace(string(out)))
 		}
 		tctx, cancel := context.WithTimeout(ctx, doorTrialTimeout)
 		out, err := x.Run(tctx, "systemctl", "try-restart", unit)

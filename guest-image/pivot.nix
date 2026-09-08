@@ -110,9 +110,6 @@ let
     for name in ${lib.concatStringsSep " " names}; do
       rm -f ${runDir}/$name.trial ${runDir}/$name.update ${runDir}/$name.ran
     done
-    # The demote hook is live again: the trial raised this while it was restarting the doors, and
-    # a passing trial ends here ([B.138], agent/guestagent/bin.go BinStartup ends the other one).
-    rm -f ${runDir}/trial-in-progress
   '';
   cfg = config.briard.pivot;
 in

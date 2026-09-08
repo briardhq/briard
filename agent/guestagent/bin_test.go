@@ -243,52 +243,30 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("a passing verdict discarded the set: %v", got)
 	}
 
-	// THE DEMOTE HOOK IS HELD OFF while the doors are restarted, and released after -- a failed
-	// trial is a start systemd puts in `failed`, which would otherwise fire OnFailure and demote
-	// the node in the middle of a controlled upgrade.
-	held := ""
-	probe := &fakeExec{}
-	probe.runFn = func(name string, args []string) ([]byte, error) {
-		if len(args) > 0 && args[0] == "try-restart" {
-			if _, err := os.Stat(filepath.Join(run, "trial-in-progress")); err == nil {
-				held = "held"
-			} else {
-				held = "LIVE"
-			}
-		}
-		return s.run(name, args)
-	}
+	// A FULL START BUDGET BEFORE EACH DOOR IS TRIALLED, and this is the whole of "a failed
+	// upgrade never demotes": the hook fires on an exhausted start limit, never on one failed
+	// start, and a trial costs up to three of the five. `reset-failed` must therefore come BEFORE
+	// the restart of that same door, not after and not for some other unit.
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
-	if err := BinStartup(context.Background(), probe, logf); err != nil {
+	if err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf); err != nil {
 		t.Fatalf("primary: %v", err)
 	}
-	if held != "held" {
-		t.Errorf("the demote hook was %s while a door was restarted: a failed trial would demote the node", held)
-	}
-	// It stays held past the verdict ON PURPOSE: OnFailure is a job systemd queues when the unit
-	// enters failed, and try-restart returns only once the auto-restart is done, so the hook can
-	// start after the verdict. What ends the hold is the commit (the passing path) or the next
-	// agent start (the refused path) -- the latter proven below.
-	if _, err := os.Stat(filepath.Join(run, "trial-in-progress")); err != nil {
-		t.Error("the demote hook was released the moment the verdict was in; a late OnFailure would still demote")
-	}
-	// The refused path: the picker consumed the agent's trial flag, so the returning agent takes
-	// the ordinary route -- and that is what ends the hold.
-	os.Remove(filepath.Join(run, "briard-guest-agent.trial"))
-	if err := BinStartup(context.Background(), &fakeExec{runFn: (&systemctlFake{run_: run}).run}, logf); err != nil {
-		t.Fatalf("the next start: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(run, "trial-in-progress")); !os.IsNotExist(err) {
-		t.Error("an ordinary agent start left the demote hook held off")
-	}
-	// That start was the aftermath, so it also discarded the set. Put a fresh trial back for the
-	// cases below.
-	stageSet(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, "RELEASE.next"), []byte("v3.20260908.trial000\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.trial"), nil, 0o644); err != nil {
-		t.Fatal(err)
+	for _, unit := range []string{"briard-dashboard.service", "briard-reverse-proxy.service"} {
+		reset, restart := -1, -1
+		for i, r := range s.runs {
+			if len(r) < 3 || r[len(r)-1] != unit {
+				continue
+			}
+			if r[1] == "reset-failed" && reset < 0 {
+				reset = i
+			}
+			if r[1] == "try-restart" && restart < 0 {
+				restart = i
+			}
+		}
+		if reset < 0 || restart < 0 || reset > restart {
+			t.Errorf("%s: reset-failed at %d, try-restart at %d; the budget must be cleared before the trial spends it", unit, reset, restart)
+		}
 	}
 
 	// The primary, both doors running and both taking the staged copy: verdict pass, each door
