@@ -52,9 +52,9 @@
 , agentVersion ? "0.0.0-dev" }:
 let
   lib = nixpkgs.lib;
-  # The guest VM only ever runs `briard run --guest`, so build the trimmed guest-only binary
-  # Guest-only build: no host subsystems / net/http / TLS in the shipped guest closure.
-  briardAgent = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; version = agentVersion; };
+  # The in-guest agent: its own main ([B.137]), so the shipped guest closure links only what the
+  # guest runs -- no channel fetcher, no self-update layout, no CLI, no QEMU launcher.
+  briardAgent = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; version = agentVersion; };
 
   # Common bootable-guest modules, shared by the good and broken generations so the
   # broken one is a minimal, honest delta (only the service env differs).
@@ -274,7 +274,7 @@ let
           # with --release, because the guest agent is the LAST binary an activation restarts,
           # so its commit is what makes the handshake report the new bundle.
           Type = "notify";
-          ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardAgent}/bin/briard-agent run --guest";
+          ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardAgent}/bin/briard-guest-agent run --guest";
           ExecStartPost = "${config.briard.pivot.commit} briard-guest-agent --release";
           Restart = "always";
           RestartSec = 1;
@@ -313,7 +313,7 @@ let
         ];
         environment = { BRIARD_GATE_ADDR = ":7790"; } // guestAgentEnv;
         serviceConfig = {
-          ExecStart = "${briardAgent}/bin/briard-agent run --deadman";
+          ExecStart = "${briardAgent}/bin/briard-guest-agent run --deadman";
           Restart = "always";
           RestartSec = 2;
         };

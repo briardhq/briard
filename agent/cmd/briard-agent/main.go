@@ -1,13 +1,8 @@
-// Command agent is the host-side Briard daemon (privileged), and -- with `run --guest` --
-// the in-guest control agent that serves the host over the virtio-serial channel.
-//
-// The host half orchestrates the guest and reports status; drbd-reactor inside the
+// Command briard-agent is the host-side Briard daemon (privileged) and the `briard` operator CLI.
+// The host half orchestrates the guest and reports status; the in-guest half -- the control
+// agent that serves the host over virtio-serial, the deadman, the converge step -- is
+// briard-guest-agent, its own main with its own import graph ([B.137]). drbd-reactor inside the
 // guest drives failover.
-//
-// the host path lives behind the `!guest` build tag (runHost in main_host.go), so
-// `go build -tags guest` produces a guest-only binary that never links the host
-// subsystems (platform/QEMU launcher, net/http health probing, the TLS stack they pull
-// in) -- the binary the guest VM actually ships. The default (untagged) build keeps both.
 package main
 
 import (
@@ -23,7 +18,6 @@ import (
 	"time"
 
 	"briard.io/agent/cli"
-	"briard.io/agent/guestagent"
 	"briard.io/agent/reportcard"
 	"briard.io/agent/subnet"
 	"briard.io/shared/flockname"
@@ -34,7 +28,7 @@ func main() {
 	args := os.Args[1:]
 
 	// `run` is the DAEMON, and it is intercepted here rather than in agent/cli because the daemon
-	// modes (runHost, runGuest, RunDeadman) cannot live in the CLI package. agent/cli documents it
+	// mode (runHost) cannot live in the CLI package. agent/cli documents it
 	// in its command table all the same, so the help lists it ([V3b.23]).
 	if len(args) > 0 && args[0] == "run" {
 		runDaemon(args[1:])
@@ -53,48 +47,30 @@ func main() {
 	os.Exit(cli.Main(context.Background(), args, os.Stdout, os.Stderr))
 }
 
-// runDaemon is `briard run [--guest|--deadman]`: the long-running process, in one of its three
-// modes. The host agent is the default because it is the one a host runs.
+// runDaemon is `briard run`: the host agent, the long-running process. The in-guest modes that
+// used to hide behind `run --guest` / `run --deadman` are briard-guest-agent's now ([B.137]), a
+// different binary with a different import graph.
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard run", flag.ExitOnError)
-	guest := fs.Bool("guest", false, "run as the in-guest control agent (serve the host channel)")
-	deadman := fs.Bool("deadman", false, "run as the in-guest watchdog for the host agent")
 	_ = fs.Parse(args)
 
 	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
-	// kill: the host agent stops its guest, and the guest agent leaves its serve loop.
+	// kill: the host agent stops its guest.
 	//
 	// Note what installing this handler COSTS, because it is easy to miss: it removes Go's
 	// default "SIGTERM terminates the process". From here on, every path under this context is
 	// responsible for noticing cancellation itself, and a path parked in a blocking syscall
-	// notices nothing at all. That is precisely how the 90-second shutdown stall happened --
-	// see runGuest, which now closes its port and holds a deadline for exactly this reason.
+	// notices nothing at all.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	switch {
-	case *deadman:
-		// The host-agent deadman runs as its OWN guest service (briard-deadman), decoupled from
-		// the per-connection guest agent (which crash-loops while the host is down).
-		if err := guestagent.RunDeadman(ctx); err != nil {
-			log.Fatalf("deadman: %v", err)
-		}
-	case *guest:
-		if err := runGuest(ctx); err != nil {
-			log.Fatalf("guest agent: %v", err)
-		}
-	default:
-		// Take the notify socket out of the environment before anything is exec'd, so the
-		// children this agent spawns cannot inherit it ([V3b.21e]). Host path only: this is the
-		// mode that runs under Type=notify, and the one that shells out to `systemctl`.
-		sdnotify.Adopt()
+	// Take the notify socket out of the environment before anything is exec'd, so the
+	// children this agent spawns cannot inherit it ([V3b.21e]).
+	sdnotify.Adopt()
 
-		// Host path: boot the guest, drive bring-up, observe status. runHost is
-		// compiled out of a `-tags guest` build (main_guest.go stubs it), so the guest
-		// binary doesn't link the host subsystems.
-		if err := runHost(ctx); err != nil {
-			log.Fatalf("host agent: %v", err)
-		}
+	// Boot the guest, drive bring-up, observe status.
+	if err := runHost(ctx); err != nil {
+		log.Fatalf("host agent: %v", err)
 	}
 }
 
@@ -122,8 +98,6 @@ func runInternal(args []string) {
 	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	drawSubnets := fs.Bool("draw-subnets", false, "draw this node's two private subnets, checked against this machine's own network, and print them as SYSTEM_SUBNET=/PRIV_SUBNET= -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
-	converge := fs.Bool("converge", false, "IN-GUEST: render, warm and start every service the replicated volume names, then exit -- briard-services.service's ExecStart, not an operator command")
-	convergeStop := fs.Bool("converge-stop", false, "IN-GUEST: stop the service units this node converged to -- briard-services.service's ExecStop")
 	_ = fs.Parse(args)
 
 	// Mint the household-visible name. An installer-internal helper rather than a `briard`
@@ -175,7 +149,7 @@ func runInternal(args []string) {
 	//
 	// Same category as --report-card and --fetch-install: a pipeline invokes it, it does one
 	// thing, it exits. It costs nothing in the shipped binary -- sha256 and encoding/json are
-	// already linked -- and runStageManifest is stubbed out of a `-tags guest` build, so the
+	// already linked -- and the guest agent is its own main ([B.137]), so the
 	// guest trim is unaffected.
 	if *stageManifest != "" {
 		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinHost, *stageGuest, *stageInputs); err != nil {
@@ -199,7 +173,7 @@ func runInternal(args []string) {
 
 	// The installer's signed-artifact fetch (assertion e) -- verify the qemu bundle +
 	// guest image against the release keyring before install.sh uses them. Host-only (it pulls
-	// in net/http); runFetchInstall is stubbed out of a `-tags guest` build.
+	// in net/http); the guest agent is its own main and never sees it ([B.137]).
 	if *fetchInstall != "" {
 		if err := runFetchInstall(ctx, *fetchInstall); err != nil {
 			log.Fatalf("fetch-install: %v", err)
@@ -244,140 +218,9 @@ func runInternal(args []string) {
 		return
 	}
 
-	// Converge-at-promotion, in the guest ([V3b.3](f)). briard-services.service runs these as a
-	// promoter CHAIN MEMBER between the data mount and the VIP, so the exit code is load-bearing:
-	// a non-zero ExecStart fails the whole promotion, the node never claims the VIP, and a primary
-	// with no address is already reported unhealthy. That is the design -- converge failing is a
-	// node that cannot serve, and it must say so rather than promote into a broken state. (A
-	// SERVICE that fails to start is a different thing and never reaches here; Converge logs it
-	// and returns nil.)
-	//
-	// Flags rather than `briard` verbs for the same reason as --guest-shutdown: nobody types them.
-	// They are plumbing between the agent and a unit file, and drbd-reactor is the only caller.
-	if *converge || *convergeStop {
-		// Converge's skip list is DROPPED here on purpose. This is drbd-reactor's call, and a
-		// service it could not prepare must not fail the unit: briard-services is a chain member,
-		// so exiting non-zero would take the promotion down over one service's packaging. Converge
-		// has already logged which one and declined to start it. The install path reads the list
-		// through the verb, where failing IS the right answer.
-		run, what := func(ctx context.Context, x guestagent.Executor) error {
-			_, err := guestagent.Converge(ctx, x)
-			return err
-		}, "converge"
-		if *convergeStop {
-			run, what = guestagent.ConvergeStop, "converge-stop"
-		}
-		if err := run(ctx, guestagent.NewOSExecutor()); err != nil {
-			log.Fatalf("%s: %v", what, err)
-		}
-		return
-	}
-
 	// A leading '-' that named none of the above. Not a daemon invocation: since [V3b.23] the
 	// daemon is `briard run`, and falling through to it here would resurrect the very "a stray
 	// flag silently starts a privileged process" behaviour this recut removed.
 	fmt.Fprintf(os.Stderr, "briard: no internal helper named in %q (did you mean `briard run`?)\n", strings.Join(args, " "))
 	os.Exit(2)
 }
-
-// runGuest opens the virtio-serial port and serves the guestagent dispatch loop.
-func runGuest(ctx context.Context) error {
-	conn, err := os.OpenFile(guestagent.ControlPortDev, os.O_RDWR, 0)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	// Make SIGTERM actually stop this process. Cancelling the context is not enough on
-	// its own: the serve loop can only observe cancellation BETWEEN frames, and between them it
-	// is parked in a blocking read on the virtio-serial port, which no context can interrupt.
-	// The cost was concrete and load-bearing -- the guest did all its real shutdown work in ~25s
-	// and then systemd sat on this unit for the full 90s TimeoutStopSec before SIGKILLing it,
-	// which was 90 of the 94 seconds an OS reboot upgrade took. Worse, that SIGKILL is exactly
-	// the power cut the clean-shutdown path exists to avoid, arriving on the one machine whose job is not
-	// losing data.
-	//
-	// Two mechanisms, because one is fast and the other is certain:
-	//
-	//   Closing the port unblocks a read already in flight -- measured, it returns "file already
-	//   closed" immediately -- but ONLY while the port is registered with Go's runtime poller.
-	//   Whether a character device is depends on the runtime's judgement about the fd, which is
-	//   not ours to promise, so it cannot be the whole answer. THE CLOSE BELONGS TO THE SERVE
-	//   LOOP, not to this goroutine: it holds it until an answer already being written has
-	//   reached the host, because the one verb whose reply is always in flight at cancellation is
-	//   `os.poweroff` -- the shutdown it starts is what sends this process its SIGTERM -- and
-	//   losing that reply told the host its guest agent had died ([B.127], guestagent.serve).
-	//
-	//   The deadline covers the case where the close is not enough. A process that was asked to
-	//   stop and has not is a process to end, and this is the backstop for a handler that never
-	//   returns at all -- the alternative it replaces is the same exit 90 seconds later, with a
-	//   SIGKILL on top. Exit 0 because a deliberate stop is not a failure; systemd does not
-	//   restart a unit it is stopping, and Restart=always already treats the ordinary EOF exit
-	//   this way.
-	go func() {
-		<-ctx.Done()
-		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
-	}()
-
-	// ServeStamped bumps the deadman's contact stamp on each request; the deadman itself runs in
-	// its own process (briard-deadman → RunDeadman), decoupled from this connection lifecycle.
-	// READY at listen ([B.86j]): the unit is Type=notify under the guest's frozen pivot, and
-	// its ExecStartPost commits a pushed binary only after this. A pushed agent that cannot
-	// open the port never says it, and the next start falls back to the committed one.
-	_ = sdnotify.Ready()
-	if err := guestagent.ServeStamped(ctx, conn, guestagent.NewOSExecutor()); err != nil {
-		return err
-	}
-
-	// Clean EOF: the host end went away. The unit's Restart=always puts this process straight back
-	// on a freshly opened port for the next host connection -- but only the FIRST of those restarts
-	// is a reconnect. While the host agent is down for good (stopped, not bouncing), the reopened
-	// port reports EOF the instant it is read: qemu's chardev is `server=on,wait=off`, and
-	// virtio-serial reports "no host attached" as end-of-file rather than by blocking. So exiting
-	// immediately is a crash loop -- measured at ~48 restarts in 30s ([B.35]) -- that spams the
-	// journal and churns the restart counter for the whole outage without bringing the channel back
-	// one second sooner. Pausing here delays a genuine reconnect by at most hostAbsentPause, which
-	// the host's own re-dial retry already absorbs, and turns the loop into a slow knock.
-	//
-	// Deliberately NOT a retry on this same fd: reopening per connection is the shipped behaviour of
-	// the one channel the product cannot lose, and this bug is cosmetic. Slow the loop, don't
-	// redesign it.
-	//
-	// CLOSE BEFORE PAUSING, and that ordering is the whole fix. The busy loop this replaced was
-	// load-bearing for RE-ADOPT: with the guest port closed, qemu's virtio-serial flow control
-	// stops draining the chardev socket, so a returning host agent's handshake request waits in
-	// the socket buffer until the next instance opens the port and reads it. Pausing with the port
-	// still OPEN reverses that -- qemu hands the frame into a port nobody is reading, and closing
-	// the fd on the way out DISCARDS it. The host then waits out its handshake deadline for a reply
-	// to a request that no longer exists, drops the connection, EOFs us again, and re-arms the same
-	// cycle: `systemctl restart briard-agent` could never re-attach to a live guest (the agent
-	// self-update path), which is what agent-readopt caught. The pause costs the host at most
-	// hostAbsentPause of delay, which its handshake deadline absorbs; holding the port through it
-	// costs the channel outright.
-	conn.Close() // hand the port back so qemu buffers the next host request instead of losing it
-	select {
-	case <-ctx.Done():
-	case <-time.After(hostAbsentPause):
-	}
-	return nil
-}
-
-// hostAbsentPause is how long a guest agent that found no host on the port waits before exiting
-// into systemd's restart. Short enough that a returning host agent is not kept waiting (its dial
-// retries anyway), long enough that a host-down window costs a handful of restarts instead of
-// hundreds.
-const hostAbsentPause = 5 * time.Second
-
-// guestStopGrace is how long a cancelled guest agent may take to unwind before it is ended
-// outright. Long enough for an in-flight verb to finish and answer, short enough that a stop is
-// still a stop -- and deliberately far below systemd's 90s TimeoutStopSec, so the agent decides
-// its own exit instead of being killed. Not a timeout tuned around a race: the close above is the
-// mechanism, and this only runs when the port turns out not to be interruptible.
-const guestStopGrace = 5 * time.Second
-
-// The backstop must outlast the longest verb that keeps running AFTER cancellation, or it ends
-// the process before that verb's reply is written -- turning the [B.132] fix back into the
-// [B.127] symptom it was first mistaken for. `os.poweroff` is the only such verb, and the two
-// constants live in different packages, so this is the thing that notices when one of them
-// moves: a compile error the moment they cross.
-const _ = uint(guestStopGrace - guestagent.PowerOffGrace)

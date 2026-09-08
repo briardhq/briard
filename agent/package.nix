@@ -1,17 +1,16 @@
 # The Briard agent binary, built from the repo's Go module. External deps are
 # kept minimal (CONTRIBUTING.md: new dependencies default to no); currently lego (ACME DNS-01) + its tree,
-# vendored via vendorHash. Runs host-side on the machine, or `run --guest` inside the
-# guest VM to serve the host over the virtio-serial channel.
+# vendored via vendorHash. Two mains share the module: the host agent, and the guest agent that
+# serves the host over the virtio-serial channel (agent/cmd/briard-guest-agent).
 #
 # vendorHash lives in ../vendor-hash.nix, which every Go package here imports -- it used to be
 # copied into eight files kept in step by comments, so adding one dependency meant editing eight
 # of them in lockstep. That file carries the regenerate recipe. It is module-wide, so it is
 # unaffected by build tags (the vendor dir carries every dep; tags only change what links).
 #
-# tags: pass [ "guest" ] to build the guest-only binary -- it excludes the host
-# subsystems (platform/QEMU launcher, net/http, crypto/tls), roughly halving the binary
-# and shedding the TLS CVE surface the guest never uses. The guest VM runs
-# `briard run --guest`; the L1 host runs the untagged (full) binary.
+# subPackage: which main to build. `agent/cmd/briard-agent` is the HOST agent (and the `briard`
+# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent ([B.137]) -- its own main, so what
+# it links is an import graph the arch tests fence rather than a build tag.
 #
 # version: the release id stamped into the binary. Shape `<epoch>.<commit-date>.<short-rev>`
 # — e.g. `v3.20260806.92d4eee` — computed in flake.nix from `self`, i.e. DERIVED FROM THE TREE and
@@ -29,14 +28,13 @@
 # This is the same relocatability requirement qemu-bundle.nix solves by patchelf; the agent is
 # pure Go, so it can simply not need a loader. Nothing here uses cgo (net's pure-Go resolver
 # and os/user's pure-Go path are both fine -- the agent shells out to iproute2/systemd).
-{ buildGoModule, patchelf, tags ? [ ], version ? "0.0.0-dev" }:
+{ buildGoModule, patchelf, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev" }:
 buildGoModule {
-  pname = "briard-agent" + (if tags == [ ] then "" else "-" + builtins.concatStringsSep "-" tags);
+  pname = baseNameOf subPackage;
   inherit version;
   src = ../.;
   vendorHash = import ../vendor-hash.nix;
-  subPackages = [ "agent/cmd/briard-agent" ];
-  inherit tags;
+  subPackages = [ subPackage ];
   env.CGO_ENABLED = 0;
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
   # self-update. Overridable by a real release version at build time.

@@ -137,9 +137,9 @@ var commands = []command{
 	{
 		name: "run", group: groupRepair,
 		synopsis: "run the agent itself — systemd does this for you",
-		detail: "The daemon. `run` is the host agent; `run --guest` and `run --deadman` are the two\n" +
-			"in-guest modes, started by units inside the guest image. You should not need to type any\n" +
-			"of them: the installer writes the units that do.",
+		detail: "The daemon: the host agent. (The in-guest agent is its own binary, briard-guest-agent,\n" +
+			"started by units inside the guest image.) You should not need to type it: the installer\n" +
+			"writes the unit that does.",
 		// run: nil — main() intercepts this word before the CLI sees it (the daemon modes cannot
 		// live in this package). It is in the table so it is DOCUMENTED; the test knows.
 	},

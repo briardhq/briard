@@ -10,7 +10,7 @@
 #   - a real OCI registry over TLS, and a real DIGEST-PINNED `podman pull` from it (decided registries; a plain-HTTP registry is not an option — containers/image refuses HTTP for every
 #     address including localhost, which a probe confirmed, so the test runs a real CA);
 #   - the REAL renderer — and since [V3b.3](f) it runs where the product runs it, inside
-#     `briard-agent --converge`, off the manifest this test puts on the replicated volume. Nothing
+#     `briard-guest-agent --converge`, off the manifest this test puts on the replicated volume. Nothing
 #     copies rendered units in from the side any more;
 #   - real quadlet generation (files under /run/containers/systemd becoming units at daemon-reload),
 #     real podman, real drbd-reactor driving the static promoter chain, and the real front door;
@@ -253,7 +253,7 @@ pkgs.testers.runNixOSTest {
     # actually does. Everything after this point is the product's own code.
     primary.succeed("mkdir -p /var/lib/briard/.services")
     primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
-    primary.succeed("briard-agent --converge")
+    primary.succeed("briard-guest-agent --converge")
 
     # CONVERGE rendered the units and quadlet generated them — at RUNTIME, from the volume, with
     # nothing copied in from the side. That is the whole mechanism, asserted after the fact rather
@@ -288,7 +288,7 @@ pkgs.testers.runNixOSTest {
     # This is the sequence a real node runs in the other order; doing it this way is what proves
     # the name is composed from the flock name rather than baked at install.
     primary.succeed("mkdir -p /run/briard && printf 'FLOCK_NAME=brave-elf\\n' >/run/briard/mdns.env")
-    primary.succeed("briard-agent --converge")
+    primary.succeed("briard-guest-agent --converge")
     host = json.loads(primary.succeed("cat /run/briard/routes.json"))["services"][0]["hosts"][0]
     assert host == "briard-brave-elf-fixture.local", f"the node composed {host}"
     body = primary.succeed(f"curl -fsS -H 'Host: {host}' http://192.168.1.100/healthz")
@@ -419,7 +419,7 @@ pkgs.testers.runNixOSTest {
     #     that the old container would keep serving while every file on disk described the new one.
     primary.succeed(f"cat > /tmp/broken.json <<'EOF'\n{broken_manifest}\nEOF")
     primary.succeed("cp /tmp/broken.json /var/lib/briard/.services/fixture.json && sync")
-    primary.succeed("briard-agent --converge")
+    primary.succeed("briard-guest-agent --converge")
     primary.succeed("mountpoint -q /var/lib/briard")  # nothing in the switch unmounted the volume
 
     # --- THE GATE. The broken container comes up ACTIVE — a live process — so nothing at the DRBD
@@ -462,7 +462,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed(f"btrfs subvolume delete {dataroot}")
     primary.succeed(f"btrfs subvolume snapshot {snap} {dataroot}")
     primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
-    primary.succeed("briard-agent --converge")
+    primary.succeed("briard-guest-agent --converge")
 
     # --- RECOVERY. The good (v0) service serves again and the poison is GONE — the tick is back at
     #     the pre-upgrade point and climbing. {code+data} both rolled back: a failed upgrade left a

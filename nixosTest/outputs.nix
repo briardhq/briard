@@ -176,10 +176,10 @@ let
   # image bakes its own FIRMWARE copies (guestDisk, stamped with the image's build); these are
   # what the guest actually runs once dressed. One directory, `bin/<name>`, the names the guest's
   # pivot and the push verbs agree on (agent/guestagent/bin.go BinNames).
-  guestAgentPkg = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; version = agentVersion; };
+  guestAgentPkg = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; version = agentVersion; };
   guestBundle = pkgs.runCommand "briard-guest-bundle-${agentVersion}" { } ''
     mkdir -p $out/bin
-    install -m0755 ${guestAgentPkg}/bin/briard-agent   $out/bin/briard-guest-agent
+    install -m0755 ${guestAgentPkg}/bin/briard-guest-agent $out/bin/briard-guest-agent
     install -m0755 ${pkgs.reverse-proxy}/bin/reverse-proxy $out/bin/briard-reverse-proxy
   '';
 

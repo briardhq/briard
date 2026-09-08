@@ -15,7 +15,7 @@ import (
 )
 
 // The three constants copied out of packages this one must not import, asserted against their
-// originals. Each copy exists for a stated reason (the `-tags guest` binary must not link
+// originals. Each copy exists for a stated reason (the guest binary must not link
 // net/http, which shared/notify pulls in via Ntfy); this test is what makes the copy safe rather
 // than a promise. A TEST may import what the shipped code may not, since it is not in the binary.
 //

@@ -1,5 +1,3 @@
-//go:build !guest
-
 package main
 
 import (
@@ -17,7 +15,7 @@ import (
 )
 
 // runHost is the default (untagged) build's host path: boot the guest, drive bring-up,
-// observe status. Importing host here (not in main.go) is what lets a `-tags guest` build
+// observe status. Importing host here (not in main.go) is what once let a `-tags guest` build
 // exclude host and everything it pulls in (platform, net/http, crypto/tls). Config comes
 // from the environment for now; the north-bound shared/api report/config seam is wired here.
 func runHost(ctx context.Context) error {
@@ -25,7 +23,7 @@ func runHost(ctx context.Context) error {
 }
 
 // runGuestShutdown asks the VM on the given monitor socket to power off cleanly and waits until
-// it is actually gone. Host-only (it pulls in platform/QEMU), stubbed in a `-tags guest` build.
+// it is actually gone. Host-only (it pulls in platform/QEMU).
 func runGuestShutdown(ctx context.Context, qmpSock string) error {
 	return platform.ShutdownVM(ctx, qmpSock, platform.GuestShutdownGrace)
 }
@@ -35,7 +33,7 @@ func runGuestShutdown(ctx context.Context, qmpSock string) error {
 // guest image under dest/guest, each beside the manifest that verified it. The channel root,
 // the release to install and the release keyring PEM come from the environment (install.sh
 // sets BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING, the last the bundled release
-// public key). It lives here, not main.go, so a `-tags guest` build never links
+// public key). It lives here, not main.go; the guest is its own main ([B.137]) and never links
 // install/net/http (the trim).
 //
 // All-or-nothing across the two chains as well as within each: dest appears only once both
@@ -135,7 +133,7 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 // runStageManifest writes dir/manifest.json describing the artifacts staged in dir as one
 // release of one chain -- the release pipeline's writer, so the bytes a release publishes are
 // described by the same code that installs them (agent/install.WriteManifest). Host-side for
-// the same reason as runFetchInstall: it lives in the install package, which the `-tags guest`
+// the same reason as runFetchInstall: it lives in the install package, which the guest
 // trim excludes.
 func runStageManifest(dir, chain, platform, version, system, minHost, guest, inputs string) error {
 	return install.WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs)

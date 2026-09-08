@@ -11,7 +11,7 @@ import (
 
 // The levels a deadman alert carries, matching notify.Level's values (shared/notify) without
 // importing it. That package reaches an ntfy endpoint over HTTP, and this code runs INSIDE the
-// guest, whose binary is built `-tags guest` precisely so it never links net/http and the TLS
+// guest, whose binary is its own main (briard-guest-agent, [B.137]) so it links no host subsystem, no ACME and no TLS-serving
 // stack behind it. Two string constants are a smaller cost than that, and the pairing is
 // asserted where the two meet rather than left to a reader (guestagent's Alert wiring).
 //

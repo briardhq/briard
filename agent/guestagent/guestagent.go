@@ -1008,7 +1008,7 @@ func dispatch(x Executor) dispatchFunc {
 			// the guest owns the VIP on its own NIC, so this works regardless of the host
 			// networking substrate (macvtap blocks host->guest, but not guest->itself). A raw
 			// net.Dial HTTP/1.0 GET keeps the guest binary free of net/http + the TLS stack the
-			// -tags guest build deliberately trims. 200 == healthy; any error == not.
+			// guest main deliberately keeps out of its own code. 200 == healthy; any error == not.
 			return probeHTTPOK(ctx, req.URL), nil
 		case verbServiceHealthOf:
 			var req serviceRequest
@@ -2123,7 +2123,7 @@ func parseUint(b []byte) uint64 {
 
 // probeHTTPOK does a minimal plaintext HTTP/1.0 GET of rawURL and reports whether the response
 // status is 200. It is deliberately net/http-free (raw net.Dial + a hand-written request) so the
-// `-tags guest` binary stays clear of net/http and the TLS stack that trim removed. Plaintext
+// guest binary stays clear of a TLS client of its own. Plaintext
 // is all the local /healthz needs. Any parse/dial/read error, non-http scheme, or non-200 status is
 // "not healthy" — the same fail-closed semantics as the old host-side probe.
 func probeHTTPOK(ctx context.Context, rawURL string) bool {
@@ -2946,7 +2946,7 @@ func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 // osExecutor is the real guest Executor: shell out + write files.
 type osExecutor struct{}
 
-// NewOSExecutor returns the production Executor used by `briard run --guest`.
+// NewOSExecutor returns the production Executor used by `briard-guest-agent run --guest`.
 func NewOSExecutor() Executor { return osExecutor{} }
 
 func (osExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {

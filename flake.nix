@@ -35,15 +35,14 @@
       # only change was the version string baked into it -- so `publish-release.sh stage` now asks
       # whether the live channel already serves an image with THESE inputs and re-stages the guest
       # chain only when they changed. The inputs are the paths that reach the image: the image
-      # recipe, the packages built into it, the Go packages the `-tags guest` binary links (listed
-      # by name; internal/arch asserts the list against `go list -deps -tags guest`, so a new
+      # recipe, the packages built into it, the Go packages the guest binary links (listed by name;
+      # internal/arch asserts the list against `go list -deps ./agent/cmd/briard-guest-agent`, so a new
       # import cannot silently fall outside the hash), the module files and the nixpkgs pin.
       # `builtins.path` copies each into the store, and a store path's name IS its content hash --
       # test files excluded, since they never reach the image.
       guestInputPackages = [
-        "agent/cli" "agent/cmd/briard-agent" "agent/drbd" "agent/guestagent" "agent/hass"
-        "agent/install" "agent/mosquitto" "agent/quadlet" "agent/reportcard" "agent/selfupdate"
-        "agent/services" "agent/subnet" "shared"
+        "agent/cmd/briard-guest-agent" "agent/drbd" "agent/guestagent" "agent/hass" "agent/mosquitto"
+        "agent/quadlet" "agent/services" "shared"
       ];
       guestInputDirs = [ "guest-image" "reverse-proxy" "dashboard" ] ++ guestInputPackages;
       noTests = path: type: !(lib.hasSuffix "_test.go" (baseNameOf path)) && baseNameOf path != "testdata";

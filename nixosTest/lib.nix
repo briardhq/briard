@@ -173,7 +173,7 @@ let
   # install_fixture stands in for the ONE half of the install path a hermetic harness cannot run:
   # the host agent's Primary-only orchestration. It writes the manifest to the REPLICATED volume
   # (what `service.provision` records as the service's identity), creates its storage, and then
-  # hands over to the PRODUCT — `briard-agent --converge` is the same code drbd-reactor runs at
+  # hands over to the PRODUCT — `briard-guest-agent --converge` is the same code drbd-reactor runs at
   # every promotion, not a harness re-implementation of it ([V3b.3](f)).
   #
   # It must run AFTER a node has promoted, because everything it touches is on the replicated
@@ -212,7 +212,7 @@ let
         # The product's own converge, by the same entry point briard-services.service uses. On a
         # version change it is also what BOUNCES the container: converge restarts what it has not
         # started with exactly these bytes ([V3b.3](e1)).
-        m.succeed("briard-agent --converge")
+        m.succeed("briard-guest-agent --converge")
         return dataroot
 
     def fixture_units(m, service=None):

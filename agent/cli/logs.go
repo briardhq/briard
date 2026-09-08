@@ -44,7 +44,7 @@ import (
 const (
 	// The units that carry the host's own story: the agent (all the logic) and the VM it runs
 	// (qemu's own output). Written here rather than imported from agent/platform, which owns
-	// GuestUnit: this package is linked into the `-tags guest` binary, and platform pulls in the
+	// GuestUnit: this package used to be linked into the guest binary, and platform pulls in the
 	// QEMU launcher and net/http, which that build exists to leave out.
 	agentUnit = "briard-agent.service"
 	guestUnit = "briard-guest.service"

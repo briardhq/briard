@@ -215,12 +215,12 @@ func TestNoDirectPromoteDemote(t *testing.T) {
 }
 
 // The guest image's input hash ([B.86i], flake.nix guestInputPackages) must cover every Go
-// package the `-tags guest` binary links, or an edit to a package outside the list would ship a
+// package the guest binary (agent/cmd/briard-guest-agent) links, or an edit outside the list would ship a
 // changed guest binary under an unchanged inputs hash -- and `publish-release.sh stage` would
 // then REUSE the old image. `go list` is the truth; the flake carries a copy; this keeps them equal.
 func TestGuestInputsCoverTheGuestBinary(t *testing.T) {
 	root := moduleRoot(t)
-	cmd := exec.Command("go", "list", "-deps", "-tags", "guest", "./agent/cmd/briard-agent")
+	cmd := exec.Command("go", "list", "-deps", "./agent/cmd/briard-guest-agent")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {

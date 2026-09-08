@@ -155,7 +155,7 @@ pkgs.testers.runNixOSTest {
     # reaches its OWN service, and that "fronted" is a per-service decision rather than a property
     # of there being exactly one thing to forward to.
     name_the_flock(primary)
-    primary.succeed("briard-agent --converge")
+    primary.succeed("briard-guest-agent --converge")
     import json as _rj
     table = _rj.loads(primary.succeed("cat /run/briard/routes.json"))
     routed = {s["name"]: s for s in table["services"]}

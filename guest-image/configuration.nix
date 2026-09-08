@@ -785,9 +785,9 @@ in
   # than a harness stand-in.
   options.briard.agentPackage = lib.mkOption {
     type = lib.types.package;
-    default = pkgs.callPackage ../agent/package.nix { tags = [ "guest" ]; };
-    defaultText = lib.literalExpression "the guest-tagged briard-agent";
-    description = "The briard-agent build this guest's units invoke (guest-tagged).";
+    default = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; };
+    defaultText = lib.literalExpression "the briard-guest-agent build";
+    description = "The briard-guest-agent build this guest's units invoke.";
   };
 
   # Image tarballs baked into this disk's closure and loaded into podman at boot. A NODE fact,
@@ -1329,8 +1329,8 @@ in
         RestartSec = 2;
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${config.briard.agentPackage}/bin/briard-agent --converge";
-        ExecStop = "${config.briard.agentPackage}/bin/briard-agent --converge-stop";
+        ExecStart = "${config.briard.agentPackage}/bin/briard-guest-agent --converge";
+        ExecStop = "${config.briard.agentPackage}/bin/briard-guest-agent --converge-stop";
       };
       unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;

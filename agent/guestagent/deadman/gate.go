@@ -23,7 +23,7 @@ import (
 // problem rather than a solution to it.
 //
 // RAW TCP, NOT HTTP, and that is load-bearing rather than taste: the guest binary is built
-// `-tags guest` so it never links net/http and the TLS stack behind it (the same trim that makes
+// its own main (briard-guest-agent) so it links no host subsystem (the same fence that makes
 // this package duplicate notify's level strings instead of importing them). `net` alone is a much
 // smaller thing to pull in, and one line of key=value text needs nothing more.
 //
