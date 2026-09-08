@@ -31,7 +31,17 @@ let
   denied = [
     "sound"
     # hardware a virtio guest does not have
-    "drivers/media" "drivers/gpu" "drivers/iio" "drivers/usb" "drivers/input" "drivers/hid"
+    "drivers/media" "drivers/gpu" "drivers/iio" "drivers/usb" "drivers/hid"
+    # drivers/input: THE SUBDIRECTORIES ONLY, and this is the one denial that has already bitten.
+    # `evdev` (CONFIG_INPUT_EVDEV=m) sits at the top of this family, and it is what turns the ACPI
+    # power button into a /dev/input/event* node -- the only thing logind watches to shut a
+    # machine down on that button. Denying the family wholesale left the guest deaf to it: the
+    # host pressed the button, waited its minute and killed the VM, so every clean stop became a
+    # hard one (agent-readopt, the nightly of 2026-09-08, the night this denylist landed). The
+    # devices themselves -- keyboards, mice, touchscreens -- this guest still has none of.
+    "drivers/input/touchscreen" "drivers/input/tablet" "drivers/input/joystick"
+    "drivers/input/mouse" "drivers/input/keyboard" "drivers/input/misc" "drivers/input/rmi4"
+    "drivers/input/gameport" "drivers/input/serio"
     "drivers/infiniband" "drivers/hwmon" "drivers/platform" "drivers/video" "drivers/staging"
     "drivers/regulator" "drivers/mtd" "drivers/mfd" "drivers/ata" "drivers/w1" "drivers/bluetooth"
     "drivers/isdn" "drivers/nfc" "drivers/leds" "drivers/thermal" "drivers/power" "drivers/pcmcia"
@@ -91,5 +101,9 @@ in
   boot.initrd.kernelModules = lib.mkForce [ "virtio_balloon" "virtio_console" "virtio_rng" ];
   # Loaded at boot by systemd-modules-load: DRBD (configuration.nix) and loop; NixOS's default
   # `atkbd` (a PS/2 keyboard driver) would now fail to load and fail the unit.
-  boot.kernelModules = lib.mkForce [ "drbd" "loop" ];
+  # `evdev` is loaded EXPLICITLY rather than left to udev's modalias matching: it is what carries
+  # the ACPI power button, and a clean stop of this guest is the host's whole shutdown contract
+  # ([B.51], [B.127], [B.132]). A shutdown path must not depend on a device-matching rule firing.
+  # NixOS's own default here is `atkbd`, for a keyboard this guest does not have.
+  boot.kernelModules = lib.mkForce [ "drbd" "loop" "evdev" ];
 }
