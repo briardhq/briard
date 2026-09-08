@@ -177,6 +177,21 @@ bucket_of() { echo "$1" | sed 's|^s3://\([^?]*\).*|s3://\1|'; }
 endpoint_of() { echo "https://$(echo "$1" | sed 's|.*endpoint=\([^&]*\).*|\1|')"; }
 # Does the bucket hold this key? (`s3 ls` prints nothing and exits 1 for a missing key.)
 have_key() { [ -n "$(aws s3 ls "$1" --endpoint-url "$2" 2>/dev/null)" ]; }
+# Copy one key to another INSIDE the bucket, `$bucket`-relative on both sides.
+#
+# ⚠️ `s3api copy-object`, NOT `s3 cp`, and the difference is not style. awscli2's `s3 cp` between
+# two S3 keys carries the source object's TAGS, which costs it a GetObjectTagging on the source
+# and an `x-amz-tagging-directive` on the copy -- neither of which R2 implements. `--copy-props
+# none` only trades the first error for the second. Measured on the FIRST `promote` of this tree,
+# which failed with `NotImplemented` AFTER `publish` had already put the new install.sh at the
+# root, so the advertised one-liner was resolving a `stable` the failed promote never created.
+# (Large objects went through by luck: a multipart copy sets no tagging directive, so exactly the
+# small pointer files -- the manifest and its signature -- failed.) Nothing here has tags to lose.
+# A `cp` from a LOCAL file has no source object to interrogate and needs none of this.
+copy_key() {
+	aws s3api copy-object --bucket "${2#s3://}" --key "$3" \
+		--copy-source "${2#s3://}/$1" --endpoint-url "$4" >/dev/null
+}
 
 # Purge a list of URLs (stdin) at the edge. CDN-specific, so it rides behind two env vars —
 # but a publish without them warns loudly, because the alternative is a silently stale
@@ -208,6 +223,13 @@ purge_edge() {
 # won, so the live channel 404'd its manifest until a hand-run `cp` restored it. Pointers are
 # never synced, only cp'd, one file at a time.)
 POINTER_FILES="briard-agent briard-agent.exe manifest.json.sig manifest.json"
+# ⚠️ EVERY SERVER-SIDE (s3->s3) COPY BELOW CARRIES `--copy-props none`. awscli2's `cp` between two
+# S3 keys reads the source object's tags first (GetObjectTagging) so it can carry them across, and
+# R2 does not implement that API -- without the flag the call dies `NotImplemented`. The FIRST
+# `promote` of this tree hit exactly that, AFTER `publish` had already put the new install.sh at
+# the root, so the advertised one-liner was resolving a `stable` the failed promote never created.
+# Nothing here has tags to lose. A `cp` from a LOCAL file has no source object to interrogate, so
+# the upload paths need nothing.
 
 case "${1:-}" in
 
@@ -418,7 +440,7 @@ publish)
 			else
 				for f in $POINTER_FILES; do
 					have_key "$bucket/guest/$GV/$f" "$endpoint" || continue
-					aws s3 cp "$bucket/guest/$GV/$f" "$bucket/guest/latest/$f" --endpoint-url "$endpoint" --no-progress
+					copy_key "guest/$GV/$f" "$bucket" "guest/latest/$f" "$endpoint"
 				done
 				say "guest/latest -> $GV (reused, unchanged inputs; nothing uploaded)"
 			fi
@@ -505,7 +527,7 @@ promote)
 				# Server-side copies, in POINTER_FILES order and for the same reason.
 				for f in $POINTER_FILES; do
 					have_key "$bucket/$c/$rel/$f" "$endpoint" || continue
-					aws s3 cp "$bucket/$c/$rel/$f" "$bucket/$c/$p/$f" --endpoint-url "$endpoint" --no-progress
+					copy_key "$c/$rel/$f" "$bucket" "$c/$p/$f" "$endpoint"
 				done
 				say "promoted $c/$p -> $v"
 			fi
