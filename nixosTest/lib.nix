@@ -47,6 +47,11 @@ let
   # R0 over the node list. Per-node volume form so a witness can be `disk none`;
   # the production safety config. new-current-uuid then needs the
   # volume id (r0/0) — the one testScript quirk of this form.
+  #
+  # `disk` is per-node because that is where DRBD puts it, and because the backing a node runs on
+  # IS a node fact: [V3b.33]'s spike runs its resource over an LV so it can move that LV between a
+  # plaintext and an encrypted PV underneath, and it has to be able to say so for one rig without
+  # every other rig moving with it.
   mkResource =
     nodes:
     let
@@ -56,7 +61,12 @@ let
           address 10.0.0.${toString (n.id + 1)}:7789;
           volume 0 {
             device /dev/drbd0;
-            ${if n.diskless or false then "disk none;" else "disk /dev/vdb; meta-disk internal;"}
+            ${
+              if n.diskless or false then
+                "disk none;"
+              else
+                "disk ${n.disk or "/dev/vdb"}; meta-disk internal;"
+            }
           }
         }'';
     in

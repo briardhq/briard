@@ -141,6 +141,10 @@ let
   # Kill the primary → HA fails over with config intact at the same VIP.
   hassFailover = import ./hass-failover.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
+  # [V3b.33](a): the DRBD backing moves between a plaintext and an encrypted PV, live, both ways,
+  # with HA serving throughout. Carries HA's cost because the claim is about a running household.
+  luksConvert = import ./luks-convert.nix { inherit pkgs guestModule; fixture = hassFixture; };
+
   # A real HA upgrade (2025.11.0 → 2025.12.0) carrying a real recorder schema
   # migration (v52 unit_class) through the pipeline, its data intact.
   hassUpgrade = import ./hass-upgrade.nix { inherit pkgs guestModule; fixture = hassPairFixture; };
@@ -390,6 +394,9 @@ in
       hass-upgrade = hassUpgrade; # real recorder schema migration through the upgrade
       hass-upgrade-rollback = hassUpgradeRollback; # real regression trips the gate → {code+data} rollback
       hass-backup = hassBackup; # off-site encrypted .storage backup + restore
+      # The storage seam under all of them: arming a node is a pvmove and disarming it is the
+      # same move back, neither of which HA notices ([V3b.33](a)).
+      luks-convert = luksConvert;
     };
 
     # Agent-in-the-loop: the agent drives a real guest under *nested*
