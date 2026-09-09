@@ -36,6 +36,17 @@ let
     { config, ... }:
     {
       imports = [ guestModule ];
+      # No host pushes the guest's binaries into a nixosTest machine ([B.138], [B.139]): the image
+      # bakes only the firmware, so link the pushed set in as if a host had dressed it. lib.nix's
+      # mkNode states the same three; this file rolls its own node for the r0.res part only, so it
+      # has to state them too -- and until [B.141] it did not, which is why briard-services could
+      # not locate /var/lib/briard-bin/briard-guest-agent and the promoter chain died at its first
+      # member.
+      briard.pivot.preDressed = {
+        briard-reverse-proxy = "${pkgs.reverse-proxy}/bin/reverse-proxy";
+        briard-dashboard = "${pkgs.dashboard}/bin/dashboard";
+        briard-guest-agent = "${config.briard.agentPackage}/bin/briard-guest-agent";
+      };
       virtualisation.emptyDiskImages = mkIf (!diskless) [ 256 ];
       networking.interfaces.eth1.ipv4.addresses = [
         { address = "10.0.0.${toString config.virtualisation.test.nodeNumber}"; prefixLength = 24; }
