@@ -12,7 +12,7 @@
 #
 # lib.nix declares r0.res as a read-only store symlink; runtime growth needs to REWRITE it, so this
 # test writes its own .res straight into the product path the agent uses (/run/briard/drbd.d) --
-# exactly what the guest's drbd.provision/drbd.adjust verbs do. No nested KVM (the L1 node
+# exactly what the guest's storage.node/drbd.adjust verbs do. No nested KVM (the L1 node
 # runs DRBD directly), so it rides the fast `drbd` tag.
 { pkgs, guestModule, fixture }:
 
@@ -85,7 +85,7 @@ let
       # drbd.conf at its own /run/briard/drbd.d because the product's .res lived in read-only
       # environment.etc while this test has to REWRITE it at runtime. The product's .res is on
       # tmpfs now, at a path the agent writes and rewrites, so the test drives the real one --
-      # which is what "exactly what the guest's drbd.provision/drbd.adjust verbs do" was always
+      # which is what "exactly what the guest's storage.node/drbd.adjust verbs do" was always
       # meant to mean. The promoter snippet moved with it, declared as a tmpfiles symlink.
       systemd.tmpfiles.rules = [ "d /run/briard/drbd.d 0755 root root -" ]
         ++ lib.optionals promoter [
@@ -140,6 +140,28 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     ${h.fixtureHelpers}
+    import json
+
+    def storage(m, res, seed=False, diskless=False):
+        """Bring a node's storage up the way the HOST does ([V3b.33](d)): write the spec, start
+        briard-node-storage.service. This file rolls its own node (for the r0.res part), so it
+        writes the spec itself rather than using lib.nix's briard-test-storage -- and the `.res`
+        it names is the one this test is REWRITING, which is the whole subject here."""
+        spec = {
+            "tiers": [] if diskless else [
+                {"name": "data", "device": "/dev/vdb", "vg": "briard", "lv": "data", "mode": "auto"}
+            ],
+            "resource": {
+                "name": "r0",
+                "config": m.succeed(f"cat {res}"),
+                "diskless": diskless,
+                "freshInit": seed,
+            },
+        }
+        m.succeed("mkdir -p /run/briard")
+        m.succeed("cat >/run/briard/node-storage.json <<'BRIARDSPEC'\n" + json.dumps(spec) + "\nBRIARDSPEC")
+        m.succeed("systemctl start briard-node-storage.service")
+
     start_all()
     for m in [anchor1, anchor2, witness]:
         m.wait_for_unit("multi-user.target")
@@ -149,13 +171,10 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service") # the image, warm on both anchors
 
     # --- Phase 1: anchor1 comes up single-node (mesh-of-one) green, serving the VIP ---
-    anchor1.succeed("cp ${singleRes} /run/briard/drbd.d/r0.res")
-    anchor1.succeed("drbdadm create-md --force r0")
-    anchor1.succeed("systemctl start drbd@r0.target")
-    anchor1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")  # peer-less -> UpToDate
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    anchor1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
+    # The SEED of a new flock: the unit creates the LV, creates metadata on it, attaches, and --
+    # being the seed -- declares it UpToDate and arms the one-time format. All of it in one place
+    # now ([V3b.33](d)), where the harness used to hand-roll the last two by hand.
+    storage(anchor1, "${singleRes}", seed=True)
     anchor1.succeed("systemctl start drbd-reactor.service")
     anchor1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     # The front door first, with nothing installed: that is what a node coming up single-handed
@@ -176,12 +195,9 @@ pkgs.testers.runNixOSTest {
     # --- Phase 2: bring the joiners up BLANK on the 3-node config, ready to connect ---
     # anchor2: a fresh (blank) replica -> Inconsistent, it will SyncTarget from anchor1. It must
     # NOT new-current-uuid (that would declare it UpToDate and split-brain the primary's data).
-    anchor2.succeed("cp ${threeRes} /run/briard/drbd.d/r0.res")
-    anchor2.succeed("drbdadm create-md --force r0")
-    anchor2.succeed("systemctl start drbd@r0.target")
-    # Witness: diskless quorum voter -- no metadata, no create-md.
-    witness.succeed("cp ${threeRes} /run/briard/drbd.d/r0.res")
-    witness.succeed("systemctl start drbd@r0.target")
+    storage(anchor2, "${threeRes}")
+    # Witness: diskless quorum voter -- no tier, no metadata, no create-md.
+    storage(witness, "${threeRes}", diskless=True)
 
     # --- THE RUNTIME GROWTH: adjust anchor1 mesh-of-one -> 3-node mesh, in place ---
     # Exactly what the drbd.adjust verb runs (rewrite the .res + `drbdadm adjust`): no create-md,

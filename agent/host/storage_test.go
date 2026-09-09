@@ -26,7 +26,7 @@ func demoRes() drbd.Resource {
 // DATA_DEV escape hatch still lets an operator set -- is refused rather than brought up.
 func TestStorageSpecFencesTheBackingDevice(t *testing.T) {
 	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
-	spec, err := cfg.storageSpec(demoRes(), false, false)
+	spec, err := cfg.StorageSpec(demoRes(), false, false)
 	if err != nil {
 		t.Fatalf("the shipped wiring was refused: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestStorageSpecFencesTheBackingDevice(t *testing.T) {
 
 	elsewhere := demoRes()
 	elsewhere.Peers[0].Disk = platform.GuestDataDevice // the raw disk, under the seam
-	if _, err := cfg.storageSpec(elsewhere, false, false); err == nil {
+	if _, err := cfg.StorageSpec(elsewhere, false, false); err == nil {
 		t.Error("a .res attaching the raw disk was accepted; the node would build an LV and attach nothing")
 	}
 
@@ -49,14 +49,14 @@ func TestStorageSpecFencesTheBackingDevice(t *testing.T) {
 	// node fail over a device it never touches.
 	other := demoRes()
 	other.Peers = append(other.Peers, drbd.Peer{Name: "n2", NodeID: 1, Address: "10.0.0.2:7789", Disk: "/dev/sdz"})
-	if _, err := cfg.storageSpec(other, false, false); err != nil {
+	if _, err := cfg.StorageSpec(other, false, false); err != nil {
 		t.Errorf("refused over another node's backing: %v", err)
 	}
 }
 
 func TestStorageSpecDiskful(t *testing.T) {
 	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
-	spec, err := cfg.storageSpec(demoRes(), false, true)
+	spec, err := cfg.StorageSpec(demoRes(), false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestStorageSpecDiskful(t *testing.T) {
 func TestStorageSpecCarriesEveryMode(t *testing.T) {
 	for _, m := range []nodestorage.Mode{nodestorage.ModeAuto, nodestorage.ModeOff, nodestorage.ModeAdiantum} {
 		cfg := Config{Node: "n1", DataEncryption: m}
-		spec, err := cfg.storageSpec(demoRes(), false, false)
+		spec, err := cfg.StorageSpec(demoRes(), false, false)
 		if err != nil {
 			t.Fatalf("mode %q: %v", m, err)
 		}
@@ -95,12 +95,12 @@ func TestStorageSpecCarriesEveryMode(t *testing.T) {
 // mistake.
 func TestStorageSpecRefusesAnUnknownMode(t *testing.T) {
 	cfg := Config{Node: "n1", DataEncryption: "aes256"}
-	if _, err := cfg.storageSpec(demoRes(), false, false); err == nil {
+	if _, err := cfg.StorageSpec(demoRes(), false, false); err == nil {
 		t.Error("an unknown encryption mode was accepted")
 	}
 	// ...and the empty one, which is what a Config built by hand rather than by ConfigFromEnv
 	// carries. Silently reading it as `auto` is the same mistake in the other direction.
-	if _, err := (Config{Node: "n1"}).storageSpec(demoRes(), false, false); err == nil {
+	if _, err := (Config{Node: "n1"}).StorageSpec(demoRes(), false, false); err == nil {
 		t.Error("an unset encryption mode was accepted")
 	}
 }
@@ -109,7 +109,7 @@ func TestStorageSpecRefusesAnUnknownMode(t *testing.T) {
 // is computed from "am I the first peer", which knows nothing about roles.
 func TestStorageSpecDiskless(t *testing.T) {
 	cfg := Config{Node: "w1", DataEncryption: nodestorage.ModeAuto}
-	spec, err := cfg.storageSpec(demoRes(), true, true)
+	spec, err := cfg.StorageSpec(demoRes(), true, true)
 	if err != nil {
 		t.Fatal(err)
 	}

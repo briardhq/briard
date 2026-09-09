@@ -22,7 +22,9 @@ import (
 
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/host"
 	"briard.io/agent/platform"
+	"briard.io/shared/nodestorage"
 )
 
 // vipHealth is where the service answers on the harness L2 (guest-image bakes the VIP).
@@ -101,13 +103,26 @@ func main() {
 	}
 	defer guest.Stop()
 
+	node := env("NODE", "guest")
+	res := drbd.Resource{
+		Name: "r0", Device: "/dev/drbd0",
+		// Single node: majority-of-1 is quorate, so the reactor promotes.
+		Peers: []drbd.Peer{{Name: node, NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice}},
+	}
+	// THE PRODUCT'S OWN RENDERER ([V3b.33](d)). The storage spec is the host's to compose, and
+	// this driver is the harness standing in for the host -- so it calls host.StorageSpec rather
+	// than assembling a spec of its own, and a rig therefore exercises the real composition.
+	// DATA_ENCRYPTION reaches it the same way it reaches the agent, which is what lets a rig ask
+	// for `off` or `adiantum` without a second code path.
+	storage, err := host.Config{
+		Node:           node,
+		DataEncryption: nodestorage.Mode(env("DATA_ENCRYPTION", string(nodestorage.ModeAuto))),
+	}.StorageSpec(res, false, true) // the test always starts from a blank data disk
+	if err != nil {
+		log.Fatalf("storage spec: %v", err)
+	}
 	spec := guestagent.BringUpSpec{
-		Resource: drbd.Resource{
-			Name: "r0", Device: "/dev/drbd0",
-			// Single node: majority-of-1 is quorate, so the reactor promotes.
-			Peers: []drbd.Peer{{Name: env("NODE", "guest"), NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice}},
-		},
-		FreshInit: true, // the test always starts from a blank data disk
+		Storage: storage,
 		// The ordered unit: data mount -> converge -> VIP claim. The same three units on every
 		// node whatever is installed ([V3b.3](e2)) -- what a node runs comes off the VOLUME at
 		// promotion, so the chain has nothing to vary with.
@@ -131,7 +146,7 @@ func main() {
 	if err := g.BringUp(bringup, spec); err != nil {
 		log.Fatalf("bring-up: %v", err)
 	}
-	if err := g.WaitPrimary(bringup, spec.Resource.Name, guestagent.DefaultPollInterval); err != nil {
+	if err := g.WaitPrimary(bringup, spec.Storage.Resource.Name, guestagent.DefaultPollInterval); err != nil {
 		log.Fatalf("bring-up wait-primary: %v", err)
 	}
 	cancel()

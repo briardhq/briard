@@ -38,10 +38,10 @@ pkgs.testers.runNixOSTest {
         # briard-services does that at promotion, from the volume ([V3b.3](f)).
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("modprobe drbd")
-        m.succeed("drbdadm create-md --force r0")
-        # Fire the stock bring-up unit: drbd@<res>.target → drbd@<res>.service →
-        # `drbdadm adjust` (attach + connect, leaves the node Secondary).
-        m.succeed("systemctl start drbd@r0.target")
+        # The product's own storage bring-up ([V3b.33](d)): build the tier, write the `.res`,
+        # create metadata, then attach through the STOCK unit (drbd@<res>.target →
+        # drbd@<res>.service → `drbdadm adjust`), which leaves the node Secondary.
+        m.succeed("briard-test-storage")
 
     # The service units come from the RENDERER, not from this file. They are NOT generated yet:
     # converge writes their source and reloads systemd at promotion, so asking for them here

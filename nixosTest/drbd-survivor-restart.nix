@@ -63,10 +63,10 @@ pkgs.testers.runNixOSTest {
         # The image is warmed on both disk nodes before anything promotes: the survivor renders
         # from the volume when it takes over and must not need a pull to do it.
         m.wait_for_unit("briard-test-fixture-install.service")
-        m.succeed("drbdadm create-md --force r0")
-    for m in machines:
-        m.succeed("systemctl start drbd@r0.target")
-
+        m.succeed("briard-test-storage")
+    # The witness has no tier to build and still needs its `.res` and its attach --
+    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
@@ -103,8 +103,11 @@ pkgs.testers.runNixOSTest {
     def bring_drbd_back(m):
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
-        # NOT create-md: the metadata must still be there. If this attaches, the replica survived.
-        m.succeed("systemctl start drbd@r0.target")
+        # The SAME storage bring-up as the first time, which is the point: it activates the VG,
+        # opens the volume if it is encrypted, and then meets its own metadata -- create-md
+        # WITHOUT --force refuses, so the replica is attached rather than re-seeded. If this
+        # attaches, the replica survived ([V3b.33](d) made that one unit's job).
+        m.succeed("briard-test-storage")
         m.succeed("systemctl start drbd-reactor.service")
 
     ### ACT 2a — a CLEAN reboot of the survivor, peer still absent.

@@ -286,6 +286,60 @@ let
       vipDev = "eth1";
       vipAddr = "192.168.1.100/24";
       vipEnvFile = pkgs.writeText "vip.env" "VIP_DEV=${vipDev}\nVIP_ADDR=${vipAddr}\n";
+
+      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR STORAGE ([V3b.33](d)) ──────────────────────
+      # Storage policy is the host's, pushed at bring-up as /run/briard/node-storage.json, and
+      # briard-node-storage.service carries it out. These nodes have no host, so the harness
+      # writes the spec and starts the unit -- which is the WHOLE POINT of the re-cut: a rig used
+      # to hand-roll `modprobe drbd; create-md --force; drbd@r0.target; new-current-uuid; touch
+      # data.format`, a harness re-implementing the product, and the divergence is what hid
+      # [V3b.33](c)'s encrypted-blank-device bug from every hermetic test (their `--force` could
+      # not meet the probe that broke).
+      #
+      # freshInit is FALSE here and set per node by the script below, because the seed is a
+      # per-node decision the module cannot make: every machine in a rig shares one module, and
+      # a spec that seeded on all of them would have three nodes declare themselves UpToDate.
+      storageSpecFile = pkgs.writeText "node-storage.json" (
+        builtins.toJSON {
+          tiers = lib.optional (!diskless) {
+            name = "data";
+            device = "/dev/vdb"; # the framework's emptyDiskImages disk, as the product's is
+            vg = "briard";
+            lv = "data";
+            mode = "auto";
+          };
+          resource = {
+            name = "r0";
+            config = resource;
+            inherit diskless;
+            freshInit = false;
+          };
+        }
+      );
+      # A COMMAND RATHER THAN A testScript HELPER, so a rig needs no preamble to reach it: every
+      # test already runs shell on its nodes, and half of them do not import fixtureHelpers.
+      #   briard-test-storage            bring this node up as a joiner (never seeds)
+      #   briard-test-storage --seed     ...as the seed of a new flock
+      #   briard-test-storage --mode off ...formatted in the clear, whatever the CPU can do
+      testStorage = pkgs.writeShellScriptBin "briard-test-storage" ''
+        set -eu
+        seed=false
+        mode=auto
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --seed) seed=true ;;
+            --mode) shift; mode="$1" ;;
+            *) echo "briard-test-storage: unknown argument $1" >&2; exit 2 ;;
+          esac
+          shift
+        done
+        mkdir -p /run/briard
+        rm -f /run/briard/node-storage.json
+        ${pkgs.jq}/bin/jq --argjson s "$seed" --arg m "$mode" \
+          '.resource.freshInit = $s | (.tiers[]?).mode = $m' \
+          ${storageSpecFile} >/run/briard/node-storage.json
+        exec ${pkgs.systemd}/bin/systemctl start briard-node-storage.service
+      '';
     in
     { config, ... }:
     {
@@ -309,10 +363,10 @@ let
       # and converge from briard-services'. install_fixture runs both from a test shell, so both
       # have to be reachable there.
       # lvm2/cryptsetup are the SEAM's tooling ([V3b.33]) in a test shell: the product carries them
-      # in briard-data-seam.service's own unit PATH, and a rig that has to look at the stack it
+      # in briard-node-storage.service's own unit PATH, and a rig that has to look at the stack it
       # built -- `dmsetup deps`, `cryptsetup isLuks`, `pvs` -- runs from outside any unit. Free in
       # size: both are already in this guest's closure.
-      environment.systemPackages = [ pkgs.curl pkgs.lvm2.bin pkgs.cryptsetup ]
+      environment.systemPackages = [ pkgs.curl pkgs.lvm2.bin pkgs.cryptsetup testStorage ]
         ++ lib.optionals (allFixtures != [ ]) [ pkgs.btrfs-progs config.briard.agentPackage ];
       # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes
       # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic

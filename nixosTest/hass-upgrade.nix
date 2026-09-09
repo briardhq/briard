@@ -82,8 +82,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_for_unit("multi-user.target")
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=1200) # both 2.4 GB images
     node1.succeed("modprobe drbd")
-    node1.succeed("drbdadm create-md --force r0")
-    node1.succeed("systemctl start drbd@r0.target")
+    node1.succeed("briard-test-storage")
     # Single node: no peer — just make it UpToDate so the promoter has quorum-of-1.
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on

@@ -65,8 +65,7 @@ pkgs.testers.runNixOSTest {
         # Naming afterwards would leave briard-mdns-services inactive on its ConditionPathExists.
         name_the_flock(m)
         m.succeed("modprobe drbd")
-        m.succeed("drbdadm create-md --force r0")
-        m.succeed("systemctl start drbd@r0.target")
+        m.succeed("briard-test-storage")
 
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 1")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")

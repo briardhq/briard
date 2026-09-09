@@ -23,20 +23,12 @@ let
   # LVM beats raw `dmsetup` here: nothing has to rebuild a table at every boot, and "which backing
   # is this node on" lives ON THE DISK rather than in host config.
   #
-  # dataDisk is the SECOND virtio disk, which is a hardware fact of the VM the host builds
-  # (agent/platform/qemu.go attaches DataDisk there) rather than anything configured -- the same
-  # kind of two-sided contract as the /run paths below. dataLV is restated from Go's
-  # drbd.DataDevice, which is what DRBD is pointed at; the two must agree.
-  dataDisk = "/dev/vdb";
-  dataVG = "briard";
-  dataLV = "/dev/mapper/${dataVG}-data";
-  # The dm-crypt device the PV sits on when this node is encrypted, which is the default wherever
-  # the CPU has AES ([V3b.33](c)). The name is NOT `${dataVG}-...`: an LV of the briard VG would
-  # be named that way, and a crypt device wearing an LV's naming is a device nobody can classify
-  # at a glance -- including the seam invariant, which reads `dmsetup table` and has to tell them
-  # apart.
-  cryptName = "briard-crypt";
-  cryptDev = "/dev/mapper/${cryptName}";
+  # ⚠️ NONE OF THOSE NAMES LIVE HERE ANY MORE ([V3b.33](d)). The device, the VG, the LV and the
+  # encryption mode arrive in the spec the HOST writes to /run/briard/node-storage.json, because
+  # storage policy is a node-scoped fact the host holds and pushes at bring-up (AGENTS §5) -- and
+  # a unit whose only inputs are what it can read off the machine has nowhere for a decision to
+  # arrive, which is why (c) could not build its Adiantum opt-in. This image contributes the unit
+  # file; the pushed agent contributes every name and every choice.
   # The installer's one-time "this volume is brand new" marker (agent/guestagent's
   # dataFormatMarker). A /run path is a two-sided contract with the agent, restated here the way
   # mdnsEnvPath and vipEnvPath are, and the Go side owns it.
@@ -1004,7 +996,7 @@ in
     #
     # THERE IS NO DEADLOCK TO DESIGN AROUND, which is what makes it nearly free: bring-up gates on
     # QUORATE, not Primary (host.go), so the agent never waits for a promotion; and quorum does not
-    # need the reactor either, because the agent attaches DRBD itself (drbd.provision + drbd.up).
+    # need the reactor either, because the agent attaches DRBD itself (storage.node, [V3b.33](d)).
     # So promotion may safely wait for the agent, and does.
     #
     # THE COST, stated rather than buried: a permanently absent agent -- /opt/briard wiped, the unit
@@ -1226,130 +1218,40 @@ in
     # the resource, and stops them in reverse on demote. So they run on the primary
     # and nowhere else.
 
-    # 0. the seam — the single-LV VG DRBD attaches to ([V3b.33]). NOT a chain member: it runs
-    # once at boot, on every node, before anything can provision a resource, because
-    # `drbdadm create-md` names the LV and a device that does not exist cannot be claimed.
-    systemd.services.briard-data-seam = {
-      description = "Briard data seam (the encrypted single-LV VG DRBD attaches to)";
-      wantedBy = [ "multi-user.target" ];
-      # Before the agent can serve a bring-up verb over the channel. Ordering against a unit this
-      # module does not define is a no-op where it is absent (the hermetic nixosTest nodes have no
-      # host and no agent), and those nodes reach multi-user.target before their testScript
-      # provisions anything, so the guarantee holds both ways.
-      before = [ "briard-guest-agent.service" ];
-      # A diskless witness has no data disk and no seam to build. ConditionPathExists makes that
-      # a SKIP rather than a failure, which is what a witness legitimately is.
-      unitConfig.ConditionPathExists = dataDisk;
+    # 0. node storage — every tier this node holds, and the DRBD resource on top of them
+    # ([V3b.33](d)). NOT a chain member and NOT started at boot: the HOST starts it, once per
+    # bring-up, after writing /run/briard/node-storage.json.
+    #
+    # `wantedBy = [ ]` is the statement. Because the agent it execs is PUSHED ([B.139]), storage
+    # bring-up provably cannot run before the host has dressed the guest -- which is fine (the
+    # host is always present at guest start: `-no-reboot`, and the agent is the guest's sole
+    # supervisor) and turns something accidental into something stated.
+    #
+    # It runs on EVERY node, witness included: a diskless node builds no tier and still needs its
+    # `.res` written and its resource attached.
+    systemd.services.briard-node-storage = {
+      description = "Briard node storage (tiers, and the DRBD resource on top of them)";
+      wantedBy = [ ];
       path = [
         pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange -- the `bin` output, already in this closure
         pkgs.cryptsetup
-        pkgs.jq # the clear-key token is JSON, and jq is already here (the front door's routes)
-        pkgs.kmod
-        pkgs.gnugrep
-        pkgs.coreutils
+        pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here ([V3b.33](a))
+        pkgs.drbd # drbdadm create-md / new-current-uuid
+        pkgs.coreutils # install, test, rm
+        config.systemd.package # systemctl start drbd@<res>.target
       ];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "briard-data-seam-up" ''
-          set -eu
-          # dm-mirror is what `pvmove` builds its transient mirror out of, and LVM cannot autoload
-          # it here: lvm shells out to /sbin/modprobe, which does not exist on a NixOS guest, so
-          # the first conversion would fail with "Required device-mapper target(s) not detected in
-          # your kernel" (measured, [V3b.33](a)). Loading it at boot means the module a conversion
-          # needs is never the reason one cannot start.
-          modprobe dm-mirror
-
-          # A RETURNING ENCRYPTED NODE OPENS ITSELF, and this is the whole of what "clear key"
-          # means: slot 0's passphrase is in a LUKS2 TOKEN on the same disk, in plaintext JSON.
-          # A keyslot cannot hold the volume key unwrapped, but the token area can hold the
-          # passphrase that unwraps it -- which is where clevis parks its JWE and
-          # systemd-cryptenroll its TPM2 metadata -- so a later boot needs nothing from anybody.
-          #
-          # ⚠️ THE HONEST FRAMING IS "READY TO BE ARMED", NEVER "PROTECTED". An un-armed volume
-          # resists physical loss only (theft, RMA, resale); the key is right there. What it buys
-          # is that arming later is a keyslot operation instead of a multi-hour migration nobody
-          # would opt into -- and `cryptsetup luksDump` is the audit surface that says which a
-          # node is, because an armed node has no briard-clear token.
-          if cryptsetup isLuks ${dataDisk} && [ ! -b ${cryptDev} ]; then
-            cryptsetup token export --token-id 0 ${dataDisk} \
-              | jq -j '.briard_passphrase' \
-              | cryptsetup open --key-file - ${dataDisk} ${cryptName}
-          fi
-
-          # A RETURNING NODE carries its VG on the disk -- that is the point of using LVM rather
-          # than a table this unit would have to rebuild -- so activate and stop.
-          vgchange -ay ${dataVG} >/dev/null 2>&1 || true
-          if [ -b ${dataLV} ]; then
-            exit 0
-          fi
-
-          # ── A BLANK DISK ─────────────────────────────────────────────────────────────────────
-          # THE AES AXIS, checked INSIDE the guest because that is the one place silicon,
-          # accelerator and CPU model compose into a single answer: under KVM `-cpu max` passes
-          # the host's own CPU through, under TCG or WHPX it does not, and qemu's default qemu64
-          # hides `aes` outright. Hardware without it -- Pi 4 and older, pre-AES-NI x86, any TCG
-          # host -- runs the volume in the CLEAR and says so, because a software cipher on the
-          # write path of a household's data is a worse trade than an honest report.
-          pv=${dataDisk}
-          if grep -qw aes /proc/cpuinfo; then
-            key=/run/briard-luks.key
-            ( umask 077; head -c 32 /dev/urandom | base64 -w0 >"$key" )
-            # ⚠️ A DELIBERATELY CHEAP KDF, and it costs nothing, because the passphrase it
-            # stretches is 256 bits of urandom stored IN THE CLEAR two hundred bytes away. A KDF
-            # makes GUESSING expensive; nobody has to guess this one. What it would cost is real:
-            # LUKS2's default argon2id targets ~1 GiB and two seconds, paid at every boot of every
-            # node, on guests that have 2 GB. Arming (v5) adds a slot with a secret worth
-            # stretching and destroys this one, so no future keyslot inherits these parameters.
-            #
-            # `--offset` PINS the data offset at 16 MiB rather than inheriting LUKS2's default,
-            # which makes the header size a stated product constant -- the host's header backup
-            # (agent/host/luksheader.go) copies exactly this prefix, so the two must agree.
-            cryptsetup luksFormat --type luks2 --batch-mode \
-              --cipher aes-xts-plain64 --key-size 512 --offset 32768 \
-              --pbkdf argon2id --pbkdf-force-iterations 4 --pbkdf-memory 32 --pbkdf-parallel 1 \
-              --key-file "$key" ${dataDisk}
-            # The token, written with jq so the passphrase is JSON-escaped by something that knows
-            # the rules. `type` and `keyslots` are LUKS2's mandatory fields; the rest is ours, and
-            # cryptsetup stores an unknown token type verbatim without trying to interpret it.
-            jq -n --rawfile p "$key" \
-              '{type:"briard-clear",keyslots:["0"],briard_passphrase:$p}' \
-              | cryptsetup token import --token-id 0 ${dataDisk}
-            cryptsetup open --key-file "$key" ${dataDisk} ${cryptName}
-            rm -f "$key" # /run is tmpfs, and the token holds the same bytes anyway
-            pv=${cryptDev}
-          else
-            echo "briard: this CPU has no AES acceleration -- creating the data volume UNENCRYPTED" >&2
-          fi
-
-          # Build the seam on whichever PV the branch above chose. `pvcreate` WITHOUT -f is the
-          # probe, and it is the same shape as `drbdadm create-md` without --force ([B.126])
-          # rather than a second idiom: it refuses on ANY existing signature (the prompt hits a
-          # closed stdin and aborts) and it fails on a device it cannot read. So "pvcreate
-          # succeeded" means the device was readable AND blank -- the distinction a `blkid ||`
-          # probe cannot make, which is the mistake that once reformatted a household's
-          # replicated volume.
-          #
-          # A node installed before the seam therefore FAILS EARLIER than this, at luksFormat or
-          # here, rather than having its data volume claimed: its data.img already holds DRBD
-          # metadata. That is the alpha reinstall-only policy working as intended, not a gap.
-          pvcreate "$pv"
-          vgcreate ${dataVG} "$pv"
-          # The whole PV, because the seam reserves nothing: a conversion's target is a disk the
-          # HOST sizes, and it can be made large enough to hold this LV plus a LUKS header.
-          # Reserving here would cost every node space forever to save the host one line.
-          lvcreate -l 100%FREE -n data ${dataVG}
-
-          # THE BLANK-SIGNAL, handed to the agent's bring-up ([V3b.33](c), agent/guestagent's
-          # dataFreshMarker). `drbdadm create-md` without --force is a probe that reads the device
-          # and asks whether it looks empty -- and on an ENCRYPTED device it never does, because
-          # dm-crypt returns ciphertext for sectors nobody has written. So the fact moves here,
-          # where it is a fact: this branch just ran `lvcreate`, so the LV is empty by
-          # construction. On TMPFS, which is the safety property rather than a detail -- it cannot
-          # outlive this boot, so no later boot can present a populated replica as a fresh one.
-          mkdir -p /run/briard
-          : >/run/briard/data.fresh
-        '';
+        # ⚠️ NO RemainAfterExit, and that is deliberate rather than an omission: the host starts
+        # this unit at EVERY bring-up, including a re-adopt of a warm guest, and `systemctl start`
+        # on a unit that stayed "active" would be a silent no-op -- the `.res` never re-asserted,
+        # the attach never re-tried. Every step it takes is idempotent by construction (a
+        # returning node activates its VG and stops), so re-running is the cheaper guarantee.
+        RemainAfterExit = false;
+        # THROUGH THE PIVOT'S binDir DIRECTLY ([B.86j], [B.138]), never through the picker: the
+        # picker's trial flag is keyed by the binary's NAME, so a unit that reached the agent
+        # through it would arm a trial every time storage came up.
+        ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --node-storage";
       };
     };
 

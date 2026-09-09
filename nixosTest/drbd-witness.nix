@@ -50,10 +50,10 @@ pkgs.testers.runNixOSTest {
         # The image is warmed on both disk nodes before anything promotes: the survivor renders
         # from the volume when it takes over and must not need a pull to do it.
         m.wait_for_unit("briard-test-fixture-install.service")
-        m.succeed("drbdadm create-md --force r0")
-    for m in machines:
-        m.succeed("systemctl start drbd@r0.target")
-
+        m.succeed("briard-test-storage")
+    # The witness has no tier to build and still needs its `.res` and its attach --
+    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    witness.succeed("briard-test-storage")
     # All three connected (node1 ↔ node2 + the diskless witness), then skip the
     # initial sync. The per-node volume form needs the volume id (r0/0).
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")

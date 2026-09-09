@@ -201,9 +201,10 @@ pkgs.testers.runNixOSTest {
     for m in [node1, node2, witness]:
         m.succeed("modprobe drbd")
     for m in disk_nodes:
-        m.succeed("drbdadm create-md --force r0")
-    for m in [node1, node2, witness]:
-        m.succeed("systemctl start drbd@r0.target")
+        m.succeed("briard-test-storage")
+    # The witness has no tier to build and still needs its `.res` and its attach --
+    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
@@ -359,7 +360,7 @@ pkgs.testers.runNixOSTest {
     # here the harness does, as it did the first time). DRBD does not auto-promote, so the reactor
     # has to be running before any node can take the role — starting it is what re-enters the race.
     primary.succeed("modprobe drbd")
-    primary.succeed("systemctl start drbd@r0.target")
+    primary.succeed("briard-test-storage") # re-attach the surviving replica (never re-seeds it)
     primary.succeed("systemctl start drbd-reactor.service")
 
     # WHICHEVER node holds the volume must be serving the fixture again, and it does not matter

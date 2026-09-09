@@ -101,8 +101,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_for_unit("multi-user.target")
     node1.wait_for_unit("briard-test-fixture-install.service") # the image, warm before promotion
     node1.succeed("modprobe drbd")
-    node1.succeed("drbdadm create-md --force r0")
-    node1.succeed("systemctl start drbd@r0.target")
+    node1.succeed("briard-test-storage")
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
     # the promotion path, so a harness that seeds a resource by hand leaves the same marker.

@@ -258,12 +258,13 @@ pkgs.testers.runNixOSTest {
     # HA's 2.4 GB image is resident before anything promotes, as on a real node.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     # ── THE SEAM, BUILT BY THE PRODUCT ─────────────────────────────────────────────────────────
-    # briard-data-seam.service laid this down at boot on the node's own data disk, and it also
-    # loaded dm-mirror -- the target pvmove builds its transient mirror out of, which LVM cannot
-    # autoload on a NixOS guest (it shells out to /sbin/modprobe, which does not exist there;
-    # [V3b.33](a) measured the refusal). Nothing here builds a seam of its own: a rig that did
-    # would be proving a stack no household runs.
-    node1.wait_for_unit("briard-data-seam.service")
+    # briard-node-storage.service lays this down from the spec the host writes ([V3b.33](d)), and
+    # it also loads dm-mirror -- the target pvmove builds its transient mirror out of, which LVM
+    # cannot autoload on a NixOS guest (it shells out to /sbin/modprobe, which does not exist
+    # there; [V3b.33](a) measured the refusal). Nothing here builds a seam of its own: a rig that
+    # did would be proving a stack no household runs.
+    node1.succeed("modprobe drbd")
+    node1.succeed("briard-test-storage --seed")
     node1.succeed(f"test -b {LV}")
     node1.succeed("lsmod | grep -q '^dm_mirror'")
     # The fence, asserted here because everything below depends on it: one linear segment, the
@@ -272,12 +273,9 @@ pkgs.testers.runNixOSTest {
     table = node1.succeed(f"dmsetup table {LV}").strip().splitlines()
     assert len(table) == 1 and " linear " in f" {table[0]} ", f"the LV is not one linear segment: {table}"
 
-    # ── A NODE, THE WAY EVERY OTHER RIG BRINGS ONE UP ──────────────────────────────────────────
-    node1.succeed("modprobe drbd")
-    node1.succeed("drbdadm create-md --force r0")
-    node1.succeed("systemctl start drbd@r0.target")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
+    # ── AND THE RESOURCE ON TOP OF IT, from the same unit run above: it created the LV, created
+    # metadata on it, attached, and -- being the seed -- declared it UpToDate and armed the
+    # one-time format. One unit, which is what [V3b.33](d) bought.
     name_the_flock(node1)
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)

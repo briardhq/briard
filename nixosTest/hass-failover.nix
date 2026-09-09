@@ -60,8 +60,7 @@ pkgs.testers.runNixOSTest {
         # what makes an offline failover possible, and it is asserted again below the kill.
         m.wait_for_unit("briard-test-fixture-install.service", timeout=900)
         m.succeed("modprobe drbd")
-        m.succeed("drbdadm create-md --force r0")
-        m.succeed("systemctl start drbd@r0.target")
+        m.succeed("briard-test-storage")
 
     # Offline failover — the crux for HA: an outage that triggers failover
     # often kills WAN, and the 2.4 GB image must never be pulled at promotion (warm

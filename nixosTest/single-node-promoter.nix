@@ -40,13 +40,19 @@ pkgs.testers.runNixOSTest {
     node1.wait_for_unit("multi-user.target")
     node1.wait_for_unit("briard-test-fixture-install.service") # the image, warmed before anything promotes
     node1.succeed("modprobe drbd")
-    node1.succeed("drbdadm create-md --force r0")
-    node1.succeed("systemctl start drbd@r0.target")
-    # Make the peer-less resource UpToDate so the promoter can promote without --force.
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
+    # ── AND ON ADIANTUM, WHICH IS THE OTHER THING THIS RIG NOW PROVES ──────────────────────────
+    # Adiantum is the cipher for hardware with no AES acceleration (Pi 4 and older, pre-AES-NI
+    # x86). [V3b.33](c) specified it and could NOT build it: it was an install-time opt-in, and a
+    # boot-time seam unit had no channel to read one from. (d) gave it that channel, so the mode
+    # is now expressible -- and a mode nothing ever runs is a mode we do not know works.
+    #
+    # It rides THIS rig because a lone node exercising the whole chain on a volume is exactly what
+    # an AES-less box is, and the coverage is free: the default cipher is proven by every other
+    # storage rig. A failure here is unambiguous, because the cipher is asserted before anything
+    # else happens.
+    node1.succeed("briard-test-storage --seed --mode adiantum")
+    assert "adiantum" in node1.succeed("dmsetup table /dev/mapper/briard-crypt"), \
+        "the volume is not on Adiantum: " + node1.succeed("dmsetup table /dev/mapper/briard-crypt")
 
     # Hand off to the promoter. On a mesh-of-one it must promote AND keep its event path
     # live — the bug left it adopted-but-unreactive (IGNORING every event).

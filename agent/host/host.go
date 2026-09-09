@@ -857,11 +857,16 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		}
 	}
 
+	// The node's storage spec, rendered by the host because storage policy is the host's
+	// ([V3b.33](d)). A spec this host cannot build stops bring-up here -- before the guest is
+	// asked to do anything -- rather than inside a unit whose only report is an exit code.
+	storage, err := cfg.StorageSpec(cfg.Resource, cfg.Diskless, cfg.FreshInit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("host: %w", err)
+	}
 	spec := guestagent.BringUpSpec{
-		Resource:  cfg.Resource,
-		Diskless:  cfg.Diskless,
-		FreshInit: cfg.FreshInit, // exactly one node seeds; the rest sync from it
-		Promoter:  cfg.Promoter,
+		Storage:  storage,
+		Promoter: cfg.Promoter,
 		// The guest's /run is tmpfs, so a reboot took these with it while the host's cache kept
 		// the manifest. Re-rendered here, before ReactorStart, or the promoter starts a chain
 		// whose units are gone.
@@ -879,7 +884,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// budget. reconnect() is exactly that retry loop; use it for adopt, and the patient
 	// one-shot dial for a fresh launch.
 	var client *guestagent.Client
-	var err error
+
 	if adopted {
 		if client, err = reconnect(bringup, cfg.ControlSock, logf); err != nil {
 			return nil, nil, fmt.Errorf("%w: %w", errNoChannel, err)

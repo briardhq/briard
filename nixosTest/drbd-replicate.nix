@@ -28,10 +28,10 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
-        # --force here only force-creates metadata on the blank disk; it is NOT
+        # The product's storage bring-up ([V3b.33](d)). It create-md's with --force only because
+        # it CREATED the LV a moment earlier and there is nothing on it to protect; that is NOT
         # force-promotion, which stays banned tree-wide (CONTRIBUTING.md invariant 3).
-        m.succeed("drbdadm create-md --force r0")
-        m.succeed("drbdadm up r0")
+        m.succeed("briard-test-storage")
 
     # The two sides find each other on the private DRBD subnet.
     node1.wait_until_succeeds("drbdadm cstate r0 | grep -q Connected")

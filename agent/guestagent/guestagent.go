@@ -26,6 +26,7 @@ import (
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
+	"briard.io/shared/nodestorage"
 	"briard.io/shared/telemetry"
 )
 
@@ -45,13 +46,17 @@ const DefaultPollInterval = 500 * time.Millisecond
 // the DRBD config and drives create-md / target / reactor through these; the
 // guest just executes. None of them promote/demote -- drbd-reactor does that.
 const (
-	verbProvision = "drbd.provision"     // write configs + create-md
-	verbUp        = "drbd.up"            // start drbd@<res>.target (attach+connect)
-	verbInitUUID  = "drbd.init-uptodate" // new-current-uuid: declare a fresh resource UpToDate
-	verbReactor   = "drbd.reactor.start" // start drbd-reactor (it then promotes) -- the ONLY thing that does
-	verbStatus    = "drbd.status"        // drbdsetup status --json -> model.Cluster (QuorumState + peers)
-	verbAdjust    = "drbd.adjust"        // rewrite the .res + `drbdadm adjust` (runtime mesh growth)
+	verbNodeStorage = "storage.node"       // write the storage spec + start briard-node-storage.service
+	verbReactor     = "drbd.reactor.start" // write the promoter snippet + start drbd-reactor -- the ONLY thing that promotes
+	verbStatus      = "drbd.status"        // drbdsetup status --json -> model.Cluster (QuorumState + peers)
+	verbAdjust      = "drbd.adjust"        // rewrite the .res + `drbdadm adjust` (runtime mesh growth)
 )
+
+// nodeStorageUnit is the guest unit this verb starts: `wantedBy = [ ]`, so it runs when the host
+// says so and never at boot ([V3b.33](d)). Because the agent it execs is PUSHED, storage bring-up
+// provably cannot run before the host has dressed the guest -- which turns something that was
+// accidental into something stated.
+const nodeStorageUnit = "briard-node-storage.service"
 
 // Net.configure sets a static address on a guest NIC -- the system/DRBD NIC on the
 // private subnet, so DRBD can bind/connect there. Host-driven: the agent knows
@@ -310,7 +315,7 @@ const dataMountRoot = "/var/lib/briard"
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbProvision, verbUp, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
+	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
@@ -494,6 +499,17 @@ type backupRestoreRequest struct {
 // reactorRequest names a drbd-reactor promoter snippet to pause/resume.
 type reactorRequest struct {
 	Snippet string `json:"snippet"`
+}
+
+// reactorStartRequest arms the promoter: the snippet to land and the resource it promotes.
+//
+// It is not reactorRequest with a field added, because the two are different acts on different
+// documents -- pause/resume name a snippet ALREADY on disk by its file name, and this one carries
+// the snippet's CONTENT. One struct would have made "snippet" mean two things depending on the
+// verb, which is the kind of thing that reads fine and drops a promoter chain.
+type reactorStartRequest struct {
+	Resource string `json:"resource"`
+	Snippet  string `json:"snippet"`
 }
 
 // evictRequest asks this node to give the work to a peer (reactor.evict).
@@ -699,64 +715,28 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// keep-the-baked-name fallback are all deleted: a third copy on disk is a third thing
 			// that can be wrong.
 			return nil, x.Sethostname(req.Name)
-		case verbProvision:
-			var req ProvisionRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
+		case verbNodeStorage:
+			// THE HOST'S STORAGE SPEC, LANDED AND CARRIED OUT ([V3b.33](d)). Parsed here rather
+			// than written through blindly so a spec this build cannot understand is refused at
+			// the verb, with the host still listening, instead of inside a unit whose only
+			// report is an exit code.
+			spec, err := nodestorage.Parse(payload)
+			if err != nil {
 				return nil, err
 			}
-			if err := x.WriteFile(resPath(req.Resource), []byte(req.ResConfig)); err != nil {
+			raw, err := spec.Marshal()
+			if err != nil {
 				return nil, err
 			}
-			if req.ReactorConfig != "" {
-				if err := x.WriteFile(reactorPath, []byte(req.ReactorConfig)); err != nil {
-					return nil, err
-				}
+			if err := x.WriteFile(nodestorage.Path, raw); err != nil {
+				return nil, err
 			}
-			if req.Diskless {
-				return ProvisionResult{}, nil // a diskless witness has no metadata to create
-			}
-			// Idempotent bring-up: `create-md` WITHOUT --force is itself the metadata
-			// probe. A node returning from a reboot already holds its replica on the persisted
-			// data disk -- a blind create-md --force would WIPE it and re-seed, split-braining
-			// against the peer that kept serving. On a fresh/blank disk create-md writes new
-			// metadata (exit 0 -> CreatedMetadata); on a disk that already holds metadata DRBD
-			// refuses to overwrite -- the confirm prompt hits EOF (the Executor gives commands
-			// /dev/null stdin) and aborts non-zero, which we read as "metadata already present,
-			// attach it, never wipe". This is more reliable than a dump-md pre-check, which at
-			// provision time (resource written but not yet defined in the kernel) reported no
-			// metadata on a disk that still had it. A non-metadata failure (bad config/disk)
-			// also lands here as "attach"; Up then fails loudly, so bring-up still stops rather
-			// than silently wiping. Use x.Run (not run): a non-zero here is expected, not fatal.
-			//
-			// ⚠️ AN ENCRYPTED BLANK DEVICE DOES NOT LOOK BLANK, which is why the probe above needs
-			// a second signal since [V3b.33](c). dm-crypt returns CIPHERTEXT for sectors nobody
-			// has written, i.e. random bytes -- so `drbdmeta` finds "some data" where a plaintext
-			// disk had zeros, asks for a typed `yes`, meets the Executor's /dev/null stdin and
-			// aborts. Every fresh encrypted node failed here, silently: create-md's non-zero was
-			// read as "existing replica, attach it", and the attach then said `No valid meta data
-			// found` (measured on agent-bringup, and invisible to the hermetic rigs because their
-			// harness uses `create-md --force`).
-			//
-			// The blank-signal therefore moves to the component that KNOWS rather than the one
-			// that guesses: briard-data-seam.service writes dataFreshMarker in the branch where it
-			// has just created the LV, so the marker means "this device was created empty, this
-			// boot" -- a fact, not an inference from bytes. It is on TMPFS for the same reason
-			// dataFormatMarker is: it cannot outlive the boot that created the volume, so no later
-			// boot, promotion or failover can find it and no reboot can ever wipe a replica.
-			//
-			// CONSUMED FIRST, like the format marker: a create-md that fails must not be retried
-			// with --force by the next attempt.
-			args := []string{"create-md", req.Resource}
-			if _, err := x.ReadFile(dataFreshMarker); err == nil {
-				if _, err := x.Run(ctx, "rm", "-f", dataFreshMarker); err != nil {
-					return nil, fmt.Errorf("consume %s: %w", dataFreshMarker, err)
-				}
-				args = []string{"create-md", "--force", req.Resource}
-			}
-			if _, err := x.Run(ctx, "drbdadm", args...); err != nil {
-				return ProvisionResult{CreatedMetadata: false}, nil // existing replica / refusal: attach, don't wipe
-			}
-			return ProvisionResult{CreatedMetadata: true}, nil
+			// The WORK is the unit's, not this handler's, and that is the shape [V3b.33](d)
+			// chose: systemd owns the result -- its status, its journal, its exit code -- and
+			// the ExecStart is the PUSHED agent, so storage code moves with the host bundle
+			// instead of being frozen in the image. `systemctl start` on a Type=oneshot returns
+			// when ExecStart has finished, so a failure here is a failed bring-up.
+			return nil, run("systemctl", "start", nodeStorageUnit)
 		case verbAdjust:
 			var req ProvisionRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -778,47 +758,20 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				}
 			}
 			return nil, run("drbdadm", "adjust", req.Resource)
-		case verbUp:
-			req, err := resourceReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			return nil, run("systemctl", "start", "drbd@"+req.Resource+".target")
-		case verbInitUUID:
-			req, err := resourceReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			// Declare a brand-new resource's local data current, skipping the initial
-			// sync (there is no peer to sync from on first init). One-time; NOT a
-			// force-promotion. The agent does this only when it first creates a resource.
-			if err := run("drbdadm", "new-current-uuid", "--clear-bitmap", req.Resource+"/0"); err != nil {
-				return nil, err
-			}
-			// AND ARM THE ONE-TIME FORMAT ([B.126]). briard-data used to format the volume itself,
-			// on the promotion path, as `blkid /dev/drbd0 || mkfs.btrfs -f`: a forced format behind
-			// a probe that cannot tell "this device is blank" from "this device could not be read",
-			// since blkid is non-zero for both. A transient read failure on a healthy volume would
-			// have reformatted the household's replicated data, on a path that runs at EVERY
-			// promotion forever.
-			//
-			// So the decision moves here and the ACT stays in briard-data, which is the only split
-			// that respects architectural invariant 2: nothing in the agent may promote, and only a
-			// Primary can be formatted. This verb is reached solely under `spec.FreshInit &&
-			// prov.CreatedMetadata` -- the designated seed of a NEW flock, on a disk create-md just
-			// wrote metadata to having refused to touch one that already had it. A joiner is
-			// hard-wired FreshInit=false; a reboot has CreatedMetadata=false.
-			//
-			// ⚠️ THE MARKER IS ON TMPFS, AND THAT IS THE SAFETY PROPERTY, not an accident of where
-			// /run happens to be: it cannot outlive the boot the installer created the volume in,
-			// so no later boot, promotion or failover can find it. A reboot can never format.
-			if err := run("mkdir", "-p", filepath.Dir(dataFormatMarker)); err != nil {
-				return nil, err
-			}
-			return nil, x.WriteFile(dataFormatMarker, []byte(req.Resource+"\n"))
 		case verbReactor:
-			if _, err := resourceReq(payload); err != nil {
+			var req reactorStartRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
+			}
+			// THE PROMOTER SNIPPET LANDS HERE, one step before the daemon that reads it starts.
+			// It used to ride drbd.provision, which no longer exists ([V3b.33](d)); this is the
+			// verb it belongs to, and writing it beside the start keeps the chain a node will be
+			// promoted with and the moment it may be promoted one call apart. Empty on a witness,
+			// which runs no promoter and never reaches this verb.
+			if req.Snippet != "" {
+				if err := x.WriteFile(reactorPath, []byte(req.Snippet)); err != nil {
+					return nil, err
+				}
 			}
 			// ARMING THE PROMOTER, and since [V3b.16a] this is the only thing that ever does: the
 			// guest unit is `wantedBy = [ ]`, so drbd-reactor does not start at boot. Everything
@@ -1731,23 +1684,21 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 // ([B.85], guest-image/configuration.nix), so the path belongs to the unit that acts on it and
 // nothing in Go needs to know it.)
 
-// dataFormatMarker is how the installer tells briard-data.service that THIS volume is brand new
-// and may be formatted ([B.126]). Written only under `FreshInit && CreatedMetadata`, consumed and
-// removed by the unit, and on TMPFS so it cannot survive the boot that created it -- which is what
-// makes "a reboot can never format" a property of the filesystem rather than of our care.
+// dataFormatMarker is how storage bring-up tells briard-data.service that THIS volume is brand
+// new and may be formatted ([B.126]). Written only when this node is the seed of a new flock AND
+// the metadata was created by that same run, consumed and removed by the unit, and on TMPFS so it
+// cannot survive the boot that created it -- which is what makes "a reboot can never format" a
+// property of the filesystem rather than of our care.
 //
-// The DECISION is here and the ACT is in the unit because only a Primary can be formatted and
-// nothing in the agent may promote (architectural invariant 2, and internal/arch enforces it).
+// The DECISION is in briard-node-storage and the ACT is in the mount unit because only a Primary
+// can be formatted and nothing in the agent may promote (architectural invariant 2, and
+// internal/arch enforces it).
+//
+// ⚠️ Its sibling /run/briard/data.fresh is GONE ([V3b.33](d)). It existed to carry "this LV was
+// created empty" from the boot-time seam unit to this package's create-md, because an encrypted
+// blank device reads as ciphertext and cannot be probed. One program now runs both `lvcreate` and
+// `create-md`, so it knows in-process and there is no handoff to lose.
 const dataFormatMarker = "/run/briard/data.format"
-
-// dataFreshMarker is how briard-data-seam.service tells this agent that the LV DRBD is about to
-// claim was created EMPTY on this boot ([V3b.33](c)) -- the blank-signal `drbdmeta` can no longer
-// produce for itself, because an encrypted device's unwritten sectors read as ciphertext rather
-// than as zeros. Written by the seam unit only in the branch that ran `lvcreate`; consumed here.
-// Tmpfs, and that is the safety property: it cannot outlive the boot that created the volume.
-// A /run path is a two-sided contract with the guest image, restated there the way
-// dataFormatMarker is.
-const dataFreshMarker = "/run/briard/data.fresh"
 
 // vipEnvPath is the REQUIRED EnvironmentFile briard-vip.service reads its VIP_DEV and VIP_ADDR
 // from; the agent writes it via net.configure at every bring-up. Nothing is baked behind it
@@ -2303,38 +2254,35 @@ func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
 	return cidr, nil
 }
 
-// Provision drops the rendered DRBD + reactor configs and create-md's the resource -- but only
-// if it has no valid metadata yet: it returns whether it created fresh metadata, so the
-// caller declares UpToDate only on a true first init (never on a reboot, which would wipe the
-// persisted replica). ReactorConfig is dropped regardless (idempotent).
-func (g *Client) Provision(ctx context.Context, req ProvisionRequest) (ProvisionResult, error) {
-	var res ProvisionResult
-	err := g.c.Call(ctx, verbProvision, req, &res)
-	return res, err
-}
-
-// Up starts drbd@<res>.target (attach + connect; leaves the node Secondary).
-func (g *Client) Up(ctx context.Context, resource string) error {
-	return g.c.Call(ctx, verbUp, resourceRequest{Resource: resource}, nil)
+// NodeStorage hands the guest this node's storage spec and runs briard-node-storage.service:
+// every tier built or opened, the `.res` landed, metadata created if there is none, and the
+// resource attached. It ends at /dev/drbd0 attached and never promotes.
+//
+// ONE CALL WHERE THERE WERE THREE ([V3b.33](d)). drbd.provision / drbd.up / drbd.init-uptodate
+// split one act across three round trips, and the split is what made "is this volume brand new"
+// something to infer from an exit code -- an inference encryption broke, because a blank
+// dm-crypt device returns ciphertext. The unit runs `lvcreate` and `create-md` in one process,
+// so it knows.
+func (g *Client) NodeStorage(ctx context.Context, spec nodestorage.Spec) error {
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	return g.c.Call(ctx, verbNodeStorage, spec, nil)
 }
 
 // Adjust rewrites the resource config and runs `drbdadm adjust` -- apply a peer-set change to the
 // already-running resource without a restart (runtime mesh growth). Called on the serving
-// primary to add a joining anchor/witness; the joining nodes come up via Provision+Up
+// primary to add a joining anchor/witness; the joining nodes come up via NodeStorage
 // (FreshInit=false) and resync. No create-md here, so the primary's disk is never touched.
 func (g *Client) Adjust(ctx context.Context, req ProvisionRequest) error {
 	return g.c.Call(ctx, verbAdjust, req, nil)
 }
 
-// InitUpToDate declares a brand-new resource's data current (skips the initial
-// sync). One-time, first-init only -- never on an existing resource.
-func (g *Client) InitUpToDate(ctx context.Context, resource string) error {
-	return g.c.Call(ctx, verbInitUUID, resourceRequest{Resource: resource}, nil)
-}
-
-// ReactorStart starts drbd-reactor, which then drives promotion (not us).
-func (g *Client) ReactorStart(ctx context.Context, resource string) error {
-	return g.c.Call(ctx, verbReactor, resourceRequest{Resource: resource}, nil)
+// ReactorStart lands the promoter snippet and starts drbd-reactor, which then drives promotion
+// (not us). The snippet travels with the start because the chain a node is promoted WITH and the
+// moment it MAY be promoted belong one call apart, not one verb apart.
+func (g *Client) ReactorStart(ctx context.Context, resource, snippet string) error {
+	return g.c.Call(ctx, verbReactor, reactorStartRequest{Resource: resource, Snippet: snippet}, nil)
 }
 
 // Status reads the guest's DRBD/quorum ground truth into a QuorumState — the
@@ -2708,10 +2656,12 @@ func (g *Client) ReactorResume(ctx context.Context, snippet string) error {
 
 // BringUpSpec is one DRBD resource to bring up on this node.
 type BringUpSpec struct {
-	Resource  drbd.Resource
-	Diskless  bool     // this node is a diskless witness (no create-md, no promoter)
-	FreshInit bool     // first-ever bring-up of this resource: declare it UpToDate (skip initial sync)
-	Promoter  []string // drbd-reactor promoter units in start order; nil on a witness
+	// Storage is the node's whole block layout and the resource on top of it, rendered by the
+	// host ([V3b.33](d), agent/host's storageSpec): the tiers to build, the `.res`, whether
+	// this node is diskless, and whether it is the seed of a new flock. It replaces the
+	// Resource/Diskless/FreshInit trio, which described the same three facts one verb at a time.
+	Storage  nodestorage.Spec
+	Promoter []string // drbd-reactor promoter units in start order; nil on a witness
 	// ServiceUnits re-materialises a runtime-installed service's quadlet files before the
 	// promoter is started. They live on tmpfs inside the guest, so a reboot erases them
 	// while the host's manifest cache survives — and Promoter above then names units that do not
@@ -2747,36 +2697,17 @@ type BringUpSpec struct {
 //
 // THE ORDER IS THE GUARANTEE, not merely the sequence ([V3b.16a]). Nothing else starts
 // drbd-reactor -- not boot, not a target -- so every step above happens-before any promotion can,
-// on a reboot exactly as on a first install. Quorum does not wait on the reactor either (drbd.up
+// on a reboot exactly as on a first install. Quorum does not wait on the reactor either (storage.node
 // attaches DRBD itself), and the caller gates on QUORATE rather than Primary, so there is no
 // cycle: bring-up never waits for a promotion it is the precondition of.
 func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
-	res := spec.Resource
-	var reactorCfg string
-	if len(spec.Promoter) > 0 {
-		reactorCfg = drbd.ReactorConfig(res.Name, spec.Promoter)
-	}
-	req := ProvisionRequest{
-		Resource:      res.Name,
-		ResConfig:     res.Config(),
-		ReactorConfig: reactorCfg,
-		Diskless:      spec.Diskless,
-	}
-	prov, err := g.Provision(ctx, req)
-	if err != nil {
+	res := spec.Storage.Resource.Name
+	// EVERY BLOCK-LEVEL STEP, IN ONE CALL: the tiers, the `.res`, create-md, the attach, and --
+	// on a true first init only -- new-current-uuid and the one-time format marker. What used to
+	// be three verbs and a host-side gate on `FreshInit && CreatedMetadata` is one unit that
+	// holds both facts itself, which is what let /run/briard/data.fresh go ([V3b.33](d)).
+	if err := g.NodeStorage(ctx, spec.Storage); err != nil {
 		return err
-	}
-	if err := g.Up(ctx, res.Name); err != nil {
-		return err
-	}
-	// Declare UpToDate (skip-initial-sync) only on a TRUE first init: the designated seed AND a
-	// disk we actually just created metadata on. On a reboot the metadata already existed, so
-	// Provision skipped create-md and we attach + resync from peers instead of re-declaring
-	// UpToDate -- which would split-brain against the replica that kept serving.
-	if spec.FreshInit && prov.CreatedMetadata {
-		if err := g.InitUpToDate(ctx, res.Name); err != nil {
-			return err
-		}
 	}
 	// Put the service's units back before the promoter can look for them. A failure here
 	// fails bring-up, like every other step: the alternative is a node that comes up with a
@@ -2801,7 +2732,7 @@ func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 		}
 	}
 	if len(spec.Promoter) > 0 {
-		return g.ReactorStart(ctx, res.Name)
+		return g.ReactorStart(ctx, res, drbd.ReactorConfig(res, spec.Promoter))
 	}
 	return nil
 }
@@ -2858,5 +2789,5 @@ func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 	if err := g.BringUp(ctx, spec); err != nil {
 		return err
 	}
-	return g.WaitPrimary(ctx, spec.Resource.Name, DefaultPollInterval)
+	return g.WaitPrimary(ctx, spec.Storage.Resource.Name, DefaultPollInterval)
 }

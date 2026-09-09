@@ -45,8 +45,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service") # warm on every node: a survivor must not pull
         m.succeed("modprobe drbd")
-        m.succeed("drbdadm create-md --force r0")
-        m.succeed("systemctl start drbd@r0.target")
+        m.succeed("briard-test-storage")
 
     # Offline failover: sever any default route and assert it's gone, so the
     # self-fence + survivor takeover are proven to need zero internet — a local

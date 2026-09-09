@@ -113,11 +113,14 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 
 	if spec.Join {
 		logf("pair: joining as %s (diskless=%t) -- fresh bring-up + resync from the primary", cfg.Node, diskless)
+		// NEVER seed a joiner: attach + resync as SyncTarget, which is what the false says.
+		storage, err := cfg.StorageSpec(target, diskless, false)
+		if err != nil {
+			return err
+		}
 		if err := g.BringUp(ctx, guestagent.BringUpSpec{
-			Resource:  target,
-			Diskless:  diskless,
-			FreshInit: false, // NEVER seed a joiner: attach + resync as SyncTarget
-			Promoter:  promoter,
+			Storage:  storage,
+			Promoter: promoter,
 		}); err != nil {
 			return err
 		}

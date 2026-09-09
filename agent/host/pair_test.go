@@ -15,6 +15,7 @@ import (
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
+	"briard.io/shared/nodestorage"
 	"briard.io/shared/notify"
 )
 
@@ -55,8 +56,8 @@ func (w *fakeWitness) StartForwarder(_ context.Context, s platform.ForwarderSpec
 // threePeerMesh is anchorA (seed/primary) + anchorB (blank joiner) + a diskless witness.
 func threePeerMesh() []api.MeshPeer {
 	return []api.MeshPeer{
-		{Name: "anchorA", NodeID: 0, Address: "10.0.0.1:7789", Disk: "/dev/vdb"},
-		{Name: "anchorB", NodeID: 1, Address: "10.0.0.2:7789", Disk: "/dev/vdb"},
+		{Name: "anchorA", NodeID: 0, Address: "10.0.0.1:7789", Disk: drbd.DataDevice},
+		{Name: "anchorB", NodeID: 1, Address: "10.0.0.2:7789", Disk: drbd.DataDevice},
 		{Name: "witness", NodeID: 2, Address: "10.0.0.3:7789"}, // diskless
 	}
 }
@@ -95,7 +96,7 @@ func TestReconcileMeshPrimaryAdjustsInPlace(t *testing.T) {
 // A blank second anchor joins: fresh bring-up as a NON-seed (FreshInit=false), so it attaches and
 // resyncs as SyncTarget rather than declaring itself UpToDate (which would split-brain).
 func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
-	cfg := Config{Node: "anchorB", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"}
+	cfg := Config{Node: "anchorB", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2", DataEncryption: nodestorage.ModeAuto}
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: true, SystemDev: "eth1", SystemCIDR: "10.0.0.2/24"}
 	f := &fakeMesher{}
@@ -108,17 +109,22 @@ func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
 	if f.broughtUp == nil {
 		t.Fatal("a blank joiner must bring up")
 	}
-	if f.broughtUp.FreshInit {
+	if f.broughtUp.Storage.Resource.FreshInit {
 		t.Error("a joiner must NOT FreshInit (never declare UpToDate -- it resyncs from the primary)")
 	}
-	if f.broughtUp.Diskless {
+	if f.broughtUp.Storage.Resource.Diskless {
 		t.Error("a disk-bearing anchor must not be diskless")
 	}
 	if len(f.broughtUp.Promoter) == 0 {
 		t.Error("a disk-bearing anchor runs the promoter (it can be promoted on failover)")
 	}
-	if len(f.broughtUp.Resource.Peers) != 3 {
-		t.Errorf("joiner bring-up mesh has %d peers, want 3", len(f.broughtUp.Resource.Peers))
+	// The mesh reaches the guest as the rendered `.res` now, not as a peer slice ([V3b.33](d)),
+	// so the assertion reads the document the guest will actually attach with.
+	res := f.broughtUp.Storage.Resource.Config
+	for _, want := range []string{"on anchorA", "on anchorB", "on w"} {
+		if !strings.Contains(res, want) {
+			t.Errorf("the joiner's .res is missing %q:\n%s", want, res)
+		}
 	}
 	if f.netCIDR != "10.0.0.2/24" {
 		t.Errorf("joiner configure-net CIDR = %q, want 10.0.0.2/24", f.netCIDR)
@@ -127,7 +133,7 @@ func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
 
 // The diskless witness joins for the quorum vote only: bring up diskless, no promoter.
 func TestReconcileMeshWitnessJoinsDisklessNoPromoter(t *testing.T) {
-	cfg := Config{Node: "witness", Promoter: []string{"briard-vip.service"}}
+	cfg := Config{Node: "witness", Promoter: []string{"briard-vip.service"}, DataEncryption: nodestorage.ModeAuto}
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: true, SystemDev: "eth1", SystemCIDR: "10.0.0.3/24"}
 	f := &fakeMesher{}
@@ -137,7 +143,7 @@ func TestReconcileMeshWitnessJoinsDisklessNoPromoter(t *testing.T) {
 	if f.broughtUp == nil {
 		t.Fatal("the witness must bring up")
 	}
-	if !f.broughtUp.Diskless {
+	if !f.broughtUp.Storage.Resource.Diskless {
 		t.Error("the witness must bring up diskless (no metadata, quorum vote only)")
 	}
 	if len(f.broughtUp.Promoter) != 0 {
@@ -150,8 +156,8 @@ func TestReconcileMeshWitnessJoinsDisklessNoPromoter(t *testing.T) {
 // addr, and the MeshWitness block carries the private guest↔host link + the cloud proxy target.
 func forwardedWitnessSpec(self string, join bool, cidr string) api.MeshSpec {
 	peers := []api.MeshPeer{
-		{Name: "anchorA", NodeID: 0, Address: "10.7.0.1:7789", Disk: "/dev/vdb"},
-		{Name: "anchorB", NodeID: 1, Address: "10.7.0.2:7789", Disk: "/dev/vdb"},
+		{Name: "anchorA", NodeID: 0, Address: "10.7.0.1:7789", Disk: drbd.DataDevice},
+		{Name: "anchorB", NodeID: 1, Address: "10.7.0.2:7789", Disk: drbd.DataDevice},
 		{Name: "cloud-witness", NodeID: 2, Address: "10.11.9.1:7789"}, // the host forwarder, not the LAN
 	}
 	_ = self
@@ -294,7 +300,7 @@ func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
 	// Before: this node knows only what install.sh gave it -- no PEERS, so a mesh of one on
 	// loopback. This is the shipped single-node state, and the thing that must NOT come back.
 	lone := drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{
-		{Name: "anchorA", NodeID: 0, Address: "127.0.0.1:7789", Disk: "/dev/vdb"},
+		{Name: "anchorA", NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice},
 	}}
 	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
 		MeshCache: cache, Resource: lone}
@@ -346,7 +352,7 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"unparseable", "{not json"},
 		// A spec that does not name this node -- a rename, or a cache carried onto another node.
-		{"does not name this node", `{"resource":"r0","peers":[{"name":"someone-else","node_id":0,"address":"10.0.0.9:7789","disk":"/dev/vdb"}]}`},
+		{"does not name this node", `{"resource":"r0","peers":[{"name":"someone-else","node_id":0,"address":"10.0.0.9:7789","disk":"/dev/mapper/briard-data"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := filepath.Join(dir, tc.name+".json")

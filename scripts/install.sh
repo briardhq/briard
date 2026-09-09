@@ -136,6 +136,17 @@ VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows i
 # recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
 # one-liner. Written in whole GiB -- the dd fallback parses it that way.
 DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
+# The data volume's ENCRYPTION POLICY, decided here and pushed to the guest at every bring-up
+# ([V3b.33](d)). "auto" -- the default and what almost every install should use -- encrypts
+# wherever the GUEST's CPU has AES and runs in the clear where it does not, which is a
+# hardware-determined split the machine card reports. "off" is somebody deciding otherwise;
+# "adiantum" is the cipher for hardware with no AES acceleration (Pi 4 and older, pre-AES-NI x86),
+# a documented opt-in and never promoted.
+#
+# ⚠️ IT APPLIES AT FORMAT TIME ONLY. Changing it on an installed node does not convert its volume:
+# that is a live `pvmove` between a plaintext and an encrypted PV, which the seam exists to make
+# possible and which is a verb, not a config flip.
+DATA_ENCRYPTION="${BRIARD_DATA_ENCRYPTION:-auto}"
 # The guest's CPU model. "max" = every feature the accelerator can expose, which under KVM is this
 # host's own CPU: qemu's DEFAULT (qemu64) is below x86-64-v2 and costs the guest aes/sha-ni/sse4.2
 # (so software TLS, sha256 and crc32c) plus the CPUID bits its kernel needs to mitigate Spectre.
@@ -1016,6 +1027,7 @@ Environment=CPU=$CPU_MODEL
 Environment=GUEST_DISK=$OVERLAY
 Environment=GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
 Environment=DATA_DISK=$DATA
+Environment=DATA_ENCRYPTION=$DATA_ENCRYPTION
 Environment=STATE_DISK=$STATE_DISK
 Environment=CONTROL_SOCK=$RUNDIR/ctl.sock
 Environment=NODE=$NODE_NAME

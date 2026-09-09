@@ -101,8 +101,7 @@ pkgs.testers.runNixOSTest {
     # that fetches it, and on the failover path a pull would be fatal.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     node1.succeed("modprobe drbd")
-    node1.succeed("drbdadm create-md --force r0")
-    node1.succeed("systemctl start drbd@r0.target")
+    node1.succeed("briard-test-storage")
     # Single node: no peer to connect to — just make it UpToDate so it's promotable.
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on

@@ -82,7 +82,7 @@ func TestFirmwareRefusesEveryVerbOutsideTheProtocol(t *testing.T) {
 		t.Errorf("bundle = %q, want empty: the firmware is what runs before any push", h.Bundle)
 	}
 	// One verb from each family the pushed agent owns: bring-up, services, observation.
-	for _, verb := range []string{"drbd.up", "service.start", "sys.resources", "os.system"} {
+	for _, verb := range []string{"storage.node", "service.start", "sys.resources", "os.system"} {
 		err := c.Call(context.Background(), verb, struct{}{}, nil)
 		if err == nil {
 			t.Errorf("%s was served by the firmware", verb)

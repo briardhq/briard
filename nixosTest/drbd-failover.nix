@@ -41,8 +41,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service") # image warm on EVERY node, before any promotion
         m.succeed("modprobe drbd")
-        m.succeed("drbdadm create-md --force r0")
-        m.succeed("systemctl start drbd@r0.target")
+        m.succeed("briard-test-storage")
 
     # Offline failover: the outage that triggers a takeover often kills WAN
     # too, so failover must need zero internet. Sever any default route and assert

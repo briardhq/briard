@@ -22,6 +22,7 @@ import (
 	"briard.io/internal/testsock"
 	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/nodestorage"
 )
 
 // fakeExec records writes/runs and returns canned output; stands in for the guest.
@@ -88,45 +89,54 @@ func dial(t *testing.T, x Executor) *Client {
 	return g
 }
 
-func TestProvisionWritesConfigsAndCreatesMD(t *testing.T) {
-	f := &fakeExec{} // fresh disk: create-md (no --force) succeeds
+// The storage verb's own job is small and exact: land the spec where the unit will read it, and
+// start that unit. The block work is the unit's, and nodestorage_test.go tests it directly.
+func TestNodeStorageVerbLandsTheSpecAndStartsTheUnit(t *testing.T) {
+	f := &fakeExec{}
 	g := dial(t, f)
-	req := ProvisionRequest{Resource: "r0", ResConfig: "RES", ReactorConfig: "REACTOR"}
-	res, err := g.Provision(context.Background(), req)
-	if err != nil {
+	spec := nodestorage.Spec{
+		Tiers: []nodestorage.Tier{{
+			Name: nodestorage.TierData, Device: "/dev/vdb",
+			VG: "briard", LV: "data", Mode: nodestorage.ModeAdiantum,
+		}},
+		Resource: nodestorage.Resource{Name: "r0", Config: "RES", FreshInit: true},
+	}
+	if err := g.NodeStorage(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if !res.CreatedMetadata {
-		t.Error("a fresh disk must report CreatedMetadata=true")
+	landed, err := nodestorage.Parse([]byte(f.files[nodestorage.Path]))
+	if err != nil {
+		t.Fatalf("what landed does not parse: %v", err)
 	}
-	if f.files["/run/briard/drbd.d/r0.res"] != "RES" {
-		t.Errorf(".res = %q", f.files["/run/briard/drbd.d/r0.res"])
+	if tier, ok := landed.Tier(nodestorage.TierData); !ok || tier.Mode != nodestorage.ModeAdiantum {
+		t.Errorf("the host's encryption policy did not survive the wire: %+v", landed)
 	}
-	if f.files["/run/briard/drbd-reactor.d/briard.toml"] != "REACTOR" {
-		t.Errorf("reactor toml = %q", f.files["/run/briard/drbd-reactor.d/briard.toml"])
-	}
-	// Create-md is run WITHOUT --force -- it's the probe (and the create, on a fresh disk).
-	want := [][]string{{"drbdadm", "create-md", "r0"}}
+	want := [][]string{{"systemctl", "start", nodeStorageUnit}}
 	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want %v (create-md, no --force)", f.runs, want)
+		t.Errorf("runs = %v, want %v", f.runs, want)
 	}
 }
 
-// A node returning from a reboot already has valid metadata: create-md (no --force) refuses,
-// so Provision reports no fresh create and does NOT wipe the persisted replica -- B.22b. The
-// key safety property: --force is never passed, so even the probe can't overwrite.
-func TestProvisionAttachesWhenMetadataExists(t *testing.T) {
-	f := &fakeExec{runFn: existingMetadata} // create-md refuses (metadata present)
+// A spec the GUEST cannot understand is refused at the verb, with the host still listening,
+// rather than inside a unit whose only report is an exit code. Unknown fields included: the host
+// and the pushed agent ship together, so a field one side does not know means they have drifted.
+func TestNodeStorageVerbRefusesADriftedSpec(t *testing.T) {
+	f := &fakeExec{}
 	g := dial(t, f)
-	res, err := g.Provision(context.Background(), ProvisionRequest{Resource: "r0", ResConfig: "RES"})
-	if err != nil {
-		t.Fatal(err)
+	if err := g.c.Call(context.Background(), verbNodeStorage, map[string]any{
+		"tiers": []map[string]any{{
+			"name": "data", "device": "/dev/vdb", "vg": "briard", "lv": "data",
+			"mode": "auto", "stripes": 4,
+		}},
+		"resource": map[string]any{"name": "r0", "config": "RES"},
+	}, nil); err == nil {
+		t.Fatal("a spec with an unknown field was accepted; a second dm layer would arrive unnoticed")
 	}
-	if res.CreatedMetadata {
-		t.Error("existing metadata must not report a fresh create")
+	if len(f.runs) != 0 {
+		t.Errorf("the unit was started anyway: %v", f.runs)
 	}
-	if len(f.runs) != 1 || !reflect.DeepEqual(f.runs[0], []string{"drbdadm", "create-md", "r0"}) {
-		t.Errorf("runs = %v, want a single non-forced create-md (which refused, no wipe)", f.runs)
+	if _, ok := f.files[nodestorage.Path]; ok {
+		t.Error("a refused spec was still written to disk")
 	}
 }
 
@@ -318,7 +328,7 @@ func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 			return nil, nil
 		}
 		taken <- struct{}{} // the request is read; its reply is written next
-		return guestfirmware.Hello{Version: guestfirmware.GuestProtocol, Capabilities: []string{guestfirmware.VerbHello, verbUp}}, nil
+		return guestfirmware.Hello{Version: guestfirmware.GuestProtocol, Capabilities: []string{guestfirmware.VerbHello, verbReactor}}, nil
 	})
 
 	// Session 1 dies with its hello on the wire: the guest answers into a stream nobody
@@ -337,7 +347,7 @@ func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 	}
 	// The verb AFTER the handshake is where the field failure surfaced: the handshake had
 	// matched the orphan and left the real reply for this call to trip over.
-	if err := g.Up(context.Background(), "r0"); err != nil {
+	if err := g.ReactorStart(context.Background(), "r0", ""); err != nil {
 		t.Fatalf("first verb after a re-adopted handshake: %v", err)
 	}
 }
@@ -593,40 +603,18 @@ func TestMDNSPublishedIsEmptyWhenNothingIsPublished(t *testing.T) {
 	}
 }
 
-// A diskless witness provisions the config but writes no reactor file and, having
-// no metadata, runs no create-md.
-func TestProvisionWitnessSkipsReactorAndCreateMD(t *testing.T) {
+// Arming the promoter lands the snippet and starts the daemon, in that order: a drbd-reactor that
+// started before its snippet existed would promote with no chain at all.
+func TestReactorStartLandsTheSnippet(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	req := ProvisionRequest{Resource: "r0", ResConfig: "RES", Diskless: true}
-	res, err := g.Provision(context.Background(), req)
-	if err != nil {
+	if err := g.ReactorStart(context.Background(), "r0", "PROMOTER"); err != nil {
 		t.Fatal(err)
 	}
-	if res.CreatedMetadata {
-		t.Error("a diskless witness has no metadata to create")
+	if f.files[reactorPath] != "PROMOTER" {
+		t.Errorf("promoter snippet = %q", f.files[reactorPath])
 	}
-	if _, ok := f.files["/run/briard/drbd-reactor.d/briard.toml"]; ok {
-		t.Error("witness should not write a reactor config")
-	}
-	if len(f.runs) != 0 {
-		t.Errorf("witness should run no dump-md/create-md, got %v", f.runs)
-	}
-}
-
-func TestUpAndReactorStartCommands(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f)
-	if err := g.Up(context.Background(), "r0"); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.ReactorStart(context.Background(), "r0"); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"systemctl", "start", "drbd@r0.target"},
-		{"systemctl", "start", "drbd-reactor.service"},
-	}
+	want := [][]string{{"systemctl", "start", "drbd-reactor.service"}}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
 	}
@@ -651,11 +639,11 @@ func TestExecErrorPropagatesToHost(t *testing.T) {
 	// output, so a bring-up failure is diagnosable (not a bare "exit status 1").
 	f := &fakeExec{output: []byte("no such target\n"), err: errors.New("exit status 1")}
 	g := dial(t, f)
-	err := g.Up(context.Background(), "r0")
+	err := g.ReactorStart(context.Background(), "r0", "")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, want := range []string{"systemctl start drbd@r0.target", "exit status 1", "no such target"} {
+	for _, want := range []string{"systemctl start drbd-reactor.service", "exit status 1", "no such target"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, must contain %q", err, want)
 		}
@@ -674,26 +662,48 @@ func demoResource() drbd.Resource {
 	}
 }
 
-// A data node's bring-up: config + reactor written, then create-md -> target -> reactor.
+// demoStorage is the host-rendered spec BringUp now carries: one data tier and the resource on
+// top of it. What the guest DOES with it is briard-node-storage.service's business and is tested
+// against the real steps in nodestorage_test.go; here the question is what crosses the channel.
+func demoStorage(fresh bool) nodestorage.Spec {
+	return nodestorage.Spec{
+		Tiers: []nodestorage.Tier{{
+			Name: nodestorage.TierData, Device: "/dev/vdb",
+			VG: "briard", LV: "data", Mode: nodestorage.ModeAuto,
+		}},
+		Resource: nodestorage.Resource{
+			Name: "r0", Config: demoResource().Config(), FreshInit: fresh,
+		},
+	}
+}
+
+// A data node's bring-up is now TWO acts, and the order between them is the guarantee ([V3b.16a]):
+// every block-level step through one unit, and only then the promoter armed -- so nothing can
+// promote before the volume it would mount exists.
 func TestBringUpDataNode(t *testing.T) {
-	f := &fakeExec{} // fresh disk: create-md succeeds
+	f := &fakeExec{}
 	g := dial(t, f)
 	spec := BringUpSpec{
-		Resource: demoResource(),
+		Storage:  demoStorage(true),
 		Promoter: []string{"briard-data.service", "briard-services.service", "briard-vip.service"},
 	}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if f.files["/run/briard/drbd.d/r0.res"] == "" {
-		t.Error("BringUp wrote no .res")
+	// The spec lands verbatim, because the guest re-parses it: a document the two halves
+	// disagree about is the one thing this verb must not carry.
+	landed, err := nodestorage.Parse([]byte(f.files[nodestorage.Path]))
+	if err != nil {
+		t.Fatalf("the spec that landed does not parse: %v", err)
 	}
-	if f.files["/run/briard/drbd-reactor.d/briard.toml"] == "" {
-		t.Error("data node got no reactor config")
+	if landed.Resource.Config != demoResource().Config() || !landed.Resource.FreshInit {
+		t.Errorf("the spec that landed is not the one the host rendered: %+v", landed)
+	}
+	if f.files[reactorPath] == "" {
+		t.Error("a data node got no promoter snippet")
 	}
 	want := [][]string{
-		{"drbdadm", "create-md", "r0"},
-		{"systemctl", "start", "drbd@r0.target"},
+		{"systemctl", "start", nodeStorageUnit},
 		{"systemctl", "start", "drbd-reactor.service"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
@@ -701,67 +711,38 @@ func TestBringUpDataNode(t *testing.T) {
 	}
 }
 
-// A revived data node (metadata already on disk): create-md refuses (no --force, so no wipe),
-// so bring-up ATTACHES -- and, even though it's the seed, runs NO new-current-uuid (which would
-// split-brain against the peer that kept serving) -- then resyncs from peers. This is what
-// makes a node survive a reboot without wiping/re-seeding its replica.
-func TestBringUpRestartAttachesWithoutWipe(t *testing.T) {
-	f := &fakeExec{runFn: existingMetadata} // create-md refuses -> metadata present
-	g := dial(t, f)
-	spec := BringUpSpec{Resource: demoResource(), FreshInit: true, Promoter: []string{"briard-vip.service"}}
-	if err := g.BringUp(context.Background(), spec); err != nil {
-		t.Fatal(err)
-	}
-	want := [][]string{
-		{"drbdadm", "create-md", "r0"}, // attempted, refused (no --force) -> attach
-		{"systemctl", "start", "drbd@r0.target"},
-		{"systemctl", "start", "drbd-reactor.service"},
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("restart bring-up = %v, want %v (create-md refused, no new-current-uuid)", f.runs, want)
-	}
-}
-
-// A witness's bring-up: config written, comes up, but no create-md and no reactor.
+// A witness's bring-up: the same storage call (its spec builds no tier) and NO promoter -- the
+// load-bearing negative, since a diskless node that could promote would serve from nothing.
 func TestBringUpWitness(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.BringUp(context.Background(), BringUpSpec{Resource: demoResource(), Diskless: true}); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := f.files["/run/briard/drbd-reactor.d/briard.toml"]; ok {
-		t.Error("witness should not get a reactor config")
-	}
-	want := [][]string{{"systemctl", "start", "drbd@r0.target"}}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("witness bring-up = %v, want %v (no create-md, no reactor)", f.runs, want)
-	}
-}
-
-// A fresh resource needs new-current-uuid (skip initial sync) between up and reactor.
-func TestBringUpFreshInit(t *testing.T) {
-	f := &fakeExec{} // fresh disk: create-md succeeds -> seed declares UpToDate
-	g := dial(t, f)
-	spec := BringUpSpec{Resource: demoResource(), FreshInit: true, Promoter: []string{"briard-vip.service"}}
+	spec := BringUpSpec{Storage: nodestorage.Spec{
+		Resource: nodestorage.Resource{Name: "r0", Config: demoResource().Config(), Diskless: true},
+	}}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{
-		{"drbdadm", "create-md", "r0"},
-		{"systemctl", "start", "drbd@r0.target"},
-		{"drbdadm", "new-current-uuid", "--clear-bitmap", "r0/0"},
-		// The one-time format is ARMED here and performed by briard-data ([B.126]); the mkdir is
-		// that marker's directory. Nothing promotes -- invariant 2 -- so the act stays in the unit
-		// the promoter runs, and only the DECISION crosses.
-		{"mkdir", "-p", "/run/briard"},
-		{"systemctl", "start", "drbd-reactor.service"},
+	if _, ok := f.files[reactorPath]; ok {
+		t.Error("witness should not get a reactor config")
 	}
+	want := [][]string{{"systemctl", "start", nodeStorageUnit}}
 	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("fresh-init bring-up = %v, want %v", f.runs, want)
+		t.Errorf("witness bring-up = %v, want %v (no reactor)", f.runs, want)
 	}
-	// And the marker itself is what a fresh seed leaves behind for the unit to consume.
-	if _, ok := f.files[dataFormatMarker]; !ok {
-		t.Errorf("fresh init left no %s; the volume would never be formatted", dataFormatMarker)
+}
+
+// A spec the host could not build never reaches the guest: the client refuses it before the
+// call, so a bad document cannot be half carried out by a unit whose only report is an exit code.
+func TestBringUpRefusesAnInvalidSpec(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	bad := demoStorage(true)
+	bad.Tiers[0].Mode = ""
+	if err := g.BringUp(context.Background(), BringUpSpec{Storage: bad}); err == nil {
+		t.Fatal("an invalid storage spec was sent to the guest")
+	}
+	if len(f.runs) != 0 {
+		t.Errorf("the guest was asked to do %v anyway", f.runs)
 	}
 }
 
@@ -1141,12 +1122,12 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 			Serve(context.Background(), conn, f)
 		}
 	}()
-	spec := BringUpSpec{Resource: demoResource(), Promoter: []string{"briard-vip.service"}}
+	spec := BringUpSpec{Storage: demoStorage(false), Promoter: []string{"briard-vip.service"}}
 	if err := BringUpGuest(context.Background(), sock, spec); err != nil {
 		t.Fatal(err)
 	}
-	if f.files["/run/briard/drbd.d/r0.res"] == "" {
-		t.Error("bring-up wrote no .res over the socket")
+	if f.files[nodestorage.Path] == "" {
+		t.Error("bring-up landed no storage spec over the socket")
 	}
 }
 
@@ -1212,7 +1193,7 @@ func TestBringUpRendersServiceUnitsBeforeStartingThePromoter(t *testing.T) {
 	g := dial(t, f)
 
 	err := g.BringUp(context.Background(), BringUpSpec{
-		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "10.0.0.1", NodeID: 0}}},
+		Storage:       demoStorage(false),
 		Promoter:      []string{"briard-app.service"},
 		ServiceUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
 		ServiceImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
@@ -1275,7 +1256,7 @@ func TestBringUpPullsOnlyAnImageThatIsMissing(t *testing.T) {
 	}}
 	g := dial(t, f)
 	err := g.BringUp(context.Background(), BringUpSpec{
-		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "10.0.0.1", NodeID: 0}}},
+		Storage:       demoStorage(false),
 		Promoter:      []string{"briard-app.service"},
 		ServiceUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
 		ServiceImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
@@ -1302,7 +1283,7 @@ func TestBringUpRendersNothingWithNoInstalledService(t *testing.T) {
 	g := dial(t, f)
 
 	err := g.BringUp(context.Background(), BringUpSpec{
-		Resource: drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "10.0.0.1", NodeID: 0}}},
+		Storage:  demoStorage(false),
 		Promoter: []string{"briard-app.service"},
 	})
 	if err != nil {

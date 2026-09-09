@@ -226,7 +226,7 @@ func catalogFor(t *testing.T, m manifest.Manifest) Config {
 	return Config{
 		CatalogURL:    srv.URL,
 		UpdateKeyring: pemKey(t, pub),
-		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "127.0.0.1:7789", Disk: "/dev/vdb"}}},
+		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "127.0.0.1:7789", Disk: drbd.DataDevice}}},
 		Promoter:      promoterUnits(),
 		HealthURL:     "http://192.168.1.100/healthz",
 		ServiceCache:  "", // off: these tests assert orchestration, not persistence

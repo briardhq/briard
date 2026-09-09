@@ -13,6 +13,8 @@
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
 //	briard-guest-agent --converge       render, warm and start every service the volume names
 //	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
+//	briard-guest-agent --node-storage   build this node's tiers and attach the DRBD resource,
+//	                                    from the spec the host wrote (briard-node-storage)
 //	briard-guest-agent --test-launch    the cheap self-test a staged copy passes before it is
 //	                                    trialled ([B.138]): execs, parses, sees the port device
 package main
@@ -96,6 +98,7 @@ func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent", flag.ExitOnError)
 	converge := fs.Bool("converge", false, "render, warm and start every service the replicated volume names, then exit -- briard-services.service's ExecStart")
 	convergeStop := fs.Bool("converge-stop", false, "stop the service units this node converged to -- briard-services.service's ExecStop")
+	nodeStorage := fs.Bool("node-storage", false, "build every tier /run/briard/node-storage.json names and attach the resource -- briard-node-storage.service's ExecStart")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
 	_ = fs.Parse(args)
 
@@ -114,6 +117,17 @@ func runInternal(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	if *nodeStorage {
+		// STORAGE IS THE HOST'S DECISION AND THE GUEST'S WORK ([V3b.33](d)): the spec was
+		// written by the host before this unit was started, so there is nothing to pass on the
+		// command line and nothing for this process to decide. A non-zero exit fails the verb
+		// the host is still waiting on.
+		if err := guestagent.NodeStorage(ctx, guestfirmware.NewOSExecutor()); err != nil {
+			log.Fatalf("node storage: %v", err)
+		}
+		return
+	}
 
 	if *converge || *convergeStop {
 		// Converge's skip list is DROPPED here on purpose: this is drbd-reactor's call, and a

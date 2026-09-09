@@ -32,7 +32,7 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 	}
 }
 
-// storageSpec renders the node-storage spec for one resource bring-up: what block layout this
+// StorageSpec renders the node-storage spec for one resource bring-up: what block layout this
 // node builds, and the .res it attaches on top of it.
 //
 // It takes the resource and the two decisions rather than reading them off c, because the join
@@ -44,7 +44,12 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // runs luksFormat and lvcreate, so a policy nobody can parse must stop bring-up here, loudly,
 // rather than quietly becoming the default. That is the whole reason DataEncryption is not
 // validated at ConfigFromEnv time and then trusted -- one gate, at the point of use.
-func (c Config) storageSpec(res drbd.Resource, diskless, freshInit bool) (nodestorage.Spec, error) {
+//
+// EXPORTED FOR THE TEST DRIVER, the harness that stands in for this agent (nixosTest/driver): it
+// renders its spec through here rather than assembling one of its own, so a rig exercises the
+// product's composition -- the DATA_ENCRYPTION knob included -- instead of a second opinion about
+// it. That is the whole point of [V3b.33](d)'s re-cut.
+func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodestorage.Spec, error) {
 	spec := nodestorage.Spec{
 		Resource: nodestorage.Resource{
 			Name:     res.Name,
