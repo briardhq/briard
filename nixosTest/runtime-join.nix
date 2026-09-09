@@ -10,9 +10,10 @@
 # onto the freshly-joined anchor. Same split as the rest of the HA net (lib.nix drives the DRBD
 # primitives, the agent logic is at-rest -- [[v3-2-real-ha-upgrade]]).
 #
-# lib.nix declares r0.res as a read-only store symlink; runtime growth needs to REWRITE it, so this
-# test writes its own .res straight into the product path the agent uses (/run/briard/drbd.d) --
-# exactly what the guest's storage.node/drbd.adjust verbs do. No nested KVM (the L1 node
+# Runtime growth REWRITES the resource config, so this test drives the `.res` itself -- it hands
+# briard-node-storage a spec carrying the config it wants, and later rewrites the file in place
+# for `drbdadm adjust`, which is exactly what the guest's storage.node/drbd.adjust verbs do.
+# No nested KVM (the L1 node
 # runs DRBD directly), so it rides the fast `drbd` tag.
 { pkgs, guestModule, fixture }:
 
@@ -29,8 +30,12 @@ let
   promoterSnippet = h.promoterSnippet;
 
 
-  # A node like lib.nix's mkNode, but with no baked r0.res so the testScript can write and rewrite
-  # it at runtime (the whole point).
+  # A node like lib.nix's mkNode, but rolled here so this test owns the `.res` end to end.
+  #
+  # `PROPOSED:` the reason it forked has largely gone. lib.nix stopped declaring the `.res` at
+  # [V3b.33](d) -- briard-node-storage writes it -- so what is left of the difference is the
+  # storage spec this file builds in Python versus the one lib.nix bakes. Worth folding back in,
+  # and not in the change that noticed it.
   mkNode =
     { diskless ? false, promoter ? true }:
     { config, ... }:

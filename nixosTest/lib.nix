@@ -409,8 +409,13 @@ let
         # (ConditionPathExists on mdns.env), so the noise was invisible until one asserted mDNS.
         "d /run/briard 0755 root root -"
         "L+ /run/briard/vip.env - - - - ${vipEnvFile}"
+        # ⚠️ THE `.res` IS NOT DECLARED HERE ANY MORE ([V3b.33](d)). It used to be a tmpfiles
+        # symlink to a store file, which was right while the harness SUPPLIED it and nothing
+        # wrote it. briard-node-storage writes the `.res` itself now, exactly as the product
+        # does -- and writing through a store symlink is `read-only file system`, which is how
+        # this was found (single-node-promoter, run 34395428265). The directory stays; what goes
+        # in it is the unit's, from the spec above.
         "d /run/briard/drbd.d 0755 root root -"
-        "L+ /run/briard/drbd.d/r0.res - - - - ${pkgs.writeText "r0.res" resource}"
       ]
       # The snippet is STATIC ([V3b.3](f)): the chain names briard-services, and what the node runs
       # comes from the VOLUME at promotion, so no test's workload choice can change it.
