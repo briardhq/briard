@@ -52,11 +52,21 @@
 #                      exists — which is why the repo being public and readable IS the answer
 #                      to the `curl | sh` objection.
 #
-# VERSIONED DIRECTORIES ARE IMMUTABLE. `publish` refuses a version the bucket already holds.
-# The guest image is not bit-reproducible (timestamps, filesystem UUIDs), so re-staging the same
-# commit yields different bytes under the same id — and a pointer copied from the old manifest
-# would then name bytes the versioned directory no longer serves. Recovery from a bad release is
-# therefore MOVING A POINTER (`promote` an older version), never re-publishing from the tag.
+# VERSIONED DIRECTORIES ARE IMMUTABLE — the property is AN ID NEVER NAMES TWO DIFFERENT
+# BYTE-SETS, not that bytes live forever. The guest image is not bit-reproducible (timestamps,
+# filesystem UUIDs), so re-staging the same commit yields different bytes under the same id, and
+# a pointer copied from the old manifest would then name bytes the versioned directory no longer
+# serves. Two guards, because one of them stopped being able to see the whole question when `gc`
+# started deleting: `publish` refuses a version the bucket already holds, and `release_version`
+# refuses a commit older than the gc floor (an id carries its COMMIT DATE, so re-minting one
+# means re-publishing that commit, and anything gc removed is past the floor).
+#
+# RECOVERY FROM A BAD RELEASE IS A REVERT COMMIT, PUBLISHED FORWARD — not a pointer move. Read
+# agent/install/update.go before reaching for `promote <older-id>`: the timer's `stable` path
+# installs only when date(have) < date(want), so moving stable BACKWARD rolls no installed node
+# back. It changes what new installs get and lowers the floor an exact cloud pin may reach, and
+# that is all. A revert commit is a new rev with today's date, so it is a forward move for every
+# node, and it needs no old bytes — which is why `gc` can delete them (owner, 2026-09-09).
 #
 # `latest` moves on every publish; `stable` moves only on `promote`, and promotion is meant to
 # be evidence-driven (canary converged, fleet healthy for a real window) — never a release-day
@@ -84,8 +94,8 @@
 #                         (needs the credential, no key; refuses an already-published version)
 #   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm
 #                         (default: whatever host/latest names; refuses a same-date promotion)
-#   gc       [--keep V]…  archive versioned dirs no pointer names and nothing pins, older than
-#                         the 30-day floor, to $RELEASE_ARCHIVE — whole releases, never files
+#   gc       [--keep V]…  DELETE versioned dirs no pointer names and nothing pins, older than
+#                         the 30-day floor — whole releases, never files
 #   verify                fetch stable + latest of every chain and arm from the LIVE channel and
 #                         check them the way a client does
 #
@@ -93,7 +103,6 @@
 #   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
 #   RELEASE_WRITE       write store URL — required by `publish`/`promote`/`gc`, e.g.
 #                       's3://get-briard-io?endpoint=<account>.r2.cloudflarestorage.com&region=auto'
-#   RELEASE_ARCHIVE     cold store URL for `gc` (same shape); refused unset — gc never deletes
 #   RELEASE_SIGN_KEY    PKCS8 PEM Ed25519 private key (sign mode; release secret store)
 #   RELEASE_PUBKEY      PKIX PEM public key, for `verify` (default: alongside the private key)
 #   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
@@ -111,8 +120,9 @@ CHAINS="host guest"
 # loop below turns into "" (`arm=${a#-}`) so it runs once over "<chain>/<version>/" — a real
 # empty word would vanish from `for` and the chain would never be visited.
 arms_of() { case "$1" in host) echo "linux windows" ;; *) echo "-" ;; esac; }
-# Nothing younger than this is ever archived, whatever the pointers say, so `gc` can never
-# race a rollback or a fresh pin.
+# Nothing younger than this is ever removed, whatever the pointers say, so `gc` can never race a
+# rollback or a fresh pin. It is also the STALE-COMMIT FLOOR `release_version` refuses past —
+# one number, because the two are the same fact seen from each end (see there).
 GC_FLOOR_DAYS=30
 
 die() { echo "publish-release: $*" >&2; exit 1; }
@@ -135,6 +145,17 @@ release_version() {
 		v3.dirty|*dirty*) die "refusing a DIRTY tree (version=$v) — commit first; a build nobody can reproduce must not be published" ;;
 		"") die "empty version" ;;
 	esac
+	# THE STALE-COMMIT FLOOR, and it is what keeps ids unique now that `gc` DELETES. An id is
+	# `v3.<commit-date>.<shortrev>`, so the only way to mint one twice is to publish the same
+	# commit twice — and `publish` catches that by asking the bucket, which is exactly the
+	# question a deleted release makes unanswerable. Everything `gc` removes is past the floor BY
+	# PUBLISH DATE, and a commit is never younger than its own publish, so refusing a commit
+	# older than the floor closes that hole with no ledger to keep or lose. It costs nothing in
+	# practice: releases are cut from HEAD, and shipping old code is a REVERT COMMIT (the header's
+	# recovery note) — a new rev with today's date, which passes this.
+	local age
+	age=$(( ( $(date -u +%s) - $(date -u -d "$(date_of "$v")" +%s) ) / 86400 ))
+	[ "$age" -le "$GC_FLOOR_DAYS" ] || die "refusing a commit $age days old (version=$v, floor ${GC_FLOOR_DAYS}d): gc deletes past that floor, so this id may name bytes that existed once and are gone — publish a revert commit, not the old tag"
 	echo "$v"
 }
 # The guest release a PUBLISHED host release pairs with, read off its live manifest ([B.86i]):
@@ -547,17 +568,26 @@ gc)
 	shift
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	# gc NEVER DELETES. Old releases are needed as upgrade targets for a pin, and as the bytes
-	# a rollback re-points to — rebuilding will not reproduce them (see the header). So they
-	# leave the SERVING tree and go cold, and the cold store is a required input rather than a
-	# default, because "archive to nowhere" is deletion with a nicer name.
-	[ -n "${RELEASE_ARCHIVE:-}" ] || die "set RELEASE_ARCHIVE to the cold store URL — gc archives, it does not delete"
+	# gc DELETES (owner, 2026-09-09), and what makes that safe is that nothing needs the old
+	# BYTES — only the old CODE, which git has. An id is `v3.<commit-date>.<shortrev>`, so the
+	# property a client depends on is "an id never names two different byte-sets", not "bytes
+	# live forever"; shipping old code is a REVERT COMMIT, which is a new rev under a new id and
+	# satisfies that trivially. `release_version`'s stale-commit floor is the other half.
+	#
+	# AND THERE IS NO COLD ARCHIVE, deliberately. The case for one is "the bytes a rollback
+	# re-points to", and agent/install/update.go does not support it: `stable` installs only when
+	# date(have) < date(want), so a backward pointer move reaches new installs and cloud pins and
+	# no installed node. Against that: a second bucket, a second credential's blast radius, and a
+	# move R2 cannot perform — `s3 mv` fetches object tags for any copy past the 8 MB multipart
+	# threshold, i.e. every image and every agent, so it half-moves a release and leaves a
+	# manifest whose bytes are elsewhere, the one state this file exists to prevent (measured
+	# against the live bucket, 2026-09-09). `--keep` and the floor cover the pin case instead.
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
-	archive=$(bucket_of "$RELEASE_ARCHIVE")
 	# Pins live in the cloud's rollout state, which this script cannot see; the operator names
-	# them. A release that is pinned and not named here is archived, and the pinned node's next
-	# tick fails its fetch loudly (a failed directive, not a silent no-op) — recoverable by
-	# copying the release back, which is why the archive holds whole releases.
+	# them. A release that is pinned and not named here is DELETED, and the pinned node's next
+	# tick fails its fetch loudly (a failed directive, not a silent no-op) — recovered by
+	# publishing a revert commit and re-pointing the pin at it, not by restoring bytes. This is
+	# the one place `--keep` earns its keep, and the floor is what buys time to use it.
 	keep=""
 	while [ $# -gt 0 ]; do
 		case "$1" in --keep) keep="$keep $2"; shift 2 ;; *) die "gc: unknown argument $1" ;; esac
@@ -588,12 +618,11 @@ gc)
 			fi
 			# WHOLE RELEASES, NEVER FILES: a release directory is what a signed manifest names,
 			# and a partial one is a manifest whose bytes are gone — indistinguishable, to a
-			# client, from an attack. (The nix cache has the sharper version of this rule:
-			# `nix copy` remembers "the destination has it" for 30 days, so a path deleted by
-			# hand stays present to the next publish and is silently never re-uploaded —
-			# observed 2026-08-06. Whoever builds cache GC inherits that.)
-			say "archiving $c/$v (published $when) -> $archive/$c/$v/"
-			aws s3 mv "$bucket/$c/$v/" "$archive/$c/$v/" --recursive --endpoint-url "$endpoint" --no-progress
+			# client, from an attack. `rm --recursive` needs no server-side copy, so it has no
+			# object-tagging call to trip on and cannot leave a release half-removed the way a
+			# move does — but the rule stands for whatever ever replaces it.
+			say "deleting $c/$v (published $when, past the ${GC_FLOOR_DAYS}-day floor)"
+			aws s3 rm "$bucket/$c/$v/" --recursive --endpoint-url "$endpoint" --no-progress
 		done
 	done
 	;;
