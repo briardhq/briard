@@ -5,16 +5,31 @@ import (
 	"strings"
 )
 
-// DataDevice is the backing device every diskful node runs its data resource on: the single
-// LV of the guest's single-LV VG ([V3b.33]). DRBD names it and never anything else, and that is
-// the whole point of the seam -- the LV's table can be reloaded underneath, so the backing can be
-// moved onto an encrypted PV and back with `pvmove` while DRBD's device object stays open. A bare
-// disk has no table to reload, and inserting a seam later means DRBD must close and reopen.
+// THE SEAM'S NAMES. DataDevice is the backing device every diskful node runs its data resource
+// on: the single LV of the guest's single-LV VG ([V3b.33]). DRBD names it and never anything
+// else, and that is the whole point of the seam -- the LV's table can be reloaded underneath, so
+// the backing can be moved onto an encrypted PV and back with `pvmove` while DRBD's device object
+// stays open. A bare disk has no table to reload, and inserting a seam later means DRBD must
+// close and reopen.
 //
 // Defined here so the agent and the cloud's pairing directive name one value, and RESTATED (never
 // shared) by the guest image's seam unit, which builds the VG this points into and cannot import
 // Go. Two sides of one contract, the way /run/briard's paths already are.
-const DataDevice = "/dev/mapper/briard-data"
+const (
+	// DataVG and DataLV are the volume group and the single logical volume the seam builds.
+	// They are the parts, and DataDevice is composed from them rather than restated beside
+	// them: the host now names the VG and the LV separately when it renders the node's storage
+	// spec ([V3b.33](d), shared/nodestorage), and three literals that must agree is three
+	// places for them to stop agreeing.
+	DataVG = "briard"
+	DataLV = "data"
+	// DataDevice is the mapper path that LV appears at, and what a `.res` names as its backing.
+	//
+	// ⚠️ Composed by plain concatenation because our names carry no dash: device-mapper escapes
+	// a dash in a VG or LV name by DOUBLING it, so this form is correct only for names that
+	// have none. nodestorage.Validate refuses the character, which is what keeps it true.
+	DataDevice = "/dev/mapper/" + DataVG + "-" + DataLV
+)
 
 // Peer is one node's placement in a DRBD resource. Address is "ip:port" on the
 // private replication subnet; Disk is the backing device, or empty

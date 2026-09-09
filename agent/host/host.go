@@ -35,6 +35,7 @@ import (
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
+	"briard.io/shared/nodestorage"
 	"briard.io/shared/notify"
 	"briard.io/shared/sdnotify"
 	"briard.io/shared/telemetry"
@@ -205,6 +206,19 @@ type Config struct {
 	ServiceRendered quadlet.Rendered
 	Diskless        bool // this node is a diskless witness
 	FreshInit       bool // seed a fresh cluster (skip initial sync); exactly one node
+	// DataEncryption is this node's storage policy: what the guest does when it FORMATS the
+	// data tier ([V3b.33](d)). "auto" (the default) encrypts wherever the guest's CPU has AES
+	// and runs in the clear where it does not; "off" is somebody deciding otherwise; "adiantum"
+	// is the AES-less cipher, a documented opt-in and never promoted.
+	//
+	// IT LIVES ON THE HOST because it is a decision, and the guest's boot unit had nowhere to
+	// read a decision from -- which is why the Adiantum half of [V3b.33](c) went unbuilt. It
+	// reaches the guest in the rendered storage spec (storage.go), never as an assumption.
+	//
+	// ⚠️ It applies at FORMAT time only. A node whose tier already exists opens what is there;
+	// changing this value does not convert an installed node -- that is the `pvmove` path
+	// [V3b.33](a) proved, and it is a verb, not a config flip.
+	DataEncryption nodestorage.Mode
 
 	// System/DRBD NIC address (the private subnet). When SystemDev is set, the
 	// agent configures it on the guest before bring-up so DRBD can use it; "" for a

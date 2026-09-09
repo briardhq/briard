@@ -97,6 +97,13 @@ const (
 	// DataDriveID names the DRBD backing disk; nothing addresses it today, but every disk is an
 	// explicit device (see qemuArgs) and an explicit device wants a named drive.
 	DataDriveID = "briard-data"
+	// GuestDataDevice is where that disk appears INSIDE the guest. It is a hardware fact of the
+	// VM this file builds rather than anything configured -- the disks are explicit devices in
+	// command-line order, so the slots ascend root < data < state and the guest sees vda/vdb/vdc
+	// (see qemuArgs, and the boot-order bug that comment records). Named here, beside the line
+	// that attaches it second, because the host now has to TELL the guest which device to build
+	// its storage tier on ([V3b.33](d), shared/nodestorage) instead of the guest assuming it.
+	GuestDataDevice = "/dev/vdb"
 )
 
 // Net substrate modes for QEMUSpec.NetMode.

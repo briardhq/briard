@@ -8,6 +8,7 @@ import (
 
 	"briard.io/agent/drbd"
 	"briard.io/shared/model"
+	"briard.io/shared/nodestorage"
 )
 
 // promoterUnits is the ordered drbd-reactor promoter chain for a data node: mount the DRBD
@@ -167,6 +168,12 @@ func ConfigFromEnv() Config {
 		// Exactly one node seeds a fresh cluster (skip-initial-sync); the rest sync
 		// from it. The first peer is that node by convention (single-node: itself).
 		FreshInit: node == peers[0].Name,
+		// The node's storage policy ([V3b.33](d)), which install.sh sets from
+		// BRIARD_DATA_ENCRYPTION. Defaulting to auto here rather than to the empty string is
+		// what makes every node the installer has never heard the question asked of behave as
+		// the shipped default -- and an unparseable value is refused at bring-up (storageSpec),
+		// not silently rounded to it.
+		DataEncryption: nodestorage.Mode(env("DATA_ENCRYPTION", string(nodestorage.ModeAuto))),
 		// A diskless node has no service/VIP to probe (nor a service NIC to reach it), so
 		// its health follows quorum ("" -> healthy == quorate); data nodes probe the VIP.
 		//
