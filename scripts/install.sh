@@ -350,13 +350,19 @@ if [ -d "$PREFIX/qemu" ] && [ ! -L "$PREFIX/qemu" ]; then rm -rf "$PREFIX/qemu";
 ln -sfnT agent/qemu "$PREFIX/qemu"
 # THE GUEST BUNDLE ([B.86j]): the briard binaries the guest runs, shipped in the host chain and
 # pushed into the guest by the agent at every bring-up. Same tree-and-link shape as qemu, same
-# commit (briard-commit moves guest.next with -T). Existence-guarded: the local staging path and
-# a channel that predates the bundle carry none, and the guest then runs the image's firmware.
+# commit (briard-commit moves guest.next with -T). Existence-guarded: a channel that predates the
+# bundle carries none, and the guest then runs the image's firmware -- which is a REFUSAL now
+# ([B.138]), not a degraded mode, so an install that finds a bundle must land it.
 if [ -f "$HOSTSRC/guest-bundle.tar" ]; then
 	GUEST_TREE="$PREFIX/agent/guest-${QEMU_REL:-install}"
 	rm -rf "$GUEST_TREE"
 	mkdir -p "$GUEST_TREE"
-	tar -xf "$HOSTSRC/guest-bundle.tar" -C "$GUEST_TREE" && rm -f "$HOSTSRC/guest-bundle.tar"
+	tar -xf "$HOSTSRC/guest-bundle.tar" -C "$GUEST_TREE"
+	# Freeing the tarball is an OPTIMISATION for the network path, where $HOSTSRC is our own temp
+	# dir -- not a step whose failure may abort an install. BRIARD_ARTIFACTS points at a read-only
+	# staging dir (a Nix store path, which is how the install rigs run), and under `set -e` the
+	# bare rm would take the whole install down with it ([B.141]).
+	rm -f "$HOSTSRC/guest-bundle.tar" 2>/dev/null || true
 	chmod -R u+w "$GUEST_TREE"
 	ln -sfnT "$(basename "$GUEST_TREE")" "$PREFIX/agent/guest"
 fi

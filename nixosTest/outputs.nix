@@ -321,7 +321,7 @@ let
   # DELTA over installMacvtap: the NIC enslave, the host-IP move, and a clean abort at that
   # irreversible step. Nothing mode-independent lives here; that chain is installMacvtap's.
   installBridge = import ./install-bridge.nix {
-    inherit pkgs guestDisk;
+    inherit pkgs guestDisk guestBundle;
     agent = agentPkg;
     qemuBundle = qemuBundle.bundle;
   };

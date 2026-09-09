@@ -32,15 +32,24 @@
 #
 # Heavy (a nested guest boot on the bundled qemu), rides the `install` nightly tag.
 # Run: nix build .#tests.install-bridge -L
-{ pkgs, guestDisk, agent, qemuBundle }:
+{ pkgs, guestDisk, agent, qemuBundle, guestBundle }:
 let
   # The staging dir install.sh reads with BRIARD_ARTIFACTS: the agent binary, the relocatable
-  # qemu bundle, and the base guest image. Laid out as install.sh expects.
-  staging = pkgs.runCommand "briard-install-staging-bridge" { } ''
+  # qemu bundle, the guest bundle, and the base guest image. Laid out as install.sh expects.
+  staging = pkgs.runCommand "briard-install-staging-bridge" {
+    nativeBuildInputs = [ pkgs.gnutar ];
+  } ''
     mkdir -p "$out/qemu"
     cp ${agent}/bin/briard-agent "$out/briard-agent"
     cp ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
     cp -r ${qemuBundle}/. "$out/qemu/"
+    # THE GUEST BUNDLE ([B.86j]/[B.138]): the briard binaries the host pushes into the guest at
+    # bring-up. Without it the guest runs the image's firmware, which REFUSES every non-firmware
+    # verb -- the crash loop [B.141] found here, three weeks after the change that made a bundle
+    # mandatory. Plain tar: the staging path takes it uncompressed, where the signed channel
+    # install-macvtap builds takes the zstd'd one.
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+        -cf "$out/guest-bundle.tar" -C ${guestBundle} .
     cp ${guestDisk}/nixos.qcow2 "$out/nixos.qcow2"
   '';
   installScript = ../scripts/install.sh;
