@@ -958,6 +958,9 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("host: bring-up: %w", err)
 	}
+	// The volume exists and is open by now, so if this node is encrypted its header is final
+	// ([V3b.33](c)). Once, beside the volume, and never fatal.
+	backupLUKSHeader(qspec.DataDisk, logf)
 	logf("CONVERGED node=%s role=%s", cfg.Node, cfg.Role)
 	return g, client, nil
 }

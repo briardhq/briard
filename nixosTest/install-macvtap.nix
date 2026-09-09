@@ -762,36 +762,51 @@ pkgs.testers.runNixOSTest {
     # the guest REATTACHES the existing data volume (blkid-guarded mkfs skipped, create-md without
     # --force refuses to re-seed) rather than reformatting it.
     #
-    # The handle is the btrfs FILESYSTEM UUID on the pet volume, read straight off the backing
-    # file: mkfs generates a fresh one, so a reformat across the reinstall changes it and an
-    # honest reattach cannot. The handle was once the fixture's monotonic tick counter,
-    # which was strictly stronger (it proved committed *content* crossed, not just that the
-    # filesystem was the same one) -- but the shipped node runs no service, so there is nothing
+    # The handle is the volume's own UUID, read straight off the backing file: a reformat mints a
+    # fresh one, so a reformat across the reinstall changes it and an honest reattach cannot.
+    # The handle was once the fixture's monotonic tick counter, which was strictly stronger (it
+    # proved committed *content* crossed, not just that the volume was the same one) -- but the
+    # shipped node runs no service, so there is nothing
     # writing data to compare. A runtime service install gets the stronger proof back by installing a service at
     # runtime and resuming the tick comparison on top of this one.
     def fsid(m):
-        # btrfs's primary superblock carries the magic "_BHRfS_M" at +0x40 and the fsid at +0x20.
-        # It is FOUND rather than assumed at a fixed offset, and that is not defensiveness: since
-        # [V3b.33] the volume sits under a seam (`data.img -> [LUKS] -> PV -> VG -> LV -> DRBD`),
-        # so its distance from the start of the backing file is the sum of a LUKS data offset, an
-        # LVM alignment and DRBD's layout -- three numbers this test would otherwise restate and
-        # then be wrong about the next time one of them is chosen differently. Searching for the
-        # magic asserts the same thing the fixed offset did (there IS a btrfs here, so the fsid
-        # below is a filesystem's identity and not a blob of zeroes) without owning the arithmetic.
+        # THE VOLUME'S IDENTITY, READ OFF THE BACKING FILE. It used to be btrfs's filesystem UUID
+        # at a fixed offset; since [V3b.33](c) the volume is ENCRYPTED, so there is no btrfs magic
+        # anywhere in this file to find -- which is the point, and is itself asserted below. The
+        # handle is therefore the LUKS2 header's own UUID: a reformat mints a new one, an honest
+        # reattach cannot, and it sits at a FIXED offset in a header whose layout is LUKS2's, not
+        # ours (magic at 0, uuid at 168, 40 bytes NUL-padded).
         #
-        # Bounded to the first 64 MiB: btrfs keeps superblock COPIES at 64 MiB and 256 MiB, so an
-        # unbounded search would also have to reason about which one it found.
-        at = m.succeed(
-            "head -c 67108864 /var/lib/briard/data.img | grep -abo _BHRfS_M | head -1 | cut -d: -f1"
+        # Asserting the magic keeps this honest, the same way the btrfs one did: wrong offsets
+        # would otherwise compare two identical blobs of zeroes and "pass".
+        magic = m.succeed(
+            "dd if=/var/lib/briard/data.img bs=1 count=6 status=none | od -An -tx1 | tr -d ' \\n'"
         ).strip()
-        assert at, "no btrfs superblock in the first 64 MiB of the data volume"
-        sb = int(at) - 0x40  # the magic is at +0x40 from the superblock's start
+        assert magic == "4c554b53babe", f"the data volume is not LUKS2 (read {magic!r})"
         return m.succeed(
-            f"dd if=/var/lib/briard/data.img bs=1 skip={sb + 0x20} count=16 status=none | od -An -tx1 | tr -d ' \\n'"
+            "dd if=/var/lib/briard/data.img bs=1 skip=168 count=40 status=none | tr -d '\\0'"
         ).strip()
 
     pre = fsid(host)
-    print(f"pre-wipe data volume fsid={pre}")
+    print(f"pre-wipe data volume LUKS uuid={pre}")
+
+    # ENCRYPTED AT REST, ASKED OF THE DISK ([V3b.33](c)). A real `curl | sh` install on a host with
+    # AES produced a volume whose btrfs is not findable in the backing file at all -- nobody chose
+    # this, nobody typed a passphrase, and the node came up green anyway. `grep -c` rather than
+    # `grep -q` on purpose: -q exits at the first match and the pipeline's status becomes the
+    # SIGPIPE'd producer's, which inverts the answer on exactly the assertion that must not invert.
+    hits = host.succeed("head -c 67108864 /var/lib/briard/data.img >/tmp/rawprobe; "
+                        "grep -ac _BHRfS_M /tmp/rawprobe || true").strip()
+    assert hits == "0", f"the data volume is READABLE in the backing file ({hits} btrfs superblocks)"
+    host.succeed("rm -f /tmp/rawprobe")
+
+    # ...and the host kept the header beside it, once, at bring-up: ~16 MB whose loss is the loss
+    # of everything on the volume, and it sits BELOW DRBD so it never replicates.
+    host.succeed("test -s /var/lib/briard/data-header.img")
+    assert host.succeed("stat -c %s /var/lib/briard/data-header.img").strip() == "16777216"
+    assert host.succeed("dd if=/var/lib/briard/data-header.img bs=1 count=6 status=none "
+                        "| od -An -tx1 | tr -d ' \\n'").strip() == "4c554b53babe", \
+        "the kept header is not a LUKS header"
 
     # [V3b.19] The route's WITHDRAWAL is proven in agent-recover, not here, and the reason is worth
     # recording: a withdrawal needs the agent alive to perform it, but an agent alive when its guest
@@ -898,10 +913,10 @@ pkgs.testers.runNixOSTest {
     print(f"reinstall reached green again on the re-fetched cattle, at the same leased {vip}")
 
     # THE PROOF (assertion d): the guest re-attached the existing data volume rather than
-    # reformatting it -- same filesystem, not a fresh one wearing the same path. A reformat
-    # would mint a new fsid, which is the sharp failable control.
+    # reformatting it -- the same volume, not a fresh one wearing the same path. A reformat
+    # would mint a new UUID, which is the sharp failable control.
     post = fsid(host)
-    print(f"post-reinstall data volume fsid={post} (pre-wipe={pre})")
+    print(f"post-reinstall data volume LUKS uuid={post} (pre-wipe={pre})")
     assert post == pre, f"PET LOST: data volume reformatted across reinstall ({pre} -> {post})"
     print("pet volume survived the cattle wipe: the guest reattached it")
 

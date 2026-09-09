@@ -727,7 +727,33 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// metadata on a disk that still had it. A non-metadata failure (bad config/disk)
 			// also lands here as "attach"; Up then fails loudly, so bring-up still stops rather
 			// than silently wiping. Use x.Run (not run): a non-zero here is expected, not fatal.
-			if _, err := x.Run(ctx, "drbdadm", "create-md", req.Resource); err != nil {
+			//
+			// ⚠️ AN ENCRYPTED BLANK DEVICE DOES NOT LOOK BLANK, which is why the probe above needs
+			// a second signal since [V3b.33](c). dm-crypt returns CIPHERTEXT for sectors nobody
+			// has written, i.e. random bytes -- so `drbdmeta` finds "some data" where a plaintext
+			// disk had zeros, asks for a typed `yes`, meets the Executor's /dev/null stdin and
+			// aborts. Every fresh encrypted node failed here, silently: create-md's non-zero was
+			// read as "existing replica, attach it", and the attach then said `No valid meta data
+			// found` (measured on agent-bringup, and invisible to the hermetic rigs because their
+			// harness uses `create-md --force`).
+			//
+			// The blank-signal therefore moves to the component that KNOWS rather than the one
+			// that guesses: briard-data-seam.service writes dataFreshMarker in the branch where it
+			// has just created the LV, so the marker means "this device was created empty, this
+			// boot" -- a fact, not an inference from bytes. It is on TMPFS for the same reason
+			// dataFormatMarker is: it cannot outlive the boot that created the volume, so no later
+			// boot, promotion or failover can find it and no reboot can ever wipe a replica.
+			//
+			// CONSUMED FIRST, like the format marker: a create-md that fails must not be retried
+			// with --force by the next attempt.
+			args := []string{"create-md", req.Resource}
+			if _, err := x.ReadFile(dataFreshMarker); err == nil {
+				if _, err := x.Run(ctx, "rm", "-f", dataFreshMarker); err != nil {
+					return nil, fmt.Errorf("consume %s: %w", dataFreshMarker, err)
+				}
+				args = []string{"create-md", "--force", req.Resource}
+			}
+			if _, err := x.Run(ctx, "drbdadm", args...); err != nil {
 				return ProvisionResult{CreatedMetadata: false}, nil // existing replica / refusal: attach, don't wipe
 			}
 			return ProvisionResult{CreatedMetadata: true}, nil
@@ -1713,6 +1739,15 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 // The DECISION is here and the ACT is in the unit because only a Primary can be formatted and
 // nothing in the agent may promote (architectural invariant 2, and internal/arch enforces it).
 const dataFormatMarker = "/run/briard/data.format"
+
+// dataFreshMarker is how briard-data-seam.service tells this agent that the LV DRBD is about to
+// claim was created EMPTY on this boot ([V3b.33](c)) -- the blank-signal `drbdmeta` can no longer
+// produce for itself, because an encrypted device's unwritten sectors read as ciphertext rather
+// than as zeros. Written by the seam unit only in the branch that ran `lvcreate`; consumed here.
+// Tmpfs, and that is the safety property: it cannot outlive the boot that created the volume.
+// A /run path is a two-sided contract with the guest image, restated there the way
+// dataFormatMarker is.
+const dataFreshMarker = "/run/briard/data.fresh"
 
 // vipEnvPath is the REQUIRED EnvironmentFile briard-vip.service reads its VIP_DEV and VIP_ADDR
 // from; the agent writes it via net.configure at every bring-up. Nothing is baked behind it

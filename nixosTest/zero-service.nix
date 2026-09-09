@@ -125,5 +125,22 @@ pkgs.testers.runNixOSTest {
     primary.crash()
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
     print("an empty node fails over and still answers at the VIP — the substrate is the product")
+
+    # THE CLEAR KEY IS THE WHOLE POINT, AND A POWER CUT IS WHERE IT IS PROVED ([V3b.33](c)). The
+    # node just lost power with its volume encrypted; it comes back and opens it with nothing
+    # supplied by anybody, because slot 0's passphrase is in a LUKS2 token on the same disk. That
+    # is what makes encryption-by-default possible on a stranger's LAN, where there is no unlock
+    # scheme that generalises — and it is exactly why the honest claim is "ready to be armed",
+    # never "protected".
+    #
+    # It rides the crash this test already does: a boot is the only way to ask the question, and
+    # this is the one rig that already pays for one.
+    primary.start()
+    primary.wait_for_unit("briard-data-seam.service")
+    primary.succeed("cryptsetup isLuks /dev/vdb")
+    primary.succeed("test -b /dev/mapper/briard-data")
+    assert "briard-crypt" in primary.succeed("dmsetup deps -o devname /dev/mapper/briard-data"), \
+        "the volume came back unencrypted after a power cut"
+    print("the node opened its own encrypted volume after a power cut, unattended")
   '';
 }

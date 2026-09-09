@@ -11,10 +11,11 @@
 let
   btrfsRoot = "/var/lib/briard"; # the DRBD btrfs volume mount
   # ── THE STORAGE SEAM ([V3b.33]) ──────────────────────────────────────────────────────────────
-  # The stack under the mount above is `dataDisk -> PV -> VG -> LV -> DRBD -> btrfs`, and the VG
-  # exists for exactly one reason: an LV can have its dm table reloaded underneath a device that
-  # is open, so the backing can be moved onto an encrypted PV (and back) with `pvmove` while DRBD
-  # never closes its device. A bare disk has no table to reload.
+  # The stack under the mount above is `dataDisk -> LUKS -> PV -> VG -> LV -> DRBD -> btrfs`, and
+  # the VG exists for exactly one reason: an LV can have its dm table reloaded underneath a device
+  # that is open, so the backing can be moved onto an encrypted PV -- OR OFF ONE -- with `pvmove`
+  # while DRBD never closes its device. A bare disk has no table to reload, which is why the seam
+  # had to exist before the encryption did.
   #
   # It is nearly free because a single-LV VG IS dm-linear -- one table line, the same target and
   # the same linear_map() a bare disk would have had. Everything LVM adds sits outside the data
@@ -29,6 +30,13 @@ let
   dataDisk = "/dev/vdb";
   dataVG = "briard";
   dataLV = "/dev/mapper/${dataVG}-data";
+  # The dm-crypt device the PV sits on when this node is encrypted, which is the default wherever
+  # the CPU has AES ([V3b.33](c)). The name is NOT `${dataVG}-...`: an LV of the briard VG would
+  # be named that way, and a crypt device wearing an LV's naming is a device nobody can classify
+  # at a glance -- including the seam invariant, which reads `dmsetup table` and has to tell them
+  # apart.
+  cryptName = "briard-crypt";
+  cryptDev = "/dev/mapper/${cryptName}";
   # The installer's one-time "this volume is brand new" marker (agent/guestagent's
   # dataFormatMarker). A /run path is a two-sided contract with the agent, restated here the way
   # mdnsEnvPath and vipEnvPath are, and the Go side owns it.
@@ -1222,7 +1230,7 @@ in
     # once at boot, on every node, before anything can provision a resource, because
     # `drbdadm create-md` names the LV and a device that does not exist cannot be claimed.
     systemd.services.briard-data-seam = {
-      description = "Briard data seam (the single-LV VG DRBD attaches to)";
+      description = "Briard data seam (the encrypted single-LV VG DRBD attaches to)";
       wantedBy = [ "multi-user.target" ];
       # Before the agent can serve a bring-up verb over the channel. Ordering against a unit this
       # module does not define is a no-op where it is absent (the hermetic nixosTest nodes have no
@@ -1234,7 +1242,11 @@ in
       unitConfig.ConditionPathExists = dataDisk;
       path = [
         pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange -- the `bin` output, already in this closure
+        pkgs.cryptsetup
+        pkgs.jq # the clear-key token is JSON, and jq is already here (the front door's routes)
         pkgs.kmod
+        pkgs.gnugrep
+        pkgs.coreutils
       ];
       serviceConfig = {
         Type = "oneshot";
@@ -1248,6 +1260,23 @@ in
           # needs is never the reason one cannot start.
           modprobe dm-mirror
 
+          # A RETURNING ENCRYPTED NODE OPENS ITSELF, and this is the whole of what "clear key"
+          # means: slot 0's passphrase is in a LUKS2 TOKEN on the same disk, in plaintext JSON.
+          # A keyslot cannot hold the volume key unwrapped, but the token area can hold the
+          # passphrase that unwraps it -- which is where clevis parks its JWE and
+          # systemd-cryptenroll its TPM2 metadata -- so a later boot needs nothing from anybody.
+          #
+          # ⚠️ THE HONEST FRAMING IS "READY TO BE ARMED", NEVER "PROTECTED". An un-armed volume
+          # resists physical loss only (theft, RMA, resale); the key is right there. What it buys
+          # is that arming later is a keyslot operation instead of a multi-hour migration nobody
+          # would opt into -- and `cryptsetup luksDump` is the audit surface that says which a
+          # node is, because an armed node has no briard-clear token.
+          if cryptsetup isLuks ${dataDisk} && [ ! -b ${cryptDev} ]; then
+            cryptsetup token export --token-id 0 ${dataDisk} \
+              | jq -j '.briard_passphrase' \
+              | cryptsetup open --key-file - ${dataDisk} ${cryptName}
+          fi
+
           # A RETURNING NODE carries its VG on the disk -- that is the point of using LVM rather
           # than a table this unit would have to rebuild -- so activate and stop.
           vgchange -ay ${dataVG} >/dev/null 2>&1 || true
@@ -1255,22 +1284,71 @@ in
             exit 0
           fi
 
-          # A BLANK DISK: build the seam. `pvcreate` WITHOUT -f is the probe, and it is the same
-          # shape as `drbdadm create-md` without --force ([B.126]) rather than a second idiom: it
-          # refuses on ANY existing signature (the prompt hits a closed stdin and aborts) and it
-          # fails on a device it cannot read. So "pvcreate succeeded" means the device was
-          # readable AND blank -- the distinction a `blkid ||` probe cannot make, which is the
-          # mistake that once reformatted a household's replicated volume.
+          # ── A BLANK DISK ─────────────────────────────────────────────────────────────────────
+          # THE AES AXIS, checked INSIDE the guest because that is the one place silicon,
+          # accelerator and CPU model compose into a single answer: under KVM `-cpu max` passes
+          # the host's own CPU through, under TCG or WHPX it does not, and qemu's default qemu64
+          # hides `aes` outright. Hardware without it -- Pi 4 and older, pre-AES-NI x86, any TCG
+          # host -- runs the volume in the CLEAR and says so, because a software cipher on the
+          # write path of a household's data is a worse trade than an honest report.
+          pv=${dataDisk}
+          if grep -qw aes /proc/cpuinfo; then
+            key=/run/briard-luks.key
+            ( umask 077; head -c 32 /dev/urandom | base64 -w0 >"$key" )
+            # ⚠️ A DELIBERATELY CHEAP KDF, and it costs nothing, because the passphrase it
+            # stretches is 256 bits of urandom stored IN THE CLEAR two hundred bytes away. A KDF
+            # makes GUESSING expensive; nobody has to guess this one. What it would cost is real:
+            # LUKS2's default argon2id targets ~1 GiB and two seconds, paid at every boot of every
+            # node, on guests that have 2 GB. Arming (v5) adds a slot with a secret worth
+            # stretching and destroys this one, so no future keyslot inherits these parameters.
+            #
+            # `--offset` PINS the data offset at 16 MiB rather than inheriting LUKS2's default,
+            # which makes the header size a stated product constant -- the host's header backup
+            # (agent/host/luksheader.go) copies exactly this prefix, so the two must agree.
+            cryptsetup luksFormat --type luks2 --batch-mode \
+              --cipher aes-xts-plain64 --key-size 512 --offset 32768 \
+              --pbkdf argon2id --pbkdf-force-iterations 4 --pbkdf-memory 32 --pbkdf-parallel 1 \
+              --key-file "$key" ${dataDisk}
+            # The token, written with jq so the passphrase is JSON-escaped by something that knows
+            # the rules. `type` and `keyslots` are LUKS2's mandatory fields; the rest is ours, and
+            # cryptsetup stores an unknown token type verbatim without trying to interpret it.
+            jq -n --rawfile p "$key" \
+              '{type:"briard-clear",keyslots:["0"],briard_passphrase:$p}' \
+              | cryptsetup token import --token-id 0 ${dataDisk}
+            cryptsetup open --key-file "$key" ${dataDisk} ${cryptName}
+            rm -f "$key" # /run is tmpfs, and the token holds the same bytes anyway
+            pv=${cryptDev}
+          else
+            echo "briard: this CPU has no AES acceleration -- creating the data volume UNENCRYPTED" >&2
+          fi
+
+          # Build the seam on whichever PV the branch above chose. `pvcreate` WITHOUT -f is the
+          # probe, and it is the same shape as `drbdadm create-md` without --force ([B.126])
+          # rather than a second idiom: it refuses on ANY existing signature (the prompt hits a
+          # closed stdin and aborts) and it fails on a device it cannot read. So "pvcreate
+          # succeeded" means the device was readable AND blank -- the distinction a `blkid ||`
+          # probe cannot make, which is the mistake that once reformatted a household's
+          # replicated volume.
           #
-          # A node installed before the seam therefore FAILS HERE, loudly, rather than having its
-          # data volume claimed: its data.img already holds DRBD metadata, so pvcreate refuses.
-          # That is the alpha reinstall-only policy working as intended, not a gap.
-          pvcreate ${dataDisk}
-          vgcreate ${dataVG} ${dataDisk}
+          # A node installed before the seam therefore FAILS EARLIER than this, at luksFormat or
+          # here, rather than having its data volume claimed: its data.img already holds DRBD
+          # metadata. That is the alpha reinstall-only policy working as intended, not a gap.
+          pvcreate "$pv"
+          vgcreate ${dataVG} "$pv"
           # The whole PV, because the seam reserves nothing: a conversion's target is a disk the
           # HOST sizes, and it can be made large enough to hold this LV plus a LUKS header.
           # Reserving here would cost every node space forever to save the host one line.
           lvcreate -l 100%FREE -n data ${dataVG}
+
+          # THE BLANK-SIGNAL, handed to the agent's bring-up ([V3b.33](c), agent/guestagent's
+          # dataFreshMarker). `drbdadm create-md` without --force is a probe that reads the device
+          # and asks whether it looks empty -- and on an ENCRYPTED device it never does, because
+          # dm-crypt returns ciphertext for sectors nobody has written. So the fact moves here,
+          # where it is a fact: this branch just ran `lvcreate`, so the LV is empty by
+          # construction. On TMPFS, which is the safety property rather than a detail -- it cannot
+          # outlive this boot, so no later boot can present a populated replica as a fresh one.
+          mkdir -p /run/briard
+          : >/run/briard/data.fresh
         '';
       };
     };

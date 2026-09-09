@@ -94,18 +94,29 @@ pkgs.testers.runNixOSTest {
         "${agent}/bin/briard-agent run"
     )
 
-    # The agent prints CONVERGED once the guest reports quorate Primary.
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
-
-    # The whole point: L1 reaches Briard's front door at the agent-claimed VIP. This boots the
-    # SHIPPED disk, so what answers here is the node itself, not a workload baked in for the test.
+    # THE CONSOLE IS THE WINDOW ([[guest-console-is-the-window]]), and it covers BRING-UP too --
+    # not just the front door. Bring-up is the first thing that can fail and the one whose cause is
+    # entirely inside the guest: a chain member that would not start, a device the resource names
+    # and the guest does not have. Without the dump here, the only evidence is the agent's one-line
+    # "a dependency job for drbd@r0.target failed", which names no dependency.
     try:
+        # The agent prints CONVERGED once the guest reports quorate Primary.
+        host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
+
+        # The whole point: L1 reaches Briard's front door at the agent-claimed VIP. This boots the
+        # SHIPPED disk, so what answers here is the node itself, not a workload baked in for the test.
         host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
     except Exception:
-        # A front door that never answers is diagnosable only from inside the guest
-        # ([[guest-console-is-the-window]]): dump its console before failing.
+        # The FAILURE LINES FIRST, then the tail. A tail alone is not enough once the host agent
+        # has died: the guest agent then restarts every second forever, and 250 lines of that
+        # scroll the actual cause off the end (measured, chasing a bring-up failure whose reason
+        # sat 600 lines above the tail). `grep -m` rather than `| head`, so the producer is not
+        # SIGPIPE'd into a non-zero status under the driver's pipefail shell.
+        print("=== guest console (failures) ===")
+        print(host.succeed("tr -d '\\r' < /tmp/guest-console.log "
+                           "| grep -m 200 -iE 'fail|error|refus|dependency|drbd-r0' || true"))
         print("=== guest console (tail) ===")
-        print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -250 || true"))
+        print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -80 || true"))
         raise
     # ...and it reaches it THE WAY A REAL HOST DOES: over the private link, on a route the agent
     # put there. Asserted rather than inferred from the curl, because the curl passing is what a

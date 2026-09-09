@@ -33,7 +33,7 @@ pkgs.testers.runNixOSTest {
     print(f"report-card exit={status}:\n{out}")
 
     # Every gate in the closed set is emitted.
-    for name in ["kvm", "tun", "iproute2", "systemd", "memory", "network", "mdns"]:
+    for name in ["kvm", "tun", "iproute2", "systemd", "memory", "network", "mdns", "encryption"]:
         assert name in out, f"report card is missing the {name} check"
 
     # Deterministic gates on this node PASS (concrete, non-vacuous): iproute2 installed, 8 GB RAM,
@@ -64,6 +64,13 @@ pkgs.testers.runNixOSTest {
     # here means hasMDNSResolver failed to see a resolver that is demonstrably present.
     assert gate("mdns") == "PASS", f"mdns gate = {gate('mdns')}, want PASS (nss-mdns is configured)"
     machine.succeed("grep -qE '^hosts:.*mdns' /etc/nsswitch.conf")
+    # THE AES AXIS, read off THIS machine rather than assumed ([V3b.33](c)): the gate must agree
+    # with /proc/cpuinfo, so a gatherer that stopped reading the flag would be caught either way
+    # round -- this runs under KVM on a builder whose CPU has AES, and under TCG on one that hides
+    # it. Never a REFUSE: an AES-less box is a perfectly good node.
+    aes = machine.execute("grep -qwE 'aes' /proc/cpuinfo")[0] == 0
+    assert gate("encryption") == ("PASS" if aes else "WARN"), \
+        f"encryption gate = {gate('encryption')} but /proc/cpuinfo aes={aes}"
 
     # The exit code is self-consistent with the verdict: 0 iff no REFUSE (admitted).
     refused = "REFUSE" in out

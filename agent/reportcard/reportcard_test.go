@@ -19,6 +19,9 @@ func capable() HostFacts {
 		// (Ubuntu, Fedora) ships nss-mdns or systemd-resolved; a bare server may not, which is a
 		// warning about the household's own software and never a refusal.
 		HasMDNSResolver: true,
+		// ...and it can encrypt its data volume at rest without paying for it on every write. Every
+		// x86-64 CPU since ~2010 and every Pi 5 can; the machine we expect to admit is one of them.
+		CPUAES: true,
 	}
 }
 
@@ -349,5 +352,22 @@ func TestMemoryThresholdsAllowForFirmwareReservation(t *testing.T) {
 	}
 	if strings.Contains(c.Detail, "7680") || strings.Contains(c.Detail, "3584") {
 		t.Errorf("the detail must quote the DIMM's number, not the kernel's threshold; got %q", c.Detail)
+	}
+}
+
+// The AES axis ([V3b.33](c)): a CPU without AES acceleration still admits -- it is a perfectly
+// good node -- but the card says out loud that its data volume will be created unencrypted, so the
+// split is stated before the install rather than discovered after it.
+func TestAssessAESlessWarnsButAdmits(t *testing.T) {
+	f := capable()
+	f.CPUAES = false
+	r := Assess(f)
+	if got := find(t, r, "encryption").Status; got != Warn {
+		t.Errorf("AES-less host: encryption = %s, want warn", got)
+	}
+	for _, c := range r.Checks {
+		if c.Status == Refuse {
+			t.Errorf("an AES-less host must still be admitted; %q refused: %s", c.Name, c.Detail)
+		}
 	}
 }

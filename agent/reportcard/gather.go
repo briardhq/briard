@@ -18,6 +18,7 @@ func Gather() HostFacts {
 	return HostFacts{
 		DevKVM:    exists("/dev/kvm"),
 		VirtFlags: cpuHasVirtFlags(),
+		CPUAES:    cpuHasFlag("aes"),
 		DevNetTun: exists("/dev/net/tun"),
 		TunModule: tunModuleAvailable(),
 		HasIP:     onPath("ip"),
@@ -256,6 +257,15 @@ func onPath(bin string) bool {
 
 // cpuHasVirtFlags reports whether /proc/cpuinfo advertises Intel VT-x (vmx) or AMD-V (svm).
 func cpuHasVirtFlags() bool {
+	return cpuHasFlag("vmx") || cpuHasFlag("svm")
+}
+
+// cpuHasFlag reports whether /proc/cpuinfo advertises a CPU feature.
+//
+// It reads both "flags" (x86) and "Features" (aarch64), because the two facts it answers live on
+// different lines depending on the architecture: virtualization is x86-only in practice, but AES
+// acceleration is exactly the question a Pi has to answer ([V3b.33](c)) and a Pi says "Features".
+func cpuHasFlag(want string) bool {
 	f, err := os.Open("/proc/cpuinfo")
 	if err != nil {
 		return false
@@ -264,11 +274,11 @@ func cpuHasVirtFlags() bool {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
-		if !strings.HasPrefix(line, "flags") {
+		if !strings.HasPrefix(line, "flags") && !strings.HasPrefix(line, "Features") {
 			continue
 		}
 		for _, tok := range strings.Fields(line) {
-			if tok == "vmx" || tok == "svm" {
+			if tok == want {
 				return true
 			}
 		}

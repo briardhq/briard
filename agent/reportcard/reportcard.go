@@ -38,6 +38,10 @@ type Check struct {
 type HostFacts struct {
 	DevKVM    bool // /dev/kvm present
 	VirtFlags bool // vmx (Intel) or svm (AMD) in /proc/cpuinfo
+	// CPUAES is `aes` in /proc/cpuinfo -- AES-NI on x86, the ARMv8 crypto extension on aarch64.
+	// It decides whether this node's data volume is created encrypted ([V3b.33](c)), so the card
+	// reports it before the install rather than leaving the split to be discovered.
+	CPUAES    bool
 	DevNetTun bool // /dev/net/tun present (the installer modprobes tun first)
 	TunModule bool // the tun module is loaded or available to load (or built-in)
 	HasIP     bool // `ip` (iproute2) on PATH
@@ -231,6 +235,23 @@ func Assess(f HostFacts) Report {
 	} else {
 		cs = append(cs, Check{"mdns", Warn, "no mDNS resolver on this machine -- the briard-<name>.local address will not resolve HERE",
 			"the numeric address always works (and other machines on your LAN resolve the name fine); install avahi-daemon + libnss-mdns if you want the name on this box too"})
+	}
+
+	// ENCRYPTION AT REST, which on this machine is decided by one hardware fact ([V3b.33](c)).
+	// The data volume is created encrypted wherever AES acceleration exists, and in the clear
+	// where it does not -- a software cipher on the write path of a household's data is a worse
+	// trade than an honest report. So the fleet splits on an axis that is hardware-determined,
+	// predictable, and said out loud here rather than discovered later.
+	//
+	// Never a Refuse: an AES-less box is a perfectly good node. And the decision is really the
+	// GUEST's -- it checks its own /proc/cpuinfo, where silicon, accelerator and CPU model compose
+	// into one answer -- so this reports what that check will find (`-cpu max` passes this CPU
+	// through under KVM, which the kvm check above has already established).
+	if f.CPUAES {
+		cs = append(cs, Check{"encryption", Pass, "AES acceleration present -- the data volume will be encrypted at rest", ""})
+	} else {
+		cs = append(cs, Check{"encryption", Warn, "no AES acceleration on this CPU -- the data volume will be created UNENCRYPTED",
+			"nothing to fix here: this is the CPU. The node works normally; it just cannot encrypt at rest without paying for it on every write"})
 	}
 
 	cs = append(cs, vipCheck(f)...)

@@ -1,17 +1,21 @@
-# [V3b.33](a) — THE SPIKE: encryption is a `pvmove`, and it is reversible.
+# [V3b.33] — ENCRYPTION IS A `pvmove`, AND IT IS REVERSIBLE.
 #
-# The item it gates was admitted on a premise that turned out to be false — "format the volume
-# encrypted at install, because you can never add it later". You can. What has to exist in
-# advance is not the encryption, it is a SEAM: a single-LV VG between the disk and DRBD. With one
-# there, arming a node is `pvmove` onto an encrypted PV and disarming it is the same move back,
-# both with the workload serving throughout; without one there is no table to reload, and DRBD
-# would have to close and reopen its backing device.
+# The item was admitted on a premise that turned out to be false — "format the volume encrypted at
+# install, because you can never add it later". You can. What has to exist in advance is not the
+# encryption, it is a SEAM: a single-LV VG between the disk and DRBD. With one there, disarming a
+# node is a `pvmove` onto a plaintext PV and arming it is the same move back, both with the
+# workload serving throughout; without one there is no table to reload and DRBD would have to
+# close and reopen its backing device.
 #
 # So this rig proves the claim in the direction that actually matters — BOTH — on the shape a
 # household runs: real Home Assistant, on a btrfs volume, over a promoted DRBD.
 #
-#   plaintext PV → (hotplug a blank disk, luksFormat, pvcreate, vgextend) → pvmove → vgreduce
-#                → (device_del the old disk) → and then all the way back onto plaintext.
+#   the shipped ENCRYPTED node → (hotplug a blank disk, pvcreate, vgextend) → pvmove → vgreduce
+#                              → (device_del the retired disk) → and all the way back onto LUKS.
+#
+# DISARM FIRST, deliberately. Encryption on by default (c) is defensible only if a household can
+# get back off it without an outage — otherwise the default is a one-way door for the installed
+# base, which is precisely the trap the original "impossible later" premise would have set.
 #
 # WHAT IS UNDER TEST IS THE ABSENCE OF EVENTS, which is why every assertion here is a negative
 # with a positive control beside it. `pvmove` suspends the LV to insert and to retire its
@@ -119,15 +123,6 @@ pkgs.testers.runNixOSTest {
           };
         }
       ];
-      # THE CONVERSION'S OWN TOOLING, in a test shell. The product's seam unit carries lvm2 in its
-      # own unit PATH; a conversion is driven from outside any unit here, and cryptsetup is not in
-      # the shipped image at all yet -- (c) is what puts it there. Both are cheap: lvm2's `bin`
-      # output is already in this closure (it arrives with the device-mapper udev rules every
-      # NixOS machine has) and cryptsetup's `lib` output with systemd.
-      environment.systemPackages = [
-        pkgs.lvm2.bin
-        pkgs.cryptsetup
-      ];
     };
 
   # HA boot is slow and the promoter selects the primary dynamically.
@@ -138,12 +133,17 @@ pkgs.testers.runNixOSTest {
 
     VG = "${vg}"
     LV = "${lvDev}"
-    DISK_MB = ${toString diskMB}
     TARGET_MB = ${toString targetMB}
-    PLAIN0 = "/dev/disk/by-id/virtio-plain0"
-    ENC0 = "/dev/disk/by-id/virtio-enc0"
+    # The disk the seam unit claimed at boot, and the crypt device it opened on top of it. Both
+    # are the PRODUCT's names, restated here rather than invented: this rig moves the product's
+    # own volume, so it has to say what the product said.
+    DATA_DISK = "/dev/vdb"
+    CRYPT_NAME = "briard-crypt"
+    CRYPT = "/dev/mapper/briard-crypt"
+    # The conversion targets, hotplugged. plain0 is the shipped disk itself, named by its serial
+    # so `device_del` can retire it once the volume has moved off.
     PLAIN1 = "/dev/disk/by-id/virtio-plain1"
-    CRYPT = "/dev/mapper/convert-enc0"
+    ENC1 = "/dev/disk/by-id/virtio-enc1"
 
 
     def hotplug(m, serial, size_mb):
@@ -168,6 +168,26 @@ pkgs.testers.runNixOSTest {
         m.qmp_client.send("device_del", {"id": f"{serial}-dev"})
         m.wait_for_qmp_event(lambda e: e["event"] == "DEVICE_DELETED", timeout=120)
         m.wait_until_fails(f"test -b /dev/disk/by-id/virtio-{serial}", timeout=60)
+
+
+    def has_btrfs_magic(m, dev):
+        """Whether a btrfs superblock is visible in the RAW bytes of a device -- the direct test of
+        "encrypted at rest", asked of the disk itself rather than of the commands that set it up.
+
+        ⚠️ NOT A PIPELINE, and this is measured rather than stylistic: `head -c N dev | grep -q`
+        makes grep exit at the FIRST match, head then dies of SIGPIPE, and under the driver's
+        pipefail shell the pipeline's status is head's. So a device that HAS the magic reports
+        exit 1 -- the answer inverted, silently, on exactly the assertion whose whole job is to
+        tell the two apart. It cost a run, and the negative would have passed forever.
+
+        flushbufs first for a different reason and the same spirit: DRBD and dm submit bios
+        straight to their backing device, so a raw read can otherwise be answered from a page
+        cache filled before the volume was ever written."""
+        m.succeed(f"blockdev --flushbufs {dev}")
+        m.succeed(f"head -c 67108864 {dev} >/tmp/rawprobe")
+        found = m.execute("grep -qa _BHRfS_M /tmp/rawprobe")[0] == 0
+        m.succeed("rm -f /tmp/rawprobe")
+        return found
 
 
     def now(m):
@@ -276,7 +296,7 @@ pkgs.testers.runNixOSTest {
     # realistic load; this is the deterministic witness beside it.
     node1.succeed("head -c 1048576 /dev/urandom >/var/lib/briard/.convert-token")
     node1.succeed("sync -f /var/lib/briard")
-    token = node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0]
+    witness = node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0]
 
     # ── ARM THE PROBERS, AND THE CLOCK THE NEGATIVES ARE READ FROM ─────────────────────────────
     node1.succeed("touch /run/briard-probe.run")
@@ -294,53 +314,72 @@ pkgs.testers.runNixOSTest {
 
     print(f"cpu aes: {'yes' if node1.succeed('grep -c aes /proc/cpuinfo || true').strip() != '0' else 'no'}")
 
-    # ── FORWARD: PLAINTEXT → LUKS, LIVE ────────────────────────────────────────────────────────
-    hotplug(node1, "enc0", TARGET_MB)
-    node1.succeed("head -c 32 /dev/urandom >/run/briard-luks.key")
-    node1.succeed(f"cryptsetup luksFormat --batch-mode --type luks2 {ENC0} /run/briard-luks.key")
-    node1.succeed(f"cryptsetup open --key-file /run/briard-luks.key {ENC0} convert-enc0")
-    node1.succeed(f"pvcreate -ff -y {CRYPT}")
-    node1.succeed(f"vgextend {VG} {CRYPT}")
-    t0, t1 = move(node1, PLAIN0, CRYPT, "encrypt")
-    node1.succeed(f"vgreduce {VG} {PLAIN0}")
-    node1.succeed(f"pvremove -ff -y {PLAIN0}")
-    unplug(node1, "plain0")
-
-    # The LV's data path now goes through dm-crypt, asserted from the DEVICE STACK rather than
-    # from the fact that the commands above returned zero.
+    # ── THE SHIPPED STATE IS ENCRYPTED ─────────────────────────────────────────────────────────
+    # Nobody asked for this and nobody typed a passphrase: the seam unit formatted the disk LUKS2
+    # because this CPU has AES, and opened it from a token that holds slot 0's passphrase in the
+    # clear. The honest claim is "ready to be armed", never "protected" -- so what is asserted is
+    # the SHAPE (the data really goes through dm-crypt) and the AUDIT SURFACE (the briard-clear
+    # token is what says this node is not yet armed), not a secrecy this state does not have.
+    node1.succeed(f"cryptsetup isLuks {DATA_DISK}")
     deps = node1.succeed(f"dmsetup deps -o devname {LV}")
-    assert "convert-enc0" in deps, f"the LV is not sitting on the crypt device: {deps}"
-    node1.succeed("cryptsetup status convert-enc0 | grep -q 'type:.*LUKS2'")
-    print(node1.succeed(f"cryptsetup luksDump {ENC0} | grep -iE 'cipher|version|sector'"))
-    stall(node1, t0, t1, "encrypt")
-    undisturbed(node1, since, "encrypt")
-    assert token == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0]
+    assert CRYPT_NAME in deps, f"the shipped LV is not sitting on a crypt device: {deps}"
+    token = node1.succeed(f"cryptsetup token export --token-id 0 {DATA_DISK}")
+    assert '"type":"briard-clear"' in token.replace(" ", ""), f"no clear-key token: {token}"
+    print(node1.succeed(f"cryptsetup luksDump {DATA_DISK} | grep -iE 'cipher|version|sector|Tokens'"))
 
-    # ── BACK: LUKS → PLAINTEXT, LIVE ───────────────────────────────────────────────────────────
-    # The half that decides whether (c) is a commitment or a trap. If encryption can only be added,
-    # then choosing it at install is irreversible for the installed base; because it can be taken
-    # off the same way it went on, the default is a default and not a one-way door.
+    # AND IT IS ACTUALLY OPAQUE, which is the one claim a green boot does not make on its own: the
+    # btrfs superblock is findable through the crypt device and NOT on the raw disk under it. The
+    # positive half is what keeps this from passing over a search that never worked.
+    assert has_btrfs_magic(node1, LV), "no btrfs through the crypt device -- the search is broken"
+    assert not has_btrfs_magic(node1, DATA_DISK), "the volume is READABLE on the raw disk"
+    print("the data volume is opaque on the raw disk and readable through the crypt device")
+
+    # ── DISARM: LUKS → PLAINTEXT, LIVE ─────────────────────────────────────────────────────────
+    # This direction first, because it is the one that decides whether the default is a default or
+    # a one-way door. Encryption on by default is defensible only if a household can get back off
+    # it without an outage; that it can be put ON is proven by the second move below.
     hotplug(node1, "plain1", TARGET_MB)
     node1.succeed(f"pvcreate -ff -y {PLAIN1}")
     node1.succeed(f"vgextend {VG} {PLAIN1}")
-    t0, t1 = move(node1, CRYPT, PLAIN1, "decrypt")
+    t0, t1 = move(node1, CRYPT, PLAIN1, "disarm")
     node1.succeed(f"vgreduce {VG} {CRYPT}")
     node1.succeed(f"pvremove -ff -y {CRYPT}")
-    node1.succeed("cryptsetup close convert-enc0")
-    unplug(node1, "enc0")
+    node1.succeed(f"cryptsetup close {CRYPT_NAME}")
+    unplug(node1, "plain0")  # the shipped disk itself: a disarm frees the encrypted backing
 
     deps = node1.succeed(f"dmsetup deps -o devname {LV}")
-    assert "convert-enc0" not in deps, f"the crypt device is still under the LV: {deps}"
-    assert not node1.succeed("dmsetup ls --target crypt").strip().startswith("convert-enc0")
-    stall(node1, t0, t1, "decrypt")
+    assert CRYPT_NAME not in deps, f"the crypt device is still under the LV: {deps}"
+    assert has_btrfs_magic(node1, PLAIN1), "disarmed, but the volume is not readable in the clear"
+    stall(node1, t0, t1, "disarm")
+    undisturbed(node1, since, "disarm")
+    assert witness == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0]
+
+    # ── RE-ARM: PLAINTEXT → LUKS, LIVE ─────────────────────────────────────────────────────────
+    # The same move the other way, onto a header this rig makes itself. v5 owns the arming VERB;
+    # what this proves is the only thing the verb will need from the substrate.
+    hotplug(node1, "enc1", TARGET_MB)
+    node1.succeed("head -c 32 /dev/urandom >/run/briard-rearm.key")
+    node1.succeed(f"cryptsetup luksFormat --batch-mode --type luks2 {ENC1} /run/briard-rearm.key")
+    node1.succeed(f"cryptsetup open --key-file /run/briard-rearm.key {ENC1} {CRYPT_NAME}")
+    node1.succeed(f"pvcreate -ff -y {CRYPT}")
+    node1.succeed(f"vgextend {VG} {CRYPT}")
+    t0, t1 = move(node1, PLAIN1, CRYPT, "rearm")
+    node1.succeed(f"vgreduce {VG} {PLAIN1}")
+    node1.succeed(f"pvremove -ff -y {PLAIN1}")
+    unplug(node1, "plain1")
+
+    deps = node1.succeed(f"dmsetup deps -o devname {LV}")
+    assert CRYPT_NAME in deps, f"the LV is not back on a crypt device: {deps}"
+    assert not has_btrfs_magic(node1, ENC1), "re-armed, but the volume is READABLE on the raw disk"
+    stall(node1, t0, t1, "rearm")
 
     # ── STOP PROBING, THEN JUDGE ───────────────────────────────────────────────────────────────
     node1.succeed("rm /run/briard-probe.run")
     node1.wait_until_fails("systemctl is-active convert-io-probe.service", timeout=60)
     node1.wait_until_fails("systemctl is-active convert-ha-probe.service", timeout=60)
 
-    undisturbed(node1, since, "decrypt")
-    assert token == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0], \
+    undisturbed(node1, since, "rearm")
+    assert witness == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0], \
         "the witness file did not survive the round trip"
 
     # HA is not merely still answering -- it is still the same HA, with the recorder DB it wrote
@@ -354,8 +393,8 @@ pkgs.testers.runNixOSTest {
     # And the seam is exactly what it was: one linear segment, on one PV, under the same name.
     table = node1.succeed(f"dmsetup table {LV}").strip().splitlines()
     assert len(table) == 1 and " linear " in f" {table[0]} ", f"the LV is not one linear segment: {table}"
+    # `pvs` names the mapper path, not the /dev/dm-N it resolves to -- compare what LVM says.
     pvs = node1.succeed(f"pvs --noheadings -o pv_name --select vg_name={VG}").split()
-    assert pvs == [node1.succeed(f"readlink -f {PLAIN1}").strip()], \
-        f"the VG is not on the single plaintext PV it was moved back to: {pvs}"
+    assert pvs == [CRYPT], f"the VG is not on the single encrypted PV it was moved back to: {pvs}"
   '';
 }

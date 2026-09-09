@@ -308,7 +308,11 @@ let
       # Primary-only half, which in the product runs btrfs from the guest agent unit's own PATH
       # and converge from briard-services'. install_fixture runs both from a test shell, so both
       # have to be reachable there.
-      environment.systemPackages = [ pkgs.curl ]
+      # lvm2/cryptsetup are the SEAM's tooling ([V3b.33]) in a test shell: the product carries them
+      # in briard-data-seam.service's own unit PATH, and a rig that has to look at the stack it
+      # built -- `dmsetup deps`, `cryptsetup isLuks`, `pvs` -- runs from outside any unit. Free in
+      # size: both are already in this guest's closure.
+      environment.systemPackages = [ pkgs.curl pkgs.lvm2.bin pkgs.cryptsetup ]
         ++ lib.optionals (allFixtures != [ ]) [ pkgs.btrfs-progs config.briard.agentPackage ];
       # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes
       # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
