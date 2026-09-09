@@ -26,7 +26,7 @@ import (
 //
 // THE SHAPE, and the chicken-and-egg it has to solve. The promoter chain is what drbd-reactor
 // promotes WITH, but the volume is only readable AFTER promotion. So the chain is STATIC —
-// `briard-data -> briard-services -> briard-vip` on every data node — and `briard-services` is
+// `briard-primary-storage -> briard-services -> briard-vip` on every data node — and `briard-services` is
 // the unit that, once the mount exists, reads the manifests, renders, warms and starts them.
 // A constant chain is what made converge-at-promotion possible for the deleted payload slot;
 // generalising it is what makes it possible for N runtime-installed services.
@@ -44,7 +44,7 @@ import (
 // /run (tmpfs), re-derived by every converge, therefore immune to the durable-write rule.
 //
 // Recording them beats re-deriving them at stop time: ExecStop runs while the volume is still
-// mounted TODAY (drbd-reactor unwinds the chain in reverse, so briard-data goes last), but a stop
+// mounted TODAY (drbd-reactor unwinds the chain in reverse, so briard-primary-storage goes last), but a stop
 // that depends on reading the volume would fail exactly when the volume is what went wrong.
 const unitsFile = "/run/briard/services.units"
 

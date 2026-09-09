@@ -393,7 +393,7 @@ pkgs.testers.runNixOSTest {
     print(f"pre-upgrade good tick = {good_tick}")
 
     # --- Snapshot the rollback point (applyServiceInstall's data.snapshot). The .snapshots dir is
-    #     created by briard-data at mount, and the snapshot replicates with the volume. ---
+    #     created by briard-primary-storage at mount, and the snapshot replicates with the volume. ---
     snap = "/var/lib/briard/.snapshots/fixture-preupgrade"
     primary.succeed("test -d /var/lib/briard/.snapshots")
     primary.succeed(f"btrfs subvolume snapshot -r {dataroot} {snap}")

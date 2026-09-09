@@ -257,7 +257,7 @@ pkgs.testers.runNixOSTest {
             "tr -d '\\r' < /var/log/briard-guest-console.log 2>/dev/null | grep -a 'briard-vip:' || echo '(no briard-vip lines at all)'"
         ))
         print(f"=== {where}: what the guest said about its address ===")
-        print(guest_console("briard-vip|dhcpcd|briard-data|eth0|eth2|Failed|error"))
+        print(guest_console("briard-vip|dhcpcd|briard-primary-storage|eth0|eth2|Failed|error"))
         print(f"=== {where}: guest reached multi-user? ===")
         print(guest_console("Reached target|Startup finished|briard-guest"))
         print(f"=== {where}: dnsmasq ===")

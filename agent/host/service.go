@@ -794,7 +794,7 @@ func filesToRemove(have, want map[string]string) []string {
 // clean `systemctl stop` of it releases the bind (what data.restore needs) AND leaves the
 // drbd-reactor target up. Stopping the POD instead makes podman kill the containers ungracefully →
 // their units go to `failed` → the target `Requires=` a failed member → the target deactivates →
-// `briard-data` (PartOf) unmounts the SHARED DRBD volume, taking every other service with it. The
+// `briard-primary-storage` (PartOf) unmounts the SHARED DRBD volume, taking every other service with it. The
 // full trace is on quadlet.Rendered.ContainerUnits. The pod carries no data bind, so a data op
 // never needs to stop it.
 func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnits []string, logf func(string, ...any)) {

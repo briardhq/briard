@@ -174,5 +174,5 @@ func bounded(ctx context.Context) func(time.Duration, func(context.Context) erro
 // them. The front door is not a member -- it rides briard-vip (wantedBy + partOf), so it tracks
 // the primary regardless.
 func promoterUnits() []string {
-	return []string{"briard-data.service", "briard-services.service", "briard-vip.service"}
+	return []string{"briard-primary-storage.service", "briard-services.service", "briard-vip.service"}
 }

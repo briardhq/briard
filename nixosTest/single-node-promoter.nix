@@ -76,7 +76,7 @@ pkgs.testers.runNixOSTest {
     node1.sleep(10)
     node1.succeed("drbdadm role r0 | grep -q Primary")
     assert_healthy_promoter(node1, "after maintenance restart")
-    node1.succeed("systemctl is-active briard-data.service briard-services.service briard-vip.service")
+    node1.succeed("systemctl is-active briard-primary-storage.service briard-services.service briard-vip.service")
     for unit in fixture_units(node1):
         node1.succeed(f"systemctl is-active {unit}")
   '';

@@ -303,7 +303,7 @@ const (
 	verbFsSync        = "fs.sync"        // flush the data volume's dirty pages (pre-eviction pre-copy)
 )
 
-// dataMountRoot is where briard-data mounts the replicated volume — the guest image's
+// dataMountRoot is where briard-primary-storage mounts the replicated volume — the guest image's
 // `btrfsRoot` (guest-image/configuration.nix), restated here the way manifestDir restates a
 // path under it. fs.sync carries no path on the wire on purpose: the verb has exactly one
 // meaning ("flush the replicated volume"), and the node that mounts the volume is the one that
@@ -1684,7 +1684,7 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 // ([B.85], guest-image/configuration.nix), so the path belongs to the unit that acts on it and
 // nothing in Go needs to know it.)
 
-// dataFormatMarker is how storage bring-up tells briard-data.service that THIS volume is brand
+// dataFormatMarker is how storage bring-up tells briard-primary-storage.service that THIS volume is brand
 // new and may be formatted ([B.126]). Written only when this node is the seed of a new flock AND
 // the metadata was created by that same run, consumed and removed by the unit, and on TMPFS so it
 // cannot survive the boot that created it -- which is what makes "a reboot can never format" a

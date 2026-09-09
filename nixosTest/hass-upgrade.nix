@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
-    node1.wait_until_succeeds("systemctl is-active briard-data.service", timeout=120)
+    node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     node1.succeed("mountpoint -q /var/lib/briard")
 
     # Both ends warm: `from` is what gets installed, `to` is resident and ready to be installed

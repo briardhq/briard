@@ -15,6 +15,8 @@
 //	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
 //	briard-guest-agent --node-storage   build this node's tiers and attach the DRBD resource,
 //	                                    from the spec the host wrote (briard-node-storage)
+//	briard-guest-agent --primary-storage      format on first use + mount the replicated volume
+//	briard-guest-agent --primary-storage-stop unmount it (briard-primary-storage's ExecStop)
 //	briard-guest-agent --test-launch    the cheap self-test a staged copy passes before it is
 //	                                    trialled ([B.138]): execs, parses, sees the port device
 package main
@@ -99,6 +101,8 @@ func runInternal(args []string) {
 	converge := fs.Bool("converge", false, "render, warm and start every service the replicated volume names, then exit -- briard-services.service's ExecStart")
 	convergeStop := fs.Bool("converge-stop", false, "stop the service units this node converged to -- briard-services.service's ExecStop")
 	nodeStorage := fs.Bool("node-storage", false, "build every tier /run/briard/node-storage.json names and attach the resource -- briard-node-storage.service's ExecStart")
+	primaryStorage := fs.Bool("primary-storage", false, "format on first use, mount the replicated volume -- briard-primary-storage.service's ExecStart")
+	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
 	_ = fs.Parse(args)
 
@@ -117,6 +121,21 @@ func runInternal(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	if *primaryStorage || *primaryStorageStop {
+		// A PROMOTER CHAIN MEMBER, so the exit code is load-bearing: a non-zero ExecStart fails
+		// the whole promotion, the node never claims the VIP, and a primary with no address is
+		// already reported unhealthy. An unformatted or unmountable volume is a node that cannot
+		// serve, and it must say so rather than promote into a broken state.
+		run, what := guestagent.PrimaryStorage, "primary-storage"
+		if *primaryStorageStop {
+			run, what = guestagent.PrimaryStorageStop, "primary-storage-stop"
+		}
+		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
+			log.Fatalf("%s: %v", what, err)
+		}
+		return
+	}
 
 	if *nodeStorage {
 		// STORAGE IS THE HOST'S DECISION AND THE GUEST'S WORK ([V3b.33](d)): the spec was

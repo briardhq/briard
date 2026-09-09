@@ -91,7 +91,7 @@ pkgs.testers.runNixOSTest {
         # round trip is visible after the fact ([[verification-assertions-must-fail]]).
         return node1.succeed(
             "systemctl show -p ActiveEnterTimestampMonotonic --value drbd-promote@r0.service",
-            "systemctl show -p ActiveEnterTimestampMonotonic --value briard-data.service",
+            "systemctl show -p ActiveEnterTimestampMonotonic --value briard-primary-storage.service",
         ).strip()
 
     def ticks():
@@ -194,7 +194,7 @@ pkgs.testers.runNixOSTest {
 
     # Belt-and-suspenders: green here ⇒ the promoter resumed onto a live, mounted node.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=30)
-    node1.succeed("systemctl is-active briard-data.service ${serviceUnit} briard-vip.service")
+    node1.succeed("systemctl is-active briard-primary-storage.service ${serviceUnit} briard-vip.service")
 
     # === #5 THE PAUSE ACROSS A DAEMON-RELOAD =================================================
     # #3 proves the paused promoter ignores a deliberate SERVICE stop. This asks about a CHAIN

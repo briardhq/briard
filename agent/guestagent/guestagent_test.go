@@ -685,7 +685,7 @@ func TestBringUpDataNode(t *testing.T) {
 	g := dial(t, f)
 	spec := BringUpSpec{
 		Storage:  demoStorage(true),
-		Promoter: []string{"briard-data.service", "briard-services.service", "briard-vip.service"},
+		Promoter: []string{"briard-primary-storage.service", "briard-services.service", "briard-vip.service"},
 	}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)

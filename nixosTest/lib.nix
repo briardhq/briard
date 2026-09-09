@@ -27,7 +27,7 @@ let
   promoterSnippet =
     let
       units = [
-        "briard-data.service"
+        "briard-primary-storage.service"
         "briard-services.service"
         "briard-vip.service"
         "briard-reverse-proxy.service"

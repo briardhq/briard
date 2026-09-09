@@ -77,7 +77,7 @@ pkgs.testers.runNixOSTest {
         # cannot rewind, unlike the role.
         return m.succeed(
             "systemctl show -p ActiveEnterTimestampMonotonic --value drbd-promote@r0.service",
-            "systemctl show -p ActiveEnterTimestampMonotonic --value briard-data.service",
+            "systemctl show -p ActiveEnterTimestampMonotonic --value briard-primary-storage.service",
         ).strip().replace("\n", "/")
 
     start_all()

@@ -28,7 +28,7 @@ import (
 // Nothing here is conditional on a service existing any more. The old conditional membership
 // existed because naming a unit the guest does not define fails the WHOLE ordered chain, and a
 // zero-service node has no service unit to name — but briard-services is defined
-// unconditionally by the guest image, exactly as briard-data and briard-vip are, so there is
+// unconditionally by the guest image, exactly as briard-primary-storage and briard-vip are, so there is
 // nothing left to make conditional.
 //
 // It takes no arguments, and that is the end state [V3b.3](e1) was after: the chain is the same
@@ -54,7 +54,7 @@ import (
 // exists to avoid.
 func promoterUnits() []string {
 	return []string{
-		"briard-data.service",
+		"briard-primary-storage.service",
 		"briard-services.service",
 		"briard-vip.service",
 		"briard-reverse-proxy.service",

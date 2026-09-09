@@ -116,7 +116,7 @@ pkgs.testers.runNixOSTest {
     # is installed yet, so the front door comes up answering for itself.
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
-    node1.wait_until_succeeds("systemctl is-active briard-data.service", timeout=120)
+    node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
 
     # THE INSTALL: HA's manifest onto the volume, then the product's own converge renders it,

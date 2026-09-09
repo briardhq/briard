@@ -190,10 +190,10 @@ func TestReactorConfigStartOrder(t *testing.T) {
 [promoter.resources.r0]
 adjust-resource-on-start = false
 target-as = "Wants"
-start = [ "briard-data.service", "briard-services.service", "briard-vip.service" ]
+start = [ "briard-primary-storage.service", "briard-services.service", "briard-vip.service" ]
 `
 	got := ReactorConfig("r0", []string{
-		"briard-data.service",
+		"briard-primary-storage.service",
 		"briard-services.service",
 		"briard-vip.service",
 	})

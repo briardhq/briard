@@ -82,7 +82,7 @@ pkgs.testers.runNixOSTest {
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
     primary.succeed("systemctl is-active drbd-promote@r0.service")  # stock promote ran
-    primary.succeed("systemctl is-active briard-data.service")
+    primary.succeed("systemctl is-active briard-primary-storage.service")
     for unit in service_units:
         primary.succeed(f"systemctl cat {unit} >/dev/null")  # converge wrote the source, quadlet generated it
         primary.wait_until_succeeds(f"test $(systemctl is-active {unit}) = active", timeout=120)

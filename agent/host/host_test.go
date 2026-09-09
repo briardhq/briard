@@ -231,7 +231,7 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 // The old assertion here was the opposite, and its reason was real: naming a unit the guest does
 // not define fails the whole ordered chain and takes the VIP down on every fresh install, which is
 // precisely the state `curl | sh` lands in. briard-services is why it can now be unconditional —
-// the guest image defines it always, exactly as it defines briard-data and briard-vip.
+// the guest image defines it always, exactly as it defines briard-primary-storage and briard-vip.
 //
 // Nothing is conditional any more ([V3b.3](e1) took the last member out): the chain is the same
 // units on every anchor, whatever the node is running and whatever the environment says. The
@@ -245,7 +245,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 		t.Errorf("Services = %+v with nothing installed, want the empty set", cfg.Services)
 	}
 	want := []string{
-		"briard-data.service",
+		"briard-primary-storage.service",
 		"briard-services.service",
 		"briard-vip.service",
 		"briard-reverse-proxy.service",

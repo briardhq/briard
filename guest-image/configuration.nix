@@ -29,11 +29,10 @@ let
   # a unit whose only inputs are what it can read off the machine has nowhere for a decision to
   # arrive, which is why (c) could not build its Adiantum opt-in. This image contributes the unit
   # file; the pushed agent contributes every name and every choice.
-  # The installer's one-time "this volume is brand new" marker (agent/guestagent's
-  # dataFormatMarker). A /run path is a two-sided contract with the agent, restated here the way
-  # mdnsEnvPath and vipEnvPath are, and the Go side owns it.
-  dataFormatMarker = "/run/briard/data.format";
-  snapDir = "${btrfsRoot}/.snapshots"; # pre-upgrade snapshots, siblings of the data subvolume
+  #
+  # The one-time format marker and the snapshots directory left with it: both are the pushed
+  # agent's now (agent/guestagent's dataFormatMarker and snapshotsDir), because the unit that
+  # reads one and makes the other is Go rather than shell.
   tlsDir = "${btrfsRoot}/tls"; # cert/key on the DRBD volume (replicated, survive failover)
   # The VIP's address AND device are both agent-determined: net.configure writes VIP_ADDR +
   # VIP_DEV here, and briard-vip.service reads this file and NOTHING ELSE. Nothing is baked, so
@@ -1198,7 +1197,7 @@ in
         ExecStopPost = [
           "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target"
           "${config.systemd.package}/bin/systemctl daemon-reload"
-          "-${config.systemd.package}/bin/systemctl reset-failed briard-data.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-dashboard.service briard-mdns.service briard-mdns-services.service"
+          "-${config.systemd.package}/bin/systemctl reset-failed briard-primary-storage.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-dashboard.service briard-mdns.service briard-mdns-services.service"
           # LAST, and the reason is FailureAction=reboot above: a node that reboots because it
           # could not release the resource must leave the reason on disk first, and the journal
           # is otherwise still in RAM when the reboot happens.
@@ -1255,11 +1254,17 @@ in
       };
     };
 
-    # 1. data — mount the replicated DRBD device, formatting it on first use.
-    systemd.services.briard-data = {
-      description = "Briard data volume (DRBD device, mounted on the primary)";
+    # 1. primary storage — format on first use, mount the replicated volume ([V3b.33](d)). The
+    # FILESYSTEM half: node storage did the block work on every node, and this runs only where the
+    # volume is actually mounted, which is the one node that promoted. The cut between the two is
+    # by SCOPE, and it is the one the product already had.
+    systemd.services.briard-primary-storage = {
+      description = "Briard primary storage (the replicated volume, mounted on the primary)";
       wantedBy = [ ];
-      path = [ pkgs.util-linux pkgs.btrfs-progs ];
+      # The tools the pushed agent shells out to: mount/umount/mountpoint (util-linux),
+      # mkfs.btrfs, and mkdir/rm. A unit's default PATH is minimal, and the agent names these by
+      # command rather than by store path -- so the unit is where they are resolved.
+      path = [ pkgs.util-linux pkgs.btrfs-progs pkgs.coreutils ];
       serviceConfig = {
         # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
         # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
@@ -1270,52 +1275,15 @@ in
         RestartSec = 2;
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "briard-data-up" ''
-          set -eu
-          mkdir -p ${btrfsRoot}
-          # FORMAT ONLY WHEN THE INSTALLER SAID SO ([B.126]). This used to be
-          # `blkid /dev/drbd0 || mkfs.btrfs -f` -- a forced format behind a probe that cannot tell
-          # "this device is blank" from "this device could not be read", since blkid is non-zero
-          # for both. A transient read failure on a healthy volume would have reformatted the
-          # household's replicated data, and this unit runs at EVERY promotion, forever.
-          #
-          # The decision now belongs to bring-up, which alone knows this is the seed of a NEW flock
-          # on a disk create-md just claimed (FreshInit && CreatedMetadata). The ACT stays here
-          # because only a Primary can be formatted and nothing in the agent may promote
-          # (architectural invariant 2). ⚠️ The marker is on TMPFS, and that is the property rather
-          # than a detail: it cannot outlive the boot that created the volume, so no later boot,
-          # promotion or failover can ever find it.
-          #
-          # -f is right HERE, where the installer has just claimed the disk for a brand-new flock
-          # and overwriting a previous life is the intent. The bug was never the flag; it was a
-          # destructive operation on a path that runs forever.
-          # MOUNT GUARDED, because this unit may now be RETRIED ([B.125](b)): mounting an already
-          # mounted path stacks a second mount rather than failing, so the retry has to ask.
-          # ⚠️ QUOTED, AND THAT IS A SAFETY PROPERTY RATHER THAN STYLE. `[ -e $X ]` with an empty X
-          # is a ONE-argument test on the string "-e", which is always TRUE -- so a lost
-          # interpolation here does not mean "never format", it means "format on EVERY promotion",
-          # on every node. MEASURED, by doing it: an editing slip emptied this path, drbd-failover
-          # went red, and the survivor had reformatted the replicated volume mid-failover. Quoted,
-          # the same slip yields `[ -e "" ]`, which is false -- the mount then fails and the node
-          # demotes, which is the direction this whole item exists to move things in.
-          if [ -e "${dataFormatMarker}" ]; then
-            rm -f "${dataFormatMarker}"   # consume FIRST: a format that fails must not be retried
-            mkfs.btrfs -f /dev/drbd0
-          fi
-          # An unformatted volume fails here, which fails the chain and demotes the node -- loud
-          # and recoverable, which "silently reformatted" is not. Same direction create-md takes:
-          # refuse rather than overwrite.
-          # MOUNT GUARDED, because this unit may now be RETRIED ([B.125](b)): mounting an already
-          # mounted path stacks a second mount rather than failing, so a retry has to ask first.
-          ${pkgs.util-linux}/bin/mountpoint -q ${btrfsRoot} || mount /dev/drbd0 ${btrfsRoot}
-          # First use: the snapshots dir, sibling of whatever service subvolumes get created
-          # later. It replicates with the volume, so it survives failover. Idempotent. A
-          # service's own data subvolume is created when that service is INSTALLED (the guest's
-          # renderer makes it), so a node nobody has given a workload to mounts an empty volume
-          # — which is the honest state of one.
-          mkdir -p ${snapDir}
-        '';
-        ExecStop = "${pkgs.util-linux}/bin/umount ${btrfsRoot}";
+        # THROUGH THE PIVOT'S binDir DIRECTLY ([B.86j], [B.138]), never through the picker, whose
+        # trial flag is keyed by the binary's NAME. This was the last inline-shell unit in the
+        # chain; storage is code we expect to change, so it belongs on the side that moves with
+        # the host bundle rather than frozen in this image. ⚠️ It follows that the MOUNT now
+        # depends on the pushed bundle -- an exposure that already existed (briard-services is a
+        # chain member running the pushed agent, and a guest with no good bundle cannot serve
+        # anything), but a decision rather than a side effect.
+        ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --primary-storage";
+        ExecStop = "${config.briard.pivot.binDir}/briard-guest-agent --primary-storage-stop";
       };
       unitConfig = chainMemberFailure // {
         StartLimitIntervalSec = 300;
@@ -1358,7 +1326,7 @@ in
     #    services themselves, and goes back to being constant: `data -> services -> vip` on every
     #    data node. A constant chain is what made converge-at-promotion possible for the baked
     #    payload slot; this generalises the trick to N runtime-installed services. The unit is
-    #    defined unconditionally for the same reason briard-data is: naming a unit the guest does
+    #    defined unconditionally for the same reason briard-primary-storage is: naming a unit the guest does
     #    not define fails the WHOLE ordered chain.
     #
     #    ITS FAILURE IS LOUD, BY POSITION. A promoter fails the whole promotion if a member
@@ -1378,8 +1346,8 @@ in
     systemd.services.briard-services = {
       description = "Briard services, converged from the replicated volume at promotion";
       wantedBy = [ ];
-      after = [ "briard-data.service" ];
-      requires = [ "briard-data.service" ];
+      after = [ "briard-primary-storage.service" ];
+      requires = [ "briard-primary-storage.service" ];
       path = [
         pkgs.coreutils # ls/mkdir/rm, for reading the volume and owning the quadlet dir
         pkgs.systemd # systemctl daemon-reload + start/stop of the rendered units
@@ -1559,7 +1527,7 @@ in
         # StartLimit below finally accumulate: the unit is no longer torn down and started
         # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
         # and still hands the resource on -- which is what this budget always claimed to do.
-        # NOT on briard-data/services/vip: for those, failure really does mean this node
+        # NOT on briard-primary-storage/services/vip: for those, failure really does mean this node
         # must not hold the volume.
         RestartMode = "direct";
         RestartSec = 2;
@@ -1635,7 +1603,7 @@ in
         # StartLimit below finally accumulate: the unit is no longer torn down and started
         # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
         # and still hands the resource on -- which is what this budget always claimed to do.
-        # NOT on briard-data/services/vip: for those, failure really does mean this node
+        # NOT on briard-primary-storage/services/vip: for those, failure really does mean this node
         # must not hold the volume.
         RestartMode = "direct";
         RestartSec = 2;
@@ -1704,7 +1672,7 @@ in
         # StartLimit below finally accumulate: the unit is no longer torn down and started
         # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
         # and still hands the resource on -- which is what this budget always claimed to do.
-        # NOT on briard-data/services/vip: for those, failure really does mean this node
+        # NOT on briard-primary-storage/services/vip: for those, failure really does mean this node
         # must not hold the volume.
         RestartMode = "direct";
         RestartSec = 2;
@@ -1732,7 +1700,7 @@ in
     # /run; it writes only under /var/lib/briard/dashboard.
     systemd.services.briard-dashboard = {
       description = "Briard household dashboard (behind the front door)";
-      after = [ "briard-data.service" "briard-services.service" ];
+      after = [ "briard-primary-storage.service" "briard-services.service" ];
       serviceConfig = {
         # THROUGH THE PIVOT ([B.138], pivot.nix): the copy the host pushed, and nothing else -- the
         # image bakes no dashboard. Type=notify, READY at listen, so a trial agent reads this
