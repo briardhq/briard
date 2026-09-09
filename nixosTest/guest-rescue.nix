@@ -153,10 +153,29 @@ pkgs.testers.runNixOSTest {
     # still holding DRBD's metadata.
     data_inode = host.succeed("stat -c %i /tmp/data.img").strip()
     data_size = host.succeed("stat -c %s /tmp/data.img").strip()
-    zeros = host.succeed("head -c 4096 /dev/zero | sha256sum").strip().split()[0]
-    data_tail = host.succeed("tail -c 4096 /tmp/data.img | sha256sum").strip().split()[0]
-    assert data_tail != zeros, "the data disk tail is all zeroes -- DRBD never seeded it, so the survival assertions below would be vacuous"
-    print(f"before rescue: qemu {qemu_before}, data inode {data_inode}, data tail {data_tail[:12]}")
+
+    def data_uuid(m):
+        """The data volume's identity, read off the backing file: the LUKS2 header's own UUID.
+
+        THE HANDLE USED TO BE THE TAIL of the file, where `meta-disk internal` puts DRBD's
+        metadata -- non-zero there meant "something seeded this disk". [V3b.33] put a seam under
+        DRBD (`data.img -> LUKS -> PV -> VG -> LV -> DRBD`) and the tail stopped meaning that:
+        LVM rounds the LV to whole extents, so the last megabytes of the PV are unallocated
+        remainder that nothing ever writes, and the tail reads as zeroes on a perfectly healthy
+        node. The header at offset 0 is the opposite -- written by this node the first time it
+        booted, and the ~16 MB whose loss is the loss of the volume.
+
+        It is also a STRONGER claim than the tail was: a UUID that survives says this is the same
+        volume, where non-zero bytes said only that some bytes were there."""
+        magic = m.succeed(
+            "dd if=/tmp/data.img bs=1 count=6 status=none | od -An -tx1 | tr -d ' \\n'"
+        ).strip()
+        assert magic == "4c554b53babe", \
+            f"the data volume is not LUKS2 (read {magic!r}) -- the survival assertions below would be vacuous"
+        return m.succeed("dd if=/tmp/data.img bs=1 skip=168 count=40 status=none | tr -d '\\0'").strip()
+
+    data_id = data_uuid(host)
+    print(f"before rescue: qemu {qemu_before}, data inode {data_inode}, data volume {data_id}")
 
     # === THE RESCUE ===
     # `briard-agent <verb>` IS the CLI (a bare first argument is a subcommand, main.go) -- the
@@ -272,8 +291,8 @@ pkgs.testers.runNixOSTest {
     #
     # WHAT THIS DOES NOT PROVE, stated so nobody reads more into it: that bring-up ADOPTED the
     # replica rather than re-seeding it in place. A re-seed writes fresh metadata to the same file,
-    # so it would keep the inode and the size. Byte-comparing the tail cannot separate the two
-    # either, because DRBD legitimately rewrites its metadata on attach. Proving adoption needs
+    # so it would keep the inode and the size -- and it would keep the LUKS UUID too, because a
+    # re-seed happens INSIDE the volume, above the header. Proving adoption needs
     # real service data in the volume (the catalogued fixture the other data tests install) -- worth
     # doing, and deliberately not smuggled in here as an assertion that looks
     # stronger than it is.
@@ -281,9 +300,9 @@ pkgs.testers.runNixOSTest {
         "the data disk is a different file -- the rescue recreated the replicated volume"
     assert data_size == host.succeed("stat -c %s /tmp/data.img").strip(), \
         "the data disk changed size -- the rescue resized the replicated volume"
-    assert host.succeed("tail -c 4096 /tmp/data.img | sha256sum").strip().split()[0] != zeros, \
-        "the data disk's metadata was wiped by the rescue"
-    print("data disk untouched: same file, same size, metadata intact")
+    assert data_uuid(host) == data_id, \
+        "the data volume has a different LUKS UUID -- the rescue reformatted the replicated volume"
+    print("data disk untouched: same file, same size, same volume")
 
     # (3) And it is a node again: the rebuilt guest came up on the existing replica and the front
     # door answers.
