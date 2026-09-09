@@ -36,12 +36,13 @@ let
   vg = "briard";
   lvDev = "/dev/mapper/${vg}-data";
 
-  # The backing disks, in MiB. The LV is deliberately SMALLER than the disk that holds it: a LUKS2
-  # header is ~16 MiB off the front of the target and the PV label another 1 MiB, so an LV sized to
-  # the whole plaintext disk could never land on an encrypted one of the same size. A household's
-  # installer sizes the LV once, at install, under the same constraint.
+  # The data disk, and the CONVERSION TARGETS, in MiB. A target is deliberately LARGER: the seam
+  # unit gives the LV the whole PV, and a LUKS2 header takes ~16 MiB off the front of the target
+  # plus another 1 MiB for the PV label, so a target the same size as the source could never hold
+  # it. The host sizes the file it hotplugs, so this is its constraint to meet -- and meeting it
+  # is why the seam reserves nothing on every node forever.
   diskMB = 4096;
-  lvMB = 3072;
+  targetMB = 4352;
 
   # ── THE TWO PROBERS ────────────────────────────────────────────────────────────────────────
   # Separate because they measure separate claims at separate rates: the volume must not miss a
@@ -83,13 +84,12 @@ let
 
   node = h.mkNode {
     inherit fixture;
-    # THE SEAM, declared where DRBD reads it: the resource names the LV forever, and every move
-    # below happens underneath that name. This is the whole now-decision the item turns on.
+    # The resource names the LV -- as every node does since [V3b.33](b) -- and every move below
+    # happens underneath that name, which is the whole now-decision the item turns on.
     resource = h.mkResource [
       {
         name = "node1";
         id = 0;
-        disk = lvDev;
       }
     ];
   };
@@ -105,11 +105,11 @@ pkgs.testers.runNixOSTest {
       # and HA's Python stack wants ~1 GB live.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
-      # The data disk, resized from lib.nix's 256 MiB (a 4 GiB LV is what `install.sh` lays down by
-      # default, and a 256 MiB move would measure nothing) and given a qdev id + a serial. Both are
-      # load-bearing: the id is what `device_del` names when the conversion retires this disk, and
-      # the serial is what makes `/dev/disk/by-id/virtio-plain0` a stable name in the guest rather
-      # than a `/dev/vd?` letter that shifts as disks come and go.
+      # The data disk the seam unit will claim, resized from lib.nix's 256 MiB (a 4 GiB volume is
+      # what `install.sh` lays down by default, and a 256 MiB move would measure nothing) and given
+      # a qdev id + a serial. Both are load-bearing: the id is what `device_del` names when the
+      # conversion retires this disk, and the serial is what makes `/dev/disk/by-id/virtio-plain0`
+      # a stable name in the guest rather than a `/dev/vd?` letter that shifts as disks come and go.
       virtualisation.emptyDiskImages = lib.mkForce [
         {
           size = diskMB;
@@ -119,9 +119,11 @@ pkgs.testers.runNixOSTest {
           };
         }
       ];
-      # The seam's userspace. Both are ALREADY in this guest's closure -- lvm2's `bin` output
-      # arrives with the device-mapper udev rules every NixOS machine has, and cryptsetup's `lib`
-      # output with systemd -- so what is added here is the PATH, plus cryptsetup's binary.
+      # THE CONVERSION'S OWN TOOLING, in a test shell. The product's seam unit carries lvm2 in its
+      # own unit PATH; a conversion is driven from outside any unit here, and cryptsetup is not in
+      # the shipped image at all yet -- (c) is what puts it there. Both are cheap: lvm2's `bin`
+      # output is already in this closure (it arrives with the device-mapper udev rules every
+      # NixOS machine has) and cryptsetup's `lib` output with systemd.
       environment.systemPackages = [
         pkgs.lvm2.bin
         pkgs.cryptsetup
@@ -136,8 +138,8 @@ pkgs.testers.runNixOSTest {
 
     VG = "${vg}"
     LV = "${lvDev}"
-    LV_MB = ${toString lvMB}
     DISK_MB = ${toString diskMB}
+    TARGET_MB = ${toString targetMB}
     PLAIN0 = "/dev/disk/by-id/virtio-plain0"
     ENC0 = "/dev/disk/by-id/virtio-enc0"
     PLAIN1 = "/dev/disk/by-id/virtio-plain1"
@@ -179,9 +181,15 @@ pkgs.testers.runNixOSTest {
         m.succeed(f"pvmove --atomic -n data {src} {dst}", timeout=1800)
         t1 = now(m)
         secs = (t1 - t0) / 1e9
-        print(f"[{label}] pvmove {src} -> {dst}: {secs:.1f}s for {LV_MB} MiB "
-              f"({LV_MB / secs:.0f} MiB/s)")
+        print(f"[{label}] pvmove {src} -> {dst}: {secs:.1f}s for {lv_mb(m)} MiB "
+              f"({lv_mb(m) / secs:.0f} MiB/s)")
         return t0, t1
+
+
+    def lv_mb(m):
+        """The LV size as the PRODUCT chose it -- the seam unit gives it the whole PV, so this rig
+        reads the number rather than restating one it did not decide."""
+        return int(float(m.succeed(f"lvs --noheadings --units m --nosuffix -o lv_size {LV}").strip()))
 
 
     def stall(m, t0, t1, label):
@@ -229,26 +237,20 @@ pkgs.testers.runNixOSTest {
     node1.wait_for_unit("multi-user.target")
     # HA's 2.4 GB image is resident before anything promotes, as on a real node.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
-
-    # ── THE SEAM, BUILT BEFORE DRBD EVER ATTACHES ──────────────────────────────────────────────
-    # A single-LV VG is dm-linear and nothing else: one table line, the same target and the same
-    # linear_map() a bare disk would have had. Everything LVM adds sits outside the data path.
-    node1.succeed(f"pvcreate -ff -y {PLAIN0}")
-    node1.succeed(f"vgcreate {VG} {PLAIN0}")
-    node1.succeed(f"lvcreate -L {LV_MB}M -n data {VG}")
+    # ── THE SEAM, BUILT BY THE PRODUCT ─────────────────────────────────────────────────────────
+    # briard-data-seam.service laid this down at boot on the node's own data disk, and it also
+    # loaded dm-mirror -- the target pvmove builds its transient mirror out of, which LVM cannot
+    # autoload on a NixOS guest (it shells out to /sbin/modprobe, which does not exist there;
+    # [V3b.33](a) measured the refusal). Nothing here builds a seam of its own: a rig that did
+    # would be proving a stack no household runs.
+    node1.wait_for_unit("briard-data-seam.service")
     node1.succeed(f"test -b {LV}")
-    # The fence, asserted here because everything below depends on it: one linear segment, and no
-    # other dm device in the way. It is what keeps the seam free.
+    node1.succeed("lsmod | grep -q '^dm_mirror'")
+    # The fence, asserted here because everything below depends on it: one linear segment, the
+    # same target and the same linear_map() a bare disk would have had. It is what keeps the
+    # seam free, and `lab/oracle` asserts it continuously on the soak fleet.
     table = node1.succeed(f"dmsetup table {LV}").strip().splitlines()
     assert len(table) == 1 and " linear " in f" {table[0]} ", f"the LV is not one linear segment: {table}"
-
-    # ⚠️ `dm-mirror` IS LOADED BY HAND, AND THAT IS A PRODUCT FINDING, NOT A RIG QUIRK. pvmove
-    # builds its transient mirror out of the dm-mirror target, and LVM's own autoload cannot reach
-    # it on a NixOS guest: lvm shells out to `/sbin/modprobe`, which does not exist here, so the
-    # first `pvmove` fails with `Required device-mapper target(s) not detected in your kernel`
-    # (measured -- everything up to it succeeded). Whatever drives a conversion on a real node has
-    # to load this first. `dm-crypt` needs no such help: cryptsetup loads it through libdevmapper.
-    node1.succeed("modprobe dm-mirror")
 
     # ── A NODE, THE WAY EVERY OTHER RIG BRINGS ONE UP ──────────────────────────────────────────
     node1.succeed("modprobe drbd")
@@ -293,7 +295,7 @@ pkgs.testers.runNixOSTest {
     print(f"cpu aes: {'yes' if node1.succeed('grep -c aes /proc/cpuinfo || true').strip() != '0' else 'no'}")
 
     # ── FORWARD: PLAINTEXT → LUKS, LIVE ────────────────────────────────────────────────────────
-    hotplug(node1, "enc0", DISK_MB)
+    hotplug(node1, "enc0", TARGET_MB)
     node1.succeed("head -c 32 /dev/urandom >/run/briard-luks.key")
     node1.succeed(f"cryptsetup luksFormat --batch-mode --type luks2 {ENC0} /run/briard-luks.key")
     node1.succeed(f"cryptsetup open --key-file /run/briard-luks.key {ENC0} convert-enc0")
@@ -318,7 +320,7 @@ pkgs.testers.runNixOSTest {
     # The half that decides whether (c) is a commitment or a trap. If encryption can only be added,
     # then choosing it at install is irreversible for the installed base; because it can be taken
     # off the same way it went on, the default is a default and not a one-way door.
-    hotplug(node1, "plain1", DISK_MB)
+    hotplug(node1, "plain1", TARGET_MB)
     node1.succeed(f"pvcreate -ff -y {PLAIN1}")
     node1.succeed(f"vgextend {VG} {PLAIN1}")
     t0, t1 = move(node1, CRYPT, PLAIN1, "decrypt")

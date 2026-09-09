@@ -10,6 +10,25 @@
 { config, pkgs, lib, ... }:
 let
   btrfsRoot = "/var/lib/briard"; # the DRBD btrfs volume mount
+  # ── THE STORAGE SEAM ([V3b.33]) ──────────────────────────────────────────────────────────────
+  # The stack under the mount above is `dataDisk -> PV -> VG -> LV -> DRBD -> btrfs`, and the VG
+  # exists for exactly one reason: an LV can have its dm table reloaded underneath a device that
+  # is open, so the backing can be moved onto an encrypted PV (and back) with `pvmove` while DRBD
+  # never closes its device. A bare disk has no table to reload.
+  #
+  # It is nearly free because a single-LV VG IS dm-linear -- one table line, the same target and
+  # the same linear_map() a bare disk would have had. Everything LVM adds sits outside the data
+  # path (a PV label, a 1 MiB metadata area, userspace, udev), and two of those additions are why
+  # LVM beats raw `dmsetup` here: nothing has to rebuild a table at every boot, and "which backing
+  # is this node on" lives ON THE DISK rather than in host config.
+  #
+  # dataDisk is the SECOND virtio disk, which is a hardware fact of the VM the host builds
+  # (agent/platform/qemu.go attaches DataDisk there) rather than anything configured -- the same
+  # kind of two-sided contract as the /run paths below. dataLV is restated from Go's
+  # drbd.DataDevice, which is what DRBD is pointed at; the two must agree.
+  dataDisk = "/dev/vdb";
+  dataVG = "briard";
+  dataLV = "/dev/mapper/${dataVG}-data";
   # The installer's one-time "this volume is brand new" marker (agent/guestagent's
   # dataFormatMarker). A /run path is a two-sided contract with the agent, restated here the way
   # mdnsEnvPath and vipEnvPath are, and the Go side owns it.
@@ -1198,6 +1217,63 @@ in
     # its own — drbd-reactor starts them, in this order, only after it has promoted
     # the resource, and stops them in reverse on demote. So they run on the primary
     # and nowhere else.
+
+    # 0. the seam — the single-LV VG DRBD attaches to ([V3b.33]). NOT a chain member: it runs
+    # once at boot, on every node, before anything can provision a resource, because
+    # `drbdadm create-md` names the LV and a device that does not exist cannot be claimed.
+    systemd.services.briard-data-seam = {
+      description = "Briard data seam (the single-LV VG DRBD attaches to)";
+      wantedBy = [ "multi-user.target" ];
+      # Before the agent can serve a bring-up verb over the channel. Ordering against a unit this
+      # module does not define is a no-op where it is absent (the hermetic nixosTest nodes have no
+      # host and no agent), and those nodes reach multi-user.target before their testScript
+      # provisions anything, so the guarantee holds both ways.
+      before = [ "briard-guest-agent.service" ];
+      # A diskless witness has no data disk and no seam to build. ConditionPathExists makes that
+      # a SKIP rather than a failure, which is what a witness legitimately is.
+      unitConfig.ConditionPathExists = dataDisk;
+      path = [
+        pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange -- the `bin` output, already in this closure
+        pkgs.kmod
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "briard-data-seam-up" ''
+          set -eu
+          # dm-mirror is what `pvmove` builds its transient mirror out of, and LVM cannot autoload
+          # it here: lvm shells out to /sbin/modprobe, which does not exist on a NixOS guest, so
+          # the first conversion would fail with "Required device-mapper target(s) not detected in
+          # your kernel" (measured, [V3b.33](a)). Loading it at boot means the module a conversion
+          # needs is never the reason one cannot start.
+          modprobe dm-mirror
+
+          # A RETURNING NODE carries its VG on the disk -- that is the point of using LVM rather
+          # than a table this unit would have to rebuild -- so activate and stop.
+          vgchange -ay ${dataVG} >/dev/null 2>&1 || true
+          if [ -b ${dataLV} ]; then
+            exit 0
+          fi
+
+          # A BLANK DISK: build the seam. `pvcreate` WITHOUT -f is the probe, and it is the same
+          # shape as `drbdadm create-md` without --force ([B.126]) rather than a second idiom: it
+          # refuses on ANY existing signature (the prompt hits a closed stdin and aborts) and it
+          # fails on a device it cannot read. So "pvcreate succeeded" means the device was
+          # readable AND blank -- the distinction a `blkid ||` probe cannot make, which is the
+          # mistake that once reformatted a household's replicated volume.
+          #
+          # A node installed before the seam therefore FAILS HERE, loudly, rather than having its
+          # data volume claimed: its data.img already holds DRBD metadata, so pvcreate refuses.
+          # That is the alpha reinstall-only policy working as intended, not a gap.
+          pvcreate ${dataDisk}
+          vgcreate ${dataVG} ${dataDisk}
+          # The whole PV, because the seam reserves nothing: a conversion's target is a disk the
+          # HOST sizes, and it can be made large enough to hold this LV plus a LUKS header.
+          # Reserving here would cost every node space forever to save the host one line.
+          lvcreate -l 100%FREE -n data ${dataVG}
+        '';
+      };
+    };
 
     # 1. data — mount the replicated DRBD device, formatting it on first use.
     systemd.services.briard-data = {

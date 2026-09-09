@@ -48,10 +48,9 @@ let
   # the production safety config. new-current-uuid then needs the
   # volume id (r0/0) — the one testScript quirk of this form.
   #
-  # `disk` is per-node because that is where DRBD puts it, and because the backing a node runs on
-  # IS a node fact: [V3b.33]'s spike runs its resource over an LV so it can move that LV between a
-  # plaintext and an encrypted PV underneath, and it has to be able to say so for one rig without
-  # every other rig moving with it.
+  # A diskful node's backing is `/dev/mapper/briard-data` on every node in the product and in
+  # every rig ([V3b.33]): the single LV of the single-LV VG the guest image's seam unit builds at
+  # boot, restated here because a `.res` is text and cannot import Go's `drbd.DataDevice`.
   mkResource =
     nodes:
     let
@@ -65,7 +64,7 @@ let
               if n.diskless or false then
                 "disk none;"
               else
-                "disk ${n.disk or "/dev/vdb"}; meta-disk internal;"
+                "disk /dev/mapper/briard-data; meta-disk internal;"
             }
           }
         }'';

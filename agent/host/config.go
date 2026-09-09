@@ -101,7 +101,7 @@ func ConfigFromEnv() Config {
 		peers = []drbd.Peer{{
 			Name: node, NodeID: 0,
 			Address: env("PEER_ADDR", "127.0.0.1:7789"),
-			Disk:    env("DATA_DEV", "/dev/vdb"),
+			Disk:    env("DATA_DEV", drbd.DataDevice),
 		}}
 	}
 	cfg := Config{
@@ -236,9 +236,12 @@ func ConfigFromEnv() Config {
 // same value on every node (DRBD identifies self by matching the guest hostname to
 // an `on <name>` stanza), so NodeID is the entry's position and the ordering must
 // be identical fleet-wide. Each entry is "name@host[:port]/disk": host defaults to
-// port 7789; disk "none" (or empty) is a diskless witness, otherwise it names the
-// backing device by bare name under /dev (e.g. "vdb" -> /dev/vdb). Malformed entries
-// are skipped. Returns nil for an empty value -- caller keeps the single self-peer.
+// port 7789; disk "none" (or empty) is a diskless witness, anything else is a DISKFUL
+// node. The field is a flag, not a path, and that is what [V3b.33] made of it: a diskful
+// node's backing is one value fleet-wide (drbd.DataDevice, the LV the guest's seam unit
+// builds), so a mesh string that could name a different device per node would only be a
+// way to disagree with the seam. Malformed entries are skipped. Returns nil for an empty
+// value -- caller keeps the single self-peer.
 func parsePeers(s string) []drbd.Peer {
 	var peers []drbd.Peer
 	for _, entry := range strings.Split(s, ",") {
@@ -253,7 +256,7 @@ func parsePeers(s string) []drbd.Peer {
 		}
 		p := drbd.Peer{Name: name, NodeID: len(peers), Address: addr}
 		if disk != "" && disk != "none" {
-			p.Disk = "/dev/" + disk
+			p.Disk = drbd.DataDevice
 		}
 		peers = append(peers, p)
 	}

@@ -770,15 +770,24 @@ pkgs.testers.runNixOSTest {
     # writing data to compare. A runtime service install gets the stronger proof back by installing a service at
     # runtime and resuming the tick comparison on top of this one.
     def fsid(m):
-        # btrfs primary superblock at 0x10000: fsid at +0x20, magic ("_BHRfS_M") at +0x40.
-        # Asserting the magic keeps this honest -- wrong offsets would otherwise compare two
-        # identical blobs of zeroes and "pass".
-        magic = m.succeed(
-            "dd if=/var/lib/briard/data.img bs=1 skip=65600 count=8 status=none | od -An -c | tr -d ' \\n'"
+        # btrfs's primary superblock carries the magic "_BHRfS_M" at +0x40 and the fsid at +0x20.
+        # It is FOUND rather than assumed at a fixed offset, and that is not defensiveness: since
+        # [V3b.33] the volume sits under a seam (`data.img -> [LUKS] -> PV -> VG -> LV -> DRBD`),
+        # so its distance from the start of the backing file is the sum of a LUKS data offset, an
+        # LVM alignment and DRBD's layout -- three numbers this test would otherwise restate and
+        # then be wrong about the next time one of them is chosen differently. Searching for the
+        # magic asserts the same thing the fixed offset did (there IS a btrfs here, so the fsid
+        # below is a filesystem's identity and not a blob of zeroes) without owning the arithmetic.
+        #
+        # Bounded to the first 64 MiB: btrfs keeps superblock COPIES at 64 MiB and 256 MiB, so an
+        # unbounded search would also have to reason about which one it found.
+        at = m.succeed(
+            "head -c 67108864 /var/lib/briard/data.img | grep -abo _BHRfS_M | head -1 | cut -d: -f1"
         ).strip()
-        assert magic == "_BHRfS_M", f"no btrfs superblock where expected (read {magic!r})"
+        assert at, "no btrfs superblock in the first 64 MiB of the data volume"
+        sb = int(at) - 0x40  # the magic is at +0x40 from the superblock's start
         return m.succeed(
-            "dd if=/var/lib/briard/data.img bs=1 skip=65568 count=16 status=none | od -An -tx1 | tr -d ' \\n'"
+            f"dd if=/var/lib/briard/data.img bs=1 skip={sb + 0x20} count=16 status=none | od -An -tx1 | tr -d ' \\n'"
         ).strip()
 
     pre = fsid(host)

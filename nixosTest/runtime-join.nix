@@ -91,7 +91,7 @@ let
       address 10.0.0.${toString (n.id + 1)}:7789;
       volume 0 {
         device /dev/drbd0;
-        ${if n.disk then "disk /dev/vdb; meta-disk internal;" else "disk none;"}
+        ${if n.disk then "disk /dev/mapper/briard-data; meta-disk internal;" else "disk none;"}
       }
     }'';
   resFor = nodes: ''

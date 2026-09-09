@@ -250,6 +250,7 @@ let
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs for data.snapshot/restore, mkfs.btrfs for the one-time format
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
+          pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry ([V3b.33](b))
           # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
           # differently-wrapped copy of the runtime (configuration.nix explains; [B.5]).
           config.virtualisation.podman.package # podman, for the renderer + service.* verbs

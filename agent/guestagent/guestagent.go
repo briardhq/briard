@@ -1923,6 +1923,13 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 	// out instead of re-failing every sample, and a fresh error is attributable to the current
 	// cycle. Mechanism only: the guest returns the lines, the oracle scans + scopes them.
 	r.KernelErrors = recentKernelErrors(ctx, x)
+	// The device-mapper tables ([V3b.33](b)): `dmsetup table` prints one `<name>: <table>` line
+	// per dm device, which is exactly the seam invariant's input -- the data LV must still be one
+	// `linear` segment and nothing unexpected may have appeared beside it. Best-effort like every
+	// other field here: no dmsetup, or no dm device, yields no lines.
+	if out, err := x.Run(ctx, "dmsetup", "table"); err == nil {
+		r.DMTargets = dmTableLines(out)
+	}
 	return r
 }
 
@@ -2108,6 +2115,22 @@ func nonEmptyLines(b []byte) []string {
 }
 
 func countLines(b []byte) int { return len(nonEmptyLines(b)) }
+
+// dmTableLines turns `dmsetup table` output into one entry per dm device. dmsetup speaks in its
+// own voice when there is nothing to report -- it prints "No devices found" and exits 0 -- so
+// that line is dropped rather than reported as a device, the same trap splitJournalCursor exists
+// for. A witness, or any node whose data disk carries no seam, therefore reports nothing at all
+// rather than one phantom target.
+func dmTableLines(b []byte) []string {
+	var out []string
+	for _, l := range nonEmptyLines(b) {
+		if !strings.Contains(l, ":") {
+			continue // "No devices found", and anything else dmsetup says about itself
+		}
+		out = append(out, l)
+	}
+	return out
+}
 
 func resourceReq(payload json.RawMessage) (resourceRequest, error) {
 	var req resourceRequest

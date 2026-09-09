@@ -337,11 +337,15 @@ func TestConfigFromEnv_SystemNIC(t *testing.T) {
 }
 
 func TestParsePeers(t *testing.T) {
-	got := parsePeers("n1@10.0.0.2/vdb, n2@10.0.0.3:7000/sdb , w@10.0.0.4/none")
+	got := parsePeers("n1@10.0.0.2/disk, n2@10.0.0.3:7000/sdb , w@10.0.0.4/none")
 	want := []drbd.Peer{
-		{Name: "n1", NodeID: 0, Address: "10.0.0.2:7789", Disk: "/dev/vdb"}, // bare host -> default port; bare disk -> /dev/
-		{Name: "n2", NodeID: 1, Address: "10.0.0.3:7000", Disk: "/dev/sdb"}, // explicit port kept; disk under /dev
-		{Name: "w", NodeID: 2, Address: "10.0.0.4:7789"},                    // witness: "none" disk -> diskless
+		// The disk field is a DISKFUL/DISKLESS FLAG, not a path ([V3b.33]): every diskful node
+		// runs on the one seam LV, so ANY non-"none" value means that device and nothing else --
+		// which is why "sdb" below, a device name that would once have been honoured, no longer
+		// gives one node a backing it can disagree with the flock about.
+		{Name: "n1", NodeID: 0, Address: "10.0.0.2:7789", Disk: drbd.DataDevice}, // bare host -> default port
+		{Name: "n2", NodeID: 1, Address: "10.0.0.3:7000", Disk: drbd.DataDevice}, // explicit port kept
+		{Name: "w", NodeID: 2, Address: "10.0.0.4:7789"},                         // witness: "none" -> diskless
 	}
 	if len(got) != len(want) {
 		t.Fatalf("parsePeers len = %d, want %d: %+v", len(got), len(want), got)
@@ -354,7 +358,7 @@ func TestParsePeers(t *testing.T) {
 	if parsePeers("") != nil {
 		t.Error("empty PEERS must yield nil (single-node self-peer path)")
 	}
-	if p := parsePeers("garbage,,n1@10.0.0.2/vdb"); len(p) != 1 || p[0].NodeID != 0 {
+	if p := parsePeers("garbage,,n1@10.0.0.2/disk"); len(p) != 1 || p[0].NodeID != 0 {
 		t.Errorf("malformed entries must be skipped without NodeID gaps, got %+v", p)
 	}
 }

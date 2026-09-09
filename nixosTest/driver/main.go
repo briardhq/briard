@@ -105,7 +105,7 @@ func main() {
 		Resource: drbd.Resource{
 			Name: "r0", Device: "/dev/drbd0",
 			// Single node: majority-of-1 is quorate, so the reactor promotes.
-			Peers: []drbd.Peer{{Name: env("NODE", "guest"), NodeID: 0, Address: "127.0.0.1:7789", Disk: "/dev/vdb"}},
+			Peers: []drbd.Peer{{Name: env("NODE", "guest"), NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice}},
 		},
 		FreshInit: true, // the test always starts from a blank data disk
 		// The ordered unit: data mount -> converge -> VIP claim. The same three units on every

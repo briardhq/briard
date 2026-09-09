@@ -48,6 +48,18 @@ type NodeResources struct {
 	// warning+ kernel lines, normally empty); the oracle applies policy (a climb; a bad-pattern
 	// scan). Complements ShellSubstrate, which covers the host/L1 layer (qemu OOM, KVM).
 	KernelErrors []string `json:"kernel_errors,omitempty"` // recent guest kernel warning+ lines
+
+	// DMTargets is every device-mapper table line the guest holds, as `<name>: <table>`. It is
+	// the input to the storage-seam invariant ([V3b.33](b)): the data LV must be exactly one
+	// `linear` segment, and nothing else may have appeared under it. A single-LV VG is free
+	// precisely because it IS dm-linear -- the moment something turns it striped, cached or thin,
+	// or inserts a layer nobody decided on, the seam stops being free and a `pvmove` conversion
+	// stops being a table reload. That is invisible in every other signal here, which is why it
+	// is reported rather than inferred.
+	//
+	// Mechanism only, like KernelErrors: the guest reports the tables, the oracle applies the
+	// policy. Empty on a node whose data disk has no seam (a diskless witness).
+	DMTargets []string `json:"dm_targets,omitempty"`
 }
 
 // ServiceResources is one service's footprint inside the appliance. Name is the service's own

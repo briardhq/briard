@@ -5,6 +5,17 @@ import (
 	"strings"
 )
 
+// DataDevice is the backing device every diskful node runs its data resource on: the single
+// LV of the guest's single-LV VG ([V3b.33]). DRBD names it and never anything else, and that is
+// the whole point of the seam -- the LV's table can be reloaded underneath, so the backing can be
+// moved onto an encrypted PV and back with `pvmove` while DRBD's device object stays open. A bare
+// disk has no table to reload, and inserting a seam later means DRBD must close and reopen.
+//
+// Defined here so the agent and the cloud's pairing directive name one value, and RESTATED (never
+// shared) by the guest image's seam unit, which builds the VG this points into and cannot import
+// Go. Two sides of one contract, the way /run/briard's paths already are.
+const DataDevice = "/dev/mapper/briard-data"
+
 // Peer is one node's placement in a DRBD resource. Address is "ip:port" on the
 // private replication subnet; Disk is the backing device, or empty
 // for a diskless witness.
