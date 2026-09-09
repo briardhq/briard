@@ -317,9 +317,9 @@ let
   # The machine report card on a real host (the free-local install gate).
   reportCard = import ./report-card.nix { inherit pkgs; agent = agentPkg; };
 
-  # The bridge FALLBACK substrate -- a pure DELTA over installMacvtap: the NIC enslave,
-  # the host-IP move, and a clean abort at that irreversible step. Nothing mode-independent lives
-  # here, so it is a clean delete whenever the fallback goes.
+  # BRIDGE mode -- Windows' official L2 shape and its Linux testing clone ([V3b.26d]) -- a pure
+  # DELTA over installMacvtap: the NIC enslave, the host-IP move, and a clean abort at that
+  # irreversible step. Nothing mode-independent lives here; that chain is installMacvtap's.
   installBridge = import ./install-bridge.nix {
     inherit pkgs guestDisk;
     agent = agentPkg;
@@ -431,7 +431,7 @@ in
       qemu-bundle = qemuBundle.test;
       report-card = reportCard;
       install-macvtap = installMacvtap; # DEFAULT substrate: curl|sh -> green, off-box VIP reach, cattle/pet reinstall
-      install-bridge = installBridge; # the bridge FALLBACK delta: NIC enslave + host-IP move
+      install-bridge = installBridge; # bridge mode (Windows' shape): NIC enslave + host-IP move
     };
 
     # Debug harnesses — deliberately EXCLUDED from allTests / the nightly `.#all` (flake.nix

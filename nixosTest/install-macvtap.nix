@@ -20,11 +20,11 @@
 # cattle/pet block below records how a runtime service install wins back the stronger
 # tick-counter comparison.
 #
-# It carries the mode-independent half (install-bridge.nix, cut down
-# to the bridge deltas). It had accumulated on the FALLBACK's test purely because bridge was the
-# original default -- so the default substrate was the thin one, and dropping the fallback would
-# have silently taken the reinstall proof with it. Now install-bridge.nix is a pure delta: when the
-# bridge fallback goes, deleting that file loses nothing mode-independent.
+# It carries the mode-independent half (install-bridge.nix, cut down to the bridge deltas). It had
+# accumulated on BRIDGE's test purely because bridge was the original default -- so the default
+# substrate was the thin one, and anything done to the bridge rig risked silently taking the
+# reinstall proof with it. Now install-bridge.nix is a pure delta: nothing mode-independent
+# depends on it.
 #
 # agent-bringup.nix already proves the agent MECHANISM (nested guest, DRBD, VIP) with the host
 # itself as the client. This test proves the INSTALLER around it: it runs scripts/install.sh

@@ -1,6 +1,7 @@
-# The free-local install on the BRIDGE fallback substrate -- a pure DELTA over install-macvtap.nix,
-# which owns the mode-independent chain (report-card gate, bundled qemu, DRBD converge, VIP,
-# off-box reach, cattle/pet reinstall). Nothing here re-proves any of that.
+# The free-local install on BRIDGE mode -- Windows' official L2 shape, and the Linux clone of it we
+# run for tests -- a pure DELTA over install-macvtap.nix, which owns the mode-independent chain
+# (report-card gate, bundled qemu, DRBD converge, VIP, off-box reach, cattle/pet reinstall).
+# Nothing here re-proves any of that.
 #
 # What is bridge-specific and load-bearing:
 #   1. the host NIC is enslaved to an L2 bridge and the host's own L3 identity MOVES onto it --
@@ -10,13 +11,13 @@
 #      the never-a-half-install guarantee where it actually costs something.
 #   3. an OFF-BOX LAN client reaches Briard at the VIP *through the enslaved bridge*.
 #
-# The shared install chain lives in install-macvtap.nix, on the default substrate; this file is
-# only the bridge delta.
+# The shared install chain lives in install-macvtap.nix, on the Linux default substrate; this file
+# is only the bridge delta.
 #
 # ⚠️ THIS FILE IS NOT A DELETION CANDIDATE, and its header said it was until [V3b.26]. Bridge mode
-# stopped being a fallback on its way out and became Windows' ONLY possible L2 shape, plus its
-# Linux clone -- so this CONVERTED into the bridge-mode test rather than being deleted, in
-# [V3b.26d] (2026-08-25).
+# stopped being a fallback on its way out and became Windows' ONLY possible L2 shape, plus the Linux
+# clone of it we support for testing -- so this CONVERTED into the bridge-mode test rather than
+# being deleted, in [V3b.26d] (2026-08-25).
 #
 # What "bridge mode" means since that conversion, and what DELTA 2 below is here to catch if it
 # ever silently reverts: ONE tap on the bridge, not two. The guest gets one kernel NIC (eth1,
