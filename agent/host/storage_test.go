@@ -22,8 +22,12 @@ func demoRes() drbd.Resource {
 // composing to the same string the node creates a volume and then attaches nothing. Nothing else
 // in the tree holds both halves.
 //
-// PROVEN ABLE TO FAIL by the second half: a peer whose Disk is the raw disk -- which is what the
-// DATA_DEV escape hatch still lets an operator set -- is refused rather than brought up.
+// PROVEN ABLE TO FAIL by the second half: a peer whose Disk is the raw disk is refused rather
+// than brought up. That is a LIVE path, not a hypothetical: `parsePeers` normalises any PEERS
+// value to the seam LV, but `meshTarget` copies Disk verbatim off the wire from the cloud's
+// pairing directive (pair.go) -- so the mesh a joiner is handed is the one thing that can still
+// name a device this node does not build, and a joiner that attaches nothing is the worst place
+// to find out.
 func TestStorageSpecFencesTheBackingDevice(t *testing.T) {
 	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
 	spec, err := cfg.StorageSpec(demoRes(), false, false)

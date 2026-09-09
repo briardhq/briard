@@ -96,13 +96,20 @@ func ConfigFromEnv() Config {
 	role := model.Role(env("ROLE", string(model.RoleAnchor)))
 	// The full connection mesh comes from PEERS (identical on every node — DRBD
 	// matches self by the `on <name>` stanza to the guest hostname). With PEERS
-	// unset we keep the single-node self-peer from PEER_ADDR/DATA_DEV.
+	// unset we keep the single-node self-peer from PEER_ADDR.
+	//
+	// ITS DISK IS NOT CONFIGURABLE, and there used to be a DATA_DEV knob here saying otherwise.
+	// It was the third leg of V1.0's single-node tripod -- who (NODE), where (PEER_ADDR), which
+	// disk (DATA_DEV) -- from the era when the backing really was the raw disk and a node might
+	// answer that differently. [V3b.33](b) ended the question: every diskful node runs on the one
+	// LV the seam builds, so `Peer.Disk` is the diskful/diskless flag it always was, and the only
+	// thing the knob could still express was a disagreement with the seam. Nothing ever set it.
 	peers := parsePeers(os.Getenv("PEERS"))
 	if len(peers) == 0 {
 		peers = []drbd.Peer{{
 			Name: node, NodeID: 0,
 			Address: env("PEER_ADDR", "127.0.0.1:7789"),
-			Disk:    env("DATA_DEV", drbd.DataDevice),
+			Disk:    drbd.DataDevice,
 		}}
 	}
 	cfg := Config{

@@ -30,12 +30,9 @@ let
   promoterSnippet = h.promoterSnippet;
 
 
-  # A node like lib.nix's mkNode, but rolled here so this test owns the `.res` end to end.
-  #
-  # `PROPOSED:` the reason it forked has largely gone. lib.nix stopped declaring the `.res` at
-  # [V3b.33](d) -- briard-node-storage writes it -- so what is left of the difference is the
-  # storage spec this file builds in Python versus the one lib.nix bakes. Worth folding back in,
-  # and not in the change that noticed it.
+  # A node like lib.nix's mkNode, but rolled here so this test owns the `.res` end to end. What is
+  # left of the difference since [V3b.33](d) is the storage spec this file builds in Python versus
+  # the one lib.nix bakes -- the read-only-`.res` reason it originally forked for is gone.
   mkNode =
     { diskless ? false, promoter ? true }:
     { config, ... }:
