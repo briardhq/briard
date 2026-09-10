@@ -155,7 +155,7 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		mdPresent = metadataPresent(ctx, x, spec)
 	}
 	if !spec.Resource.Replicated {
-		return loneNode(ctx, x, run, spec, mdPresent)
+		return loneNode(run, spec, mdPresent)
 	}
 
 	if err := x.WriteFile(resPath(spec.Resource.Name), []byte(spec.Resource.Config)); err != nil {
@@ -238,7 +238,7 @@ func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) boo
 //     flock ended with this node its serving, up-to-date member. The metadata is WIPED -- not a
 //     courtesy: stale metadata would be found and attached by the next enable -- and the `.res`
 //     the flock left in /run goes with it.
-func loneNode(ctx context.Context, x Executor, run func(string, ...string) error, spec nodestorage.Spec, mdPresent bool) error {
+func loneNode(run func(string, ...string) error, spec nodestorage.Spec, mdPresent bool) error {
 	if !mdPresent {
 		return nil
 	}

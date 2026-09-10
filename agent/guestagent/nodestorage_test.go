@@ -496,7 +496,7 @@ func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
 
 // ★ THE CONVERT ROW ([B.145d]): a lone node joining its first peer. Its LVs exist and hold THE
 // data, the metadata LV holds nothing, and the spec now says replicated and seed. So: no mkfs,
-// create-md --force on the metadata LV, the disk attached and declared UpToDate BEFORE the stock
+// create-md --force on the metadata LV, the disk up, disconnected and declared UpToDate BEFORE the stock
 // target connects anything -- the order that keeps a joiner already dialling from being marked
 // UpToDate without a sync ([B.145a]'s lesson).
 func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
@@ -509,7 +509,7 @@ func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 	if f.ran("mkfs.btrfs") || f.ran("lvcreate") {
 		t.Errorf("the conversion touched the data; runs = %v", f.runs)
 	}
-	var create, attach, uuid, target int = -1, -1, -1, -1
+	var create, up, disconnect, uuid, target int = -1, -1, -1, -1, -1
 	for i, r := range f.runs {
 		switch {
 		case r[0] == "drbdadm" && r[1] == "create-md":
@@ -517,16 +517,18 @@ func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 			if !slices.Contains(r, "--force") || !slices.Contains(r, "--max-peers=4") {
 				t.Errorf("create-md without --force/--max-peers: %v", r)
 			}
-		case r[0] == "drbdadm" && r[1] == "attach":
-			attach = i
+		case r[0] == "drbdadm" && r[1] == "up":
+			up = i
+		case r[0] == "drbdadm" && r[1] == "disconnect":
+			disconnect = i
 		case r[0] == "drbdadm" && r[1] == "new-current-uuid":
 			uuid = i
 		case r[0] == "systemctl" && slices.Contains(r, "drbd@r0.target"):
 			target = i
 		}
 	}
-	if !(create >= 0 && create < attach && attach < uuid && uuid < target) {
-		t.Errorf("convert out of order (create %d, attach %d, uuid %d, target %d): %v", create, attach, uuid, target, f.runs)
+	if !(create >= 0 && create < up && up < disconnect && disconnect < uuid && uuid < target) {
+		t.Errorf("convert out of order (create %d, up %d, disconnect %d, uuid %d, target %d): %v", create, up, disconnect, uuid, target, f.runs)
 	}
 	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=flock\n" {
 		t.Errorf("topology.env = %q", got)
