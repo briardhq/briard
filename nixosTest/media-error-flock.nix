@@ -129,16 +129,41 @@ pkgs.testers.runNixOSTest {
     assert client_a == "false", f"(a) accidental diskless must report client=false, got {client_a}"
     print("VERDICT (a): CONFIRMED -- silent network fallback; only a status field records it")
 
-    # ── The open question: how big is the re-attach resync? ───────────────────────────────────
+    # ── ACTS (a2)+(a3): how big is the re-attach resync, AND does it repair the sector? ───────
     # Write while diskless, so there IS a known amount to bring back: 4 MiB of the 16.
     node1.succeed("dd if=/dev/urandom of=/dev/drbd0 bs=1M count=4 conv=fsync")
-    node1.succeed(f"dmsetup message dusty 0 removebadblock {BAD}")
-    node1.succeed("dmsetup message dusty 0 clearbadblocks || true")
+
+    # ⚠️ RE-ATTACH WITH THE SECTOR STILL BROKEN. The first version of this rig cleared the bad
+    # block first, which quietly assumed the disk had been replaced -- and so never asked the
+    # question that decides whether `detach` can recover at all: does the re-attach resync REWRITE
+    # the bad block? Predicted no, and for a reason measured earlier in this thread: under `detach`
+    # the out-of-sync bit is set AFTER the device is already Failed with its bitmap freed
+    # (`drbd_sender.c:351` runs before `__req_mod` at `:362`), so nothing records that the sector
+    # is suspect. The re-attach resync then covers only what the PEER tracked as written while we
+    # were away -- and if nothing wrote that sector, nothing rewrites it.
     node1.succeed("drbdadm attach r0")
     node1.wait_until_succeeds("drbdsetup status r0 | grep -q UpToDate")
     print("RESYNC EVIDENCE (a):", resync_lines(node1))
     print(f"VERDICT (a2): after re-attach disk={dev(node1, 'disk-state')} -- read the KB figure above:")
-    print("             ~4 MB means bitmap-partial; ~the whole device means a full rebuild")
+    print("             ~16 MB on a 256 MB device means bitmap-partial; ~the whole device means a rebuild")
+
+    bad_after_reattach = read_sector(node1, BAD)
+    disk_a3 = dev(node1, "disk-state")
+    print(f"VERDICT (a3): with the sector still broken, re-attach reached {dev(node1, 'disk-state')};")
+    print(f"              reading the bad sector -> readable={bad_after_reattach}, disk now={disk_a3}")
+    if not bad_after_reattach:
+        print("VERDICT (a3): the resync did NOT repair the sector -- `detach` recovers the DEVICE")
+        print("              but not the DAMAGE, so the next read detaches again. A loop, in a flock too.")
+    else:
+        print("VERDICT (a3): the sector reads -- either the resync covered it, or the injector")
+        print("              healed it on write (dm-dust write-fail-count semantics). Check the KB figure.")
+
+    # Now the disk really is 'replaced', so act (b) starts from a clean device.
+    node1.succeed(f"dmsetup message dusty 0 removebadblock {BAD} || true")
+    node1.succeed("dmsetup message dusty 0 clearbadblocks || true")
+    if dev(node1, "disk-state") == "Diskless":
+        node1.succeed("drbdadm attach r0")
+    node1.wait_until_succeeds("drbdsetup status r0 | grep -q UpToDate")
 
     # ── ACT (b): the same fault under pass_on ─────────────────────────────────────────────────
     node1.succeed("drbdadm disk-options --on-io-error=pass_on r0")
