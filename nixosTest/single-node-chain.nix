@@ -68,7 +68,6 @@ pkgs.testers.runNixOSTest {
     rc, out = node1.execute("drbdsetup status --json")
     assert rc != 0 or out.strip() == "[]", f"a DRBD resource exists on a lone node: {out}"
     node1.fail("test -e /run/briard/drbd.d/r0.res")
-| grep -qw drbd")
     node1.fail("test -e /run/briard/drbd.d/r0.res")
     print("### 1 the LVs are built, the word is alone, and DRBD is nowhere")
 
