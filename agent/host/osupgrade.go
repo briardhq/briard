@@ -262,14 +262,14 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	if err != nil {
 		return true, fmt.Errorf("read cluster before image upgrade: %w", err)
 	}
-	if cl.Primary && cl.PeerCanTakeOver() {
+	if cl.Serving() && cl.PeerCanTakeOver() {
 		return true, fmt.Errorf("%w (peers: %s)", ErrHandoverRequired, describePeers(cl))
 	}
 	// A serving node past that refusal is the LONE holder of the house: nobody could take the
 	// work, so after the reboot nobody else can be serving it. That node's gate therefore has
 	// to see it SERVING again -- Primary with its front door answering -- where a standby's
 	// gate is satisfied by the job it has (guest.OSReadyServing says what this closes).
-	mustServe := cl.Primary
+	mustServe := cl.Serving()
 	backing := u.cfg.GuestImage
 	if backing == "" {
 		return true, errors.New("image-upgrade: no GUEST_IMAGE configured; this node's launch does not name the image its overlay is built on")

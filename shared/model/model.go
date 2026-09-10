@@ -20,11 +20,16 @@ const (
 	StorageBulk     StorageClass = "bulk"     // NAS/SMB, weaker, isolated SPOF
 )
 
-// QuorumState is DRBD's view of this node, read as ground truth.
-// The agent follows it; it never overrides it.
+// QuorumState is this node's SERVING state -- is it the write authority for the home's data
+// right now, and is it allowed to be -- read as ground truth. The agent follows it; it never
+// overrides it. On a flock it is DRBD's view (role and quorum, `drbdsetup status`), which is
+// where the names come from. It is computed in ONE place, the guest's node-status verb, and
+// readers ask Serving() for "does this node hold the house" rather than spelling the answer
+// from the fields -- so a node that runs no DRBD (a lone anchor, [B.145]) is made to read as
+// Primary and quorate by that verb alone, and no reader learns a second shape.
 type QuorumState struct {
-	Primary   bool `json:"primary"`   // is this node the DRBD primary?
-	Quorate   bool `json:"quorate"`   // does this node currently have quorum?
+	Primary   bool `json:"primary"`   // is this node the write authority (on a flock: the DRBD primary)?
+	Quorate   bool `json:"quorate"`   // is it allowed to write (on a flock: does it have quorum)?
 	Connected int  `json:"connected"` // peers connected right now
 	// This node's OWN storage, in the same terms PeerState reports for everyone else
 	//. Their absence was load-bearing rather than an oversight: a node could say
@@ -34,6 +39,16 @@ type QuorumState struct {
 	Diskful  bool `json:"diskful"`  // carries real storage — false for a diskless witness
 	UpToDate bool `json:"uptodate"` // every volume this node carries is UpToDate
 }
+
+// Serving reports whether this node holds the house right now: it is the write authority and
+// allowed to write. THE predicate for "is this node serving" -- every reader that used to spell
+// it Primary ∧ Quorate, or read Primary alone to mean it, asks here, so the answer is derived
+// once and the lone-node branch lands in the verb that fills the fields, never at a call site.
+// A Primary that has lost quorum is not serving: DRBD refuses its writes (on-no-quorum=io-error)
+// and the reactor demotes it. Narrower questions stay on the fields: Quorate alone is
+// participation (a standby's whole job), Diskful/UpToDate are what the node carries, and
+// Primary alone is the role -- what single-primary and minority-refuses are invariants OF.
+func (q QuorumState) Serving() bool { return q.Primary && q.Quorate }
 
 // PeerState is one peer as *this* node sees it, read from the same
 // `drbdsetup status --json` that yields QuorumState. It answers a question

@@ -334,9 +334,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if err != nil {
 		return failed(fmt.Sprintf("read node status: %v", err))
 	}
-	if !qs.Primary {
-		logf("service install %s: units rendered; not Primary, so no provisioning here", m.Name)
-		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "units rendered (secondary)"}
+	if !qs.Serving() {
+		logf("service install %s: units rendered; not serving, so no provisioning here", m.Name)
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "units rendered (not serving)"}
 	}
 
 	dataDir := quadlet.DataRoot(m.Name)

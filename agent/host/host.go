@@ -1103,7 +1103,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// renders from the volume ([V3b.3](f)), so the volume -- not this host's memory -- is what
 		// it is actually running. Read it once per promotion and re-derive this cycle's report, so
 		// the first status the cloud sees from a new primary already names what it serves.
-		if primary := cl.QuorumState.Primary; primary != wasPrimary {
+		if primary := cl.Serving(); primary != wasPrimary {
 			if primary {
 				cfg.beat.Beat()
 				cfg.adoptVolumeServices(ctx, r, logf)
@@ -1524,7 +1524,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 	st.Quorum = cl.QuorumState
 	// AFTER the cluster read, because the state is only meaningful on the node that holds the
 	// volume -- the services run on whoever is Primary and nowhere else.
-	st.Services = cfg.serviceStatuses(rctx, r, cl.QuorumState.Primary)
+	st.Services = cfg.serviceStatuses(rctx, r, cl.Serving())
 	// The name this node is REALLY publishing, not the one it was configured with. A read error
 	// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
 	// make a silent conflict-rename permanently invisible, which is the whole failure being
@@ -1569,7 +1569,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 		// and that is the free-tier owner's whole picture, so it must read unhealthy. (A guest
 		// that reports no peers at all falls on the unhealthy side; the alpha ships host and
 		// guest together, so that is not a shape to be soft on.)
-		st.Healthy = !cl.Primary && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
+		st.Healthy = !cl.Serving() && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
 	} else {
 		probe = url
 		// Prefer the in-guest probe (the service-health verb) so the health signal survives a substrate

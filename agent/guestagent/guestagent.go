@@ -48,7 +48,7 @@ const DefaultPollInterval = 500 * time.Millisecond
 const (
 	verbNodeStorage = "storage.node"       // write the storage spec + start briard-node-storage.service
 	verbReactor     = "drbd.reactor.start" // write the promoter snippet + start drbd-reactor -- the ONLY thing that promotes
-	verbStatus      = "drbd.status"        // drbdsetup status --json -> model.Cluster (QuorumState + peers)
+	verbStatus      = "drbd.status"        // the node status: model.Cluster (QuorumState + peers); on a flock, drbdsetup status --json
 	verbAdjust      = "drbd.adjust"        // rewrite the .res + `drbdadm adjust` (runtime mesh growth)
 )
 
@@ -794,7 +794,9 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			// The fuller view. QuorumState is embedded, so a host that only knows
-			// the three summary fields reads this response unchanged.
+			// the three summary fields reads this response unchanged. This is the ONE
+			// place the serving state is filled in (model.QuorumState.Serving reads it),
+			// which is where a node that runs no DRBD will get its answer from.
 			return drbd.ParseCluster(out, req.Resource)
 		case verbCertWrite:
 			var req certWriteRequest
@@ -2269,8 +2271,9 @@ func (g *Client) ReactorStart(ctx context.Context, resource, snippet string) err
 	return g.c.Call(ctx, verbReactor, reactorStartRequest{Resource: resource, Snippet: snippet}, nil)
 }
 
-// Status reads the guest's DRBD/quorum ground truth into a QuorumState — the
-// summary the node reports up (shared/api's closed allowlist).
+// Status reads the node's serving state into a QuorumState — the summary the node reports
+// up (shared/api's closed allowlist). Ask qs.Serving() for "is this node serving"; on a
+// flock the guest fills it from DRBD.
 func (g *Client) Status(ctx context.Context, resource string) (model.QuorumState, error) {
 	c, err := g.Cluster(ctx, resource)
 	return c.QuorumState, err
@@ -2721,14 +2724,12 @@ func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 	return nil
 }
 
-// WaitPrimary polls Status until this node is the quorate primary -- i.e. bring-up
-// has converged: drbd-reactor promoted once quorum formed. interval is the poll
-// cadence; the caller bounds the total wait via ctx. Transient Status errors
-// (guest still coming up) are ignored until ctx expires.
+// WaitPrimary polls Status until this node is serving -- i.e. bring-up has converged:
+// on a flock, drbd-reactor promoted once quorum formed. interval is the poll cadence;
+// the caller bounds the total wait via ctx. Transient Status errors (guest still
+// coming up) are ignored until ctx expires.
 func (g *Client) WaitPrimary(ctx context.Context, resource string, interval time.Duration) error {
-	return g.waitStatus(ctx, resource, interval, func(qs model.QuorumState) bool {
-		return qs.Primary && qs.Quorate
-	})
+	return g.waitStatus(ctx, resource, interval, model.QuorumState.Serving)
 }
 
 // WaitQuorate polls Status until this node is quorate -- the convergence gate for a

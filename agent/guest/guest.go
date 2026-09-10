@@ -501,7 +501,7 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 	if cl.Diskful && cl.Quorate && !cl.UpToDate {
 		return false, nil
 	}
-	if cl.Primary && !m.probeReady(ctx) {
+	if cl.Serving() && !m.probeReady(ctx) {
 		return false, nil
 	}
 	return true, nil
@@ -529,7 +529,7 @@ func (m *Manager) OSReadyServing(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !cl.Primary || (cl.Diskful && cl.Quorate && !cl.UpToDate) {
+	if !cl.Serving() || (cl.Diskful && cl.Quorate && !cl.UpToDate) {
 		return false, nil
 	}
 	return m.probeReady(ctx), nil

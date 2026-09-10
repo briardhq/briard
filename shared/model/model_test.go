@@ -27,3 +27,27 @@ func TestServingUnit(t *testing.T) {
 		})
 	}
 }
+
+// Serving is THE "does this node hold the house" predicate, and both conjuncts are load-bearing:
+// a Primary that has lost quorum is refused its writes and about to be demoted, so it is not
+// serving; a quorate Secondary is participating, not serving. Pinned so no reader is tempted
+// back to Primary alone.
+func TestServing(t *testing.T) {
+	cases := []struct {
+		name string
+		qs   QuorumState
+		want bool
+	}{
+		{"quorate primary serves", QuorumState{Primary: true, Quorate: true}, true},
+		{"primary without quorum does not", QuorumState{Primary: true}, false},
+		{"quorate secondary participates, does not serve", QuorumState{Quorate: true}, false},
+		{"nothing serves nothing", QuorumState{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.qs.Serving(); got != tc.want {
+				t.Errorf("Serving() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
