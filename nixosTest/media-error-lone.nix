@@ -173,17 +173,30 @@ pkgs.testers.runNixOSTest {
     # `pass_on` + forced-UpToDate IS the raw-disk behaviour we wanted, and the single-node design
     # has an answer. If it does not, DRBD has no lone-node mode that survives one bad sector.
     forced_rc, forced_out = n.execute("drbdadm new-current-uuid --clear-bitmap r0/0 2>&1")
-    disk_d2 = dstate(n)
-    bad_read_d2 = read_sector(n, BAD)
-    good_read_d2 = read_sector(n, GOOD)
+    disk_after_force = dstate(n)
+    # ⚠️ ORDER IS THE MEASUREMENT HERE, and the first run of this act got it wrong: it read the
+    # BROKEN sector first, which under pass_on immediately drops the disk back to Inconsistent,
+    # so the good-sector read that followed was failing for a reason the act had itself caused.
+    # Read the control FIRST -- that is the "did the force restore access" number -- then the bad
+    # one, then the control AGAIN, which answers the question that actually decides the design:
+    # does a single bad read re-break the whole device every time?
+    good_after_force = read_sector(n, GOOD)
+    bad_after_force = read_sector(n, BAD)
+    good_after_bad = read_sector(n, GOOD)
     show_state(n, "act (d2): pass_on + forced UpToDate")
-    print(f"VERDICT (d2): force rc={forced_rc} out={forced_out!r} disk={disk_d2}")
-    print(f"VERDICT (d2): bad sector readable={bad_read_d2}  GOOD sector readable={good_read_d2}")
-    if good_read_d2 and not bad_read_d2:
-        print("VERDICT (d2): RAW-DISK BEHAVIOUR RESTORED -- pass_on + force is a viable lone-node mode")
+    print(f"VERDICT (d2): force rc={forced_rc} out={forced_out!r} disk right after force={disk_after_force}")
+    print(f"VERDICT (d2): GOOD before touching the bad sector = {good_after_force}   <- did the force restore access?")
+    print(f"VERDICT (d2): BAD sector = {bad_after_force}   (expected False: the sector really is broken)")
+    print(f"VERDICT (d2): GOOD *after* the bad read = {good_after_bad}   <- does one bad read re-break everything?")
+    print(f"VERDICT (d2): disk now={dstate(n)}")
+    if good_after_force and not good_after_bad:
+        print("VERDICT (d2): the force RESTORES access, and every bad read TAKES IT AWAY AGAIN --")
+        print("             so a lone node would need a force per bad-sector read, in a loop")
+    elif good_after_force and good_after_bad:
+        print("VERDICT (d2): RAW-DISK BEHAVIOUR -- pass_on + one force is a viable lone-node mode")
     else:
-        print("VERDICT (d2): NOT restored -- DRBD has no lone-node mode surviving one bad sector;")
-        print("             the DRBD-less single node ([B.144]'s fallback) becomes the only answer")
+        print("VERDICT (d2): the force does not restore access at all; DRBD has no lone-node mode")
+        print("             surviving one bad sector, and the DRBD-less single node is the answer")
 
     # ── ACT (e): the trap -- can a lone node in that state come back? ─────────────────────────
     n.shutdown()
