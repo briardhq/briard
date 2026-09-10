@@ -336,22 +336,38 @@ let
       #   briard-test-storage            bring this node up as a joiner (never seeds)
       #   briard-test-storage --seed     ...as the seed of a new flock
       #   briard-test-storage --mode off ...formatted in the clear, whatever the CPU can do
+      #   briard-test-storage --alone    ...running no DRBD (the spec names the data LV), or
+      #                       --flock    ...replicated -- either overrides mkNode's `replicated`,
+      #                                  which is how a rig drives a TRANSITION ([B.145d]): the host
+      #                                  would record the mesh and reboot the guest; the harness
+      #                                  rewrites the spec and re-runs node-storage
+      #   briard-test-storage --alone --disable  ...with the one-shot convert-disable intent an
+      #                                  unpair asserts, the only thing that lets a node found
+      #                                  alone with DRBD metadata wipe it rather than refuse
       testStorage = pkgs.writeShellScriptBin "briard-test-storage" ''
         set -eu
         seed=false
         mode=auto
+        replicated=${lib.boolToString replicated}
+        convert=""
         while [ $# -gt 0 ]; do
           case "$1" in
             --seed) seed=true ;;
             --mode) shift; mode="$1" ;;
+            --alone) replicated=false ;;
+            --flock) replicated=true ;;
+            --disable) convert=disable ;;
             *) echo "briard-test-storage: unknown argument $1" >&2; exit 2 ;;
           esac
           shift
         done
         mkdir -p /run/briard
         rm -f /run/briard/node-storage.json
-        ${pkgs.jq}/bin/jq --argjson s "$seed" --arg m "$mode" \
-          '.resource.freshInit = $s | (.tiers[]?).mode = $m' \
+        ${pkgs.jq}/bin/jq --argjson s "$seed" --arg m "$mode" --argjson r "$replicated" --arg c "$convert" \
+          '.resource.freshInit = $s | (.tiers[]?).mode = $m
+           | .resource.replicated = $r
+           | .resource.device = (if $r then "/dev/drbd0" else "/dev/mapper/briardservice-data" end)
+           | if $c == "" then del(.resource.convert) else .resource.convert = $c end' \
           ${storageSpecFile} >/run/briard/node-storage.json
         exec ${pkgs.systemd}/bin/systemctl start briard-node-storage.service
       '';

@@ -161,6 +161,13 @@ type Resource struct {
 	// bring-up and reads it back for everything that used to key on DRBD state. A joiner and a
 	// witness are always replicated.
 	Replicated bool `json:"replicated,omitempty"`
+	// Convert is the ONE-SHOT intent that lifts the refuse cell ([B.145d]): a node whose spec says
+	// alone but whose metadata LV holds DRBD metadata is refused, because that is what a forgotten
+	// flock looks like -- unless the host ASSERTS, from the removal verb and nowhere else, that
+	// the flock ended and the metadata is to be wiped. ConvertDisable is the only value; enable
+	// needs no intent (converting adds a copy and never loses one). The host writes it for one
+	// bring-up and clears it once that bring-up has converged.
+	Convert string `json:"convert,omitempty"`
 	// MaxPeers is the number of peer slots the metadata is created with (`create-md
 	// --max-peers`). A product constant the host states, because it is baked into the metadata
 	// and the .res at creation time names fewer peers than a flock will ever have: a mesh of one
@@ -315,8 +322,23 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("node storage: resource %s is not replicated, so its device must be the %s LV %s, not %s", s.Resource.Name, TierData, data.Mapper(), s.Resource.Device)
 		}
 	}
+	switch s.Resource.Convert {
+	case "":
+	case ConvertDisable:
+		// The intent to wipe metadata belongs to a node that is leaving DRBD; on one that still
+		// runs it the word would be a wipe of a live replica's metadata.
+		if s.Resource.Replicated {
+			return fmt.Errorf("node storage: resource %s carries convert=%s while replicated", s.Resource.Name, ConvertDisable)
+		}
+	default:
+		return fmt.Errorf("node storage: resource %s: %q is not a convert intent", s.Resource.Name, s.Resource.Convert)
+	}
 	return nil
 }
+
+// ConvertDisable is the one convert intent: the flock ended, wipe the DRBD metadata this node
+// still carries and run the volume alone ([B.145d]).
+const ConvertDisable = "disable"
 
 // lvmName refuses the two characters that would make Mapper lie: a dash, which device-mapper
 // escapes by doubling, and a slash, which would leave the path naming a directory that is not

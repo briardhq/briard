@@ -388,6 +388,23 @@ const (
 	//                        as SyncTarget. The cloud computes the mesh and is the authorized sender
 	//                       ; a stub injects it in the test. Blank-join only — re-homing
 	//                        an already-seeded island is cloud-composed.
+	//
+	//                        ⚠️ A LONE NODE HAS NO RESOURCE TO ADJUST ([B.145]): a home with one
+	//                        diskful member runs no DRBD, so the serving anchor's side of its FIRST
+	//                        pairing is a CONVERSION -- the host records the mesh and reboots the
+	//                        guest, and bring-up creates the metadata on the LV the layout reserved
+	//                        for it, declares this copy UpToDate before any peer connects, and the
+	//                        joiner syncs from it. One reboot, never a migration ([B.145d]).
+	DirectiveUnpair = "unpair" // Payload = a JSON MeshSpec: the mesh that REMAINS after a member left
+	//                        ([B.145d]), sent to a surviving anchor (Join=false, always). With two or
+	//                        more diskful members left the survivor adjusts in place, as pair does;
+	//                        with one -- itself -- the flock has ended and the node goes back to
+	//                        running its volume without DRBD: the host records the mesh, asserts the
+	//                        one-shot convert-disable intent (the ONLY thing that lets a node found
+	//                        alone with metadata wipe it rather than refuse), and reboots the guest.
+	//                        REFUSED unless this node is serving and UpToDate, so a removal never
+	//                        makes a stale copy the only one. Cloud-composed, like pair; the leaver
+	//                        receives nothing here. A local variant waits for the OSS flock design.
 	DirectiveHandover = "handover" // Payload = "" (plain), "keep-masked", or "unmask". Give this node's
 	//                        Work to a peer -- a PLANNED failover, which is what lets a
 	//                        healthy node reboot into a new generation while its peer serves the house.

@@ -143,78 +143,106 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	if err := x.WriteFile(topologyEnvPath, []byte(topologyEnv(spec.Resource.Replicated))); err != nil {
 		return err
 	}
+
+	// THE PROBE IS THE DRBD MAGIC, NOT BLANKNESS ([B.145]). Both LVs sit above LUKS, so a never-
+	// written metadata LV reads as ciphertext ([B.126]'s trap one layer up); "metadata present"
+	// is `drbdmeta dump-md` succeeding, which is exact on garbage. It is what tells the spec ×
+	// disk rows apart -- a returning node from a converting one, a plain lone node from a
+	// forgotten flock -- and it is not asked on LVs this run just made (garbage by construction)
+	// or on a witness (no LV at all).
+	mdPresent := false
+	if !fresh && !spec.Resource.Diskless {
+		mdPresent = metadataPresent(ctx, x, spec)
+	}
 	if !spec.Resource.Replicated {
-		return loneNode(ctx, x, spec)
+		return loneNode(ctx, x, run, spec, mdPresent)
 	}
 
 	if err := x.WriteFile(resPath(spec.Resource.Name), []byte(spec.Resource.Config)); err != nil {
 		return err
 	}
 
-	// Idempotent bring-up: `create-md` WITHOUT --force is itself the metadata probe. A node
-	// returning from a reboot already holds its replica on the persisted volume -- a blind
-	// create-md --force would WIPE its metadata and re-seed, split-braining against the peer
-	// that kept serving. On a metadata LV that already holds metadata DRBD refuses to
-	// overwrite: the confirm prompt hits EOF (the Executor gives commands /dev/null stdin) and
-	// aborts non-zero, which we read as "metadata already present, attach it, never wipe". A
-	// non-metadata failure (bad config, bad disk) also lands there as "attach"; the attach below
-	// then fails loudly, so bring-up still stops rather than silently wiping.
-	//
-	// --force ONLY on LVs this process just created, where there is nothing to protect. That is
-	// the fix for the encrypted-blank-device failure: [B.126]'s probe reads bytes, and a blank
-	// LV above dm-crypt reads as ciphertext.
+	// THE REPLICATED ROWS ([B.145d]), by what the disk says:
+	//   metadata present            -> attach: a returning node, its replica on the persisted
+	//                                  volume; never re-created, never re-seeded (a blind
+	//                                  --force would split-brain against the peer that kept
+	//                                  serving);
+	//   no metadata, LVs just made  -> create: a seed or a blank joiner (today's first init);
+	//   no metadata, LVs existing   -> CONVERT: a lone node joining its first peer, whose data
+	//                                  is THE data ([B.145]); or a blank re-joiner whose old LVs
+	//                                  are discarded by the resync. Same command either way.
+	// `--force`, because the probe above has already said there is nothing to protect -- the
+	// refusal create-md would otherwise raise is the same fact read less precisely.
 	//
 	// --max-peers EXPLICITLY, because the number is baked into the metadata and drbdadm's
 	// default is "the peers this .res names" -- one slot for a node installed alone, and the
 	// flock it grows into would need its metadata recreated (shared/nodestorage.MetadataBytes).
 	created := false
-	if !spec.Resource.Diskless {
-		args := []string{"create-md", "--max-peers=" + strconv.Itoa(spec.Resource.MaxPeers)}
-		if fresh {
-			args = append(args, "--force")
+	if !spec.Resource.Diskless && !mdPresent {
+		if err := run("drbdadm", "create-md", "--max-peers="+strconv.Itoa(spec.Resource.MaxPeers), "--force", spec.Resource.Name); err != nil {
+			return err
 		}
-		args = append(args, spec.Resource.Name)
-		if _, err := x.Run(ctx, "drbdadm", args...); err == nil {
-			created = true
+		created = true
+	}
+
+	// Declare UpToDate (skip the initial sync) only on a TRUE first init: the designated seed
+	// AND metadata this run created -- the seed of a new flock, or the lone node converting
+	// (its only copy is the data by definition). A joiner is hard-wired FreshInit=false.
+	//
+	// ⚠️ BEFORE ANY PEER CAN CONNECT, which is why the disk is attached on its own first and
+	// the stock target (attach + connect) comes after. `--clear-bitmap` with a peer CONNECTED
+	// declares that peer UpToDate too, with no sync -- the [B.145a] harness lesson, and on a
+	// conversion the joiner may already be up and dialling. Attached but not connected, the
+	// same command marks only this disk, and the joiner then syncs from it for real.
+	if created && spec.Resource.FreshInit {
+		if err := run("drbdadm", "attach", spec.Resource.Name); err != nil {
+			return err
+		}
+		if err := run("drbdadm", "new-current-uuid", "--clear-bitmap", spec.Resource.Name+"/0"); err != nil {
+			return err
 		}
 	}
 
 	// Attach + connect, through the STOCK unit: it is what loads the module and what a node
-	// administered by hand would use.
-	if err := run("systemctl", "start", "drbd@"+spec.Resource.Name+".target"); err != nil {
-		return err
-	}
-
-	// Declare UpToDate (skip the initial sync) only on a TRUE first init: the designated seed of
-	// a new flock AND metadata this run actually created. On a reboot the metadata already
-	// existed, so we attach and resync from peers rather than re-declaring UpToDate, which would
-	// split-brain against the replica that kept serving. A joiner is hard-wired FreshInit=false.
-	if !spec.Resource.FreshInit || !created {
-		return nil
-	}
-	return run("drbdadm", "new-current-uuid", "--clear-bitmap", spec.Resource.Name+"/0")
+	// administered by hand would use. Idempotent over the attach above (it is `drbdadm adjust`).
+	return run("systemctl", "start", "drbd@"+spec.Resource.Name+".target")
 }
 
-// loneNode is the spec × disk row for a node that runs no DRBD ([B.145c]). The LVs are up and,
-// on a first init, formatted, so there is nothing left to build: the mount is
-// briard-primary-storage's, exactly as on a flock, off the data LV the spec names. What this row
-// does is REFUSE the one shape that is not plain -- metadata on the metadata LV while the spec
-// says "alone". Today that is a node that was in a flock and whose host has forgotten it (a
-// lost mesh cache degrades to the configured single-peer mesh), and mounting the data LV
-// underneath metadata a peer may still be replicating against is a split-brain factory. Bring-up
-// stops here, loudly, until the pairing is restored or [B.145d]'s explicit convert-disable
-// intent wipes the metadata.
-//
-// The probe is `drbdmeta dump-md` SUCCEEDING. The LV sits above LUKS, so "blank" is not a
-// readable state -- a never-written LV reads as ciphertext ([B.126]) -- but the DRBD magic is
-// exact on garbage. The device argument names only drbdmeta's lock file; no DRBD device exists
-// on this node.
-func loneNode(ctx context.Context, x Executor, spec nodestorage.Spec) error {
+// metadataPresent is the probe: the DRBD magic on the metadata LV, read by `drbdmeta dump-md`.
+// The device argument only names drbdmeta's lock file, so it is the same word whether or not a
+// DRBD device exists on this node.
+func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) bool {
 	data, _ := spec.Tier(nodestorage.TierData)
-	if _, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md"); err == nil {
+	_, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md")
+	return err == nil
+}
+
+// loneNode is the spec × disk rows for a node that runs no DRBD ([B.145c], [B.145d]). The LVs
+// are up and, on a first init, formatted, so there is nothing left to build: the mount is
+// briard-primary-storage's, exactly as on a flock, off the data LV the spec names. What differs
+// is what the metadata LV says:
+//   - no metadata -> plain: nothing to do;
+//   - metadata, no intent -> REFUSE. A node that was in a flock and whose host has forgotten it
+//     (a lost mesh cache degrades to the configured single-peer mesh) looks exactly like this,
+//     and mounting the data LV underneath metadata a peer may still be replicating against is a
+//     split-brain factory. Bring-up stops here, loudly, until the pairing is restored or the
+//     removal is asserted;
+//   - metadata, convert=disable -> DISABLE: the host asserted, from the removal verb, that the
+//     flock ended with this node its serving, up-to-date member. The metadata is WIPED -- not a
+//     courtesy: stale metadata would be found and attached by the next enable -- and the `.res`
+//     the flock left in /run goes with it.
+func loneNode(ctx context.Context, x Executor, run func(string, ...string) error, spec nodestorage.Spec, mdPresent bool) error {
+	if !mdPresent {
+		return nil
+	}
+	data, _ := spec.Tier(nodestorage.TierData)
+	if spec.Resource.Convert != nodestorage.ConvertDisable {
 		return fmt.Errorf("node storage: %s holds DRBD metadata but the spec says this node is alone -- refusing to bring the volume up outside the flock that metadata belongs to (a forgotten pairing? restore it, or convert explicitly)", data.MetaMapper())
 	}
-	return nil
+	if err := run("drbdmeta", "--force", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "wipe-md"); err != nil {
+		return err
+	}
+	return run("rm", "-f", resPath(spec.Resource.Name))
 }
 
 // topologyEnv is the one-word file the guest's shell units key on: the hold unit's steps differ

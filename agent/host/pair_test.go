@@ -66,11 +66,11 @@ func threePeerMesh() []api.MeshPeer {
 // replication address, then Adjust with the full 3-peer config -- never BringUp (which would
 // create-md and could re-seed).
 func TestReconcileMeshPrimaryAdjustsInPlace(t *testing.T) {
-	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"}
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2", Resource: pairedRes()}
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
 	f := &fakeMesher{}
-	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if f.broughtUp != nil {
@@ -100,7 +100,7 @@ func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: true, SystemDev: "eth1", SystemCIDR: "10.0.0.2/24"}
 	f := &fakeMesher{}
-	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if f.adjusted != nil {
@@ -137,7 +137,7 @@ func TestReconcileMeshWitnessJoinsDisklessNoPromoter(t *testing.T) {
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: true, SystemDev: "eth1", SystemCIDR: "10.0.0.3/24"}
 	f := &fakeMesher{}
-	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if f.broughtUp == nil {
@@ -174,7 +174,7 @@ func forwardedWitnessSpec(self string, join bool, cidr string) api.MeshSpec {
 // witnessCfg is a node configured with the host-held forwarder identity (bin + anchor cert/key/ca).
 func witnessCfg(node string) Config {
 	return Config{
-		Node: node, Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
+		Node: node, Resource: pairedRes(), Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
 		ForwarderBin: "/opt/briard/bin/witness-forwarder",
 		WitnessCert:  "/var/lib/briard/pki/node.crt",
 		WitnessKey:   "/var/lib/briard/pki/node.key",
@@ -188,7 +188,7 @@ func TestReconcileMeshForwardedWitnessStartsForwarder(t *testing.T) {
 	cfg := witnessCfg("anchorA")
 	spec := forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
 	f, w := &fakeMesher{}, &fakeWitness{}
-	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), f, w, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 	// Both NICs were addressed: eth1 (DRBD) and eth3 (witness link, no VIP dev).
@@ -231,7 +231,7 @@ func TestReconcileMeshForwardedWitnessFailsWithoutIdentity(t *testing.T) {
 	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"} // no forwarder bin/cert
 	spec := forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
 	f, w := &fakeMesher{}, &fakeWitness{}
-	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err == nil {
+	if err := cfg.reconcileMesh(context.Background(), f, w, &fakeRebooter{}, spec, func(string, ...any) {}); err == nil {
 		t.Fatal("a forwarded-witness pairing without forwarder identity must fail")
 	}
 	if f.adjusted != nil || f.broughtUp != nil {
@@ -248,7 +248,7 @@ func TestReconcileMeshForwardedWitnessNodeStartsNoForwarder(t *testing.T) {
 	cfg := Config{Node: "cloud-witness"}
 	spec := forwardedWitnessSpec("cloud-witness", true, "10.11.9.9/24")
 	f, w := &fakeMesher{}, &fakeWitness{}
-	if err := cfg.reconcileMesh(context.Background(), f, w, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), f, w, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if w.started != nil {
@@ -260,18 +260,18 @@ func TestReconcileMeshForwardedWitnessNodeStartsNoForwarder(t *testing.T) {
 func TestReconcileMeshRefusesWhenSelfAbsent(t *testing.T) {
 	cfg := Config{Node: "stranger"}
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(), Join: true}
-	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, spec, func(string, ...any) {}); err == nil {
+	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, &fakeRebooter{}, spec, func(string, ...any) {}); err == nil {
 		t.Fatal("a mesh without this node must error, not proceed")
 	}
 }
 
 // ApplyPair parses the directive payload and reports the terminal outcome.
 func TestApplyPairOutcome(t *testing.T) {
-	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}}
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, Resource: pairedRes()}
 	payload, _ := json.Marshal(api.MeshSpec{Resource: "r0", Device: "/dev/drbd0",
 		Peers: threePeerMesh(), Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"})
 	f := &fakeMesher{}
-	o := cfg.applyPair(context.Background(), f, &fakeWitness{}, api.Directive{ID: "p1", Kind: api.DirectivePair, Payload: string(payload)}, func(string, ...any) {})
+	o := cfg.applyPair(context.Background(), f, &fakeWitness{}, &fakeRebooter{}, api.Directive{ID: "p1", Kind: api.DirectivePair, Payload: string(payload)}, func(string, ...any) {})
 	if o.State != api.OutcomeDone || o.ID != "p1" {
 		t.Errorf("good pair outcome = %+v, want done/p1", o)
 	}
@@ -279,7 +279,7 @@ func TestApplyPairOutcome(t *testing.T) {
 		t.Error("applyPair did not drive the reconcile")
 	}
 
-	bad := cfg.applyPair(context.Background(), f, &fakeWitness{}, api.Directive{ID: "p2", Kind: api.DirectivePair, Payload: "{not json"}, func(string, ...any) {})
+	bad := cfg.applyPair(context.Background(), f, &fakeWitness{}, &fakeRebooter{}, api.Directive{ID: "p2", Kind: api.DirectivePair, Payload: "{not json"}, func(string, ...any) {})
 	if bad.State != api.OutcomeFailed {
 		t.Errorf("malformed payload outcome = %+v, want failed", bad)
 	}
@@ -308,7 +308,7 @@ func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
 	// The cloud pairs it into the 3-voter mesh.
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
-	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -392,7 +392,7 @@ func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 	cfg := witnessCfg("anchorA")
 	cfg.MeshCache = cache
 	spec := forwardedWitnessSpec("anchorA", false, "10.7.0.1/24")
-	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, spec, func(string, ...any) {}); err != nil {
+	if err := cfg.reconcileMesh(context.Background(), &fakeMesher{}, &fakeWitness{}, &fakeRebooter{}, spec, func(string, ...any) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -490,7 +490,7 @@ func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2",
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2", Resource: pairedRes(),
 		MeshCache: filepath.Join(blocker, "mesh.json")}
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(),
 		Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
@@ -501,7 +501,7 @@ func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 	}
 	f := &fakeMesher{}
 	var lines []string
-	out := cfg.applyPair(context.Background(), f, &fakeWitness{},
+	out := cfg.applyPair(context.Background(), f, &fakeWitness{}, &fakeRebooter{},
 		api.Directive{ID: "p9", Kind: api.DirectivePair, Payload: string(payload)},
 		func(s string, a ...any) { lines = append(lines, fmt.Sprintf(s, a...)) })
 
@@ -613,5 +613,91 @@ func TestForgottenMeshStaysQuiet(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// fakeRebooter records the guest reboots a topology transition asks for ([B.145d]).
+type fakeRebooter struct{ reboots int }
+
+func (r *fakeRebooter) RebootGuest(_ context.Context) error {
+	r.reboots++
+	return nil
+}
+
+// pairedRes is a node already in a flock: two diskful members, a resource to adjust.
+func pairedRes() drbd.Resource {
+	return drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{
+		{Name: "anchorA", NodeID: 0, Address: "10.0.0.1:7789", Disk: drbd.DataDevice},
+		{Name: "anchorB", NodeID: 1, Address: "10.0.0.2:7789", Disk: drbd.DataDevice},
+	}}
+}
+
+// ★ A LONE NODE'S FIRST PAIRING IS A CONVERSION ([B.145d]): it runs no DRBD to adjust, so the
+// primary's side records the mesh and reboots the guest -- and never Adjusts, never BringUps.
+func TestReconcileMeshLonePrimaryConvertsThroughAReboot(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, MeshCache: filepath.Join(dir, "mesh.json"),
+		Resource: demoRes()} // a mesh of one: no DRBD today
+	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(), Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
+	f, rb := &fakeMesher{}, &fakeRebooter{}
+	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, rb, spec, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if f.adjusted != nil || f.broughtUp != nil {
+		t.Errorf("a lone node was adjusted/brought up in place (adjust=%v bringup=%v); it has no resource to adjust", f.adjusted != nil, f.broughtUp != nil)
+	}
+	if rb.reboots != 1 {
+		t.Errorf("reboots = %d, want 1: the conversion is the next bring-up's", rb.reboots)
+	}
+	if cached, _, ok := cfg.cachedMesh(func(string, ...any) {}); !ok || len(cached.Peers) != 3 {
+		t.Errorf("the mesh was not recorded before the reboot (ok=%t peers=%d); the bring-up would convert to nothing", ok, len(cached.Peers))
+	}
+}
+
+// ★ THE REMOVAL ([B.145d]): refused unless this node is serving and UpToDate; a still-replicated
+// remainder adjusts in place; a remainder of one records the mesh, asserts the one-shot disable
+// intent, and reboots.
+func TestApplyUnpair(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, MeshCache: filepath.Join(dir, "mesh.json"), Resource: pairedRes()}
+	logf := func(string, ...any) {}
+	alone, _ := json.Marshal(api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Join: false,
+		Peers: []api.MeshPeer{{Name: "anchorA", NodeID: 0, Address: "10.0.0.1:7789", Disk: drbd.DataDevice}}})
+	serving := model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}
+
+	// Not serving (a standby), or serving but not UpToDate: refused, with the intent untouched.
+	for _, qs := range []model.QuorumState{
+		{Quorate: true, Diskful: true, UpToDate: true},
+		{Primary: true, Quorate: true, Diskful: true},
+	} {
+		f, rb := &fakeMesher{}, &fakeRebooter{}
+		o := cfg.applyUnpair(context.Background(), f, fakeStatus{qs: qs}, rb, api.Directive{ID: "u1", Kind: api.DirectiveUnpair, Payload: string(alone)}, logf)
+		if o.State != api.OutcomeFailed || rb.reboots != 0 || cfg.convertIntent() != "" {
+			t.Errorf("qs=%+v: outcome=%+v reboots=%d intent=%q; a stale copy would have become the only one", qs, o, rb.reboots, cfg.convertIntent())
+		}
+	}
+
+	// Still a flock after the removal (3 -> 2 diskful): adjust in place, no reboot, no intent.
+	two, _ := json.Marshal(api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Join: false, Peers: threePeerMesh()[:2]})
+	f, rb := &fakeMesher{}, &fakeRebooter{}
+	o := cfg.applyUnpair(context.Background(), f, fakeStatus{qs: serving}, rb, api.Directive{ID: "u2", Kind: api.DirectiveUnpair, Payload: string(two)}, logf)
+	if o.State != api.OutcomeDone || f.adjusted == nil || rb.reboots != 0 || cfg.convertIntent() != "" {
+		t.Errorf("shrink: outcome=%+v adjusted=%t reboots=%d intent=%q", o, f.adjusted != nil, rb.reboots, cfg.convertIntent())
+	}
+
+	// The flock ends: recorded, the intent asserted, the guest rebooted -- and nothing adjusted.
+	f, rb = &fakeMesher{}, &fakeRebooter{}
+	o = cfg.applyUnpair(context.Background(), f, fakeStatus{qs: serving}, rb, api.Directive{ID: "u3", Kind: api.DirectiveUnpair, Payload: string(alone)}, logf)
+	if o.State != api.OutcomeDone || f.adjusted != nil || rb.reboots != 1 {
+		t.Errorf("end: outcome=%+v adjusted=%t reboots=%d", o, f.adjusted != nil, rb.reboots)
+	}
+	if got := cfg.convertIntent(); got != nodestorage.ConvertDisable {
+		t.Errorf("intent = %q, want %q: without it the next bring-up refuses the metadata it finds", got, nodestorage.ConvertDisable)
+	}
+	if cached, res, ok := cfg.cachedMesh(logf); !ok || res.DiskfulPeers() != 1 || cached.Join {
+		t.Errorf("the remaining mesh was not recorded (ok=%t diskful=%d join=%t)", ok, res.DiskfulPeers(), cached.Join)
+	}
+	if err := cfg.clearConvertIntent(); err != nil || cfg.convertIntent() != "" {
+		t.Errorf("the intent did not clear (err=%v, intent=%q)", err, cfg.convertIntent())
 	}
 }

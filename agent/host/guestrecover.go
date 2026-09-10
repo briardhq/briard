@@ -606,3 +606,13 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 	u.logf("rescue: the guest was rebuilt and has re-converged")
 	return nil
 }
+
+// RebootGuest is a topology transition's one act ([B.145d]): stop the guest cleanly and bring
+// it back up, so the bring-up re-reads the recorded membership and node-storage runs the spec ×
+// disk table. It is the recovery ladder's power cycle, called on purpose -- and on this type
+// rather than beside it for the reason RescueGuest is: a second owner of the VM+channel+Manager
+// swap would be a second way to do it.
+func (u *osUpgrade) RebootGuest(ctx context.Context) error {
+	_, err := u.rebootGuest(ctx)
+	return err
+}

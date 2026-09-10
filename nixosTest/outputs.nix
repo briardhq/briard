@@ -359,7 +359,7 @@ in
       # this grew out of measured the DRBD answer -- whole-volume outage -- and is history at the
       # item; the flock's companion spike stays in `debug` below.)
       media-error-lone = import ./media-error-lone.nix { inherit pkgs fixture guestModule; };
-      runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # grow single-node -> 3-node mesh at runtime
+      runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # a lone node converts to a 3-node mesh, and the survivor back to alone ([B.145d])
       drbd-loopback-path = import ./drbd-loopback-path.nix { inherit pkgs guestModule; }; # loopback-path gating experiment
       # The maintenance-mode contract (pause → poke → resume). It sat in `integration`
       # while it drove the agent's verbs over a nested guest's channel; V3.17e4 made it

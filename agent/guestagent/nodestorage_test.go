@@ -24,7 +24,6 @@ type storageFake struct {
 	*fakeExec
 	isLuks    bool            // `cryptsetup isLuks <dev>` exit 0
 	present   map[string]bool // `test -b <path>` exit 0
-	mdRefuse  bool            // create-md WITHOUT --force refuses (a node with a replica)
 	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata ([B.145c])
 }
 
@@ -52,18 +51,11 @@ func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 		// Two lines, because the real command warns on stderr ahead of the report and Run hands
 		// both back together -- the parser has to read the LAST line.
 		return []byte("  WARNING: nothing to see here\n  4194304 63\n"), nil
-	case name == "drbdmeta":
-		// The lone node's probe: the DRBD magic on the metadata LV. Garbage (a never-written LV
-		// above LUKS) fails it, which is the common case.
+	case name == "drbdmeta" && slices.Contains(args, "dump-md"):
+		// THE probe: the DRBD magic on the metadata LV. Garbage (a never-written LV above LUKS)
+		// fails it, which is the common case; a wipe-md is answered like any other command.
 		if !s.mdPresent {
 			return []byte("No valid meta data found"), errors.New("exit status 1")
-		}
-	case name == "drbdadm" && len(args) > 0 && args[0] == "create-md":
-		// The blank-probe: without --force it refuses on a device that already holds metadata
-		// (the prompt meets a closed stdin), which is how a returning node is recognised. With
-		// --force there is nothing to refuse.
-		if s.mdRefuse && !slices.Contains(args, "--force") {
-			return []byte("v09 meta data already in place"), errors.New("exit status 20")
 		}
 	}
 	return nil, nil
@@ -227,7 +219,7 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.present["/dev/mapper/briardservice-data"] = true
 	f.present["/dev/mapper/briardservice-metadata"] = true
-	f.mdRefuse = true
+	f.mdPresent = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +239,7 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	if !f.ran("vgchange", "-ay", "briardservice") {
 		t.Errorf("the VG was never activated; runs = %v", f.runs)
 	}
-	if !f.ran("drbdadm", "create-md", "--max-peers=4", "r0") || !f.ran("systemctl", "start", "drbd@r0.target") {
+	if !f.ran("drbdmeta", loneProbeDevice, "v09", "/dev/mapper/briardservice-metadata", "flex-external", "dump-md") || !f.ran("systemctl", "start", "drbd@r0.target") {
 		t.Errorf("the resource was not brought up; runs = %v", f.runs)
 	}
 }
@@ -257,7 +249,7 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.isLuks = true
-	f.mdRefuse = true
+	f.mdPresent = true
 	// The token cryptsetup will export, and the LV that appears once the VG is activated. The
 	// crypt device is NOT present: that is what makes this the open path.
 	f.runFn = func(name string, args []string) ([]byte, error) {
@@ -453,8 +445,9 @@ func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
 			t.Errorf("a lone node ran %v; runs = %v", forbidden, f.runs)
 		}
 	}
-	if !f.ran("drbdmeta", loneProbeDevice, "v09", "/dev/mapper/briardservice-metadata", "flex-external", "dump-md") {
-		t.Errorf("the metadata probe did not run; runs = %v", f.runs)
+	// No probe on LVs this run made: garbage by construction, and nothing to refuse over.
+	if f.ran("drbdmeta") {
+		t.Errorf("a fresh lone node probed its brand-new metadata LV; runs = %v", f.runs)
 	}
 }
 
@@ -498,5 +491,96 @@ func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
 	}
 	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=flock\n" {
 		t.Errorf("topology.env = %q", got)
+	}
+}
+
+// ★ THE CONVERT ROW ([B.145d]): a lone node joining its first peer. Its LVs exist and hold THE
+// data, the metadata LV holds nothing, and the spec now says replicated and seed. So: no mkfs,
+// create-md --force on the metadata LV, the disk attached and declared UpToDate BEFORE the stock
+// target connects anything -- the order that keeps a joiner already dialling from being marked
+// UpToDate without a sync ([B.145a]'s lesson).
+func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
+	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
+		t.Fatal(err)
+	}
+	if f.ran("mkfs.btrfs") || f.ran("lvcreate") {
+		t.Errorf("the conversion touched the data; runs = %v", f.runs)
+	}
+	var create, attach, uuid, target int = -1, -1, -1, -1
+	for i, r := range f.runs {
+		switch {
+		case r[0] == "drbdadm" && r[1] == "create-md":
+			create = i
+			if !slices.Contains(r, "--force") || !slices.Contains(r, "--max-peers=4") {
+				t.Errorf("create-md without --force/--max-peers: %v", r)
+			}
+		case r[0] == "drbdadm" && r[1] == "attach":
+			attach = i
+		case r[0] == "drbdadm" && r[1] == "new-current-uuid":
+			uuid = i
+		case r[0] == "systemctl" && slices.Contains(r, "drbd@r0.target"):
+			target = i
+		}
+	}
+	if !(create >= 0 && create < attach && attach < uuid && uuid < target) {
+		t.Errorf("convert out of order (create %d, attach %d, uuid %d, target %d): %v", create, attach, uuid, target, f.runs)
+	}
+	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=flock\n" {
+		t.Errorf("topology.env = %q", got)
+	}
+}
+
+// A blank re-joiner with old LVs (a former member wiped by a removal) creates metadata and
+// attaches, and NEVER declares itself UpToDate: its data is discarded by the resync, which is
+// what "blank join" means. FreshInit=false is what separates it from the convert row.
+func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
+	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ran("drbdadm", "create-md", "--max-peers=4", "--force", "r0") {
+		t.Errorf("no metadata was created; runs = %v", f.runs)
+	}
+	if f.ran("drbdadm", "new-current-uuid") || f.ran("mkfs.btrfs") {
+		t.Errorf("a re-joiner seeded or formatted; runs = %v", f.runs)
+	}
+}
+
+// ★ THE DISABLE ROW ([B.145d]): alone, metadata present, and the one-shot intent asserted by an
+// unpair. The metadata is wiped (mandatory, not a courtesy: the next enable would find and attach
+// it) and the flock's .res goes with it; nothing else of DRBD runs.
+func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.mdPresent = true
+	spec := loneSpec(true)
+	spec.Resource.Convert = nodestorage.ConvertDisable
+	if err := nodeStorage(context.Background(), f, spec); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ran("drbdmeta", "--force", loneProbeDevice, "v09", "/dev/mapper/briardservice-metadata", "flex-external", "wipe-md") {
+		t.Errorf("the metadata was not wiped; runs = %v", f.runs)
+	}
+	if !f.ran("rm", "-f", resPath("r0")) {
+		t.Errorf("the flock's .res was left behind; runs = %v", f.runs)
+	}
+	for _, forbidden := range [][]string{{"drbdadm"}, {"systemctl", "start", "drbd@r0.target"}, {"mkfs.btrfs"}} {
+		if f.ran(forbidden...) {
+			t.Errorf("the disable row ran %v; runs = %v", forbidden, f.runs)
+		}
+	}
+	// ...and without the intent the same disk is still refused: the intent is the whole lift.
+	g := newStorageFake(aesCPU)
+	g.present["/dev/mapper/briardservice-data"] = true
+	g.present["/dev/mapper/briardservice-metadata"] = true
+	g.mdPresent = true
+	if err := nodeStorage(context.Background(), g, loneSpec(true)); err == nil || g.ran("drbdmeta", "--force") {
+		t.Errorf("alone + metadata + no intent was not refused (err=%v, runs=%v)", err, g.runs)
 	}
 }

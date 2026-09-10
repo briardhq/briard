@@ -860,9 +860,33 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// The node's storage spec, rendered by the host because storage policy is the host's
 	// ([V3b.33](d)). A spec this host cannot build stops bring-up here -- before the guest is
 	// asked to do anything -- rather than inside a unit whose only report is an exit code.
-	storage, err := cfg.StorageSpec(cfg.Resource, cfg.Diskless, cfg.FreshInit)
+	//
+	// THE MEMBERSHIP THIS NODE IS IN, re-read at EVERY bring-up and not only at the agent's start
+	// ([B.145d]): a topology transition records the mesh and reboots the guest in the same agent
+	// process, so the bring-up that follows must read what was just recorded, not what Run
+	// restored an hour ago. The same read also closes the gap a recovery relaunch had -- a guest
+	// power-cycled by this process after a runtime pairing came back on the mesh from start-up.
+	if spec, res, ok := cfg.cachedMesh(logf); ok {
+		cfg.Resource, cfg.Mesh = res, spec
+	}
+	// A JOINER NEVER SEEDS, ON ANY BOOT. FreshInit is "am I the first peer" of the mesh the
+	// environment described -- true on every node that was installed alone, which is every
+	// node. The recorded mesh says which of those joined blank, and that node must never
+	// declare itself UpToDate: the row that would (no metadata, LVs existing) is exactly the
+	// one a wiped re-joiner reaches.
+	freshInit := cfg.FreshInit && !cfg.Mesh.Join
+	storage, err := cfg.StorageSpec(cfg.Resource, cfg.Diskless, freshInit)
 	if err != nil {
 		return nil, nil, fmt.Errorf("host: %w", err)
+	}
+	// The one-shot convert intent ([B.145d]), asserted by an unpair and spent by the bring-up
+	// that carries it (cleared below, once converged).
+	if word := cfg.convertIntent(); word != "" {
+		storage.Resource.Convert = word
+		if err := storage.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("host: convert intent %q: %w", word, err)
+		}
+		logf("storage: carrying the one-shot convert intent %q into this bring-up", word)
 	}
 	spec := guestagent.BringUpSpec{
 		Storage:  storage,
@@ -976,6 +1000,11 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("host: bring-up: %w", err)
+	}
+	// The intent was spent by the bring-up that just converged ([B.145d]); a bring-up that failed
+	// above left it for the next one, which is the retry a re-delivered removal relies on.
+	if err := cfg.clearConvertIntent(); err != nil {
+		logf("storage: could not clear the spent convert intent (%v); the next bring-up will carry it again, harmlessly", err)
 	}
 	// The volume exists and is open by now, so if this node is encrypted its header is final
 	// ([V3b.33](c)). Once, beside the volume, and never fatal.
@@ -1251,14 +1280,27 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, 
 		}
 		return cfg.applyDashboard(ctx, h, d, logf)
 	}
-	if d.Kind == api.DirectivePair {
-		// Runtime anchor pairing needs the guest client's mesh verbs
-		// (adjust/bring-up), not the narrow upgrader; r is that client.
+	if d.Kind == api.DirectivePair || d.Kind == api.DirectiveUnpair {
+		// Runtime anchor pairing needs the guest client's mesh verbs (adjust/bring-up), not the
+		// narrow upgrader; r is that client. A topology TRANSITION ([B.145d]) -- a lone node's
+		// first pairing, a flock ending -- also needs the one act only the upgrader owns: the
+		// guest reboot that re-runs bring-up on the recorded membership.
 		m, ok := r.(guestMesher)
 		if !ok {
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot reconcile a mesh"}
 		}
-		return cfg.applyPair(ctx, m, platformWitness{}, d, logf)
+		rb, ok := up.(guestRebooter)
+		if !ok {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no guest to reboot on this node"}
+		}
+		if d.Kind == api.DirectiveUnpair {
+			sr, ok := r.(statusReader)
+			if !ok {
+				return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot read the cluster"}
+			}
+			return cfg.applyUnpair(ctx, m, sr, rb, d, logf)
+		}
+		return cfg.applyPair(ctx, m, platformWitness{}, rb, d, logf)
 	}
 	return applyDirective(ctx, d, up, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
 }
