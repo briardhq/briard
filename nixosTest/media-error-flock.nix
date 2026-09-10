@@ -160,6 +160,15 @@ pkgs.testers.runNixOSTest {
     # (`consider_resync`, drbd_receiver.c) -- so drive it and see whether the marked block
     # comes back. On real hardware that write is what makes the controller remap the sector.
     node1.succeed(f"dmsetup message dusty 0 removebadblock {BAD}")
+    # ⚠️ MEASURED 2026-09-10 (run 34466966604): DRBD REFUSES this disconnect on a live Primary --
+    # `State change failed: Need access to UpToDate data (-2)`, exit 17, the same refusal a lone
+    # node gives when asked to promote an Inconsistent disk. It is the kernel enforcing the hazard
+    # the thread had only reasoned about: with the disk Inconsistent, the peer is the ONLY source
+    # for the marked blocks, so dropping the connection would strand a serving Primary. The repair
+    # therefore CANNOT be driven on the node that is serving -- it has to hand over first, which is
+    # exactly [B.140a]'s eviction, arrived at from the other direction.
+    demote_rc, demote_out = node1.execute("drbdadm secondary r0 2>&1")
+    print(f"VERDICT (b1): demote before repair rc={demote_rc} out={demote_out!r} role={role(node1)}")
     node1.succeed("drbdadm disconnect r0")
     node1.succeed("drbdadm connect r0")
     node1.wait_until_succeeds("drbdadm cstate r0 | grep -q Connected")
