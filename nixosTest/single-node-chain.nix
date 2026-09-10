@@ -66,7 +66,7 @@ pkgs.testers.runNixOSTest {
     # The module may be loaded (the image loads it at boot); what matters is that no resource
     # is configured on it.
     rc, out = node1.execute("drbdsetup status --json")
-    assert rc != 0 or out.strip() == "[]", f"a DRBD resource exists on a lone node: {out}"
+    assert rc != 0 or "".join(out.split()) == "[]", f"a DRBD resource exists on a lone node: {out}"
     node1.fail("test -e /run/briard/drbd.d/r0.res")
     node1.fail("test -e /run/briard/drbd.d/r0.res")
     print("### 1 the LVs are built, the word is alone, and DRBD is nowhere")
