@@ -159,7 +159,7 @@ pkgs.testers.runNixOSTest {
     # if the device detached again, the resync did not rewrite the block.
     bad_after_reattach = read_sector(node1, BAD)
     disk_a3 = dev(node1, "disk-state")
-    print(f"VERDICT (a3): re-attach resynced the region above; reading the still-broken sector")
+    print("VERDICT (a3): re-attach resynced the region above; reading the still-broken sector")
     print(f"              -> read succeeded={bad_after_reattach} (always true with a peer), disk now={disk_a3}")
     if disk_a3 == "Diskless":
         print("VERDICT (a3): NOT REPAIRED -- the read detached the device AGAIN. `detach` recovers the")
