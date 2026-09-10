@@ -463,6 +463,14 @@ in
       # dm-dust is the injector because an `error` target cannot model a sector that stops failing.
       # `debug` because it prints verdicts and act (e) deliberately asserts nothing.
       media-error-lone = import ./media-error-lone.nix { inherit pkgs guestModule; };
+      # — **THE COMPANION SPIKE** ([B.144] acts (a)+(b)): the same bad sector on a node that HAS a
+      # peer. (a) proves the silent fallback in its purest form -- the read of the BROKEN sector
+      # succeeds, served over the network, so nothing above DRBD can tell it happened -- and then
+      # measures the re-attach resync, the partial-vs-full question left open in [B.140a]/[V5.7].
+      # (b) does it under `pass_on` and drives the reconnect that is the only thing which starts a
+      # resync while Established. The alert half of (a) is NOT here and cannot be: the redundancy
+      # alerter is host-agent code and a hermetic node has no host.
+      media-error-flock = import ./media-error-flock.nix { inherit pkgs guestModule; };
       # — **A STOPWATCH, NOT AN ASSERTION** ([B.56]). Measures how long a COLD converge holds the
       # promotion when its pull is throttled to a crawl: [V3b.3](f) put a fetch on the promotion
       # path and every chain rule we have was measured with an INSTANT failure. It runs its full
