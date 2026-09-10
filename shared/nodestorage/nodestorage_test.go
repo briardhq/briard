@@ -10,7 +10,7 @@ import (
 func good() Spec {
 	return Spec{
 		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: ModeAuto}},
-		Resource: Resource{Name: "r0", Device: "/dev/drbd0", Config: "resource r0 {}\n", FreshInit: true, MaxPeers: 4},
+		Resource: Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "resource r0 {}\n", FreshInit: true, MaxPeers: 4},
 	}
 }
 
@@ -118,7 +118,7 @@ func TestValidate(t *testing.T) {
 		t.Errorf("the shipped shape was refused: %v", err)
 	}
 	// A witness IS a legitimate spec: the .res and the attach, and no tier at all.
-	w := Spec{Resource: Resource{Name: "r0", Device: "/dev/drbd0", Config: "resource r0 {}\n", Diskless: true}}
+	w := Spec{Resource: Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "resource r0 {}\n", Diskless: true}}
 	if err := w.Validate(); err != nil {
 		t.Errorf("a diskless witness was refused: %v", err)
 	}
@@ -194,5 +194,40 @@ func TestMetadataBytes(t *testing.T) {
 		if got := MetadataBytes(tc.data, tc.peers); got != tc.want {
 			t.Errorf("MetadataBytes(%d, %d) = %d, want %d", tc.data, tc.peers, got, tc.want)
 		}
+	}
+}
+
+// A LONE NODE IS A LEGITIMATE SPEC, AND ITS TWO FIELDS MUST AGREE ([B.145c]). Not replicated
+// means "mount the data LV directly": the .res is not required, the device must BE that LV, and
+// a witness -- which exists to arbitrate between two copies -- has nothing to do there.
+func TestValidateLoneNode(t *testing.T) {
+	lone := good()
+	lone.Resource.Replicated = false
+	lone.Resource.Config = ""
+	lone.Resource.Device = lone.Tiers[0].Mapper()
+	if err := lone.Validate(); err != nil {
+		t.Fatalf("a lone node on its data LV was refused: %v", err)
+	}
+
+	onDRBD := good()
+	onDRBD.Resource.Replicated = false
+	if err := onDRBD.Validate(); err == nil || !strings.Contains(err.Error(), "must be the data LV") {
+		t.Errorf("alone with /dev/drbd0 accepted (err=%v); the mount would open a device nothing attached", err)
+	}
+
+	loneWitness := Spec{Resource: Resource{Name: "r0", Device: "/dev/drbd0", Diskless: true}}
+	if err := loneWitness.Validate(); err == nil || !strings.Contains(err.Error(), "nothing to do") {
+		t.Errorf("a diskless node in a home with no DRBD accepted (err=%v)", err)
+	}
+
+	// ...and a replicated resource on the bare LV is the other disagreement: a mount underneath
+	// a resource a peer writes to.
+	underneath := good()
+	underneath.Resource.Device = underneath.Tiers[0].Mapper()
+	if err := underneath.Validate(); err != nil {
+		// Replicated with the LV as device is not refused by name -- DRBD's device is whatever
+		// the .res says -- so this is documented as accepted; the fence for it is the host's
+		// StorageSpec, which never writes it.
+		t.Logf("replicated on the LV: %v", err)
 	}
 }

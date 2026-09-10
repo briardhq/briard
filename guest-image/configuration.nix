@@ -55,6 +55,45 @@ let
   # The harnesses DECLARE their own device and address (nixosTest/lib.nix, and the driver-based
   # tests via VIP_DEV/VIP_ADDR), which turns an inherited assumption into a stated one.
   vipEnvPath = "/run/briard/vip.env";
+  # The topology word node-storage writes beside vip.env ([B.145c]): `flock` or `alone`, and the
+  # only thing a shell unit needs to know about the spec. PAIRED with the Go const
+  # guestagent.topologyEnvPath and the two values its topologyEnv writes.
+  topologyEnvPath = "/run/briard/topology.env";
+  # THE CHAIN, stated once: the seven promoter units in start order, the same list the host's
+  # promoterUnits() hands drbd-reactor. The hold resets them, and the lone node's target (the
+  # mkMerge tail of this file) carries them.
+  chainMembers = [
+    "briard-primary-storage.service"
+    "briard-services.service"
+    "briard-vip.service"
+    "briard-reverse-proxy.service"
+    "briard-dashboard.service"
+    "briard-mdns.service"
+    "briard-mdns-services.service"
+  ];
+  # A hold step with one body per topology ([B.145c]). The word decides; a missing word is
+  # "node storage has not run on this boot", and an unknown one names itself rather than
+  # guessing -- both are failures of the step, and what a failed step means is the unit's to say
+  # (ExecCondition skips, ExecStartPre escalates).
+  byTopology =
+    name:
+    { flock, alone }:
+    pkgs.writeShellScript name ''
+      set -u
+      if [ ! -r ${topologyEnvPath} ]; then
+        echo "${name}: no ${topologyEnvPath}; node storage has not run on this boot" >&2
+        exit 1
+      fi
+      . ${topologyEnvPath}
+      case "''${BRIARD_TOPOLOGY:-}" in
+        flock) ${flock} ;;
+        alone) ${alone} ;;
+        *)
+          echo "${name}: ${topologyEnvPath} says '$BRIARD_TOPOLOGY', which is neither flock nor alone" >&2
+          exit 1
+          ;;
+      esac
+    '';
   # Where the agent drops drbd-reactor's promoter snippet. Tmpfs, and PAIRED with the Go const
   # guestagent.reactorPath -- different languages, so no shared import; the agent-side comment
   # names this file back.
@@ -834,7 +873,7 @@ in
     description = "Image tarballs pre-staged into local podman storage at boot.";
   };
 
-  config = {
+  config = lib.mkMerge [ {
     system.stateVersion = "26.05";
 
     # No substituters and no baked cache key ([B.86i]): the guest has no nix (disk-image.nix,
@@ -1171,11 +1210,18 @@ in
         # already intricate, and a rule that makes the demote hook itself conditional -- with a
         # flag lifetime to get wrong -- buys a rarely-exercised branch where a budget reset with
         # plain semantics does the same job.
-        ExecCondition = "${pkgs.writeShellScript "briard-hold-only-if-primary" ''
-          ${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'
-        ''}";
+        #
+        # ⚠️ AND ON A LONE NODE THE GUARD IS ALWAYS MET ([B.145c]): there is no loser to protect
+        # and nobody else who could be holding the volume, so every member failure is this
+        # node's own to hold -- and to restart from, below.
+        ExecCondition = "${byTopology "briard-hold-only-if-holding" {
+          flock = "${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'";
+          alone = "exit 0";
+        }}";
         # 1. refuse promotion, 2. stop the chain (this IS the demote), 3. confirm we really are
-        #    Secondary or escalate. Each is its own ExecStartPre so a failure names its own step.
+        #    Secondary or escalate. Each is its own ExecStartPre so a failure names its own step,
+        #    and each has its lone-node body ([B.145c]) -- the same three steps by symmetry, with
+        #    the volume standing where the resource stands.
         #
         # STEP 2 STOPS drbd-promote@, NOT THE TARGET, and that is a barrier rather than a
         # preference. Measured: `systemctl stop drbd-services@r0.target` returns as soon as the
@@ -1184,20 +1230,46 @@ in
         # `After=drbd-promote@`, so on the way down they stop BEFORE it: waiting for the promote
         # unit is the only spelling that waits for all of them. Its own ExecStop is also the
         # ordinary demote, so step 3 is a confirmation (the shim returns 0 for "already
-        # secondary anyways") rather than the thing doing the work.
+        # secondary anyways") rather than the thing doing the work. The lone node has no promote
+        # unit to wait on, so its stop NAMES every member, in reverse: a stop of several units
+        # returns when all of them are down.
         ExecStartPre = [
-          "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target"
-          "${config.systemd.package}/bin/systemctl daemon-reload"
-          "-${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service"
-          "${pkgs.drbd}/lib/drbd/scripts/drbd-service-shim.sh secondary-or-escalate r0"
+          # A lone node needs no mask: nothing re-promotes during its hold, because the release
+          # below is the only thing that starts its target.
+          "${byTopology "briard-hold-refuse" {
+            flock = "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target && ${config.systemd.package}/bin/systemctl daemon-reload";
+            alone = ":";
+          }}"
+          "-${byTopology "briard-hold-stop" {
+            flock = "${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service";
+            alone = "${config.systemd.package}/bin/systemctl stop briard-chain.target ${lib.concatStringsSep " " (lib.reverseList chainMembers)}";
+          }}"
+          # The ONE escalation, the same cell in both topologies: a demote DRBD refused, or an
+          # unmount something still holds open. A node stuck holding a volume it has declared it
+          # cannot serve is the one thing nothing else recovers from -- on a flock because the
+          # peer cannot take over, alone because the restart below would mount on top of it.
+          "${byTopology "briard-hold-confirm" {
+            flock = "${pkgs.drbd}/lib/drbd/scripts/drbd-service-shim.sh secondary-or-escalate r0";
+            alone = "! ${pkgs.util-linux}/bin/mountpoint -q ${btrfsRoot} || ${pkgs.util-linux}/bin/umount ${btrfsRoot}";
+          }}"
         ];
         ExecStart = "${pkgs.coreutils}/bin/sleep ${toString config.briard.promotionHoldSecs}";
         # The release. `-` on the unmask and the resets: a hold that cannot tidy up must still end,
         # because leaving the mask on is the one outcome worse than releasing early.
         ExecStopPost = [
-          "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target"
-          "${config.systemd.package}/bin/systemctl daemon-reload"
-          "-${config.systemd.package}/bin/systemctl reset-failed briard-primary-storage.service briard-services.service briard-vip.service briard-reverse-proxy.service briard-dashboard.service briard-mdns.service briard-mdns-services.service"
+          "-${byTopology "briard-hold-release" {
+            flock = "${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target; ${config.systemd.package}/bin/systemctl daemon-reload";
+            alone = ":";
+          }}"
+          "-${config.systemd.package}/bin/systemctl reset-failed ${lib.concatStringsSep " " chainMembers}"
+          # Alone, the restart is ours ([B.145c]): no reactor re-promotes, so the hold starts the
+          # chain it stopped -- hold-and-restart, forever, and no reboot, which is what a flock
+          # does through its reactor. `--no-block`, because this runs inside the hold's own stop
+          # and the start must not wait on it.
+          "-${byTopology "briard-hold-restart" {
+            flock = ":";
+            alone = "${config.systemd.package}/bin/systemctl start --no-block briard-chain.target";
+          }}"
           # LAST, and the reason is FailureAction=reboot above: a node that reboots because it
           # could not release the resource must leave the reason on disk first, and the journal
           # is otherwise still in RAM when the reboot happens.
@@ -1869,5 +1941,34 @@ in
       publish.hinfo = false; # no CPU/OS disclosure on a household LAN
       nssmdns4 = false; # nothing in the guest resolves .local names; it only answers
     };
-  };
+  }
+
+  # THE LONE NODE'S TARGET ([B.145c]): the promoter chain with no promoter. A home with one
+  # diskful member runs no DRBD, so nothing generates drbd-services@r0.target for it; this static
+  # target carries the IDENTICAL member list in the identical order, with the same Wants/After the
+  # reactor writes onto its target and the same PartOf + Requires/After-the-previous it writes onto
+  # each member -- so a lone node and a flock run one chain, and the members cannot tell which
+  # target started them. A lone node's bring-up ends in `systemctl start` of this (the guest's
+  # chain.start verb) where a flock's ends in starting drbd-reactor; `wantedBy = [ ]` so nothing
+  # else can. Folded onto the members here rather than written into each unit, so the list is
+  # stated once (chainMembers, the same seven the hold above resets).
+  {
+    systemd.targets.briard-chain = {
+      description = "Briard: the promoter chain, on a node that runs no promoter";
+      wantedBy = [ ];
+      wants = chainMembers;
+      after = chainMembers;
+    };
+    systemd.services = lib.listToAttrs (
+      lib.imap0 (
+        i: unit:
+        lib.nameValuePair (lib.removeSuffix ".service" unit) {
+          partOf = [ "briard-chain.target" ];
+          requires = lib.optional (i > 0) (lib.elemAt chainMembers (i - 1));
+          after = lib.optional (i > 0) (lib.elemAt chainMembers (i - 1));
+        }
+      ) chainMembers
+    );
+  }
+  ];
 }

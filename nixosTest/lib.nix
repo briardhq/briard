@@ -265,6 +265,13 @@ let
       resource,
       diskless ? false,
       promoter ? true,
+      # false = a node that runs no DRBD ([B.145c]): the spec names the data LV as the device,
+      # node-storage writes no .res and attaches nothing, and the chain is started by
+      # `systemctl start briard-chain.target` instead of drbd-reactor. The default keeps every
+      # existing rig on DRBD -- a harness may build a one-node flock the product never writes
+      # (the product's StorageSpec runs DRBD only with two diskful members), because the DRBD
+      # mechanism rigs are about the mechanism.
+      replicated ? true,
       # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
       # This is the ONLY way a test node gets a workload ([V3b.3](e2) deleted the build-time service
@@ -312,7 +319,8 @@ let
           };
           resource = {
             name = "r0";
-            device = "/dev/drbd0";
+            device = if replicated then "/dev/drbd0" else "/dev/mapper/briardservice-data";
+            inherit replicated;
             maxPeers = 4; # the product constant (agent/drbd MaxPeers): baked into the metadata
             config = resource;
             inherit diskless;
@@ -417,7 +425,7 @@ let
         # symlink to a store file, which was right while the harness SUPPLIED it and nothing
         # wrote it. briard-node-storage writes the `.res` itself now, exactly as the product
         # does -- and writing through a store symlink is `read-only file system`, which is how
-        # this was found (single-node-promoter, run 34395428265). The directory stays; what goes
+        # this was found (the lone-node rig, run 34395428265). The directory stays; what goes
         # in it is the unit's, from the spec above.
         "d /run/briard/drbd.d 0755 root root -"
       ]

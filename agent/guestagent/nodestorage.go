@@ -53,6 +53,15 @@ const (
 	// -- no new channel verb, no cryptsetup on a Windows box, no guest that has to be up.
 	// ⚠️ The two must agree; luksheader.go's luksHeaderSize is the same number in bytes.
 	luksDataOffset = "32768"
+	// topologyEnvPath is the shell-readable topology word, beside vip.env. PAIRED with
+	// guest-image/configuration.nix's topologyEnvPath.
+	topologyEnvPath = "/run/briard/topology.env"
+	// loneProbeDevice is the device name drbdmeta wants for its lock file when the metadata
+	// probe runs on a node that has no DRBD device at all. It names nothing that exists.
+	loneProbeDevice = "/dev/drbd0"
+	// chainTarget is the lone node's promotion: the static target carrying the seven chain
+	// members in the reactor's order (guest-image/configuration.nix). PAIRED with that name.
+	chainTarget = "briard-chain.target"
 )
 
 // NodeStorage builds this node's storage from the spec at nodestorage.Path.
@@ -124,6 +133,16 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		}
 	}
 
+	// THE TOPOLOGY, FOR THE UNITS THAT CANNOT READ THE SPEC ([B.145c]): the hold unit's steps are
+	// shell, and they need one word -- flock or alone. Beside vip.env, same lifetime, and written
+	// on every node so the word is never missing on the one that reads it.
+	if err := x.WriteFile(topologyEnvPath, []byte(topologyEnv(spec.Resource.Replicated))); err != nil {
+		return err
+	}
+	if !spec.Resource.Replicated {
+		return loneNode(ctx, x, spec)
+	}
+
 	if err := x.WriteFile(resPath(spec.Resource.Name), []byte(spec.Resource.Config)); err != nil {
 		return err
 	}
@@ -170,6 +189,63 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		return nil
 	}
 	return run("drbdadm", "new-current-uuid", "--clear-bitmap", spec.Resource.Name+"/0")
+}
+
+// loneNode is the spec × disk row for a node that runs no DRBD ([B.145c]). The LVs are up and,
+// on a first init, formatted, so there is nothing left to build: the mount is
+// briard-primary-storage's, exactly as on a flock, off the data LV the spec names. What this row
+// does is REFUSE the one shape that is not plain -- metadata on the metadata LV while the spec
+// says "alone". Today that is a node that was in a flock and whose host has forgotten it (a
+// lost mesh cache degrades to the configured single-peer mesh), and mounting the data LV
+// underneath metadata a peer may still be replicating against is a split-brain factory. Bring-up
+// stops here, loudly, until the pairing is restored or [B.145d]'s explicit convert-disable
+// intent wipes the metadata.
+//
+// The probe is `drbdmeta dump-md` SUCCEEDING. The LV sits above LUKS, so "blank" is not a
+// readable state -- a never-written LV reads as ciphertext ([B.126]) -- but the DRBD magic is
+// exact on garbage. The device argument names only drbdmeta's lock file; no DRBD device exists
+// on this node.
+func loneNode(ctx context.Context, x Executor, spec nodestorage.Spec) error {
+	data, _ := spec.Tier(nodestorage.TierData)
+	if _, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md"); err == nil {
+		return fmt.Errorf("node storage: %s holds DRBD metadata but the spec says this node is alone -- refusing to bring the volume up outside the flock that metadata belongs to (a forgotten pairing? restore it, or convert explicitly)", data.MetaMapper())
+	}
+	return nil
+}
+
+// topologyEnv is the one-word file the guest's shell units key on: the hold unit's steps differ
+// between a flock (mask the promoter target, demote) and a lone node (stop the chain target,
+// unmount), and a unit cannot parse the spec. PAIRED with guest-image/configuration.nix's
+// topologyEnvPath and the BRIARD_TOPOLOGY values its scripts compare against.
+func topologyEnv(replicated bool) string {
+	if replicated {
+		return "BRIARD_TOPOLOGY=flock\n"
+	}
+	return "BRIARD_TOPOLOGY=alone\n"
+}
+
+// replicated reads the topology back off the spec the host wrote: the ONE source for "does this
+// node run DRBD", consulted by the status verb, the promoter verbs and the deadman. An error is
+// "no spec yet" -- a guest the host has not brought up -- and each reader says what it does
+// with that.
+func replicated(x Executor) (bool, error) {
+	raw, err := x.ReadFile(nodestorage.Path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", nodestorage.Path, err)
+	}
+	spec, err := nodestorage.Parse(raw)
+	if err != nil {
+		return false, err
+	}
+	return spec.Resource.Replicated, nil
+}
+
+// alone is replicated's answer for the verbs that have a sensible default when the spec is
+// missing: only a spec that SAYS alone makes a node alone; no spec reads as a flock, which is
+// what every verb did before there were lone nodes.
+func alone(x Executor) bool {
+	rep, err := replicated(x)
+	return err == nil && !rep
 }
 
 // buildTier brings one tier up to "the LVs exist", and reports whether it CREATED them.

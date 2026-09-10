@@ -152,6 +152,15 @@ type Resource struct {
 	// reads the device off the same document the block layer was built from ([B.145a]) rather
 	// than restating a constant beside it.
 	Device string `json:"device"`
+	// Replicated says the resource is real: DRBD runs on this node, the .res is written, the
+	// metadata is created and attached, and Device is the DRBD device. False is a LONE node
+	// ([B.145]): a home with one diskful member runs btrfs on the data LV directly -- no DRBD,
+	// no metadata, no promoter, since with no second copy DRBD only turns a bad block into a
+	// dead node -- and Device names that LV. The host decides it from the mesh (two or more
+	// DISKFUL members; a witness beside one anchor holds no copy), the guest carries it out at
+	// bring-up and reads it back for everything that used to key on DRBD state. A joiner and a
+	// witness are always replicated.
+	Replicated bool `json:"replicated,omitempty"`
 	// MaxPeers is the number of peer slots the metadata is created with (`create-md
 	// --max-peers`). A product constant the host states, because it is baked into the metadata
 	// and the .res at creation time names fewer peers than a flock will ever have: a mesh of one
@@ -234,13 +243,19 @@ func (s Spec) Validate() error {
 	if s.Resource.Name == "" {
 		return fmt.Errorf("node storage: the spec names no resource")
 	}
-	if s.Resource.Config == "" {
+	if s.Resource.Replicated && s.Resource.Config == "" {
 		return fmt.Errorf("node storage: resource %s carries no .res config", s.Resource.Name)
 	}
 	if !strings.HasPrefix(s.Resource.Device, "/dev/") {
 		return fmt.Errorf("node storage: resource %s: %q is not a device path", s.Resource.Name, s.Resource.Device)
 	}
 	if s.Resource.Diskless {
+		// A witness exists to arbitrate between two copies. Alone, it would be a node that
+		// builds nothing and attaches nothing -- a contradiction the host's mesh rule should
+		// never write, refused here for a spec written by hand.
+		if !s.Resource.Replicated {
+			return fmt.Errorf("node storage: a diskless node in a home that runs no DRBD has nothing to do")
+		}
 		// A witness with tiers is a spec built by something that thinks it is diskful. Refuse
 		// rather than ignore: silently skipping them would hide the disagreement until someone
 		// wondered why a witness had no volume.
@@ -284,6 +299,20 @@ func (s Spec) Validate() error {
 		}
 		if !t.Mode.Valid() {
 			return fmt.Errorf("node storage: tier %s: %q is not an encryption mode", t.Name, t.Mode)
+		}
+	}
+	// ★ A LONE NODE MOUNTS THE DATA LV, AND THE DOCUMENT MUST SAY SO IN ONE PLACE. Replicated
+	// and Device are two fields describing one fact, so they are held to agree here rather than
+	// left for the mount to discover: "alone" with /dev/drbd0 would mount a device nothing
+	// attached, and "replicated" with the LV would mount underneath a resource a peer is
+	// writing to.
+	if !s.Resource.Replicated {
+		data, ok := s.Tier(TierData)
+		if !ok {
+			return fmt.Errorf("node storage: a node that runs no DRBD mounts its %s tier directly, and this spec has none", TierData)
+		}
+		if s.Resource.Device != data.Mapper() {
+			return fmt.Errorf("node storage: resource %s is not replicated, so its device must be the %s LV %s, not %s", s.Resource.Name, TierData, data.Mapper(), s.Resource.Device)
 		}
 	}
 	return nil

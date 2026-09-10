@@ -50,6 +50,7 @@ const (
 	verbReactor     = "drbd.reactor.start" // write the promoter snippet + start drbd-reactor -- the ONLY thing that promotes
 	verbStatus      = "drbd.status"        // the node status: model.Cluster (QuorumState + peers); on a flock, drbdsetup status --json
 	verbAdjust      = "drbd.adjust"        // rewrite the .res + `drbdadm adjust` (runtime mesh growth)
+	verbChainStart  = "chain.start"        // start the lone node's chain target -- its promotion, with no DRBD ([B.145c])
 )
 
 // nodeStorageUnit is the guest unit this verb starts: `wantedBy = [ ]`, so it runs when the host
@@ -315,7 +316,7 @@ const dataMountRoot = "/var/lib/briard"
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbStatus, verbNetConfigure, verbNetVIP,
+	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataRestore,
@@ -784,19 +785,32 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// re-converging a healthy node costs nothing, and an agent that died inside a
 			// maintenance bracket re-arms the promoter it left stopped ([V3b.15]).
 			return nil, run("systemctl", "start", "drbd-reactor.service")
+		case verbChainStart:
+			// THE LONE NODE'S PROMOTION ([B.145c]): the same seven members in the same order,
+			// started by a static target instead of drbd-reactor's generated one. Nothing else
+			// starts it (`wantedBy = [ ]`), so every step of bring-up happens-before it exactly
+			// as for the reactor -- and like the reactor start it is idempotent, so re-converging
+			// a healthy node costs nothing.
+			return nil, run("systemctl", "start", chainTarget)
 		case verbStatus:
 			req, err := resourceReq(payload)
 			if err != nil {
 				return nil, err
+			}
+			// THE ONE PLACE THE SERVING STATE IS FILLED IN (model.QuorumState.Serving reads it),
+			// with its two branches: a node that runs no DRBD answers from its chain target, a
+			// flock from DRBD. Only a spec that SAYS alone takes the first branch; no spec yet
+			// (a guest the host has not brought up) asks DRBD, which answers "no resource" --
+			// the same not-serving the host always read before bring-up.
+			if alone(x) {
+				return loneCluster(ctx, x), nil
 			}
 			out, err := x.Run(ctx, "drbdsetup", "status", "--json")
 			if err != nil {
 				return nil, err
 			}
 			// The fuller view. QuorumState is embedded, so a host that only knows
-			// the three summary fields reads this response unchanged. This is the ONE
-			// place the serving state is filled in (model.QuorumState.Serving reads it),
-			// which is where a node that runs no DRBD will get its answer from.
+			// the three summary fields reads this response unchanged.
 			return drbd.ParseCluster(out, req.Resource)
 		case verbCertWrite:
 			var req certWriteRequest
@@ -1221,6 +1235,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// paused — i.e. when someone else is mid-operation. It cannot prevent the race (a
 			// pause can still land between this check and ours) and is not claimed to; it turns
 			// the likely overlap from silent corruption of the bracket into a loud refusal.
+			//
+			// A lone node runs no promoter ([B.145c]), so nothing can be paused: the honest
+			// answer to "is anyone mid-operation" is no.
+			if alone(x) {
+				return true, nil
+			}
 			out, err := x.Run(ctx, "systemctl", "is-active", "drbd-reactor.service")
 			if err != nil {
 				// Is-active exits non-zero for every not-active state, which is an ANSWER
@@ -1254,6 +1274,13 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			var req evictRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
+			}
+			// NOT a no-op on a lone node ([B.145c]), unlike pause/resume: an evict that reports
+			// success is a promise that the work moved, and here there is nobody to move it to.
+			// A caller is gated on a takeover-capable peer before it gets here; this is what it
+			// hears if it was not.
+			if alone(x) {
+				return nil, fmt.Errorf("evict: this node runs no DRBD and has no peer to hand the work to")
 			}
 			args := []string{"evict"}
 			switch {
@@ -1305,11 +1332,20 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// disk-image.nix), so there is no version in which one is present without the other,
 			// and duplicating it only buys a second place to have to keep correct. Measured
 			// after the move: a bare stop of a promoted reactor completes in 401ms.
+			//
+			// A lone node has no promoter to pause ([B.145c]): its chain is a static target that
+			// nothing re-promotes, so the bracket's "hold still" is already the steady state.
+			if alone(x) {
+				return nil, nil
+			}
 			return nil, run("systemctl", "stop", "drbd-reactor.service")
 		case verbReactorResume:
 			// Restart the daemon; it re-reads config and adopts the already-Primary services,
 			// with no restart/demote. (No maintenance marker to clear -- nothing in the guest
 			// switches the OS on its own, so nothing autonomous races a managed op.)
+			if alone(x) {
+				return nil, nil // nothing was paused ([B.145c])
+			}
 			return nil, run("systemctl", "start", "drbd-reactor.service")
 		case verbNetConfigure:
 			var req netConfigureRequest
@@ -1640,6 +1676,14 @@ func RunDeadman(ctx context.Context) error {
 		LastContact: func() time.Time { return StampMtime(ContactStampPath) },
 		Gate:        gate,
 		Fabric: func(ctx context.Context) (deadman.Fabric, error) {
+			// A lone node has no DRBD to read ([B.145c]): one voter, quorum guaranteed, nobody
+			// to protect. The source is the spec the storage was built from -- the deadman
+			// learning that document is the price of knowing whether it is alone, and the
+			// owner took it (2026-09-10). No spec reads as a flock, and the read below then
+			// fails as it always did before bring-up: not knowing means holding.
+			if alone(x) {
+				return deadman.Fabric{Quorate: true}, nil
+			}
 			out, err := x.Run(ctx, "drbdsetup", "status", "--json")
 			if err != nil {
 				return deadman.Fabric{}, err
@@ -2271,6 +2315,12 @@ func (g *Client) ReactorStart(ctx context.Context, resource, snippet string) err
 	return g.c.Call(ctx, verbReactor, reactorStartRequest{Resource: resource, Snippet: snippet}, nil)
 }
 
+// ChainStart starts the lone node's chain target: what ReactorStart is on a node that runs no
+// DRBD ([B.145c]). The members and their order are the image's, so there is no snippet to land.
+func (g *Client) ChainStart(ctx context.Context) error {
+	return g.c.Call(ctx, verbChainStart, struct{}{}, nil)
+}
+
 // Status reads the node's serving state into a QuorumState — the summary the node reports
 // up (shared/api's closed allowlist). Ask qs.Serving() for "is this node serving"; on a
 // flock the guest fills it from DRBD.
@@ -2719,9 +2769,29 @@ func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 		}
 	}
 	if len(spec.Promoter) > 0 {
+		// The same chain, a different trigger ([B.145c]): a lone node's bring-up ends in its
+		// static target where a flock's ends in drbd-reactor. The members do not know which
+		// started them.
+		if !spec.Storage.Resource.Replicated {
+			return g.ChainStart(ctx)
+		}
 		return g.ReactorStart(ctx, res, drbd.ReactorConfig(res, spec.Promoter))
 	}
 	return nil
+}
+
+// loneCluster is the node status of a node that runs no DRBD ([B.145c]): the second branch of the
+// one predicate, and the ONLY place it lives. The node reads as "Primary, quorate" when its chain
+// target is active -- the owner's seam, taken literally -- so every reader of Serving(), and every
+// narrower field read, keeps its meaning: Primary is "holds the volume" (the chain is up; a hold
+// takes it down), Quorate is "allowed to write" (always: there is no peer to lose a majority to),
+// Diskful and UpToDate are what the node carries (its only copy, current by definition), and
+// Connected and Peers are nobody -- so a standby rule that asks PeerCanTakeOver() hears no, which
+// is the truth about a lone node that is not serving.
+func loneCluster(ctx context.Context, x Executor) model.Cluster {
+	out, err := x.Run(ctx, "systemctl", "is-active", chainTarget)
+	active := err == nil && strings.TrimSpace(string(out)) == "active"
+	return model.Cluster{QuorumState: model.QuorumState{Primary: active, Quorate: true, Diskful: true, UpToDate: true}}
 }
 
 // WaitPrimary polls Status until this node is serving -- i.e. bring-up has converged:

@@ -99,7 +99,7 @@ func TestNodeStorageVerbLandsTheSpecAndStartsTheUnit(t *testing.T) {
 			Name: nodestorage.TierData, Device: "/dev/vdb",
 			VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAdiantum,
 		}},
-		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: "RES", FreshInit: true, MaxPeers: 4},
+		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "RES", FreshInit: true, MaxPeers: 4},
 	}
 	if err := g.NodeStorage(context.Background(), spec); err != nil {
 		t.Fatal(err)
@@ -672,7 +672,7 @@ func demoStorage(fresh bool) nodestorage.Spec {
 			VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAuto,
 		}},
 		Resource: nodestorage.Resource{
-			Name: "r0", Device: "/dev/drbd0", Config: demoResource().Config(), FreshInit: fresh, MaxPeers: 4,
+			Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: demoResource().Config(), FreshInit: fresh, MaxPeers: 4,
 		},
 	}
 }
@@ -717,7 +717,7 @@ func TestBringUpWitness(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
 	spec := BringUpSpec{Storage: nodestorage.Spec{
-		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: demoResource().Config(), Diskless: true},
+		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: demoResource().Config(), Diskless: true},
 	}}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
@@ -1613,5 +1613,95 @@ func TestStorageFreeReadsDf(t *testing.T) {
 	x = &fakeExec{output: []byte("df: /var/lib/containers/storage: No such file or directory"), err: errors.New("exit 1")}
 	if _, err := dispatch(x)(context.Background(), verbStorageFree, []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "No such file") {
 		t.Errorf("a failed df = %v; want the error with df's own words", err)
+	}
+}
+
+// loneStorage is a node that runs no DRBD ([B.145c]).
+func loneStorage() nodestorage.Spec {
+	s := demoStorage(true)
+	s.Resource.Replicated = false
+	s.Resource.Config = ""
+	s.Resource.Device = s.Tiers[0].Mapper()
+	return s
+}
+
+// A lone node's bring-up ends in its static chain target, not in drbd-reactor, and lands no
+// promoter snippet: the same chain, a different trigger ([B.145c]).
+func TestBringUpLoneNode(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	spec := BringUpSpec{Storage: loneStorage(), Promoter: []string{"briard-primary-storage.service", "briard-services.service"}}
+	if err := g.BringUp(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if f.files[reactorPath] != "" {
+		t.Error("a lone node got a promoter snippet for a reactor it does not run")
+	}
+	want := [][]string{
+		{"systemctl", "start", nodeStorageUnit},
+		{"systemctl", "start", chainTarget},
+	}
+	if !reflect.DeepEqual(f.runs, want) {
+		t.Errorf("bring-up sequence = %v, want %v", f.runs, want)
+	}
+}
+
+// ★ THE SECOND BRANCH OF THE ONE PREDICATE ([B.145c]): a lone node reads as Primary and quorate
+// when its chain target is active, Diskful and UpToDate always, with nobody connected -- so
+// Serving() follows the chain and the standby rule's PeerCanTakeOver() says no.
+func TestStatusLoneNodeReadsFromTheChain(t *testing.T) {
+	for _, tc := range []struct {
+		state   string
+		serving bool
+	}{{"active", true}, {"inactive", false}} {
+		f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+			if name == "drbdsetup" {
+				return nil, errors.New("drbdsetup: a lone node asked DRBD")
+			}
+			if name == "systemctl" && len(args) == 2 && args[0] == "is-active" && args[1] == chainTarget {
+				if tc.state != "active" {
+					return []byte(tc.state + "\n"), errors.New("exit status 3")
+				}
+				return []byte("active\n"), nil
+			}
+			return nil, nil
+		}}
+		raw, _ := loneStorage().Marshal()
+		_ = f.WriteFile(nodestorage.Path, raw)
+		g := dial(t, f)
+		cl, err := g.Cluster(context.Background(), "r0")
+		if err != nil {
+			t.Fatalf("chain %s: %v", tc.state, err)
+		}
+		if cl.Serving() != tc.serving || !cl.Quorate || !cl.Diskful || !cl.UpToDate || cl.Connected != 0 || cl.PeerCanTakeOver() {
+			t.Errorf("chain %s: status = %+v", tc.state, cl)
+		}
+	}
+}
+
+// The promoter verbs on a lone node: nothing is ever paused (so the overlap guard passes), pause
+// and resume touch nothing, and evict REFUSES -- a success would promise the work moved.
+func TestReactorVerbsOnALoneNode(t *testing.T) {
+	f := &fakeExec{}
+	raw, _ := loneStorage().Marshal()
+	_ = f.WriteFile(nodestorage.Path, raw)
+	g := dial(t, f)
+	ctx := context.Background()
+	if active, err := g.ReactorActive(ctx); err != nil || !active {
+		t.Errorf("ReactorActive = %t, %v; the overlap guard would refuse every service install", active, err)
+	}
+	if err := g.ReactorPause(ctx, "r0"); err != nil {
+		t.Errorf("pause: %v", err)
+	}
+	if err := g.ReactorResume(ctx, "r0"); err != nil {
+		t.Errorf("resume: %v", err)
+	}
+	if err := g.ReactorEvict(ctx, false, false); err == nil {
+		t.Error("evict succeeded on a node with nobody to hand the work to")
+	}
+	for _, r := range f.runs {
+		if r[0] == "systemctl" || r[0] == "drbd-reactorctl" {
+			t.Errorf("a lone node's promoter verb ran %v", r)
+		}
 	}
 }

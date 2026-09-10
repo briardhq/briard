@@ -52,13 +52,23 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // product's composition -- the DATA_ENCRYPTION knob included -- instead of a second opinion about
 // it. That is the whole point of [V3b.33](d)'s re-cut.
 func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodestorage.Spec, error) {
+	// A RESOURCE IS WORTH RUNNING ONLY WITH TWO COPIES ([B.145]). With one diskful member DRBD
+	// protects nothing and turns any single bad block into a dead node, so a lone anchor runs
+	// btrfs on its LV directly and DRBD is introduced when the second anchor joins. The rule is
+	// the DISKFUL count: a witness beside one anchor is that same lone anchor, and a witness with
+	// nothing to arbitrate between is a spec that must not be written at all.
+	replicated := res.DiskfulPeers() >= 2
+	if diskless && !replicated {
+		return nodestorage.Spec{}, fmt.Errorf("node %s: a diskless node in a mesh with %d diskful member(s) has nothing to arbitrate between", c.Node, res.DiskfulPeers())
+	}
 	spec := nodestorage.Spec{
 		Resource: nodestorage.Resource{
-			Name:     res.Name,
-			Device:   res.Device,
-			Config:   res.Config(),
-			Diskless: diskless,
-			MaxPeers: drbd.MaxPeers,
+			Name:       res.Name,
+			Device:     res.Device,
+			Replicated: replicated,
+			Config:     res.Config(),
+			Diskless:   diskless,
+			MaxPeers:   drbd.MaxPeers,
 			// A DISKLESS NODE NEVER SEEDS, and dropping the flag here is what keeps that
 			// structural rather than a rule somebody has to remember. cfg.FreshInit is computed
 			// from the peer list ("am I the first peer"), which knows nothing about roles, so a
@@ -72,6 +82,10 @@ func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodest
 	if !diskless {
 		tier := dataTier(c.DataEncryption)
 		spec.Tiers = []nodestorage.Tier{tier}
+		// The one field that differs between the topologies: what briard-primary-storage mounts.
+		if !replicated {
+			spec.Resource.Device = tier.Mapper()
+		}
 		// ★ THE TIER THIS NODE BUILDS MUST BE THE DEVICE ITS OWN `on` STANZA ATTACHES. The two
 		// halves are rendered from different places -- the tier from the seam's VG/LV, the .res
 		// from the peer list -- and nothing else in bring-up holds both, so a disagreement

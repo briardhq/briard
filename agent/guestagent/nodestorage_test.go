@@ -22,9 +22,10 @@ const (
 // LUKS, is that device node there, and does create-md refuse. Everything else succeeds.
 type storageFake struct {
 	*fakeExec
-	isLuks   bool            // `cryptsetup isLuks <dev>` exit 0
-	present  map[string]bool // `test -b <path>` exit 0
-	mdRefuse bool            // create-md WITHOUT --force refuses (a node with a replica)
+	isLuks    bool            // `cryptsetup isLuks <dev>` exit 0
+	present   map[string]bool // `test -b <path>` exit 0
+	mdRefuse  bool            // create-md WITHOUT --force refuses (a node with a replica)
+	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata ([B.145c])
 }
 
 func newStorageFake(cpuinfo string) *storageFake {
@@ -51,6 +52,12 @@ func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 		// Two lines, because the real command warns on stderr ahead of the report and Run hands
 		// both back together -- the parser has to read the LAST line.
 		return []byte("  WARNING: nothing to see here\n  4194304 63\n"), nil
+	case name == "drbdmeta":
+		// The lone node's probe: the DRBD magic on the metadata LV. Garbage (a never-written LV
+		// above LUKS) fails it, which is the common case.
+		if !s.mdPresent {
+			return []byte("No valid meta data found"), errors.New("exit status 1")
+		}
 	case name == "drbdadm" && len(args) > 0 && args[0] == "create-md":
 		// The blank-probe: without --force it refuses on a device that already holds metadata
 		// (the prompt meets a closed stdin), which is how a returning node is recognised. With
@@ -96,7 +103,7 @@ func demoTier(mode nodestorage.Mode) nodestorage.Tier {
 func demoSpec(mode nodestorage.Mode, fresh bool) nodestorage.Spec {
 	return nodestorage.Spec{
 		Tiers:    []nodestorage.Tier{demoTier(mode)},
-		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: "RES", FreshInit: fresh, MaxPeers: 4},
+		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "RES", FreshInit: fresh, MaxPeers: 4},
 	}
 }
 
@@ -301,7 +308,7 @@ func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 // nothing touches a block device -- there is none.
 func TestNodeStorageWitness(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	spec := nodestorage.Spec{Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: "RES", Diskless: true}}
+	spec := nodestorage.Spec{Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "RES", Diskless: true}}
 	if err := nodeStorage(context.Background(), f, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -412,5 +419,84 @@ func TestNodeStorageRefusesADiskTooSmallForData(t *testing.T) {
 	}
 	if f.ran("lvcreate") {
 		t.Error("an LV was created on a disk that cannot hold the layout")
+	}
+}
+
+// loneSpec is a node that runs no DRBD ([B.145c]): the data LV is the device, and there is no .res.
+func loneSpec(fresh bool) nodestorage.Spec {
+	s := demoSpec(nodestorage.ModeAuto, fresh)
+	s.Resource.Replicated = false
+	s.Resource.Config = ""
+	s.Resource.Device = s.Tiers[0].Mapper()
+	return s
+}
+
+// ★ THE LONE ROW: the LVs are built and (as the seed) formatted, the topology word says alone,
+// and then NOTHING of DRBD's happens -- no .res, no create-md, no attach, no new-current-uuid.
+// The mount is briard-primary-storage's, off the LV the spec names, exactly as on a flock.
+func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	if err := nodeStorage(context.Background(), f, loneSpec(true)); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ran("mkfs.btrfs", "-f", "/dev/mapper/briardservice-data") {
+		t.Errorf("the seed's LV was not formatted; runs = %v", f.runs)
+	}
+	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=alone\n" {
+		t.Errorf("topology.env = %q, want the word the hold unit keys on", got)
+	}
+	if _, ok := f.files[resPath("r0")]; ok {
+		t.Error("a lone node wrote a .res it will never attach")
+	}
+	for _, forbidden := range [][]string{{"drbdadm"}, {"systemctl", "start", "drbd@r0.target"}, {"modprobe", "drbd"}} {
+		if f.ran(forbidden...) {
+			t.Errorf("a lone node ran %v; runs = %v", forbidden, f.runs)
+		}
+	}
+	if !f.ran("drbdmeta", loneProbeDevice, "v09", "/dev/mapper/briardservice-metadata", "flex-external", "dump-md") {
+		t.Errorf("the metadata probe did not run; runs = %v", f.runs)
+	}
+}
+
+// A returning lone node activates its VG and stops: nothing destructive, and still no DRBD.
+func TestNodeStorageReturningLoneNode(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
+	if err := nodeStorage(context.Background(), f, loneSpec(true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range [][]string{{"lvcreate"}, {"mkfs.btrfs"}, {"drbdadm"}} {
+		if f.ran(forbidden...) {
+			t.Errorf("a returning lone node ran %v; runs = %v", forbidden, f.runs)
+		}
+	}
+	if !f.ran("vgchange", "-ay", "briardservice") {
+		t.Errorf("the VG was not activated; runs = %v", f.runs)
+	}
+}
+
+// ★ THE REFUSE CELL: "alone" in the spec and DRBD metadata on the metadata LV is a node whose
+// host has forgotten its flock, and mounting the LV underneath metadata a peer may still be
+// replicating against is a split-brain factory. Bring-up stops; the volume is not mounted.
+func TestNodeStorageLoneNodeRefusesForeignMetadata(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.mdPresent = true
+	err := nodeStorage(context.Background(), f, loneSpec(true))
+	if err == nil || !strings.Contains(err.Error(), "holds DRBD metadata") {
+		t.Fatalf("err = %v; a forgotten flock's data was brought up alone", err)
+	}
+}
+
+// The word is written on a flock too, so the unit that reads it never finds it missing.
+func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=flock\n" {
+		t.Errorf("topology.env = %q", got)
 	}
 }

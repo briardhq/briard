@@ -17,6 +17,13 @@ func demoRes() drbd.Resource {
 	}
 }
 
+// pairRes is the flock: two diskful members, so the resource is real ([B.145]).
+func pairRes() drbd.Resource {
+	r := demoRes()
+	r.Peers = append(r.Peers, drbd.Peer{Name: "n2", NodeID: 1, Address: "10.0.0.2:7789", Disk: drbd.DataDevice})
+	return r
+}
+
 // ★ THE FENCE THAT MAKES THE SPEC AND THE .RES NAME ONE DEVICE. The host tells the guest which VG
 // and LV to build, and separately tells DRBD which mapper path to attach; if those two stop
 // composing to the same string the node creates a volume and then attaches nothing. Nothing else
@@ -113,7 +120,7 @@ func TestStorageSpecRefusesAnUnknownMode(t *testing.T) {
 // is computed from "am I the first peer", which knows nothing about roles.
 func TestStorageSpecDiskless(t *testing.T) {
 	cfg := Config{Node: "w1", DataEncryption: nodestorage.ModeAuto}
-	spec, err := cfg.StorageSpec(demoRes(), true, true)
+	spec, err := cfg.StorageSpec(pairRes(), true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +130,7 @@ func TestStorageSpecDiskless(t *testing.T) {
 	if spec.Resource.FreshInit {
 		t.Error("a diskless witness carries FreshInit; it holds no volume to declare UpToDate")
 	}
-	if spec.Resource.Config != demoRes().Config() {
+	if spec.Resource.Config != pairRes().Config() {
 		t.Error("a witness still needs the .res -- it attaches nothing but it connects")
 	}
 }
@@ -144,7 +151,7 @@ func TestConfigFromEnvDataEncryption(t *testing.T) {
 // count the metadata is created with -- all from the constants the .res itself is rendered from.
 func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
 	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
-	spec, err := cfg.StorageSpec(demoRes(), false, false)
+	spec, err := cfg.StorageSpec(pairRes(), false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,10 +162,50 @@ func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
 	if !strings.Contains(spec.Resource.Config, "meta-disk "+tier.MetaMapper()+";") {
 		t.Errorf("the .res does not keep its metadata on the LV this node builds:\n%s", spec.Resource.Config)
 	}
-	if spec.Resource.Device != demoRes().Device {
-		t.Errorf("resource device = %q, want %q", spec.Resource.Device, demoRes().Device)
+	if spec.Resource.Device != pairRes().Device {
+		t.Errorf("resource device = %q, want %q", spec.Resource.Device, pairRes().Device)
 	}
 	if spec.Resource.MaxPeers != drbd.MaxPeers {
 		t.Errorf("maxPeers = %d, want the product constant %d", spec.Resource.MaxPeers, drbd.MaxPeers)
+	}
+}
+
+// THE TOPOLOGY RULE ([B.145]): a resource is worth running only with two DISKFUL members. A lone
+// anchor mounts its data LV directly; an anchor beside a witness is that same lone anchor (the
+// witness holds no copy); and a witness in such a mesh is a spec that must not exist.
+func TestStorageSpecLoneNode(t *testing.T) {
+	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
+	spec, err := cfg.StorageSpec(demoRes(), false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tier, _ := spec.Tier(nodestorage.TierData)
+	if spec.Resource.Replicated {
+		t.Error("a mesh of one was marked replicated; DRBD would turn its first bad block into a dead node")
+	}
+	if spec.Resource.Device != tier.Mapper() {
+		t.Errorf("a lone node mounts %q, want its data LV %q", spec.Resource.Device, tier.Mapper())
+	}
+
+	withWitness := demoRes()
+	withWitness.Peers = append(withWitness.Peers, drbd.Peer{Name: "w1", NodeID: 1, Address: "10.0.0.2:7789"})
+	spec, err = cfg.StorageSpec(withWitness, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Resource.Replicated {
+		t.Error("one anchor + a witness was marked replicated: the rule is two DISKFUL members, and a gate written as peers > 0 runs DRBD on exactly the node it exists to spare")
+	}
+	if _, err := (Config{Node: "w1", DataEncryption: nodestorage.ModeAuto}).StorageSpec(withWitness, true, false); err == nil {
+		t.Error("a witness with one diskful member to arbitrate for was given a spec")
+	}
+
+	pair := pairRes()
+	spec, err = cfg.StorageSpec(pair, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.Resource.Replicated || spec.Resource.Device != pair.Device {
+		t.Errorf("two anchors: replicated=%t device=%q, want DRBD on %s", spec.Resource.Replicated, spec.Resource.Device, pair.Device)
 	}
 }

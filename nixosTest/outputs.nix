@@ -353,7 +353,7 @@ in
       drbd-fence = import ./drbd-fence.nix { inherit pkgs fixture guestModule; };
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
-      single-node-promoter = import ./single-node-promoter.nix { inherit pkgs fixture guestModule; }; # peer-less mode
+      single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD ([B.145c])
       runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # grow single-node -> 3-node mesh at runtime
       drbd-loopback-path = import ./drbd-loopback-path.nix { inherit pkgs guestModule; }; # loopback-path gating experiment
       # The maintenance-mode contract (pause → poke → resume). It sat in `integration`

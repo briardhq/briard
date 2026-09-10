@@ -74,6 +74,20 @@ type Resource struct {
 	Peers  []Peer
 }
 
+// DiskfulPeers counts the members that carry a replica -- what decides whether the resource is
+// worth running at all ([B.145]). It is the DISKFUL count on purpose: a witness is diskless, so
+// one anchor beside a witness has one copy and no peer that could hold another, and a gate
+// written as "peers > 0" would run DRBD on exactly the node it exists to spare.
+func (r Resource) DiskfulPeers() int {
+	n := 0
+	for _, p := range r.Peers {
+		if p.Disk != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // Config renders the resource as a drbd.d/<name>.res file. A plain resource uses
 // the connection-mesh form (one address per node, DRBD wires the pairs). A
 // forwarded-witness resource instead uses explicit `connection` stanzas
