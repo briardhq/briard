@@ -154,9 +154,36 @@ pkgs.testers.runNixOSTest {
     print(f"VERDICT (d): bad sector readable={bad_read_d}  GOOD sector readable={good_read_d}  disk={disk_d}")
 
     assert not bad_read_d, "(d) the injector did not fail the read"
-    # The claim: raw-disk behaviour. The damage is confined to the sector that is actually broken.
-    assert good_read_d, "(d) a good sector must still read under pass_on -- if not, pass_on buys nothing"
-    print(f"VERDICT (d): confined damage, disk state is {disk_d}")
+    # MEASURED 2026-09-10 (run 34465547397): good_read_d is FALSE. `pass_on` does NOT confine the
+    # damage on a lone node -- the disk drops to Inconsistent, and `drbd_data_accessible()`
+    # (drbd_state.c:6430) is true only if the LOCAL disk is UpToDate or SOME PEER is. With no peer
+    # there is nothing to fall back to, so `cached_err_io` is set (drbd_state.c:912, the
+    # on-no-data-accessible=io-error arm) and EVERY request on the device fails -- not just the
+    # broken sector. Note quorum was `yes` throughout, so this is NOT the quorum path.
+    # Recorded rather than asserted: the act exists to measure, and both settings failing is the
+    # finding.
+    print(f"VERDICT (d): confined damage={good_read_d} (measured False on 2026-09-10), disk={disk_d}")
+
+    # ── ACT (d2): THE DECISIVE ONE -- does forcing UpToDate restore raw-disk behaviour? ───────
+    # The same predicate says how to escape: `drbd_data_accessible` returns true the moment the
+    # LOCAL disk is UpToDate again. On a lone node that is exactly what
+    # `new-current-uuid --clear-bitmap` asserts -- and the owner's argument for why it is not a lie
+    # here stands ([B.144]): with one copy there is no stale peer and no split brain to be wrong
+    # about. If this restores the good sector while the bad one still fails on its own, then
+    # `pass_on` + forced-UpToDate IS the raw-disk behaviour we wanted, and the single-node design
+    # has an answer. If it does not, DRBD has no lone-node mode that survives one bad sector.
+    forced_rc, forced_out = n.execute("drbdadm new-current-uuid --clear-bitmap r0/0 2>&1")
+    disk_d2 = dstate(n)
+    bad_read_d2 = read_sector(n, BAD)
+    good_read_d2 = read_sector(n, GOOD)
+    show_state(n, "act (d2): pass_on + forced UpToDate")
+    print(f"VERDICT (d2): force rc={forced_rc} out={forced_out!r} disk={disk_d2}")
+    print(f"VERDICT (d2): bad sector readable={bad_read_d2}  GOOD sector readable={good_read_d2}")
+    if good_read_d2 and not bad_read_d2:
+        print("VERDICT (d2): RAW-DISK BEHAVIOUR RESTORED -- pass_on + force is a viable lone-node mode")
+    else:
+        print("VERDICT (d2): NOT restored -- DRBD has no lone-node mode surviving one bad sector;")
+        print("             the DRBD-less single node ([B.144]'s fallback) becomes the only answer")
 
     # ── ACT (e): the trap -- can a lone node in that state come back? ─────────────────────────
     n.shutdown()
