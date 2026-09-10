@@ -155,7 +155,9 @@ pkgs.testers.runNixOSTest {
     anchor2.wait_for_unit("briard-test-fixture-install.service")
     # The REFUSE cell: alone in the spec, DRBD metadata on the LV, no intent -- exactly what a
     # host that forgot its flock would write. Nothing is mounted, nothing is wiped.
-    anchor2.fail("briard-test-storage --alone")
+    rc, _ = anchor2.execute("briard-test-storage --alone")
+    print(anchor2.succeed("journalctl -q -u briard-node-storage.service --no-pager | tail -20"))
+    assert rc != 0, "alone + metadata + no intent was NOT refused"
     anchor2.fail("mountpoint -q /var/lib/briard")
     anchor2.succeed("journalctl -q -u briard-node-storage.service --no-pager | grep -q 'holds DRBD metadata'")
     # With the asserted intent: the metadata is wiped, no resource comes up, the chain does.

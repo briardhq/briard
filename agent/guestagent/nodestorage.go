@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -220,8 +221,16 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 // DRBD device exists on this node.
 func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) bool {
 	data, _ := spec.Tier(nodestorage.TierData)
-	_, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md")
-	return err == nil
+	out, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md")
+	// One line per bring-up, in the unit's journal: the probe decides between rows that differ
+	// by a wipe, so what it saw must be readable after the fact.
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "node storage: no DRBD metadata on %s (%v: %s)\n", data.MetaMapper(), err, first)
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "node storage: DRBD metadata present on %s (%s)\n", data.MetaMapper(), first)
+	return true
 }
 
 // loneNode is the spec × disk rows for a node that runs no DRBD ([B.145c], [B.145d]). The LVs
