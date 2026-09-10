@@ -40,6 +40,8 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import time
     ${h.fixtureHelpers}
+    member = "${member}"
+    hold_secs = ${toString holdSecs}
 
     def state(unit):
         return node1.execute(f"systemctl is-active {unit}")[1].strip()
@@ -105,7 +107,7 @@ pkgs.testers.runNixOSTest {
     node1.fail("systemctl is-active briard-chain.target")
     print("### 4 the hold stopped the chain and unmounted the volume")
     # ...and brought it back, by itself, with the start limit cleared and no reboot.
-    node1.wait_until_succeeds("systemctl is-active briard-chain.target", timeout=holdSecs + 60)
+    node1.wait_until_succeeds("systemctl is-active briard-chain.target", timeout=hold_secs + 60)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     node1.wait_until_succeeds(f"systemctl is-active {member}", timeout=60)
     node1.succeed("mountpoint -q /var/lib/briard")
