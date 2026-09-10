@@ -189,13 +189,20 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	// AND metadata this run created -- the seed of a new flock, or the lone node converting
 	// (its only copy is the data by definition). A joiner is hard-wired FreshInit=false.
 	//
-	// ⚠️ BEFORE ANY PEER CAN CONNECT, which is why the disk is attached on its own first and
-	// the stock target (attach + connect) comes after. `--clear-bitmap` with a peer CONNECTED
-	// declares that peer UpToDate too, with no sync -- the [B.145a] harness lesson, and on a
-	// conversion the joiner may already be up and dialling. Attached but not connected, the
-	// same command marks only this disk, and the joiner then syncs from it for real.
+	// ⚠️ WITH NO PEER CONNECTED, which is why the resource is brought up and then DISCONNECTED
+	// before the word is said. `--clear-bitmap` with a peer CONNECTED declares that peer
+	// UpToDate too, with no sync -- the [B.145a] harness lesson, and on a conversion the joiner
+	// may already be up and dialling. `drbdadm attach` alone cannot do it (the minor does not
+	// exist until `up`, and drbdadm has no new-minor of its own -- measured, "Device minor not
+	// allocated"), so: `up` (which may let a dialling peer in for a moment -- two Inconsistent
+	// disks, nothing syncs, nothing promotes), `disconnect` (synchronous: every connection is
+	// down when it returns), the UUID on this disk alone, and the stock target's adjust below
+	// reconnects. The joiner then syncs from it for real.
 	if created && spec.Resource.FreshInit {
-		if err := run("drbdadm", "attach", spec.Resource.Name); err != nil {
+		if err := run("drbdadm", "up", spec.Resource.Name); err != nil {
+			return err
+		}
+		if err := run("drbdadm", "disconnect", spec.Resource.Name); err != nil {
 			return err
 		}
 		if err := run("drbdadm", "new-current-uuid", "--clear-bitmap", spec.Resource.Name+"/0"); err != nil {
