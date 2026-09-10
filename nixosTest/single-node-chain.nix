@@ -106,7 +106,7 @@ pkgs.testers.runNixOSTest {
             break
     assert state(member) == "failed", f"PRECOND: {member} never crossed its start limit ({state(member)})"
     # The hold ran, and it took the chain down: target inactive, volume unmounted.
-    node1.wait_until_succeeds("journalctl -u briard-promotion-hold.service --no-pager | grep -q .", timeout=30)
+    node1.wait_until_succeeds("journalctl -q -u briard-promotion-hold.service --no-pager | grep -q .", timeout=30)
     node1.wait_until_fails("mountpoint -q /var/lib/briard", timeout=60)
     node1.fail("systemctl is-active briard-chain.target")
     print("### 4 the hold stopped the chain and unmounted the volume")

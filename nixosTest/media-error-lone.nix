@@ -119,7 +119,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("curl -fsS http://192.168.1.100:8080/healthz")
     for unit in fixture_units(node1):
         node1.succeed(f"systemctl is-active {unit}")
-    node1.fail("journalctl -u briard-promotion-hold.service --no-pager | grep -q .")
+    node1.fail("journalctl -q -u briard-promotion-hold.service --no-pager | grep -q .")
     assert node1.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot_id, "the node REBOOTED"
     # A fresh file lands elsewhere and reads back: the volume is not merely surviving, it works.
     node1.succeed("dd if=/dev/urandom of=/var/lib/briard/media-error/after bs=1M count=1 conv=fsync 2>/dev/null")
