@@ -51,8 +51,8 @@ pkgs.testers.runNixOSTest {
     # storage rig. A failure here is unambiguous, because the cipher is asserted before anything
     # else happens.
     node1.succeed("briard-test-storage --seed --mode adiantum")
-    assert "adiantum" in node1.succeed("dmsetup table /dev/mapper/briard-crypt"), \
-        "the volume is not on Adiantum: " + node1.succeed("dmsetup table /dev/mapper/briard-crypt")
+    assert "adiantum" in node1.succeed("dmsetup table /dev/mapper/briardservice-crypt"), \
+        "the volume is not on Adiantum: " + node1.succeed("dmsetup table /dev/mapper/briardservice-crypt")
 
     # Hand off to the promoter. On a mesh-of-one it must promote AND keep its event path
     # live — the bug left it adopted-but-unreactive (IGNORING every event).

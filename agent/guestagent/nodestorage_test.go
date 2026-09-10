@@ -84,7 +84,7 @@ func (s *storageFake) argsOf(words ...string) string {
 }
 
 func demoTier(mode nodestorage.Mode) nodestorage.Tier {
-	return nodestorage.Tier{Name: nodestorage.TierData, Device: "/dev/vdb", VG: "briard", LV: "data", Mode: mode}
+	return nodestorage.Tier{Name: nodestorage.TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", Mode: mode}
 }
 
 func demoSpec(mode nodestorage.Mode, fresh bool) nodestorage.Spec {
@@ -107,9 +107,9 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 		{"cryptsetup", "luksFormat"},
 		{"cryptsetup", "token", "import", "--token-id", "0"},
 		{"cryptsetup", "open"},
-		{"pvcreate", "/dev/mapper/briard-crypt"},
-		{"vgcreate", "briard", "/dev/mapper/briard-crypt"},
-		{"lvcreate", "-l", "100%FREE", "-n", "data", "briard"},
+		{"pvcreate", "/dev/mapper/briardservice-crypt"},
+		{"vgcreate", "briardservice", "/dev/mapper/briardservice-crypt"},
+		{"lvcreate", "-l", "100%FREE", "-n", "data", "briardservice"},
 		{"drbdadm", "create-md", "--force", "r0"},
 		{"systemctl", "start", "drbd@r0.target"},
 		{"drbdadm", "new-current-uuid", "--clear-bitmap", "r0/0"},
@@ -186,7 +186,7 @@ func TestNodeStorageAdiantum(t *testing.T) {
 	if !strings.Contains(args, "--cipher xchacha12,aes-adiantum-plain64") {
 		t.Errorf("luksFormat args = %q, want the Adiantum cipher on a CPU with no AES", args)
 	}
-	if !f.ran("pvcreate", "/dev/mapper/briard-crypt") {
+	if !f.ran("pvcreate", "/dev/mapper/briardservice-crypt") {
 		t.Errorf("the PV is not the crypt device; runs = %v", f.runs)
 	}
 }
@@ -197,7 +197,7 @@ func TestNodeStorageAdiantum(t *testing.T) {
 // created by this run.
 func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briard-data"] = true
+	f.present["/dev/mapper/briardservice-data"] = true
 	f.mdRefuse = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 			t.Errorf("a returning node ran %v; runs = %v", forbidden, f.runs)
 		}
 	}
-	if !f.ran("vgchange", "-ay", "briard") {
+	if !f.ran("vgchange", "-ay", "briardservice") {
 		t.Errorf("the VG was never activated; runs = %v", f.runs)
 	}
 	if !f.ran("drbdadm", "create-md", "r0") || !f.ran("systemctl", "start", "drbd@r0.target") {
@@ -239,7 +239,7 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 			return nil, nil
 		}
 		if name == "vgchange" {
-			f.present["/dev/mapper/briard-data"] = true
+			f.present["/dev/mapper/briardservice-data"] = true
 			return nil, nil
 		}
 		return f.storageRun(name, args)
@@ -247,7 +247,7 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("cryptsetup", "open", "--key-file", luksKeyPath, "/dev/vdb", "briard-crypt") {
+	if !f.ran("cryptsetup", "open", "--key-file", luksKeyPath, "/dev/vdb", "briardservice-crypt") {
 		t.Errorf("the volume was not opened from its own token; runs = %v", f.runs)
 	}
 	if f.files[luksKeyPath] != "s3cret" {

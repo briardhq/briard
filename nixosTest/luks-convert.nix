@@ -37,7 +37,7 @@
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
 
-  vg = "briard";
+  vg = "briardservice";
   lvDev = "/dev/mapper/${vg}-data";
 
   # The data disk, and the CONVERSION TARGETS, in MiB. A target is deliberately LARGER: the seam
@@ -138,8 +138,8 @@ pkgs.testers.runNixOSTest {
     # are the PRODUCT's names, restated here rather than invented: this rig moves the product's
     # own volume, so it has to say what the product said.
     DATA_DISK = "/dev/vdb"
-    CRYPT_NAME = "briard-crypt"
-    CRYPT = "/dev/mapper/briard-crypt"
+    CRYPT_NAME = "briardservice-crypt"
+    CRYPT = "/dev/mapper/briardservice-crypt"
     # The conversion targets, hotplugged. plain0 is the shipped disk itself, named by its serial
     # so `device_del` can retire it once the volume has moved off.
     PLAIN1 = "/dev/disk/by-id/virtio-plain1"

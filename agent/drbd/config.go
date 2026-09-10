@@ -21,7 +21,7 @@ const (
 	// them: the host now names the VG and the LV separately when it renders the node's storage
 	// spec ([V3b.33](d), shared/nodestorage), and three literals that must agree is three
 	// places for them to stop agreeing.
-	DataVG = "briard"
+	DataVG = "briardservice"
 	DataLV = "data"
 	// DataDevice is the mapper path that LV appears at, and what a `.res` names as its backing.
 	//

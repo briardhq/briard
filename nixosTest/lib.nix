@@ -48,7 +48,7 @@ let
   # the production safety config. new-current-uuid then needs the
   # volume id (r0/0) — the one testScript quirk of this form.
   #
-  # A diskful node's backing is `/dev/mapper/briard-data` on every node in the product and in
+  # A diskful node's backing is `/dev/mapper/briardservice-data` on every node in the product and in
   # every rig ([V3b.33]): the single LV of the single-LV VG the guest image's seam unit builds at
   # boot, restated here because a `.res` is text and cannot import Go's `drbd.DataDevice`.
   mkResource =
@@ -64,7 +64,7 @@ let
               if n.diskless or false then
                 "disk none;"
               else
-                "disk /dev/mapper/briard-data; meta-disk internal;"
+                "disk /dev/mapper/briardservice-data; meta-disk internal;"
             }
           }
         }'';
@@ -304,7 +304,7 @@ let
           tiers = lib.optional (!diskless) {
             name = "data";
             device = "/dev/vdb"; # the framework's emptyDiskImages disk, as the product's is
-            vg = "briard";
+            vg = "briardservice";
             lv = "data";
             mode = "auto";
           };

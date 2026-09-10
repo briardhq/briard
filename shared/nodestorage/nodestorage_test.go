@@ -9,14 +9,14 @@ import (
 // a whole document.
 func good() Spec {
 	return Spec{
-		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briard", LV: "data", Mode: ModeAuto}},
+		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", Mode: ModeAuto}},
 		Resource: Resource{Name: "r0", Config: "resource r0 {}\n", FreshInit: true},
 	}
 }
 
 func TestMapper(t *testing.T) {
-	if got := (Tier{VG: "briard", LV: "data"}).Mapper(); got != "/dev/mapper/briard-data" {
-		t.Errorf("Mapper() = %q; DRBD is pointed at /dev/mapper/briard-data and would attach nothing", got)
+	if got := (Tier{VG: "briardservice", LV: "data"}).Mapper(); got != "/dev/mapper/briardservice-data" {
+		t.Errorf("Mapper() = %q; DRBD is pointed at /dev/mapper/briardservice-data and would attach nothing", got)
 	}
 }
 
