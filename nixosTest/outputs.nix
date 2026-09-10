@@ -354,6 +354,11 @@ in
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD ([B.145c])
+      # The exit assertion of [B.145c], a guard since the lone node stopped running DRBD: one bad
+      # sector under a data file costs ONE file, and the node keeps serving. (The [B.144] spike
+      # this grew out of measured the DRBD answer -- whole-volume outage -- and is history at the
+      # item; the flock's companion spike stays in `debug` below.)
+      media-error-lone = import ./media-error-lone.nix { inherit pkgs fixture guestModule; };
       runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # grow single-node -> 3-node mesh at runtime
       drbd-loopback-path = import ./drbd-loopback-path.nix { inherit pkgs guestModule; }; # loopback-path gating experiment
       # The maintenance-mode contract (pause → poke → resume). It sat in `integration`
@@ -453,16 +458,6 @@ in
       # `block()`/`crash()` cannot express, because nothing leaves the cluster — only the edge
       # between the two data nodes fails, and the witness stays reachable from both.
       drbd-link-split = import ./drbd-link-split.nix { inherit pkgs guestModule; };
-      # — **A SPIKE, NOT A GUARD** ([B.144]). What ONE bad sector does to a LONE node, measured
-      # rather than argued: (c) under the shipped `on-io-error detach` a single unreadable sector
-      # takes the WHOLE device away, so sectors that are perfectly fine stop reading too; (d) under
-      # `pass_on` the damage stays confined the way a raw disk would confine it; (e) after a reboot
-      # in that state, can the lone node still promote -- the one question nobody could predict, and
-      # the one that decides whether `pass_on`-when-alone is adoptable. It also proves the mechanism
-      # the per-topology design rests on, that `on-io-error` flips at runtime via `disk-options`.
-      # dm-dust is the injector because an `error` target cannot model a sector that stops failing.
-      # `debug` because it prints verdicts and act (e) deliberately asserts nothing.
-      media-error-lone = import ./media-error-lone.nix { inherit pkgs fixture guestModule; }; # one bad sector costs one file ([B.145c])
       # — **THE COMPANION SPIKE** ([B.144] acts (a)+(b)): the same bad sector on a node that HAS a
       # peer. (a) proves the silent fallback in its purest form -- the read of the BROKEN sector
       # succeeds, served over the network, so nothing above DRBD can tell it happened -- and then
