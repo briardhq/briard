@@ -586,3 +586,21 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 		t.Errorf("alone + metadata + no intent was not refused (err=%v, runs=%v)", err, g.runs)
 	}
 }
+
+// The probe reads ABSENT off one phrase and nothing else: metadata a Primary left "unclean"
+// fails dump-md too (measured on a rebooted failover survivor, [B.145d]) and is metadata all the
+// same -- so a lone spec over it is refused, and only the phrase that means garbage lets it pass.
+func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "drbdmeta" && slices.Contains(args, "dump-md") {
+			return []byte("Found meta data is \"unclean\", please apply-al first"), errors.New("exit status 255")
+		}
+		return f.storageRun(name, args)
+	}
+	if err := nodeStorage(context.Background(), f, loneSpec(true)); err == nil || !strings.Contains(err.Error(), "holds DRBD metadata") {
+		t.Fatalf("err = %v; unclean metadata was read as none, and a forgotten flock's data would have been mounted alone", err)
+	}
+}

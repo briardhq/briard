@@ -222,11 +222,18 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) bool {
 	data, _ := spec.Tier(nodestorage.TierData)
 	out, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md")
+	// ABSENT IS ONE PHRASE, AND EVERYTHING ELSE IS PRESENT. dump-md exits non-zero for more than
+	// garbage: metadata a Primary left behind reads "unclean, please apply-al first" (measured,
+	// [B.145d] -- the survivor of a failover, rebooted), and that is metadata as surely as a
+	// clean dump is. A device drbdmeta cannot open at all lands on the present side too, which
+	// is the conservative one for every row: alone, it refuses rather than mounts; replicated,
+	// it attaches and fails loudly rather than creating over what it could not read.
+	present := err == nil || !strings.Contains(string(out), "No valid meta data found")
 	// One line per bring-up, in the unit's journal: the probe decides between rows that differ
 	// by a wipe, so what it saw must be readable after the fact.
 	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "node storage: no DRBD metadata on %s (%v: %s)\n", data.MetaMapper(), err, first)
+	if !present {
+		fmt.Fprintf(os.Stderr, "node storage: no DRBD metadata on %s (%s)\n", data.MetaMapper(), first)
 		return false
 	}
 	fmt.Fprintf(os.Stderr, "node storage: DRBD metadata present on %s (%s)\n", data.MetaMapper(), first)
