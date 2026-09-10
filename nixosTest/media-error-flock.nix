@@ -153,16 +153,26 @@ pkgs.testers.runNixOSTest {
     print(f"VERDICT (a2): after re-attach disk={dev(node1, 'disk-state')} -- read the KB figure above:")
     print("             ~16 MB on a 256 MB device means bitmap-partial; ~the whole device means a rebuild")
 
+    # ⚠️ THE READ RESULT IS THE WRONG PREDICATE HERE, and the first version of this act used it.
+    # With a peer present the read ALWAYS succeeds -- that is act (a)'s whole finding -- so it says
+    # nothing about whether the sector was repaired. The disk STATE after the read is the answer:
+    # if the device detached again, the resync did not rewrite the block.
     bad_after_reattach = read_sector(node1, BAD)
     disk_a3 = dev(node1, "disk-state")
-    print(f"VERDICT (a3): with the sector still broken, re-attach reached {dev(node1, 'disk-state')};")
-    print(f"              reading the bad sector -> readable={bad_after_reattach}, disk now={disk_a3}")
-    if not bad_after_reattach:
-        print("VERDICT (a3): the resync did NOT repair the sector -- `detach` recovers the DEVICE")
-        print("              but not the DAMAGE, so the next read detaches again. A loop, in a flock too.")
+    print(f"VERDICT (a3): re-attach resynced the region above; reading the still-broken sector")
+    print(f"              -> read succeeded={bad_after_reattach} (always true with a peer), disk now={disk_a3}")
+    if disk_a3 == "Diskless":
+        print("VERDICT (a3): NOT REPAIRED -- the read detached the device AGAIN. `detach` recovers the")
+        print("              DEVICE but not the DAMAGE: nothing recorded which block was bad, because")
+        print("              the out-of-sync bit is set after the bitmap is freed. In a flock this is a")
+        print("              SILENT loop -- the workload keeps being served from the peer while the node")
+        print("              bounces to Diskless on every read of that sector and never settles as a")
+        print("              usable failover target. Only a FULL invalidate would repair it, by")
+        print("              rewriting everything.")
     else:
-        print("VERDICT (a3): the sector reads -- either the resync covered it, or the injector")
-        print("              healed it on write (dm-dust write-fail-count semantics). Check the KB figure.")
+        print(f"VERDICT (a3): the device survived the read (disk={disk_a3}) -- the resync DID cover the")
+        print("              block. Check that the bad sector lies outside every region the test wrote,")
+        print("              or this is the rig measuring its own write window again.")
 
     # Now the disk really is 'replaced', so act (b) starts from a clean device.
     node1.succeed(f"dmsetup message dusty 0 removebadblock {BAD} || true")
