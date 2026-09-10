@@ -34,7 +34,15 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "media-error-lone";
-  nodes.node1 = node;
+  nodes.node1 = {
+    imports = [ node ];
+    # dm-dust is a pass-through, so the PV label written through it is visible on /dev/vdb too
+    # and LVM refuses the "duplicate" (measured: "Cannot use device /dev/mapper/dusty with
+    # duplicates"). Hide the raw disk: the tier is on the dust device and nothing else.
+    environment.etc."lvm/lvm.conf".text = ''
+      devices { global_filter = [ "r|^/dev/vdb$|" ] }
+    '';
+  };
 
   testScript = ''
     import re
