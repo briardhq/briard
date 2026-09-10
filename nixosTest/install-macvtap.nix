@@ -870,6 +870,13 @@ pkgs.testers.runNixOSTest {
     _h[6] = (_h[6] & 0x0F) | 0x50
     _h[8] = (_h[8] & 0x3F) | 0x80
     want_id = _h.hex()
+    # READ THROUGH A WAIT, because this looks at the image FROM THE HOST while the guest is still
+    # flushing it: journald moves the runtime journal under /var/log/journal after the state disk
+    # mounts, and ext4 commits reach the host file on the guest's commit interval -- so a read
+    # taken seconds after CONVERGED can find no directory at all (measured: one run in three).
+    # The wait is on the EXACT id, so a wrong machine-id still times out and the assertion below
+    # still says what was found.
+    host.wait_until_succeeds(f"debugfs -R 'ls -p /journal' {STATE_IMG} 2>/dev/null | cut -d/ -f6 | grep -qx {want_id}", timeout=120)
     journals = host.succeed(f"debugfs -R 'ls -p /journal' {STATE_IMG} 2>/dev/null | cut -d/ -f6 | grep -E '^[0-9a-f]{{32}}$' || true").split()
     assert journals == [want_id], f"the guest's journal on the state disk is under {journals}; want the machine-id derived from the node name, {want_id}"
     # [B.106] the repair landed on the device that was already up, not just on freshly created ones.
