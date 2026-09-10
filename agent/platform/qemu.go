@@ -195,17 +195,7 @@ func qemuArgs(s QEMUSpec) []string {
 		// found here or the guest never boots.
 		args = append(args, "-L", s.DataDir)
 	}
-	if s.SerialLog != "" {
-		// Capture the guest's ttyS0 console (kernel + systemd) for debugging -- APPENDING, because
-		// `-serial file:` truncates on open and this guest is relaunched routinely: every OS
-		// upgrade reboots it, every agent restart re-launches it, and a rollback launches the
-		// PREVIOUS generation. Truncating means the console you need is the one just overwritten
-		// by the boot that replaced it, so the log reliably holds every incarnation except the
-		// interesting one. Measured while debugging a promotion that failed on an earlier boot
-		// than the log could still show.
-		args = append(args, "-chardev", "file,id=serial0,path="+s.SerialLog+",append=on",
-			"-serial", "chardev:serial0")
-	}
+	args = append(args, serialArgs(s)...)
 	// THE DISKS, EVERY ONE AS AN EXPLICIT DEVICE, IN THIS ORDER. `-drive if=virtio` shorthand and
 	// `-device virtio-blk-pci` do not mix: qemu realises the explicit devices FIRST and the
 	// shorthand drives last, so the first time a disk was added by -device (the state disk, which
@@ -667,4 +657,45 @@ func waitForSocket(ctx context.Context, path string) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// DebugChardevID names the chardev behind the guest's debug console (ttyS1). It is created
+// NULL on every launch and only ever points somewhere while `briard debug shell` holds it open
+// (DebugArm/DebugDisarm). Naming it here is what lets a later QMP caller address it.
+const DebugChardevID = "serial1"
+
+// serialArgs renders BOTH of the guest's serial ports. Two, always, in this order.
+//
+// ttyS0 is the CAPTURE: kernel, systemd and the guest's whole journal (it sets
+// ForwardToConsole), appended rather than truncated so a relaunch does not overwrite the boot
+// that explains it. ttyS1 is the DEBUG CONSOLE, where the guest runs an autologin getty --
+// present on every launch, but backed by qemu's `null` chardev, which discards writes and never
+// delivers a byte. It becomes reachable only when DebugArm swaps that backend for a unix socket,
+// and stops being reachable the moment DebugDisarm swaps it back.
+//
+// ORDER IS THE CONTRACT, AND THE EMPTY CASE IS WHY THIS IS A FUNCTION. The guest numbers its
+// ports by -serial POSITION, so the first one emitted is ttyS0. A real install always captures
+// (install.sh sets GUEST_SERIAL), but a launch without a capture is ordinary -- several rigs run
+// that way -- and the old code then emitted no -serial at all, which would now silently promote
+// the debug console to ttyS0: a login prompt where the kernel console belongs, and a getty out
+// from under the unit bound to /dev/ttyS1. Hence a null-backed serial0 stands in when there is
+// nothing to capture, so ttyS1 is ttyS1 on every launch of every node.
+func serialArgs(s QEMUSpec) []string {
+	var a []string
+	if s.SerialLog != "" {
+		// APPENDING, because `-chardev file` truncates on open and this guest is relaunched
+		// routinely: every OS upgrade reboots it, every agent restart re-launches it, and a
+		// rollback launches the PREVIOUS generation. Truncating means the console you need is
+		// the one just overwritten by the boot that replaced it, so the log reliably holds
+		// every incarnation except the interesting one. Measured while debugging a promotion
+		// that failed on an earlier boot than the log could still show.
+		a = append(a, "-chardev", "file,id=serial0,path="+s.SerialLog+",append=on")
+	} else {
+		a = append(a, "-chardev", "null,id=serial0")
+	}
+	return append(a,
+		"-serial", "chardev:serial0",
+		"-chardev", "null,id="+DebugChardevID,
+		"-serial", "chardev:"+DebugChardevID,
+	)
 }

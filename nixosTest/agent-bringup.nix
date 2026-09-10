@@ -158,6 +158,30 @@ pkgs.testers.runNixOSTest {
         timeout=60,
     )
     print("host recovered a dropped control channel (re-dial + resync)")
+
+    # --- the debug console: closed, opened deliberately, closed again ---
+    # The one assertion that cannot be made anywhere else: that ttyS1 really is a root shell in
+    # the guest, and that a normal node is not carrying an open one. Unit tests can prove the
+    # argv and a bare QEMU can prove the chardev moves, but only a booted product image proves
+    # the getty bound to the port and that autologin lands somewhere with a shell.
+    #
+    # Driven with stdin as a PIPE, which is also the degraded path the CLI is written for: no
+    # terminal, so it skips raw mode and just relays. The trailing \035 is Ctrl-] -- the escape,
+    # because the far end is an autologin getty that never hangs up on its own.
+    host.fail("test -e /run/briard/qmp/console.sock")  # a launch must leave the guest closed
+    host.succeed(
+        "(printf '\\n'; sleep 2; printf 'id\\n'; sleep 5; printf '\\035') "
+        "| briard-agent debug shell > /tmp/debug-shell.out 2>&1"
+    )
+    shell_out = host.succeed("cat /tmp/debug-shell.out")
+    print(shell_out)
+    assert "uid=0(root)" in shell_out, f"no root shell on ttyS1:\n{shell_out}"
+    # Closed again on the way out, and the socket is the evidence: nothing else records the
+    # state, so if this file survives the verb, a node stays open after a support call.
+    host.fail("test -e /run/briard/qmp/console.sock")
+    host.succeed("journalctl | grep -q 'debug console ARMED'")
+    host.succeed("journalctl | grep -q 'debug console disarmed'")
+    print("debug console: closed -> root shell -> closed")
     print(host.succeed("journalctl -u briard-agent | tail -30"))
   '';
 }

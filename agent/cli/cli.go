@@ -163,6 +163,14 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "help", "-h", "--help":
 		return runHelp(ctx, args[1:], stdout, stderr)
+	case "debug":
+		// UNDOCUMENTED, AND INTERCEPTED HERE RATHER THAN ADDED TO `commands`, which is the
+		// help's single source of truth: TestEveryCommandIsDocumented walks that table from
+		// both ends, so a row with no help text is precisely what it exists to reject, and a
+		// row WITH help text would advertise a verb that is not part of the product. `help`
+		// is intercepted for the same structural reason. See debug.go for what it opens and
+		// why hiding it is a policy rather than a boundary.
+		return runDebug(ctx, args[1:], stdout, stderr)
 	}
 	for _, c := range commands {
 		if c.name != args[0] || c.run == nil {

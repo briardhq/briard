@@ -484,3 +484,47 @@ func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 		t.Errorf("a shorthand if=virtio drive survived; it would enumerate after every explicit device:\n%s", got)
 	}
 }
+
+// BOTH SERIAL PORTS, ALWAYS, AND ttyS1 SECOND. The guest numbers its ports by -serial position:
+// ttyS0 is the capture `briard logs` reads and ttyS1 is the debug console the guest binds an
+// autologin getty to. If the first port is ever dropped -- which is what the old code did
+// whenever SerialLog was empty, i.e. on every production node -- the debug console silently
+// becomes ttyS0 and the getty binds to a device that is now the log file.
+func TestQEMUArgsSerialPortsAlwaysBothInOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name, serialLog, wantFirst string
+	}{
+		{"with a capture", "/var/log/briard/guest.log", "file,id=serial0,path=/var/log/briard/guest.log,append=on"},
+		{"without one", "", "null,id=serial0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", SerialLog: tc.serialLog}), " ")
+			if !strings.Contains(got, tc.wantFirst) {
+				t.Errorf("serial0 backend missing %q\ngot: %s", tc.wantFirst, got)
+			}
+			iZero := strings.Index(got, "-serial chardev:serial0")
+			iOne := strings.Index(got, "-serial chardev:"+DebugChardevID)
+			if iZero < 0 || iOne < 0 {
+				t.Fatalf("both -serial ports must appear\ngot: %s", got)
+			}
+			if iZero > iOne {
+				t.Errorf("the capture must be ttyS0 (emitted first), the debug console ttyS1\ngot: %s", got)
+			}
+		})
+	}
+}
+
+// The debug console ships DISCONNECTED. Nothing about a launch may create a path into the
+// guest: the port is null-backed until `briard debug shell` arms it over QMP, so a socket path
+// appearing on this command line would mean every node in the field was born open.
+func TestQEMUArgsDebugConsoleIsNullBacked(t *testing.T) {
+	got := strings.Join(qemuArgs(QEMUSpec{
+		Accel: "tcg", ControlSock: "/s", QMPSock: "/run/briard/qmp/guest.sock",
+	}), " ")
+	if !strings.Contains(got, "-chardev null,id="+DebugChardevID) {
+		t.Errorf("the debug console must launch on a null backend\ngot: %s", got)
+	}
+	if strings.Contains(got, "console.sock") {
+		t.Errorf("a launch must never wire the debug console to a socket\ngot: %s", got)
+	}
+}

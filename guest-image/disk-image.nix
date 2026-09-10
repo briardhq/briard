@@ -172,6 +172,54 @@ let
       # drbd-reactor activity during an upgrade.
       services.journald.extraConfig = "ForwardToConsole=yes\nMaxLevelConsole=info";
 
+      # THE DEBUG CONSOLE: ttyS1, and it is connected to nothing until someone opens it.
+      #
+      # The host gives every guest a SECOND serial port whose backend is qemu's `null` chardev
+      # (platform.serialArgs) -- a port that exists, so the getty below can bind to it, wired to
+      # a device that discards writes and never delivers a byte. `briard debug shell` swaps that
+      # backend for a unix socket over QMP (chardev-change) and swaps it back on exit, so a
+      # normal node runs this getty against /dev/null for its whole life and is "open" only
+      # while a root operator on the host is holding it open. A relaunch disarms it too, by
+      # construction: every launch starts the port null-backed again.
+      #
+      # WHY ttyS1 RATHER THAN MAKING ttyS0 TWO-WAY. ttyS0 is the capture -- kernel, systemd and
+      # (just above) the whole journal -- which `briard logs` reads and which is usually the only
+      # account of a boot that went wrong. A shell sharing that wire would be typing into a log
+      # stream and would put a login banner in the middle of the evidence.
+      #
+      # AUTOLOGIN, WITH NO PASSWORD ANYWHERE, and it grants nothing that was not already held.
+      # The only route to this port is a socket in the QMP directory, which the agent creates
+      # 0700 root (platform.secureQMPDir), on a host whose root already owns the guest's disk,
+      # its qemu process and the binary-push channel. A password here would be a shared secret
+      # baked into a public image, guarding a door its only possible holder is already through.
+      # It is also not network-reachable and not reachable by the cloud: QMP is a local unix
+      # socket, and nothing about this rides the directive plane.
+      #
+      # WHAT IT IS NOT is a supported way to operate this appliance, which is why nothing
+      # advertises it -- `briard debug shell` is absent from the CLI's help on purpose. The
+      # containment is not the lock, it is that the guest is DISPOSABLE ([B.86]): the OS moves by
+      # image swap and `briard rescue` rebuilds it from the image, so anything hand-edited in
+      # this root is erased at the next update. Only the data volume survives, and that is
+      # replicated and snapshotted.
+      services.getty.autologinUser = "root";
+      # Instantiated from the upstream template by a Wants= link rather than by declaring
+      # `systemd.services."serial-getty@ttyS1"`, WHICH WOULD BREAK IT: NixOS renders a named
+      # instance as its own unit file, shadowing `serial-getty@.service` for that instance and
+      # taking the template's ExecStart (the agetty invocation, including the --autologin above)
+      # with it. A Wants= link adds no unit and overrides nothing.
+      #
+      # The upstream template carries `BindsTo=dev-%i.device`, so this is self-gating: on a guest
+      # whose host is too old to give it a second serial port, /dev/ttyS1 never appears, the
+      # device unit is never active, and the getty is simply never started -- no failure, no
+      # respawn. That is the case that makes the link safe to ship before every agent has the
+      # host half.
+      systemd.targets.getty.wants = [ "serial-getty@ttyS1.service" ];
+      # ttyS0's getty is masked because ttyS0 is a FILE. With autologin on, the template would
+      # otherwise spawn a root shell against the capture -- writing prompts into the log that
+      # `briard logs` prints, reading input that can never arrive. Nothing was using it: the
+      # login prompt it used to print into the log was never the way into this guest.
+      systemd.services."serial-getty@ttyS0".enable = false;
+
       # EXACTLY ONE NIC IN THIS GUEST DOES DHCP, AND IT IS NOT THIS ONE.
       #
       # The four are fixed and only one faces a network we do not own: eth0 is qemu's SLIRP

@@ -339,3 +339,53 @@ func (g *Guest) Reset(ctx context.Context) error {
 	_, err := qmpExecute(ctx, g.QMPSock, "system_reset", nil)
 	return err
 }
+
+// DebugArm points the guest's debug console (ttyS1) at a unix socket, on a guest that is
+// already running, and returns the path QEMU is now serving.
+//
+// IT IS THE BACKEND THAT MOVES, NOT THE PORT, because QEMU cannot hot-add a serial port at all
+// -- `device_add isa-serial` is refused outright with "Bus 'isa.0' does not support
+// hotplugging" (measured, qemu 10.2.4, the machine type qemuArgs asks for). What it will do is
+// change a chardev under a live frontend, which is why serialArgs gives every guest the port up
+// front with nothing behind it. So arming costs no relaunch: the getty inside the guest has
+// been sitting on that port since boot, reading a device that never had anything to say.
+//
+// QEMU creates the socket, in the QMP directory, which Launch has already made 0700 root
+// (secureQMPDir) -- the same containment as the monitor itself, and the honest one: a caller
+// who can reach QMP can already dump this guest's RAM, so a shell inside it is not a new power.
+func DebugArm(ctx context.Context, qmpSock, consoleSock string) error {
+	_, err := qmpExecute(ctx, qmpSock, "chardev-change", map[string]any{
+		"id": DebugChardevID,
+		"backend": map[string]any{
+			"type": "socket",
+			"data": map[string]any{
+				"addr":   map[string]any{"type": "unix", "data": map[string]any{"path": consoleSock}},
+				"server": true,
+				"wait":   false, // never block the VM on someone connecting
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("platform: arm debug console: %w", err)
+	}
+	return nil
+}
+
+// DebugDisarm puts the debug console back on a null backend. QEMU UNLINKS THE SOCKET when it
+// does, which is the property worth having: "is this node open?" is then a question the
+// filesystem answers, not a claim some state file makes, and nothing can be left behind saying
+// yes when the answer is no. A relaunch disarms just as thoroughly, since every launch starts
+// the port null-backed.
+//
+// Safe to call when the console was never armed -- changing a null backend to a null backend is
+// what QEMU does either way, and the caller is usually a deferred cleanup that cannot know.
+func DebugDisarm(ctx context.Context, qmpSock string) error {
+	_, err := qmpExecute(ctx, qmpSock, "chardev-change", map[string]any{
+		"id":      DebugChardevID,
+		"backend": map[string]any{"type": "null", "data": map[string]any{}},
+	})
+	if err != nil {
+		return fmt.Errorf("platform: disarm debug console: %w", err)
+	}
+	return nil
+}
