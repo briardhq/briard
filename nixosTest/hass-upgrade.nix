@@ -131,7 +131,7 @@ pkgs.testers.runNixOSTest {
     # -r read-only, the exact form the guest agent's data.snapshot verb runs. Taken
     # live: btrfs snapshots atomically (crash-consistent; HA recovers its WAL on open), so it
     # is a valid rollback point without quiescing — an HA-measured fact the revert can lean
-    # on, not the rule: [B.121] has the install path stop the service before snapshotting.
+    # on, not the rule: [B.143] has the install path stop the service before snapshotting.
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
     # THE UPGRADE: install the `to` manifest under the SAME service name. That is what a version

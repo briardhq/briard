@@ -1284,7 +1284,7 @@ func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 // must be a sample of the service as it was — before the rollback point is taken and before
 // anything is written to the volume.
 //
-// ⚠️ It must also stay above whatever [B.121] inserts: that item puts a `stop` before the
+// ⚠️ It must also stay above whatever [B.143] inserts: that item puts a `stop` before the
 // snapshot, and a baseline captured after a stop is a baseline of a service that is not running.
 // This assertion is what will catch that if the two land in the wrong order.
 func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {

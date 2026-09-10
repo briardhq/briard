@@ -347,7 +347,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// already broken before the upgrade is excluded, and only what this change breaks can trip it.
 	// A sample taken any later is a sample of something already disturbed.
 	//
-	// ⚠️ THIS LINE MUST STAY ABOVE THE SNAPSHOT, and above whatever [B.121] inserts: that item
+	// ⚠️ THIS LINE MUST STAY ABOVE THE SNAPSHOT, and above whatever [B.143] inserts: that item
 	// rules the live snapshot wrong and puts a `stop` before it, and a baseline captured after a
 	// stop is a baseline of a service that is not running. Both items edit this function; either
 	// order is fine as long as this stays first.
@@ -364,7 +364,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 
 	// Snapshot the rollback point BEFORE the switch, whenever a service is already installed — its
 	// data is what a broken upgrade can poison, and the read-only snapshot on the replicated
-	// volume is what a failed gate restores. The snapshot is taken live, which [B.121] rules
+	// volume is what a failed gate restores. The snapshot is taken live, which [B.143] rules
 	// wrong — the service is to be stopped first, so the rollback point is application-consistent
 	// and a revert loses no healthy writes; the data is quiesced on the rollback path, where
 	// `data.restore` needs the subvolume's bind released.
