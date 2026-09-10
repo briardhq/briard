@@ -67,7 +67,13 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
-    BAD = 2048          # made unreadable on node1 only
+    # ⚠️ BAD SITS FAR FROM ANYTHING THE TEST WRITES, and that placement IS the experiment.
+    # At sector 2048 (1 MiB) it fell INSIDE the 4 MiB written while diskless, so the re-attach
+    # resync covered it for a reason that had nothing to do with it being broken -- and dm-dust,
+    # which models remap-on-write faithfully ("removed from badblocklist by write"), duly healed
+    # it. That measured the rig, not DRBD. At ~97 MiB it is outside every region this test writes,
+    # so if the resync still covers it, that is DRBD tracking the DAMAGE rather than the WINDOW.
+    BAD = 200000        # made unreadable on node1 only; ~97 MiB in, well past anything written
     GOOD = 8            # never bad -- the control
 
     def dev(m, field):
