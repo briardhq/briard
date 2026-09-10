@@ -56,7 +56,9 @@ pkgs.testers.runNixOSTest {
     # The product's lone-node stack, and a serving chain on it.
     node1.succeed("briard-test-storage --seed --mode off")
     assert node1.succeed("cat /run/briard/topology.env").strip() == "BRIARD_TOPOLOGY=alone"
-    node1.fail("lsmod | grep -qw drbd")
+    rc, out = node1.execute("drbdsetup status --json")
+    assert rc != 0 or out.strip() == "[]", f"a DRBD resource exists on a lone node: {out}"
+| grep -qw drbd")
     node1.succeed("systemctl start briard-chain.target")
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     install_fixture(node1)

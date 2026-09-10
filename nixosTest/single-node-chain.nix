@@ -63,7 +63,12 @@ pkgs.testers.runNixOSTest {
     assert node1.succeed("cat /run/briard/topology.env").strip() == "BRIARD_TOPOLOGY=alone", \
         node1.succeed("cat /run/briard/topology.env")
     node1.fail("test -e /dev/drbd0")
-    node1.fail("lsmod | grep -qw drbd")
+    # The module may be loaded (the image loads it at boot); what matters is that no resource
+    # is configured on it.
+    rc, out = node1.execute("drbdsetup status --json")
+    assert rc != 0 or out.strip() == "[]", f"a DRBD resource exists on a lone node: {out}"
+    node1.fail("test -e /run/briard/drbd.d/r0.res")
+| grep -qw drbd")
     node1.fail("test -e /run/briard/drbd.d/r0.res")
     print("### 1 the LVs are built, the word is alone, and DRBD is nowhere")
 
