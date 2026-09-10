@@ -117,6 +117,13 @@ pkgs.testers.runNixOSTest {
         # tag could match an image the manifest does not name.
         m.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
 
+    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
+    # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
+    # the claim under test, so assert the disk state before removing the only UpToDate copy.
+    for m in machines:
+        if m != primary:
+            m.wait_until_succeeds("drbdadm dstate r0 | grep -qE '^(UpToDate|Diskless)'", timeout=300)
     # Kill the primary abruptly (power-loss shape).
     primary.crash()
     survivors = [m for m in machines if m != primary]

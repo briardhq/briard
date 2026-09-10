@@ -1231,11 +1231,14 @@ pkgs.testers.runNixOSTest {
     # them, and the host rightly pushes nothing (measured: the first cut of this step waited 600 s
     # for a dress the product had no reason to do).
     before = dressed_count(V)
+    # CONVERGED is already in the journal from the install, so a bare grep for it proves nothing
+    # about THIS promotion ([[verification-assertions-must-fail]]): count past what is there --
+    # and count BEFORE the stop, because the relaunched guest converges within a second of being
+    # dressed, inside the poll interval of the wait below (measured: 0.9 s), so a count taken
+    # after that wait already includes the converge it is meant to detect.
+    converges = int(host.succeed("journalctl -u briard-agent | grep -c CONVERGED || true").strip())
     host.succeed("systemctl stop briard-guest.service")
     host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {V} (dressed)') -gt {before} ]", timeout=600)
-    # CONVERGED is already in the journal from the install, so a bare grep for it proves nothing
-    # about THIS promotion ([[verification-assertions-must-fail]]): count past what is there.
-    converges = int(host.succeed("journalctl -u briard-agent | grep -c CONVERGED || true").strip())
     host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c CONVERGED) -gt {converges} ]", timeout=600)
     try:
         client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)

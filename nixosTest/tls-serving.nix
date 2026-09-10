@@ -112,6 +112,11 @@ pkgs.testers.runNixOSTest {
     print("renewed cert hot-reloaded live at the VIP (no restart)")
 
     # ---- TLS survives failover: the RENEWED cert (replicated), same VIP, on the survivor ----
+    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
+    # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
+    # the claim under test, so assert the disk state before removing the only UpToDate copy.
+    survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()
     survivor.wait_until_succeeds("curl -fsS --cacert ${testCertB}/fullchain.pem https://192.168.1.100/healthz")
     print("after failover the survivor serves the renewed cert at the SAME VIP — TLS + renewal survived")
