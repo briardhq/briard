@@ -41,7 +41,7 @@ pkgs.testers.runNixOSTest {
         # The product's own storage bring-up ([V3b.33](d)): build the tier, write the `.res`,
         # create metadata, then attach through the STOCK unit (drbd@<res>.target →
         # drbd@<res>.service → `drbdadm adjust`), which leaves the node Secondary.
-        m.succeed("briard-test-storage")
+        m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
     # The service units come from the RENDERER, not from this file. They are NOT generated yet:
     # converge writes their source and reloads systemd at promotion, so asking for them here
@@ -51,10 +51,6 @@ pkgs.testers.runNixOSTest {
 
     node1.wait_until_succeeds("drbdadm cstate r0 | grep -q Connected")
     # Skip the initial sync so the resource is promotable without force-promotion.
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
 
     # Hand off to the promoter: with r0 provisioned and UpToDate, start
     # drbd-reactor on both nodes. It promotes exactly one (quorum-gated, no

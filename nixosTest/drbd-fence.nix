@@ -45,7 +45,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service") # warm on every node: a survivor must not pull
         m.succeed("modprobe drbd")
-        m.succeed("briard-test-storage")
+        m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
     # Offline failover: sever any default route and assert it's gone, so the
     # self-fence + survivor takeover are proven to need zero internet — a local
@@ -56,10 +56,6 @@ pkgs.testers.runNixOSTest {
         m.fail("ip route show default | grep -q .")
 
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
 
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")

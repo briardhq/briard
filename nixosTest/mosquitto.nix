@@ -65,13 +65,9 @@ pkgs.testers.runNixOSTest {
         # Naming afterwards would leave briard-mdns-services inactive on its ConditionPathExists.
         name_the_flock(m)
         m.succeed("modprobe drbd")
-        m.succeed("briard-test-storage")
+        m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 1")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
     for m in [node1, node2]:
         m.succeed("systemctl start drbd-reactor.service")
 

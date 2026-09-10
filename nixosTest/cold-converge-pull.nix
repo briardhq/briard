@@ -137,9 +137,7 @@ pkgs.testers.runNixOSTest {
     # The node has to be Primary with the volume mounted before anything can be written to it --
     # the same constraint the product's install path lives under, and the reason converge exists.
     node1.succeed("modprobe drbd")
-    node1.succeed("briard-test-storage")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
+    node1.succeed("briard-test-storage --seed")
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)

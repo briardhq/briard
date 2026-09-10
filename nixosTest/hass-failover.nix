@@ -60,7 +60,7 @@ pkgs.testers.runNixOSTest {
         # what makes an offline failover possible, and it is asserted again below the kill.
         m.wait_for_unit("briard-test-fixture-install.service", timeout=900)
         m.succeed("modprobe drbd")
-        m.succeed("briard-test-storage")
+        m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
     # Offline failover — the crux for HA: an outage that triggers failover
     # often kills WAN, and the 2.4 GB image must never be pulled at promotion (warm
@@ -77,10 +77,6 @@ pkgs.testers.runNixOSTest {
 
     # Each node reaches both peers, then we skip the initial sync once.
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
 
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")

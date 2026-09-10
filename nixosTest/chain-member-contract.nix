@@ -85,13 +85,9 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("modprobe drbd")
-        m.succeed("briard-test-storage")
+        m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 1")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]).
-    for m in machines:
-        m.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 

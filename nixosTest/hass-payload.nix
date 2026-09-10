@@ -101,12 +101,8 @@ pkgs.testers.runNixOSTest {
     # that fetches it, and on the failover path a pull would be fatal.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     node1.succeed("modprobe drbd")
-    node1.succeed("briard-test-storage")
+    node1.succeed("briard-test-storage --seed")
     # Single node: no peer to connect to — just make it UpToDate so it's promotable.
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
 
     # Give the node a flock name before anything converges, the way the agent does at bring-up:
     # the per-service names are composed from it, so a node with none routes nothing.

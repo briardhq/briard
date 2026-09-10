@@ -50,17 +50,13 @@ pkgs.testers.runNixOSTest {
         # The image is warmed on both disk nodes before anything promotes: the survivor renders
         # from the volume when it takes over and must not need a pull to do it.
         m.wait_for_unit("briard-test-fixture-install.service")
-        m.succeed("briard-test-storage")
+        m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
     # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
     witness.succeed("briard-test-storage")
     # All three connected (node1 ↔ node2 + the diskless witness), then skip the
     # initial sync. The per-node volume form needs the volume id (r0/0).
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
-    node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    # Arm the one-time format the way BRING-UP does ([B.126]): the product no longer formats on
-    # the promotion path, so a harness that seeds a resource by hand leaves the same marker.
-    node1.succeed("mkdir -p /run/briard && touch /run/briard/data.format")
 
     # Only the disk nodes run the promoter; the witness just votes.
     for m in disk_nodes:
