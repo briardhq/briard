@@ -3,8 +3,9 @@ package guestagent
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
+
+	"briard.io/shared/nodestorage"
 )
 
 // THE FILESYSTEM HALF OF STORAGE, ON THE ONE NODE THAT PROMOTED ([V3b.33](d)).
@@ -14,34 +15,22 @@ import (
 // EVERY node, this does filesystem work only where the volume is mounted, and the cut between
 // them is by scope rather than by tidiness.
 //
-// IT IS THE UNIT FORMERLY SPELLED IN SHELL, and moving it into Go deletes a hazard that unit's
-// own comment records: `[ -e $X ]` with an empty X is a ONE-argument test on the string "-e",
-// which is always TRUE -- so a lost interpolation did not mean "never format", it meant "format
-// on EVERY promotion, on every node". Measured, by doing it: an editing slip emptied the path,
-// drbd-failover went red, and the survivor had reformatted the replicated volume mid-failover. In
-// Go that failure mode does not exist, and the decision becomes unit-testable, which for a
-// destructive act it was not.
-
-// drbdDevice is the replicated device this mounts. One resource, one volume, one device: the
-// number is a product constant, restated in the guest image's `.res` and in the host's config
-// default the way the /run paths are.
-const drbdDevice = "/dev/drbd0"
+// IT NEVER FORMATS ([B.145a]). The one-time format lives in briard-node-storage, in the same
+// process and the same branch as the `lvcreate` that made the volume, so "this is brand new" is
+// a fact known where it is acted on rather than carried here on a marker. What that removes is
+// the shape [B.126] and [V3b.33](d) each had to guard: a destructive operation on a path that runs
+// at every promotion, on every node, forever. There is no such operation on this path now.
 
 // snapshotsDir is the pre-upgrade snapshot store, a sibling of the service data subvolumes rather
 // than a child of one: it replicates with the volume, so it survives a failover.
 func snapshotsDir() string { return filepath.Join(dataMountRoot, ".snapshots") }
 
-// PrimaryStorage formats the volume if -- and only if -- storage bring-up armed the one-time
-// format on this boot, mounts it, and makes the snapshots directory.
+// PrimaryStorage mounts the replicated device the node's storage spec names, and makes the
+// snapshots directory.
 //
-// THE FORMAT IS THE WHOLE RISK HERE and every guard on it is deliberate. The marker is written by
-// briard-node-storage only when this node is the seed of a NEW flock and the metadata was created
-// by that same run; it lives on tmpfs, so it cannot outlive the boot that created the volume,
-// which is what makes "a reboot can never format" a property of the filesystem rather than of our
-// care. It is CONSUMED FIRST, so a format that fails is not retried. And `-f` is right here,
-// where the installer has just claimed the disk for a brand-new flock and overwriting a previous
-// life is the intent -- the bug [B.126] fixed was never the flag, it was a destructive operation
-// on a path that runs at every promotion forever.
+// The device is READ OFF THE SPEC rather than restated as a constant here: the same document the
+// block layer was built from says what sits on top of it, so the mount unit and the storage unit
+// cannot disagree about which device is the volume.
 func PrimaryStorage(ctx context.Context, x Executor) error {
 	run := func(name string, args ...string) error {
 		out, err := x.Run(ctx, name, args...)
@@ -50,27 +39,21 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 		}
 		return nil
 	}
-	if err := run("mkdir", "-p", dataMountRoot); err != nil {
+	raw, err := x.ReadFile(nodestorage.Path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", nodestorage.Path, err)
+	}
+	spec, err := nodestorage.Parse(raw)
+	if err != nil {
 		return err
 	}
-	if _, err := x.ReadFile(dataFormatMarker); err == nil {
-		if err := run("rm", "-f", dataFormatMarker); err != nil {
-			return fmt.Errorf("consume %s: %w", dataFormatMarker, err)
-		}
-		if err := run("mkfs.btrfs", "-f", drbdDevice); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		// A marker we could not READ is not a marker that is absent. Refusing here is the same
-		// direction the rest of this file takes: an unformatted volume fails the mount below,
-		// fails the chain and demotes the node -- loud and recoverable, which "silently
-		// reformatted" is not.
-		return fmt.Errorf("read %s: %w", dataFormatMarker, err)
+	if err := run("mkdir", "-p", dataMountRoot); err != nil {
+		return err
 	}
 	// MOUNT GUARDED, because this unit may be RETRIED ([B.125](b)): mounting an already-mounted
 	// path stacks a second mount rather than failing, so the retry has to ask first.
 	if _, err := x.Run(ctx, "mountpoint", "-q", dataMountRoot); err != nil {
-		if err := run("mount", drbdDevice, dataMountRoot); err != nil {
+		if err := run("mount", spec.Resource.Device, dataMountRoot); err != nil {
 			return err
 		}
 	}

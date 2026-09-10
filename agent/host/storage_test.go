@@ -138,3 +138,27 @@ func TestConfigFromEnvDataEncryption(t *testing.T) {
 		t.Errorf("DATA_ENCRYPTION=off arrived as %q", got)
 	}
 }
+
+// THE TWO-LV LAYOUT REACHES THE SPEC ([B.145a]): the metadata LV by the name the .res's
+// `meta-disk` will look for, the replicated device the mount unit will read, and the peer-slot
+// count the metadata is created with -- all from the constants the .res itself is rendered from.
+func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
+	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
+	spec, err := cfg.StorageSpec(demoRes(), false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tier, _ := spec.Tier(nodestorage.TierData)
+	if tier.MetaLV != drbd.MetaLV || tier.MetaMapper() != drbd.MetaDevice {
+		t.Errorf("metadata LV = %q (%s), want %q (%s)", tier.MetaLV, tier.MetaMapper(), drbd.MetaLV, drbd.MetaDevice)
+	}
+	if !strings.Contains(spec.Resource.Config, "meta-disk "+tier.MetaMapper()+";") {
+		t.Errorf("the .res does not keep its metadata on the LV this node builds:\n%s", spec.Resource.Config)
+	}
+	if spec.Resource.Device != demoRes().Device {
+		t.Errorf("resource device = %q, want %q", spec.Resource.Device, demoRes().Device)
+	}
+	if spec.Resource.MaxPeers != drbd.MaxPeers {
+		t.Errorf("maxPeers = %d, want the product constant %d", spec.Resource.MaxPeers, drbd.MaxPeers)
+	}
+}

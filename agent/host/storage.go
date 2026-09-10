@@ -17,17 +17,19 @@ import (
 // host renders the whole spec here and the guest carries it out.
 
 // dataTier is the one tier every diskful node holds: the replicated volume, on the second virtio
-// disk, as the single-LV VG the seam invariant fences (INVARIANTS §13).
+// disk, as the two-LV VG the seam invariant fences (INVARIANTS §13) -- the data LV and, at the
+// end of the PV, DRBD's external metadata ([B.145a]).
 //
-// The three names come from the two packages that already own them -- the raw device from the
-// file that attaches it, the VG and LV from the package DRBD's backing path is composed in -- so
-// this function introduces no fourth literal for any of them.
+// The names come from the two packages that already own them -- the raw device from the file
+// that attaches it, the VG and LVs from the package DRBD's backing paths are composed in -- so
+// this function introduces no further literal for any of them.
 func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 	return nodestorage.Tier{
 		Name:   nodestorage.TierData,
 		Device: platform.GuestDataDevice,
 		VG:     drbd.DataVG,
 		LV:     drbd.DataLV,
+		MetaLV: drbd.MetaLV,
 		Mode:   mode,
 	}
 }
@@ -53,8 +55,10 @@ func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodest
 	spec := nodestorage.Spec{
 		Resource: nodestorage.Resource{
 			Name:     res.Name,
+			Device:   res.Device,
 			Config:   res.Config(),
 			Diskless: diskless,
+			MaxPeers: drbd.MaxPeers,
 			// A DISKLESS NODE NEVER SEEDS, and dropping the flag here is what keeps that
 			// structural rather than a rule somebody has to remember. cfg.FreshInit is computed
 			// from the peer list ("am I the first peer"), which knows nothing about roles, so a

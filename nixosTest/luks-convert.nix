@@ -2,7 +2,7 @@
 #
 # The item was admitted on a premise that turned out to be false — "format the volume encrypted at
 # install, because you can never add it later". You can. What has to exist in advance is not the
-# encryption, it is a SEAM: a single-LV VG between the disk and DRBD. With one there, disarming a
+# encryption, it is a SEAM: a VG of linear LVs between the disk and DRBD. With one there, disarming a
 # node is a `pvmove` onto a plaintext PV and arming it is the same move back, both with the
 # workload serving throughout; without one there is no table to reload and DRBD would have to
 # close and reopen its backing device.
@@ -41,7 +41,7 @@ let
   lvDev = "/dev/mapper/${vg}-data";
 
   # The data disk, and the CONVERSION TARGETS, in MiB. A target is deliberately LARGER: the seam
-  # unit gives the LV the whole PV, and a LUKS2 header takes ~16 MiB off the front of the target
+  # unit gives the two LVs the whole PV between them, and a LUKS2 header takes ~16 MiB off the front of the target
   # plus another 1 MiB for the PV label, so a target the same size as the source could never hold
   # it. The host sizes the file it hotplugs, so this is its constraint to meet -- and meeting it
   # is why the seam reserves nothing on every node forever.
@@ -195,10 +195,13 @@ pkgs.testers.runNixOSTest {
 
 
     def move(m, src, dst, label):
-        """One `pvmove --atomic`, timed. Atomic so the LV is either wholly on the source or wholly
-        on the target: an interrupted conversion has no third state to be recovered from."""
+        """One `pvmove --atomic`, timed. Atomic so the LVs are either wholly on the source or wholly
+        on the target: an interrupted conversion has no third state to be recovered from. BOTH LVs
+        move -- data and DRBD's metadata beside it ([B.145a]) -- because the pair travels together:
+        a `vgreduce` of the source with either left behind is refused, and a data LV on one PV with
+        its metadata on another is a layout nobody decided on."""
         t0 = now(m)
-        m.succeed(f"pvmove --atomic -n data {src} {dst}", timeout=1800)
+        m.succeed(f"pvmove --atomic {src} {dst}", timeout=1800)
         t1 = now(m)
         secs = (t1 - t0) / 1e9
         print(f"[{label}] pvmove {src} -> {dst}: {secs:.1f}s for {lv_mb(m)} MiB "
@@ -207,8 +210,8 @@ pkgs.testers.runNixOSTest {
 
 
     def lv_mb(m):
-        """The LV size as the PRODUCT chose it -- the seam unit gives it the whole PV, so this rig
-        reads the number rather than restating one it did not decide."""
+        """The data LV's size as the PRODUCT chose it -- the seam unit gives it the PV less the
+        metadata LV's share, so this rig reads the number rather than restating one it did not decide."""
         return int(float(m.succeed(f"lvs --noheadings --units m --nosuffix -o lv_size {LV}").strip()))
 
 

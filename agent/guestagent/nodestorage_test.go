@@ -3,6 +3,7 @@ package guestagent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -45,11 +46,16 @@ func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 		if !s.present[args[1]] {
 			return nil, errors.New("exit status 1")
 		}
+	case name == "vgs":
+		// A 256 MiB PV: 4 MiB extents, 63 of them once LVM has taken its label and metadata area.
+		// Two lines, because the real command warns on stderr ahead of the report and Run hands
+		// both back together -- the parser has to read the LAST line.
+		return []byte("  WARNING: nothing to see here\n  4194304 63\n"), nil
 	case name == "drbdadm" && len(args) > 0 && args[0] == "create-md":
 		// The blank-probe: without --force it refuses on a device that already holds metadata
 		// (the prompt meets a closed stdin), which is how a returning node is recognised. With
 		// --force there is nothing to refuse.
-		if s.mdRefuse && args[1] != "--force" {
+		if s.mdRefuse && !slices.Contains(args, "--force") {
 			return []byte("v09 meta data already in place"), errors.New("exit status 20")
 		}
 	}
@@ -84,13 +90,13 @@ func (s *storageFake) argsOf(words ...string) string {
 }
 
 func demoTier(mode nodestorage.Mode) nodestorage.Tier {
-	return nodestorage.Tier{Name: nodestorage.TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", Mode: mode}
+	return nodestorage.Tier{Name: nodestorage.TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: mode}
 }
 
 func demoSpec(mode nodestorage.Mode, fresh bool) nodestorage.Spec {
 	return nodestorage.Spec{
 		Tiers:    []nodestorage.Tier{demoTier(mode)},
-		Resource: nodestorage.Resource{Name: "r0", Config: "RES", FreshInit: fresh},
+		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: "RES", FreshInit: fresh, MaxPeers: 4},
 	}
 }
 
@@ -109,8 +115,10 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 		{"cryptsetup", "open"},
 		{"pvcreate", "/dev/mapper/briardservice-crypt"},
 		{"vgcreate", "briardservice", "/dev/mapper/briardservice-crypt"},
-		{"lvcreate", "-l", "100%FREE", "-n", "data", "briardservice"},
-		{"drbdadm", "create-md", "--force", "r0"},
+		{"lvcreate", "-l", "61", "-n", "data", "briardservice"},
+		{"lvcreate", "-l", "100%FREE", "-n", "metadata", "briardservice"},
+		{"mkfs.btrfs", "-f", "/dev/mapper/briardservice-data"},
+		{"drbdadm", "create-md", "--max-peers=4", "--force", "r0"},
 		{"systemctl", "start", "drbd@r0.target"},
 		{"drbdadm", "new-current-uuid", "--clear-bitmap", "r0/0"},
 	} {
@@ -121,8 +129,21 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 	if f.files[resPath("r0")] != "RES" {
 		t.Errorf(".res = %q, want the host's rendering", f.files[resPath("r0")])
 	}
-	if _, ok := f.files[dataFormatMarker]; !ok {
-		t.Errorf("the seed left no %s; the volume would never be formatted", dataFormatMarker)
+	// THE ORDER IS THE SAFETY: the format runs after the LVs exist and BEFORE DRBD attaches the
+	// backing exclusively -- and only this once, on a volume this run created.
+	var lv, mkfs, attach int
+	for i, r := range f.runs {
+		switch {
+		case r[0] == "lvcreate" && slices.Contains(r, "metadata"):
+			lv = i
+		case r[0] == "mkfs.btrfs":
+			mkfs = i
+		case r[0] == "systemctl" && slices.Contains(r, "drbd@r0.target"):
+			attach = i
+		}
+	}
+	if !(lv < mkfs && mkfs < attach) {
+		t.Errorf("format out of order (lvcreate %d, mkfs %d, attach %d): %v", lv, mkfs, attach, f.runs)
 	}
 	// The cipher and the pinned data offset are the two things the HOST also depends on: its
 	// header backup copies exactly this prefix (agent/host/luksheader.go).
@@ -198,6 +219,7 @@ func TestNodeStorageAdiantum(t *testing.T) {
 func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardservice-metadata"] = true
 	f.mdRefuse = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
@@ -207,7 +229,8 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 		{"pvcreate"},
 		{"vgcreate"},
 		{"lvcreate"},
-		{"drbdadm", "create-md", "--force"},
+		{"mkfs.btrfs"},
+		{"drbdadm", "create-md", "--max-peers=4", "--force"},
 		{"drbdadm", "new-current-uuid"},
 	} {
 		if f.ran(forbidden...) {
@@ -217,11 +240,8 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	if !f.ran("vgchange", "-ay", "briardservice") {
 		t.Errorf("the VG was never activated; runs = %v", f.runs)
 	}
-	if !f.ran("drbdadm", "create-md", "r0") || !f.ran("systemctl", "start", "drbd@r0.target") {
+	if !f.ran("drbdadm", "create-md", "--max-peers=4", "r0") || !f.ran("systemctl", "start", "drbd@r0.target") {
 		t.Errorf("the resource was not brought up; runs = %v", f.runs)
-	}
-	if _, ok := f.files[dataFormatMarker]; ok {
-		t.Error("a returning node armed the one-time format; a reboot would reformat the volume")
 	}
 }
 
@@ -240,6 +260,7 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 		}
 		if name == "vgchange" {
 			f.present["/dev/mapper/briardservice-data"] = true
+			f.present["/dev/mapper/briardservice-metadata"] = true
 			return nil, nil
 		}
 		return f.storageRun(name, args)
@@ -280,7 +301,7 @@ func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 // nothing touches a block device -- there is none.
 func TestNodeStorageWitness(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	spec := nodestorage.Spec{Resource: nodestorage.Resource{Name: "r0", Config: "RES", Diskless: true}}
+	spec := nodestorage.Spec{Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: "RES", Diskless: true}}
 	if err := nodeStorage(context.Background(), f, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -314,5 +335,82 @@ func TestNodeStorageRefusesAMissingSpec(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	if err := NodeStorage(context.Background(), f); err == nil {
 		t.Error("a node with no spec built storage anyway")
+	}
+}
+
+// A JOINER'S FRESH LVs ARE LEFT BLANK: the same blank-disk path builds them, and neither the
+// format nor the UpToDate declaration runs, because the resync from the primary is what fills
+// them. FreshInit=false is the whole of the difference, and it is the host's to state.
+func TestNodeStorageJoinerBuildsButNeverFormats(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ran("lvcreate", "-l", "61", "-n", "data", "briardservice") || !f.ran("lvcreate", "-l", "100%FREE", "-n", "metadata", "briardservice") {
+		t.Errorf("the joiner did not build its LVs; runs = %v", f.runs)
+	}
+	if !f.ran("drbdadm", "create-md", "--max-peers=4", "--force", "r0") {
+		t.Errorf("fresh metadata was not created with --force; runs = %v", f.runs)
+	}
+	for _, forbidden := range [][]string{{"mkfs.btrfs"}, {"drbdadm", "new-current-uuid"}} {
+		if f.ran(forbidden...) {
+			t.Errorf("a joiner ran %v; it would split-brain against the primary", forbidden)
+		}
+	}
+}
+
+// A VOLUME FROM BEFORE THE METADATA LV has a data LV and nowhere for DRBD to write: refuse by
+// name rather than fail three steps later on a path that reads like a broken .res. The alpha's
+// answer is a reinstall, and the message says so.
+func TestNodeStorageRefusesAVolumeWithoutAMetadataLV(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.present["/dev/mapper/briardservice-data"] = true
+	err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false))
+	if err == nil || !strings.Contains(err.Error(), "reinstall") {
+		t.Fatalf("err = %v, want a refusal that says to reinstall", err)
+	}
+	for _, forbidden := range [][]string{{"lvcreate"}, {"drbdadm"}, {"systemctl"}, {"mkfs.btrfs"}} {
+		if f.ran(forbidden...) {
+			t.Errorf("ran %v on a volume it had refused", forbidden)
+		}
+	}
+}
+
+// The split is DRBD's requirement rounded up to extents plus one -- so it grows with the disk
+// and the peer count, and never rounds to zero.
+func TestMetadataExtents(t *testing.T) {
+	const mib = 1 << 20
+	for _, tc := range []struct {
+		dataBytes, extent int64
+		peers             int
+		want              int64
+	}{
+		{256 * mib, 4 * mib, 4, 2},       // ~1 MiB needed -> 1 extent, plus the margin
+		{1 << 40, 4 * mib, 4, 34},        // 1 TiB x 4 peers = 128 MiB of bitmap, +1 MiB, +1 extent
+		{1 << 40, 4 * mib, 1, 10},        // ...and a quarter of that for one peer
+		{10 * mib, 4 * mib, 4, 2},        // tiny disks still get a whole extent and the margin
+		{3 * (1 << 40), 32 * mib, 4, 14}, // bigger extents round up the same way
+	} {
+		if got := metadataExtents(tc.dataBytes, tc.extent, tc.peers); got != tc.want {
+			t.Errorf("metadataExtents(%d, %d, %d) = %d, want %d", tc.dataBytes, tc.extent, tc.peers, got, tc.want)
+		}
+	}
+}
+
+// A disk too small to hold even the metadata is refused before anything is created on it.
+func TestNodeStorageRefusesADiskTooSmallForData(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "vgs" {
+			return []byte("  4194304 2\n"), nil
+		}
+		return f.storageRun(name, args)
+	}
+	err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeOff, true))
+	if err == nil || !strings.Contains(err.Error(), "too small") {
+		t.Fatalf("err = %v, want a refusal naming the size", err)
+	}
+	if f.ran("lvcreate") {
+		t.Error("an LV was created on a disk that cannot hold the layout")
 	}
 }

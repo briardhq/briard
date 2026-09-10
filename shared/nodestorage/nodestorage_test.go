@@ -9,8 +9,8 @@ import (
 // a whole document.
 func good() Spec {
 	return Spec{
-		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", Mode: ModeAuto}},
-		Resource: Resource{Name: "r0", Config: "resource r0 {}\n", FreshInit: true},
+		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: ModeAuto}},
+		Resource: Resource{Name: "r0", Device: "/dev/drbd0", Config: "resource r0 {}\n", FreshInit: true, MaxPeers: 4},
 	}
 }
 
@@ -71,6 +71,18 @@ func TestValidate(t *testing.T) {
 	unnamed := good()
 	unnamed.Tiers[0].Name = ""
 
+	noResDev := good()
+	noResDev.Resource.Device = ""
+
+	noSlots := good()
+	noSlots.Resource.MaxPeers = 0
+
+	noMeta := good()
+	noMeta.Tiers[0].MetaLV = ""
+
+	sameLV := good()
+	sameLV.Tiers[0].MetaLV = "data"
+
 	for _, tc := range []struct {
 		name string
 		spec Spec
@@ -86,6 +98,10 @@ func TestValidate(t *testing.T) {
 		{"no resource", noRes, "names no resource"},
 		{"a resource with no .res", noResCfg, "carries no .res"},
 		{"a tier with no name", unnamed, "has no name"},
+		{"a resource with no device", noResDev, "not a device path"},
+		{"metadata with no peer slots", noSlots, "at least one peer slot"},
+		{"a tier with no metadata LV", noMeta, "has no metaLV name"},
+		{"data and metadata on one LV", sameLV, "both called"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.spec.Validate()
@@ -102,7 +118,7 @@ func TestValidate(t *testing.T) {
 		t.Errorf("the shipped shape was refused: %v", err)
 	}
 	// A witness IS a legitimate spec: the .res and the attach, and no tier at all.
-	w := Spec{Resource: Resource{Name: "r0", Config: "resource r0 {}\n", Diskless: true}}
+	w := Spec{Resource: Resource{Name: "r0", Device: "/dev/drbd0", Config: "resource r0 {}\n", Diskless: true}}
 	if err := w.Validate(); err != nil {
 		t.Errorf("a diskless witness was refused: %v", err)
 	}
@@ -151,5 +167,32 @@ func TestParseRefusesUnknownFields(t *testing.T) {
 func TestParseValidates(t *testing.T) {
 	if _, err := Parse([]byte(`{"tiers":[],"resource":{"name":"r0","config":"x"}}`)); err == nil {
 		t.Error("a diskful spec with no tiers parsed")
+	}
+}
+
+func TestMetaMapper(t *testing.T) {
+	if got := (Tier{VG: "briardservice", MetaLV: "metadata"}).MetaMapper(); got != "/dev/mapper/briardservice-metadata" {
+		t.Errorf("MetaMapper() = %q", got)
+	}
+}
+
+// DRBD's requirement, restated: one bitmap bit per 4 KiB block per peer, in 4 KiB pages, plus a
+// MiB for the activity log, the superblock and the rounding. The numbers below are the ones a
+// reader can check by hand, which is the point of a formula that stands in for drbdmeta's.
+func TestMetadataBytes(t *testing.T) {
+	const mib = 1 << 20
+	for _, tc := range []struct {
+		data  int64
+		peers int
+		want  int64
+	}{
+		{1 << 40, 1, 32*mib + mib},   // 1 TiB / 32768 = 32 MiB of bitmap for one peer
+		{1 << 40, 4, 128*mib + mib},  // ...times the slots
+		{256 * mib, 4, 4*8192 + mib}, // 256 MiB / 32768 = 8 KiB (two pages already), times four
+		{1, 1, 4096 + mib},           // never zero, never below a page
+	} {
+		if got := MetadataBytes(tc.data, tc.peers); got != tc.want {
+			t.Errorf("MetadataBytes(%d, %d) = %d, want %d", tc.data, tc.peers, got, tc.want)
+		}
 	}
 }

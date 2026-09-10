@@ -75,13 +75,15 @@ func (m Mode) Valid() bool {
 	return false
 }
 
-// Tier is one block-storage tier this node holds: the raw device, the single-LV VG built on it
-// (via LUKS, per Mode), and the LV DRBD -- or a later consumer -- attaches to.
+// Tier is one block-storage tier this node holds: the raw device, the VG built on it (via LUKS,
+// per Mode), and its two LVs -- the data LV DRBD attaches to and the metadata LV it keeps its
+// external metadata on ([B.145a]).
 //
-// THE SINGLE LV IS THE SEAM ([V3b.33], INVARIANTS §13). Its table is one `linear` line, so the
-// backing can be moved onto an encrypted PV and back with `pvmove` while the device object above
-// it never closes. Anything that adds a second dm layer here (striped, cached, thin) stops the
-// seam being free, which is why the oracle fences the shape rather than trusting this document.
+// THE LINEAR LV IS THE SEAM ([V3b.33], INVARIANTS §13). The data LV's table is one `linear` line,
+// so the backing can be moved onto an encrypted PV and back with `pvmove` while the device object
+// above it never closes. Anything that adds a second dm layer here (striped, cached, thin) stops
+// the seam being free, which is why the oracle fences the shape rather than trusting this
+// document.
 type Tier struct {
 	// Name is what this tier is called in logs, the report card and later specs -- "data" for
 	// the replicated volume every node has today. Unique within a spec.
@@ -89,12 +91,18 @@ type Tier struct {
 	// Device is the raw block device the tier is built on, e.g. /dev/vdb. A HARDWARE FACT of
 	// the VM the host builds, which is why it can be stated here rather than discovered.
 	Device string `json:"device"`
-	// VG and LV name the volume group and the single logical volume inside it. Both are
+	// VG and LV name the volume group and the data logical volume inside it. Both are
 	// carried explicitly rather than derived from Name: what DRBD's .res file already names is
 	// a mapper path, and a document that recomputed it from a tier name would be a second
 	// opinion about the same string.
 	VG string `json:"vg"`
 	LV string `json:"lv"`
+	// MetaLV names the SECOND logical volume in the VG: DRBD's external metadata ([B.145a]).
+	// It sits at the END of the PV at a size computed from the data LV (MetadataBytes), which
+	// is DRBD's own internal-metadata placement spelled in LVM -- and what makes a filesystem
+	// that already fills the data LV convertible to a replicated one in place: `create-md`
+	// writes here and never has to shrink anything.
+	MetaLV string `json:"metaLV"`
 	// Mode is this tier's encryption policy. Per tier because LUKS sits UNDER DRBD, so the
 	// choice is a node-local one -- which is also what makes the AES axis free.
 	Mode Mode `json:"mode"`
@@ -110,11 +118,45 @@ type Tier struct {
 // scheme -- and our names have never had one.
 func (t Tier) Mapper() string { return "/dev/mapper/" + t.VG + "-" + t.LV }
 
+// MetaMapper is the metadata LV's path, and therefore what a resource config names as
+// `meta-disk`. Same composition, same dash rule, as Mapper.
+func (t Tier) MetaMapper() string { return "/dev/mapper/" + t.VG + "-" + t.MetaLV }
+
+// MetadataBytes is how much external metadata DRBD needs for a data device of dataBytes with
+// room for maxPeers peers -- the size the metadata LV is created at.
+//
+// THE FORMULA IS DRBD's, restated so the LV can be carved before drbdmeta ever runs: the bitmap
+// keeps one bit per 4 KiB block PER PEER (so dataBytes/32768 bytes a peer), plus the activity log
+// (32 KiB at the default stripe) and the superblock. The trailing MiB covers those two and rounds
+// the answer away from "byte-tight": `drbdmeta` refuses a device that is too small and is content
+// with one that is too large, so erring up is free and erring down is a conversion that fails at
+// the one moment it must not. The caller rounds up to whole extents and adds one more.
+//
+// ⚠️ maxPeers IS BAKED INTO THE METADATA at create-md and cannot be changed without recreating it
+// (a full resync), which is why it is carried in the spec and passed explicitly rather than left
+// to drbdadm's default of "however many peers the .res names today".
+func MetadataBytes(dataBytes int64, maxPeers int) int64 {
+	const blocksPerByte = 4096 * 8 // one bitmap bit per 4 KiB block, eight bits a byte
+	perPeer := (dataBytes + blocksPerByte - 1) / blocksPerByte
+	perPeer = (perPeer + 4095) &^ 4095 // the bitmap is written in 4 KiB pages
+	return perPeer*int64(maxPeers) + 1<<20
+}
+
 // Resource is the DRBD half of the node's storage bring-up: the host-rendered .res file, and the
 // two facts that decide what is done with it.
 type Resource struct {
 	// Name is the resource, e.g. "r0".
 	Name string `json:"name"`
+	// Device is the replicated block device the resource presents, e.g. /dev/drbd0 -- what the
+	// .res names as `device` and what briard-primary-storage mounts. Carried so the mount unit
+	// reads the device off the same document the block layer was built from ([B.145a]) rather
+	// than restating a constant beside it.
+	Device string `json:"device"`
+	// MaxPeers is the number of peer slots the metadata is created with (`create-md
+	// --max-peers`). A product constant the host states, because it is baked into the metadata
+	// and the .res at creation time names fewer peers than a flock will ever have: a mesh of one
+	// would otherwise get ONE slot, and the second anchor's join would need new metadata.
+	MaxPeers int `json:"maxPeers,omitempty"`
 	// Config is the rendered drbd.d/<name>.res, straight from drbd.Resource.Config(). The host
 	// renders it because the mesh is the host's knowledge -- peers, addresses, witness
 	// topology -- and the guest has never composed one.
@@ -195,6 +237,9 @@ func (s Spec) Validate() error {
 	if s.Resource.Config == "" {
 		return fmt.Errorf("node storage: resource %s carries no .res config", s.Resource.Name)
 	}
+	if !strings.HasPrefix(s.Resource.Device, "/dev/") {
+		return fmt.Errorf("node storage: resource %s: %q is not a device path", s.Resource.Name, s.Resource.Device)
+	}
 	if s.Resource.Diskless {
 		// A witness with tiers is a spec built by something that thinks it is diskful. Refuse
 		// rather than ignore: silently skipping them would hide the disagreement until someone
@@ -209,6 +254,9 @@ func (s Spec) Validate() error {
 	}
 	if len(s.Tiers) == 0 {
 		return fmt.Errorf("node storage: a diskful node with no tiers has nothing for %s to attach", s.Resource.Name)
+	}
+	if s.Resource.MaxPeers < 1 {
+		return fmt.Errorf("node storage: resource %s: maxPeers %d -- metadata needs at least one peer slot, and the number is baked in at create-md", s.Resource.Name, s.Resource.MaxPeers)
 	}
 	seen := make(map[string]bool, len(s.Tiers))
 	for _, t := range s.Tiers {
@@ -227,6 +275,12 @@ func (s Spec) Validate() error {
 		}
 		if err := lvmName(t.Name, "lv", t.LV); err != nil {
 			return err
+		}
+		if err := lvmName(t.Name, "metaLV", t.MetaLV); err != nil {
+			return err
+		}
+		if t.MetaLV == t.LV {
+			return fmt.Errorf("node storage: tier %s: the data and metadata LVs are both called %q", t.Name, t.LV)
 		}
 		if !t.Mode.Valid() {
 			return fmt.Errorf("node storage: tier %s: %q is not an encryption mode", t.Name, t.Mode)

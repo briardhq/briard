@@ -52,7 +52,7 @@ func TestResourceConfigForwardedWitness(t *testing.T) {
 		volume 0 {
 			device /dev/drbd0;
 			disk /dev/vdb;
-			meta-disk internal;
+			meta-disk /dev/mapper/briardservice-metadata;
 		}
 	}
 	on n2 {
@@ -60,7 +60,7 @@ func TestResourceConfigForwardedWitness(t *testing.T) {
 		volume 0 {
 			device /dev/drbd0;
 			disk /dev/vdb;
-			meta-disk internal;
+			meta-disk /dev/mapper/briardservice-metadata;
 		}
 	}
 	on cloud-witness {
@@ -132,7 +132,7 @@ func TestResourceConfig(t *testing.T) {
 		volume 0 {
 			device /dev/drbd0;
 			disk /dev/vdb;
-			meta-disk internal;
+			meta-disk /dev/mapper/briardservice-metadata;
 		}
 	}
 	on node2 {
@@ -141,7 +141,7 @@ func TestResourceConfig(t *testing.T) {
 		volume 0 {
 			device /dev/drbd0;
 			disk /dev/vdb;
-			meta-disk internal;
+			meta-disk /dev/mapper/briardservice-metadata;
 		}
 	}
 	on witness {
@@ -169,7 +169,7 @@ func TestResourceConfigDisklessWitness(t *testing.T) {
 	if n := strings.Count(got, "disk none;"); n != 1 {
 		t.Errorf("want exactly 1 diskless volume, got %d", n)
 	}
-	if n := strings.Count(got, "meta-disk internal;"); n != 2 {
+	if n := strings.Count(got, "meta-disk /dev/mapper/briardservice-metadata;"); n != 2 {
 		t.Errorf("want 2 disk-backed volumes with meta-disk, got %d", n)
 	}
 }

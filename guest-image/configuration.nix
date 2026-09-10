@@ -17,7 +17,7 @@ let
   # while DRBD never closes its device. A bare disk has no table to reload, which is why the seam
   # had to exist before the encryption did.
   #
-  # It is nearly free because a single-LV VG IS dm-linear -- one table line, the same target and
+  # It is nearly free because a linear LV IS dm-linear -- one table line, the same target and
   # the same linear_map() a bare disk would have had. Everything LVM adds sits outside the data
   # path (a PV label, a 1 MiB metadata area, userspace, udev), and two of those additions are why
   # LVM beats raw `dmsetup` here: nothing has to rebuild a table at every boot, and "which backing
@@ -1236,6 +1236,7 @@ in
         pkgs.cryptsetup
         pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here ([V3b.33](a))
         pkgs.drbd # drbdadm create-md / new-current-uuid
+        pkgs.btrfs-progs # mkfs.btrfs, once, on the LV this unit just created ([B.145a])
         pkgs.coreutils # install, test, rm
         config.systemd.package # systemctl start drbd@<res>.target
       ];

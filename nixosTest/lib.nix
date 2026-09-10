@@ -49,8 +49,9 @@ let
   # volume id (r0/0) — the one testScript quirk of this form.
   #
   # A diskful node's backing is `/dev/mapper/briardservice-data` on every node in the product and in
-  # every rig ([V3b.33]): the single LV of the single-LV VG the guest image's seam unit builds at
-  # boot, restated here because a `.res` is text and cannot import Go's `drbd.DataDevice`.
+  # every rig ([V3b.33]), with DRBD's metadata beside it on `briardservice-metadata` ([B.145a]): the
+  # two LVs briard-node-storage builds from the host's spec, restated here because a `.res` is text
+  # and cannot import Go's `drbd.DataDevice` / `drbd.MetaDevice`.
   mkResource =
     nodes:
     let
@@ -64,7 +65,7 @@ let
               if n.diskless or false then
                 "disk none;"
               else
-                "disk /dev/mapper/briardservice-data; meta-disk internal;"
+                "disk /dev/mapper/briardservice-data; meta-disk /dev/mapper/briardservice-metadata;"
             }
           }
         }'';
@@ -306,10 +307,13 @@ let
             device = "/dev/vdb"; # the framework's emptyDiskImages disk, as the product's is
             vg = "briardservice";
             lv = "data";
+            metaLV = "metadata";
             mode = "auto";
           };
           resource = {
             name = "r0";
+            device = "/dev/drbd0";
+            maxPeers = 4; # the product constant (agent/drbd MaxPeers): baked into the metadata
             config = resource;
             inherit diskless;
             freshInit = false;

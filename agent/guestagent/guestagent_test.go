@@ -97,9 +97,9 @@ func TestNodeStorageVerbLandsTheSpecAndStartsTheUnit(t *testing.T) {
 	spec := nodestorage.Spec{
 		Tiers: []nodestorage.Tier{{
 			Name: nodestorage.TierData, Device: "/dev/vdb",
-			VG: "briardservice", LV: "data", Mode: nodestorage.ModeAdiantum,
+			VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAdiantum,
 		}},
-		Resource: nodestorage.Resource{Name: "r0", Config: "RES", FreshInit: true},
+		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: "RES", FreshInit: true, MaxPeers: 4},
 	}
 	if err := g.NodeStorage(context.Background(), spec); err != nil {
 		t.Fatal(err)
@@ -125,10 +125,10 @@ func TestNodeStorageVerbRefusesADriftedSpec(t *testing.T) {
 	g := dial(t, f)
 	if err := g.c.Call(context.Background(), verbNodeStorage, map[string]any{
 		"tiers": []map[string]any{{
-			"name": "data", "device": "/dev/vdb", "vg": "briardservice", "lv": "data",
+			"name": "data", "device": "/dev/vdb", "vg": "briardservice", "lv": "data", "metaLV": "metadata",
 			"mode": "auto", "stripes": 4,
 		}},
-		"resource": map[string]any{"name": "r0", "config": "RES"},
+		"resource": map[string]any{"name": "r0", "device": "/dev/drbd0", "config": "RES", "maxPeers": 4},
 	}, nil); err == nil {
 		t.Fatal("a spec with an unknown field was accepted; a second dm layer would arrive unnoticed")
 	}
@@ -669,10 +669,10 @@ func demoStorage(fresh bool) nodestorage.Spec {
 	return nodestorage.Spec{
 		Tiers: []nodestorage.Tier{{
 			Name: nodestorage.TierData, Device: "/dev/vdb",
-			VG: "briardservice", LV: "data", Mode: nodestorage.ModeAuto,
+			VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAuto,
 		}},
 		Resource: nodestorage.Resource{
-			Name: "r0", Config: demoResource().Config(), FreshInit: fresh,
+			Name: "r0", Device: "/dev/drbd0", Config: demoResource().Config(), FreshInit: fresh, MaxPeers: 4,
 		},
 	}
 }
@@ -717,7 +717,7 @@ func TestBringUpWitness(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
 	spec := BringUpSpec{Storage: nodestorage.Spec{
-		Resource: nodestorage.Resource{Name: "r0", Config: demoResource().Config(), Diskless: true},
+		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Config: demoResource().Config(), Diskless: true},
 	}}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)

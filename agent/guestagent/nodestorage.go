@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-
+	"strconv"
 	"strings"
 
 	"briard.io/shared/nodestorage"
@@ -15,10 +15,11 @@ import (
 // THE NODE'S BLOCK STORAGE, BUILT FROM A SPEC THE HOST WROTE ([V3b.33](d)).
 //
 // briard-node-storage.service's ExecStart, on every node at every bring-up. It builds each tier
-// the spec names -- open or create LUKS, activate or create the single-LV VG -- and then, once
-// for the resource, writes the host-rendered `.res`, creates metadata and attaches by starting
-// the stock `drbd@<res>.target`. It ends at `/dev/drbd0` attached and goes no further: the
-// filesystem is briard-primary-storage's, on the one node that promoted.
+// the spec names -- open or create LUKS, activate or create the two-LV VG, format the seed's
+// volume once -- and then, once for the resource, writes the host-rendered `.res`, creates its
+// external metadata and attaches by starting the stock `drbd@<res>.target`. It ends at
+// `/dev/drbd0` attached and goes no further: the mount is briard-primary-storage's, on the one
+// node that promoted.
 //
 // IT REPLACES A BOOT UNIT, and the reason is scope rather than tidiness. [V3b.33](b)/(c) built
 // the seam from `multi-user.target` with no inputs but what it could read off the machine, so
@@ -91,16 +92,35 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		}
 	}
 
-	// FRESH means "this run created the LV the resource attaches", which is the fact create-md
+	// FRESH means "this run created the LVs the resource attaches", which is the fact create-md
 	// cannot read off an encrypted device.
 	fresh := false
 	for _, t := range spec.Tiers {
-		made, err := buildTier(ctx, x, run, t)
+		made, err := buildTier(ctx, x, run, t, spec.Resource.MaxPeers)
 		if err != nil {
 			return fmt.Errorf("tier %s: %w", t.Name, err)
 		}
 		if t.Name == nodestorage.TierData {
 			fresh = made
+		}
+	}
+
+	// THE FORMAT, HERE AND ONLY HERE ([B.145a]). The two facts that make it safe are both known
+	// in this process: the data LV was created a moment ago by the `lvcreate` above (so there is
+	// nothing on it to lose), and the host designated this node the seed of a NEW flock (a
+	// joiner's blank LV is left blank, to be filled by the resync). "A reboot can never format"
+	// is therefore a property of the branch structure -- `lvcreate` runs only on a disk with no
+	// VG -- rather than of a marker carried between two units.
+	//
+	// It runs BEFORE the attach because DRBD opens its backing device exclusively, and it can run
+	// on the backing at all because the metadata is EXTERNAL: byte 0 of the data LV is byte 0 of
+	// the replicated device, so the filesystem written here is the one the Primary mounts.
+	// Nothing here promotes (architectural invariant 2): this is a block device the node owns
+	// outright for a few more lines, not the resource.
+	if fresh && spec.Resource.FreshInit {
+		data, _ := spec.Tier(nodestorage.TierData)
+		if err := run("mkfs.btrfs", "-f", data.Mapper()); err != nil {
+			return err
 		}
 	}
 
@@ -110,22 +130,27 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 
 	// Idempotent bring-up: `create-md` WITHOUT --force is itself the metadata probe. A node
 	// returning from a reboot already holds its replica on the persisted volume -- a blind
-	// create-md --force would WIPE it and re-seed, split-braining against the peer that kept
-	// serving. On a disk that already holds metadata DRBD refuses to overwrite: the confirm
-	// prompt hits EOF (the Executor gives commands /dev/null stdin) and aborts non-zero, which
-	// we read as "metadata already present, attach it, never wipe". A non-metadata failure (bad
-	// config, bad disk) also lands there as "attach"; the attach below then fails loudly, so
-	// bring-up still stops rather than silently wiping.
+	// create-md --force would WIPE its metadata and re-seed, split-braining against the peer
+	// that kept serving. On a metadata LV that already holds metadata DRBD refuses to
+	// overwrite: the confirm prompt hits EOF (the Executor gives commands /dev/null stdin) and
+	// aborts non-zero, which we read as "metadata already present, attach it, never wipe". A
+	// non-metadata failure (bad config, bad disk) also lands there as "attach"; the attach below
+	// then fails loudly, so bring-up still stops rather than silently wiping.
 	//
-	// --force ONLY on an LV this process just created, where there is nothing to protect. That
-	// is the fix for the encrypted-blank-device failure: [B.126]'s probe reads bytes, and a
-	// blank dm-crypt device returns ciphertext.
+	// --force ONLY on LVs this process just created, where there is nothing to protect. That is
+	// the fix for the encrypted-blank-device failure: [B.126]'s probe reads bytes, and a blank
+	// LV above dm-crypt reads as ciphertext.
+	//
+	// --max-peers EXPLICITLY, because the number is baked into the metadata and drbdadm's
+	// default is "the peers this .res names" -- one slot for a node installed alone, and the
+	// flock it grows into would need its metadata recreated (shared/nodestorage.MetadataBytes).
 	created := false
 	if !spec.Resource.Diskless {
-		args := []string{"create-md", spec.Resource.Name}
+		args := []string{"create-md", "--max-peers=" + strconv.Itoa(spec.Resource.MaxPeers)}
 		if fresh {
-			args = []string{"create-md", "--force", spec.Resource.Name}
+			args = append(args, "--force")
 		}
+		args = append(args, spec.Resource.Name)
 		if _, err := x.Run(ctx, "drbdadm", args...); err == nil {
 			created = true
 		}
@@ -144,26 +169,16 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	if !spec.Resource.FreshInit || !created {
 		return nil
 	}
-	if err := run("drbdadm", "new-current-uuid", "--clear-bitmap", spec.Resource.Name+"/0"); err != nil {
-		return err
-	}
-	// ...AND ARM THE ONE-TIME FORMAT ([B.126]). The DECISION is made here, where the seed and the
-	// brand-new metadata are both known; the ACT stays in briard-primary-storage, because only a
-	// Primary can be formatted and nothing in the agent may promote (architectural invariant 2).
-	//
-	// ⚠️ THE MARKER IS ON TMPFS, AND THAT IS THE SAFETY PROPERTY rather than an accident of where
-	// /run happens to be: it cannot outlive the boot that created the volume, so no later boot,
-	// promotion or failover can find it. A reboot can never format.
-	return x.WriteFile(dataFormatMarker, []byte(spec.Resource.Name+"\n"))
+	return run("drbdadm", "new-current-uuid", "--clear-bitmap", spec.Resource.Name+"/0")
 }
 
-// buildTier brings one tier up to "the LV exists", and reports whether it CREATED it.
+// buildTier brings one tier up to "the LVs exist", and reports whether it CREATED them.
 //
 // The two paths are a returning node and a blank disk, and telling them apart is the whole of the
 // safety here: a returning node's VG is on its disk (which is why this uses LVM rather than a
 // table something would have to rebuild), so activating it is enough, and nothing destructive
 // runs. Only a device with no VG on it reaches the format branch.
-func buildTier(ctx context.Context, x Executor, run func(string, ...string) error, t nodestorage.Tier) (bool, error) {
+func buildTier(ctx context.Context, x Executor, run func(string, ...string) error, t nodestorage.Tier, maxPeers int) (bool, error) {
 	crypt := cryptDevice(t)
 
 	// A RETURNING ENCRYPTED NODE OPENS ITSELF, and this is the whole of what "clear key" means:
@@ -193,6 +208,12 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 	// a failure.
 	_, _ = x.Run(ctx, "vgchange", "-ay", t.VG)
 	if blockExists(ctx, x, t.Mapper()) {
+		// A volume built before the metadata LV existed has a data LV and nowhere for DRBD to
+		// keep its metadata. Refusing here, by name, beats the attach failing three steps later
+		// on a path that reads like a broken .res -- and the answer is the alpha's: reinstall.
+		if !blockExists(ctx, x, t.MetaMapper()) {
+			return false, fmt.Errorf("%s exists but %s does not: this volume predates the metadata LV and cannot be attached; reinstall the node", t.Mapper(), t.MetaMapper())
+		}
 		return false, nil
 	}
 
@@ -224,13 +245,60 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 	if err := run("vgcreate", t.VG, pv); err != nil {
 		return false, err
 	}
-	// The whole PV, because the seam reserves nothing: a conversion's target is a disk the HOST
-	// sizes, and it can be made large enough to hold this LV plus a LUKS header. Reserving here
-	// would cost every node space forever to save the host one line.
-	if err := run("lvcreate", "-l", "100%FREE", "-n", t.LV, t.VG); err != nil {
+	// TWO LVs, DATA FIRST ([B.145a]). LVM hands out the lowest free extents, so creating the data
+	// LV at "everything but the metadata's share" and then the metadata LV as 100%FREE lands the
+	// metadata at the END of the PV with no extent arithmetic -- the placement DRBD gives its
+	// internal metadata, spelled in LVM. The share is computed from the whole VG rather than
+	// from the data LV it will serve, which over-provisions by the metadata's own footprint and
+	// errs in the only direction drbdmeta accepts.
+	extent, total, err := vgExtents(ctx, x, t.VG)
+	if err != nil {
+		return false, err
+	}
+	meta := metadataExtents(total*extent, extent, maxPeers)
+	if meta >= total {
+		return false, fmt.Errorf("%s has %d extents of %d bytes and the metadata alone needs %d: the disk is too small for a data volume", t.VG, total, extent, meta)
+	}
+	if err := run("lvcreate", "-l", strconv.FormatInt(total-meta, 10), "-n", t.LV, t.VG); err != nil {
+		return false, err
+	}
+	if err := run("lvcreate", "-l", "100%FREE", "-n", t.MetaLV, t.VG); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// vgExtents reads the VG's extent size (bytes) and extent count, the two numbers the LV split is
+// computed from.
+//
+// The LAST line is parsed rather than the first: Run hands back stdout and stderr together, and
+// LVM puts its warnings on stderr ahead of the report -- a leading "WARNING: ..." would otherwise
+// be read as the numbers.
+func vgExtents(ctx context.Context, x Executor, vg string) (extent, count int64, err error) {
+	out, err := x.Run(ctx, "vgs", "--noheadings", "--nosuffix", "--units", "b", "-o", "vg_extent_size,vg_extent_count", vg)
+	if err != nil {
+		return 0, 0, fmt.Errorf("vgs %s: %w: %s", vg, err, strings.TrimSpace(string(out)))
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	fields := strings.Fields(lines[len(lines)-1])
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("vgs %s: cannot read extent size and count from %q", vg, strings.TrimSpace(string(out)))
+	}
+	if extent, err = strconv.ParseInt(fields[0], 10, 64); err != nil {
+		return 0, 0, fmt.Errorf("vgs %s: extent size %q: %w", vg, fields[0], err)
+	}
+	if count, err = strconv.ParseInt(fields[1], 10, 64); err != nil {
+		return 0, 0, fmt.Errorf("vgs %s: extent count %q: %w", vg, fields[1], err)
+	}
+	return extent, count, nil
+}
+
+// metadataExtents is the metadata LV's size in extents: DRBD's requirement for a data device of
+// dataBytes with maxPeers slots, rounded up to whole extents, plus one. The extra extent is the
+// margin the formula's comment promises -- "computed" is not "byte-tight".
+func metadataExtents(dataBytes, extent int64, maxPeers int) int64 {
+	need := nodestorage.MetadataBytes(dataBytes, maxPeers)
+	return (need+extent-1)/extent + 1
 }
 
 // luksFormat formats the tier's raw device and opens it, leaving the passphrase behind in a

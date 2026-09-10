@@ -1684,22 +1684,6 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 // ([B.85], guest-image/configuration.nix), so the path belongs to the unit that acts on it and
 // nothing in Go needs to know it.)
 
-// dataFormatMarker is how storage bring-up tells briard-primary-storage.service that THIS volume is brand
-// new and may be formatted ([B.126]). Written only when this node is the seed of a new flock AND
-// the metadata was created by that same run, consumed and removed by the unit, and on TMPFS so it
-// cannot survive the boot that created it -- which is what makes "a reboot can never format" a
-// property of the filesystem rather than of our care.
-//
-// The DECISION is in briard-node-storage and the ACT is in the mount unit because only a Primary
-// can be formatted and nothing in the agent may promote (architectural invariant 2, and
-// internal/arch enforces it).
-//
-// ⚠️ Its sibling /run/briard/data.fresh is GONE ([V3b.33](d)). It existed to carry "this LV was
-// created empty" from the boot-time seam unit to this package's create-md, because an encrypted
-// blank device reads as ciphertext and cannot be probed. One program now runs both `lvcreate` and
-// `create-md`, so it knows in-process and there is no handoff to lose.
-const dataFormatMarker = "/run/briard/data.format"
-
 // vipEnvPath is the REQUIRED EnvironmentFile briard-vip.service reads its VIP_DEV and VIP_ADDR
 // from; the agent writes it via net.configure at every bring-up. Nothing is baked behind it
 // ([V3b.16a]) -- which is safe only because the promoter that starts briard-vip is itself
