@@ -55,6 +55,11 @@ let
       connection-mesh { hosts n; }
     }
   '';
+  # The product writes its rendered `.res` to /run/briard/drbd.d at bring-up
+  # (`briard-node-storage`, agent/guestagent). mkNode only puts the text in the storage SPEC, and
+  # this rig deliberately skips that unit -- it wants DRBD on the dust device, not on the seam's
+  # LV -- so it lays the file down itself, in the same place the product would.
+  resFile = pkgs.writeText "r0.res" resource;
 in
 pkgs.testers.runNixOSTest {
   name = "media-error-lone";
@@ -92,6 +97,7 @@ pkgs.testers.runNixOSTest {
     sectors = n.succeed("blockdev --getsz /dev/vdb").strip()
     n.succeed(f"dmsetup create dusty --table '0 {sectors} dust /dev/vdb 0 512'")
     n.succeed("dmsetup message dusty 0 enable")
+    n.succeed("mkdir -p /run/briard/drbd.d && cp ${resFile} /run/briard/drbd.d/r0.res")
 
     # A lone UpToDate Primary with real bytes on it.
     n.succeed("drbdadm create-md --force r0")
@@ -159,6 +165,7 @@ pkgs.testers.runNixOSTest {
     n.succeed("modprobe -a drbd dm_dust")
     n.succeed(f"dmsetup create dusty --table '0 {sectors} dust /dev/vdb 0 512'")
     n.succeed("dmsetup message dusty 0 enable")
+    n.succeed("mkdir -p /run/briard/drbd.d && cp ${resFile} /run/briard/drbd.d/r0.res")
     n.succeed(f"dmsetup message dusty 0 addbadblock {BAD}")
     n.succeed("drbdadm up r0")
     n.succeed("sleep 3")
