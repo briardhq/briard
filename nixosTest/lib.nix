@@ -272,6 +272,9 @@ let
       # (the product's StorageSpec runs DRBD only with two diskful members), because the DRBD
       # mechanism rigs are about the mechanism.
       replicated ? true,
+      # The block device the data tier is built on. The framework's empty disk by default; a rig
+      # that injects media faults names a device-mapper target it stacked on top of it.
+      tierDevice ? "/dev/vdb",
       # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
       # This is the ONLY way a test node gets a workload ([V3b.3](e2) deleted the build-time service
@@ -311,7 +314,7 @@ let
         builtins.toJSON {
           tiers = lib.optional (!diskless) {
             name = "data";
-            device = "/dev/vdb"; # the framework's emptyDiskImages disk, as the product's is
+            device = tierDevice; # the framework's emptyDiskImages disk by default, as the product's is
             vg = "briardservice";
             lv = "data";
             metaLV = "metadata";

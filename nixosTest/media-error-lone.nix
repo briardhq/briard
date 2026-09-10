@@ -1,226 +1,120 @@
-# [B.144] act (c)+(d)+(e) — WHAT ONE BAD SECTOR DOES TO A LONE NODE, measured.
+# WHAT ONE BAD SECTOR COSTS A LONE NODE: ONE FILE ([B.145c]'s exit assertion, [B.144]'s question).
 #
-# A spike, not a guard: it prints a verdict per act and asserts only what the thread already
-# predicted from the 9.2.19 source, so a surprise shows up as a failed assertion with the full
-# state printed above it.
+# [B.144] measured the DRBD answer on this same injector: with no UpToDate diskful peer, DRBD turns
+# a single unreadable sector into a whole-volume outage in every `on-io-error` mode -- `detach`
+# drops the disk and fails everything, `pass_on` downgrades it to Inconsistent and
+# `drbd_data_accessible()` finds no UpToDate copy, and forcing UpToDate is undone by the next read
+# of the bad sector. That measurement is why a lone node runs no DRBD ([B.145]); this rig is the
+# other half of the argument, on the product's own stack: LVM on a dm-dust device, btrfs on the
+# data LV, the chain started from its target, a fixture serving -- then one sector under a data
+# file goes bad. The verdict is that EXACTLY ONE file becomes unreadable, every other file still
+# reads, the front door still answers, the chain stays up and nothing was held or rebooted.
 #
-# The three questions, in order:
-#   (c) `on-io-error detach` + no peer -> does ONE unreadable sector take the WHOLE device away?
-#       (predicted yes: the handler drops the disk with no check for whether a peer exists, and
-#       `on-no-data-accessible` then defaults to io-error, so every read fails -- including reads
-#       of the 99.99% of the device that is fine.)
-#   (d) `on-io-error pass_on` + no peer -> is it raw-disk behaviour instead? (predicted yes: EIO
-#       on the bad sector only, disk `Inconsistent`, every good sector still readable.)
-#   (e) after a reboot in that Inconsistent state, CAN THE LONE NODE STILL PROMOTE? That is the
-#       trap that decides whether `pass_on`-when-alone is adoptable, and it is the one act whose
-#       answer nobody in the thread could predict.
+# THE INJECTOR IS dm-dust, as in [B.144]: `addbadblock` fails reads of one sector, in place, with
+# the filesystem mounted. The tier is built on the dust device (mkNode's tierDevice), not on
+# /dev/vdb, so the sector is bad underneath everything the product stacks on it. Encryption is
+# OFF for this rig only so the arithmetic from a btrfs chunk to a dust sector has one constant
+# layer (the LV's start on the PV) rather than two; the claim is about btrfs, which sits above
+# the cipher either way, and every other lone-node rig runs encrypted.
 #
-# It also proves the mechanism the per-topology design rests on: that `on-io-error` can be flipped
-# at RUNTIME with `drbdadm disk-options`, with no detach and no restart.
-#
-# THE INJECTOR IS dm-dust, and the choice is load-bearing ([B.144]): a plain `dmsetup error` target
-# fails forever, so it cannot model a sector that stops failing. dm-dust's `addbadblock` /
-# `removebadblock` messages give exact per-sector control in both directions, which is what lets
-# (d) simulate the controller's remap-on-write without needing a real dying disk.
-#
-# No LVM, no LUKS, no promoter, no agent: DRBD sits straight on the dust device. The question is
-# what the DRBD kernel module does with a media error, and every layer between it and the injector
-# is a layer that could absorb the thing being measured.
-{ pkgs, guestModule }:
+# WHERE THE BAD SECTOR GOES. btrfs data lives in chunks whose physical placement the chunk tree
+# states (`btrfs inspect-internal dump-tree -t chunk`); the first DATA chunk is filled with 1 MiB
+# files, so 1 MiB into it is inside some file's extent. Metadata is DUP and never targeted --
+# a metadata sector would be healed from its copy, which is a different (and also good) story.
+{ pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
-  # Mesh-of-one, the shipped single-node form, with the production safety options -- plus the
-  # `disk {}` section the product does NOT render today ([B.140a]): `on-io-error` is inherited
-  # from the module default everywhere in the tree, which is half of why this was never measured.
-  resource = ''
-    resource r0 {
-      net { protocol C; }
-      options {
-        auto-promote                  no;
-        quorum                        majority;
-        on-no-quorum                  io-error;
-        on-suspended-primary-outdated force-secondary;
-      }
-      disk { on-io-error detach; }
-      on n {
-        node-id 0;
-        address 10.0.0.1:7789;
-        volume 0 {
-          device /dev/drbd0;
-          disk /dev/mapper/dusty;
-          meta-disk internal;
-        }
-      }
-      connection-mesh { hosts n; }
-    }
-  '';
-  # The product writes its rendered `.res` to /run/briard/drbd.d at bring-up
-  # (`briard-node-storage`, agent/guestagent). mkNode only puts the text in the storage SPEC, and
-  # this rig deliberately skips that unit -- it wants DRBD on the dust device, not on the seam's
-  # LV -- so it lays the file down itself, in the same place the product would.
-  resFile = pkgs.writeText "r0.res" resource;
+  node = h.mkNode {
+    inherit fixture;
+    replicated = false;
+    tierDevice = "/dev/mapper/dusty";
+    resource = h.mkResource [ { name = "node1"; id = 0; } ];
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "media-error-lone";
-  skipTypeCheck = true;
-
-  nodes.n = h.mkNode {
-    inherit resource;
-    promoter = false; # bare DRBD: drbd-reactor would only add a second opinion about the role
-  };
+  nodes.node1 = node;
 
   testScript = ''
-    BAD = 2048          # the sector we make unreadable: 1 MiB in, well inside the data area
-    GOOD = 8            # a sector that is never bad -- the control, and the whole point of act (c)
+    import re
+    ${h.fixtureHelpers}
 
-    def dstate(m):
-        return m.succeed("drbdsetup status r0 --json | ${pkgs.jq}/bin/jq -r '.[0].devices[0][\"disk-state\"]'").strip()
+    FILES = 6  # 1 MiB each, into an 8 MiB first data chunk: the sector 1 MiB in is inside a file
 
-    def read_sector(m, sector):
-        """True if a 512-byte direct read of that sector succeeds."""
-        status, _ = m.execute(f"dd if=/dev/drbd0 bs=512 skip={sector} count=1 iflag=direct of=/dev/null 2>&1")
-        return status == 0
+    node1.start()
+    node1.wait_for_unit("multi-user.target")
+    node1.wait_for_unit("briard-test-fixture-install.service")
+    boot_id = node1.succeed("cat /proc/sys/kernel/random/boot_id").strip()
 
-    def show_state(m, label):
-        print(f"--- {label} ---")
-        print(m.succeed("drbdsetup status r0 --verbose --statistics || true"))
-        print(m.succeed("dmesg | grep -iE 'drbd|dust' | tail -20 || true"))
+    # The injector under everything: the tier is built on it.
+    node1.succeed("modprobe dm_dust")
+    sectors = node1.succeed("blockdev --getsz /dev/vdb").strip()
+    node1.succeed(f"dmsetup create dusty --table '0 {sectors} dust /dev/vdb 0 512'")
+    node1.succeed("dmsetup message dusty 0 enable")
 
-    n.start()
-    n.wait_for_unit("multi-user.target")
-    n.succeed("modprobe drbd")
+    # The product's lone-node stack, and a serving chain on it.
+    node1.succeed("briard-test-storage --seed --mode off")
+    assert node1.succeed("cat /run/briard/topology.env").strip() == "BRIARD_TOPOLOGY=alone"
+    node1.fail("lsmod | grep -qw drbd")
+    node1.succeed("systemctl start briard-chain.target")
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
+    install_fixture(node1)
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
-    # The injector. dm-dust must be present in the guest's module tree -- assert it rather than
-    # let a missing module surface later as an unexplained pass.
-    n.succeed("modprobe dm_dust")
-    sectors = n.succeed("blockdev --getsz /dev/vdb").strip()
-    n.succeed(f"dmsetup create dusty --table '0 {sectors} dust /dev/vdb 0 512'")
-    n.succeed("dmsetup message dusty 0 enable")
-    n.succeed("mkdir -p /run/briard/drbd.d && cp ${resFile} /run/briard/drbd.d/r0.res")
+    # Real bytes, fsynced, then dropped from the page cache so every read below hits the disk.
+    node1.succeed("mkdir -p /var/lib/briard/media-error")
+    for i in range(FILES):
+        node1.succeed(f"dd if=/dev/urandom of=/var/lib/briard/media-error/f{i} bs=1M count=1 conv=fsync 2>/dev/null")
+    node1.succeed("sync -f /var/lib/briard && echo 3 > /proc/sys/vm/drop_caches")
+    for i in range(FILES):
+        node1.succeed(f"cat /var/lib/briard/media-error/f{i} > /dev/null")
 
-    # A lone UpToDate Primary with real bytes on it.
-    n.succeed("drbdadm create-md --force r0")
-    n.succeed("drbdadm up r0")
-    n.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
-    n.succeed("drbdadm primary r0")
-    n.succeed("dd if=/dev/urandom of=/dev/drbd0 bs=1M count=16 conv=fsync")
-    n.succeed("echo 3 > /proc/sys/vm/drop_caches")
-    assert dstate(n) == "UpToDate", f"precondition: expected UpToDate, got {dstate(n)}"
-    assert read_sector(n, GOOD), "precondition: the control sector must be readable"
-    print("[setup] lone Primary, UpToDate, both sectors readable")
-
-    # ── ACT (c): one bad sector under `on-io-error detach` ────────────────────────────────────
-    n.succeed(f"dmsetup message dusty 0 addbadblock {BAD}")
-    bad_read_c = read_sector(n, BAD)
-    good_read_c = read_sector(n, GOOD)
-    disk_c = dstate(n)
-    show_state(n, "act (c): detach, after one bad sector")
-    print(f"VERDICT (c): bad sector readable={bad_read_c}  GOOD sector readable={good_read_c}  disk={disk_c}")
-
-    assert not bad_read_c, "(c) the injector did not fail the read -- the act measured nothing"
-    # The finding this act exists for: the device is gone, so a sector that is PERFECTLY FINE is
-    # unreadable too. That is DRBD amplifying a localized fault into total unavailability, which
-    # on a lone node is the whole volume.
-    assert disk_c == "Diskless", f"(c) expected Diskless after detach, got {disk_c}"
-    assert not good_read_c, "(c) UNEXPECTED: a good sector still reads after the detach -- re-derive the model"
-
-    # ...and it does not terminate on its own: nothing re-attaches, so the node stays dead.
-    n.succeed("sleep 5")
-    assert dstate(n) == "Diskless", "(c) the node recovered by itself -- that would change the item"
-    print("VERDICT (c): CONFIRMED -- one bad sector, whole volume unreadable, no self-recovery")
-
-    # ── The runtime flip the per-topology design rests on ─────────────────────────────────────
-    n.succeed(f"dmsetup message dusty 0 removebadblock {BAD}")   # the disk is 'replaced'
-    n.succeed("drbdadm attach r0")
-    for _ in range(30):
-        if dstate(n) != "Diskless":
+    # The first DATA chunk's physical start on the LV, from the chunk tree; the LV's start on
+    # the dust device, from its dm table. Their sum plus 1 MiB is a sector inside one file.
+    tree = node1.succeed("btrfs inspect-internal dump-tree -t chunk /dev/mapper/briardservice-data")
+    data_chunk = None
+    for block in tree.split("\titem ")[1:]:
+        if "type DATA" in block:
+            m = re.search(r"stripe 0 devid 1 offset (\d+)", block)
+            assert m, f"a DATA chunk with no stripe:\n{block}"
+            data_chunk = int(m.group(1))
             break
-        n.sleep(1)
-    print(f"[recover] re-attached without forcing; disk={dstate(n)}")
+    assert data_chunk is not None, f"no DATA chunk in the chunk tree:\n{tree}"
+    table = node1.succeed("dmsetup table briardservice-data").strip()
+    m = re.match(r"0 \d+ linear \S+ (\d+)$", table)
+    assert m, f"the data LV is not one linear segment: {table!r}"
+    lv_start = int(m.group(1))
+    BAD = lv_start + data_chunk // 512 + 2048
+    print(f"[inject] data chunk at LV byte {data_chunk}, LV starts at dust sector {lv_start}: bad sector {BAD}")
 
-    n.succeed("drbdadm disk-options --on-io-error=pass_on r0")
-    flipped = n.succeed("drbdsetup show r0 | grep on-io-error || true").strip()
-    print(f"VERDICT (flip): runtime disk-options -> {flipped!r}")
-    assert "pass_on" in flipped, "the runtime flip did not take -- the per-topology design needs another mechanism"
+    node1.succeed(f"dmsetup message dusty 0 addbadblock {BAD}")
+    node1.succeed("echo 3 > /proc/sys/vm/drop_caches")
 
-    # ── ACT (d): the same bad sector under `on-io-error pass_on` ──────────────────────────────
-    n.succeed("echo 3 > /proc/sys/vm/drop_caches")
-    n.succeed(f"dmsetup message dusty 0 addbadblock {BAD}")
-    bad_read_d = read_sector(n, BAD)
-    good_read_d = read_sector(n, GOOD)
-    disk_d = dstate(n)
-    show_state(n, "act (d): pass_on, after one bad sector")
-    print(f"VERDICT (d): bad sector readable={bad_read_d}  GOOD sector readable={good_read_d}  disk={disk_d}")
-
-    assert not bad_read_d, "(d) the injector did not fail the read"
-    # MEASURED 2026-09-10 (run 34465547397): good_read_d is FALSE. `pass_on` does NOT confine the
-    # damage on a lone node -- the disk drops to Inconsistent, and `drbd_data_accessible()`
-    # (drbd_state.c:6430) is true only if the LOCAL disk is UpToDate or SOME PEER is. With no peer
-    # there is nothing to fall back to, so `cached_err_io` is set (drbd_state.c:912, the
-    # on-no-data-accessible=io-error arm) and EVERY request on the device fails -- not just the
-    # broken sector. Note quorum was `yes` throughout, so this is NOT the quorum path.
-    # Recorded rather than asserted: the act exists to measure, and both settings failing is the
-    # finding.
-    print(f"VERDICT (d): confined damage={good_read_d} (measured False on 2026-09-10), disk={disk_d}")
-
-    # ── ACT (d2): THE DECISIVE ONE -- does forcing UpToDate restore raw-disk behaviour? ───────
-    # The same predicate says how to escape: `drbd_data_accessible` returns true the moment the
-    # LOCAL disk is UpToDate again. On a lone node that is exactly what
-    # `new-current-uuid --clear-bitmap` asserts -- and the owner's argument for why it is not a lie
-    # here stands ([B.144]): with one copy there is no stale peer and no split brain to be wrong
-    # about. If this restores the good sector while the bad one still fails on its own, then
-    # `pass_on` + forced-UpToDate IS the raw-disk behaviour we wanted, and the single-node design
-    # has an answer. If it does not, DRBD has no lone-node mode that survives one bad sector.
-    forced_rc, forced_out = n.execute("drbdadm new-current-uuid --clear-bitmap r0/0 2>&1")
-    disk_after_force = dstate(n)
-    # ⚠️ ORDER IS THE MEASUREMENT HERE, and the first run of this act got it wrong: it read the
-    # BROKEN sector first, which under pass_on immediately drops the disk back to Inconsistent,
-    # so the good-sector read that followed was failing for a reason the act had itself caused.
-    # Read the control FIRST -- that is the "did the force restore access" number -- then the bad
-    # one, then the control AGAIN, which answers the question that actually decides the design:
-    # does a single bad read re-break the whole device every time?
-    good_after_force = read_sector(n, GOOD)
-    bad_after_force = read_sector(n, BAD)
-    good_after_bad = read_sector(n, GOOD)
-    show_state(n, "act (d2): pass_on + forced UpToDate")
-    print(f"VERDICT (d2): force rc={forced_rc} out={forced_out!r} disk right after force={disk_after_force}")
-    print(f"VERDICT (d2): GOOD before touching the bad sector = {good_after_force}   <- did the force restore access?")
-    print(f"VERDICT (d2): BAD sector = {bad_after_force}   (expected False: the sector really is broken)")
-    print(f"VERDICT (d2): GOOD *after* the bad read = {good_after_bad}   <- does one bad read re-break everything?")
-    print(f"VERDICT (d2): disk now={dstate(n)}")
-    if good_after_force and not good_after_bad:
-        print("VERDICT (d2): the force RESTORES access, and every bad read TAKES IT AWAY AGAIN --")
-        print("             so a lone node would need a force per bad-sector read, in a loop")
-    elif good_after_force and good_after_bad:
-        print("VERDICT (d2): RAW-DISK BEHAVIOUR -- pass_on + one force is a viable lone-node mode")
-    else:
-        print("VERDICT (d2): the force does not restore access at all; DRBD has no lone-node mode")
-        print("             surviving one bad sector, and the DRBD-less single node is the answer")
-
-    # ── ACT (e): the trap -- can a lone node in that state come back? ─────────────────────────
-    n.shutdown()
-    n.start()
-    n.wait_for_unit("multi-user.target")
-    n.succeed("modprobe -a drbd dm_dust")
-    n.succeed(f"dmsetup create dusty --table '0 {sectors} dust /dev/vdb 0 512'")
-    n.succeed("dmsetup message dusty 0 enable")
-    n.succeed("mkdir -p /run/briard/drbd.d && cp ${resFile} /run/briard/drbd.d/r0.res")
-    n.succeed(f"dmsetup message dusty 0 addbadblock {BAD}")
-    n.succeed("drbdadm up r0")
-    n.succeed("sleep 3")
-    disk_e = dstate(n)
-    promote_rc, promote_out = n.execute("drbdadm primary r0 2>&1")
-    show_state(n, "act (e): after reboot in the post-pass_on state")
-    print(f"VERDICT (e): disk after reboot={disk_e}  promote_rc={promote_rc}  promote_out={promote_out!r}")
-
-    # No assertion on the outcome: this act EXISTS to find out. Both answers are findings, and the
-    # forced-UpToDate escape ([B.144]) is only needed if this one refuses.
-    if promote_rc == 0:
-        print("VERDICT (e): the lone node PROMOTED -- pass_on-when-alone needs no forcing")
-    else:
-        print("VERDICT (e): the lone node REFUSED to promote -- the forced-UpToDate step is required")
-        forced_rc, forced_out = n.execute("drbdadm new-current-uuid --clear-bitmap r0/0 2>&1; drbdadm primary r0 2>&1")
-        print(f"VERDICT (e2): after forced UpToDate, promote_rc={forced_rc} out={forced_out!r} disk={dstate(n)}")
+    # === THE VERDICT: one file, and only one =============================================
+    unreadable = []
+    for i in range(FILES):
+        rc, out = node1.execute(f"cat /var/lib/briard/media-error/f{i} > /dev/null 2>&1")
+        if rc != 0:
+            unreadable.append(f"f{i}")
+    print(f"VERDICT: unreadable files = {unreadable}")
+    print(node1.succeed("dmesg | grep -iE 'btrfs|dust' | tail -20 || true"))
+    assert len(unreadable) == 1, (
+        f"one bad sector cost {len(unreadable)} file(s) ({unreadable}); the claim is exactly one"
+    )
+    # Everything else still serves: the mount, the chain, the front door, the fixture -- and
+    # nothing held or rebooted, because a damaged file is not a failed member.
+    node1.succeed("mountpoint -q /var/lib/briard")
+    node1.succeed("systemctl is-active briard-chain.target briard-primary-storage.service briard-services.service")
+    node1.succeed("curl -fsS http://192.168.1.100/healthz")
+    node1.succeed("curl -fsS http://192.168.1.100:8080/healthz")
+    for unit in fixture_units(node1):
+        node1.succeed(f"systemctl is-active {unit}")
+    node1.fail("journalctl -u briard-promotion-hold.service --no-pager | grep -q .")
+    assert node1.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot_id, "the node REBOOTED"
+    # A fresh file lands elsewhere and reads back: the volume is not merely surviving, it works.
+    node1.succeed("dd if=/dev/urandom of=/var/lib/briard/media-error/after bs=1M count=1 conv=fsync 2>/dev/null")
+    node1.succeed("echo 3 > /proc/sys/vm/drop_caches && cat /var/lib/briard/media-error/after > /dev/null")
+    print("VERDICT: one bad sector, one file; the lone node kept serving")
   '';
 }

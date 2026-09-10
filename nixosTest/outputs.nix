@@ -462,7 +462,7 @@ in
       # the per-topology design rests on, that `on-io-error` flips at runtime via `disk-options`.
       # dm-dust is the injector because an `error` target cannot model a sector that stops failing.
       # `debug` because it prints verdicts and act (e) deliberately asserts nothing.
-      media-error-lone = import ./media-error-lone.nix { inherit pkgs guestModule; };
+      media-error-lone = import ./media-error-lone.nix { inherit pkgs fixture guestModule; }; # one bad sector costs one file ([B.145c])
       # — **THE COMPANION SPIKE** ([B.144] acts (a)+(b)): the same bad sector on a node that HAS a
       # peer. (a) proves the silent fallback in its purest form -- the read of the BROKEN sector
       # succeeds, served over the network, so nothing above DRBD can tell it happened -- and then
