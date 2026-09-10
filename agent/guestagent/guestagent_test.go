@@ -1680,7 +1680,9 @@ func TestStatusLoneNodeReadsFromTheChain(t *testing.T) {
 }
 
 // The promoter verbs on a lone node: nothing is ever paused (so the overlap guard passes), pause
-// and resume touch nothing, and evict REFUSES -- a success would promise the work moved.
+// and resume touch nothing, and evict is the same gesture on the chain target -- keep-masked
+// stops the chain (the target and its root, which every member requires) and masks it, unmask
+// releases and starts it, a plain evict is a restart. Never drbd-reactorctl.
 func TestReactorVerbsOnALoneNode(t *testing.T) {
 	f := &fakeExec{}
 	raw, _ := loneStorage().Marshal()
@@ -1696,12 +1698,26 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 	if err := g.ReactorResume(ctx, "r0"); err != nil {
 		t.Errorf("resume: %v", err)
 	}
-	if err := g.ReactorEvict(ctx, false, false); err == nil {
-		t.Error("evict succeeded on a node with nobody to hand the work to")
-	}
 	for _, r := range f.runs {
 		if r[0] == "systemctl" || r[0] == "drbd-reactorctl" {
-			t.Errorf("a lone node's promoter verb ran %v", r)
+			t.Errorf("a lone node's pause/resume ran %v", r)
+		}
+	}
+	for _, tc := range []struct {
+		name               string
+		keepMasked, unmask bool
+		want               [][]string
+	}{
+		{"keep-masked", true, false, [][]string{{"systemctl", "stop", chainTarget, chainRoot}, {"systemctl", "mask", "--runtime", chainTarget}}},
+		{"unmask", false, true, [][]string{{"systemctl", "unmask", "--runtime", chainTarget}, {"systemctl", "start", chainTarget}}},
+		{"plain", false, false, [][]string{{"systemctl", "stop", chainTarget, chainRoot}, {"systemctl", "start", chainTarget}}},
+	} {
+		f.runs = nil
+		if err := g.ReactorEvict(ctx, tc.keepMasked, tc.unmask); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !reflect.DeepEqual(f.runs, tc.want) {
+			t.Errorf("%s: ran %v, want %v", tc.name, f.runs, tc.want)
 		}
 	}
 }

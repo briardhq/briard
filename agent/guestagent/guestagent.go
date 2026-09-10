@@ -1275,12 +1275,30 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			// NOT a no-op on a lone node ([B.145c]), unlike pause/resume: an evict that reports
-			// success is a promise that the work moved, and here there is nobody to move it to.
-			// A caller is gated on a takeover-capable peer before it gets here; this is what it
-			// hears if it was not.
+			// THE LONE NODE'S EVICT IS THE SAME GESTURE ON THE CHAIN TARGET ([B.145c]), not a
+			// refusal: "not me" is a stop of the chain (the house goes dark -- there is nobody to
+			// take it, and the install rigs assert exactly that, off-box), keep-masked masks the
+			// target so nothing starts it back (the hold's own release tries and is refused, as
+			// the reactor's re-promotion is on a flock), and unmask releases it and starts the
+			// chain, which is what the reactor's election does two seconds after an unmask. A
+			// plain evict is therefore a restart. The stop names the first member beside the
+			// target: every other member Requires= it transitively, so that one stop waits for
+			// all of them, where a target's own stop job returns as soon as the target is down.
 			if alone(x) {
-				return nil, fmt.Errorf("evict: this node runs no DRBD and has no peer to hand the work to")
+				switch {
+				case req.Unmask:
+					if err := run("systemctl", "unmask", "--runtime", chainTarget); err != nil {
+						return nil, err
+					}
+				default:
+					if err := run("systemctl", "stop", chainTarget, chainRoot); err != nil {
+						return nil, err
+					}
+					if req.KeepMasked {
+						return nil, run("systemctl", "mask", "--runtime", chainTarget)
+					}
+				}
+				return nil, run("systemctl", "start", chainTarget)
 			}
 			args := []string{"evict"}
 			switch {

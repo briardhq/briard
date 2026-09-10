@@ -62,6 +62,10 @@ const (
 	// chainTarget is the lone node's promotion: the static target carrying the seven chain
 	// members in the reactor's order (guest-image/configuration.nix). PAIRED with that name.
 	chainTarget = "briard-chain.target"
+	// chainRoot is the chain's first member, the mount. Every other member Requires= it
+	// transitively (the fold in configuration.nix), so stopping it is the one stop that waits
+	// for the whole chain to be down.
+	chainRoot = "briard-primary-storage.service"
 )
 
 // NodeStorage builds this node's storage from the spec at nodestorage.Path.
