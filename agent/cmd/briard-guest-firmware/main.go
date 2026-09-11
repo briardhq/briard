@@ -87,14 +87,20 @@ func runGuest(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	// The same call the pushed agent makes ([B.148]), and for the flags rather than the commit:
+	// reaching this binary means the picker found no trial to run, so there is nothing to
+	// commit -- but the markers an earlier start left in the tmpfs must still be cleared here,
+	// or the next trial's verdict would read a door's stale `trial` as its own.
+	guestfirmware.BinCommit(ctx, x, log.Printf)
+
 	go func() {
 		<-ctx.Done()
 		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
 	}()
 
-	// READY at listen ([B.86j]): the unit is Type=notify under the guest's frozen pivot, and its
-	// ExecStartPost commits a pushed set only after this. The firmware's own start commits
-	// nothing -- only a trial start does -- but the gate is the same one.
+	// READY at listen ([B.86j]): the unit is Type=notify under the guest's pivot. The firmware's
+	// own start commits nothing -- only a trial start does -- but it says READY at the same
+	// point, once the port it exists to serve is open.
 	_ = sdnotify.Ready()
 	if err := guestfirmware.Serve(ctx, conn, x); err != nil {
 		return err

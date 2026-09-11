@@ -113,9 +113,11 @@ func main() {
 		*httpAddr, *listen, *certPath, *routesPath, tbl.current().describe())
 	// Either listener dying is fatal: the front door is promoter-owned, so systemd restarts
 	// it on the primary rather than leaving half a door open.
-	// Bind BEFORE saying READY ([B.86j]): the front door runs under the guest's frozen pivot
-	// (Type=notify, ExecStartPost commits the pushed binary only after READY), so READY must mean
-	// "listening", not "started". A pushed binary that cannot bind never reaches it and reverts.
+	// Bind BEFORE saying READY ([B.86j]): the front door runs under the guest's pivot, and this
+	// unit's READY is an INPUT TO THE TRIAL -- the trial agent try-restarts this door and blocks
+	// on the result, so READY must mean "listening", not "started", or a pushed binary that
+	// cannot bind would pass the verdict and be committed. (The commit is the agent's, never this
+	// unit's: no door has an ExecStartPost, and since [B.148] neither does the agent.)
 	plainLn, err := net.Listen("tcp", *httpAddr)
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *httpAddr, err)

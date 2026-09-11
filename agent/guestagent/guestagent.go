@@ -57,6 +57,15 @@ const (
 // says so and never at boot ([V3b.33](d)). Because the agent it execs is PUSHED, storage bring-up
 // provably cannot run before the host has dressed the guest -- which turns something that was
 // accidental into something stated.
+//
+// ⚠️ "DRESSED" HAS TO MEAN COMMITTED, not staged, and for a while it did not ([B.148]). The unit
+// names <binDir>/briard-guest-agent directly (configuration.nix says why it must not go through
+// the picker), so it can only start once the commit has moved the staged file onto that name.
+// The commit used to be the agent unit's ExecStartPost, which systemd runs AFTER the port is
+// open and answering -- so this verb could arrive, and did, in the window where the path did not
+// exist yet: 203/EXEC, a failed bring-up, an OS upgrade rolled back. The commit is now the last
+// thing the agent does before it serves anything (guestfirmware.BinCommit), so the sentence
+// above is true as written.
 const nodeStorageUnit = "briard-node-storage.service"
 
 // Net.configure sets a static address on a guest NIC -- the system/DRBD NIC on the

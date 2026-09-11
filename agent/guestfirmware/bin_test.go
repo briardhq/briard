@@ -3,6 +3,7 @@ package guestfirmware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -322,19 +323,20 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	}
 }
 
-// THE HANDSHAKE MUST NOT REPORT AN OLD RELEASE ([B.138]): between the trial agent's READY and
-// its commit the host reconnects and asks what the guest runs. A trial that has passed reports
-// the release it is trialling; every other start reports the committed one. Reading the
-// committed file first was a good dress recorded as a permanent revert.
-func TestRunningBundlePrefersTheTrialledRelease(t *testing.T) {
-	dir, run := binDirs(t)
+// THE HANDSHAKE REPORTS THE COMMITTED RELEASE, and after [B.148] that is the whole rule: the
+// commit runs before the port is served, so every handshake a host can read is taken after it.
+// This used to prefer RELEASE.next on a trial start, because the host could get in between READY
+// and the ExecStartPost commit and reading the committed file there handed it the OLD id -- a
+// good dress recorded as a permanent revert ([B.138]). The window is gone; so is the inversion.
+func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
+	_, run := binDirs(t)
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// runningBundle only speaks for a process running FROM the pushed directory.
 	t.Setenv("BRIARD_BIN_DIR", filepath.Dir(exe))
-	dir = filepath.Dir(exe)
+	dir := filepath.Dir(exe)
 	t.Cleanup(func() {
 		os.Remove(filepath.Join(dir, "RELEASE"))
 		os.Remove(filepath.Join(dir, "RELEASE.next"))
@@ -348,11 +350,102 @@ func TestRunningBundlePrefersTheTrialledRelease(t *testing.T) {
 	if got := runningBundle(); got != "v3.20260901.old00000" {
 		t.Errorf("an ordinary start reports %q, want the committed release", got)
 	}
+	// A staged id present and the marker still saying trial -- the state the old inversion keyed
+	// off. It must make no difference: what has not been committed is not what this guest runs.
 	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if got := runningBundle(); got != "v3.20260901.old00000" {
+		t.Errorf("a start with a staged id reports %q, want the committed release", got)
+	}
+	// ...and once the commit has moved it, that IS the committed release.
+	if err := os.Rename(filepath.Join(dir, "RELEASE.next"), filepath.Join(dir, "RELEASE")); err != nil {
+		t.Fatal(err)
+	}
 	if got := runningBundle(); got != "v3.20260908.new00000" {
-		t.Errorf("a passed trial reports %q, want the release it is trialling", got)
+		t.Errorf("after the commit the handshake reports %q, want the release just committed", got)
+	}
+}
+
+// THE COMMIT ([B.148]): only a trial start moves the set, it moves every staged name plus
+// RELEASE together, it gives the doors their start budget back, and it clears every flag --
+// on a non-trial start too, where the markers are all it touches.
+func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
+	dir, run := binDirs(t)
+	stageSet(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "RELEASE"), []byte("v3.20260901.old00000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "RELEASE.next"), []byte("v3.20260908.new00000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range BinNames {
+		if err := os.WriteFile(filepath.Join(run, n+".update"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(run, n+".ran"), []byte("pushed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A NON-TRIAL start commits nothing: the staged set is still staged and RELEASE is untouched.
+	// (Discarding it is the aftermath rule's job, not this one's.)
+	fx := &fakeExec{}
+	BinCommit(context.Background(), fx, func(string, ...any) {})
+	for _, n := range BinNames {
+		if _, err := os.Stat(filepath.Join(dir, n+".next")); err != nil {
+			t.Errorf("a non-trial start moved %s: %v", n, err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "RELEASE")); strings.TrimSpace(string(b)) != "v3.20260901.old00000" {
+		t.Errorf("a non-trial start moved RELEASE: %q", b)
+	}
+	if len(fx.runs) != 0 {
+		t.Errorf("a non-trial start ran %v, want nothing", fx.runs)
+	}
+	// ...but the markers are cleared on every start: one left behind would be read as the next
+	// start's own.
+	for _, n := range BinNames {
+		if _, err := os.Stat(filepath.Join(run, n+".ran")); !os.IsNotExist(err) {
+			t.Errorf("%s.ran survived a non-trial start: %v", n, err)
+		}
+		if _, err := os.Stat(filepath.Join(run, n+".update")); !os.IsNotExist(err) {
+			t.Errorf("%s.update survived a non-trial start: %v", n, err)
+		}
+	}
+
+	// A TRIAL start commits the whole set at once.
+	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx = &fakeExec{}
+	var said []string
+	BinCommit(context.Background(), fx, func(f string, a ...any) { said = append(said, strings.TrimSpace(fmt.Sprintf(f, a...))) })
+	for _, n := range BinNames {
+		if _, err := os.Stat(filepath.Join(dir, n+".next")); !os.IsNotExist(err) {
+			t.Errorf("%s.next survived the commit: %v", n, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s was not committed: %v", n, err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "RELEASE")); strings.TrimSpace(string(b)) != "v3.20260908.new00000" {
+		t.Errorf("RELEASE = %q, want the staged id", b)
+	}
+	// The doors get their budget back -- the trial spent one of it where a door was running.
+	want := []string{"systemctl", "reset-failed", "briard-reverse-proxy.service", "briard-dashboard.service"}
+	if len(fx.runs) != 1 || !reflect.DeepEqual(fx.runs[0], want) {
+		t.Errorf("the commit ran %v, want exactly %v", fx.runs, want)
+	}
+	// And it says what it committed, naming the release and every binary in it: the line the
+	// rigs count once per boot.
+	if len(said) != 1 || !strings.HasPrefix(said[0], "bin: committed v3.20260908.new00000: ") {
+		t.Fatalf("the commit said %q", said)
+	}
+	for _, n := range BinNames {
+		if !strings.Contains(said[0], n) {
+			t.Errorf("the commit line does not name %s: %q", n, said[0])
+		}
 	}
 }
 

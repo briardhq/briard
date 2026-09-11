@@ -34,7 +34,9 @@ import (
 // door is running (the primary; a single node is always the primary, which is where there is no
 // peer to fall back on) it try-restarts it onto the staged copy and reads READY or failure; on a
 // secondary the doors are not running and the cheap gate was the only one. Only a passing
-// verdict opens the port, and its ExecStartPost commits the set plus the release id together.
+// verdict opens the port, and it commits the set plus the release id together before it serves
+// the reconnect below -- so a handshake this host can read is a handshake taken after the commit
+// ([B.148]).
 // A failed door has already reverted itself by its own auto-restart (flag consumed), one start
 // out of its budget -- a failed upgrade never demotes; the refused agent exits without opening
 // the port, the committed agent comes back, discards the staged set and puts both doors on the

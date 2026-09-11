@@ -11,8 +11,9 @@
 # before the first dress the doors' units have nothing to exec and say so, and the host dresses
 # before rejoin, so nothing can promote a node that has not been dressed.
 #
-# This module is the guest-side half of that, the SAME shape as the host's own pivot
-# (scripts/install.sh briard-exec / briard-commit, [B.84]), with ONE commit for the whole set:
+# This module is the guest-side half of that -- the PICKER, and the files it chooses between. It
+# is the same shape as the host's own pivot (scripts/install.sh briard-exec / briard-commit,
+# [B.84]) minus the commit, which since [B.148] the agent does itself (see below):
 #
 #   <bin>/<name>.next    a pushed binary, verified by the firmware (sha256 over the whole file)
 #                        and proven by its own --test-launch before anything is armed
@@ -33,8 +34,18 @@
 # restarts ONLY the agent's unit; the trial agent's start is the verdict on the set: it
 # try-restarts each door that is running (their pickers, flags consumed, exec the staged files;
 # Type=notify with a short start timeout, so systemctl's return IS the outcome), and only a
-# passing verdict opens the port and says READY. The agent's ExecStartPost is the ONE commit --
-# systemd runs it only after READY=1 -- and it moves every staged name plus RELEASE together.
+# passing verdict opens the port. It then COMMITS -- every staged name plus RELEASE, together --
+# and only after that says READY and serves its first verb.
+#
+# ⚠️ THE COMMIT IS NOT A UNIT HOOK, and that is the fix of [B.148]. It was an `ExecStartPost`
+# here (briard-bin-commit, a shell script systemd ran only after READY=1), which read as the
+# tighter gate and was not: the host is outside the guest and cannot see READY, so what it
+# actually waits on is the PORT -- opened before READY, and before systemd schedules any
+# ExecStartPost. In that window the host handshakes, judges the guest dressed and sends bring-up
+# verbs, and `briard-node-storage.service` execs `<bin>/briard-guest-agent` directly, which the
+# commit has not created yet: measured 203/EXEC on the fleet tier 2026-09-11 (os-reboot.sh, run
+# 34576181211, lost by 12 ms), rolling back a healthy OS upgrade. agent/guestfirmware/bin.go
+# BinCommit carries the full account and what the move gives up.
 #
 # A door whose staged file fails has already reverted by then: its auto-restart (2 s, direct
 # mode) finds the flag consumed and execs the committed file. One failed start out of the unit's
@@ -58,10 +69,9 @@ let
   # was measured).
   binDir = "/var/lib/briard-bin";
   runDir = "/run/briard-bin"; # tmpfs: the single-use flags
-  # The set, in commit order -- the same names as guestfirmware/bin.go BinNames, and the units the doors run
-  # under. The agent's own name is the one whose trial flag its picker consumes.
-  names = [ "briard-dashboard" "briard-reverse-proxy" "briard-guest-agent" ];
-  doorUnits = "briard-dashboard.service briard-reverse-proxy.service";
+  # ⚠️ The SET is not listed here any more ([B.148]): the commit that used to walk it moved into
+  # the agent, so guestfirmware/bin.go BinNames is now the only place the names and their order
+  # live. This module cares about one name at a time -- whichever its picker was handed.
   # briard-bin-exec <name> <baked|-> [args...]
   exec = pkgs.writeShellScript "briard-bin-exec" ''
     set -eu
@@ -95,30 +105,6 @@ let
     echo baked > ${runDir}/$name.ran
     exec "$baked" "$@"
   '';
-  # briard-bin-commit: the agent unit's ExecStartPost, after READY. Only a TRIAL start commits
-  # (the aftermath rule has already discarded a stale set before a non-trial start says READY),
-  # and it commits the WHOLE staged set plus RELEASE; every flag is cleared, and the doors get
-  # their start budget back -- the trial spent one of it where a door was running.
-  commit = pkgs.writeShellScript "briard-bin-commit" ''
-    set -eu
-    if [ "$(cat ${runDir}/briard-guest-agent.ran 2>/dev/null || true)" = trial ]; then
-      set=""
-      for name in ${lib.concatStringsSep " " names}; do
-        if [ -e ${binDir}/$name.next ]; then
-          mv ${binDir}/$name.next ${binDir}/$name           # atomic same-fs commit
-          set="$set $name"
-        fi
-      done
-      if [ -e ${binDir}/RELEASE.next ]; then
-        mv ${binDir}/RELEASE.next ${binDir}/RELEASE
-      fi
-      echo "briard-bin-commit: committed $(cat ${binDir}/RELEASE 2>/dev/null || echo '?'):$set" >&2
-      systemctl reset-failed ${doorUnits} || true
-    fi
-    for name in ${lib.concatStringsSep " " names}; do
-      rm -f ${runDir}/$name.update ${runDir}/$name.ran
-    done
-  '';
   cfg = config.briard.pivot;
 in
 {
@@ -128,12 +114,6 @@ in
       default = exec;
       readOnly = true;
       description = "The picker every dressed unit's ExecStart goes through: briard-bin-exec <name> <baked|-> [args].";
-    };
-    commit = lib.mkOption {
-      type = lib.types.path;
-      default = commit;
-      readOnly = true;
-      description = "The ONE commit, the guest agent unit's ExecStartPost (after READY): every staged name plus RELEASE.";
     };
     binDir = lib.mkOption {
       type = lib.types.str;

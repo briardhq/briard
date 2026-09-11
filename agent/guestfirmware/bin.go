@@ -39,8 +39,8 @@ import (
 // finds the flag consumed and execs the committed file; one failed start out of the unit's
 // budget, which is why a failed upgrade never demotes (the promotion hold fires on start-limit
 // exhaustion only -- configuration.nix, chainMemberFailure). A passing verdict opens the control
-// port and says READY; the unit's ExecStartPost (guest-image/pivot.nix briard-bin-commit) then
-// commits every staged name plus the release id together. A failing verdict exits 1 without
+// port and then COMMITS, in this process and before a single verb is served (BinCommit,
+// [B.148]): every staged name plus the release id together. A failing verdict exits 1 without
 // opening the port; the agent's own picker brings the committed agent back -- or the FIRMWARE,
 // when the first dress is what failed and nothing is committed yet -- and that start runs
 // the AFTERMATH rule: staged files present on a non-trial start mean the set failed -- discard
@@ -342,8 +342,8 @@ func activate(ctx context.Context, x Executor, a BinActivation) error {
 // the outcome of a Type=notify unit's start) and must be active afterwards AND still on its
 // staged copy. Any failure returns an error and the caller exits 1 without opening the port; the
 // door that failed has already reverted itself, its arm flag consumed and its marker no longer
-// saying trial. A passing verdict returns nil, the caller opens the port and says READY, and the
-// unit's ExecStartPost commits the set.
+// saying trial. A passing verdict returns nil, and the caller opens the port, commits the set
+// (BinCommit) and only then says READY and serves.
 //
 // A NON-TRIAL start with staged files present is the aftermath of a failed trial (the invariant:
 // staged files exist only between a stage and its verdict): the set is discarded and both doors
@@ -450,8 +450,76 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 		}
 		logf("bin: trial of %s: %s restarted on the staged binary and says READY", release, n)
 	}
-	logf("bin: trial of %s: verdict PASS; opening the port, and the commit follows READY", release)
+	logf("bin: trial of %s: verdict PASS; opening the port, then committing before anything is served", release)
 	return nil
+}
+
+// BinCommit is the ONE commit of the pushed set -- every staged name plus RELEASE, moved
+// together, and every flag cleared. It runs IN THE AGENT, after the control port is open and
+// BEFORE the port is served or READY is sent ([B.148]).
+//
+// WHY IT IS HERE AND NOT AN ExecStartPost. It used to be guest-image/pivot.nix's
+// briard-bin-commit, run by systemd only after READY=1, so that a start systemd had not seen
+// succeed could not commit. That ordering bought less than it looked: the host does not watch
+// READY -- it cannot, it is outside the guest -- it watches the PORT, which this process opens
+// two statements earlier. So the real window was [port open, commit], and in it the host
+// reconnects, handshakes, judges the guest dressed and starts sending bring-up verbs, while
+// briard-node-storage.service names <binDir>/briard-guest-agent DIRECTLY (configuration.nix:
+// through the picker it would arm a trial every time storage came up). Measured 2026-09-11 on
+// the fleet tier (os-reboot.sh, run 34576181211): storage bring-up reached the guest 12 ms
+// before the commit did, exec'd a path that did not exist yet, 203/EXEC -- and because
+// `systemctl start` on a oneshot returns the failure, a healthy OS upgrade rolled back. The
+// deadman lands in the same window on every dress and survives it only because it retries every
+// 2 s; the units bring-up starts get one attempt each.
+//
+// Committing here closes it by construction: the set is final before anything can ask for it.
+// What is given up is the guarantee that a binary which trialled, opened the port and then died
+// before READY cannot commit itself -- a datagram send's worth of stretch, and a binary that
+// dies immediately AFTER READY commits today with the same result. The verdict was always the
+// pushed binary's own (BinStartup); the guarantee that survives a wrong one is not this hook but
+// the update timer below the agent, which fetches, verifies and restarts again regardless.
+//
+// Only a TRIAL start commits. The flags are cleared on EVERY start: a `.ran` marker left behind
+// by an earlier start would otherwise be read as this one's.
+func BinCommit(ctx context.Context, x Executor, logf func(string, ...any)) {
+	dir, run := binDir(), binRunDir()
+	if pickerRan(selfBin) == "trial" {
+		var set []string
+		for _, n := range BinNames {
+			err := os.Rename(filepath.Join(dir, n+nextSuffix), filepath.Join(dir, n)) // atomic same-fs commit
+			if err == nil {
+				set = append(set, n)
+			} else if !os.IsNotExist(err) {
+				logf("bin: committing %s failed (%v): the set is PARTIAL, and the next non-trial start discards what is left of it", n, err)
+			}
+		}
+		if err := os.Rename(filepath.Join(dir, releaseFile+nextSuffix), filepath.Join(dir, releaseFile)); err != nil && !os.IsNotExist(err) {
+			logf("bin: committing %s failed (%v): the handshake will report the release this set replaced", releaseFile, err)
+		}
+		logf("bin: committed %s: %s", committedRelease(), strings.Join(set, " "))
+		// The doors get their start budget back: the trial spent one of it where a door was running.
+		args := []string{"reset-failed"}
+		for _, n := range doorNames {
+			args = append(args, binUnits[n])
+		}
+		if out, err := x.Run(ctx, "systemctl", args...); err != nil {
+			logf("bin: could not clear the doors' start budget after the commit (%v: %s)", err, strings.TrimSpace(string(out)))
+		}
+	}
+	for _, n := range BinNames {
+		os.Remove(filepath.Join(run, n+updateSuffix))
+		os.Remove(filepath.Join(run, n+ranSuffix))
+	}
+}
+
+// committedRelease is the id in <binDir>/RELEASE, "?" when there is none to read -- the same
+// fallback the shell commit printed, and only ever used in that log line.
+func committedRelease() string {
+	b, err := os.ReadFile(filepath.Join(binDir(), releaseFile))
+	if err != nil {
+		return "?"
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // armed reports whether n still holds its single-use arm flag: it has not started since the
@@ -484,13 +552,14 @@ func unitActive(ctx context.Context, x Executor, unit string) bool {
 // runningBundle is what the handshake reports: the bundle id when this process runs from the
 // pushed directory, "" when it runs the firmware.
 //
-// A TRIAL THAT HAS PASSED reports the release it is trialling (RELEASE.next), and this order is
-// load-bearing: the port opens only after the verdict, the commit is the unit's ExecStartPost
-// AFTER that, and the host -- already retrying its reconnect -- gets in first almost every time.
-// Reading RELEASE first meant handing it the OLD id and having a good dress recorded as a
-// permanent revert (measured on the first install-macvtap run of [B.138]; the same window
-// existed under [B.86j], hidden by a port that opened earlier). A trial that FAILS never opens
-// the port at all, so this can only ever report a release the doors have already earned.
+// It reads the COMMITTED file and nothing else. Between [B.138] and [B.148] it had to prefer
+// RELEASE.next on a trial start, because a handshake could be answered in the window between
+// READY and the ExecStartPost commit, where only the staged id existed -- reading RELEASE there
+// handed the host the OLD id and had a good dress recorded as a permanent revert (measured on
+// the first install-macvtap run of [B.138]). BinCommit now runs before this process serves
+// anything, so that window is gone: by the time any handshake is answered RELEASE holds the id
+// just committed, and the `.ran` marker the inversion keyed off has been cleared. A trial that
+// FAILS never opens the port at all, so this can only ever report a release the doors earned.
 func runningBundle() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -500,16 +569,11 @@ func runningBundle() string {
 	if filepath.Dir(exe) != dir {
 		return ""
 	}
-	order := []string{releaseFile, releaseFile + nextSuffix}
-	if pickerRan(selfBin) == "trial" {
-		order = []string{releaseFile + nextSuffix, releaseFile}
+	b, err := os.ReadFile(filepath.Join(dir, releaseFile))
+	if err != nil {
+		return ""
 	}
-	for _, f := range order {
-		if b, err := os.ReadFile(filepath.Join(dir, f)); err == nil {
-			return strings.TrimSpace(string(b))
-		}
-	}
-	return ""
+	return strings.TrimSpace(string(b))
 }
 
 // HandleBin is the dispatch arm for the three verbs.

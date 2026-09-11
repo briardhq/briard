@@ -192,14 +192,22 @@ func runGuest(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	// THE COMMIT ([B.148]), here and nowhere else: the port is open, which is the last thing this
+	// binary had left to prove, and NOTHING HAS BEEN SERVED YET. The host's gate is the port, not
+	// READY -- so anything committed after the first verb is a set the units bring-up starts
+	// cannot exec (briard-node-storage names the committed path directly). BinCommit says why in
+	// full, with the run that measured it.
+	guestfirmware.BinCommit(ctx, x, log.Printf)
+
 	go func() {
 		<-ctx.Done()
 		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
 	}()
 
-	// READY at listen ([B.86j]): the unit is Type=notify under the guest's frozen pivot, and its
-	// ExecStartPost commits a pushed binary only after this. A pushed agent that cannot open the
-	// port never says it, and the next start falls back to the committed one.
+	// READY at listen ([B.86j]): the unit is Type=notify under the guest's pivot. A pushed agent
+	// that cannot open the port never says it, and the next start falls back to the committed
+	// one. Since [B.148] the set is already committed when this is sent, so READY means "serving
+	// the binaries this node keeps" rather than "about to commit them".
 	_ = sdnotify.Ready()
 	if err := guestagent.ServeStamped(ctx, conn, x); err != nil {
 		return err

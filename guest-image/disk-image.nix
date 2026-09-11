@@ -321,13 +321,14 @@ let
         serviceConfig = {
           # THROUGH THE PIVOT ([B.86j], [B.138], [B.139], pivot.nix): the agent the host pushed
           # when there is one, else the baked firmware -- which is the ONE binary this image
-          # carries, and serves only the handshake, the three push verbs and os.poweroff. READY
-          # only after the trial verdict and at listen (the mains), and the ONE commit of the
-          # whole pushed set only after that -- this unit is the one an activation restarts, and
-          # its start is the verdict on the doors.
+          # carries, and serves only the handshake, the three push verbs and os.poweroff. This
+          # unit is the one an activation restarts, and its start is the verdict on the doors:
+          # trial verdict, then the port, then the ONE commit of the whole pushed set, and only
+          # then READY (the mains). ⚠️ NO ExecStartPost, and its absence is the fix of [B.148]:
+          # a commit systemd ran after READY ran after the host's first bring-up verbs too, and
+          # those start units that exec the committed path. It is the agent's own job now.
           Type = "notify";
           ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardFirmware}/bin/briard-guest-firmware run --guest";
-          ExecStartPost = config.briard.pivot.commit;
           Restart = "always";
           RestartSec = 1;
         };

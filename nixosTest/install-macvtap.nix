@@ -1214,8 +1214,10 @@ pkgs.testers.runNixOSTest {
     boots = console_count("briard-bin-exec: briard-guest-agent: baked .*briard-guest-firmware")
     firmware_dresses = int(host.succeed("journalctl -u briard-agent | grep -c 'guest bundle: the guest runs its firmware' || true").strip())
     pushed_starts = console_count("briard-bin-exec: briard-guest-agent: pushed")
-    commits = console_count("briard-bin-commit: committed")
-    set_commits = console_count("briard-bin-commit: committed .*briard-dashboard.*briard-reverse-proxy.*briard-guest-agent")
+    # The commit is the AGENT's own line since [B.148] ("bin: committed <release>: <names>"),
+    # not a briard-bin-commit unit hook -- same account, one process earlier.
+    commits = console_count("bin: committed")
+    set_commits = console_count("bin: committed .*briard-dashboard.*briard-reverse-proxy.*briard-guest-agent")
     if boots < 1 or firmware_dresses != boots or commits != boots or set_commits != commits or pushed_starts < 1:
         print("=== the guest's pivot and units ===")
         print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-dashboard|Control process|Failed"))
@@ -1320,7 +1322,7 @@ pkgs.testers.runNixOSTest {
         host.wait_until_succeeds("[ $(tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'trial of .* REFUSED: briard-reverse-proxy' || true) -gt 0 ]", timeout=120)
         host.wait_until_succeeds("[ $(tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'a staged set .* was left behind by a trial that did not commit' || true) -gt 0 ]", timeout=120)
         # ...and the set did NOT commit: no commit line names the refused release.
-        assert console_count(f"briard-bin-commit: committed {V5}") == 0, f"{V5} committed despite a refused trial"
+        assert console_count(f"bin: committed {V5}") == 0, f"{V5} committed despite a refused trial"
     except Exception:
         print(guest_console("briard-bin|trial|briard-guest-agent|briard-reverse-proxy|briard-dashboard|Failed"))
         raise
