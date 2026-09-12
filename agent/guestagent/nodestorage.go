@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -321,15 +322,26 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 	// ⚠️ THE HONEST FRAMING IS "READY TO BE ARMED", NEVER "PROTECTED". An un-armed volume resists
 	// physical loss only (theft, RMA, resale); the key is right there. What it buys is that
 	// arming later is a keyslot operation instead of a multi-hour migration nobody opts into.
-	if isLuks(ctx, x, t.Device) && !blockExists(ctx, x, crypt) {
-		pass, err := clearKey(ctx, x, t.Device)
-		if err != nil {
-			return false, err
-		}
-		if err := withKeyFile(x, pass, func(key string) error {
-			return run("cryptsetup", "open", "--key-file", key, t.Device, cryptName(t))
-		}); err != nil {
-			return false, err
+	//
+	// ⚠️ AND AN UNREADABLE PROBE IS NOT A BLANK DISK ([B.126]). Falling through on it reaches the
+	// blank-disk path below, whose first act is luksFormat on this very device -- so a disk that is
+	// busy, or whose header read failed, would be crypto-erased by a bring-up that was only ever
+	// asking a question. Refuse instead: a genuinely blank device answers, and a retry costs a
+	// boot.
+	switch isLuks(ctx, x, t.Device) {
+	case luksUnreadable:
+		return false, fmt.Errorf("cryptsetup could not read %s (see the unit's journal for what it said): refusing to treat it as blank, because the next step would luksFormat over a header this node cannot rule out -- a busy or failing device is the likely cause, and a genuinely unformatted disk answers", t.Device)
+	case luksFormatted:
+		if !blockExists(ctx, x, crypt) {
+			pass, err := clearKey(ctx, x, t.Device)
+			if err != nil {
+				return false, err
+			}
+			if err := withKeyFile(x, pass, func(key string) error {
+				return run("cryptsetup", "open", "--key-file", key, t.Device, cryptName(t))
+			}); err != nil {
+				return false, err
+			}
 		}
 	}
 
@@ -598,11 +610,51 @@ func cryptName(t nodestorage.Tier) string { return t.VG + "-crypt" }
 
 func cryptDevice(t nodestorage.Tier) string { return "/dev/mapper/" + cryptName(t) }
 
+// luksState is the three answers the format decision needs, and the reason it is not a bool
+// ([B.126]): a device that IS formatted, one that provably is NOT, and one the probe could not
+// read. The third is not the second, and collapsing them is what routes an unreadable encrypted
+// disk into luksFormat. The zero value is the conservative one on purpose.
+type luksState int
+
+const (
+	luksUnreadable luksState = iota // refuse: this says nothing about what is on the disk
+	luksFormatted
+	luksBlank
+)
+
 // isLuks answers "has this device been formatted", which is the question that decides whether a
 // node opens what is there or formats something new.
-func isLuks(ctx context.Context, x Executor, device string) bool {
+//
+// ⚠️ BLANK IS ONE EXIT CODE AND EVERYTHING ELSE IS UNREADABLE -- the same rule metadataPresent
+// reads off one phrase, for the same reason. `cryptsetup` exits 1 for "not a LUKS device" and
+// reserves the rest for conditions that say nothing about the disk's contents: wrong parameters,
+// no permission (2), out of memory (3), wrong device (4), device busy (5). An error carrying no
+// status at all -- the binary missing, the command never run -- is unreadable too.
+//
+// The side that refuses is the safe one and it is not a close call: the alternative is luksFormat
+// over a header this node could not rule out, and that header holds the clear-key token, so the
+// mistake is a CRYPTO-ERASE rather than a wipe something could be carved back from. `pvcreate`
+// cannot cover it either -- the blank probe runs one step LATER, by which time the header is gone.
+func isLuks(ctx context.Context, x Executor, device string) luksState {
 	_, err := x.Run(ctx, "cryptsetup", "isLuks", device)
-	return err == nil
+	if err == nil {
+		return luksFormatted
+	}
+	if code, ok := exitCode(err); ok && code == 1 {
+		return luksBlank
+	}
+	return luksUnreadable
+}
+
+// exitCode reads a command's exit status off the error an Executor returns. os/exec's *ExitError
+// carries it through the embedded *os.ProcessState; anything that does not reports false, which
+// every caller must read as "I could not tell" rather than as a value.
+func exitCode(err error) (int, bool) {
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) {
+		return ec.ExitCode(), true
+	}
+	return 0, false
 }
 
 // blockExists is how both idempotency checks are spelled: the crypt device is already open, or

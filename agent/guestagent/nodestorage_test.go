@@ -3,6 +3,8 @@ package guestagent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -22,13 +24,27 @@ const (
 // LUKS, is that device node there, and does create-md refuse. Everything else succeeds.
 type storageFake struct {
 	*fakeExec
-	isLuks    bool            // `cryptsetup isLuks <dev>` exit 0
+	// luks is what `cryptsetup isLuks <dev>` reports, and it is THREE-VALUED for the reason
+	// [B.126] exists: a bool here cannot say "the probe failed for a reason that is not an
+	// answer", so a fake carrying one encodes the very assumption the defect rested on and no
+	// test written against it can reach the dangerous branch.
+	luks      luksState
 	present   map[string]bool // `test -b <path>` exit 0
 	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata ([B.145c])
 }
 
+// exitStatus is the fake's stand-in for os/exec's *ExitError: the one thing production reads off
+// a failed command beyond "it failed". Without it a fake cannot distinguish cryptsetup's "not a
+// LUKS device" (1) from its "device busy" (5), which is the whole distinction under test.
+type exitStatus int
+
+func (e exitStatus) ExitCode() int { return int(e) }
+func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+
+// The common case is a fresh install onto a blank disk, so that is the default; a test that means
+// something else says so.
 func newStorageFake(cpuinfo string) *storageFake {
-	s := &storageFake{fakeExec: &fakeExec{}, present: map[string]bool{}}
+	s := &storageFake{fakeExec: &fakeExec{}, present: map[string]bool{}, luks: luksBlank}
 	_ = s.WriteFile("/proc/cpuinfo", []byte(cpuinfo))
 	s.runFn = s.storageRun
 	return s
@@ -39,8 +55,13 @@ func newStorageFake(cpuinfo string) *storageFake {
 func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 	switch {
 	case name == "cryptsetup" && len(args) > 1 && args[0] == "isLuks":
-		if !s.isLuks {
-			return nil, errors.New("exit status 1")
+		switch s.luks {
+		case luksBlank:
+			return nil, exitStatus(1)
+		case luksUnreadable:
+			// EBUSY -- the openable-but-unprobeable device. Real shape: cryptsetup prints a
+			// diagnostic and exits 5, which says nothing at all about what is on the disk.
+			return []byte("Device " + args[1] + " is busy.\n"), exitStatus(5)
 		}
 	case name == "test" && len(args) == 2 && args[0] == "-b":
 		if !s.present[args[1]] {
@@ -248,7 +269,7 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 // anybody -- and does not reformat on the way.
 func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.isLuks = true
+	f.luks = luksFormatted
 	f.mdPresent = true
 	// The token cryptsetup will export, and the LV that appears once the VG is activated. The
 	// crypt device is NOT present: that is what makes this the open path.
@@ -282,7 +303,7 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 // say why, rather than opening with an empty passphrase and reporting a corrupt header.
 func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.isLuks = true
+	f.luks = luksFormatted
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		if name == "cryptsetup" && len(args) > 1 && args[0] == "token" && args[1] == "export" {
 			_ = f.WriteFile(luksTokenPath, []byte(`{"type":"systemd-tpm2","keyslots":["1"]}`))
@@ -293,6 +314,58 @@ func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 	err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false))
 	if err == nil || !strings.Contains(err.Error(), clearKeyToken) {
 		t.Fatalf("err = %v, want a refusal naming the missing %s token", err, clearKeyToken)
+	}
+}
+
+// AN UNREADABLE PROBE IS NOT A BLANK DISK ([B.126]). `cryptsetup isLuks` exits non-zero for far
+// more than "not LUKS" -- busy (5), no permission (2), wrong device (4) -- and when it did so on a
+// device that IS formatted, bring-up fell through to the blank-disk path and luksFormat'ed over
+// the household's header. That is a crypto-erase, not a wipe: the clear-key token lives in the
+// header being replaced, and `pvcreate`'s blank probe runs one step later, too late to cover it.
+//
+// ⚠️ THE ASSERTION THAT MUST BE ABLE TO FAIL IS THE SECOND ONE. "bring-up returned an error" is
+// nearly free -- almost any bug produces one -- so the load-bearing half is that luksFormat NEVER
+// RAN. Measured against the defect (isLuks collapsed back to two values, 2026-09-12): the runs
+// come back holding `cryptsetup luksFormat ... /dev/vdb`, then `token import`, `pvcreate`,
+// `vgcreate`, both `lvcreate`s and `create-md --force` -- the volume rebuilt end to end.
+//
+// FreshInit is FALSE because that is the realistic shape: the disk is already LUKS, so this is a
+// node coming BACK, and what it expects is to open what is there. The mkfs gate is sound and skips
+// on a returning node -- the luksFormat alone is what destroys it, since the header it replaces
+// carries the clear-key token and nothing can read the old volume again.
+func TestNodeStorageRefusesAnUnreadableLuksProbe(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.luks = luksUnreadable
+
+	err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false))
+	if err == nil || !strings.Contains(err.Error(), "/dev/vdb") {
+		t.Fatalf("err = %v, want a refusal naming the device it could not read", err)
+	}
+	if f.ran("cryptsetup", "luksFormat") {
+		t.Fatalf("a device the probe COULD NOT READ was formatted anyway; runs = %v", f.runs)
+	}
+	// Nothing downstream of the refusal ran either: the tier is abandoned before any of the
+	// writes that would matter, not merely before the format.
+	for _, forbidden := range [][]string{{"pvcreate"}, {"vgcreate"}, {"lvcreate"}, {"mkfs.btrfs"}} {
+		if f.ran(forbidden...) {
+			t.Errorf("%v ran past an unreadable probe; runs = %v", forbidden, f.runs)
+		}
+	}
+}
+
+// THE NON-VACUITY TWIN of the test above, and the reason the probe is three-valued rather than
+// inverted: a disk that PROVABLY has no LUKS on it -- cryptsetup's exit 1, the one code that is an
+// answer -- must still be formatted. A fix that simply refused on every non-zero exit would pass
+// the test above and break every fresh install; this is what catches that.
+func TestNodeStorageFormatsAProvablyBlankDisk(t *testing.T) {
+	f := newStorageFake(aesCPU)
+	f.luks = luksBlank
+
+	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ran("cryptsetup", "luksFormat") {
+		t.Errorf("a provably blank disk was not formatted; runs = %v", f.runs)
 	}
 }
 
@@ -602,5 +675,37 @@ func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 	}
 	if err := nodeStorage(context.Background(), f, loneSpec(true)); err == nil || !strings.Contains(err.Error(), "holds DRBD metadata") {
 		t.Fatalf("err = %v; unclean metadata was read as none, and a forgotten flock's data would have been mounted alone", err)
+	}
+}
+
+// exitCode IS THE SEAM THE FAKE CANNOT TEST, so it gets tested against the real thing. Every other
+// test here supplies its own error type, which means they all assume the one fact production
+// depends on rather than checking it: that what `osExecutor.Run` hands back on a non-zero exit is
+// something `errors.As` can read an ExitCode off. If that assumption were wrong, `cryptsetup
+// isLuks`'s exit 1 would read as could-not-tell and EVERY FRESH INSTALL would refuse to format --
+// a green suite and a product that cannot install ([B.126]).
+//
+// `*exec.ExitError` carries ExitCode() through its embedded *os.ProcessState; a command that never
+// ran yields `*exec.Error`, which carries none. The second case is the one worth stating: absent a
+// status, could-not-tell is the answer, and that routes to a refusal.
+func TestExitCodeReadsRealExecErrors(t *testing.T) {
+	run := func(name string, args ...string) error {
+		_, err := exec.CommandContext(context.Background(), name, args...).CombinedOutput()
+		return err
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		ok   bool
+	}{
+		{"not a LUKS device", run("sh", "-c", "exit 1"), 1, true},
+		{"device busy", run("sh", "-c", "exit 5"), 5, true},
+		{"binary missing", run("briard-no-such-binary"), 0, false},
+	} {
+		code, ok := exitCode(tc.err)
+		if code != tc.code || ok != tc.ok {
+			t.Errorf("%s: exitCode(%v) = (%d, %v), want (%d, %v)", tc.name, tc.err, code, ok, tc.code, tc.ok)
+		}
 	}
 }
