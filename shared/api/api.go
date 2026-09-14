@@ -430,6 +430,22 @@ const (
 	//                        inside the demote path. Node-local and idempotent; a node with
 	//                        nothing mounted (a Secondary, a witness) reports done("skipped"),
 	//                        which is an answer, not a failure.
+
+	// LOCAL-ONLY KINDS ([B.142a]). These two are refused when they arrive on the cloud's
+	// down-channel; the allowlist that does it is localOnlyKinds in agent/host. They sit in this
+	// same block because the taxonomy is one taxonomy -- what differs is which door may carry
+	// them, and that is a property of the call site, never of anything on the Directive struct.
+	DirectiveDebugArm = "debug-arm" // Payload empty. Swap the guest's second serial port from its
+	//                        null backend to a unix socket, so the getty that has been sitting on
+	//                        that port since boot becomes reachable. Outcome Detail = the socket's
+	//                        path, which the caller then connects to. The agent derives that path
+	//                        from its own QMPSock, so no second setting exists that could place it
+	//                        outside the 0700 root directory the monitor already lives in.
+	DirectiveDebugDisarm = "debug-disarm" // Payload empty. Put that port back on a null backend.
+	//                        QEMU unlinks the socket, so "is this node open?" stays a question the
+	//                        filesystem answers. Idempotent -- disarming a console that was never
+	//                        armed is the same monitor call -- which is what lets a caller run it
+	//                        from an unconditional cleanup path.
 )
 
 // CertBundle is a renewed cert the controller pushes down (JSON-encoded into a DirectiveCert's

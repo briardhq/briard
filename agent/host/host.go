@@ -1192,7 +1192,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 					// exactly the gap this rule exists to close. The legs that block for minutes
 					// (the upgrade path, the recovery ladder) take their own lease.
 					cfg.beat.Beat()
-					o := cfg.dispatch(ctx, d, r, up, n, cr, su, logf)
+					o := cfg.dispatch(ctx, d, originCloud, r, up, n, cr, su, logf)
 					cfg.adoptInstalledServices(d, o, logf)
 					if o.ID != "" {
 						*pending = append(*pending, o)
@@ -1225,7 +1225,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
 			cfg.beat.Beat()
-			o := cfg.dispatch(ctx, rq.d, r, up, n, cr, su, logf)
+			o := cfg.dispatch(ctx, rq.d, originLocal, r, up, n, cr, su, logf)
 			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
 			cfg.adoptInstalledServices(rq.d, o, logf)
 		case <-t.C:
@@ -1234,10 +1234,58 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	}
 }
 
+// origin is the door a directive arrived through.
+//
+// IT IS A PARAMETER, NEVER A FIELD ON api.Directive ([B.142a]). The Directive struct is the wire
+// type the cloud sends, so an origin field on it would be a claim the sender makes about itself
+// -- a cloud could simply say "local". Only the call site knows which door it read from, and a
+// call site cannot be forged. There are exactly two, both in observe().
+type origin int
+
+const (
+	originCloud origin = iota // the controller's down-channel, in the report loop
+	originLocal               // the admin socket: root-only, on this host, by a human
+)
+
+func (o origin) String() string {
+	if o == originLocal {
+		return "local"
+	}
+	return "cloud"
+}
+
+// localOnlyKinds are the kinds the cloud's down-channel may not carry ([B.142a]).
+//
+// An ALLOWLIST of the exceptions rather than a classification of every kind, so that adding an
+// ordinary cloud-driven kind stays a one-line change and cannot be broken by forgetting this
+// table. The cost is that a future local-only verb must be added here deliberately; the test
+// that keeps that honest is TestLocalOnlyKindsAreRefusedFromTheCloud, which enumerates them.
+//
+// What this buys is narrow and worth stating exactly, because [B.142] once claimed more: arming
+// publishes a socket inside the 0700 root QMP directory, which the cloud has no filesystem path
+// to and no directive proxies, so this is not what stops a remote root shell -- nothing remote
+// could reach one anyway. It is that the cloud has no business changing a node's local debug
+// state, made structural instead of incidental.
+var localOnlyKinds = map[string]bool{
+	api.DirectiveDebugArm:    true,
+	api.DirectiveDebugDisarm: true,
+}
+
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
 // that decision is made — the local door and the cloud's down-channel both come
 // through here, so "what does this node do with a directive" cannot drift between them.
-func (cfg Config) dispatch(ctx context.Context, d api.Directive, r guestReader, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r guestReader, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any)) api.DirectiveOutcome {
+	if o != originLocal && localOnlyKinds[d.Kind] {
+		// Logged, not merely refused: a controller asking for a local-only kind is either a bug
+		// in the cloud or someone standing where the cloud stands, and both are worth a line in
+		// the node's own journal rather than only an outcome the asker reads.
+		logf("directive kind=%s refused: local-only, and this one arrived from the %s", d.Kind, o)
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed,
+			Detail: "kind " + d.Kind + " is accepted only on this node's local admin socket"}
+	}
+	if d.Kind == api.DirectiveDebugArm || d.Kind == api.DirectiveDebugDisarm {
+		return cfg.applyDebugConsole(ctx, d, logf)
+	}
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm {
 		// A service install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
 		i, ok := r.(serviceInstaller)

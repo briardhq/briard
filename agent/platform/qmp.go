@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path/filepath"
 	"time"
 )
 
@@ -338,6 +339,19 @@ func (g *Guest) Reset(ctx context.Context) error {
 	}
 	_, err := qmpExecute(ctx, g.QMPSock, "system_reset", nil)
 	return err
+}
+
+// DebugConsoleName is the debug console's socket; DebugConsolePath puts it BESIDE the monitor
+// that arms it, rather than anywhere a second setting could name.
+//
+// THAT DERIVATION IS THE CONTAINMENT ([B.142a]). Launch makes the QMP directory 0700 root
+// (secureQMPDir), so a socket placed there inherits it; the same socket in, say, /tmp would be a
+// world-reachable door onto an autologin root shell. There is therefore exactly one input -- the
+// monitor's own path -- and no configuration that can pull the two apart.
+const DebugConsoleName = "console.sock"
+
+func DebugConsolePath(qmpSock string) string {
+	return filepath.Join(filepath.Dir(qmpSock), DebugConsoleName)
 }
 
 // DebugArm points the guest's debug console (ttyS1) at a unix socket, on a guest that is

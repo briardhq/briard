@@ -18,50 +18,46 @@ package cli
 // erased at the next update, and only the replicated data volume survives. A shell here is a
 // window, not a place to keep anything.
 //
-// It deliberately does NOT go through the agent's admin socket. That socket carries
-// api.Directives, and the cloud enqueues directives too -- a debug-shell directive kind would
-// hand the cloud (or anyone who took it) a root shell into every household, unilaterally. This
-// talks straight to the local monitor instead, so the capability has no remote edge at all.
+// ARM AND DISARM ARE THE AGENT'S ([B.142a]), submitted over the admin socket as directive kinds
+// the cloud's down-channel is refused (host.localOnlyKinds). This client keeps only what is
+// inherently the operator's: the terminal, the escape key, and the guarantee that every path out
+// of here disarms. The agent owns the act so that it owns the RECORD -- its log reaches the
+// journal, where an interactive process's stderr never could.
+//
+// What that gate does NOT do is stop a remote root shell, and the earlier claim that it did is
+// withdrawn: arming publishes a socket inside the 0700 root QMP directory, which nothing remote
+// can reach and no directive proxies. A cloud able to arm could leave a door open, not walk
+// through one -- walking through needs host root, which is already QMP, which is already this
+// guest's RAM. What the gate says is that the cloud has no business changing local debug state.
+//
+// The trade it costs: with the agent's observe loop wedged, no console. That is deliberate. The
+// user this product is built for should be deterred from operating on an already-degraded node,
+// and anyone equipped to drive QMP by hand is not that user.
 
 import (
 	"context"
 	"flag"
 	"fmt"
 	"io"
-	"log/syslog"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
-	"briard.io/agent/platform"
+	"briard.io/shared/api"
 )
-
-// defaultQMPSock mirrors ConfigFromEnv's QMP_SOCK default (agent/host/config.go), for the same
-// reason defaultSock mirrors ADMIN_SOCK: the alternative is a shared const in shared/api, which
-// would put a deployment path in the closed wire-contract package. Keep the two in step.
-const defaultQMPSock = "/run/briard/qmp/guest.sock"
-
-// consoleSockName is the debug console's socket, beside the monitor that arms it. DERIVED from
-// the QMP path rather than configured separately, so there is one literal to keep in step and
-// no way to point the two at different directories -- the 0700 one is the only place this may
-// live.
-const consoleSockName = "console.sock"
 
 // escapeByte is Ctrl-] — the telnet/socat convention for "let me out". It is needed because the
 // guest end is an autologin getty: `exit` just logs out and the getty hands you a fresh shell,
 // so the session has no natural end and the terminal is in raw mode besides.
 const escapeByte = 0x1d
 
-func qmpSockDefault() string {
-	if s := os.Getenv("QMP_SOCK"); s != "" {
-		return s
-	}
-	return defaultQMPSock
-}
+// disarmTimeout bounds the cleanup submit. Unlike `submit`'s deliberately unbounded wait (an
+// upgrade legitimately runs for minutes), this one runs while the operator waits to get their
+// terminal back, and the op behind it is a single monitor call.
+const disarmTimeout = 20 * time.Second
 
 // runDebug dispatches `briard debug <subcommand>`. One subcommand today; the level exists so
 // that if a second debugging tool is ever wanted it lands here rather than growing the
@@ -77,7 +73,7 @@ func runDebug(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard debug shell", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	qmp := fs.String("qmp", qmpSockDefault(), "the guest's QMP monitor socket")
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -85,24 +81,25 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprint(stderr, "briard debug shell: takes no arguments\n")
 		return 2
 	}
-	console := filepath.Join(filepath.Dir(*qmp), consoleSockName)
 
-	audit := openAudit()
-	defer audit.Close()
-
-	// ARM. A failure here is almost always one of two things and the message says which: no
-	// guest running (nothing listening on the monitor), or a guest launched by an agent old
-	// enough not to give it a debug port at all (QEMU refuses to change a chardev it has no
-	// record of).
-	armCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if err := platform.DebugArm(armCtx, *qmp, console); err != nil {
+	// ARM. The failures worth naming are the three the operator can act on, and they are now
+	// three rather than two: no agent (or not root -- `submit` says which), no guest running,
+	// or a guest launched by an agent old enough not to give it a debug port at all (QEMU
+	// refuses to change a chardev it has no record of). There is no -qmp here any more: the
+	// agent derives the console path from its own monitor, which is what keeps the socket in
+	// the 0700 root directory with no second setting able to move it.
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveDebugArm})
+	if err != nil {
 		fmt.Fprintf(stderr, "briard debug shell: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "briard debug shell: %s\n", o.Detail)
 		fmt.Fprintf(stderr, "  (is a guest running? `briard logs` says. A guest launched by an\n"+
 			"   older agent has no debug port and must be relaunched to gain one.)\n")
 		return 1
 	}
-	audit.log("debug console ARMED on %s by uid=%d", console, os.Geteuid())
+	console := o.Detail
 
 	// DISARM ON EVERY PATH OUT, including the signals a terminal delivers, because an armed node
 	// is a node left open. The one hole is SIGKILL, which nothing can close from in here -- the
@@ -115,19 +112,27 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 		disarmed = true
 		// A FRESH CONTEXT, NOT ctx: the usual reason we are unwinding is that ctx was cancelled,
 		// and cleanup that inherits the cancellation is cleanup that does not run.
-		dctx, dcancel := context.WithTimeout(context.Background(), 15*time.Second)
+		dctx, dcancel := context.WithTimeout(context.Background(), disarmTimeout)
 		defer dcancel()
 		// The terminal is already restored by the time this runs (restore is deferred later,
 		// so it unwinds first), which is why these are plain newlines and not raw-mode CRLF.
-		if err := platform.DebugDisarm(dctx, *qmp); err != nil {
-			// Loud, and on stderr as well as the journal: the operator is the only one who can
-			// fix a node that stayed open, and they are about to walk away from the terminal.
-			fmt.Fprintf(stderr, "\nbriard debug shell: FAILED TO DISARM: %v\n"+
-				"  the console at %s is still open; relaunching the guest also closes it\n", err, console)
-			audit.log("debug console DISARM FAILED on %s: %v", console, err)
+		//
+		// Loud on stderr for BOTH failure shapes -- the submit never landing, and the agent
+		// reporting it could not disarm. The operator is the only one who can fix a node that
+		// stayed open and is about to walk away from the terminal; the agent has already written
+		// its own side to the journal.
+		left := func(reason string) {
+			fmt.Fprintf(stderr, "\nbriard debug shell: FAILED TO DISARM: %s\n"+
+				"  the console at %s is still open; relaunching the guest also closes it\n", reason, console)
+		}
+		od, err := submit(dctx, *sock, api.Directive{Kind: api.DirectiveDebugDisarm})
+		if err != nil {
+			left(err.Error())
 			return
 		}
-		audit.log("debug console disarmed on %s", console)
+		if od.State != api.OutcomeDone {
+			left(od.Detail)
+		}
 	}
 	defer disarm()
 
@@ -268,29 +273,8 @@ func trimNewline(b []byte) []byte {
 	return b
 }
 
-// auditLog is the record that a node was opened. It goes to syslog rather than to the CLI's own
-// stdout because the operator's terminal is exactly where it will not be found later: the whole
-// point is that the next person to look at this node's journal can see that somebody was inside
-// it, and when. Best-effort -- a node with no /dev/log still gets its shell.
-type auditLog struct{ w *syslog.Writer }
-
-func openAudit() auditLog {
-	w, err := syslog.New(syslog.LOG_NOTICE|syslog.LOG_AUTH, "briard")
-	if err != nil {
-		return auditLog{}
-	}
-	return auditLog{w: w}
-}
-
-func (a auditLog) log(format string, args ...any) {
-	if a.w == nil {
-		return
-	}
-	_ = a.w.Notice(fmt.Sprintf(format, args...))
-}
-
-func (a auditLog) Close() {
-	if a.w != nil {
-		_ = a.w.Close()
-	}
-}
+// The record that a node was opened is the AGENT's now ([B.142a]) -- host.applyDebugConsole logs
+// it, and systemd puts the agent's stderr in the journal. What stood here was a syslog writer,
+// which existed only because an interactive process's stderr is the operator's terminal and so
+// reaches no journal at all; it also pinned `log/syslog`, which has no Windows build and broke
+// the GOOS seam for every package in this module.

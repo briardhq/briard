@@ -52,16 +52,18 @@ func TestDebugVerbIsReachable(t *testing.T) {
 	}
 }
 
-// The console socket is DERIVED from the monitor's path, never configured beside it. That is
-// what keeps it in the 0700 root directory Launch creates: a second setting could point it at
-// /tmp, and a world-reachable socket onto a root shell is the one way this feature becomes the
-// vulnerability it currently is not.
-func TestDebugConsoleLivesBesideTheMonitor(t *testing.T) {
-	if got, want := qmpSockDefault(), defaultQMPSock; got != want {
-		t.Errorf("qmpSockDefault() = %q, want %q", got, want)
+// THE CLIENT CANNOT NAME A MONITOR ([B.142a]). The console socket is derived by the AGENT from
+// its own QMP path, which is what keeps it inside the 0700 root directory Launch creates. A
+// `-qmp` flag here would hand that choice back to the caller, and a console socket somewhere
+// world-reachable is the one way this feature becomes the vulnerability it currently is not.
+// The derivation itself is asserted in agent/platform (TestDebugConsolePathIsBesideTheMonitor).
+func TestDebugShellCannotBePointedAtAMonitor(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := Main(context.Background(), []string{"debug", "shell", "-qmp", "/tmp/anywhere.sock"}, &out, &errb)
+	if code != 2 {
+		t.Errorf("`briard debug shell -qmp ...` = %d, want 2 (no such flag)", code)
 	}
-	t.Setenv("QMP_SOCK", "/run/elsewhere/qmp/guest.sock")
-	if got, want := qmpSockDefault(), "/run/elsewhere/qmp/guest.sock"; got != want {
-		t.Errorf("QMP_SOCK override = %q, want %q", got, want)
+	if !strings.Contains(errb.String(), "not defined: -qmp") {
+		t.Errorf("-qmp should be rejected as an undefined flag, got: %s", errb.String())
 	}
 }

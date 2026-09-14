@@ -300,3 +300,26 @@ func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
 		c.Close()
 	}
 }
+
+// THE CONSOLE SOCKET LIVES BESIDE THE MONITOR ([B.142a]), derived from it and never configured
+// on its own. Launch makes the QMP directory 0700 root, so a socket placed there inherits that
+// containment; the same socket somewhere world-reachable would be an open door onto an autologin
+// root shell. This asserts there is exactly one input and that nothing can pull the two apart --
+// the property `briard debug shell` gave up its -qmp flag to keep.
+func TestDebugConsolePathIsBesideTheMonitor(t *testing.T) {
+	for _, tc := range []struct{ qmp, want string }{
+		{"/run/briard/qmp/guest.sock", "/run/briard/qmp/" + DebugConsoleName},
+		{"/run/elsewhere/qmp/guest.sock", "/run/elsewhere/qmp/" + DebugConsoleName},
+		{"/tmp/t/mon.sock", "/tmp/t/" + DebugConsoleName},
+	} {
+		if got := DebugConsolePath(tc.qmp); got != tc.want {
+			t.Errorf("DebugConsolePath(%q) = %q, want %q", tc.qmp, got, tc.want)
+		}
+	}
+	// The directory is the monitor's, always -- stated as its own claim because that, not the
+	// filename, is what the 0700 mode is attached to.
+	const qmp = "/run/briard/qmp/guest.sock"
+	if got, want := filepath.Dir(DebugConsolePath(qmp)), filepath.Dir(qmp); got != want {
+		t.Errorf("console directory = %q, want the monitor's %q", got, want)
+	}
+}

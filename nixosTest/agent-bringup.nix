@@ -179,8 +179,12 @@ pkgs.testers.runNixOSTest {
     # Closed again on the way out, and the socket is the evidence: nothing else records the
     # state, so if this file survives the verb, a node stays open after a support call.
     host.fail("test -e /run/briard/qmp/console.sock")
-    host.succeed("journalctl | grep -q 'debug console ARMED'")
-    host.succeed("journalctl | grep -q 'debug console disarmed'")
+    # THE AGENT'S OWN JOURNAL, not merely the journal ([B.142a]): arm and disarm are directives it
+    # applies, so the record is its log line like every other action on this node. Scoped to the
+    # unit because that is the claim -- a CLI writing its own audit from outside would satisfy an
+    # unscoped `journalctl` just as well, which is exactly the arrangement this replaced.
+    host.succeed("journalctl -u briard-agent | grep -q 'debug console ARMED'")
+    host.succeed("journalctl -u briard-agent | grep -q 'debug console disarmed'")
     print("debug console: closed -> root shell -> closed")
     print(host.succeed("journalctl -u briard-agent | tail -30"))
   '';
