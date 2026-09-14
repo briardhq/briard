@@ -119,6 +119,14 @@ pkgs.testers.runNixOSTest {
     # Failover still works with nothing installed: the whole point is that the node is
     # replicating and able to take over BEFORE it has a workload, so that installing one
     # later lands on a substrate already proven.
+    #
+    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
+    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
+    # removing the only UpToDate copy. This rig is the most exposed of the eight that crash a
+    # primary, because it installs nothing: the crash arrives seconds after the initial full
+    # resync starts, with no install standing between the two to hide it.
+    survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
     print("an empty node fails over and still answers at the VIP — the substrate is the product")

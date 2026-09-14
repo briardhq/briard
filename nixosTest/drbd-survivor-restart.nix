@@ -90,6 +90,11 @@ pkgs.testers.runNixOSTest {
     print(f"### primary={primary.name} survivor={survivor.name}")
 
     ### ACT 1 — the control: the primary crashes, the survivor keeps quorum and promotes.
+    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
+    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
+    # removing the only UpToDate copy.
+    survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()
     survivor.wait_until_succeeds("drbdadm role r0 | grep -q Primary")
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")

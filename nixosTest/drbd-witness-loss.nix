@@ -76,6 +76,14 @@ pkgs.testers.runNixOSTest {
     service_units = fixture_units(primary)
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
+    # THE CRASH BELOW MUST FIND AN UPTODATE REPLICA ([B.145a]) -- here to keep the refusal HONEST
+    # rather than to enable a promotion. The product's seed path syncs a joiner for real, so a crash
+    # that lands mid-resync leaves a SyncTarget, and a SyncTarget cannot promote whatever quorum
+    # says: every assertion below would hold for the wrong reason. Quorum is the claim under test,
+    # so the survivor is licensed on disk state before quorum is the only thing left refusing it --
+    # and it is waited for while the cluster is still whole, which is this act's precondition.
+    secondary.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
+
     # WAN outage: the cloud witness becomes unreachable. Both disk nodes are still
     # up = 2-of-3 = majority, so the cluster stays quorate and keeps serving.
     witness.block()

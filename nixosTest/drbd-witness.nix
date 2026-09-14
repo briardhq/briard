@@ -79,8 +79,13 @@ pkgs.testers.runNixOSTest {
     # Kill the primary disk node. Survivor + diskless witness = 2 of 3 = quorum,
     # so the survivor promotes and serves — the diskless-quorum win (a lone disk
     # node would be 1 of 2 and self-fence).
-    primary.crash()
     survivor = next(m for m in disk_nodes if m != primary)
+    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
+    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
+    # removing the only UpToDate copy.
+    survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
+    primary.crash()
 
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
     t2 = int(json.loads(survivor.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])

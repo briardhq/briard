@@ -249,6 +249,13 @@ pkgs.testers.runNixOSTest {
     # is what makes this a claim about DRBD carrying what the service durably wrote.
     primary.wait_until_succeeds(f"grep -aq before-the-kill {broker_root}/broker/mosquitto.db", timeout=120)
     primary.succeed("sync")
+    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
+    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
+    # removing the only UpToDate copy.
+    for m in machines:
+        if m != primary:
+            m.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()
     survivors = [m for m in machines if m != primary]
 
