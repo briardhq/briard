@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -277,12 +278,16 @@ func flags(dev string) int64 {
 }
 
 // master names the bridge dev is a port of, "" when it is a port of nothing.
+//
+// filepath.Base, not a prefix trim: the symlink is a MULTI-LEVEL relative path
+// (`../../devices/virtual/net/br0`), so stripping one `../` leaves a path that matches no bridge
+// name — which would make Converged answer false forever and the tick re-converge on every pass.
 func master(dev string) string {
 	l, err := os.Readlink("/sys/class/net/" + dev + "/master")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimPrefix(l, "../")
+	return filepath.Base(l)
 }
 
 // hasAddr reports whether dev already holds exactly this address AND prefix. The prefix is part
