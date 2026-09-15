@@ -391,9 +391,14 @@ type Config struct {
 	// net is the host-side L2 this node converged to, DERIVED at start-up from the selected
 	// device rather than configured ([B.150](d)). Machinery like beat and telemetry: awaitNetwork
 	// fills it and the status tick re-asserts it, so the tick never has to re-select (which would
-	// macvtap-probe the parent every ten seconds). A zero value means "this agent does not own
-	// the network", which is every unit test and every rig that builds its own devices.
-	net nic.Spec
+	// macvtap-probe the parent every ten seconds). nil means "this agent does not own the
+	// network", which is every unit test and every rig that builds its own devices.
+	//
+	// A POINTER because a re-parent CHANGES it ([B.150](e)) and Config is copied everywhere --
+	// into the Manager, into each observe call, into bringUp. A value here would leave the new
+	// parent visible only to the frame that wrote it, so a channel bounce would resurrect the
+	// parent that is no longer there. One goroutine writes it (the observe loop); nothing races.
+	net *nic.Spec
 
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
@@ -543,6 +548,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if err != nil {
 		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
 	}
+	// IS THIS THE LAN WE WERE ON LAST TIME? Asked HERE, before anything overwrites the record,
+	// and acted on after the notifier exists ([B.150](e)). An operator who moved the box and set
+	// BRIARD_NIC is the only way a node legitimately reaches a different subnet -- we never do it
+	// on our own -- and what that invalidates is the collision check behind this node's drawn
+	// system subnet, which nothing else would ever notice.
+	movedLAN := cfg.net != nil && nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, cfg.net.Parent)) == nic.Elsewhere
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
 		// ASKED TO STOP BEFORE THE GUEST WAS UP. A cancellation is the shutdown this agent was
@@ -629,6 +640,18 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			alerter = newRedundancyAlerter(n, cfg.Node, peers, logf)
 		}
 	}
+	// THIS NODE IS ON A DIFFERENT NETWORK THAN IT WAS ([B.150](e)). The system subnet was drawn
+	// against the collision landscape of the old one, so that check is now stale -- and it is not
+	// ours to fix: the subnet is flock-scoped, and re-drawing it here would break a peer still
+	// holding the old one. So the node says so and keeps serving. Acted on here rather than at
+	// the comparison above because this is where a notifier exists to say it with.
+	if movedLAN {
+		logf("network: this node is on a different network than the one it last served on")
+		cfg.checkMovedLAN(ctx, n, logf)
+	}
+	// ...and NOW the LAN is recorded: after bring-up, so a fingerprint of a network we never
+	// actually served on cannot teach the next re-parent decision something unverified.
+	cfg.recordNetwork(ctx, logf)
 	// A trial that refused its own release ([B.86b]) could not report it -- failing the start IS
 	// the mechanism -- so it left one line, and the agent that came back after the revert says
 	// so. Taken once. The staged bundle stays on disk, inert, until the channel moves past it.
@@ -1128,6 +1151,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// macvtap hides from the machine running the guest and from nobody else ([V3b.19]). Lives for
 	// the observe loop because it remembers what it installed; see viproute.go.
 	vr := newVIPRouter(cfg.WitnessTap, cfg.VIPDev, cfg.guestNodeIP(), cfg.hostNodeIP())
+	// How long the guest's L2 parent has been gone ([B.150](e)). Lives for the observe loop for
+	// the same reason vr and the recovery counter do: "how long has this been true" is not a
+	// question a single tick can answer.
+	rp := &reparenter{}
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1145,6 +1172,20 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// NetworkManager manages, and NM reconciles addresses on a connection's reactivation.
 		cfg.beat.Beat()
 		cfg.convergeNetwork(ctx, logf)
+		// ...and the harder question the same tick is the only place to ask ([B.150](e)): has the
+		// PARENT gone away? qemu does not notice — it keeps running with a dead NIC, so the guest
+		// is alive, healthy by its own account, and unreachable. Paced, because the repair costs
+		// the household a guest restart; see reparent.go for what each tier is paying for.
+		if dev, rel := rp.consider(ctx, cfg, time.Now(), logf); dev != "" {
+			if err := cfg.reparent(ctx, up, n, dev, rel, logf); err != nil {
+				logf("network: %v", err)
+			} else {
+				// The guest was restarted under us, so this channel is dead and the Manager
+				// already holds the new one. Hand back the way an OS upgrade does and let Run
+				// adopt it, rather than growing a second way to swap the channel.
+				return guestfirmware.ErrChannelDown
+			}
+		}
 		// The running system is read from the guest each cycle, so it is correct even on a node
 		// that switched closure without this loop driving it.
 		cfg.beat.Beat()

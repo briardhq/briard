@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 // The two ways there is no answer, separated because they want opposite handling from a caller
@@ -255,3 +256,13 @@ func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// arpWait bounds the fingerprint's neighbour resolution. A gateway is by definition something
+// this host has been talking to, so its entry is usually already in the table; this is the budget
+// for provoking one that is not, and it is short because a fingerprint must never be able to
+// delay a bring-up.
+const arpWait = 750 * time.Millisecond
+
+// timeAfter is time.After, named so the fingerprint's poll loop reads as a wait rather than as a
+// channel expression.
+func timeAfter(d time.Duration) <-chan time.Time { return time.After(d) }

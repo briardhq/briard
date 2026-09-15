@@ -70,7 +70,7 @@ pkgs.testers.runNixOSTest {
     # The install host: a stock-ish box with nested KVM. Deliberately NO pkgs.qemu -- the only
     # qemu it may use is the one the installer bundles under /opt/briard.
     host =
-      { ... }:
+      { lib, ... }:
       {
         virtualisation.memorySize = 6144; # clears the report card's 4 GB floor + room for the 2 GB nested guest
         virtualisation.cores = 4;
@@ -88,6 +88,10 @@ pkgs.testers.runNixOSTest {
         # `netsh bridge` looks like -- and briard joining it rather than re-plumbing it.
         networking.useDHCP = false;
         networking.bridges.br0.interfaces = [ "eth1" ];
+        # mkForce, because `virtualisation.vlans` gives every vlan interface an address of its own
+        # and a bridge SLAVE may hold none -- NixOS asserts on exactly that. The address moves to
+        # the bridge below, which is what a real bridged host looks like.
+        networking.interfaces.eth1.ipv4.addresses = lib.mkForce [ ];
         networking.interfaces.br0.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];

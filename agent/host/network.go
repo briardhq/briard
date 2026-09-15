@@ -158,8 +158,9 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, l
 	// did not build them has no business insisting on which parent they hang off.
 	if cfg.linksPresent() {
 		if sel := nic.Select(cfg.NICOverride); sel.Dev != "" {
-			cfg.net = cfg.netSpec(sel.Dev, sel.Bridge)
+			spec := cfg.netSpec(sel.Dev, sel.Bridge)
 			cfg = cfg.applySubstrate(sel.Bridge)
+			cfg.net = &spec
 			logf("network: the guest's L2 is already up on %s (%s)", sel.Dev, substrateName(sel.Bridge))
 		} else {
 			logf("network: the guest's L2 is already up; this agent did not build it and will not touch it")
@@ -182,7 +183,7 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, l
 				logf("network: %s is usable again", sel.Dev)
 			}
 			cfg = cfg.applySubstrate(spec.Bridge)
-			cfg.net = spec
+			cfg.net = &spec
 			logf("network: the guest's L2 hangs off %s (%s)", spec.Parent, substrateName(spec.Bridge))
 			return cfg, nil
 		}
@@ -250,12 +251,12 @@ func (cfg Config) waitTick(ctx context.Context, local <-chan localRequest, why s
 // ten seconds forever, and re-parenting is a different act with its own trigger and its own cost
 // (it restarts the guest) -- that is [B.150](e), not this.
 func (cfg Config) convergeNetwork(ctx context.Context, logf func(string, ...any)) {
-	if cfg.net.Parent == "" || nic.Converged(cfg.net) {
+	if cfg.net == nil || cfg.net.Parent == "" || nic.Converged(*cfg.net) {
 		return
 	}
 	step, cancel := context.WithTimeout(ctx, netTick)
 	defer cancel()
-	if err := nic.Converge(step, cfg.net); err != nil {
+	if err := nic.Converge(step, *cfg.net); err != nil {
 		logf("network: could not converge the guest's L2 on %s: %v", cfg.net.Parent, err)
 		return
 	}

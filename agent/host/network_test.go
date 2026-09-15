@@ -119,7 +119,10 @@ func TestAwaitNetworkReturnsWhenThereIsNoNetworkToOwn(t *testing.T) {
 	}()
 	select {
 	case cfg := <-done:
-		if cfg.net.Parent != "" {
+		// nil, not an empty spec: "this agent owns no network" has to be distinguishable from
+		// "this agent owns a network it could not describe", because everything downstream --
+		// recordNetwork, the re-parent tick -- branches on it.
+		if cfg.net != nil {
 			t.Errorf("net = %+v, want nothing recorded for an agent that owns no network", cfg.net)
 		}
 	case <-ctx.Done():

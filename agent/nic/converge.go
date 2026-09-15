@@ -124,6 +124,33 @@ func Converge(ctx context.Context, s Spec) error {
 	return nil
 }
 
+// Rebuild converges s after DELETING the guest's NIC devices, so they are recreated on s.Parent
+// whatever they were hanging off before. It is the re-parent's half of [B.150](e).
+//
+// The delete is the whole difference from Converge, and it is not optional: a macvtap cannot be
+// re-parented, and Converge is check-first -- a child that still EXISTS (a parent renamed rather
+// than removed, say) would be left attached to the old device and reported converged. Deleting
+// first is what makes "the guest's L2 hangs off this parent now" true rather than hoped.
+//
+// ⚠️ THE PRIVATE TAP IS NOT TOUCHED. It has no parent -- it is a point-to-point wire to our own
+// guest -- so a re-parent has nothing to do to it, and recreating it would drop the host's own
+// addresses and the permanent neighbour entry that make the reboot gate and the VIP route work.
+func Rebuild(ctx context.Context, s Spec) error {
+	if s.Bridge {
+		// Nothing to rebuild: the port is a plain tap on a bridge the USER owns, and a bridge
+		// that went away is theirs to restore ([B.150](c)).
+		return Converge(ctx, s)
+	}
+	for _, t := range []string{s.SystemTap, s.ServiceTap} {
+		if t != "" && exists("/sys/class/net/"+t) {
+			if out, err := ip(ctx, "link", "del", t); err != nil {
+				return fmt.Errorf("nic: removing %s before re-parenting: %s", t, firstLine(out, err))
+			}
+		}
+	}
+	return Converge(ctx, s)
+}
+
 // Converged reports whether Converge would change nothing. It exists so the tick can stay silent
 // on the overwhelmingly common path -- and so the agent can SAY that the network is not what it
 // should be without having tried to fix it yet.
