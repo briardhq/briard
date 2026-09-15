@@ -263,6 +263,10 @@ func ConfigFromEnv() Config {
 		// loop. agent-watchdog.nix sets it to wedge that goroutine on purpose; nothing else does,
 		// install.sh writes no such variable, and unset is a no-op. See wedgeForTest.
 		WedgeFIFO: os.Getenv("BRIARD_WEDGE_FIFO"),
+		// The other test fixture, read here for the same reason and with the same contract:
+		// install-macvtap sets it to drive a re-parent without waiting out the shipped tier;
+		// install.sh writes no such key and 0 is the shipped behaviour. See Config.ReparentTier.
+		ReparentTier: durEnv("BRIARD_REPARENT_TIER", 0),
 		// Services is NOT read from the environment, and there is nothing here to read it from:
 		// what a node runs is installed at runtime and rebuilt from the node-local manifest cache
 		// at bring-up (Run -> installedServices), or read off the volume when this node promotes

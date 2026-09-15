@@ -136,15 +136,28 @@ func (cfg Config) recordedNetwork() nic.Fingerprint {
 // reparentWait is the tier: how long to let a candidate stand before rebuilding on it. The second
 // return is false when no wait is long enough -- the machine has moved, or we cannot tell, and
 // the answer is an operator rather than a timer.
-func reparentWait(rel nic.Relation) (time.Duration, bool) {
+//
+// fixture collapses every tier to a fixed wait, and is a TEST FIXTURE rather than a product knob
+// (Config.ReparentTier says so). The shipped fast tier is five minutes, which a rig would
+// otherwise spend real wall-clock observing a decision the first second already made.
+//
+// ⚠️ IT SHRINKS DURATIONS AND NEVER CONVERTS A REFUSAL INTO ONE. `Elsewhere` and `Unknown` are not
+// long waits, they are "an operator decides" -- so a fixture that reached them would let a rig
+// prove a re-parent the product forbids, which is the worst thing a test knob can do.
+func reparentWait(rel nic.Relation, fixture time.Duration) (time.Duration, bool) {
+	var d time.Duration
 	switch rel {
 	case nic.SameWire:
-		return reparentSameWire, true
+		d = reparentSameWire
 	case nic.SameSubnet:
-		return reparentSameSubnet, true
+		d = reparentSameSubnet
 	default: // Elsewhere, Unknown
 		return 0, false
 	}
+	if fixture > 0 && fixture < d {
+		return fixture, true
+	}
+	return d, true
 }
 
 // reparenter holds the one piece of state the decision needs across ticks: since when the
@@ -192,7 +205,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		return "", nic.Unknown
 	}
 	rel := nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, sel.Dev))
-	wait, ok := reparentWait(rel)
+	wait, ok := reparentWait(rel, cfg.ReparentTier)
 	if !ok {
 		// THE MACHINE HAS MOVED, or we cannot tell. Never automatic: a paired node that rebuilds
 		// itself on a LAN its peer is not on is a split flock.

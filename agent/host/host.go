@@ -410,6 +410,17 @@ type Config struct {
 	// so agent-watchdog.nix can wedge that goroutine on purpose. Empty everywhere but that test.
 	// See wedgeForTest for why this is explicit rather than borrowed from a defect.
 	WedgeFIFO string
+
+	// ReparentTier is a TEST FIXTURE in the same category as WedgeFIFO, and for the same reason
+	// that one is explicit: it collapses [B.150](e)'s re-parent tiers to a fixed wait so
+	// install-macvtap can drive a re-parent without spending the shipped five minutes of real
+	// wall-clock observing a decision the first second already made. Zero everywhere but that
+	// test; install.sh writes no such key.
+	//
+	// ⚠️ It shrinks DURATIONS ONLY. "Different subnet" and "cannot tell" are not long waits, they
+	// are an operator's decision, and reparentWait keeps them unreachable from here — a fixture
+	// that could reach them would let a rig prove a re-parent the product forbids.
+	ReparentTier time.Duration
 }
 
 // statusReader is the DRBD/quorum slice of the guest client the snapshot needs -- kept

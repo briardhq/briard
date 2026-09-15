@@ -27,10 +27,35 @@ func TestReparentWait(t *testing.T) {
 		{nic.Elsewhere, 0, false},
 		{nic.Unknown, 0, false},
 	} {
-		got, ok := reparentWait(tc.rel)
+		got, ok := reparentWait(tc.rel, 0)
 		if ok != tc.timed || got != tc.want {
 			t.Errorf("reparentWait(%q) = %v,%v; want %v,%v", tc.rel, got, ok, tc.want, tc.timed)
 		}
+	}
+}
+
+// THE TEST FIXTURE SHRINKS DURATIONS AND NOTHING ELSE. install-macvtap uses it to drive a
+// re-parent without spending the shipped five minutes -- but "different subnet" and "cannot tell"
+// are not long waits, they are an operator's decision, and a fixture that could reach them would
+// let a rig prove a re-parent the product forbids. That is the worst thing a test knob can do, so
+// it is the thing asserted.
+func TestReparentWaitFixtureCannotUnlockARefusal(t *testing.T) {
+	for _, rel := range []nic.Relation{nic.Elsewhere, nic.Unknown} {
+		if _, ok := reparentWait(rel, time.Millisecond); ok {
+			t.Errorf("the fixture turned %q into a wait; it must stay an operator's decision", rel)
+		}
+	}
+	// It does shrink the real tiers...
+	if got, ok := reparentWait(nic.SameWire, 2*time.Second); !ok || got != 2*time.Second {
+		t.Errorf("reparentWait(same-wire, 2s) = %v,%v; want 2s,true", got, ok)
+	}
+	if got, ok := reparentWait(nic.SameSubnet, 2*time.Second); !ok || got != 2*time.Second {
+		t.Errorf("reparentWait(same-subnet, 2s) = %v,%v; want 2s,true", got, ok)
+	}
+	// ...and never LENGTHENS one: a fixture longer than the tier is ignored, so a stray value
+	// cannot make a production node more sluggish than the shipped policy.
+	if got, _ := reparentWait(nic.SameWire, time.Hour); got != reparentSameWire {
+		t.Errorf("reparentWait(same-wire, 1h) = %v; want the shipped tier", got)
 	}
 }
 

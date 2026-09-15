@@ -119,6 +119,13 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
+        # A DEFAULT ROUTE, via the router node that already serves this LAN's DHCP. It is what a
+        # real household host has, and without it this rig could not exercise the shipped path at
+        # all: since [B.150](b) the agent SELECTS the device holding the main table's default
+        # route, so a host with none forces every install here to pin BRIARD_NIC and the selection
+        # is never tested. It is also what gives the LAN fingerprint a gateway MAC ([B.150](e)) --
+        # the strong signal the re-parent tiers are paced by, and with no gateway there is none.
+        networking.defaultGateway = { address = "192.168.1.3"; interface = "eth1"; };
         # IPv6 OFF on the install host, permanently and on purpose ([V3b.26b]). A stranger may have
         # disabled v6 before installing -- it is their machine and their setting -- and DESIGN §4.3
         # puts our addressing on v4 INDEFINITELY, so nothing we ship may quietly need v6 to work.
@@ -359,10 +366,15 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip link del briard-vpn0")
 
     # --- the install on the macvtap substrate: one command -> green ---
+    # ⚠️ NO BRIARD_NIC. The device is SELECTED, from the main table's default route the host node
+    # declares ([B.150](b)) -- so this install exercises the shipped path rather than being told
+    # the answer. The negative cases above keep the override, because naming a device is exactly
+    # what they are testing.
+    #
     # BRIARD_UNIT_DIR=/run/systemd/system: NixOS's /etc/systemd/system is a read-only store
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     install_out = host.succeed(
-        "${channelEnv} BRIARD_NIC=eth1 "
+        "${channelEnv} "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     # THE INSTALLER ENDS WITH THE LINK ([V3b.31h]): it waited for the agent's own healthy line
@@ -867,7 +879,7 @@ pkgs.testers.runNixOSTest {
     # (cattle), and does NOT recreate the pet data.img. Convergence is idempotent, so the agent
     # adopts the macvtaps that are already up rather than re-creating them.
     host.succeed(
-        "${channelEnv} BRIARD_NIC=eth1 "
+        "${channelEnv} "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched
@@ -1495,5 +1507,59 @@ pkgs.testers.runNixOSTest {
     host.fail("/opt/briard/agent/briard-agent update guest -to guest.20990101.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
     print("the shipped node resolves its guest chain: already running the installed release; a release needing a newer host is refused loudly")
+
+    # ---- RE-PARENTING: the parent goes away and the guest comes back ([B.150](e)) -------------
+    #
+    # A RENAME, not a deletion, and that is the STRONGER probe. A macvtap child SURVIVES its
+    # parent being renamed -- it re-points as `briard0@eth9` (measured on 6.18) -- so the devices
+    # are still there, still up, and still attached to the wrong name. That is precisely the case
+    # `nic.Rebuild`'s delete-first exists for, and an `ip link del eth1` would never reach it:
+    # Converge is check-first, so a child that exists would be reported converged and left hanging
+    # off a parent the record no longer names.
+    #
+    # ⚠️ Renaming an UP device works and does NOT disturb the host's own L3: the address and the
+    # default route follow the ifindex, so 192.168.1.1 and the gateway stay exactly where they
+    # were. That is the point -- it is also why a re-parent cannot cost the agent its path to the
+    # cloud (nothing here moves a host address or route, [B.150](c)).
+    #
+    # The tier is collapsed by the test fixture rather than waited out: the shipped fast tier is
+    # five minutes, which would buy this assertion nothing the first second does not already give
+    # it. BRIARD_REPARENT_TIER shrinks durations only -- "different subnet" and "cannot tell" stay
+    # unreachable from it, so this cannot accidentally prove a re-parent the product forbids.
+    host.succeed("printf 'BRIARD_REPARENT_TIER=2s\\n' >> /opt/briard/config.env")
+    host.succeed("systemctl restart briard-agent.service")
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+    # The LAN fingerprint was recorded at bring-up and names the device we are about to remove.
+    host.succeed("grep -q '\"parent\":\"eth1\"' /var/lib/briard/network.json")
+
+    host.succeed("ip link set eth1 name eth9")
+    host.succeed("ip -o link show eth9")          # the device is there, under a new name
+    host.fail("ip link show eth1")                # ...and the recorded parent is gone
+    host.succeed("ip -d link show briard0 | grep -q 'briard0@eth9'")  # the child followed it
+
+    # The tick notices -- qemu never will, which is the whole reason this lives on the tick.
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 're-parenting the guest.s L2 from eth1 onto eth9'",
+        timeout=180,
+    )
+    # The devices were REBUILT on the new parent rather than adopted where they lay. Same names,
+    # new parent: `@eth9` is what says the delete-and-recreate actually happened.
+    host.wait_until_succeeds("ip -d link show briard0 | grep -q 'briard0@eth9'", timeout=120)
+    host.succeed("ip -d link show briard-drbd0 | grep -q 'briard-drbd0@eth9'")
+    host.succeed("ip link show briard0 | grep -q ALLMULTI")  # and came back with their flags
+    host.succeed("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
+
+    # A RE-PARENT IS NEVER A QUIET SELF-HEAL. The household's service just moved segments, and a
+    # node that healed itself silently is a node whose next problem starts with nobody knowing.
+    host.succeed("journalctl -u briard-agent | grep -q 'alert \\[warning\\].*different network device'")
+    # The record now names the new parent, so a LATER re-parent paces itself against this LAN
+    # rather than against one that no longer exists.
+    host.wait_until_succeeds("grep -q '\"parent\":\"eth9\"' /var/lib/briard/network.json", timeout=120)
+
+    # AND THE HOUSEHOLD GETS ITS SERVICE BACK, off-box, at the same address. This is the assertion
+    # the rest of the block exists to make non-vacuous: the guest was stopped and relaunched onto
+    # devices that did not exist when it was last running.
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=600)
+    print("the guest's L2 re-parented from eth1 onto eth9 and the VIP answers off-box again")
   '';
 }
