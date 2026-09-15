@@ -156,6 +156,50 @@ func (f fakeStatus) ServiceInstalled(_ context.Context, name string) (string, er
 
 func (f fakeStatus) SupportsServiceList() bool { return !f.noServiceList }
 
+// TestMain points every ConfigFromEnv test at a path that does not exist, so a test run on a
+// machine that HAS an install (the one place /opt/briard/config.env is real) reads the same
+// nothing a sandbox does. Without it the suite's answers would depend on the host it ran on.
+func TestMain(m *testing.M) {
+	os.Setenv("BRIARD_CONFIG", filepath.Join(os.TempDir(), "briard-no-such-config.env"))
+	os.Exit(m.Run())
+}
+
+// The config file is the DEFAULT layer under the environment ([B.150](a)) -- it delivers what
+// the unit's `Environment=` lines used to, and it loses to anything the environment says,
+// INCLUDING an explicitly empty entry. That last part is not a nicety: empty is how the
+// substrate fork says "this node has no service tap" ([V3b.26c]), so a file value winning there
+// would render a NIC the node does not have.
+func TestConfigFromEnv_FileIsTheLayerUnderTheEnvironment(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(cfgFile, []byte(
+		"# a comment, and the blank line below it\n"+
+			"\n"+
+			"  SYSTEM_TAP = briard-drbd0  \n"+ // whitespace either side of the `=` is trimmed
+			"SERVICE_TAP=briard0\n"+
+			"VIP_ADDR=192.168.9.50/24\n"+
+			"garbage-with-no-equals\n"+
+			"NODE=from-the-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BRIARD_CONFIG", cfgFile)
+	t.Setenv("NODE", "from-the-environment") // a set value wins
+	t.Setenv("SERVICE_TAP", "")              // and so does an empty one
+
+	cfg := ConfigFromEnv()
+	if cfg.Node != "from-the-environment" {
+		t.Errorf("Node = %q, want the environment's value", cfg.Node)
+	}
+	if cfg.ServiceTap != "" {
+		t.Errorf("ServiceTap = %q, want the environment's empty value to win", cfg.ServiceTap)
+	}
+	if cfg.SystemTap != "briard-drbd0" {
+		t.Errorf("SystemTap = %q, want the file's value", cfg.SystemTap)
+	}
+	if cfg.VIPAddr != "192.168.9.50/24" {
+		t.Errorf("VIPAddr = %q, want the file's value", cfg.VIPAddr)
+	}
+}
+
 func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	// Clear the knobs so we exercise defaults deterministically.
 	for _, k := range []string{"QEMU", "ACCEL", "MEMORY_MB", "NODE", "ROLE", "RESOURCE", "HEALTH_URL"} {

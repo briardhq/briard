@@ -88,10 +88,59 @@ func versionBanner(version string) string {
 	return "briard-agent starting, version " + version
 }
 
-// ConfigFromEnv builds a Config from the environment, mirroring the driver's
-// single-node contract. Multi-node peer wiring + witness topology is separate; the
-// cloud-enrollment config source is the controller.
+// defaultConfigFile is where install.sh writes this node's configuration ([B.150](a)). Baked
+// rather than required, so a hand-run agent needs nothing; BRIARD_CONFIG points elsewhere when
+// the install used a non-default BRIARD_PREFIX (the same reason UPDATE_BASE is written down).
+const defaultConfigFile = "/opt/briard/config.env"
+
+// loadConfigFile makes the file the DEFAULT layer under the environment, by setting only the keys
+// the environment has not already spoken for. Every os.Getenv below therefore reads it without
+// knowing it exists, and so does every child the agent execs — which is what makes this exactly
+// the delivery the unit's `Environment=` lines used to be, rather than a second config mechanism
+// standing beside them.
+//
+// THE POINT IS THAT A FILE CAN BE REWRITTEN AND A UNIT CANNOT. Network decisions are made from
+// what this host can see, and what it can see changes — a NIC is replaced, a cable moves, the
+// household's router is swapped. Decisions baked into a generated unit are frozen where no
+// release can reach them; in a file the agent can converge them ([B.150]).
+//
+// Deliberately dumber than a .env parser: no quoting, no expansion, no `export`, no multi-line
+// values. Every value written here is a path, a device name, an address or a duration, and a
+// parser a reader can hold in their head is worth more than one that round-trips a shell string.
+// A missing file is not an error — the hermetic tests and a hand-run agent have none.
+func loadConfigFile(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		// Both halves are trimmed, which costs the ability to write a value with a leading or
+		// trailing space and buys the ability to hand-edit this file without counting them. No
+		// value here can want one: they are paths, device names, addresses and durations.
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		// LookupEnv, not Getenv: an explicitly EMPTY environment entry is a decision — it is how
+		// the substrate fork says "this node has no service tap" ([V3b.26c]) — so it must win
+		// over the file exactly as a non-empty one does.
+		if _, set := os.LookupEnv(k); k == "" || set {
+			continue
+		}
+		os.Setenv(k, v)
+	}
+}
+
+// ConfigFromEnv builds a Config from the environment — under which install.sh's config file is
+// the default layer (loadConfigFile) — mirroring the driver's single-node contract. Multi-node
+// peer wiring + witness topology is separate; the cloud-enrollment config source is the controller.
 func ConfigFromEnv() Config {
+	loadConfigFile(env("BRIARD_CONFIG", defaultConfigFile))
 	node := env("NODE", "guest")
 	role := model.Role(env("ROLE", string(model.RoleAnchor)))
 	// The full connection mesh comes from PEERS (identical on every node — DRBD

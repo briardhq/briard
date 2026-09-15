@@ -14,7 +14,8 @@
 # one address that answers whether or not anything is installed.
 #
 # Cattle/pet FHS:
-#   /opt/briard   = cattle: signed, self-updating binaries + qemu bundle + guest image.
+#   /opt/briard   = cattle: signed, self-updating binaries + qemu bundle + guest image, plus
+#                   config.env -- everything the agent is told about this host ([B.150](a)).
 #                   `rm -rf /opt/briard` + reinstall = a fresh host.
 #   /var/lib/briard = pet: the DRBD data volume + identity -- survives reinstall.
 #   /run/briard   = tmpfs flags.
@@ -874,7 +875,8 @@ EOF
 # unit line as one of ITS environment variables, so every shell variable would need `$$` and every
 # quote would have to survive both parsers. Same pattern as net-up.sh, and it can be read and run
 # by a human debugging the thing at 2am.
-CONSOLE_ENV=""
+CONSOLE_CONF=""
+CONSOLE_PRE=""
 if [ -n "$CONSOLE" ]; then
 	cat > "$PREFIX/console-rotate.sh" <<EOF
 #!/bin/sh
@@ -905,16 +907,17 @@ EOF
 	# AGENT starts, not when a guest launches, so a guest crash-looping under one long-lived agent
 	# keeps appending past the cap until something restarts the agent. Bounding that needs a writer
 	# we control instead of a qemu chardev, which is a bigger change than this file deserves.
-	CONSOLE_ENV="Environment=GUEST_SERIAL=$CONSOLE
-ExecStartPre=$PREFIX/console-rotate.sh"
+	# CONSOLE_CONF is a value (it goes in config.env); CONSOLE_PRE is a unit line, and stays one.
+	CONSOLE_CONF="GUEST_SERIAL=$CONSOLE"
+	CONSOLE_PRE="ExecStartPre=$PREFIX/console-rotate.sh"
 fi
 
 # In macvtap mode the agent renders the guest launch behind the fd-passing wrapper;
 # in bridge mode neither var is set and the agent opens taps by name (the default).
-NET_ENV=""
+NET_CONF=""
 if [ "$NET_MODE" = macvtap ]; then
-	NET_ENV="Environment=NET_MODE=macvtap
-Environment=NET_WRAP_BIN=$NET_WRAP"
+	NET_CONF="NET_MODE=macvtap
+NET_WRAP_BIN=$NET_WRAP"
 fi
 # The release keyring is the agent's trust root for BOTH signed host-agent self-updates and the
 # signed service catalog (`briard service install` verifies a manifest against it). Both fail
@@ -929,15 +932,15 @@ fi
 # the agent, so a normal install is unchanged. It exists because a channel signed with any key
 # but the release key cannot use a catalog signed WITH it -- UPDATE_KEYRING is one trust root
 # for both -- which made a staged channel untestable end to end without a drop-in [V3b.21f].
-CATALOG_ENV=""
-[ -n "${BRIARD_CATALOG_URL:-}" ] && CATALOG_ENV="Environment=CATALOG_URL=$BRIARD_CATALOG_URL"
+CATALOG_CONF=""
+[ -n "${BRIARD_CATALOG_URL:-}" ] && CATALOG_CONF="CATALOG_URL=$BRIARD_CATALOG_URL"
 
-KEY_ENV=""
-[ -f "$KEYRING" ] && KEY_ENV="Environment=UPDATE_KEYRING=$KEYRING"
+KEY_CONF=""
+[ -f "$KEYRING" ] && KEY_CONF="UPDATE_KEYRING=$KEYRING"
 
 # ---- the self-update PIVOT (B.84) -------------------------------------------------------
 # Two frozen wrapper scripts and the unit fields that use them. Until this existed the shipped
-# install had the Go half of self-update switched ON (KEY_ENV above) and none of the on-disk half
+# install had the Go half of self-update switched ON (KEY_CONF above) and none of the on-disk half
 # it acts through: an agent-update staged a binary into a directory the unit did not run from,
 # armed a flag nothing on disk consumed, restarted onto the SAME binary, and reported success --
 # and since nothing cleared the flag it did that again every cycle, bouncing the agent until a
@@ -1000,6 +1003,91 @@ if [ -e $RUNDIR/trial ]; then
 fi
 EOF
 chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
+# ---- the node's configuration: A FILE, NOT THE UNIT ([B.150](a)) -------------------------
+# Everything the agent is told about this host lives here, and the agent reads it with the
+# environment layered ON TOP (agent/host/config.go, loadConfigFile) -- so a rig that exports a
+# variable still wins, exactly as it did when these were `Environment=` lines.
+#
+# THE UNIT CANNOT CARRY THEM ANY MORE, because a unit written at install time is frozen where no
+# release can reach it, and several of these are decisions made from what this host could see on
+# the day it was installed: which NIC, which addresses, which substrate. What the host can see
+# changes -- a NIC is replaced, a cable moves to a different segment -- and a decision the agent
+# can revisit has to live somewhere the agent can rewrite. That is this file.
+#
+# Written like the two scripts beside it (net-up.sh, console-rotate.sh): plain, readable, and
+# greppable by a human debugging the thing at 2am. 0600 because it is root's business alone.
+cat > "$PREFIX/config.env" <<EOF
+# briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
+# '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is
+# parsed -- no quoting, no expansion, no export. Every value is a path, a device name, an
+# address or a duration.
+QEMU=$QEMU
+QEMU_DATADIR=$QEMU_DATADIR
+ACCEL=kvm:tcg
+CPU=$CPU_MODEL
+GUEST_DISK=$OVERLAY
+GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
+DATA_DISK=$DATA
+DATA_ENCRYPTION=$DATA_ENCRYPTION
+STATE_DISK=$STATE_DISK
+CONTROL_SOCK=$RUNDIR/ctl.sock
+NODE=$NODE_NAME
+# Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (this node's node IP, and the DRBD NIC --
+# DRBD replicates over loopback until a pairing gives it a peer); SERVICE_TAP -> eth2, where the VIP
+# lives (VIP_DEV), held ready so a second anchor can join without a guest reboot.
+#
+# SYSTEM_DEV/SYSTEM_CIDR are set on EVERY install now, single node included. They used to be left
+# unset here ("single-node needs no DRBD address, just the NIC present") and to arrive only with a
+# cloud pairing -- which made a lone node the one shape in the fleet with no address of its own,
+# and left everything that must reach it (the reboot gate above all) with nothing to aim at but a
+# baked private-link constant ([V3b.26b]).
+SYSTEM_TAP=$DRBD_TAP
+SYSTEM_DEV=eth1
+SYSTEM_CIDR=$SYSTEM_CIDR
+SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
+WITNESS_CIDR=$WITNESS_CIDR_ENV
+POD_SUBNET=$POD_SUBNET
+# SERVICE_TAP and WITNESS_TAP are EMPTY under bridge mode, and that is the substrate fork
+# ([V3b.26c]) reaching the agent. Empty reads exactly as unset everywhere downstream: qemu renders
+# no second or third NIC, the node route and the VIP route both no-op on an absent WITNESS_TAP, and
+# the host-side service-MAC pin has nowhere to go -- which is correct, because in that mode the MAC
+# is the guest's to hold. VIP_PARENT is the other side of the same coin: it names the NIC the guest
+# builds VIP_DEV on when nothing on the host built it.
+SERVICE_TAP=$SERVICE_TAP_ENV
+VIP_PARENT=$VIP_PARENT_ENV
+# WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
+# every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot
+# gate over it, and that guard matters MOST on the single node this env never used to reach. The
+# name is historical -- the cloud-witness forwarder was its first user, not its only one.
+WITNESS_TAP=$WITNESS_TAP_ENV
+VIP_DEV=eth2
+VIP_ADDR=$VIP
+FLOCK_ID=$FLOCK_ID
+# The visible name, passed so the agent can hand it to the guest for mDNS. It reaches the guest
+# over the control channel like the VIP does, NOT baked into the image -- the image is cattle and
+# this is pet, and baking an identity into a shared image is the mistake V3.19 was.
+FLOCK_NAME=$FLOCK_NAME
+$NET_CONF
+$KEY_CONF
+$CATALOG_CONF
+$CONSOLE_CONF
+# NO HEALTH_URL. It used to bake the address a second time, and under DHCP there is nothing to
+# bake -- the address is acquired inside the guest at promotion, so only the guest knows it. The
+# agent asks (VIP_DEV above is how it knows where to look) and rebuilds the probe target each
+# cycle. Writing an address twice is writing two things that can disagree, and the one that
+# would silently win here gates readiness, the OS health gate and a rollback.
+STATUS_EVERY=5s
+ASSIGNMENT_CACHE=$STATE/assignment.json
+# The release channel root, for the guest chain ([B.86d]): the agent resolves guest/<target>
+# here and applies the closure a release names. The host chain's fetch does not read this --
+# it lives in the frozen update unit, with the same root baked into its script.
+CHANNEL_URL=$CHANNEL
+# The layout the agent stages a self-update INTO, which must be the directory ExecStart runs
+# from ([B.84]); the two frozen wrappers above bake the same path.
+UPDATE_BASE=$UPDATE_BASE
+EOF
+chmod 0600 "$PREFIX/config.env"
+
 # $RUNDIR itself is already created up with the other directories; the flags inside it are tmpfs
 # by virtue of living under /run, which is what makes a power loss mid-trial revert for free.
 cat > "$UNIT_DIR/briard-agent.service" <<EOF
@@ -1014,79 +1102,29 @@ StartLimitIntervalSec=0
 After=briard-net.service
 Requires=briard-net.service
 [Service]
+# WHAT IS LEFT HERE IS THE EXECUTION ENVIRONMENT, NOT CONFIGURATION ([B.150](a)). Every value the
+# agent decides anything from lives in config.env above; these three cannot, and each for its own
+# structural reason rather than by taste.
+#
 # The agent shells out to systemd-run/systemctl AND to \`ip\` by name (the route to its own guest's
 # VIP over the private link, [V3b.19]); give it a PATH that resolves them on a stock host
 # (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
 # \`ip\` in particular lives in *sbin on a stock host, which is why both are listed and neither is
 # decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
+# It cannot move to the file: systemd SETS a PATH for every service, so the environment would
+# already have spoken and the file's value would correctly lose.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
-Environment=QEMU=$QEMU
-Environment=QEMU_DATADIR=$QEMU_DATADIR
-Environment=ACCEL=kvm:tcg
-Environment=CPU=$CPU_MODEL
-Environment=GUEST_DISK=$OVERLAY
-Environment=GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
-Environment=DATA_DISK=$DATA
-Environment=DATA_ENCRYPTION=$DATA_ENCRYPTION
-Environment=STATE_DISK=$STATE_DISK
-Environment=CONTROL_SOCK=$RUNDIR/ctl.sock
-Environment=NODE=$NODE_NAME
-# Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (this node's node IP, and the DRBD NIC --
-# DRBD replicates over loopback until a pairing gives it a peer); SERVICE_TAP -> eth2, where the VIP
-# lives (VIP_DEV), held ready so a second anchor can join without a guest reboot.
-#
-# SYSTEM_DEV/SYSTEM_CIDR are set on EVERY install now, single node included. They used to be left
-# unset here ("single-node needs no DRBD address, just the NIC present") and to arrive only with a
-# cloud pairing -- which made a lone node the one shape in the fleet with no address of its own,
-# and left everything that must reach it (the reboot gate above all) with nothing to aim at but a
-# baked private-link constant ([V3b.26b]).
-Environment=SYSTEM_TAP=$DRBD_TAP
-Environment=SYSTEM_DEV=eth1
-Environment=SYSTEM_CIDR=$SYSTEM_CIDR
-Environment=SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
-Environment=WITNESS_CIDR=$WITNESS_CIDR_ENV
-Environment=POD_SUBNET=$POD_SUBNET
-# SERVICE_TAP and WITNESS_TAP are EMPTY under bridge mode, and that is the substrate fork
-# ([V3b.26c]) reaching the agent. Empty reads exactly as unset everywhere downstream: qemu renders
-# no second or third NIC, the node route and the VIP route both no-op on an absent WITNESS_TAP, and
-# the host-side service-MAC pin has nowhere to go -- which is correct, because in that mode the MAC
-# is the guest's to hold. VIP_PARENT is the other side of the same coin: it names the NIC the guest
-# builds VIP_DEV on when nothing on the host built it.
-Environment=SERVICE_TAP=$SERVICE_TAP_ENV
-Environment=VIP_PARENT=$VIP_PARENT_ENV
-# WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
-# every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot
-# gate over it, and that guard matters MOST on the single node this env never used to reach. The
-# name is historical -- the cloud-witness forwarder was its first user, not its only one.
-Environment=WITNESS_TAP=$WITNESS_TAP_ENV
-Environment=VIP_DEV=eth2
-Environment=VIP_ADDR=$VIP
-Environment=FLOCK_ID=$FLOCK_ID
-# The visible name, passed so the agent can hand it to the guest for mDNS. It reaches the guest
-# over the control channel like the VIP does, NOT baked into the image -- the image is cattle and
-# this is pet, and baking an identity into a shared image is the mistake V3.19 was.
-Environment=FLOCK_NAME=$FLOCK_NAME
-$NET_ENV
-$KEY_ENV
-$CATALOG_ENV
-$CONSOLE_ENV
-# NO HEALTH_URL. It used to bake the address a second time, and under DHCP there is nothing to
-# bake -- the address is acquired inside the guest at promotion, so only the guest knows it. The
-# agent asks (VIP_DEV above is how it knows where to look) and rebuilds the probe target each
-# cycle. Writing an address twice is writing two things that can disagree, and the one that
-# would silently win here gates readiness, the OS health gate and a rollback.
-Environment=STATUS_EVERY=5s
-Environment=ASSIGNMENT_CACHE=$STATE/assignment.json
-# The release channel root, for the guest chain ([B.86d]): the agent resolves guest/<target>
-# here and applies the closure a release names. The host chain's fetch does not read this --
-# it lives in the frozen unit below, with the same root baked into its script.
-Environment=CHANNEL_URL=$CHANNEL
+# Where the file is. The one thing the unit must still say, for the same reason the wrappers bake
+# UPDATE_BASE: BRIARD_PREFIX is a knob, so the path is not knowable from a constant.
+Environment=BRIARD_CONFIG=$PREFIX/config.env
 # GOTRACEBACK=all is what makes the watchdog below worth having (V3.32). Its default signal is
 # SIGABRT, and Go answers SIGABRT by dumping goroutine stacks and dying -- so a trip leaves the
 # stack of every goroutine at the moment the agent wedged, which is the diagnosis for a bug whose
 # whole difficulty is leaving no evidence. Go's default, "single", dumps only the CURRENT
 # goroutine, and at signal-delivery time that is an arbitrary one: useless here. Restarting the
 # agent is the lesser half of this feature; the traceback is the half that closes the bug.
+# It cannot move to the file either: the Go RUNTIME reads it, before any of our code runs, so an
+# agent that set it from its own config would set it too late to mean anything.
 Environment=GOTRACEBACK=all
 Type=notify
 NotifyAccess=main
@@ -1111,10 +1149,11 @@ WatchdogSec=20
 # after READY=1 -- which IS the gate. A candidate that will not exec, panics, or hangs before loop
 # entry never sends READY, so the start fails, the commit never runs, and the next start finds the
 # single-use flag already consumed and falls back to the committed binary. The revert is implicit
-# and timerless; nothing has to remember to undo anything.
-Environment=UPDATE_BASE=$UPDATE_BASE
+# and timerless; nothing has to remember to undo anything. (UPDATE_BASE, the directory the agent
+# stages INTO, is in config.env with the rest of the values; the wrappers bake it themselves.)
 ExecStart=$PREFIX/agent/briard-exec
 ExecStartPost=$PREFIX/agent/briard-commit
+$CONSOLE_PRE
 Restart=on-failure
 RestartSec=3
 # Explicit, because the default (90s) is shorter than the operations a stop can interrupt.

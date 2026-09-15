@@ -854,7 +854,7 @@ pkgs.testers.runNixOSTest {
     # the agent by serial, formatted by the guest exactly once (the first boot of the FIRST
     # install -- the reinstall's guest found it and kept it), and the guest is the same machine
     # on both boots because its machine-id comes from the VM UUID the host derives from the node.
-    host.succeed("systemctl cat briard-agent.service | grep -q '^Environment=STATE_DISK=/var/lib/briard/state.img'")
+    host.succeed("grep -q '^STATE_DISK=/var/lib/briard/state.img$' /opt/briard/config.env")
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q 'serial=briard-state'")
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q -- '-uuid '")
     assert state_uuid == host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), "the reinstall's guest reformatted the state disk"
@@ -1031,16 +1031,40 @@ pkgs.testers.runNixOSTest {
         "Type=notify",
         "ExecStart=/opt/briard/agent/briard-exec",
         "ExecStartPost=/opt/briard/agent/briard-commit",
-        # The third leg: the layout the agent stages into must BE the directory ExecStart runs
-        # from. Left at its default it was /var/lib/briard while the unit ran out of /opt --
-        # so a commit would be a cross-filesystem rename at best and a no-op at worst.
-        "Environment=UPDATE_BASE=/opt/briard/agent",
         # A failed trial is by construction a burst of rapid start failures; without this it can
         # trip systemd's start limiter and leave the node down for the one reason self-update
         # exists to avoid.
         "StartLimitIntervalSec=0",
     ):
         assert want in unit, f"the shipped unit is missing {want!r} — self-update has no on-disk half"
+    # The third leg: the layout the agent stages into must BE the directory ExecStart runs from.
+    # Left at its default it was /var/lib/briard while the unit ran out of /opt -- so a commit
+    # would be a cross-filesystem rename at best and a no-op at worst. It is a VALUE, so since
+    # [B.150](a) it is in config.env rather than on the unit.
+    host.succeed("grep -q '^UPDATE_BASE=/opt/briard/agent$' /opt/briard/config.env")
+
+    # ---- THE UNIT CARRIES NO DECISIONS ([B.150](a)) -------------------------------------------
+    # The whole point of the config file: a unit written at install time is frozen where no
+    # release can reach it, so nothing the agent DECIDES anything from may live there. Three
+    # `Environment=` lines survive and each is the execution environment rather than
+    # configuration -- PATH (systemd sets one, so a file value would correctly lose), BRIARD_CONFIG
+    # (where the file is), and GOTRACEBACK (read by the Go runtime before our code runs).
+    #
+    # Asserted as a whitelist rather than by naming the ~30 that moved, because the failure this
+    # guards against is a NEW value being added to the unit out of habit.
+    # [[verification-assertions-must-fail]]: drop the split and STATE_DISK/VIP_ADDR/SYSTEM_TAP
+    # reappear here, and this fails naming the one that came back.
+    stray = [
+        l.split("=")[1]
+        for l in unit.splitlines()
+        if l.startswith("Environment=")
+        and l.split("=")[1] not in ("PATH", "BRIARD_CONFIG", "GOTRACEBACK")
+    ]
+    assert not stray, f"the unit froze configuration the agent must be able to rewrite: {stray}"
+    # That the agent READS the file needs no assertion of its own: with the unit carrying no
+    # values, every green thing this test has already proven -- the guest booted off GUEST_DISK,
+    # the state disk attached by serial, the VIP answering on the LAN -- came from config.env or
+    # from nowhere.
 
     # A GOOD UPDATE COMMITS. The candidate is a copy of the running agent, so it genuinely reaches
     # READY rather than standing in for something that would. The proof is the rename: briard-commit
@@ -1397,13 +1421,13 @@ pkgs.testers.runNixOSTest {
 
     # ---- THE GUEST CHAIN ON THE SHIPPED NODE ([B.86d]) ---------------------------------------
     # The installed guest manifest names the closure the image boots; install.sh seeded the
-    # node-local record from it; the agent's unit carries the channel root. `briard update guest`
+    # node-local record from it; the agent's config carries the channel root. `briard update guest`
     # resolves guest/latest on the channel, verifies it, compares min_host with this host and
     # the closure with what the guest runs -- and says so: this node is already running it.
     host.succeed("grep -q '\"system\":\"${guestDisk.system}\"' /opt/briard/guest-image/manifest.json")
     host.succeed(f"grep -q '\"min_host\":\"{V}\"' /opt/briard/guest-image/manifest.json")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")
-    host.succeed("systemctl cat briard-agent.service | grep -q '^Environment=CHANNEL_URL=http://127.0.0.1:8099'")
+    host.succeed("grep -q '^CHANNEL_URL=http://127.0.0.1:8099$' /opt/briard/config.env")
     out = host.succeed("/opt/briard/agent/briard-agent update guest").strip()
     assert f"already running {GV}" in out, f"briard update guest said: {out!r}"
     # A guest release this host is too OLD for is refused before anything is staged, and the
