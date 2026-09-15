@@ -37,6 +37,11 @@ type Fingerprint struct {
 	GatewayMAC string `json:"gateway_mac"` // the STRONG signal: a specific box on a specific segment
 }
 
+// Usable reports whether this fingerprint can pace anything. HostCIDR is the criterion because it
+// is exactly what Compare needs before it can say anything but Unknown -- a reading with no
+// address is not a description of a network, it is the absence of one.
+func (f Fingerprint) Usable() bool { return f.HostCIDR != "" }
+
 // String renders the fingerprint for a human. It exists because the interesting failure is a
 // COMPARISON that came out `unknown`, and a line saying only that is a dead end: the reader needs
 // to see which side was missing what. Fields that could not be read say so rather than rendering

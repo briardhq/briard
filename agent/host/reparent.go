@@ -101,7 +101,23 @@ func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) 
 	if path == "" || cfg.net == nil || cfg.net.Parent == "" {
 		return
 	}
-	rec := networkRecord{Fingerprint: nic.Read(ctx, cfg.net.Parent), At: time.Now().UTC()}
+	fp := nic.Read(ctx, cfg.net.Parent)
+	// ⚠️ AN UNUSABLE READING IS NOT RECORDED, and overwriting a good record with one is strictly
+	// worse than not writing at all: Compare answers Unknown for a fingerprint with no address,
+	// and Unknown refuses -- so a node that could have healed itself is stranded permanently by
+	// the very act meant to help it.
+	//
+	// It is a real race rather than a theoretical one. The parent is chosen at start-up and
+	// recorded after BRING-UP, which is seconds later; a NIC that goes away in between (unplugged
+	// while the guest boots, or renamed by a udev rule that lost a race) is read as nothing. The
+	// rig caught exactly this: the agent overwrote a complete fingerprint with `[eth1 mac=? addr=?
+	// gw=?/?]` and then refused to re-parent for the rest of its life.
+	if !fp.Usable() {
+		logf("network: not recording this LAN -- %s could not be read [%s]; keeping the previous record",
+			cfg.net.Parent, fp)
+		return
+	}
+	rec := networkRecord{Fingerprint: fp, At: time.Now().UTC()}
 	b, err := json.Marshal(rec)
 	if err != nil {
 		logf("network: could not render the LAN record: %v", err)

@@ -148,6 +148,28 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 		t.Errorf("read %+v with no state dir configured", got)
 	}
 
+	// AN UNUSABLE READING NEVER OVERWRITES A GOOD RECORD. The parent is chosen at start-up and
+	// recorded after BRING-UP, seconds later, so a NIC that goes away in between reads as nothing
+	// -- and writing that would answer Unknown forever, stranding a node that could have healed
+	// itself. Caught by install-macvtap (run 35029767682), where the agent replaced a complete
+	// fingerprint with `[eth1 mac=? addr=? gw=?/?]` and then refused to re-parent for good.
+	//
+	// Re-recorded first, because the corruption above deliberately emptied the file and comparing
+	// nothing against nothing would pass whatever the code did.
+	cfg.recordNetwork(t.Context(), discard)
+	good := cfg.recordedNetwork()
+	if !good.Usable() {
+		t.Fatalf("the fixture is vacuous: nothing good was recorded to overwrite (%+v)", good)
+	}
+	gone := Config{
+		AssignmentCache: filepath.Join(dir, "assignment.json"),
+		net:             &nic.Spec{Parent: "briard-no-such-device"},
+	}
+	gone.recordNetwork(t.Context(), discard)
+	if after := cfg.recordedNetwork(); after != good {
+		t.Errorf("an unreadable device overwrote the record: %+v, was %+v", after, good)
+	}
+
 	// AN AGENT THAT OWNS NO NETWORK MUST NOT CRASH RECORDING ONE. Run calls this unconditionally
 	// after bring-up, and nil is the ordinary state on every rig and every lab node -- so this is
 	// the difference between the fleet running and the fleet panicking on the first bring-up.
