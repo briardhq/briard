@@ -900,10 +900,16 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"debugfs -R 'ls -p /journal' {STATE_IMG} 2>/dev/null | cut -d/ -f6 | grep -qx {want_id}", timeout=120)
     journals = host.succeed(f"debugfs -R 'ls -p /journal' {STATE_IMG} 2>/dev/null | cut -d/ -f6 | grep -E '^[0-9a-f]{{32}}$' || true").split()
     assert journals == [want_id], f"the guest's journal on the state disk is under {journals}; want the machine-id derived from the node name, {want_id}"
-    # [B.106] the repair landed on the device that was already up, not just on freshly created ones.
-    host.succeed("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
+    # [B.106] the repair landed on the device that was already up, not just on freshly created
+    # ones. BOUNDED WAIT rather than an immediate read, because since [B.150](d) the repair is the
+    # AGENT's convergence tick rather than a line in a script the installer ran inline -- the
+    # install returns as soon as the node is healthy, which is before the next tick is due. The
+    # property is unchanged and still fails if convergence stops asking the question: `Converged`
+    # checks disable_ipv6 precisely so a device that already exists, and is therefore never
+    # re-created, still gets repaired.
+    host.wait_until_succeeds("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6", timeout=60)
     assert host.succeed("ip -6 addr show dev briard0").strip() == "", (
-        "the reinstall adopted briard0 but left it autoconfiguring on the guest's MAC"
+        "the agent adopted briard0 but left it autoconfiguring on the guest's MAC"
     )
 
     # Green again on the re-fetched bundle: the OFF-BOX client reaches the VIP -- AT THE SAME

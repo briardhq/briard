@@ -138,7 +138,12 @@ func Converged(s Spec) bool {
 		if !exists("/sys/class/net/"+t) || !up(t) {
 			return false
 		}
-		if !s.Bridge && t != s.PrivTap && flags(t)&ifAllmulti == 0 {
+		// The two flags on a macvtap child that are not kernel defaults. BOTH are checked, and
+		// the IPv6 one is the whole of [B.106]'s repair path: a device that already exists is
+		// never re-created, so if this is not the question the tick asks, a host installed before
+		// the fix keeps autoconfiguring on the guest's MAC forever -- and every reachability
+		// check still passes, which is why it went unnoticed the first time.
+		if !s.Bridge && t != s.PrivTap && (flags(t)&ifAllmulti == 0 || !ipv6Disabled(t)) {
 			return false
 		}
 	}
@@ -256,6 +261,17 @@ func ensureAddr(ctx context.Context, a Addr) error {
 // IsBridge reports whether dev is a bridge -- the substrate fork, asked of the device itself.
 // /sys/class/net/<dev>/bridge exists only on one, whoever created it and however.
 func IsBridge(dev string) bool { return dev != "" && exists("/sys/class/net/"+dev+"/bridge") }
+
+// ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6
+// at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
+// the tick does not chase a knob the machine does not have.
+func ipv6Disabled(dev string) bool {
+	b, err := os.ReadFile("/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
 
 // up reads IFF_UP off the device rather than asking `ip`, because this runs on every tick.
 func up(dev string) bool {
