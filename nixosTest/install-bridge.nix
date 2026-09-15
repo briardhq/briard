@@ -91,7 +91,12 @@ pkgs.testers.runNixOSTest {
         # mkForce, because `virtualisation.vlans` gives every vlan interface an address of its own
         # and a bridge SLAVE may hold none -- NixOS asserts on exactly that. The address moves to
         # the bridge below, which is what a real bridged host looks like.
+        #
+        # BOTH FAMILIES. The vlan module assigns an IPv6 address (2001:db8:1::N/64) beside the v4
+        # one, and the assertion counts every "ip" -- so forcing v4 alone fails with the same
+        # message and looks like the fix did not apply at all.
         networking.interfaces.eth1.ipv4.addresses = lib.mkForce [ ];
+        networking.interfaces.eth1.ipv6.addresses = lib.mkForce [ ];
         networking.interfaces.br0.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
