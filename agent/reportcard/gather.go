@@ -2,6 +2,7 @@ package reportcard
 
 import (
 	"bufio"
+	"context"
 	"net"
 	"os"
 	"os/exec"
@@ -9,13 +10,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"briard.io/agent/nic"
 )
 
 // Gather reads the real host into HostFacts (Linux /proc + /sys + /dev). Thin + best-effort: a
 // read that fails reads as "absent/false", which flows into a Refuse/Warn with a fix -- never a
 // crash. All the verdict logic lives in the pure Assess (this is just the eyes).
-func Gather() HostFacts {
+//
+// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer ([B.150](b)).
+// It used to be re-read per fact from the default route, which quietly judged a different device
+// than the install would use whenever BRIARD_NIC was set.
+func Gather(ctx context.Context) HostFacts {
+	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"))
 	return HostFacts{
+		NIC:       sel,
 		DevKVM:    exists("/dev/kvm"),
 		VirtFlags: cpuHasVirtFlags(),
 		CPUAES:    cpuHasFlag("aes"),
@@ -27,11 +36,9 @@ func Gather() HostFacts {
 		// on PATH says only that a package is installed.
 		SystemdBooted: exists("/run/systemd/system"),
 		MemTotalMB:    memTotalMB(),
-		WiredEthernet: hasWiredEthernet(),
-		AnyEthernet:   hasAnyEthernet(),
-		PrimaryNICBus: primaryNICBus(),
+		PrimaryNICBus: primaryNICBus(sel.Dev),
 		DiskFreeMB:    diskFreeMB(installRoot()),
-		HostCIDR:      hostCIDR(DefaultRouteNIC()),
+		HostCIDR:      hostCIDR(sel.Dev),
 		// The address the install is about to hand the guest. install.sh already computes it
 		// (BRIARD_VIP, CIDR form) and passes it here the same way it passes NET_MODE -- the card
 		// cannot judge an address it is not told about, and this is the last gate before a VM
@@ -41,7 +48,7 @@ func Gather() HostFacts {
 		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
 		// router picks from its own pool and this question is not ours to ask.
 		VIPAnswered:     os.Getenv("VIP_ADDR") != "" && AddressAnswers(os.Getenv("VIP_ADDR")),
-		HostLeased:      hostHasLease(DefaultRouteNIC()),
+		HostLeased:      hostHasLease(sel.Dev),
 		HasMDNSResolver: hasMDNSResolver(),
 	}
 }
@@ -135,22 +142,22 @@ func neighbourComplete(ip net.IP) bool {
 	return false
 }
 
-// hostHasLease reports whether THIS machine's address on nic looks DHCP-assigned, by looking for a
+// hostHasLease reports whether THIS machine's address on dev looks DHCP-assigned, by looking for a
 // lease under any of the managers a stranger's box might be running. It is evidence that a DHCP
 // server answered on this segment recently, which is the closest we can get to "one will answer
 // the guest too" without taking a lease we might not keep.
 //
 // Deliberately a broad net over several managers rather than a detection of which one is in use:
 // we do not care who asked, only that somebody answered.
-func hostHasLease(nic string) bool {
-	if nic == "" {
+func hostHasLease(dev string) bool {
+	if dev == "" {
 		return false
 	}
 	globs := []string{
-		"/var/lib/dhcpcd/" + nic + "*.lease",          // dhcpcd (and our own guest)
-		"/var/lib/dhcp/dhclient*" + nic + "*.lease*",  // ISC dhclient
-		"/var/lib/dhclient/*" + nic + "*.lease*",      // ISC dhclient, Fedora layout
-		"/var/lib/NetworkManager/*" + nic + "*.lease", // NetworkManager's internal client
+		"/var/lib/dhcpcd/" + dev + "*.lease",          // dhcpcd (and our own guest)
+		"/var/lib/dhcp/dhclient*" + dev + "*.lease*",  // ISC dhclient
+		"/var/lib/dhclient/*" + dev + "*.lease*",      // ISC dhclient, Fedora layout
+		"/var/lib/NetworkManager/*" + dev + "*.lease", // NetworkManager's internal client
 		"/run/systemd/netif/leases/*",                 // systemd-networkd (keyed by ifindex)
 	}
 	for _, g := range globs {
@@ -161,14 +168,14 @@ func hostHasLease(nic string) bool {
 	return false
 }
 
-// hostCIDR returns nic's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
+// hostCIDR returns dev's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
 // is on, which is what the VIP has to be inside. "" when unreadable or the NIC has no IPv4, which
 // the VIP check reads as "unknown" and stays quiet about rather than refusing over.
-func hostCIDR(nic string) string {
-	if nic == "" {
+func hostCIDR(dev string) string {
+	if dev == "" {
 		return ""
 	}
-	iface, err := net.InterfaceByName(nic)
+	iface, err := net.InterfaceByName(dev)
 	if err != nil {
 		return ""
 	}
@@ -202,12 +209,11 @@ func installRoot() string {
 	return "/"
 }
 
-// primaryNICBus returns the bus of the default-route NIC ("usb", "pci", or "" if it can't be
-// determined) -- best-effort, for the macvtap advisories. It reads the default route from
-// /proc/net/route (no iproute2 dependency), then resolves /sys/class/net/<dev>/device to a bus:
+// primaryNICBus returns the bus of the NIC the install will use ("usb", "pci", or "" if it cannot be
+// determined) -- best-effort, for the macvtap advisories. It resolves
+// /sys/class/net/<dev>/device to a bus:
 // a USB NIC's device link points under .../usb..., a PCIe NIC's under .../pci....
-func primaryNICBus() string {
-	dev := DefaultRouteNIC()
+func primaryNICBus(dev string) string {
 	if dev == "" {
 		return ""
 	}
@@ -223,26 +229,6 @@ func primaryNICBus() string {
 	default:
 		return ""
 	}
-}
-
-// DefaultRouteNIC reads the interface owning the default route (destination 00000000) from
-// /proc/net/route -- the NIC macvtap would parent onto. "" if none.
-func DefaultRouteNIC() string {
-	f, err := os.Open("/proc/net/route")
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Scan() // header
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text()) // Iface Destination Gateway Flags ...
-		if len(fields) >= 2 && fields[1] == "00000000" {
-			return fields[0]
-		}
-	}
-	_ = sc.Err()
-	return ""
 }
 
 func exists(path string) bool {
@@ -341,28 +327,7 @@ func memTotalMB() int {
 	return 0
 }
 
-// netInterfaces walks /sys/class/net, returning whether any non-loopback interface exists and
-// whether any of those is wired (not wireless). A wireless iface has a `wireless` dir or `phy80211`
-// symlink; virtual/loopback are skipped.
-func netInterfaces() (anyEth, wiredEth bool) {
-	entries, err := os.ReadDir("/sys/class/net")
-	if err != nil {
-		return false, false
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if name == "lo" {
-			continue
-		}
-		base := "/sys/class/net/" + name
-		anyEth = true
-		wireless := exists(base+"/wireless") || exists(base+"/phy80211")
-		if !wireless {
-			wiredEth = true
-		}
-	}
-	return anyEth, wiredEth
-}
-
-func hasAnyEthernet() bool   { a, _ := netInterfaces(); return a }
-func hasWiredEthernet() bool { _, w := netInterfaces(); return w }
+// The any-ethernet / wired-ethernet survey used to live here, and [B.150](b) retired it: it asked
+// whether the MACHINE had a wired device, not whether the device the install would actually use
+// was one. A laptop with an unplugged eth0 and the default route on wlan0 passed it, and then
+// macvtapped onto the wireless station. The question is now asked of nic.Choose's answer.

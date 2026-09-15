@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"briard.io/agent/cli"
+	"briard.io/agent/nic"
 	"briard.io/agent/reportcard"
 	"briard.io/agent/subnet"
 	"briard.io/shared/flockname"
@@ -79,6 +80,11 @@ func runDaemon(args []string) {
 // to hang on a network question: past this, the draw fails and the installer says so.
 const drawTimeout = 60 * time.Second
 
+// cardTimeout bounds --report-card end to end, for the same reason drawTimeout bounds the draw:
+// the card ARP-probes a named VIP and creates a throwaway macvtap, and neither may become a way
+// for an install to hang. Generous against the sum of its bounded parts, not against any one.
+const cardTimeout = 30 * time.Second
+
 // runInternal is the flag-shaped surface: helpers an installer, a release pipeline or a unit file
 // invokes, each of which does one thing and exits. They are deliberately NOT `briard` verbs —
 // see the note at each one.
@@ -130,7 +136,7 @@ func runInternal(args []string) {
 	if *drawSubnets {
 		ctx, cancel := context.WithTimeout(context.Background(), drawTimeout)
 		defer cancel()
-		d, err := subnet.Pick(subnet.Observe(ctx), rand.Reader, subnet.LANProbe(ctx, reportcard.DefaultRouteNIC()))
+		d, err := subnet.Pick(subnet.Observe(ctx), rand.Reader, subnet.LANProbe(ctx, nic.DefaultRoute()))
 		if err != nil {
 			log.Fatalf("draw-subnets: %v", err)
 		}
@@ -161,8 +167,14 @@ func runInternal(args []string) {
 	// The machine report card -- the free-local installer's first gate.
 	// Pure host inspection (no host subsystems), so it runs on any build; refuses the unfit with
 	// the fix named before anything is installed.
+	//
+	// Bounded, because since [B.150](b) the card does one thing that can block: it creates and
+	// deletes a throwaway macvtap on the NIC it selected, to turn "this device cannot carry the
+	// guest" into a refusal rather than an unreachable VM. A gate is worthless if it can hang.
 	if *reportCard {
-		if !reportcard.Run(os.Stdout, os.Getenv("NET_MODE") == "macvtap") {
+		ctx, cancel := context.WithTimeout(context.Background(), cardTimeout)
+		defer cancel()
+		if !reportcard.Run(ctx, os.Stdout, os.Getenv("NET_MODE") == "macvtap") {
 			os.Exit(1)
 		}
 		return

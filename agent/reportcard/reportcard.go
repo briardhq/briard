@@ -1,8 +1,9 @@
 // Package reportcard is the machine report card: the admission gate the
 // free-local installer runs first. It inspects the host for the capabilities a briard node needs
-// -- KVM, TUN/TAP, iproute2, RAM, wired ethernet -- and REFUSES the genuinely unfit with the fix
-// named, rather than half-installing onto a box that can't serve. ("Microsoft says e-waste; we say
-// server" is honest only because the card refuses what truly won't work.)
+// -- KVM, TUN/TAP, iproute2, RAM, a NIC that can carry the guest's L2 -- and REFUSES the
+// genuinely unfit with the fix named, rather than half-installing onto a box that can't serve.
+// ("Microsoft says e-waste; we say server" is honest only because the card refuses what truly
+// won't work.)
 //
 // Assess is PURE (host facts in, verdict out), so every refuse/warn path is unit-tested against
 // fabricated facts ([[verification-assertions-must-fail]]); Gather (gather.go) is the thin impure
@@ -10,10 +11,14 @@
 package reportcard
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+
+	"briard.io/agent/nic"
 )
 
 // Status is a single check's outcome. Refuse blocks admission; Warn admits but steers honestly.
@@ -49,16 +54,19 @@ type HostFacts struct {
 	// the install registers units, so an OpenRC box with the binary lying around is still a refusal.
 	SystemdBooted bool
 	MemTotalMB    int
-	WiredEthernet bool // a non-loopback, non-wireless interface exists (green needs wired)
-	AnyEthernet   bool // any non-loopback interface at all (wired or wireless)
-	// PrimaryNICBus is the bus of the default-route NIC ("usb", "pci", or "" if unknown). Used
+	// NIC is the device the guest's L2 will hang off, and why it is or is not usable
+	// ([B.150](b)). It replaced a pair of booleans that asked whether the MACHINE had a wired
+	// device -- a question a laptop with an unplugged eth0 and the default route on wlan0
+	// answered yes to, right before the install macvtapped onto the wireless station.
+	NIC nic.Selection
+	// PrimaryNICBus is the bus of the selected NIC ("usb", "pci", or "" if unknown). Used
 	// only by the macvtap advisories: a USB NIC (e.g. RTL8153) usually can't program
 	// the guest MACs into a hardware unicast filter, so macvtap runs it promiscuous.
 	PrimaryNICBus string
 	// DiskFreeMB is free space on the filesystem the install lands on. 0 means "could not read",
 	// which the disk check treats as unknown (and stays quiet) rather than as an empty disk.
 	DiskFreeMB int
-	// HostCIDR is the default-route NIC's own IPv4 address in CIDR form ("192.168.9.100/24") --
+	// HostCIDR is the SELECTED NIC's own IPv4 address in CIDR form ("192.168.9.100/24") --
 	// i.e. the LAN this node is actually on. "" means it could not be read, which the VIP check
 	// treats as unknown rather than as a fault.
 	HostCIDR string
@@ -80,7 +88,7 @@ type HostFacts struct {
 	// refuses -- absence of evidence is not evidence of absence.
 	HasMDNSResolver bool
 	// HostLeased is true when this machine's own address looks DHCP-assigned (a lease file for
-	// the default-route NIC, under any of the usual managers). EVIDENCE, not proof: a
+	// the selected NIC, under any of the usual managers). EVIDENCE, not proof: a
 	// deliberately static host on a DHCP-serving LAN reads false. So it may warn and must never
 	// refuse.
 	HostLeased bool
@@ -122,6 +130,22 @@ func (r Report) Admit() bool {
 		}
 	}
 	return true
+}
+
+// nicDetail is the one-line statement of what was selected -- the "what was picked, and why" half
+// of the message; Fix carries the remedy. It says WHY on the selected path because "eth1 holds
+// this machine's default route" is the sentence that lets a user disagree with us.
+func nicDetail(s nic.Selection) string {
+	switch {
+	case errors.Is(s.Err, nic.ErrNoInterfaces):
+		return "no network interface found"
+	case errors.Is(s.Err, nic.ErrNoDefaultRoute):
+		return "no default route, so no device can be identified as the one on your network"
+	case s.Override:
+		return fmt.Sprintf("%s (named by BRIARD_NIC)", s.Dev)
+	default:
+		return fmt.Sprintf("%s (it holds this machine's default route)", s.Dev)
+	}
 }
 
 // Assess maps host facts to the closed set of admission checks. Pure -- the whole point is that
@@ -209,17 +233,25 @@ func Assess(f HostFacts) Report {
 			fmt.Sprintf("free at least %d GB: the install writes a 2.6 GB guest image and reserves a 4 GB data volume up front", diskFloorMB/1024)})
 	}
 
-	// Ethernet -- green requires WIRED (the bridge + service IP live on L2). WiFi-only is the
-	// yellow "try-me" tier, not green; no interface at all is a refuse.
+	// THE NIC THE GUEST'S L2 WILL HANG OFF ([B.150](b)) -- judged as the one device the install
+	// will actually use, not as a survey of the machine's devices.
+	//
+	// The refusal is the whole safety margin, because every way this goes wrong ends the same
+	// way: a guest that boots, reports healthy, and is unreachable from the household. So the
+	// unusable cases refuse BEFORE anything is written, carrying nic.Selection.Fix -- what was
+	// picked, why, what failed, the override, and the devices to choose from.
+	//
+	// Wireless stays a WARN, and stays separate from the probe: the kernel creates a macvtap on a
+	// wireless station without complaint and the frames die at the access point, so the probe
+	// cannot see it. (Whether it should be a refusal is [B.150]'s open question (i) -- it wants a
+	// measurement, not a guess, and until then the honest answer is the yellow try-me tier.)
 	switch {
-	case f.WiredEthernet:
-		cs = append(cs, Check{"network", Pass, "wired ethernet present", ""})
-	case f.AnyEthernet:
-		cs = append(cs, Check{"network", Warn, "only wireless networking detected",
-			"briard is green on WIRED ethernet (the bridge + service IP need L2); plug in ethernet, or expect the yellow \"try-me\" tier"})
+	case f.NIC.Err != nil:
+		cs = append(cs, Check{"network", Refuse, nicDetail(f.NIC), f.NIC.Fix()})
+	case f.NIC.Wireless:
+		cs = append(cs, Check{"network", Warn, fmt.Sprintf("%s is wireless (it holds this machine's default route)", f.NIC.Dev), f.NIC.Fix()})
 	default:
-		cs = append(cs, Check{"network", Refuse, "no usable network interface found",
-			"connect the machine to your network (wired ethernet recommended)"})
+		cs = append(cs, Check{"network", Pass, nicDetail(f.NIC), ""})
 	}
 
 	// mDNS ON THIS MACHINE. The install ends by handing over `briard-<flock>.local`, and whether
@@ -394,8 +426,8 @@ func Print(w io.Writer, r Report) {
 // host is admitted -- the one call the installer / `briard-agent --report-card` makes. When macvtap
 // is set (NET_MODE=macvtap), the macvtap advisories are appended; they are WARN/PASS only, so
 // they never change the admission verdict.
-func Run(w io.Writer, macvtap bool) bool {
-	f := Gather()
+func Run(ctx context.Context, w io.Writer, macvtap bool) bool {
+	f := Gather(ctx)
 	r := Assess(f)
 	if macvtap {
 		r.Checks = append(r.Checks, MacvtapAdvisories(f)...)

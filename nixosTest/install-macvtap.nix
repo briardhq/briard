@@ -337,6 +337,27 @@ pkgs.testers.runNixOSTest {
     host.fail("ip link show briard-drbd0")
     client.succeed("ping -c1 -W2 192.168.1.1")  # host still on the LAN
 
+    # ---- THE MACVTAP PROBE REFUSES A DEVICE THAT CANNOT CARRY ONE ([B.150](b)) ----------------
+    # The device that exists and is up and holds an address and still cannot parent a macvtap is
+    # the real failure this guards: a laptop on a full-tunnel VPN hands us tun0 as its default
+    # route. A tun (not tap) device is the same shape -- ARPHRD_NONE, so macvlan refuses it -- and
+    # is the honest stand-in, because the refusal must come from the KERNEL rather than from a
+    # name we blacklisted.
+    #
+    # Before the probe existed this install ran to completion and left a guest that booted,
+    # reported healthy and answered nobody. So the assertion is that it refuses BEFORE writing:
+    # no taps, and the install's own message names the device, the reason and the way out.
+    host.succeed("ip tuntap add briard-vpn0 mode tun && ip link set briard-vpn0 up")
+    out = host.fail(
+        "${channelEnv} BRIARD_NET_MODE=macvtap BRIARD_NIC=briard-vpn0 sh ${installScript} 2>&1"
+    )
+    for want in ("briard-vpn0", "macvtap could not be created", "BRIARD_NIC="):
+        assert want in out, f"the refusal is the whole safety margin and it is missing {want!r}: {out}"
+    host.fail("ip link show briard0")
+    host.fail("ip link show briard-drbd0")
+    host.fail("ip link show briard-probe0")  # the probe cleans up after itself
+    host.succeed("ip link del briard-vpn0")
+
     # --- the install on the macvtap substrate: one command -> green ---
     # BRIARD_UNIT_DIR=/run/systemd/system: NixOS's /etc/systemd/system is a read-only store
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.

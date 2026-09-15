@@ -1,15 +1,22 @@
 package reportcard
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"briard.io/agent/nic"
 )
 
 // capable is the baseline "green" host: everything present, plenty of RAM, wired ethernet.
 func capable() HostFacts {
 	return HostFacts{
 		DevKVM: true, VirtFlags: true, DevNetTun: true, TunModule: true,
-		HasIP: true, SystemdBooted: true, MemTotalMB: 16 * 1024, WiredEthernet: true, AnyEthernet: true,
+		HasIP: true, SystemdBooted: true, MemTotalMB: 16 * 1024,
+		// The device the guest's L2 will hang off: wired, holding the default route, and proven
+		// able to parent a macvtap. That last part is the probe having RUN and passed -- the
+		// fixture is the machine we expect to admit, not merely one we could not fault.
+		NIC:        nic.Selection{Dev: "eth0", Probed: true, Candidates: []string{"eth0"}},
 		DiskFreeMB: 64 * 1024,
 		// A capable host on an ordinary home network holds a DHCP lease, and since V3.19c step 3
 		// that is what makes the default install -- no BRIARD_VIP, address from the router --
@@ -65,7 +72,19 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		{"no iproute2", func(f *HostFacts) { f.HasIP = false }, "iproute2", "iproute2"},
 		{"not booted with systemd", func(f *HostFacts) { f.SystemdBooted = false }, "systemd", "systemd units"},
 		{"below RAM floor", func(f *HostFacts) { f.MemTotalMB = 2048 }, "memory", "4 GB"},
-		{"no network at all", func(f *HostFacts) { f.WiredEthernet = false; f.AnyEthernet = false }, "network", "network"},
+		// The three ways the guest's L2 has nowhere to hang ([B.150](b)). Each refuses with the
+		// override named, because a user who disagrees with our selection needs the way to say so
+		// on the same screen as the refusal.
+		{"no network at all", func(f *HostFacts) {
+			f.NIC = nic.Selection{Err: nic.ErrNoInterfaces}
+		}, "network", "connect this machine to your network"},
+		{"no default route", func(f *HostFacts) {
+			f.NIC = nic.Selection{Err: nic.ErrNoDefaultRoute, Candidates: []string{"eth0", "wlan0"}}
+		}, "network", "BRIARD_NIC=eth0"},
+		{"the default route is a full-tunnel VPN", func(f *HostFacts) {
+			f.NIC = nic.Selection{Dev: "tun0", Probed: true, Candidates: []string{"eth0", "tun0"},
+				Err: errors.New("a macvtap could not be created on it (argument \"tun0\" is wrong: Device does not support macvlan)")}
+		}, "network", "BRIARD_NIC=eth0"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
 	}
 	for _, tc := range cases {
@@ -89,12 +108,19 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 
 // Warns steer honestly but still admit: WiFi-only (green wants wired) and below-recommended RAM.
 func TestAssessWarnsStillAdmit(t *testing.T) {
+	// The selected NIC is a wireless station. The probe PASSES there -- the kernel makes the
+	// macvtap without complaint and the frames die at the access point -- so this is warned about
+	// separately from it, and remains a warn until [B.150]'s open question (i) is measured.
 	t.Run("wifi only", func(t *testing.T) {
 		f := capable()
-		f.WiredEthernet, f.AnyEthernet = false, true
+		f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
 		r := Assess(f)
-		if c := find(t, r, "network"); c.Status != Warn || c.Fix == "" {
+		c := find(t, r, "network")
+		if c.Status != Warn || c.Fix == "" {
 			t.Fatalf("wifi-only network = %+v, want warn+fix", c)
+		}
+		if !strings.Contains(c.Detail, "wlan0") {
+			t.Errorf("detail = %q, want it to name the device it judged", c.Detail)
 		}
 		if !r.Admit() {
 			t.Error("a wifi-only host warns but is still admitted (yellow tier)")

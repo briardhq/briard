@@ -292,7 +292,12 @@ say "checking host readiness ..."
 # VIP_ADDR is passed for the same reason NET_MODE is: the card cannot judge an address it is not
 # told about. It is the one check that compares OUR intent against THIS LAN, and without it the
 # gate admitted a machine whose home network the service address was not even on (V3.19).
-if ! NET_MODE="$NET_MODE" VIP_ADDR="$VIP" "$CARD_AGENT" --report-card; then
+# BRIARD_NIC is passed for the third variation on the same reason: since [B.150](b) the card
+# SELECTS the device the guest's L2 will hang off -- the default route unless told otherwise -- and
+# validates it by creating a throwaway macvtap on it. Without the override the card would judge a
+# different device than the install is about to use, which is the worst possible half-truth: a
+# green card and an unreachable guest.
+if ! NET_MODE="$NET_MODE" VIP_ADDR="$VIP" BRIARD_NIC="$NIC" "$CARD_AGENT" --report-card; then
 	# Leave the box as we found it: on the network path the bootstrap agent is the one thing we
 	# put down, so take it back rather than claim "nothing was changed" while it sits there.
 	[ -n "${BRIARD_ARTIFACTS:-}" ] || rm -f "$CARD_AGENT"
@@ -512,6 +517,10 @@ if [ "$NET_MODE" = macvtap ]; then
 	WITNESS_TAP_ENV="$PRIV_TAP"
 	WITNESS_CIDR_ENV="$PRIV_GUEST_CIDR"
 	VIP_PARENT_ENV=""   # eth2 is a kernel-enumerated NIC here; the guest makes nothing
+	# The SAME read the card already made and validated with a real macvtap ([B.150](b)): the main
+	# table's default route, never `ip route get`, which follows a VPN's policy-routed default into
+	# a tunnel that cannot carry a macvtap at all. It is repeated here only because this branch
+	# still bakes the name into net-up.sh; [B.150](d) deletes that file and with it this line.
 	[ -n "$NIC" ] || NIC="$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')"
 	[ -n "$NIC" ] || die "no host NIC given and no default route to infer one (set BRIARD_NIC)"
 	ip link show "$NIC" >/dev/null 2>&1 || die "host NIC $NIC not found"
