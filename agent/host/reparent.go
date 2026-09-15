@@ -111,8 +111,10 @@ func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) 
 		logf("network: could not record the LAN at %s: %v", path, err)
 		return
 	}
-	logf("network: recorded this LAN (parent %s, gateway %s at %s)",
-		rec.Fingerprint.Parent, rec.Fingerprint.GatewayIP, macOrUnknown(rec.Fingerprint.GatewayMAC))
+	// The WHOLE fingerprint, not a friendly summary of it. What a later re-parent turns on is
+	// which fields were readable, so a line that omits the unreadable ones is a line that cannot
+	// explain the decision it is the input to.
+	logf("network: recorded this LAN [%s]", rec.Fingerprint)
 }
 
 // recordedNetwork reads it back. A missing or unreadable record is the zero fingerprint, which
@@ -204,15 +206,35 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		r.say(logf, "network: nowhere to re-parent yet: "+sel.Fix())
 		return "", nic.Unknown
 	}
-	rel := nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, sel.Dev))
+	was, seen := cfg.recordedNetwork(), nic.Read(ctx, sel.Dev)
+	// NO RECORD AT ALL is a different problem from "a different network", and saying so is worth a
+	// branch: the remedy is the same (an operator names the device) but the cause is not, and a
+	// reader told "not demonstrably the same network" about a node that simply has nothing to
+	// compare against will go looking in the wrong place. It happens on a node whose pet state was
+	// lost, and on the first boot after this landed.
+	if was == (nic.Fingerprint{}) {
+		r.say(logf, fmt.Sprintf(
+			"network: %s is gone and there is no record of the LAN this node last served on, so "+
+				"nothing can say whether %s is the same one -- NOT re-parenting on my own. Set "+
+				"BRIARD_NIC=%s in %s and restart briard-agent if this move is intended",
+			cfg.net.Parent, sel.Dev, sel.Dev, cfg.configPathForMessage()))
+		return "", nic.Unknown
+	}
+	rel := nic.Compare(was, seen)
 	wait, ok := reparentWait(rel, cfg.ReparentTier)
 	if !ok {
 		// THE MACHINE HAS MOVED, or we cannot tell. Never automatic: a paired node that rebuilds
 		// itself on a LAN its peer is not on is a split flock.
+		//
+		// ⚠️ THE MESSAGE CARRIES BOTH FINGERPRINTS, and that is not decoration. `unknown` means a
+		// field could not be read on one side or the other, and which side it was is the entire
+		// diagnosis -- without it the reader (or the next engineer) can only guess. It cost a
+		// runner cycle to learn that the hard way.
 		r.say(logf, fmt.Sprintf(
-			"network: %s is gone and %s is on a different network (%s) -- NOT re-parenting on my own. "+
-				"Set BRIARD_NIC=%s in %s and restart briard-agent if this move is intended",
-			cfg.net.Parent, sel.Dev, rel, sel.Dev, cfg.configPathForMessage()))
+			"network: %s is gone and %s is not demonstrably the same network (%s) -- NOT re-parenting "+
+				"on my own. Recorded: [%s]. Now: [%s]. Set BRIARD_NIC=%s in %s and restart "+
+				"briard-agent if this move is intended",
+			cfg.net.Parent, sel.Dev, rel, was, seen, sel.Dev, cfg.configPathForMessage()))
 		return "", rel
 	}
 	if left := wait - now.Sub(r.goneSince); left > 0 {
@@ -362,13 +384,6 @@ func alertReparent(ctx context.Context, n notify.Notifier, logf func(string, ...
 	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_ = n.Notify(nctx, al)
-}
-
-func macOrUnknown(mac string) string {
-	if mac == "" {
-		return "an address it could not resolve"
-	}
-	return mac
 }
 
 func exists(path string) bool {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -34,6 +35,22 @@ type Fingerprint struct {
 	HostCIDR   string `json:"host_cidr"`   // this host's own address on it, with the prefix
 	GatewayIP  string `json:"gateway_ip"`  // the default route's next hop
 	GatewayMAC string `json:"gateway_mac"` // the STRONG signal: a specific box on a specific segment
+}
+
+// String renders the fingerprint for a human. It exists because the interesting failure is a
+// COMPARISON that came out `unknown`, and a line saying only that is a dead end: the reader needs
+// to see which side was missing what. Fields that could not be read say so rather than rendering
+// as empty, since "absent" is exactly the thing being diagnosed.
+func (f Fingerprint) String() string {
+	return fmt.Sprintf("%s mac=%s addr=%s gw=%s/%s",
+		orNone(f.Parent), orNone(f.ParentMAC), orNone(f.HostCIDR), orNone(f.GatewayIP), orNone(f.GatewayMAC))
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "?"
+	}
+	return s
 }
 
 // Read takes the fingerprint of dev as it is right now. Best-effort throughout: a field it cannot
