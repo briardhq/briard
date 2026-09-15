@@ -540,13 +540,53 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// wait loop answers on this channel while it waits; the observe loop takes it over after.
 	local := make(chan localRequest)
 	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	// THE CLOUD SEAM, BUILT BEFORE THE NETWORK RATHER THAN AFTER THE GUEST ([B.150](f)). None of
+	// it depends on a guest -- CloudClient is Register/Report/ReportMetrics, and Resolve needs
+	// only this node's name, role and zone -- so its old position below bring-up was an accident
+	// of ordering, and the accident cost a degraded node its voice: a host whose own network is
+	// fine but whose selected device cannot carry the guest's L2 waited in awaitNetwork and never
+	// reached the report path at all.
+	//
+	// Resolve this node's identity once at boot -- register with the cloud and cache the
+	// Assignment, or cold-boot from the cache during a cloud/WAN outage (degrade-to-local;
+	// identity is never a boot dependency). nil rep = standalone, and the resolved tenant is
+	// tagged onto every report.
+	//
+	// It serves a FIRST boot too (owner, 2026-09-16): a node that has never registered reaches
+	// this with nothing cached, and Register being its very first call is exactly right -- a node
+	// that cannot run a guest yet is still a node the fleet should know exists.
+	var rep cloud.CloudClient
+	if cfg.ControllerURL != "" {
+		rep = cloud.NewHTTP(cfg.ControllerURL, cfg.ControllerToken)
+	}
+	// The node tells the cloud its IANA zone at registration, so its home can be
+	// given an update window in LOCAL time. "" when the host does not say -- the cloud then
+	// cannot schedule this home and treats that as a fault, which is the honest outcome.
+	assignment := cloud.Resolve(ctx, rep, cfg.AssignmentCache,
+		api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
 	// The host's side of the guest's L2 -- and the substrate fork, derived here from what the
 	// selected device turns out to be. AFTER READY on purpose (awaitNetwork says why), and it can
 	// block indefinitely on a node with no usable device, which is the point: waiting degraded and
 	// answerable beats exiting and leaving nothing to ask.
-	cfg, err := cfg.awaitNetwork(ctx, local, logf)
+	dg := &degraded{rep: rep, tenant: assignment.Tenant}
+	cfg, err := cfg.awaitNetwork(ctx, local, dg, logf)
 	if err != nil {
 		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
+	}
+	// A NODE THAT SPENT TIME DEGRADED RE-RESOLVES ITS IDENTITY, in place ([B.150](f)). The first
+	// Resolve above ran while this node may have had no path to the cloud at all, so it fell back
+	// to the cache -- possibly an empty one on a first boot. Re-asking now that a network exists
+	// is what makes the tenant on every later report the real one.
+	//
+	// ⚠️ IN PLACE RATHER THAN BY RESTARTING, and that is a correction to how this was framed when
+	// the question was asked. Restarting sounded smaller; it is not, because the only way to make
+	// systemd restart us is to exit non-zero, which records `Failed with result 'exit-code'`
+	// against a unit that did exactly what it was asked -- the false fault [B.133] took out. With
+	// the cloud seam hoisted above the wait, re-resolving is three lines and costs no such lie.
+	if dg.waited {
+		logf("network: a device is available again; re-resolving this node's identity")
+		assignment = cloud.Resolve(ctx, rep, cfg.AssignmentCache,
+			api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
 	}
 	// IS THIS THE LAN WE WERE ON LAST TIME? Asked HERE, before anything overwrites the record,
 	// and acted on after the notifier exists ([B.150](e)). An operator who moved the box and set
@@ -662,20 +702,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// it being built: a guest replicating to peers this host has no record of. Checked once, here,
 	// now that both the channel and the notifier exist — see warnIfMeshForgotten.
 	cfg.warnIfMeshForgotten(ctx, client, n, logf)
-	// Resolve this node's identity once at boot -- register with the cloud and
-	// cache the Assignment, or cold-boot from the cache during a cloud/WAN outage
-	// (degrade-to-local; identity is never a boot dependency). The client is built once
-	// here (nil = standalone) and the resolved tenant is tagged onto every report.
-	var rep cloud.CloudClient
-	if cfg.ControllerURL != "" {
-		rep = cloud.NewHTTP(cfg.ControllerURL, cfg.ControllerToken)
-	}
-	// The node tells the cloud its IANA zone at registration, so its home can be
-	// given an update window in LOCAL time. "" when the host does not say -- the cloud then
-	// cannot schedule this home and treats that as a fault, which is the honest outcome.
-	assignment := cloud.Resolve(ctx, rep, cfg.AssignmentCache,
-		api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
-
 	// Roll this node's per-cycle resource samples into hourly aggregates and upload
 	// them up the cloud seam (never raw). Only a node with services reporting to a cloud has
 	// dashboard metrics (volume/load); a witness or standalone node has none, so the

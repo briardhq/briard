@@ -2,12 +2,15 @@ package host
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
+	"briard.io/shared/api"
+	"briard.io/shared/model"
 )
 
 // macvtapCfg is what install.sh writes: the shape every Linux node ships in ([B.150](c)).
@@ -111,7 +114,7 @@ func TestAwaitNetworkReturnsWhenThereIsNoNetworkToOwn(t *testing.T) {
 	defer cancel()
 	done := make(chan Config, 1)
 	go func() {
-		cfg, err := Config{}.awaitNetwork(ctx, nil, func(string, ...any) {})
+		cfg, err := Config{}.awaitNetwork(ctx, nil, nil, func(string, ...any) {})
 		if err != nil {
 			t.Errorf("awaitNetwork: %v", err)
 		}
@@ -139,4 +142,91 @@ func TestOnLinkLeavesNonsenseAlone(t *testing.T) {
 			t.Errorf("onLink(%q) = %q, want it untouched", in, got)
 		}
 	}
+}
+
+// degradedClient records what a degraded node sent and hands back directives to be refused.
+type degradedClient struct {
+	got  []api.ReportRequest
+	give []api.Directive
+	err  error
+}
+
+func (c *degradedClient) Register(context.Context, api.NodeInfo) (api.Assignment, error) {
+	return api.Assignment{}, nil
+}
+func (c *degradedClient) Report(_ context.Context, req api.ReportRequest) ([]api.Directive, error) {
+	c.got = append(c.got, req)
+	if c.err != nil {
+		return nil, c.err
+	}
+	give := c.give
+	c.give = nil // handed out once, like a real controller's queue
+	return give, nil
+}
+func (c *degradedClient) ReportMetrics(context.Context, string, []api.MetricAggregate) error {
+	return nil
+}
+
+// A NODE WITH NO USABLE GUEST DEVICE STILL HAS A VOICE ([B.150](f)). It reports the identity half
+// -- who it is, what it runs, unhealthy -- rather than going silent for as long as it stays
+// degraded, which is the one tier where being told matters most: the household cannot fix it.
+func TestReportDegradedSendsIdentityAndRefusesTerminally(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, Version: "v3.test"}
+	cc := &degradedClient{give: []api.Directive{
+		{ID: "d1", Kind: "service-install"},
+		{ID: "d2", Kind: "os-upgrade"},
+	}}
+	dg := &degraded{rep: cc, tenant: "default"}
+
+	cfg.reportDegraded(t.Context(), dg, discard)
+	if len(cc.got) != 1 {
+		t.Fatalf("reports = %d, want 1", len(cc.got))
+	}
+	st := cc.got[0].Status
+	if st.NodeName != "n1" || st.Role != model.RoleAnchor || st.AgentVersion != "v3.test" || st.Tenant != "default" {
+		t.Errorf("status = %+v, want the identity half filled", st)
+	}
+	// The state half stays empty, which is the honest answer when nothing could be asked -- not a
+	// guess, and never Healthy.
+	if st.Healthy || st.Quorum != (model.QuorumState{}) || st.System != "" {
+		t.Errorf("status = %+v, want no state claimed by a node that is not serving", st)
+	}
+
+	// EVERY directive is refused, and refused TERMINALLY. A directive merely ignored is one the
+	// controller re-delivers forever, which turns a degraded node into a retry loop against a
+	// cloud that cannot help it.
+	if len(dg.pending) != 2 {
+		t.Fatalf("outcomes = %+v, want one per directive", dg.pending)
+	}
+	for _, o := range dg.pending {
+		if o.State != api.OutcomeFailed || o.Detail == "" {
+			t.Errorf("outcome = %+v, want a terminal failure with a reason", o)
+		}
+	}
+	// ...and they ride the NEXT report, so the controller actually learns of them.
+	cfg.reportDegraded(t.Context(), dg, discard)
+	if len(cc.got) != 2 || len(cc.got[1].Outcomes) != 2 {
+		t.Fatalf("second report = %+v, want it to carry both refusals", cc.got)
+	}
+	if len(dg.pending) != 0 {
+		t.Errorf("outcomes = %+v, want them cleared once acked", dg.pending)
+	}
+}
+
+// A failed report keeps the refusals for the next attempt rather than dropping them -- on this
+// path the cloud is often unreachable for the same reason the node is degraded.
+func TestReportDegradedKeepsOutcomesWhenTheReportFails(t *testing.T) {
+	cc := &degradedClient{err: errors.New("no route to host")}
+	dg := &degraded{rep: cc, pending: []api.DirectiveOutcome{{ID: "d1", State: api.OutcomeFailed}}}
+	Config{Node: "n1"}.reportDegraded(t.Context(), dg, discard)
+	if len(dg.pending) != 1 {
+		t.Errorf("outcomes = %+v, want them kept for the next attempt", dg.pending)
+	}
+}
+
+// A standalone node has nobody to tell, and must not crash discovering that. nil rep is the
+// shipped free-tier state and every rig.
+func TestReportDegradedIsANoOpWithNoCloud(t *testing.T) {
+	Config{Node: "n1"}.reportDegraded(t.Context(), &degraded{}, discard)
+	Config{Node: "n1"}.reportDegraded(t.Context(), nil, discard)
 }

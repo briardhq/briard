@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"briard.io/agent/cloud"
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
 	"briard.io/shared/api"
@@ -137,7 +138,7 @@ func onLink(cidr string) string {
 // directive submitted gets the same refusal the report card would have given, naming the device
 // it wanted and the override that fixes it. That is the whole difference from `Requires=`, which
 // left a node with nothing running to ask.
-func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, logf func(string, ...any)) (Config, error) {
+func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, dg *degraded, logf func(string, ...any)) (Config, error) {
 	// THIS AGENT WAS NOT GIVEN A NETWORK TO BUILD. No device names means no guest NICs to make,
 	// which is every agent-less harness and every unit test that constructs a Config by hand --
 	// and it has to be answered BEFORE the wait below, because the wait's exit condition is a
@@ -203,9 +204,75 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, l
 			logf("network: no usable device yet: %s", why)
 			said = why
 		}
+		// Say so up-channel BEFORE sleeping on it, so the first tick of a degradation is the one
+		// the fleet hears about rather than the second.
+		if dg != nil {
+			dg.waited = true
+		}
+		cfg.reportDegraded(ctx, dg, logf)
 		if werr := cfg.waitTick(ctx, local, why, logf); werr != nil {
 			return cfg, werr
 		}
+	}
+}
+
+// degraded is what the wait loop needs to keep TALKING while it waits ([B.150](f)).
+//
+// A node whose host network is fine but whose selected device cannot carry the guest's L2 used to
+// go silent up-channel for as long as it stayed that way: the fleet saw nothing, and a managed
+// node could not be told anything. That is the one tier where being told matters most, because
+// the household cannot fix it themselves.
+//
+// nil rep is the standalone node, which has nobody to tell; the whole thing is then a no-op.
+type degraded struct {
+	rep    cloud.CloudClient
+	tenant string
+	// pending carries refusals to the NEXT report, exactly as the observe loop carries outcomes:
+	// a directive answered but never acked is one the controller re-delivers forever.
+	pending []api.DirectiveOutcome
+	// waited records that this node actually spent time degraded, so the caller knows to
+	// re-resolve its identity once a network exists. A node that took the hot path never was.
+	waited bool
+}
+
+// reportDegraded sends this node's identity and refuses whatever comes back.
+//
+// THE STATUS IS THE IDENTITY HALF ONLY -- node, role, agent version, tenant, and what is
+// installed from the node-local cache -- with Healthy false and no Quorum. That is the same
+// shape snapshot already produces when it cannot reach the guest, and it is the honest one: the
+// node exists, it is registered, it is not serving. ⚠️ It does NOT say WHY, because the upward
+// schema is a closed allowlist and widening it is a deliberate, surfaced act (AGENTS §4.8) --
+// the reason lives in the journal and behind the admin door, where it already is.
+func (cfg Config) reportDegraded(ctx context.Context, dg *degraded, logf func(string, ...any)) {
+	if dg == nil || dg.rep == nil {
+		return
+	}
+	st := api.NodeStatus{
+		NodeName: cfg.Node, Role: cfg.Role, AgentVersion: cfg.Version, Tenant: dg.tenant,
+		// nil reader is safe here and only here: serviceStatuses touches it only when this node
+		// is Primary, and a node with no guest is not.
+		Services: cfg.serviceStatuses(ctx, nil, false),
+	}
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	directives, err := dg.rep.Report(rctx, api.ReportRequest{Status: st, Outcomes: dg.pending})
+	if err != nil {
+		// Transient by assumption, and on this path often not even that -- a node with no default
+		// route has no cloud either. Keep waiting; the outcomes retry on the next tick.
+		logf("report to controller failed while degraded: %v", err)
+		return
+	}
+	dg.pending = nil
+	// ⚠️ EVERY DIRECTIVE IS REFUSED, AND REFUSED TERMINALLY. Almost all of them need a guest, and
+	// this node has none -- but a directive that is merely ignored is re-delivered forever, which
+	// turns a degraded node into a retry loop against a cloud that cannot help it. One refusal
+	// path rather than a nil check per verb, for the same reason the admin door has one.
+	for _, d := range directives {
+		logf("refusing %s from the controller: this node has no usable network device", d.Kind)
+		dg.pending = append(dg.pending, api.DirectiveOutcome{
+			ID: d.ID, State: api.OutcomeFailed,
+			Detail: "this node has no usable network device for its guest, so it is not running one",
+		})
 	}
 }
 
