@@ -1566,10 +1566,18 @@ pkgs.testers.runNixOSTest {
 
     # A RE-PARENT IS NEVER A QUIET SELF-HEAL. The household's service just moved segments, and a
     # node that healed itself silently is a node whose next problem starts with nobody knowing.
-    host.succeed("journalctl -u briard-agent | grep -q 'alert \\[warning\\].*different network device'")
+    #
+    # ⚠️ WAITED FOR, not read once. The alert and the record both land at the END of the move --
+    # after RescueGuest has stopped and relaunched the guest -- while the devices above are
+    # rebuilt before it. Asserting these two the instant the re-parent LINE appears reads them a
+    # whole guest boot too early, which is what the first run of this block did.
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 'alert \\[warning\\].*different network device'",
+        timeout=600,
+    )
     # The record now names the new parent, so a LATER re-parent paces itself against this LAN
     # rather than against one that no longer exists.
-    host.wait_until_succeeds("grep -q '\"parent\":\"eth9\"' /var/lib/briard/network.json", timeout=120)
+    host.wait_until_succeeds("grep -q '\"parent\":\"eth9\"' /var/lib/briard/network.json", timeout=600)
 
     # AND THE HOUSEHOLD GETS ITS SERVICE BACK, off-box, at the same address. This is the assertion
     # the rest of the block exists to make non-vacuous: the guest was stopped and relaunched onto
