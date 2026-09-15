@@ -4,12 +4,20 @@
 # Nothing here re-proves any of that.
 #
 # What is bridge-specific and load-bearing:
-#   1. the host NIC is enslaved to an L2 bridge and the host's own L3 identity MOVES onto it --
-#      without cutting the host's footing. This is the named SSH risk, and it is the one thing
-#      macvtap structurally cannot exercise (it never re-plumbs host config).
-#   2. the installer aborts cleanly at that IRREVERSIBLE step on a bad NIC, leaving no bridge --
-#      the never-a-half-install guarantee where it actually costs something.
-#   3. an OFF-BOX LAN client reaches Briard at the VIP *through the enslaved bridge*.
+#   1. THE SUBSTRATE IS DERIVED FROM THE DEVICE ([B.150](c)): nothing is told this is a bridge
+#      install. The host owns a bridge carrying its address and its default route; the agent
+#      selects that bridge BECAUSE it holds the route, sees what it is, and adds ONE PORT to it.
+#   2. the installer refuses cleanly on a device it cannot use, leaving the user's bridge exactly
+#      as it found it -- the never-a-half-install guarantee where it actually costs something.
+#   3. an OFF-BOX LAN client reaches Briard at the VIP *through the user's bridge*.
+#
+# ⚠️ WHAT THIS FILE USED TO TEST AND DELIBERATELY NO LONGER DOES, because the product stopped
+# doing it: the installer enslaving the host's own NIC, moving its address and default route onto
+# a bridge of ours, and arming a self-cancelling watchdog to undo that if doing so cut the
+# operator's SSH session. [B.150](c) deleted the whole gesture -- we never CREATE a bridge, we
+# only join one the user already owns -- so there is no irreversible step here any more and no
+# footing to lose. The rig declares the bridge in its own NixOS config instead, which is a more
+# faithful test of the real case than enslaving one ourselves ever was.
 #
 # The shared install chain lives in install-macvtap.nix, on the Linux default substrate; this file
 # is only the bridge delta.
@@ -74,17 +82,27 @@ pkgs.testers.runNixOSTest {
         virtualisation.diskSize = 14336;
         virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM in L1
         virtualisation.vlans = [ 1 ]; # eth1 on the shared 192.168.1.0/24 L2 (the LAN)
-        # Static, scripted (not DHCP/networkd) so install.sh owns eth1: it snapshots eth1's addr,
-        # enslaves it to the bridge, and moves the addr over -- the real NIC-enslave path.
+        # THE USER'S BRIDGE, declared by the HOST rather than built by the installer ([B.150](c)).
+        # This is the whole shape of the test now: a machine that already bridges its LAN NIC --
+        # which is what a libvirt/Proxmox/Incus box looks like, and what a Windows host running
+        # `netsh bridge` looks like -- and briard joining it rather than re-plumbing it.
         networking.useDHCP = false;
-        networking.interfaces.eth1.ipv4.addresses = [
+        networking.bridges.br0.interfaces = [ "eth1" ];
+        networking.interfaces.br0.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
+        # ⚠️ THE DEFAULT ROUTE IS THE ASSERTION, not scenery. Nothing tells the install which
+        # device to use: the agent selects the one holding the main table's default route, so this
+        # line is what makes it choose br0 -- and choosing br0 is what derives the substrate. Take
+        # it away and the install refuses for want of a default route, which is exactly the
+        # behaviour [B.150](b) wanted and precisely why it must be stated here rather than assumed.
+        # The client is not a router and never forwards anything; the ROUTE is what is needed.
+        networking.defaultGateway = { address = "192.168.1.2"; interface = "br0"; };
         # Host tools install.sh needs; NOTE no pkgs.qemu (the bundle is the only qemu).
         environment.systemPackages = [ pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl ];
       };
 
-    # A plain LAN peer -- the off-box client that must reach the VIP through the enslaved bridge.
+    # A plain LAN peer -- the off-box client that must reach the VIP through the host's bridge.
     client =
       { ... }:
       {
@@ -106,29 +124,34 @@ pkgs.testers.runNixOSTest {
     # Baseline: host and client see each other on the LAN before we touch networking.
     client.wait_until_succeeds("ping -c1 -W2 192.168.1.1", timeout=30)
 
-    # --- DELTA 2: refuse cleanly at the IRREVERSIBLE step ---
-    # A bogus NIC must die before the enslave, leaving no bridge and the host still on the LAN.
-    # Sharper here than on macvtap: this is the path where a half-done networking step would
-    # strand the box off the net (the SSH risk).
-    host.fail(
-        "BRIARD_ARTIFACTS=${staging} BRIARD_NET_MODE=bridge BRIARD_NIC=nope999 sh ${installScript}"
-    )
-    host.fail("ip link show br-briard")  # nothing half-built
-    client.succeed("ping -c1 -W2 192.168.1.1")  # host still on the LAN
+    # The host is on the LAN through its OWN bridge before briard exists -- the precondition the
+    # whole file rests on, stated rather than assumed.
+    host.succeed("ip link show br0")
+    host.succeed("bridge link show | grep -q eth1")
+    host.succeed("ip -o -4 route show default | grep -qw br0")
 
-    # Diagnostic: the framework's QEMU vlan is not reliably symmetric for HOST-initiated pings
-    # (client->host works above; host->client often does not, even unbridged). The product's own
-    # post-enslave guard pings a peer -- correct on a real switch, but here it would gate on that
-    # asymmetry. So we drive the install WITHOUT BRIARD_NET_PEER (the guard then only verifies the
-    # address survived onto the bridge) and prove reachability the way that matters and that the
-    # vlan supports: the CLIENT reaching the VIP (client-initiated, like the working direction).
-    print("host->client (pre-bridge, diagnostic):", host.execute("ping -c2 -W2 192.168.1.2")[1])
+    # --- DELTA 2: refuse cleanly, and leave the USER'S bridge alone ---
+    # A bogus device must be refused before anything is written. It is the report card that
+    # refuses now ([B.150](b)) rather than a NIC check halfway through the networking step, so
+    # this fails earlier and for a better-stated reason -- but the property under test is the same
+    # one, and it is sharper here than on macvtap: this is the path where a half-done networking
+    # step used to be able to strand the box off the net.
+    host.fail(
+        "BRIARD_ARTIFACTS=${staging} BRIARD_NIC=nope999 sh ${installScript}"
+    )
+    host.succeed("ip -o -4 addr show dev br0 | grep -qw 192.168.1.1")  # untouched
+    host.fail("bridge link show | grep -q briard-drbd0")               # nothing half-built
+    client.succeed("ping -c1 -W2 192.168.1.1")                         # host still on the LAN
 
     # --- the install on the bridge substrate: one command -> green ---
+    # NOTE WHAT IS *NOT* ON THIS COMMAND LINE: no BRIARD_NET_MODE (the knob is gone -- the
+    # substrate is derived) and no BRIARD_NIC (the agent selects the device holding the default
+    # route, which this host put on br0). That absence is the test.
+    #
     # BRIARD_UNIT_DIR=/run/systemd/system: NixOS's /etc/systemd/system is a read-only store
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     host.succeed(
-        "BRIARD_ARTIFACTS=${staging} BRIARD_NET_MODE=bridge BRIARD_NIC=eth1 BRIARD_UNIT_DIR=/run/systemd/system "
+        "BRIARD_ARTIFACTS=${staging} BRIARD_UNIT_DIR=/run/systemd/system "
         # The test DECLARES the address it is about to curl. install.sh has no default any more
         # (V3.19c step 3): unset means DHCP, and this L2 has no server. Stating it here is the
         # point of the change -- a default every test agreed with is what hid the baked VIP.
@@ -136,13 +159,18 @@ pkgs.testers.runNixOSTest {
         "sh ${installScript}"
     )
 
-    # --- DELTA 1 (the substrate's whole point of difference): the enslave happened, the host's L3
-    # identity MOVED onto the bridge, and the host kept its footing across it.
-    host.succeed("ip link show br-briard")
-    host.succeed("bridge link show | grep -q 'eth1'")
-    host.succeed("ip -o -4 addr show dev br-briard | grep -qw 192.168.1.1")
-    host.fail("ip -o -4 addr show dev eth1 | grep -qw 192.168.1.1")  # it really MOVED, not copied
-    client.succeed("ping -c1 -W2 192.168.1.1")  # host still reachable THROUGH the bridged NIC
+    # --- DELTA 1 (the substrate's whole point of difference): the agent DERIVED the substrate from
+    # the device it selected, and joined the user's bridge without touching it.
+    #
+    # The inverted assertion is the one that carries the weight. The old install moved the host's
+    # address from eth1 onto a bridge it had built; this one must leave BOTH exactly where the
+    # host's own config put them. A regression that reintroduced enslaving would still pass every
+    # reachability check below -- these two lines are what would catch it.
+    host.succeed("ip -o -4 addr show dev br0 | grep -qw 192.168.1.1")
+    host.succeed("ip -o -4 route show default | grep -qw br0")
+    host.fail("ip link show br-briard")  # we do not create a bridge, ever
+    host.succeed("journalctl -u briard-agent | grep -q \"the guest's L2 hangs off br0\"")
+    client.succeed("ping -c1 -W2 192.168.1.1")  # host still reachable through its own bridge
 
     # --- DELTA 2 (the conversion, [V3b.26d]): ONE tap on the bridge, and no private link.
     #
@@ -159,7 +187,7 @@ pkgs.testers.runNixOSTest {
     # never spelled: a rig that spells a subnet the installer draws asserts about a coincidence.
     system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
     node_ip, host_ip = f"{system_subnet}.1", f"{system_subnet}.129"
-    host.succeed(f"ip -o -4 addr show dev br-briard | grep -qw {host_ip}")
+    host.succeed(f"ip -o -4 addr show dev br0 | grep -qw {host_ip}")
     print(f"host on the system subnet at {host_ip}, on the bridge")
 
     # The guest boots on the BUNDLED qemu and the agent converges to quorate Primary holding the VIP.
@@ -167,9 +195,9 @@ pkgs.testers.runNixOSTest {
     host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64")
 
     # --- DELTA 3 (THE PROOF): the OFF-BOX client reaches Briard at the VIP, through the
-    # enslaved host bridge -- not the install host curling itself.
+    # host's own bridge -- not the install host curling itself.
     client.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
-    print("off-box client reached the VIP through the enslaved bridge")
+    print("off-box client reached the VIP through the host's bridge")
 
     # --- DELTA 4 (THE ONE THAT PROVES THE GUEST MADE ITS OWN IDENTITY): from OFF-BOX, the VIP and
     # the node IP resolve to DIFFERENT MACs.

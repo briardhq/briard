@@ -29,6 +29,7 @@ import (
 	"briard.io/agent/guestagent"
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/install"
+	"briard.io/agent/nic"
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
@@ -161,6 +162,14 @@ type Config struct {
 	// built the device itself and the MAC is pinned at launch.
 	VIPParent  string
 	NetWrapBin string
+	// NICOverride is BRIARD_NIC: the device the operator named for the guest's L2 to hang off,
+	// overriding the default-route selection. "" is every ordinary install ([B.150](b)).
+	NICOverride string
+	// PrivHostCIDR is this host's own end of the private host<->guest link, on its tap. Pure
+	// substrate -- nothing dials it -- but the link must be addressed at BOTH ends or avahi will
+	// not join the IPv4 mDNS group on it ([V3b.26b]). It reached the agent only when the agent
+	// took the network over ([B.150](d)); before that it lived in net-up.sh and nowhere else.
+	PrivHostCIDR string
 
 	// Host-side cloud-witness forwarder. A managed pairing directive (MeshSpec.Witness)
 	// starts the witness-forwarder here -- host-side, so the mTLS identity + WAN hop stay off the
@@ -379,6 +388,13 @@ type Config struct {
 	// goroutine and not a deadline (B.87).
 	telemetry *telemetryWriter
 
+	// net is the host-side L2 this node converged to, DERIVED at start-up from the selected
+	// device rather than configured ([B.150](d)). Machinery like beat and telemetry: awaitNetwork
+	// fills it and the status tick re-asserts it, so the tick never has to re-select (which would
+	// macvtap-probe the parent every ten seconds). A zero value means "this agent does not own
+	// the network", which is every unit test and every rig that builds its own devices.
+	net nic.Spec
+
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
 	// const and nothing sets this but tests, which would otherwise spend a real minute per
@@ -511,6 +527,22 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if err := sdnotify.Ready(); err != nil {
 		logf("sd_notify READY failed (non-fatal): %v", err)
 	}
+	// THE LOCAL ADMIN DOOR, OPENED BEFORE THE NETWORK RATHER THAN AFTER THE GUEST ([B.150](d)).
+	// It used to start below, past bring-up, which was fine while a oneshot unit owned the
+	// network and `Requires=` meant a network failure stopped the agent outright. Now the agent
+	// survives that failure, and a surviving agent nobody can ask is only half the fix: the
+	// operator standing at the box needs the door open exactly when the node is degraded. The
+	// wait loop answers on this channel while it waits; the observe loop takes it over after.
+	local := make(chan localRequest)
+	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	// The host's side of the guest's L2 -- and the substrate fork, derived here from what the
+	// selected device turns out to be. AFTER READY on purpose (awaitNetwork says why), and it can
+	// block indefinitely on a node with no usable device, which is the point: waiting degraded and
+	// answerable beats exiting and leaving nothing to ask.
+	cfg, err := cfg.awaitNetwork(ctx, local, logf)
+	if err != nil {
+		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
+	}
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
 		// ASKED TO STOP BEFORE THE GUEST WAS UP. A cancellation is the shutdown this agent was
@@ -631,11 +663,11 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		agg = newMetricsAggregator(cfg.MetricsWindow, logf)
 	}
 
-	// The local admin door. Started ONCE, outside the re-dial loop below, so a bounced
-	// guest channel doesn't take the operator's CLI down with it — the socket outlives any
-	// single observe() call, which is the whole point of an out-of-band admin surface.
-	local := make(chan localRequest)
-	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	// The admin door is already listening (above, before the network), and `local` is already the
+	// channel it hands directives to. Started ONCE and outside the re-dial loop below, so a
+	// bounced guest channel doesn't take the operator's CLI down with it — the socket outlives
+	// any single observe() call, which is the whole point of an out-of-band admin surface.
+	//
 	// The guest chain's nightly timer ([B.86d]) -- a standalone node converging its OS to
 	// guest/stable through the same door; a no-op goroutine on a managed or paired node.
 	go cfg.guestUpdateTimer(ctx, local, n, logf)
@@ -1107,6 +1139,12 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// four times larger than it needs to be. A datagram costs nothing; a gap costs detection
 	// latency. See beat.go.
 	for {
+		// The host's side of the guest's L2, re-asserted before anything is read over it
+		// ([B.150](d)). Check-first and silent when nothing moved, which is every cycle on a host
+		// nothing else touches -- but our system-subnet address can sit on a device
+		// NetworkManager manages, and NM reconciles addresses on a connection's reactivation.
+		cfg.beat.Beat()
+		cfg.convergeNetwork(ctx, logf)
 		// The running system is read from the guest each cycle, so it is correct even on a node
 		// that switched closure without this loop driving it.
 		cfg.beat.Beat()

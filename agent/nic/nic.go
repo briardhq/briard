@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -53,6 +52,11 @@ type Selection struct {
 	// changes the message and nothing else: a user who named a device does not need to be told
 	// how we would have guessed.
 	Override bool
+	// Bridge is whether Dev is a bridge, which is the SUBSTRATE FORK ([B.150](c)): a bridge gets
+	// one port and the guest makes its own service identity inside; anything else gets macvtap
+	// children. Asked of the device rather than selected by a knob, because there is one true
+	// answer and the machine holds it.
+	Bridge bool
 	// Wireless is whether Dev is an 802.11 station. Kept separate from the probe on purpose —
 	// the probe SUCCEEDS on wireless (the kernel makes the macvtap happily), and the frames die
 	// later at the AP, which is exactly the class of failure the probe cannot see.
@@ -67,10 +71,33 @@ type Selection struct {
 	Candidates []string
 }
 
-// Choose makes the selection and validates it. override is BRIARD_NIC — kept under that name
-// (widened: since [B.150](c) it may name a bridge) because renaming it would cost a sweep of
-// every rig that sets it and buy nothing.
+// Choose makes the selection and VALIDATES it — for a caller that is about to create devices on
+// the answer. override is BRIARD_NIC — kept under that name (widened: since [B.150](c) it may
+// name a bridge) because renaming it would cost a sweep of every rig that sets it and buy nothing.
 func Choose(ctx context.Context, override string) Selection {
+	s := Select(override)
+	// THE PROBE VALIDATES, IT DOES NOT SELECT. There is no second heuristic above it: no
+	// gateway-ARP confirmation, no scope-global fallback, no virtual/non-virtual filter — a bond
+	// and a VLAN are both "virtual" and both fine, and no sysfs attribute separates a tun device
+	// from them the way creating a macvtap on it does. docker0 and tailscale0 fall out of the
+	// selection because they hold no default route, never by a name blacklist.
+	//
+	// Skipped when unprivileged: `ip link add` fails with EPERM for a reason that says nothing
+	// about the host, and a curious user running `briard-agent --report-card` without sudo must
+	// not be told their machine is unfit.
+	if s.Err == nil && os.Geteuid() == 0 {
+		s.Probed = true
+		s.Err = Probe(ctx, s.Dev)
+	}
+	return s
+}
+
+// Select names the device without validating it — for a caller that is NOT about to create
+// anything on the answer, and must not pay for a probe to find out where its existing devices
+// hang. The agent's hot path is exactly that: on a restart the taps are already up, so there is
+// nothing to create and nothing to validate, and probing every ten seconds (or on every agent
+// start on a lab node) would be a netlink write to answer a question nobody asked ([B.150](d)).
+func Select(override string) Selection {
 	s := Selection{Candidates: Candidates()}
 	switch {
 	case override != "":
@@ -97,18 +124,13 @@ func Choose(ctx context.Context, override string) Selection {
 			return s
 		}
 	}
-	s.Wireless = Wireless(s.Dev)
-	// THE PROBE VALIDATES, IT DOES NOT SELECT. There is no second heuristic above it: no
-	// gateway-ARP confirmation, no scope-global fallback, no virtual/non-virtual filter — a bond
-	// and a VLAN are both "virtual" and both fine, and no sysfs attribute separates a tun device
-	// from them the way creating a macvtap on it does. docker0 and tailscale0 fall out of the
-	// selection because they hold no default route, never by a name blacklist.
-	if os.Geteuid() == 0 {
-		s.Probed = true
-		s.Err = Probe(ctx, s.Dev)
-	}
+	s.Wireless, s.Bridge = Wireless(s.Dev), IsBridge(s.Dev)
 	return s
 }
+
+// Up reports whether dev exists and is up -- the question the agent's hot path asks of the
+// devices its config names, before it asks anything about a parent.
+func Up(dev string) bool { return exists("/sys/class/net/"+dev) && up(dev) }
 
 // Usable reports whether the install may proceed on this selection. Wireless is not a fault here:
 // its severity is the report card's call, not the selector's.
@@ -164,12 +186,12 @@ func exampleDev(candidates []string) string {
 func Probe(ctx context.Context, dev string) error {
 	// A leaked probe device from a run killed between create and delete would make every later
 	// probe fail with EEXIST -- i.e. would condemn a perfectly good NIC. Clear it first.
-	_ = exec.CommandContext(ctx, "ip", "link", "del", probeDev).Run()
-	out, err := exec.CommandContext(ctx, "ip", "link", "add", "link", dev, "name", probeDev, "type", "macvtap", "mode", "bridge").CombinedOutput()
+	_, _ = ip(ctx, "link", "del", probeDev)
+	out, err := ip(ctx, "link", "add", "link", dev, "name", probeDev, "type", "macvtap", "mode", "bridge")
 	if err != nil {
 		return fmt.Errorf("a macvtap could not be created on it (%s)", firstLine(out, err))
 	}
-	_ = exec.CommandContext(ctx, "ip", "link", "del", probeDev).Run()
+	_, _ = ip(ctx, "link", "del", probeDev)
 	return nil
 }
 

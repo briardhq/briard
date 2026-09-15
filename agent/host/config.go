@@ -193,7 +193,11 @@ func ConfigFromEnv() Config {
 		NetMode:       os.Getenv("NET_MODE"),     // "" (bridge, default) | "macvtap"
 		VIPParent:     os.Getenv("VIP_PARENT"),   // bridge substrate only: the NIC the guest builds VIP_DEV on
 		NetWrapBin:    os.Getenv("NET_WRAP_BIN"), // the fd-passing launch wrapper; required for NET_MODE=macvtap
-		SerialLog:     os.Getenv("GUEST_SERIAL"),
+		// BRIARD_NIC, under the name the installer has always used for it -- the agent asks the
+		// same question the report card did, so it reads the same override ([B.150](b)).
+		NICOverride:  os.Getenv("BRIARD_NIC"),
+		PrivHostCIDR: os.Getenv("PRIV_HOST_CIDR"), // the host's end of the private link, e.g. 10.11.9.1/24
+		SerialLog:    os.Getenv("GUEST_SERIAL"),
 		// Host-side witness-forwarder identity. Bin + the anchor cert/key/ca; a managed
 		// pairing directive (MeshSpec.Witness) starts the forwarder with these. Unset -> a pairing
 		// that needs the cloud witness fails fast (before any DRBD change).

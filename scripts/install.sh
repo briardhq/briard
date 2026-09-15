@@ -33,8 +33,12 @@ set -eu
 PREFIX="${BRIARD_PREFIX:-/opt/briard}"
 STATE="${BRIARD_STATE:-/var/lib/briard}"
 RUNDIR="${BRIARD_RUN:-/run/briard}"
-NIC="${BRIARD_NIC:-}"                 # host NIC to enslave/parent; empty = the default-route NIC
-BRIDGE="${BRIARD_BRIDGE:-br-briard}"
+# The device the guest's L2 hangs off; empty = the one holding the default route. It is passed
+# through to the agent rather than resolved here ([B.150](b)+(d)): the card validates it before
+# anything is written, and the agent re-asks at every start, because the answer is a property of
+# the machine on the day it is asked. BRIARD_BRIDGE went with the bridge-building code -- naming a
+# bridge for us to create was the gesture [B.150](c) deleted; name an existing one with BRIARD_NIC.
+NIC="${BRIARD_NIC:-}"
 TAP="${BRIARD_TAP:-briard0}"          # the guest's service NIC (eth2, the VIP)
 # THE SYSTEM SUBNET -- this node's own address, and the one canonical way anything reaches it
 # (DESIGN §4). Assigned on EVERY install including a lone one, rather than arriving with a
@@ -106,19 +110,20 @@ PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
 # host. The host holding no address and no route in it is what makes a pod unreachable from outside
 # the guest by construction -- there is nothing here to enforce, and that is the design.
 POD_SUBNET="${BRIARD_POD_SUBNET:-}"
-# Net substrate. "macvtap" (DEFAULT, and the only shape a Linux node ships in) makes the guest's
-# NICs macvtap children of the host NIC directly: L2 citizenship with NO bridge and NO host-IP
-# move, so no SSH-risk moment and no net guard -- the least invasive substrate.
-# "bridge" (BRIARD_NET_MODE=bridge) enslaves the host NIC to an L2 bridge and puts ONE tap on it,
-# the guest making its own service identity on top: the Linux clone of the Windows shape (DESIGN
-# §4), which is what it is FOR -- `install-bridge.nix` drives it, so the knob is load-bearing for
-# the rig that exercises the Windows topology before a Windows host agent exists. Deliberately
-# undocumented rather than removed: it is also the only substrate where the host sits on the
-# guest's L2, so it is the one you can tcpdump a networking problem from -- macvtap's host<->guest
-# isolation is the design, and it is also what hides the wire. NOT a supported install shape and
-# NOT an HA-proven one: the pair half is unmeasured, so a flock built on it is on the single-L2
-# ARP-flux hazard with nothing behind it. TAP/DRBD_TAP name the devices either way.
-NET_MODE="${BRIARD_NET_MODE:-macvtap}"
+# ⚠️ THERE IS NO NET-SUBSTRATE KNOB, and `BRIARD_NET_MODE` is gone ([B.150](c)). The substrate is
+# DERIVED from the device the guest's L2 hangs off: if that device is a BRIDGE, the agent adds one
+# port to it and the guest makes its own service identity on top (the Linux clone of the Windows
+# shape, DESIGN §4); otherwise the guest's NICs are macvtap children of it -- L2 citizenship with
+# no bridge and no host-IP move, which is the shape every Linux node ships in.
+#
+# A knob was the wrong shape for it twice over. It could disagree with the machine (bridge mode on
+# a host with no bridge meant building one, which is the ninety lines [B.150](c) deleted), and it
+# had to be answered at INSTALL time, frozen into a script, on a machine whose devices change.
+# Asking the device is a question with one true answer, and one the agent can re-ask.
+#
+# `BRIARD_NIC` is still the escape hatch, and it is now the only one: it names the device, and the
+# device decides the substrate. It may name a bridge -- that is how `install-bridge.nix` drives
+# the Windows topology, and how a user who has already built a bridge gets us to join it.
 # The service address, in CIDR form -- it must carry a prefix because it is an address ON THE
 # USER'S LAN, and the LAN's prefix is not ours to assume. Until V3.19 this was a bare address that
 # fed only HEALTH_URL (the address the HOST probes) while the guest claimed a *baked* one, so
@@ -175,9 +180,11 @@ CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # 32 MiB
 # This node's name and this flock's name are NOT constants and NOT knobs: both are minted into pet
 # state in step 6b, once $STATE exists and the agent binary is on disk. See there for why they are
 # two identifiers rather than the one hardcoded `guest` this used to be.
-NET_GUARD_SECS="${BRIARD_NET_GUARD_SECS:-45}"
 UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
-NET_PEER="${BRIARD_NET_PEER:-}"       # a LAN host to ping to confirm we kept our footing
+# BRIARD_NET_GUARD_SECS and BRIARD_NET_PEER are gone with the thing they guarded ([B.150](c)): the
+# watchdog that reverted a bridge enslave, and the LAN host it pinged to decide whether we had cut
+# the operator's own SSH session. Nothing takes a device away from the host any more, so there is
+# no footing to lose and nothing to confirm.
 # The signed release channel ROOT (network fetch). Under it, one directory per release CHAIN --
 # `host/` (agent, net-wrap, qemu) and `guest/` (the OS image) -- each holding one directory per
 # version plus the two pointers `stable` and `latest`, which are byte-copies of one version's
@@ -287,17 +294,17 @@ fi
 # Refuse-with-the-fix-named on an unbringable host, before we fetch gigabytes, touch networking or
 # boot a VM -- never a half-install (assertion c, already built).
 say "checking host readiness ..."
-# NET_MODE is passed so the card appends the macvtap advisories (USB-NIC promiscuous
-# fallback, MAC port-security) when this is a macvtap install; they never change the verdict.
-# VIP_ADDR is passed for the same reason NET_MODE is: the card cannot judge an address it is not
-# told about. It is the one check that compares OUR intent against THIS LAN, and without it the
-# gate admitted a machine whose home network the service address was not even on (V3.19).
-# BRIARD_NIC is passed for the third variation on the same reason: since [B.150](b) the card
-# SELECTS the device the guest's L2 will hang off -- the default route unless told otherwise -- and
-# validates it by creating a throwaway macvtap on it. Without the override the card would judge a
-# different device than the install is about to use, which is the worst possible half-truth: a
-# green card and an unreachable guest.
-if ! NET_MODE="$NET_MODE" VIP_ADDR="$VIP" BRIARD_NIC="$NIC" "$CARD_AGENT" --report-card; then
+# VIP_ADDR is passed because the card cannot judge an address it is not told about. It is the one
+# check that compares OUR intent against THIS LAN, and without it the gate admitted a machine whose
+# home network the service address was not even on (V3.19).
+# BRIARD_NIC is passed for a variation on the same reason: since [B.150](b) the card SELECTS the
+# device the guest's L2 will hang off -- the default route unless told otherwise -- and validates
+# it by creating a throwaway macvtap on it. Without the override the card would judge a different
+# device than the install is about to use, which is the worst possible half-truth: a green card
+# and an unreachable guest.
+# NET_MODE is NOT passed any more ([B.150](c)): the card derives the substrate from the device it
+# selected, so it cannot be told one the machine will not end up on.
+if ! VIP_ADDR="$VIP" BRIARD_NIC="$NIC" "$CARD_AGENT" --report-card; then
 	# Leave the box as we found it: on the network path the bootstrap agent is the one thing we
 	# put down, so take it back rather than claim "nothing was changed" while it sits there.
 	[ -n "${BRIARD_ARTIFACTS:-}" ] || rm -f "$CARD_AGENT"
@@ -336,7 +343,7 @@ if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	install -m0755 "$HOSTSRC/briard-agent" "$PREFIX/agent/briard-agent"
 fi
 # The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
-# ExecStart under NET_MODE=macvtap. Cattle that rides with the agent ([B.86b]): it lands here,
+# ExecStart on the macvtap substrate. Cattle that rides with the agent ([B.86b]): it lands here,
 # and an update stages briard-net-wrap.next beside it for briard-commit to move.
 NET_WRAP=""
 if [ -f "$HOSTSRC/briard-net-wrap" ]; then
@@ -482,256 +489,37 @@ SYSTEM_HOST_IP="$SYSTEM_SUBNET.129"
 # ⚠️ THE PREFIX IS SUBSTRATE-DEPENDENT, and this is the macvtap value. Under macvtap the host is
 # ISOLATED from its own guest on the LAN, so this address lives on the private tap and must be a
 # /32: a /24 there would claim an on-link route for the whole system subnet over a wire that
-# reaches exactly one machine, competing with the route the guest's own peers need. Under bridge
-# mode the host is genuinely ON that L2 (it holds the address on the bridge, beside its LAN one),
-# so the honest prefix is the subnet's -- the bridge branch of step 5 overrides this.
+# reaches exactly one machine, competing with the route the guest's own peers need. Where the
+# selected device turns out to be a BRIDGE the host is genuinely on that L2 and the honest prefix
+# is the subnet's -- the AGENT re-prefixes it, because the agent is what learns which of the two
+# this host is ([B.150](c), applySubstrate).
 SYSTEM_HOST_CIDR="$SYSTEM_HOST_IP/32"
 PRIV_HOST_CIDR="$PRIV_SUBNET.1/24"
 PRIV_GUEST_CIDR="$PRIV_SUBNET.2/24"
 
-# The private link's bring-up, shared VERBATIM by both substrates' net-up.sh. All three commands
-# are idempotent, so a reboot or a re-run is a no-op. It lives in a variable rather than being
-# written into each heredoc because the two copies must not be able to drift: a private link that
-# exists under bridge and not under macvtap would take the host rung's guard away on precisely the
-# default substrate.
-PRIV_UP="# The private host<->guest link (the guest's eth3): a plain tap, on neither the bridge nor
-# the macvtap parent, carrying this host's end of a point-to-point wire to its own VM.
-ip link show $PRIV_TAP >/dev/null 2>&1 || ip tuntap add $PRIV_TAP mode tap
-ip addr replace $PRIV_HOST_CIDR dev $PRIV_TAP
-ip addr replace $SYSTEM_HOST_CIDR dev $PRIV_TAP
-ip link set $PRIV_TAP up"
-
-# ---- 5. networking: the guest's L2 substrate (bridge enslave, or macvtap) -----------
-if [ "$NET_MODE" = macvtap ]; then
-	# macvtap substrate: the guest's NICs are macvtap children of the host NIC --
-	# full L2 citizens (unsolicited inbound, DHCP, multicast) with NO bridge and NO host-IP move.
-	# So there is no SSH-risk moment and no net guard: the host keeps its address on the physical
-	# NIC throughout, and the per-VM-start create/destroy the cattle-host model wants comes for
-	# free (macvtaps auto-vanish with the parent). Needs the fd-passing launch wrapper.
-	[ -n "$NET_WRAP" ] || die "NET_MODE=macvtap needs the briard-net-wrap wrapper (absent from staging)"
-	# THE SUBSTRATE FORK, declared here and consumed by the unit in step 7 ([V3b.26c]). Everything
-	# in it is L2 and nothing above L2 differs: same subnets, same addresses, same VIP device name.
-	# macvtap: three guest NICs, each a device the HOST creates -- the service NIC is its own
-	# macvtap child carrying the flock MAC, and the private link is a third tap.
-	SERVICE_TAP_ENV="$TAP"
-	WITNESS_TAP_ENV="$PRIV_TAP"
-	WITNESS_CIDR_ENV="$PRIV_GUEST_CIDR"
-	VIP_PARENT_ENV=""   # eth2 is a kernel-enumerated NIC here; the guest makes nothing
-	# The SAME read the card already made and validated with a real macvtap ([B.150](b)): the main
-	# table's default route, never `ip route get`, which follows a VPN's policy-routed default into
-	# a tunnel that cannot carry a macvtap at all. It is repeated here only because this branch
-	# still bakes the name into net-up.sh; [B.150](d) deletes that file and with it this line.
-	[ -n "$NIC" ] || NIC="$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')"
-	[ -n "$NIC" ] || die "no host NIC given and no default route to infer one (set BRIARD_NIC)"
-	ip link show "$NIC" >/dev/null 2>&1 || die "host NIC $NIC not found"
-	cat > "$PREFIX/net-up.sh" <<EOF
-#!/bin/sh
-set -eu
-export PATH="/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin"
-ip link set $NIC up
-# The guest's two NIC macvtaps on $NIC: DRBD (eth1) then service (eth2) -- order sets the guest's
-# ethN. Created with the kernel's random MAC; the launch wrapper (briard-net-wrap) pins the
-# agent-derived per-node MAC (matching qemu's mac=) at guest start. No bridge, no host-IP move --
-# idempotent on reboot / re-run.
-for t in $DRBD_TAP $TAP; do
-	if ! ip link show \$t >/dev/null 2>&1; then
-		ip link add link $NIC name \$t type macvtap mode bridge
-	fi
-	# The HOST end of a macvtap holds NO address. The device carries the GUEST's MAC, so a host
-	# that autoconfigures on it derives the SAME EUI-64 identifier the guest derives, on the same
-	# L2 -- a duplicate address whose winner DAD picks and whose loser silently drops it -- and the
-	# host's avahi joins mDNS on the guest's segment, where the name is the guest's to publish.
-	# Ubuntu ships net.ipv6.conf.default.accept_ra=1 and every new device inherits the "default"
-	# values, so that is what happens unless we say otherwise [B.106]. Outside the create branch on
-	# purpose: on a fresh device this runs before it is up, so no advertisement can be accepted at
-	# all; on a device that already exists (reboot, re-run, the cattle-wipe reinstall) the write
-	# flushes what it already picked up, which is how an upgraded install gets repaired. A procfs
-	# write rather than sysctl(8) because this script must run on stock hosts and on NixOS.
-	# The bridge substrate needs no counterpart: its taps are bridge PORTS, and Linux does not
-	# autoconfigure a device that has a master (measured 2026-08-19).
-	if [ -e /proc/sys/net/ipv6/conf/\$t/disable_ipv6 ]; then
-		echo 1 > /proc/sys/net/ipv6/conf/\$t/disable_ipv6
-	fi
-	ip link set \$t up
-	# ALLMULTI, or inbound multicast never reaches the guest. The guest's avahi joins 224.0.0.251
-	# on its VIRTIO NIC inside the VM, and nothing carries that join out to this device: qemu only
-	# emits a NIC_RX_FILTER_CHANGED event, and the code that acts on it (query-rx-filter ->
-	# virNetDevSetRxFilter) is libvirt's, gated on trustGuestRxFilters, and we run qemu directly.
-	# So this macvtap's multicast list holds only the all-hosts group, and macvlan_broadcast()
-	# drops every inbound mDNS query on its per-child test_bit(hash, vlan->mc_filter). ALLMULTI is
-	# what fills that bitmap -- macvlan_compute_filter bitmap_fill()s it for IFF_PROMISC/IFF_ALLMULTI.
-	#
-	# Egress does not need it, and that asymmetry is the trap: without this the guest still
-	# ANNOUNCES its name fine and answers unicast queries, so every client caches the record and
-	# the household name resolves -- until that cached record expires, after which nothing can
-	# query the guest and the name is dead. An install therefore looks correct at the moment it
-	# finishes and only fails later, off-box.
-	#
-	# The CHILD, not the parent: adding the group to the parent NIC's own multicast list
-	# (ip maddr add 01:00:5e:00:00:fb) does not help, because the gate is the per-child filter.
-	# Multicast only -- deliberately not promiscuous, which would pull every unicast frame on the
-	# segment off the wire for no benefit.
-	ip link set \$t allmulticast on
-done
-$PRIV_UP
-EOF
-	chmod +x "$PREFIX/net-up.sh"
-	say "network: the guest will share $NIC with you (your machine keeps its own address)"
-	sh "$PREFIX/net-up.sh"
-else
-# Say it, so the mode is undocumented rather than silent: someone reaches this branch by typing
-# BRIARD_NET_MODE=bridge, and what they typed is a diagnostic/rig shape, not the shipped one.
-say "network: bridge mode -- the Windows-shape clone, for tests and for watching the wire."
-say "network: not the shipped Linux substrate and not proven as an HA pair; use macvtap to install."
-# THE SUBSTRATE FORK's other half ([V3b.26c]) -- the Linux clone of the Windows shape. ONE tap, so
-# the guest gets ONE kernel NIC (eth1) and MAKES its service identity: a macvlan child named eth2
-# carrying the flock MAC, which the agent delivers over the channel. No third tap, so no eth3.
-SERVICE_TAP_ENV=""
-WITNESS_TAP_ENV=""
-WITNESS_CIDR_ENV=""
-VIP_PARENT_ENV="eth1"   # the NIC the guest builds eth2 on top of
-# The host is genuinely on the system subnet here (its address goes on the bridge), so the prefix
-# is the subnet's rather than the macvtap /32 -- see SYSTEM_HOST_IP in step 4b. Set BEFORE net-up.sh
-# is written, because the heredoc bakes this value.
-SYSTEM_HOST_CIDR="$SYSTEM_HOST_IP/24"
-# Enslaving the host's primary NIC to the bridge briefly moves its L3 identity; on a
-# remote-adopted box that can cut the very SSH session running this script. So the move
-# is one netlink batch (minimal window) AND armed with a self-cancelling watchdog that
-# reverts if we can't confirm we kept our footing (do it atomically, guard it). On reboot the same net-up runs from a oneshot unit -- no SSH to guard.
-# Where does the host's L3 identity live right now? On a FRESH install it's on the physical NIC.
-# On a REINSTALL (the cattle-reset gesture: `rm -rf /opt/briard` + re-run, assertion d / B.22b) the
-# bridge already exists and carries it -- a prior install enslaved the NIC and moved addr+route onto
-# the bridge; removing /opt drops the cattle but NOT the live bridge (kernel state) or the pet
-# /var/lib. So read the snapshot from wherever the identity is now: the bridge if it's already up
-# with a physical port, else the NIC directly. Reading an already-bridged host from the NIC would
-# snapshot an empty addr and regenerate a net-up that can't restore it.
-SRC=""
-if ip link show "$BRIDGE" >/dev/null 2>&1 &&
-	ports="$(ls "/sys/class/net/$BRIDGE/brif" 2>/dev/null | grep -vxE "$TAP|$DRBD_TAP")" && [ -n "$ports" ]; then
-	SRC="$BRIDGE"
-	[ -n "$NIC" ] || NIC="$(printf '%s\n' "$ports" | head -n1)"
-	say "reinstall: reusing the network setup already on $NIC"
-else
-	[ -n "$NIC" ] || NIC="$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')"
-	SRC="$NIC"
-fi
-[ -n "$NIC" ] || die "no host NIC given and no default route to infer one (set BRIARD_NIC)"
-ip link show "$NIC" >/dev/null 2>&1 || die "host NIC $NIC not found"
-
-# Snapshot the current IPv4 (addr/prefix) + default gateway from SRC (the NIC on a fresh install,
-# the bridge on a reinstall) so net-up can carry them onto the bridge and net-revert can restore them.
-ADDR="$(ip -o -4 addr show dev "$SRC" scope global 2>/dev/null | awk '{print $4; exit}')"
-# Capture the default gateway ONLY if it currently routes over SRC -- on a single-NIC home box it
-# does (and must live on the bridge); on a multi-NIC box the default may live on another NIC, which
-# we must NOT disturb.
-GW="$(ip -o -4 route show default 2>/dev/null | awk -v n="$SRC" 'index($0, "dev " n){print $3; exit}')"
-
-# net-up: idempotent, guardless -- the reboot path. Baked with this host's values.
-cat > "$PREFIX/net-up.sh" <<EOF
-#!/bin/sh
-set -eu
-# Run under systemd (briard-net.service), whose default PATH is minimal -- pin one that finds ip
-# on a stock host (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin).
-export PATH="/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin"
-# Already bridged? (idempotent on reboot / re-run.)
-if ! { ip link show $BRIDGE >/dev/null 2>&1 && [ "\$(ip -o -4 addr show dev $BRIDGE scope global | awk '{print \$4; exit}')" = "$ADDR" ]; }; then
-	ip link add name $BRIDGE type bridge 2>/dev/null || true
-	ip link set $NIC master $BRIDGE
-	# Pin the bridge MAC to the enslaved NIC's own MAC (a fresh bridge otherwise keeps a random
-	# MAC): keeps the host's L2 identity stable across the enslave, so peers' ARP caches for our
-	# address stay valid and frames still egress from the MAC the NIC was assigned.
-	ip link set $BRIDGE address \$(cat /sys/class/net/$NIC/address)
-	ip addr flush dev $NIC scope global 2>/dev/null || true
-	[ -n "$ADDR" ] && ip addr replace $ADDR dev $BRIDGE || true
-	ip link set $NIC up
-	ip link set $BRIDGE up
-	[ -n "$GW" ] && ip route replace default via $GW dev $BRIDGE || true
-fi
-# THE GUEST'S ONE TAP ON THE BRIDGE -- the system NIC (eth1), carrying this node's system MAC.
+# ---- 5. networking -----------------------------------------------------------------
+# THERE IS NOTHING HERE ANY MORE, and that is [B.150](c)+(d).
 #
-# ONE, not two, since [V3b.26c]. This substrate is the Linux clone of the Windows shape, and
-# Windows admits exactly one tap per qemu process ([V3b.1a]: the file-static tap_overlapped), so a
-# second tap is not expressible there. The service identity -- the flock-scoped MAC the VIP rides,
-# which failover MOVES -- is therefore made INSIDE the guest, as a macvlan child of this NIC named
-# eth2. Two identities behind one switch port, which is a different ARP geometry than two taps and
-# the reason [B.101]'s strong-host discipline is worth re-reading here.
-if ! ip link show $DRBD_TAP >/dev/null 2>&1; then
-	ip tuntap add $DRBD_TAP mode tap
-	ip link set $DRBD_TAP master $BRIDGE
-	ip link set $DRBD_TAP up
-fi
-# THE HOST'S OWN ADDRESS ON THE SYSTEM SUBNET, on the bridge -- and NO private host<->guest link.
+# This step used to build the guest's L2 and write `net-up.sh` to rebuild it at every boot: a
+# generated script with this host's NIC, device names, addresses and gateway baked into a heredoc,
+# run by `briard-net.service`, which the agent unit `Requires=`d. Every decision in it was frozen
+# at install time where no release could reach it, and the bugs that live in a file like that are
+# the ones that surface off-box days later (ALLMULTI's expiring mDNS cache; [B.106]'s accept_ra).
+# The agent converges it now, on its ordinary status tick, out of a binary that self-updates.
 #
-# There is no eth3 in this mode ([V3b.26a] settled it as option (iii)): a bridged tap already puts
-# host and guest on ONE L2, so the host reaches its guest natively and the private link would be a
-# second tap Windows cannot give us anyway. Everything the link carried moves here -- the deadman's
-# reboot gate and the host's path to the VIP are both plain on-link now, so the agent installs no
-# /32 and no permanent neighbour (it sees no WITNESS_TAP and does nothing, by construction).
+# The bridge half is GONE rather than moved, and that is the other half of the cut: we never
+# CREATE a bridge. Enslaving the host's own NIC meant taking a device away from NetworkManager,
+# moving the host's address and default route onto a bridge of ours, and arming a self-cancelling
+# watchdog to undo all of it if doing so cut the operator's own SSH session -- ninety lines whose
+# entire job was surviving a gesture we had no business making. If the device this host selects IS
+# a bridge, the agent adds one port to it; otherwise it macvtaps. The user owns the bridge either
+# way, exactly as they do on the Windows shape this clones ([V3b.26c]). `BRIARD_NET_MODE` went
+# with it: the substrate is DERIVED from the device, not chosen by a knob.
 #
-# A /24 rather than the macvtap /32: here the claim is TRUE. The host is on this segment, and it
-# needs the on-link route to reach the guest's node IP at all.
-[ -n "$SYSTEM_HOST_CIDR" ] && ip addr replace $SYSTEM_HOST_CIDR dev $BRIDGE || true
-EOF
-chmod +x "$PREFIX/net-up.sh"
-
-net_revert() {
-	say "net guard: reverting bridge (kept the host on $NIC)"
-	# $TAP is named here as well as $DRBD_TAP even though this mode now creates only the latter
-	# ([V3b.26c]): a box installed BEFORE the conversion has a second tap enslaved to this bridge,
-	# and a revert that leaves it behind strands a port on a bridge it is about to delete.
-	for t in "$TAP" "$DRBD_TAP"; do
-		ip link set "$t" nomaster 2>/dev/null || true
-		ip link del "$t" 2>/dev/null || true
-	done
-	ip link set "$NIC" nomaster 2>/dev/null || true
-	ip addr flush dev "$BRIDGE" scope global 2>/dev/null || true
-	ip link del "$BRIDGE" 2>/dev/null || true
-	[ -n "$ADDR" ] && ip addr replace "$ADDR" dev "$NIC" 2>/dev/null || true
-	[ -n "$GW" ] && ip route replace default via "$GW" dev "$NIC" 2>/dev/null || true
-}
-
-confirm_net() {
-	# We kept our footing iff the bridge carries our address and (if we have a peer or gateway)
-	# it is still reachable. The caller settles first: an ARP fired the instant the port comes up
-	# fails and parks the neighbor in FAILED, and rapid retries then reuse that dead entry instead
-	# of re-soliciting. So flush any stale neighbor and space the probes by a second so each is a
-	# fresh solicitation.
-	ip -o -4 addr show dev "$BRIDGE" scope global 2>/dev/null | grep -qw "${ADDR%%/*}" || return 1
-	target="${NET_PEER:-$GW}"
-	[ -z "$target" ] && return 0
-	ip neigh flush dev "$BRIDGE" 2>/dev/null || true
-	i=0
-	while [ "$i" -lt 6 ]; do
-		ping -c1 -W2 "$target" >/dev/null 2>&1 && return 0
-		i=$((i + 1))
-		sleep 1
-	done
-	return 1
-}
-
-say "bridging $NIC -> $BRIDGE (guard: auto-revert in ${NET_GUARD_SECS}s if this stalls)"
-rm -f "$RUNDIR/net-ok"
-# Watchdog: a pure backstop for the case where this script is KILLED between enslaving the NIC and
-# confirming (e.g. the operator's SSH dies mid-run) -- it reverts so the box isn't stranded off the
-# net. The normal success/failure paths below signal or cancel it explicitly, so it never fires
-# during an install that runs to completion. The subshell inherits net_revert + the vars.
-( sleep "$NET_GUARD_SECS"; [ -e "$RUNDIR/net-ok" ] || net_revert ) &
-guard=$!
-sh "$PREFIX/net-up.sh"
-# Let the bridge port + the NIC's L2 settle before probing (see confirm_net): a probe fired the
-# instant the port comes up parks the neighbor in FAILED and poisons the retries.
-sleep 3
-if confirm_net; then
-	: > "$RUNDIR/net-ok"
-	kill "$guard" 2>/dev/null || true
-	say "bridge up, host connectivity confirmed"
-else
-	net_revert # a genuine loss -- revert now (don't wait out the backstop) and bail
-	: > "$RUNDIR/net-ok"
-	kill "$guard" 2>/dev/null || true
-	die "lost host connectivity after bridging; reverted to $NIC"
-fi
-fi
+# One thing still has to be true here, and it is checked rather than assumed: the fd-passing launch
+# wrapper must be staged. Without it the agent cannot attach a macvtap to qemu, and that failure
+# belongs at the install rather than at the first guest launch.
+[ -n "$NET_WRAP" ] || die "the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC"
 
 # ---- 6. disks: the pet data volume + the (cattle) guest overlay ---------------------
 # data.img is the single-node DRBD backing -- pet, created once, preserved across a
@@ -854,22 +642,16 @@ if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
 fi
 say "VM disk created"
 
-# ---- 7. the units: net (reboot re-create) + the agent ------------------------------
+# ---- 7. the units: the agent ------------------------------------------------------
 say "writing systemd units to $UNIT_DIR"
 mkdir -p "$UNIT_DIR"
-cat > "$UNIT_DIR/briard-net.service" <<EOF
-[Unit]
-Description=briard host networking (bridge + service tap)
-After=network-pre.target
-Wants=network-pre.target
-Before=briard-agent.service
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=$PREFIX/net-up.sh
-[Install]
-WantedBy=multi-user.target
-EOF
+# briard-net.service is GONE ([B.150](d)), and so is the `Requires=` that made it the agent's
+# start dependency. A `Type=oneshot` unit structurally cannot do the adaptation the network needs
+# -- a macvtap cannot be re-parented, so changing parents means relaunching the guest, which only
+# the thing that runs the guest can sequence -- and the ordering it carried (`After=
+# network-pre.target`) was explicitly BEFORE the network was configured, which is the one moment
+# the device we want to select does not exist yet. The agent polls for the condition it actually
+# needs instead, so the unit below ends with no [Unit] dependencies at all.
 
 # The console capture, and the one thing it needs that qemu will not do: a bound.
 #
@@ -882,7 +664,7 @@ EOF
 #
 # A script on disk rather than an inline `ExecStartPre=/bin/sh -c ...`: systemd expands `$f` in a
 # unit line as one of ITS environment variables, so every shell variable would need `$$` and every
-# quote would have to survive both parsers. Same pattern as net-up.sh, and it can be read and run
+# quote would have to survive both parsers. It can be read and run
 # by a human debugging the thing at 2am.
 CONSOLE_CONF=""
 CONSOLE_PRE=""
@@ -921,13 +703,12 @@ EOF
 	CONSOLE_PRE="ExecStartPre=$PREFIX/console-rotate.sh"
 fi
 
-# In macvtap mode the agent renders the guest launch behind the fd-passing wrapper;
-# in bridge mode neither var is set and the agent opens taps by name (the default).
-NET_CONF=""
-if [ "$NET_MODE" = macvtap ]; then
-	NET_CONF="NET_MODE=macvtap
-NET_WRAP_BIN=$NET_WRAP"
-fi
+# The fd-passing launch wrapper, which the agent renders the guest launch behind under macvtap.
+# NET_MODE is NOT written: the agent derives it from the device ([B.150](c)), and writing it here
+# would be install-time frozen and free to disagree with what the machine turns out to be. The
+# wrapper's PATH is written unconditionally because it is a path, not a decision -- it costs
+# nothing on a node that turns out to be on a bridge and does not use it.
+NET_CONF="NET_WRAP_BIN=$NET_WRAP"
 # The release keyring is the agent's trust root for BOTH signed host-agent self-updates and the
 # signed service catalog (`briard service install` verifies a manifest against it). Both fail
 # CLOSED without it -- self-update simply switches itself off, silently -- so a node installed
@@ -1023,7 +804,7 @@ chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
 # changes -- a NIC is replaced, a cable moves to a different segment -- and a decision the agent
 # can revisit has to live somewhere the agent can rewrite. That is this file.
 #
-# Written like the two scripts beside it (net-up.sh, console-rotate.sh): plain, readable, and
+# Written like console-rotate.sh beside it: plain, readable, and
 # greppable by a human debugging the thing at 2am. 0600 because it is root's business alone.
 cat > "$PREFIX/config.env" <<EOF
 # briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
@@ -1054,21 +835,32 @@ SYSTEM_TAP=$DRBD_TAP
 SYSTEM_DEV=eth1
 SYSTEM_CIDR=$SYSTEM_CIDR
 SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
-WITNESS_CIDR=$WITNESS_CIDR_ENV
+WITNESS_CIDR=$PRIV_GUEST_CIDR
 POD_SUBNET=$POD_SUBNET
-# SERVICE_TAP and WITNESS_TAP are EMPTY under bridge mode, and that is the substrate fork
-# ([V3b.26c]) reaching the agent. Empty reads exactly as unset everywhere downstream: qemu renders
-# no second or third NIC, the node route and the VIP route both no-op on an absent WITNESS_TAP, and
-# the host-side service-MAC pin has nowhere to go -- which is correct, because in that mode the MAC
-# is the guest's to hold. VIP_PARENT is the other side of the same coin: it names the NIC the guest
-# builds VIP_DEV on when nothing on the host built it.
-SERVICE_TAP=$SERVICE_TAP_ENV
-VIP_PARENT=$VIP_PARENT_ENV
+# ⚠️ THIS FILE CARRIES THE MACVTAP SHAPE, AND THE AGENT NARROWS IT ([B.150](c)). The substrate
+# fork ([V3b.26c]) used to be decided here, by BRIARD_NET_MODE, and delivered as these values
+# being empty or set. It is now the answer to "is the device the guest's L2 hangs off a bridge",
+# which only the agent can ask -- so what is written here is the shape every Linux node ships in,
+# and \`applySubstrate\` blanks SERVICE_TAP / WITNESS_TAP / WITNESS_CIDR and sets VIP_PARENT on the
+# node that turns out to be on a bridge.
+#
+# Empty still reads exactly as unset everywhere downstream: qemu renders no second or third NIC,
+# the node route and the VIP route both no-op on an absent WITNESS_TAP, and the host-side
+# service-MAC pin has nowhere to go -- correct, because on that substrate the MAC is the guest's
+# to hold. VIP_PARENT is the other side of the same coin: it names the NIC the guest builds
+# VIP_DEV on when nothing on the host built it.
+SERVICE_TAP=$TAP
 # WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
 # every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot
 # gate over it, and that guard matters MOST on the single node this env never used to reach. The
 # name is historical -- the cloud-witness forwarder was its first user, not its only one.
-WITNESS_TAP=$WITNESS_TAP_ENV
+WITNESS_TAP=$PRIV_TAP
+# The HOST's end of that link. It reached the agent only when the agent took the network over
+# ([B.150](d)) -- before that it was baked into net-up.sh and existed nowhere else.
+PRIV_HOST_CIDR=$PRIV_HOST_CIDR
+# The device the guest's L2 hangs off, when the operator named one. Empty is every ordinary
+# install: the agent selects the device holding the default route, and re-asks at every start.
+BRIARD_NIC=$NIC
 VIP_DEV=eth2
 VIP_ADDR=$VIP
 FLOCK_ID=$FLOCK_ID
@@ -1108,8 +900,13 @@ Description=briard host agent (single node)
 # a burst of rapid start failures, so it can trip systemd's start limiter and leave the node
 # down for the one reason self-update exists to avoid.
 StartLimitIntervalSec=0
-After=briard-net.service
-Requires=briard-net.service
+# ⚠️ NO ORDERING AND NO DEPENDENCIES, deliberately ([B.150](d)). Not \`Requires=briard-net.service\`,
+# which is what used to be here: a failed network unit meant the agent never started, so a cable
+# out at boot took the node fully dark -- nothing left running to report, retry, or answer the
+# admin door. And not \`network-online.target\` either: NetworkManager's notion of "online" is a
+# poor approximation of "I have a default route", and NetworkManager-wait-online adds up to 90s to
+# every boot. The agent polls for the condition it actually needs, which replaces the ordering
+# rather than joining it.
 [Service]
 # WHAT IS LEFT HERE IS THE EXECUTION ENVIRONMENT, NOT CONFIGURATION ([B.150](a)). Every value the
 # agent decides anything from lives in config.env above; these three cannot, and each for its own
@@ -1282,14 +1079,23 @@ if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload
 	if [ "$UNIT_DIR" = /etc/systemd/system ]; then
 		# Persistent install: enable (survive reboot) + start now.
-		say "enabling briard-net + briard-agent (+ the daily update timer)"
-		systemctl enable --now briard-net.service briard-agent.service
+		say "enabling briard-agent (+ the daily update timer)"
+		systemctl enable --now briard-agent.service
 		systemctl enable --now briard-update.timer
 	else
 		# Units in a non-persistent dir (e.g. /run) can't be enabled; just start them.
-		say "starting briard-net + briard-agent (+ the daily update timer)"
-		systemctl start briard-net.service briard-agent.service briard-update.timer
+		say "starting briard-agent (+ the daily update timer)"
+		systemctl start briard-agent.service briard-update.timer
 	fi
+	# A REINSTALL OVER A NODE THAT PREDATES [B.150](d) still has the old network unit, enabled and
+	# ordered Before= the agent. Left behind it would re-run a net-up.sh this install no longer
+	# writes, fail, and -- because the agent no longer Requires= it -- do so invisibly, leaving a
+	# failed unit on an otherwise healthy node forever. Take it out with its script.
+	if systemctl list-unit-files briard-net.service >/dev/null 2>&1; then
+		systemctl disable --now briard-net.service 2>/dev/null || true
+	fi
+	rm -f "$UNIT_DIR/briard-net.service" "$PREFIX/net-up.sh"
+	systemctl daemon-reload
 	# Lead with the NAME and keep the address as the fallback. The name is the one that stays true
 	# if the address ever moves, and the address is the one that still works if a client's mDNS
 	# does not (Android is the usual offender). Naming both costs a line and removes a support

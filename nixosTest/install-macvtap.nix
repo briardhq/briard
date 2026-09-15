@@ -331,7 +331,7 @@ pkgs.testers.runNixOSTest {
     host.fail("curl -sf http://127.0.0.1:8099/guest/stable/nixos.qcow2.zst -o /dev/null")
 
     host.fail(
-        "${channelEnv} BRIARD_NET_MODE=macvtap BRIARD_NIC=nope999 sh ${installScript}"
+        "${channelEnv} BRIARD_NIC=nope999 sh ${installScript}"
     )
     host.fail("ip link show briard0")       # nothing half-built
     host.fail("ip link show briard-drbd0")
@@ -349,7 +349,7 @@ pkgs.testers.runNixOSTest {
     # no taps, and the install's own message names the device, the reason and the way out.
     host.succeed("ip tuntap add briard-vpn0 mode tun && ip link set briard-vpn0 up")
     out = host.fail(
-        "${channelEnv} BRIARD_NET_MODE=macvtap BRIARD_NIC=briard-vpn0 sh ${installScript} 2>&1"
+        "${channelEnv} BRIARD_NIC=briard-vpn0 sh ${installScript} 2>&1"
     )
     for want in ("briard-vpn0", "macvtap could not be created", "BRIARD_NIC="):
         assert want in out, f"the refusal is the whole safety margin and it is missing {want!r}: {out}"
@@ -362,7 +362,7 @@ pkgs.testers.runNixOSTest {
     # BRIARD_UNIT_DIR=/run/systemd/system: NixOS's /etc/systemd/system is a read-only store
     # symlink (a stock host's is writable), so the hermetic test drops the units in /run.
     install_out = host.succeed(
-        "${channelEnv} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
+        "${channelEnv} BRIARD_NIC=eth1 "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     # THE INSTALLER ENDS WITH THE LINK ([V3b.31h]): it waited for the agent's own healthy line
@@ -849,25 +849,25 @@ pkgs.testers.runNixOSTest {
     # reinstall's guest must find and keep rather than format again.
     assert host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip() == "53ef", "the state disk carries no ext4 filesystem after the first install"
     state_uuid = host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
-    # The live macvtaps (kernel state) survive the cattle wipe just as the bridge did on the old
-    # path -- net-up.sh is gone, but `ip link` state is not owned by /opt. And the host's own
-    # address never moved in the first place, so there is nothing to restore.
+    # The live macvtaps (kernel state) survive the cattle wipe: `ip link` state is not owned by
+    # /opt. And the host's own address never moved in the first place, so there is nothing to
+    # restore.
     host.succeed("ip -d link show briard0 | grep -q macvtap")
     host.succeed("ip -o -4 addr show dev eth1 | grep -qw 192.168.1.1")
     # Non-vacuity for the re-green proof below: with the guest gone the VIP no longer answers.
     client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
     # [B.106] arm the repair path: an install predating the fix left its macvtaps autoconfiguring,
-    # and net-up.sh adopts devices that already exist rather than re-creating them. Put one back the
-    # way such a host would have it -- the reinstall below must flush it, which is the whole reason
-    # the write sits outside net-up.sh's create branch.
+    # and convergence ADOPTS devices that already exist rather than re-creating them. Put one back
+    # the way such a host would have it -- the agent must flush it, which is the whole reason the
+    # write sits outside the create branch (agent/nic/converge.go, ensureMacvtap).
     host.succeed("echo 0 > /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
     host.wait_until_succeeds("ip -6 addr show dev briard0 | grep -q inet6", timeout=30)
 
     # Reinstall: the SAME one command. It re-lays /opt from staging, recreates a FRESH guest overlay
-    # (cattle), and does NOT recreate the pet data.img. net-up.sh is idempotent, so it adopts the
-    # macvtaps that are already up rather than re-creating them.
+    # (cattle), and does NOT recreate the pet data.img. Convergence is idempotent, so the agent
+    # adopts the macvtaps that are already up rather than re-creating them.
     host.succeed(
-        "${channelEnv} BRIARD_NIC=eth1 BRIARD_NET_MODE=macvtap "
+        "${channelEnv} BRIARD_NIC=eth1 "
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched
@@ -1063,6 +1063,31 @@ pkgs.testers.runNixOSTest {
     # would be a cross-filesystem rename at best and a no-op at worst. It is a VALUE, so since
     # [B.150](a) it is in config.env rather than on the unit.
     host.succeed("grep -q '^UPDATE_BASE=/opt/briard/agent$' /opt/briard/config.env")
+
+    # ---- THE NETWORK IS THE AGENT'S ([B.150](c)+(d)) ------------------------------------------
+    # No generated script, no oneshot unit, and -- the part that took the node dark when it
+    # failed -- no [Unit] dependency on one. A cable out at boot must leave an agent RUNNING and
+    # answerable, not a unit that never started.
+    host.fail("test -e /opt/briard/net-up.sh")
+    host.fail("systemctl cat briard-net.service")
+    # Directives only -- `unit` is the raw file, and its comments discuss the dependencies it
+    # deliberately does NOT have.
+    directives = [l for l in unit.splitlines() if l and not l.startswith(("#", ";"))]
+    deps = [l for l in directives if l.startswith(("Requires=", "After=", "Wants=", "BindsTo=", "PartOf="))]
+    assert not deps, f"the agent unit grew a start dependency {deps} -- a network failure can take the node dark again"
+    # ...and the agent says which device it hung the guest's L2 off, which is the line an operator
+    # reads when the answer surprises them.
+    host.succeed("journalctl -u briard-agent | grep -q \"the guest's L2 hangs off eth1\"")
+    # The devices the agent built, with the two flags that are not kernel defaults. ALLMULTI is
+    # the one with teeth: without it the guest still ANNOUNCES its name and answers unicast, so
+    # every client caches the record and the household name resolves -- until that record expires.
+    # An install therefore looks correct at the moment it finishes and only fails later, off-box,
+    # which is why it is asserted here rather than trusted.
+    for tap in ("briard0", "briard-drbd0"):
+        host.succeed(f"ip -d link show {tap} | grep -q macvtap")
+        host.succeed(f"ip link show {tap} | grep -q ALLMULTI")
+        host.succeed(f"test $(cat /proc/sys/net/ipv6/conf/{tap}/disable_ipv6) = 1")
+    host.succeed("ip -d link show briard-priv0 | grep -q tun")
 
     # ---- THE UNIT CARRIES NO DECISIONS ([B.150](a)) -------------------------------------------
     # The whole point of the config file: a unit written at install time is frozen where no

@@ -174,7 +174,7 @@ func runInternal(args []string) {
 	if *reportCard {
 		ctx, cancel := context.WithTimeout(context.Background(), cardTimeout)
 		defer cancel()
-		if !reportcard.Run(ctx, os.Stdout, os.Getenv("NET_MODE") == "macvtap") {
+		if !reportcard.Run(ctx, os.Stdout) {
 			os.Exit(1)
 		}
 		return

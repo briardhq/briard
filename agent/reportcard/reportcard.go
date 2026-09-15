@@ -381,11 +381,13 @@ func prefixOf(cidr string) string {
 	return "24"
 }
 
-// MacvtapAdvisories returns the macvtap-substrate caveat checks, layered onto the
-// core card only when the install chooses NET_MODE=macvtap. They are advisory (WARN/PASS) and
-// NEVER Refuse: the evaluation established macvtap is never *worse* than the bridge substrate
-// on any of these axes, so a macvtap caveat can steer but must not block a box the bridge path
-// would admit. Pure -- unit-tested against fabricated facts.
+// MacvtapAdvisories returns the macvtap-substrate caveat checks, layered onto the core card only
+// when this host's selected device is one the guest will be macvtapped onto -- which since
+// [B.150](c) is a question about the DEVICE (a bridge gets a port instead) rather than a mode the
+// install was told. They are advisory (WARN/PASS) and NEVER Refuse: the evaluation established
+// macvtap is never *worse* than the bridge substrate on any of these axes, so a macvtap caveat
+// can steer but must not block a box the bridge path would admit. Pure -- unit-tested against
+// fabricated facts.
 func MacvtapAdvisories(f HostFacts) []Check {
 	var cs []Check
 	// USB-NIC unicast-filter exhaustion. A cheap USB NIC (RTL8153-class) can't hold the two
@@ -423,13 +425,16 @@ func Print(w io.Writer, r Report) {
 }
 
 // Run gathers the real host's facts, assesses them, prints the card to w, and returns whether the
-// host is admitted -- the one call the installer / `briard-agent --report-card` makes. When macvtap
-// is set (NET_MODE=macvtap), the macvtap advisories are appended; they are WARN/PASS only, so
-// they never change the admission verdict.
-func Run(ctx context.Context, w io.Writer, macvtap bool) bool {
+// host is admitted -- the one call the installer / `briard-agent --report-card` makes.
+//
+// It no longer takes the substrate as an argument ([B.150](c)). It was NET_MODE, passed in by
+// install.sh, which meant the card could be told a substrate the machine would not end up on; the
+// substrate is now the answer to "is the selected device a bridge", and the card has the
+// selection, so it derives the same answer the agent will.
+func Run(ctx context.Context, w io.Writer) bool {
 	f := Gather(ctx)
 	r := Assess(f)
-	if macvtap {
+	if !f.NIC.Bridge {
 		r.Checks = append(r.Checks, MacvtapAdvisories(f)...)
 	}
 	Print(w, r)
