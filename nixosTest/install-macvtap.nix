@@ -119,13 +119,13 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
-        # A DEFAULT ROUTE, via the router node that already serves this LAN's DHCP. It is what a
-        # real household host has, and without it this rig could not exercise the shipped path at
-        # all: since [B.150](b) the agent SELECTS the device holding the main table's default
-        # route, so a host with none forces every install here to pin BRIARD_NIC and the selection
-        # is never tested. It is also what gives the LAN fingerprint a gateway MAC ([B.150](e)) --
-        # the strong signal the re-parent tiers are paced by, and with no gateway there is none.
-        networking.defaultGateway = { address = "192.168.1.3"; interface = "eth1"; };
+        # ⚠️ THE DEFAULT ROUTE THIS RIG NEEDS IS ADDED BY THE TEST SCRIPT, not declared here.
+        # `networking.defaultGateway` looked right and did nothing: on these VMs no
+        # `network-setup.service` line reaches the boot log at all, so the route never lands -- and
+        # the only symptom is the report card refusing with "no default route" a hundred lines
+        # later, which reads as a product bug. An `ip route add` in the script is visible, asserts
+        # itself, and cannot fail quietly. See the route at the top of testScript for WHY the rig
+        # needs one at all.
         # IPv6 OFF on the install host, permanently and on purpose ([V3b.26b]). A stranger may have
         # disabled v6 before installing -- it is their machine and their setting -- and DESIGN §4.3
         # puts our addressing on v4 INDEFINITELY, so nothing we ship may quietly need v6 to work.
@@ -278,6 +278,21 @@ pkgs.testers.runNixOSTest {
     router.wait_for_unit("dnsmasq.service")
     host.succeed("ls -l /dev/kvm")
     client.wait_until_succeeds("ping -c1 -W2 192.168.1.1", timeout=30)
+
+    # A DEFAULT ROUTE ON THE INSTALL HOST, via the router node that already serves this LAN's DHCP
+    # -- what a real household host has, and what this rig lacked.
+    #
+    # It is a PRECONDITION rather than scenery, twice over. Since [B.150](b) the agent SELECTS the
+    # device holding the main table's default route, so a host with none forces every install here
+    # to pin BRIARD_NIC and the shipped selection is never exercised at all. And the LAN
+    # fingerprint's GATEWAY MAC comes from it ([B.150](e)) -- the strong signal the re-parent tiers
+    # are paced by; with no gateway there is none, and the re-parent block below could never reach
+    # the same-wire tier it is written to test.
+    #
+    # Asserted immediately, because a route that failed to land shows up a hundred lines later as
+    # the report card refusing, which reads as a product bug rather than a rig one.
+    host.succeed("ip route replace default via 192.168.1.3 dev eth1")
+    host.succeed("ip -o -4 route show default | grep -qw eth1")
 
     # The guest console. The host cannot reach the guest over macvtap, so this is the only witness to
     # anything that happens inside it -- which is why THE INSTALLER now wires it, and why this test
