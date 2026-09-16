@@ -126,5 +126,28 @@ pkgs.testers.runNixOSTest {
         secondary.fail(f"systemctl is-active {unit}")
     secondary.fail("systemctl is-active briard-vip.service")
     secondary.fail("ip -4 addr show dev eth1 | grep -q 192.168.1.100")
+
+    # ---- A STALE avahi PID FILE IS SURVIVABLE ([B.151]) ---------------------------------------
+    #
+    # The nightly that found this did not reproduce on the next run -- a transient avahi at boot is
+    # a race -- so without this the fix would be argued rather than demonstrated, which is the one
+    # thing a verification assertion exists to prevent ([[verification-assertions-must-fail]]).
+    #
+    # The planted file is the real shape: /run/avahi-daemon is ROOT-owned, and avahi writes its pid
+    # only after dropping to the `avahi` user -- so a file left by a previous instance is one it has
+    # no privilege to unlink (unlink needs write on the DIRECTORY, not the file; measured). Its own
+    # recovery path says "trying to remove PID file" and then dies on `File exists`.
+    #
+    # Driven on the SECONDARY on purpose: avahi is Required by briard-mdns, which is a promoter
+    # chain member on the node that promoted -- bouncing it there would restart the chain this test
+    # has just finished asserting about.
+    secondary.succeed("systemctl stop avahi-daemon.service")
+    secondary.succeed("mkdir -p /run/avahi-daemon && echo 999999 > /run/avahi-daemon/pid")
+    secondary.succeed("systemctl start avahi-daemon.service")
+    secondary.succeed("systemctl is-active avahi-daemon.service")
+    # ...and it is really THIS instance's pid now, not the corpse we planted -- proof the file was
+    # replaced rather than the daemon having limped along beside it.
+    planted = secondary.succeed("cat /run/avahi-daemon/pid").strip()
+    assert planted != "999999", "avahi started but left the stale pid file in place"
   '';
 }
