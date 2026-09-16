@@ -1941,6 +1941,29 @@ in
       publish.hinfo = false; # no CPU/OS disclosure on a household LAN
       nssmdns4 = false; # nothing in the guest resolves .local names; it only answers
     };
+
+    # ⚠️ A STALE PID FILE MUST NOT COST THIS NODE ITS PROMOTION ([B.151]).
+    #
+    # avahi writes /run/avahi-daemon/pid AFTER dropping to the `avahi` user, but the directory is
+    # root-owned, so a pid file left behind by a previous instance is one the next instance CANNOT
+    # remove. Its own recovery path tries and fails, and the start dies:
+    #
+    #   avahi-daemon[923]: Process 424 died: No such process; trying to remove PID file.
+    #   avahi-daemon[923]: open(/run/avahi-daemon//pid): File exists
+    #   avahi-daemon[923]: Failed to create PID file: File exists
+    #
+    # That is not a naming inconvenience. briard-mdns REQUIRES avahi-daemon and the publishers are
+    # promoter-chain members ([B.125]), so a failed avahi fails the ordered chain, the promotion
+    # fails, and the node hands the resource on. Measured on the 2026-09-16 nightly, where node1
+    # promoted, died here, and handed off to node2 -- ON A LONE NODE THERE IS NOWHERE TO HAND TO,
+    # and the household simply has no front door.
+    #
+    # Removed as ROOT in ExecStartPre, because root is precisely the privilege avahi has already
+    # given up by the time it meets the problem. `-` so a missing file is not a failure; and
+    # systemd never runs ExecStartPre while the unit is active, so this cannot unlink a LIVE pid.
+    systemd.services.avahi-daemon.serviceConfig.ExecStartPre = [
+      "-${pkgs.coreutils}/bin/rm -f /run/avahi-daemon/pid"
+    ];
   }
 
   # THE LONE NODE'S TARGET ([B.145c]): the promoter chain with no promoter. A home with one
