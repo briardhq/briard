@@ -1969,6 +1969,24 @@ in
     systemd.services.avahi-daemon.serviceConfig.ExecStartPre = [
       "+-${pkgs.coreutils}/bin/rm -f /run/avahi-daemon/pid"
     ];
+
+    # ...AND A DEAD AVAHI COMES BACK BY ITSELF ([B.151]). Upstream's unit sets no `Restart=`, so
+    # any death is permanent until something starts it again -- and since briard-mdns REQUIRES it
+    # and the publishers are chain members ([B.125]), permanent means this node cannot promote.
+    #
+    # It really does die transiently. On the 2026-09-16 nightly avahi exited between
+    # `avahi-daemon 0.8 starting up` and its NSS-support check, in the exact window where
+    # nscd/nsncd was being stopped and restarted underneath it by the early-boot resolvconf churn
+    # -- the run that passed got through the same check moments before the same churn. Clearing
+    # the stale pid above makes the NEXT start able to succeed; this is what makes a next start
+    # happen at all.
+    #
+    # ⚠️ IT DOES NOT RESCUE THE PROMOTION THAT WAS IN FLIGHT. briard-mdns fails the moment its
+    # dependency does, so the chain fails and the resource moves; what this buys is that the node
+    # is healthy again afterwards rather than needing a reboot. Making the CHAIN retry is a
+    # different decision and belongs to [B.125], not here.
+    systemd.services.avahi-daemon.serviceConfig.Restart = "on-failure";
+    systemd.services.avahi-daemon.serviceConfig.RestartSec = 1;
   }
 
   # THE LONE NODE'S TARGET ([B.145c]): the promoter chain with no promoter. A home with one
