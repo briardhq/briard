@@ -173,6 +173,11 @@ cat $m/tags/all                                          # every test the tier r
 nix build --max-jobs 1 -L $(sed 's|^|.#tests.|' $m/tags/drbd)   # the whole failover net
 ```
 
+A test result is never fetched from a binary cache: it is a claim about the machine that ran it,
+so the derivations set `allowSubstitutes = false` and every green you see was produced on your own
+hardware. The flip side is that a host without KVM fails to build these rather than quietly
+handing you someone else's verdict.
+
 `--max-jobs 1` is the conservative setting: one test at a time, whatever the machine. Raise it
 only if you know your box can hold that many guests at once — `$m/tests.tsv` carries each test's
 node count and declared memory, which is what the arithmetic needs.

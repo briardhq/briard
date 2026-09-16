@@ -73,9 +73,16 @@
       lib = nixpkgs.lib;
       # Tags merge member-wise, not attr-wise: `drbd` and `debug` exist on both sides and must
       # gain members rather than be replaced, while `store` appears only on the private side.
-      tags = tests.tags // lib.mapAttrs
+      #
+      # Wrapped in `run-here` at the point the merged set is formed, which matters: `allTests`,
+      # `.#tests.<name>` and `.#test-manifest`'s recorded outPaths all derive from `tags`, so
+      # marking the tests here is what keeps the paths the manifest NAMES identical to the paths a
+      # build produces. Marking a later copy would leave the manifest pointing at derivations
+      # nothing builds -- an invalidation that deletes the wrong paths, which is the exact shape
+      # of stale green the tier exists to refuse.
+      tags = import ./nixosTest/run-here.nix { inherit lib; } (tests.tags // lib.mapAttrs
         (n: g: (tests.tags.${n} or { }) // g)
-        private.tags;
+        private.tags);
       # Every tag but `debug` is a real test group; flatten them into the full set. Derived
       # rather than hand-listed so a tag appearing or vanishing with the private half needs no
       # edit here (it also drops the old union's risk of silently forgetting a new tag).
