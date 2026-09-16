@@ -1523,6 +1523,27 @@ pkgs.testers.runNixOSTest {
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
     print("the shipped node resolves its guest chain: already running the installed release; a release needing a newer host is refused loudly")
 
+    # ---- CONVERGENCE RESTORES DRIFT, IT DOES NOT UNDO AN ACT ([B.150](d)) ---------------------
+    #
+    # A device that is administratively DOWN stays down. This is not a nicety: the fleet's
+    # `fault_partition` severs a node's DRBD link with `ip link set sys-<node> down`, and an agent
+    # that re-ups it within a tick heals the partition before DRBD can notice -- which is exactly
+    # what it did, taking out discipline.sh and fault-scenarios.sh on the 2026-09-16 nightly.
+    #
+    # The distinction the rule turns on: NM flushing our ADDRESS is drift and gets restored; an
+    # `ip link set X down` is somebody's decision. A REAL partition is carrier-down anyway, and a
+    # carrier-down device is still IFF_UP, so this never fought a pulled cable either way.
+    #
+    # briard-drbd0 rather than briard0, because on a lone node DRBD replicates over loopback, so
+    # downing it costs the household nothing while the assertion runs.
+    host.succeed("ip link set briard-drbd0 down")
+    host.sleep(12)  # several status ticks (STATUS_EVERY=5s): long enough for a re-up to happen
+    assert "state DOWN" in host.succeed("ip -o link show briard-drbd0"), (
+        "convergence re-upped a device something deliberately downed -- this silently heals the "
+        "fleet's partition fault and DRBD never sees a peer drop"
+    )
+    host.succeed("ip link set briard-drbd0 up")
+
     # ---- RE-PARENTING: the parent goes away and the guest comes back ([B.150](e)) -------------
     #
     # A RENAME, not a deletion, and that is the STRONGER probe. A macvtap child SURVIVES its

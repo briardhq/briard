@@ -68,14 +68,47 @@ type Spec struct {
 // Addr is one address this host holds for its own guest's benefit.
 type Addr struct{ CIDR, Dev string }
 
+// built reports whether every device this spec names already exists. It is the difference between
+// a pass that BUILDS (first convergence, or the one after a reboot) and a pass that merely
+// re-asserts -- and only the first may touch link state.
+func (s Spec) built() bool {
+	for _, d := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
+		if d != "" && !exists("/sys/class/net/"+d) {
+			return false
+		}
+	}
+	return true
+}
+
+// ⚠️ CONVERGENCE RESTORES WHAT DRIFTS. IT DOES NOT UNDO WHAT SOMEBODY DID.
+//
+// Everything here brings a device UP only on the pass that CREATES it. A device that exists and is
+// administratively down is left alone, and that is a rule rather than an oversight:
+//
+//   - The drift this loop exists for is [B.150](c)'s -- NetworkManager flushing the ADDRESS we put
+//     on a device it manages, when a connection reactivates. That is a value being reconciled away
+//     underneath us. An `ip link set X down` is not drift; it is an act, by an operator or a test.
+//   - A REAL partition is carrier-down, not admin-down, and an admin-up device with no carrier is
+//     still IFF_UP -- so this never fought a cable being pulled, and must not fight the stand-in
+//     for one either.
+//   - It also over-reached what it replaced: `net-up.sh` ran once at boot. Re-asserting link state
+//     every ten seconds was strictly more aggressive than the script whose job this took over, and
+//     the fleet found it -- `fault_partition` downs `sys-<node>`, which IS a node's SYSTEM_TAP, so
+//     the agent healed the partition within a tick and DRBD never saw a peer drop.
+
 // Converge makes the host's side of the guest's L2 match s, and returns the first thing it could
 // not do. It is idempotent by construction and safe to call on every tick.
 func Converge(ctx context.Context, s Spec) error {
 	if s.Parent == "" || s.SystemTap == "" {
 		return fmt.Errorf("nic: incomplete spec (%+v)", s)
 	}
-	if err := ensureUp(ctx, s.Parent); err != nil {
-		return err
+	// The parent is brought up only when we are about to CREATE something on it -- a first
+	// convergence, or one after a reboot took our devices with it. On a pass that finds
+	// everything present there is nothing to build and no reason to touch the host's own NIC.
+	if !s.built() {
+		if err := ensureUp(ctx, s.Parent); err != nil {
+			return err
+		}
 	}
 	if s.Bridge {
 		// ONE PORT ON A BRIDGE WE DID NOT MAKE. Nothing is enslaved, nothing is moved, and the
@@ -87,9 +120,6 @@ func Converge(ctx context.Context, s Spec) error {
 			return err
 		}
 		if err := ensureMaster(ctx, s.SystemTap, s.Parent); err != nil {
-			return err
-		}
-		if err := ensureUp(ctx, s.SystemTap); err != nil {
 			return err
 		}
 	} else {
@@ -109,9 +139,6 @@ func Converge(ctx context.Context, s Spec) error {
 		}
 		if s.PrivTap != "" {
 			if err := ensureTap(ctx, s.PrivTap); err != nil {
-				return err
-			}
-			if err := ensureUp(ctx, s.PrivTap); err != nil {
 				return err
 			}
 		}
@@ -155,14 +182,17 @@ func Rebuild(ctx context.Context, s Spec) error {
 // on the overwhelmingly common path -- and so the agent can SAY that the network is not what it
 // should be without having tried to fix it yet.
 func Converged(s Spec) bool {
-	if s.Parent == "" || !up(s.Parent) {
+	if s.Parent == "" || !exists("/sys/class/net/"+s.Parent) {
 		return false
 	}
 	for _, t := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
 		if t == "" {
 			continue
 		}
-		if !exists("/sys/class/net/"+t) || !up(t) {
+		// EXISTENCE, NOT LINK STATE. A device that is administratively down is not drift to be
+		// reconciled -- it is somebody's decision, and Converge would not undo it anyway (see the
+		// rule above it), so reporting it as unconverged would only make the tick say so forever.
+		if !exists("/sys/class/net/" + t) {
 			return false
 		}
 		// The two flags on a macvtap child that are not kernel defaults. BOTH are checked, and
@@ -191,7 +221,8 @@ func Converged(s Spec) bool {
 
 // ensureMacvtap creates one macvtap child and gives it the two flags that are not defaults.
 func ensureMacvtap(ctx context.Context, dev, parent string) error {
-	if !exists("/sys/class/net/" + dev) {
+	created := !exists("/sys/class/net/" + dev)
+	if created {
 		if out, err := ip(ctx, "link", "add", "link", parent, "name", dev, "type", "macvtap", "mode", "bridge"); err != nil {
 			return fmt.Errorf("nic: macvtap %s on %s: %s", dev, parent, firstLine(out, err))
 		}
@@ -212,8 +243,13 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 			return fmt.Errorf("nic: disable ipv6 on %s: %w", dev, err)
 		}
 	}
-	if err := ensureUp(ctx, dev); err != nil {
-		return err
+	// Up only on the pass that made it -- see the rule above Converge. The write above lands
+	// BEFORE this on a fresh device, which is the point: nothing can accept a router
+	// advertisement on an interface that is not up yet.
+	if created {
+		if err := ensureUp(ctx, dev); err != nil {
+			return err
+		}
 	}
 	// ALLMULTI, or inbound multicast never reaches the guest. The guest's avahi joins 224.0.0.251
 	// on its VIRTIO NIC inside the VM, and nothing carries that join out to this device: qemu
@@ -242,12 +278,12 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 // substrate's one port are both this shape.
 func ensureTap(ctx context.Context, dev string) error {
 	if exists("/sys/class/net/" + dev) {
-		return nil
+		return nil // exists: not ours to re-up (see the rule above Converge)
 	}
 	if out, err := ip(ctx, "tuntap", "add", dev, "mode", "tap"); err != nil {
 		return fmt.Errorf("nic: tap %s: %s", dev, firstLine(out, err))
 	}
-	return nil
+	return ensureUp(ctx, dev)
 }
 
 // ensureMaster enslaves dev to the bridge, if it is not already a port of it. A device that is a
