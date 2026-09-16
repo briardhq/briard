@@ -1944,9 +1944,8 @@ in
 
     # ⚠️ A STALE PID FILE MUST NOT COST THIS NODE ITS PROMOTION ([B.151]).
     #
-    # avahi writes /run/avahi-daemon/pid AFTER dropping to the `avahi` user, but the directory is
-    # root-owned, so a pid file left behind by a previous instance is one the next instance CANNOT
-    # remove. Its own recovery path tries and fails, and the start dies:
+    # A previous avahi that exited without cleaning up leaves /run/avahi-daemon/pid behind, and the
+    # next start dies on it:
     #
     #   avahi-daemon[923]: Process 424 died: No such process; trying to remove PID file.
     #   avahi-daemon[923]: open(/run/avahi-daemon//pid): File exists
@@ -1958,11 +1957,17 @@ in
     # promoted, died here, and handed off to node2 -- ON A LONE NODE THERE IS NOWHERE TO HAND TO,
     # and the household simply has no front door.
     #
-    # Removed as ROOT in ExecStartPre, because root is precisely the privilege avahi has already
-    # given up by the time it meets the problem. `-` so a missing file is not a failure; and
-    # systemd never runs ExecStartPre while the unit is active, so this cannot unlink a LIVE pid.
+    # ⚠️ THE `+` IS THE WHOLE FIX, and without it this line silently does nothing. Upstream's unit
+    # sets ProtectSystem=strict with no ReadWritePaths, so /run is mounted READ-ONLY inside the
+    # unit's namespace (measured: a strict unit sees `/run ro,nosuid,nodev` and `touch` fails) --
+    # which is also why avahi's own "trying to remove PID file" cannot succeed. `+` runs the
+    # command outside that namespace, with full privileges; a first attempt WITHOUT it failed
+    # exactly as before and the `-` prefix swallowed the error, so the rig saw no change at all.
+    #
+    # `-` is kept for the honest case -- no stale file -- and systemd never runs ExecStartPre while
+    # the unit is active, so this can never unlink a LIVE pid.
     systemd.services.avahi-daemon.serviceConfig.ExecStartPre = [
-      "-${pkgs.coreutils}/bin/rm -f /run/avahi-daemon/pid"
+      "+-${pkgs.coreutils}/bin/rm -f /run/avahi-daemon/pid"
     ];
   }
 
