@@ -8,8 +8,10 @@
 # KVM and run on the maintainers' own hardware, not here. To run them yourself:
 #
 #     nix build .#tests.drbd-failover -L    # one test
-#     nix build .#drbd                      # a whole tag
 #     nix flake check                       # flake integrity (boots no VMs)
+#
+# A whole tag is a list of names in `.#test-manifest`, run with an explicit `--max-jobs`
+# cap — see CONTRIBUTING.md. There is no `.#all` and no `.#drbd` on purpose ([B.149]).
 name: ci
 
 on:

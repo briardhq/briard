@@ -39,7 +39,7 @@
 # so this file proves the stage/commit/discard mechanics; the candidate's smoke test of a staged
 # qemu on a real tree is install-macvtap.nix's, on the real agent.
 #
-# Hermetic (one VM, TCG-friendly), so it rides the default `.#all`. Run one:
+# Hermetic (one VM, TCG-friendly), so it rides the tier. Run one:
 #   nix build .#tests.agent-selfupdate -L
 { pkgs, stub, agent }:
 let

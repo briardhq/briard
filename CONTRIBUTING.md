@@ -160,9 +160,22 @@ laptop, and they are the honest version of "see for yourself":
 nix build .#tests.drbd-failover -L   # kill the primary → survivor takes over, data intact
 nix build .#tests.drbd-fence -L      # partition the minority → it self-fences
 nix build .#tests.hass-payload -L    # real Home Assistant, installed as a catalogued service
-nix build .#drbd                     # the whole failover net — a whole tag
 nix log .#tests.drbd-fence           # what a run printed
 ```
+
+A whole tag is a list of names rather than a build target, and running one takes the cap
+explicitly. Each of these tests boots two or three nested VMs, so letting nix start a tag's worth
+of them at its default parallelism will take a workstation down rather than merely slow it:
+
+```sh
+m=$(nix build --no-link --print-out-paths .#test-manifest)
+cat $m/tags/all                                          # every test the tier runs
+nix build --max-jobs 1 -L $(sed 's|^|.#tests.|' $m/tags/drbd)   # the whole failover net
+```
+
+`--max-jobs 1` is the conservative setting: one test at a time, whatever the machine. Raise it
+only if you know your box can hold that many guests at once — `$m/tests.tsv` carries each test's
+node count and declared memory, which is what the arithmetic needs.
 
 The architecture guards above are ordinary tests, and they fail the build:
 

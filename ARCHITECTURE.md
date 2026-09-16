@@ -234,7 +234,14 @@ You can run this yourself in minutes on a laptop:
 ```sh
 nix build .#tests.drbd-failover -L   # kill the primary, survivor takes over, data intact
 nix build .#tests.drbd-fence -L      # partition the minority, it self-fences
-nix build .#drbd                     # the whole failover net
+```
+
+A whole tag is a list of names, not a build target — each test boots two or three nested VMs, so
+running a group takes an explicit cap:
+
+```sh
+m=$(nix build --no-link --print-out-paths .#test-manifest)
+nix build --max-jobs 1 -L $(sed 's|^|.#tests.|' $m/tags/drbd)   # the whole failover net
 ```
 
 A test that cannot fail is not evidence, so the suite is written to fail: the rollback

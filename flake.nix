@@ -79,11 +79,7 @@
       # Every tag but `debug` is a real test group; flatten them into the full set. Derived
       # rather than hand-listed so a tag appearing or vanishing with the private half needs no
       # edit here (it also drops the old union's risk of silently forgetting a new tag).
-      testTags = removeAttrs tags [ "debug" ];
-      allTests = lib.foldl' (a: b: a // b) { } (lib.attrValues testTags);
-      mkTag = name: group:
-        pkgsX.linkFarm "briard-tests-${name}"
-          (lib.mapAttrsToList (n: p: { name = n; path = p; }) group);
+      allTests = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" ]));
       # The lab rig's flake outputs (fleet module + containers, the demo/soak guest
       # disks, the self-hosted runner), layered in ONLY when `lab/` is present. `lab/` runs on
       # our L0 box and never in a user's home, so OSS's property line puts the whole of it
@@ -100,10 +96,6 @@
       # Spliced whole at the top level, except the two that merge onto public counterparts.
       labTopLevel = removeAttrs labOutputs [ "nixosConfigurations" "artifacts" ];
     in
-    # One `.#<tag>` aggregate per test group, generated from the merged tags so a group that
-    # arrives or departs with the private half (`.#store`) needs no edit below. Spliced
-    # first, so anything named explicitly in the main attrset would win — nothing does.
-    lib.mapAttrs mkTag testTags //
     labTopLevel //
     {
       # In-repo packages not in nixpkgs, surfaced as an overlay so
@@ -168,20 +160,27 @@
         };
       } // (labOutputs.nixosConfigurations or { });
 
-      # Hermetic nixosTest mechanism tests (nixosTest/outputs.nix), exposed as tags you
-      # build on demand:
-      #   nix build .#drbd | .#upgrade | .#ha | .#integration   (a slice)
-      #   nix build .#all                                        (every test — the nightly)
-      #   nix build .#tests.<name> -L                            (one test, e.g. drbd-fence)
-      # `nix flake check` stays light: it evaluates the flake + builds the config
-      # closures, but boots no VM tests — use a tag for that. These are Tier-1 hermetic
-      # tests, NOT the lab/ soak fleet (cmd/soak, never `nix build`).
-      # The per-tag aggregates themselves are generated above the attrset; `.#store`
-      # is there only when the private half is.
-      all = mkTag "all" allTests;
-      # Flat `.#tests.<name>` includes debug harnesses (drbd-link-split); `.#all`
-      # above deliberately does not, so the nightly never runs them.
+      # Hermetic nixosTest mechanism tests (nixosTest/outputs.nix). ONE test is a build:
+      #   nix build .#tests.drbd-fence -L
+      # `nix flake check` stays light: it evaluates the flake + builds the config closures, but
+      # boots no VM test. These are Tier-1 hermetic tests, NOT the lab/ soak fleet (cmd/soak,
+      # never `nix build`).
+      #
+      # ⚠️ THERE IS DELIBERATELY NO `.#all`, AND NO `.#drbd` ([B.149]). Those were linkFarms, so
+      # building one started every member at nix's default `--max-jobs` — ~40 nixosTests × 2–3
+      # nested QEMU nodes at once, which does not fail slowly, it takes the machine down. The
+      # aggregate could not guard itself (its builder runs after its members are realised) and a
+      # flake cannot read the machine at eval time, so the answer is that the group is no longer
+      # something you can type at nix. A GROUP IS STILL A THING YOU CAN RUN — see `test-manifest`
+      # below and CONTRIBUTING's "run a whole tag" recipe, which spells the cap out loud instead
+      # of hiding it behind an attribute that looks free.
       tests = allTests // (tags.debug or { });
+
+      # What the tier IS, as data: `tests.tsv` (name, tags, curated, nodes, memory, outPath) and
+      # `tags/<name>` member lists, including `tags/all` — the curated set `.#all` used to hold.
+      # Cheap to build (text files; it takes no test as an input), which is the whole point.
+      # farm's tier scheduler reads it to enumerate, cost and invalidate the suite.
+      test-manifest = import ./nixosTest/manifest.nix { pkgs = pkgsX; inherit tags; };
 
       # The cloud operator apps (`nix run .#regen-schema` / `.#backup-store` / `.#migrate-store`
       # / `.#provision-tenant`) — all four drive the cloud datastore, so they arrive with the private

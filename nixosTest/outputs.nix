@@ -6,12 +6,14 @@
 # assert convergence, and vanish — no external state. They are NOT the lab/ soak fleet
 # (Tier 2, driven by cmd/soak, never `nix build`).
 #
-# `tags` groups the tests so flake.nix can expose one buildable aggregate per tag:
-#   nix build .#drbd | .#upgrade | .#ha | .#integration   (a slice)
-#   nix build .#all                                        (every test — the nightly)
+# `tags` groups the tests. A group is DATA, never a build target ([B.149]): flake.nix turns these
+# into `.#test-manifest` (name lists + per-test cost), and one test at a time is what you build.
 #   nix build .#tests.<name> -L                            (one test, e.g. drbd-fence)
+#   cat $(nix build --no-link --print-out-paths .#test-manifest)/tags/drbd
+# A whole tag runs under an explicit `--max-jobs` cap — CONTRIBUTING.md has the recipe, and the
+# nightly's own scheduler (farm, `lab/scripts/tier-concurrency.sh`) admits by measured cost.
 # `nix flake check` stays light — it evaluates the flake + builds the config closures,
-# but boots no VM tests; use a tag for that.
+# but boots no VM tests.
 #
 # this is the PUBLIC half. Every test that builds a `cloud/` package lives in
 # `outputs-private.nix`, which flake.nix merges in tag-wise when it is present — so this
@@ -254,7 +256,7 @@ let
 
   # The host-agent self-update PIVOT — the frozen, agent-independent commit/revert
   # mechanism (Type=notify gate). Hermetic (a single VM, no nested guest): the stub stands in
-  # for the trial binary that decides whether to signal READY. Rides `.#all`.
+  # for the trial binary that decides whether to signal READY. Rides the tier.
   selfupdateStub = pkgs.callPackage ./selfupdate-stub.nix { };
   agentSelfupdate = import ./agent-selfupdate.nix {
     inherit pkgs;
@@ -339,8 +341,8 @@ let
   };
 in
 {
-  # The hermetic mechanism tests, grouped into tags. flake.nix turns each group into
-  # a buildable aggregate (`.#drbd` … `.#all`) + a flat `.#tests.<name>`.
+  # The hermetic mechanism tests, grouped into tags. flake.nix turns each group into a name list
+  # in `.#test-manifest` + a flat `.#tests.<name>`; a tag is not itself buildable ([B.149]).
   tags = {
     # The DRBD failover net (7 topologies): bring-up, promote, failover, fence,
     # witness, and minority-refuses-to-promote (quorum). The fast mechanism core.
@@ -422,13 +424,13 @@ in
     };
 
     # The frozen host-agent self-update pivot (Type=notify commit/revert gate).
-    # Hermetic — one VM, no nested guest, so it rides `.#all`.
+    # Hermetic — one VM, no nested guest, so it rides the tier.
     selfupdate = {
       agent-selfupdate = agentSelfupdate;
     };
 
     # The free-local install path. qemu-bundle proves the relocatable qemu bundle runs
-    # with /nix/store masked (the stock-host condition). Hermetic — one VM, rides `.#all`.
+    # with /nix/store masked (the stock-host condition). Hermetic — one VM, rides the tier.
     install = {
       zero-service = zeroService; # what a fresh install actually gives you — no service
       service-install = serviceInstall; # and putting something on it at runtime
@@ -439,8 +441,9 @@ in
       install-bridge = installBridge; # bridge mode (Windows' shape): NIC enslave + host-IP move
     };
 
-    # Debug harnesses — deliberately EXCLUDED from allTests / the nightly `.#all` (flake.nix
-    # merges this into the flat `.#tests.*` only). Run by hand in a repro loop.
+    # Debug harnesses — deliberately EXCLUDED from the curated set the nightly runs (the manifest
+    # marks them uncurated and flake.nix merges them into the flat `.#tests.*` only). `tags/debug`
+    # lists them. Run by hand in a repro loop.
     debug = {
       # — **THIS TEST FAILS TODAY, AND THAT IS ITS JOB.** Act 1 (crash the primary, the
       # survivor promotes) passes and is the control; act 2 (the survivor then restarts while its
