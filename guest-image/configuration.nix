@@ -1839,7 +1839,7 @@ in
     # (the agent's net.configure, briard-vip's lease, the witness link), so weak-host ARP adds
     # nothing and only the cross-NIC ambiguity is removed. The VIP takeover's gratuitous ARP
     # is explicit (vipArping crafts its own frames) and unaffected by either setting. The
-    # measured chain: briard-farm docs/V3.md [B.101].
+    # measured chain: farm docs/V3.md [B.101].
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.arp_ignore" = 1;
       "net.ipv4.conf.default.arp_ignore" = 1;
