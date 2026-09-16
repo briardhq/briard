@@ -5,7 +5,7 @@
 #
 # Brings a stock single-node Linux host to GREEN: the guest's NICs as macvtap children of the
 # host NIC (no bridge, no host-IP move), a guest VM (booted by our BUNDLED qemu -- no distro qemu) holding
-# the VIP, a single-node DRBD data volume (guest-side), and Briard answering at the VIP
+# the VIP, a data volume the guest lays out (DRBD only once a peer exists), and Briard answering at the VIP
 # on the LAN. No cloud, no name (rung 0).
 #
 # It installs NO SERVICE. A node is a node first: ready, replicating, able to fail
@@ -522,7 +522,8 @@ PRIV_GUEST_CIDR="$PRIV_SUBNET.2/24"
 [ -n "$NET_WRAP" ] || die "the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC"
 
 # ---- 6. disks: the pet data volume + the (cattle) guest overlay ---------------------
-# data.img is the single-node DRBD backing -- pet, created once, preserved across a
+# data.img is the node's data disk (the guest lays LUKS/LVM/btrfs on it; DRBD only once a
+# peer exists) -- pet, created once, preserved across a
 # reinstall. The guest overlay is cattle: a writable qcow2 backed by the
 # read-only base image, recreated every install (the base may have moved).
 DATA="$STATE/data.img"

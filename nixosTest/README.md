@@ -20,9 +20,16 @@ share no code, the seam and the guest image being all they have in common.
 | alert-correctness | not here — needs a long-running fleet (red ⇒ alert ⇒ gate blocks; heal ⇒ recovered ⇒ green) |
 | no-silent-restarts | not here — a hermetic run is too short for a crash loop to appear |
 | no-bad-kernel-log | not here — needs sustained runtime |
+| reconverges-after-heal | `drbd-fence.nix`, reunion half: unblock the partition → every node `Connected` + `UpToDate` |
+| resync-integrity | `drbd-fence.nix`, reunion half: fail the survivor → the reunited node serves a tick `>=` the survivor's last |
+| no-spurious-action-on-heal | `drbd-fence.nix`, reunion half: the ex-primary rejoins as Secondary, the survivor stays sole primary |
+| rollback-is-clean | `hass-upgrade-rollback.nix` (a deliberately broken upgrade rolls code and data back together) |
+| storage-seam-linear | `luks-convert.nix` (the data LV is one linear segment before and after an encryption round trip) |
+| user-data-on-the-replicated-volume | `zero-service.nix` (an empty node's volume is where service data would land) — partial; the rest is a review invariant |
 
-The last three are checked by our long-running soak rather than by these tests; the rows are
-kept so the set stays complete and the gaps are visible rather than implied.
+Three of these (alert-correctness, no-silent-restarts, no-bad-kernel-log) are checked by our
+long-running soak rather than by these tests; the rows are kept so the set stays complete and
+the gaps are visible rather than implied.
 
 When a test adds or changes an assertion here, update the table with it. The value of the
 checklist is that it says what is actually covered — a stale row is worse than a missing one.

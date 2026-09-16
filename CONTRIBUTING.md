@@ -13,6 +13,10 @@ say so directly rather than let the PR rot.
 So: for anything bigger than a bug fix, open an issue before writing the patch. Not as a process
 gate — it is just a shame to write something that was never going to land.
 
+**Open source, not open governance — said upfront.** Direction is ours; features start as
+issues, not pull requests; pull requests are looked at weekly, and small ones go first. Saying
+this now is cheap; introducing it later would be a betrayal.
+
 Everything here is Apache-2.0. See [LICENSE](LICENSE).
 
 **No CLA.** Contributions come in under the [Developer Certificate of Origin](https://developercertificate.org/)
@@ -42,7 +46,7 @@ and it needs Nix (as above) and a Linux host with KVM.
 nix build .#artifacts.agent       -o result-agent
 nix build .#artifacts.net-wrap    -o result-netwrap
 nix build .#artifacts.qemu-bundle -o result-qemu
-nix build .#artifacts.guest-disk  -o result-guest    # ~2.5 GB; the guest VM image
+nix build .#artifacts.guest-disk  -o result-guest    # ~0.9 GB; the guest VM image
 
 # assemble a staging directory the installer reads
 mkdir -p stage
