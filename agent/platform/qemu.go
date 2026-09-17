@@ -434,6 +434,11 @@ func Launch(ctx context.Context, s QEMUSpec) (*Guest, error) {
 	if err := waitUnitFree(ctx, unit, unitFreeGrace); err != nil {
 		return nil, err
 	}
+	// ⚠️ AFTER waitUnitFree AND BEFORE startTransient, which is the only window where rotating is
+	// safe: no qemu of ours holds the capture open, and the one about to has not opened it yet.
+	// Rotating under a live qemu would rename the inode it is writing to, so the stream would go
+	// on filling `.prev` while the file everything reads stayed empty.
+	prepareSerialLog(s.SerialLog)
 	if out, err := startTransient(ctx, args); err != nil {
 		return nil, fmt.Errorf("platform: start guest unit: %w: %s", err, out)
 	}
@@ -465,6 +470,48 @@ func secureQMPDir(sock string) error {
 		return fmt.Errorf("platform: QMP dir %s: %w", dir, err)
 	}
 	return nil
+}
+
+// serialLogMax is the size past which the guest's serial capture rolls to `.prev`. One
+// generation, so the capture costs at most 2x this on disk and the PREVIOUS story is still there.
+//
+// A constant rather than a knob: it is a disk-fill guard on an unattended machine, and the number
+// that matters is "small enough that a home disk never notices, large enough to hold several
+// boots". 32 MiB is both. install.sh carried a BRIARD_CONSOLE_MAX that nothing ever set.
+const serialLogMax = 32 << 20
+
+// prepareSerialLog bounds the guest's serial capture and creates it with a mode of our own, on
+// every launch and before qemu opens it. Same shape and same reason as secureQMPDir above: qemu
+// creates what it opens under the unit's umask, so the containment has to be applied first.
+//
+// ⚠️ THE BOUND HAS TO BE PER LAUNCH, and that is what this being here rather than in the
+// installer's ExecStartPre buys ([B.157], closing what V3.27 recorded and deferred). qemu appends
+// and never truncates -- deliberately, so a relaunch does not overwrite the boot that explains it
+// (serialArgs says why) -- and the guest is relaunched on every OS upgrade, every rollback, every
+// rung of the recovery ladder. A check that ran once when the AGENT started missed every one of
+// those, which is to say it missed the crash-looping guest the cap exists for. It also fired
+// while a re-adopted qemu held the file open, which is the rename trap the caller describes.
+//
+// BEST-EFFORT THROUGHOUT, and silent, exactly as the shell it replaces was (`|| true` on every
+// line, `exit 0` at the end): this is a logging convenience, and a node must never fail to launch
+// its guest because a log could not be rolled. A pre-create that fails costs the mode, not the
+// capture -- qemu creates the file itself.
+func prepareSerialLog(path string) {
+	if path == "" {
+		return // this node captures no console
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	if fi, err := os.Stat(path); err == nil && fi.Size() > serialLogMax {
+		_ = os.Rename(path, path+".prev")
+	}
+	// Created here rather than left to qemu, because a guest console carries the household's
+	// hostnames and addresses: not secret, not public. Chmod unconditionally, so a file an older
+	// install left world-readable is tightened rather than trusted -- the same "applied on every
+	// launch" rule secureQMPDir states.
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640); err == nil {
+		_ = f.Close()
+	}
+	_ = os.Chmod(path, 0o640)
 }
 
 // Adopt returns a handle to an already-running guest (re-adopt after an agent

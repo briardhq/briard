@@ -101,7 +101,6 @@ CPU_MODEL="${BRIARD_CPU:-max}"
 # happens inside the VM, and it is what every field diagnosis runs on. Set BRIARD_CONSOLE= (empty)
 # to opt out -- `-` and not `:-` below, so that empty reads as a DECISION rather than as unset.
 CONSOLE="${BRIARD_CONSOLE-/var/log/briard-guest-console.log}"
-CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # roll to .prev past 32 MiB, so the capture costs at most 2x
 
 # The signed release channel root. Under it, one directory per release CHAIN -- `host/` (agent,
 # net-wrap, qemu) and `guest/` (the OS image) -- each holding one directory per version plus the
@@ -441,61 +440,17 @@ say "VM disk created"
 
 # ---- 6. what the units run: the generated scripts and the config file ---------------
 # The three unit FILES are shipped and copied at the end of this step; everything between here and
-# there is what they point at -- the console rotator, the self-update pivot pair, the node's
-# config file and the update script. Each is generated because each bakes a value.
+# there is what they point at: the self-update pivot pair, the node's config file and the update
+# script. Each is generated because each bakes a value.
 mkdir -p "$UNIT_DIR"
 
-# The console capture, and the one thing it needs that qemu will not do: a bound.
-#
-# qemu appends to this file and NEVER truncates, deliberately (agent/platform/qemu.go argues it:
-# the guest is relaunched on every OS upgrade, every agent restart and every rollback, so
-# truncating means the incarnation you need is precisely the one just overwritten by the boot that
-# replaced it). Correct -- and unbounded appending is a disk-filling bug on a machine nobody
-# watches, which is every machine this ships to. So the file is rolled to .prev once it passes the
-# cap: one generation, so the cost is bounded at 2x and the PREVIOUS story is still there.
-#
-# A script on disk rather than an inline `ExecStartPre=/bin/sh -c ...`: systemd expands `$f` in a
-# unit line as one of ITS environment variables, so every shell variable would need `$$` and every
-# quote would have to survive both parsers. It can be read and run by a human debugging the thing
-# at 2am.
-#
-# ⚠️ WRITTEN UNCONDITIONALLY, even where the console is switched off, because the unit that calls
-# it is now a static shipped file ([B.157]) and must not fork on what this install chose. The empty
-# case is the SCRIPT's to answer, which it does on its first line.
+# The console capture. The PATH is all that is decided here; the BOUND and the MODE are the
+# agent's, applied at every guest launch before qemu opens the file (agent/platform, [B.157]).
+# That is the granularity the cap needs -- the guest is relaunched on every OS upgrade, every
+# rollback and every rung of the recovery ladder, and a check that ran once when the agent started
+# missed all of them, which is to say it missed the crash-looping guest it exists for.
 CONSOLE_CONF=""
-cat > "$PREFIX/console-rotate.sh" <<EOF
-#!/bin/sh
-# Roll the guest console if it has grown past the cap. Runs as briard-agent's ExecStartPre.
-# ALWAYS exits 0: a node must never fail to start because a log could not be rotated.
-set -u
-f="$CONSOLE"
-max=$CONSOLE_MAX
-[ -n "\$f" ] || exit 0   # the console is off on this node; there is nothing to roll
-if [ -f "\$f" ]; then
-	s=\$(stat -c%s "\$f" 2>/dev/null || echo 0)
-	[ "\$s" -gt "\$max" ] 2>/dev/null && mv -f "\$f" "\$f.prev" 2>/dev/null
-fi
-# Pre-create it so the console is not world-readable: qemu would create it under the unit's umask,
-# and a guest console carries the household's hostnames and addresses. Not secret, not public.
-#
-# The subshell is load-bearing, and it cost a test to find: \`:\` is a POSIX SPECIAL builtin, so a
-# redirection failure on it is fatal to the shell itself -- \`|| true\` never runs and the script
-# exits non-zero. On a host with a read-only or absent /var/log that turned this line into "the
-# agent does not start", which is a catastrophic way for a LOGGING convenience to fail. Inside a
-# subshell the failure exits the subshell and the fallback holds.
-[ -e "\$f" ] || ( : > "\$f" ) 2>/dev/null || true
-chmod 0640 "\$f" 2>/dev/null || true
-exit 0
-EOF
-chmod +x "$PREFIX/console-rotate.sh"
-if [ -n "$CONSOLE" ]; then
-	mkdir -p "$(dirname "$CONSOLE")"
-	# NOTE what the rotation does NOT bound, stated rather than implied: the check runs when the
-	# AGENT starts, not when a guest launches, so a guest crash-looping under one long-lived agent
-	# keeps appending past the cap until something restarts the agent. Bounding that needs a writer
-	# we control instead of a qemu chardev, which is a bigger change than this file deserves.
-	CONSOLE_CONF="GUEST_SERIAL=$CONSOLE"
-fi
+[ -n "$CONSOLE" ] && CONSOLE_CONF="GUEST_SERIAL=$CONSOLE"
 # The fd-passing launch wrapper, which the agent renders the guest launch behind under macvtap.
 # NET_MODE is NOT written: the agent derives it from the device ([B.150](c)), and writing it here
 # would be install-time frozen and free to disagree with what the machine turns out to be. The

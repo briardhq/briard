@@ -72,15 +72,6 @@ WatchdogSec=20
 # stages INTO, is in config.env with the rest of the values; the wrappers bake it themselves.)
 ExecStart=/opt/briard/agent/briard-exec
 ExecStartPost=/opt/briard/agent/briard-commit
-# Roll the guest's serial capture if it has outgrown its cap. UNCONDITIONAL, and the script decides
-# whether there is anything to do: a node with the console switched off has no GUEST_SERIAL in
-# config.env and the script exits 0 on reading that. Keeping the DECISION in the script rather than
-# in whether this line exists is what lets this file be one static thing for every node.
-#
-# Not `ExecStartPre=-`: a leading `-` makes systemd ignore the failure, and the failures worth
-# seeing here (an unwritable /var/log) are exactly the ones that would go quiet. The script's own
-# contract is to exit 0 -- a node must never fail to start because a log could not be rotated.
-ExecStartPre=/opt/briard/console-rotate.sh
 Restart=on-failure
 RestartSec=3
 # Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
