@@ -294,8 +294,14 @@ pkgs.testers.runNixOSTest {
     # that HA's zeroconf sees the guest's mDNS FROM INSIDE THE CONTAINER. It decides [V3b.30](a)'s
     # reach into HA, (d)'s worth, and Music Assistant's wiring, and it is cheap, so it is measured
     # rather than reasoned. The reasoning said it SHOULD work -- python-zeroconf sets
-    # SO_REUSEADDR/SO_REUSEPORT so sharing :5353 with avahi is normal, and Linux defaults
-    # IP_MULTICAST_LOOP on for IPv4 -- and "should" is not a measurement.
+    # SO_REUSEADDR/SO_REUSEPORT so sharing :5353 is normal, and Linux defaults IP_MULTICAST_LOOP on
+    # for IPv4 -- and "should" is not a measurement.
+    #
+    # ⚠️ IT IS ALSO THE COEXISTENCE GATE FOR THE DOOR'S RESPONDER ([B.152]). HA is host-networked,
+    # so its python-zeroconf and the door's responder bind :5353 in ONE namespace, and the door is
+    # a promoter chain member: a responder that cannot bind does not merely lose the name, it fails
+    # the door and hands the resource to a peer that would fail identically. This test runs both at
+    # once, so the pairing is exercised on every run rather than argued.
     #
     # ⚠️ INSIDE THE CONTAINER ON PURPOSE, not from the guest shell. Under host networking the two
     # share a netns, so the socket behaviour ought to be identical and a guest-side probe would be

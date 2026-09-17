@@ -732,7 +732,7 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 //
 // An unreadable or nameless file yields "", which routes.HostName turns into a service with no
 // hostname — installed and reachable on its port, simply not yet named. That is the same rule
-// briard-mdns already applies to the flock's own name, and it is the state of a node between
+// the front door already applies to the flock's own name, and it is the state of a node between
 // install and its first name.
 func flockName(x Executor) string {
 	raw, err := x.ReadFile(mdnsEnvPath)

@@ -83,8 +83,8 @@ const verbNetConfigure = "net.configure"
 // recorded but failed to apply must not be reportable as live.
 const verbNetVIP = "net.vip"
 
-// verbNetMDNSName records the flock's human-visible name and republishes it: briard-mdns publishes
-// `briard-<name>.local` pointing at the VIP.
+// verbNetMDNSName records the flock's human-visible name, which the front door publishes as
+// `briard-<name>.local` pointing at the VIP ([B.152]).
 //
 // It is its OWN verb rather than another field on net.configure, and the reason is the design it
 // belongs to (V3.20): the name is a LABEL and the address is an IDENTITY, so a rename must be

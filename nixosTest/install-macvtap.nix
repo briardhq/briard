@@ -163,7 +163,10 @@ pkgs.testers.runNixOSTest {
         networking.interfaces.eth1.ipv4.addresses = [
           { address = "192.168.1.2"; prefixLength = 24; }
         ];
-        environment.systemPackages = [ pkgs.curl pkgs.iputils pkgs.avahi ];
+        # tcpdump is for ONE assertion and it is a premise rather than a diagnostic: the guest must
+        # say nothing unsolicited, or the cold-cache resolve below can be answered by a multicast
+        # nobody asked for ([B.152]).
+        environment.systemPackages = [ pkgs.curl pkgs.iputils pkgs.avahi pkgs.tcpdump ];
         # An mDNS RESOLVER, so the NAME can be exercised the way a household uses it instead of by
         # reading our own config back. nssmdns4 puts `mdns4_minimal` into nsswitch -- the very
         # resolver V3.19d measured on the real Ubuntu desktop, and the reason the published name is
@@ -607,26 +610,43 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://briard-{flock_name}.local/healthz", timeout=120)
     print(f"off-box client reached http://briard-{flock_name}.local/ by NAME")
 
+    # ⚠️ THE PREMISE OF EVERYTHING BELOW: THE GUEST SAYS NOTHING UNSOLICITED ([B.152]).
+    #
+    # This is asserted rather than assumed because the cold-cache assertion that follows is only
+    # as strong as it. An announcement is the SAME PACKET as a response, so a client that asks
+    # while one is in flight can be answered by a multicast it never sent a query for -- and the
+    # assertion below then passes without a single query reaching the guest, which is exactly how
+    # [B.129] stayed invisible: inbound mDNS dropped on the macvtap's per-child mc_filter while
+    # egress worked perfectly, so the name worked until every client's cache went cold.
+    #
+    # The responder answers queries and announces nothing, so the window does not exist. If that
+    # ever changes -- an announcer is a standing option this shipped without -- THIS assertion
+    # fails first, and the fix is to put an announcement-tail wait back in front of the cold-cache
+    # resolve (40s cleared avahi's tail) rather than to delete the line that noticed.
+    # Counted off the WIRE, from the client's side of it, with nothing on this node querying for
+    # the duration -- so every packet counted is one the guest sent unasked. tcpdump's own chatter
+    # goes to stderr, so only packet lines reach grep, and `|| true` keeps a count of zero (grep's
+    # exit 1) from reading as a command failure.
+    quiet = client.succeed(
+        f"timeout 12 tcpdump -i eth1 -l -n 'udp port 5353 and src host {vip}' 2>/dev/null "
+        "| grep -c 'IP' || true"
+    ).strip()
+    assert quiet == "0", (
+        f"the guest sent {quiet} unsolicited mDNS packet(s) in 12s of silence. Something announces "
+        f"now, so the cold-cache assertion below can be answered by a multicast nobody asked for "
+        f"-- restore an announcement-tail wait before it ([B.152], [B.129])"
+    )
+
     # THE SAME NAME, FROM A COLD CACHE -- and this is the half that has teeth. The assertion above
-    # is satisfied by the guest's establishment ANNOUNCEMENT alone: avahi multicasts the record
-    # when it establishes (and re-announces for tens of seconds afterwards), every client on the
-    # segment caches it for its TTL, and a resolve inside that window is a CACHE READ rather than
-    # a query. Egress through the macvtap needs nothing from us, so a rig that only ever asks
-    # while the announcement is warm cannot fail on inbound mDNS being dropped -- which is the
-    # failure a household meets, hours later, from a cold cache.
+    # it can be satisfied by anything the client already holds; this one cannot be satisfied by
+    # anything but a QUERY that reached the guest and an ANSWER that came back. Egress needs
+    # nothing from us, so a rig that only ever asks from a warm cache cannot fail on inbound mDNS
+    # being dropped -- which is the failure a household meets, hours later.
     #
-    # WHAT HAS TO ELAPSE IS THE ANNOUNCEMENT TAIL, NOT THE RECORD TTL. The restart below is the
-    # cache flush, so there is no cached record left for a TTL to expire -- and clearing a TTL is
-    # what the 130s this used to wait was for. What a flush cannot touch is the OTHER end: avahi
-    # re-announces unsolicited for tens of seconds after establishing, and an announcement is the
-    # same packet as a response, so a client asking inside that window can be answered by a
-    # multicast it never asked for -- passing without a single query ever reaching the guest.
-    #
-    # 40s clears the tail, and it was checked the only way that means anything: with
-    # `allmulticast` removed from install.sh the assertion below still FAILS at 40s, resolving to an
-    # empty string exactly as it does at 130s. A shorter wait that merely passed would prove nothing
-    # ([B.127]; 130s -> 40s took this test from 361s to 269s).
-    client.sleep(40)
+    # THE RESTART IS THE FLUSH, and with nothing announcing it is the whole of what this needs:
+    # there is no cached record left for a TTL to expire and no announcement tail to outlast. The
+    # assertion is checked the only way that means anything, the way the tail wait was ([B.127]):
+    # with `allmulticast` removed from install.sh it must still FAIL.
     client.succeed("systemctl restart avahi-daemon")
     client.sleep(5)
     # avahi-resolve-host-name EXITS 0 EVEN WHEN IT FAILS -- it prints "Failed to resolve host

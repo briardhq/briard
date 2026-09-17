@@ -60,9 +60,10 @@ pkgs.testers.runNixOSTest {
     for m in [node1, node2]:
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service", timeout=600)
-        # Named BEFORE the reactor promotes, which is the order a real node runs in: the agent
-        # mints the flock name at bring-up, and the mDNS publishers are pulled up by briard-vip.
-        # Naming afterwards would leave briard-mdns-services inactive on its ConditionPathExists.
+        # Named BEFORE the reactor promotes, which is the order a real node runs in: the agent mints
+        # the flock name at bring-up and the door publishes it on promotion. Naming afterwards still
+        # reaches the wire -- the door re-reads the name on its tick ([B.152]) -- but it would be
+        # testing a path a real node does not take.
         name_the_flock(m)
         m.succeed("modprobe drbd")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
@@ -165,8 +166,9 @@ pkgs.testers.runNixOSTest {
     # (5) AND THE HOUSEHOLD'S OTHER DEVICES CAN FIND IT ([V3b.30](a)). The broker is the one
     # catalogued service whose clients are appliances rather than people: Tasmota- and
     # ESPHome-class firmware browses `_mqtt._tcp` and never types a name. mosquitto's own image
-    # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes
-    # from the guest's avahi, off the same routing table the front door reads.
+    # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes from
+    # the FRONT DOOR ([B.152]), off the very table it routes on -- one map, so a record that points
+    # somewhere the door does not route is not expressible.
     #
     # FROM THE OTHER MACHINE AGAIN, because that is the only place the claim means anything: a
     # record published to a LAN nobody hears is not an announcement.

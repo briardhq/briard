@@ -603,7 +603,7 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 }
 
 // A node whose flock has no minted name publishes nothing rather than a guess -- the rule
-// briard-mdns already follows for the flock's own name. The service is still installed and still
+// the front door already follows for the flock's own name. The service is still installed and still
 // routed in the table; it simply has no name yet, and the front door says exactly that.
 func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 	x := dummyNode(t) // no mdns.env at all
