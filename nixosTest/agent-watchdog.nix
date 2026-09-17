@@ -22,7 +22,7 @@
 # real latent defect (B.87) and not a contrivance — telemetry, the least important thing in the
 # loop, could take the node's supervisor down — and fixing it moved the write onto its own
 # goroutine. Which took the lever away: the shape this test must produce is exactly the shape the
-# fix makes unreachable. So the lever is now EXPLICIT, `BRIARD_WEDGE_FIFO`, opened at the same
+# fix makes unreachable. So the lever is now EXPLICIT, `WEDGE_FIFO`, opened at the same
 # point in the same loop the write used to sit at. It is a fixture, it is named like one, nothing
 # else sets it, and install.sh writes no such variable.
 #
@@ -122,7 +122,7 @@ pkgs.testers.runNixOSTest {
           # The wedge point (step 4). A fixture, and the only consumer of this variable anywhere.
           # The path does not exist yet, which is the disarmed state: the agent opens it every
           # cycle and gets ENOENT until the test mkfifos it.
-          BRIARD_WEDGE_FIFO = "/tmp/wedge.fifo";
+          WEDGE_FIFO = "/tmp/wedge.fifo";
           # Step 3's catalog. A shipped node reads the real one over the WAN; this harness is
           # hermetic, so the fetch needs somewhere local to go -- and step 3 makes that somewhere
           # unreachable on purpose. Set here rather than in the step because the agent reads its
@@ -332,7 +332,7 @@ pkgs.testers.runNixOSTest {
 
     # === 4) THE WEDGE: alive, but the observe goroutine is gone ===
     # The explicit fixture. Same syscall, same loop, same position — the agent opens
-    # BRIARD_WEDGE_FIFO each cycle and has been getting ENOENT until now.
+    # WEDGE_FIFO each cycle and has been getting ENOENT until now.
     host.succeed("mkfifo /tmp/wedge.fifo")
 
     # The process must still be ALIVE and running other goroutines — that is what separates this

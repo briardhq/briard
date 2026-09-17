@@ -227,7 +227,12 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	if len(cfg.Resource.Peers) != 1 || cfg.Resource.Peers[0].Name != "n1" {
 		t.Errorf("single self-peer expected, got %+v", cfg.Resource.Peers)
 	}
-	if cfg.MemoryMB != 2048 || cfg.QEMUBinary != "qemu-system-x86_64" {
+	// ⚠️ THE BUNDLED qemu, not a distro one on PATH. install.sh stopped writing QEMU into
+	// config.env ([B.157]) -- a path to a fixed prefix is a default, and defaults live in
+	// config.go -- so this is what every shipped node launches with now. A bare
+	// `qemu-system-x86_64` would be the product silently running something it never tested against,
+	// which is the one thing bundling qemu exists to prevent.
+	if cfg.MemoryMB != 2048 || cfg.QEMUBinary != "/opt/briard/qemu/bin/qemu-system-x86_64" {
 		t.Errorf("VM defaults wrong: mem=%d bin=%q", cfg.MemoryMB, cfg.QEMUBinary)
 	}
 }
@@ -354,6 +359,39 @@ func TestConfigFromEnv_WitnessHasNoPromoter(t *testing.T) {
 	}
 	if cfg.HealthURL != "" {
 		t.Errorf("witness health follows quorum, HealthURL must be empty, got %q", cfg.HealthURL)
+	}
+}
+
+// ⚠️ THE TWO HALVES OF `declared`, which is what lets the NIC names default in config.go without
+// losing the one meaning an empty value carries ([B.157]).
+//
+// A key nobody named takes the shipped answer -- that is every install now, since install.sh stopped
+// writing device names it had no opinion about. A key named EMPTY keeps the empty: that is how a
+// node says it has no such NIC, and env() cannot express it (it reads an explicit empty as unset and
+// hands back the default). Getting this wrong renders a NIC the node does not have, on the substrate
+// where that is precisely the fork ([V3b.26c]).
+func TestConfigFromEnv_NICNamesDefaultButAnExplicitEmptyWins(t *testing.T) {
+	for _, k := range []string{"SYSTEM_TAP", "SERVICE_TAP", "WITNESS_TAP", "SYSTEM_DEV", "VIP_DEV"} {
+		os.Unsetenv(k)
+		t.Cleanup(func() { os.Unsetenv(k) })
+	}
+	c := ConfigFromEnv()
+	for _, g := range []struct{ name, got, want string }{
+		{"SystemTap", c.SystemTap, "briard-drbd0"},
+		{"ServiceTap", c.ServiceTap, "briard0"},
+		{"WitnessTap", c.WitnessTap, "briard-priv0"},
+		{"SystemDev", c.SystemDev, "eth1"},
+		{"VIPDev", c.VIPDev, "eth2"},
+	} {
+		if g.got != g.want {
+			t.Errorf("unset %s = %q, want the shipped %q", g.name, g.got, g.want)
+		}
+	}
+	t.Setenv("SERVICE_TAP", "")
+	t.Setenv("WITNESS_TAP", "")
+	if c := ConfigFromEnv(); c.ServiceTap != "" || c.WitnessTap != "" {
+		t.Errorf("an explicit empty was overruled by the default: service=%q witness=%q",
+			c.ServiceTap, c.WitnessTap)
 	}
 }
 

@@ -19,7 +19,7 @@ func capable() HostFacts {
 		NIC:        nic.Selection{Dev: "eth0", Probed: true, Candidates: []string{"eth0"}},
 		DiskFreeMB: 64 * 1024,
 		// A capable host on an ordinary home network holds a DHCP lease, and since V3.19c step 3
-		// that is what makes the default install -- no BRIARD_VIP, address from the router --
+		// that is what makes the default install -- no BRIARD_VIP_ADDR, address from the router --
 		// pass rather than warn. The fixture describes the machine we expect to admit.
 		HostLeased: true,
 		// ...and it can resolve the .local name the install ends by handing over. A desktop
@@ -255,7 +255,7 @@ func TestVIPOffLANIsRefused(t *testing.T) {
 	if c.Status != Refuse {
 		t.Errorf("vip = %s, want refuse", c.Status)
 	}
-	if !strings.Contains(c.Fix, "BRIARD_VIP") || !strings.Contains(c.Fix, "192.168.9.0/24") {
+	if !strings.Contains(c.Fix, "BRIARD_VIP_ADDR") || !strings.Contains(c.Fix, "192.168.9.0/24") {
 		t.Errorf("the fix must name the knob AND the LAN to pick from; got %q", c.Fix)
 	}
 }
@@ -306,7 +306,7 @@ func TestVIPAlreadyInUseIsRefused(t *testing.T) {
 	if c.Status != Refuse {
 		t.Errorf("vip = %s, want refuse", c.Status)
 	}
-	if !strings.Contains(c.Fix, "BRIARD_VIP") {
+	if !strings.Contains(c.Fix, "BRIARD_VIP_ADDR") {
 		t.Errorf("the fix must name the way out, got %q", c.Fix)
 	}
 }
@@ -340,7 +340,7 @@ func TestUnsetVIPReportsWhetherTheLANCanGiveUsOne(t *testing.T) {
 	if c.Status != Warn {
 		t.Errorf("vip = %s, want warn", c.Status)
 	}
-	if !strings.Contains(c.Fix, "BRIARD_VIP") {
+	if !strings.Contains(c.Fix, "BRIARD_VIP_ADDR") {
 		t.Errorf("the fix must name the way out, got %q", c.Fix)
 	}
 }

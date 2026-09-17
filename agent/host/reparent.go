@@ -57,7 +57,7 @@ const (
 // ⚠️ THERE IS NO "DIFFERENT SUBNET" DURATION, and that is the decision rather than an omission
 // (owner, 2026-09-15). A machine on a different subnet has MOVED, and a paired node that rebuilds
 // itself on a LAN its peer is not on is a split flock -- the one outcome this whole item exists to
-// avoid. So it is not a longer wait: it is an explicit operator action, `BRIARD_NIC`, which is
+// avoid. So it is not a longer wait: it is an explicit operator action, `NIC` in config.env, which is
 // already the escape hatch for every other way our selection can be wrong. (A cloud-side way out
 // for managed nodes may come later; it would arrive through the directive path, not through a
 // timer here.)
@@ -233,7 +233,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		r.say(logf, fmt.Sprintf(
 			"network: %s is gone and there is no record of the LAN this node last served on, so "+
 				"nothing can say whether %s is the same one -- NOT re-parenting on my own. Set "+
-				"BRIARD_NIC=%s in %s and restart briard-agent if this move is intended",
+				"NIC=%s in %s and restart briard-agent if this move is intended",
 			cfg.net.Parent, sel.Dev, sel.Dev, cfg.configPathForMessage()))
 		return "", nic.Unknown
 	}
@@ -249,7 +249,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		// runner cycle to learn that the hard way.
 		r.say(logf, fmt.Sprintf(
 			"network: %s is gone and %s is not demonstrably the same network (%s) -- NOT re-parenting "+
-				"on my own. Recorded: [%s]. Now: [%s]. Set BRIARD_NIC=%s in %s and restart "+
+				"on my own. Recorded: [%s]. Now: [%s]. Set NIC=%s in %s and restart "+
 				"briard-agent if this move is intended",
 			cfg.net.Parent, sel.Dev, rel, was, seen, sel.Dev, cfg.configPathForMessage()))
 		return "", rel
@@ -324,7 +324,9 @@ func (r *reparenter) say(logf func(string, ...any), msg string) {
 }
 
 // configPathForMessage names the file an operator would edit. It is the message's job to be
-// actionable, and "set BRIARD_NIC" is not actionable without saying where.
+// actionable, and "set NIC" is not actionable without saying where. (The key is NIC in config.env;
+// BRIARD_NIC is its name at INSTALL time, where the report card reads it -- [B.157] made the two
+// one rule: every config key K is settable as BRIARD_K when the installer runs.)
 func (cfg Config) configPathForMessage() string {
 	if p := os.Getenv("BRIARD_CONFIG"); p != "" {
 		return p

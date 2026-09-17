@@ -30,89 +30,46 @@
 # BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the hermetic install
 # tests, and a future offline install). Unset = the signed network fetch over the channel.
 set -eu
-
-# ---- knobs (env-overridable; the tests pin the deterministic ones) ------------------
-# ⚠️ THE THREE PATHS ARE CONSTANTS, NOT KNOBS ([B.157]). /opt/briard is baked into the qemu
-# bundle's own ELF interpreter (/opt/briard/qemu/lib/ld-linux...), into the agent's default config
-# path and into the CLI's UPDATE_BASE default, so an install anywhere else produces a qemu that
-# cannot execute. They are named here because the script reads better for it, and because the
-# shipped unit files spell the same paths -- a move changes both.
+# ---- what this script needs to know -------------------------------------------------
+# ⚠️ THE KNOBS ARE NOT HERE, and adding one back is the mistake ([B.157]). Every `BRIARD_*` in the
+# environment is COPIED into config.env with the prefix stripped -- `BRIARD_CPU=qemu64` becomes
+# `CPU=qemu64` -- so the installer carries no list of them, no defaults for them and no
+# documentation of them. What each key means and what it defaults to is agent/host/config.go's,
+# which is a binary the channel can fix; a default frozen here would be reachable by nothing.
+#
+# Below is the short list this script READS, because it acts on it before any agent runs.
 PREFIX=/opt/briard
 STATE=/var/lib/briard
 RUNDIR=/run/briard
-# The one real knob of the four: NixOS's /etc/systemd/system is a read-only store path, so the
-# install rigs point this at /run/systemd/system.
+# ⚠️ THE THREE PATHS ABOVE ARE CONSTANTS. /opt/briard is baked into the qemu bundle's own ELF
+# interpreter (/opt/briard/qemu/lib/ld-linux...) and into the agent's defaults, so an install
+# anywhere else produces a qemu that cannot execute. The shipped unit files spell the same paths.
+
+# NixOS's /etc/systemd/system is a read-only store path, so the install rigs point this elsewhere.
 UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}"
 
-# The device the guest's L2 hangs off. Empty -- every ordinary install -- means the agent selects
-# the one holding the default route and re-asks at every start. Naming a BRIDGE is how a user who
-# already built one gets us to join it: the substrate is derived from the device, never chosen, so
-# a bridge parent gets one port and the guest makes its own service identity on top, and anything
-# else gets macvtap children. We never create a bridge.
+# The signed release channel root, and WHICH release off it: `stable` (what strangers get, a tested
+# pair by construction), `latest` (what was published most recently -- how a release is proven
+# before promotion), or an exact host id. One selector, both chains. The channel's tree is spelled
+# out in scripts/publish-release.sh.
+CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
+RELEASE="${BRIARD_RELEASE:-stable}"
+# The release public key: this script's verify root, before anything is on disk to trust.
+KEYRING="${BRIARD_UPDATE_KEYRING:-$PREFIX/keyring.pem}"
+
+# The two the REPORT CARD is told, because it judges them against this machine before a byte is
+# written: the service address (unset = DHCP, and there is deliberately no default -- any address
+# we could pick is a guess about someone else's network) and the device the guest's L2 hangs off
+# (unset = the agent selects the one holding the default route, and re-asks at every start).
+VIP="${BRIARD_VIP_ADDR:-}"
+VIP_IP="${VIP%%/*}"   # the bare address, for the closing message; EMPTY under DHCP
 NIC="${BRIARD_NIC:-}"
 
-# The guest's three NICs, by the name of the host device behind each:
-TAP="${BRIARD_TAP:-briard0}"                # eth2, the service NIC -- where the VIP lives
-DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # eth1, the system NIC -- this node's node IP, and where DRBD binds
-# eth3, the private host<->guest link: a plain tap on neither the parent nor the bridge, and the
-# host's only network path to the VM it runs (macvtap deliberately isolates the two). It is
-# addressed at both ends, because avahi joins the IPv4 mDNS group only on an interface that has a
-# v4 address. Pure L2 substrate: it does not exist on a Windows host, so NO BRIARD CODE MAY
-# REFERENCE ITS RANGE -- code that dials it could not run there.
-PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
-
-# The three private ranges this node numbers itself from: the flock's system subnet, the private
-# link's, and the guest-internal pod pool. Each is DRAWN by the agent against the network this
-# machine can see, recorded in $STATE/subnets and kept for the life of the node (agent/subnet,
-# agent/host/subnets.go). Set one to a bare "10.42.7" to pin it -- the escape hatch for a machine
-# whose 10/8 is carved up enough that the draw refuses.
-BRIARD_SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-}"
-BRIARD_PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
-BRIARD_POD_SUBNET="${BRIARD_POD_SUBNET:-}"
-
-# The service address, in CIDR form -- it is an address on the USER'S LAN and the LAN's prefix is
-# not ours to assume. UNSET MEANS DHCP, and there is deliberately no default: any address we could
-# pick is a guess about someone else's network, while a lease is the router telling us the answer
-# out of its own pool.
-VIP="${BRIARD_VIP:-}"
-VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows it yet
-
-# The pet data volume: thick-allocated (step 5), sized for a real service's data. Home Assistant's
-# `.storage` plus the recorder SQLite outgrows a gigabyte in months, and growing a DRBD-backed
-# volume afterwards is not a one-liner. Whole GiB -- the dd fallback parses it that way.
+# The pet data volume's size, because this script allocates it (step 5). Sized for a real service's
+# data: Home Assistant's `.storage` plus the recorder SQLite outgrows a gigabyte in months, and
+# growing a DRBD-backed volume afterwards is not a one-liner. Whole GiB -- the dd fallback parses
+# it that way.
 DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
-
-# The data volume's encryption policy, pushed to the guest at every bring-up. "auto" encrypts
-# wherever the guest's CPU has AES and runs in the clear where it does not; "off" is somebody
-# deciding otherwise; "adiantum" is the cipher for hardware with no AES acceleration (Pi 4 and
-# older, pre-AES-NI x86), a documented opt-in.
-# ⚠️ IT APPLIES AT FORMAT TIME ONLY. Changing it on an installed node does not convert its volume:
-# that is a live `pvmove` between a plaintext and an encrypted PV -- a verb, not a config flip.
-DATA_ENCRYPTION="${BRIARD_DATA_ENCRYPTION:-auto}"
-
-# The guest's CPU model. "max" = every feature the accelerator can expose, which under KVM is this
-# host's own CPU; qemu's default (qemu64) is below x86-64-v2 and costs the guest aes/sha-ni/sse4.2
-# plus the CPUID bits its kernel needs to mitigate Spectre. Free for us -- a briard guest never
-# migrates and never saves RAM state. BRIARD_CPU=qemu64 falls back where passthrough is the suspect.
-CPU_MODEL="${BRIARD_CPU:-max}"
-
-# The guest's serial console (its kernel + systemd), captured to the host. Under macvtap the host
-# cannot reach the guest over the network at all, so this file is the only witness to anything that
-# happens inside the VM, and it is what every field diagnosis runs on. Set BRIARD_CONSOLE= (empty)
-# to opt out -- `-` and not `:-` below, so that empty reads as a DECISION rather than as unset.
-CONSOLE="${BRIARD_CONSOLE-/var/log/briard-guest-console.log}"
-
-# The signed release channel root. Under it, one directory per release CHAIN -- `host/` (agent,
-# net-wrap, qemu) and `guest/` (the OS image) -- each holding one directory per version plus the
-# pointers `stable` and `latest`, which are byte-copies of one version's signed manifest
-# (scripts/publish-release.sh spells the tree out). The bucket also serves `catalog/` and THIS
-# script at the root, each on its own lifecycle.
-CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
-# WHICH release: `stable` (what strangers get, a tested pair by construction), `latest` (what was
-# published most recently -- how a release is proven before promotion), or an exact host id
-# (`v3.<date>.<rev>`; its guest release is the one the host manifest names). One selector, both chains.
-RELEASE="${BRIARD_RELEASE:-stable}"
-KEYRING="${BRIARD_KEYRING:-$PREFIX/keyring.pem}"       # the bundled release public key (verify root)
 
 # The release signing public key(s), embedded at release time: this script is fetched over TLS from
 # the channel, so the key travels with it (the installer-carries-the-pubkey pattern). A placeholder
@@ -168,7 +125,7 @@ else
 	if [ ! -f "$KEYRING" ]; then
 		case "$RELEASE_KEYRING_PEM" in
 		*"BEGIN PUBLIC KEY"*) printf '%s\n' "$RELEASE_KEYRING_PEM" >"$KEYRING" ;;
-		*) die "no release keyring at $KEYRING (the embedded key is a build placeholder; set BRIARD_KEYRING)" ;;
+		*) die "no release keyring at $KEYRING (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)" ;;
 		esac
 	fi
 	say "bootstrapping the installer agent from $CHANNEL (host/$RELEASE) ..."
@@ -254,7 +211,8 @@ fi
 #
 # $PREFIX/qemu stays as the PUBLIC path, a fixed link onto that moving one: the bundle bakes
 # /opt/briard/qemu/lib/ld-linux... into its ELF interpreter (qemu-bundle.nix), so that path must
-# always resolve to the running tree, and QEMU= / QEMU_DATADIR= below point through it. Named by
+# always resolve to the running tree, and the agent's QEMU / QEMU_DATADIR defaults point through
+# it (agent/host/config.go). Named by
 # the installed release when a manifest is present, so a later pin back to it reuses the tree;
 # the local staging path has no manifest and gets a fixed name.
 QEMU_REL=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$HOSTSRC/manifest.json" 2>/dev/null || true)
@@ -306,8 +264,6 @@ mkdir -p /usr/local/bin 2>/dev/null || true
 ln -sfn "$PREFIX/agent/briard-agent" /usr/local/bin/briard 2>/dev/null ||
 	say "note: could not link /usr/local/bin/briard; run $PREFIX/agent/briard-agent directly"
 AGENT="$PREFIX/agent/briard-agent"
-QEMU="$PREFIX/qemu/bin/qemu-system-x86_64"
-QEMU_DATADIR="$PREFIX/qemu/share/qemu"
 
 # ---- 4. networking -----------------------------------------------------------------
 # NOTHING IS CONFIGURED HERE. The agent owns the whole of it: which device the guest's L2 hangs
@@ -444,47 +400,6 @@ say "VM disk created"
 # script. Each is generated because each bakes a value.
 mkdir -p "$UNIT_DIR"
 
-# The console capture. The PATH is all that is decided here; the BOUND and the MODE are the
-# agent's, applied at every guest launch before qemu opens the file (agent/platform, [B.157]).
-# That is the granularity the cap needs -- the guest is relaunched on every OS upgrade, every
-# rollback and every rung of the recovery ladder, and a check that ran once when the agent started
-# missed all of them, which is to say it missed the crash-looping guest it exists for.
-CONSOLE_CONF=""
-[ -n "$CONSOLE" ] && CONSOLE_CONF="GUEST_SERIAL=$CONSOLE"
-# The fd-passing launch wrapper, which the agent renders the guest launch behind under macvtap.
-# NET_MODE is NOT written: the agent derives it from the device ([B.150](c)), and writing it here
-# would be install-time frozen and free to disagree with what the machine turns out to be. The
-# wrapper's PATH is written unconditionally because it is a path, not a decision -- it costs
-# nothing on a node that turns out to be on a bridge and does not use it.
-NET_CONF="NET_WRAP_BIN=$NET_WRAP"
-# The release keyring is the agent's trust root for BOTH signed host-agent self-updates and the
-# signed service catalog (`briard service install` verifies a manifest against it). Both fail
-# CLOSED without it -- self-update simply switches itself off, silently -- so a node installed
-# without this env is one that can never update itself and can never install a service, with the
-# key sitting right there on disk unread. Only wired when a keyring actually exists: the
-# BRIARD_ARTIFACTS path (hermetic tests, install-from-source) has no channel and no key, and
-# pointing the agent at a missing file would be worse than leaving it unset.
-# The CATALOG the agent installs services FROM. Parameterised for the same reason the channel
-# is, and separately from it: /catalog/ is live runtime content on its own lifecycle, not
-# release content (nothing in a release publish touches it). Unset = the published default in
-# the agent, so a normal install is unchanged. It exists because a channel signed with any key
-# but the release key cannot use a catalog signed WITH it -- UPDATE_KEYRING is one trust root
-# for both -- which made a staged channel untestable end to end without a drop-in [V3b.21f].
-CATALOG_CONF=""
-[ -n "${BRIARD_CATALOG_URL:-}" ] && CATALOG_CONF="CATALOG_URL=$BRIARD_CATALOG_URL"
-
-# The three private ranges, PINNED. Each is written only when the operator named one; unset --
-# every ordinary install -- means the agent draws it against the network this machine can see,
-# records it and keeps it.
-SYS_SUBNET_CONF=""
-[ -n "$BRIARD_SYSTEM_SUBNET" ] && SYS_SUBNET_CONF="SYSTEM_SUBNET=$BRIARD_SYSTEM_SUBNET"
-PRIV_SUBNET_CONF=""
-[ -n "$BRIARD_PRIV_SUBNET" ] && PRIV_SUBNET_CONF="PRIV_SUBNET=$BRIARD_PRIV_SUBNET"
-POD_SUBNET_CONF=""
-[ -n "$BRIARD_POD_SUBNET" ] && POD_SUBNET_CONF="POD_SUBNET=$BRIARD_POD_SUBNET"
-
-KEY_CONF=""
-[ -f "$KEYRING" ] && KEY_CONF="UPDATE_KEYRING=$KEYRING"
 
 # ---- the self-update PIVOT (B.84) -------------------------------------------------------
 # $RUNDIR was created with the other directories; the flags inside it are tmpfs by virtue of
@@ -555,72 +470,36 @@ chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
 # A FILE BECAUSE A UNIT CANNOT BE REWRITTEN. Some of these are decisions the agent revisits, and a
 # decision it can revisit has to live somewhere it can rewrite. Plain and greppable at 2am; 0600
 # because it is root's business alone.
+#
+# ⚠️ TWO KINDS OF LINE, AND ONLY TWO ([B.157]). What this script COMPUTED about this host -- the
+# identifiers it minted, the wrapper it staged -- and what the OPERATOR said, copied verbatim from
+# the environment. There is deliberately no third kind: no defaults, and no value written just to
+# write it down. A key that is absent is a key the agent answers from its own shipped default,
+# which a release can change and a line in this file could not.
 cat > "$PREFIX/config.env" <<EOF
 # briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
 # '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is
 # parsed -- no quoting, no expansion, no export. Every value is a path, a device name, an
-# address or a duration.
-QEMU=$QEMU
-QEMU_DATADIR=$QEMU_DATADIR
-ACCEL=kvm:tcg
-CPU=$CPU_MODEL
-GUEST_DISK=$OVERLAY
-GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
-DATA_DISK=$DATA
-DATA_ENCRYPTION=$DATA_ENCRYPTION
-STATE_DISK=$STATE_DISK
-CONTROL_SOCK=$RUNDIR/ctl.sock
+# address or a duration. What each key MEANS, and what it defaults to when absent, is
+# agent/host/config.go -- not this file, and not the installer that wrote it.
 NODE=$NODE_NAME
-# The NIC layout, by the device name behind each guest NIC. SYSTEM_TAP -> eth1, this node's node IP
-# and where DRBD binds (it replicates over loopback until a pairing gives it a peer); SERVICE_TAP ->
-# eth2, where the VIP lives, held ready so a second anchor can join without a guest reboot.
-#
-# THE ADDRESSES ON THEM ARE NOT HERE. This node numbers itself at convergence and records the
-# result in $STATE/subnets (agent/host/subnets.go); writing an address here would freeze it where
-# no release and no re-parent could revisit it.
-SYSTEM_TAP=$DRBD_TAP
-SYSTEM_DEV=eth1
-# ⚠️ THIS FILE CARRIES THE MACVTAP SHAPE, AND THE AGENT NARROWS IT ([B.150](c)). The substrate is
-# the answer to "is the device the guest's L2 hangs off a bridge", which only the agent can ask, so
-# what is written here is the shape every Linux node ships in and \`applySubstrate\` blanks
-# SERVICE_TAP / WITNESS_TAP and sets VIP_PARENT on the node that turns out to be on a bridge.
-# Empty reads exactly as unset downstream: qemu renders no second or third NIC, and the routes that
-# would ride them no-op.
-SERVICE_TAP=$TAP
-# WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). The name is
-# historical: the cloud-witness forwarder was its first user, not its only one -- the host's
-# recovery rung reads the guest's reboot gate over it, on every node including a lone one.
-WITNESS_TAP=$PRIV_TAP
-# The device the guest's L2 hangs off, when the operator named one. Empty is every ordinary
-# install: the agent selects the device holding the default route, and re-asks at every start.
-BRIARD_NIC=$NIC
-VIP_DEV=eth2
-VIP_ADDR=$VIP
 FLOCK_ID=$FLOCK_ID
-# The visible name, handed to the guest for mDNS over the control channel like the VIP is. NEVER
-# baked into the image: the image is cattle and an identity is pet.
 FLOCK_NAME=$FLOCK_NAME
-$NET_CONF
-$KEY_CONF
-$CATALOG_CONF
-$SYS_SUBNET_CONF
-$PRIV_SUBNET_CONF
-$POD_SUBNET_CONF
-$CONSOLE_CONF
-# NO HEALTH_URL. Under DHCP the address is acquired inside the guest at promotion, so only the
-# guest knows it: the agent asks (VIP_DEV says where to look) and rebuilds the probe target each
-# cycle. Writing the address twice is writing two things that can disagree, and the one that would
-# silently win here gates readiness, the OS health gate and a rollback.
-STATUS_EVERY=5s
-ASSIGNMENT_CACHE=$STATE/assignment.json
-# The release channel root, for the guest chain ([B.86d]): the agent resolves guest/<target>
-# here and applies the closure a release names. The host chain's fetch does not read this --
-# it lives in the frozen update unit, with the same root baked into its script.
-CHANNEL_URL=$CHANNEL
-# The layout the agent stages a self-update INTO, which must be the directory ExecStart runs
-# from ([B.84]); the two frozen wrappers above bake the same path.
-UPDATE_BASE=$UPDATE_BASE
 EOF
+
+# The operator's own settings, copied verbatim. EVERY `BRIARD_*` in the environment lands here with
+# the prefix stripped, so `BRIARD_CPU=qemu64` becomes `CPU=qemu64` and the rule is one sentence
+# rather than a table this script has to keep in step with config.go.
+#
+# The exclusions are the names that configure THE INSTALL rather than the node: where to fetch
+# from, which release, where the units go, how big the data volume is -- and BRIARD_CONFIG, which
+# names this very file, so copying it in would be a node telling itself where it already is.
+#
+# Sorted, so two installs given the same environment produce byte-identical files. Values are
+# single-line by the format's own rule, which is what makes a line-oriented copy correct.
+env | grep '^BRIARD_[A-Z0-9_]*=' |
+	grep -Ev '^BRIARD_(ARTIFACTS|RELEASE|UNIT_DIR|DATA_SIZE|CONFIG)=' |
+	sed 's/^BRIARD_//' | LC_ALL=C sort >> "$PREFIX/config.env"
 chmod 0600 "$PREFIX/config.env"
 
 # ---- the update unit BELOW the agent ([B.86a]) ------------------------------------------

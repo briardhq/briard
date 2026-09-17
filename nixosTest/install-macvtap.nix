@@ -100,7 +100,7 @@ let
   # What install.sh needs to reach the channel: where it lives, and the release public key it
   # verifies the manifest against. Exactly the two the shipped one-liner sets. The keyring is
   # minted into /root at test start (see the signing step in the script).
-  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_KEYRING=/root/keyring.pem";
+  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_UPDATE_KEYRING=/root/keyring.pem";
   installScript = ../scripts/install.sh;
 in
 pkgs.testers.runNixOSTest {
@@ -581,6 +581,30 @@ pkgs.testers.runNixOSTest {
     # at install is a node no release can renumber and no re-parent can re-check.
     host.succeed("journalctl -u briard-agent | grep -q 'this node numbers itself from'")
     host.fail("grep -q '^SYSTEM_CIDR=' /opt/briard/config.env")
+
+    # ---- CONFIG.ENV CARRIES TWO KINDS OF LINE AND NO THIRD ([B.157]) --------------------------
+    # What install.sh COMPUTED about this host, and what the OPERATOR said -- copied out of the
+    # environment with the BRIARD_ prefix stripped. No defaults: a key nobody named is a key the
+    # agent answers from agent/host/config.go, which a release can change and a line in this file
+    # could not.
+    #
+    # A WHITELIST rather than a list of the ~20 keys that left, because the failure this guards is
+    # a NEW default being written here out of habit, and that one fails by name. It also catches
+    # the copy's other direction -- a stray BRIARD_* from the invoking environment landing in a
+    # node's configuration. [[verification-assertions-must-fail]]: put QEMU= back and this says so.
+    keys = sorted(
+        l.split("=")[0]
+        for l in host.succeed("cat /opt/briard/config.env").splitlines()
+        if l and not l.startswith("#")
+    )
+    computed = {"NODE", "FLOCK_ID", "FLOCK_NAME"}
+    copied = {"CHANNEL_URL", "UPDATE_KEYRING"}  # exactly what channelEnv carried
+    assert set(keys) == computed | copied, (
+        f"config.env is {keys}: unexpected {sorted(set(keys) - computed - copied)}, "
+        f"missing {sorted((computed | copied) - set(keys))}"
+    )
+    print(f"config.env is {len(keys)} lines, all computed or copied: {keys}")
+
     subnets = host.succeed("cat /var/lib/briard/subnets")
     system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
     priv_subnet = host.succeed("sed -n 's/^PRIV_SUBNET=//p' /var/lib/briard/subnets").strip()
@@ -956,7 +980,10 @@ pkgs.testers.runNixOSTest {
     # the agent by serial, formatted by the guest exactly once (the first boot of the FIRST
     # install -- the reinstall's guest found it and kept it), and the guest is the same machine
     # on both boots because its machine-id comes from the VM UUID the host derives from the node.
-    host.succeed("grep -q '^STATE_DISK=/var/lib/briard/state.img$' /opt/briard/config.env")
+    # The PATH is a config.go default now rather than a config.env line ([B.157]), so the assertion
+    # reads what the running qemu was actually handed -- which is the claim that mattered anyway: a
+    # line in a file proves what the installer wrote, not what the guest got.
+    host.succeed("pgrep -af qemu-system-x86_64 | grep -q '/var/lib/briard/state.img'")
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q 'serial=briard-state'")
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q -- '-uuid '")
     assert state_uuid == host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), "the reinstall's guest reformatted the state disk"
@@ -1155,11 +1182,13 @@ pkgs.testers.runNixOSTest {
         "StartLimitIntervalSec=0",
     ):
         assert want in unit, f"the shipped unit is missing {want!r} — self-update has no on-disk half"
-    # The third leg: the layout the agent stages into must BE the directory ExecStart runs from.
-    # Left at its default it was /var/lib/briard while the unit ran out of /opt -- so a commit
-    # would be a cross-filesystem rename at best and a no-op at worst. It is a VALUE, so since
-    # [B.150](a) it is in config.env rather than on the unit.
-    host.succeed("grep -q '^UPDATE_BASE=/opt/briard/agent$' /opt/briard/config.env")
+    # The third leg: the layout the agent stages into must BE the directory ExecStart runs from. A
+    # default of /var/lib/briard under a unit that runs out of /opt makes a commit a
+    # cross-filesystem rename at best and a no-op at worst. The default moved into config.go
+    # ([B.157]), so what is asserted is the FROZEN WRAPPERS' own baked path: they are what performs
+    # the rename, and it is their agreement with ExecStart that the leg is actually about.
+    for w in ("briard-exec", "briard-commit"):
+        host.succeed(f"grep -q '/opt/briard/agent/briard-agent' /opt/briard/agent/{w}")
 
     # ---- THE NETWORK IS THE AGENT'S ([B.150](c)+(d)) ------------------------------------------
     # No generated script, no oneshot unit, and -- the part that took the node dark when it
@@ -1624,9 +1653,9 @@ pkgs.testers.runNixOSTest {
     #
     # The tier is collapsed by the test fixture rather than waited out: the shipped fast tier is
     # five minutes, which would buy this assertion nothing the first second does not already give
-    # it. BRIARD_REPARENT_TIER shrinks durations only -- "different subnet" and "cannot tell" stay
+    # it. REPARENT_TIER shrinks durations only -- "different subnet" and "cannot tell" stay
     # unreachable from it, so this cannot accidentally prove a re-parent the product forbids.
-    host.succeed("printf 'BRIARD_REPARENT_TIER=2s\\n' >> /opt/briard/config.env")
+    host.succeed("printf 'REPARENT_TIER=2s\\n' >> /opt/briard/config.env")
     host.succeed("systemctl restart briard-agent.service")
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     # The LAN fingerprint was recorded at bring-up and names the device we are about to remove.

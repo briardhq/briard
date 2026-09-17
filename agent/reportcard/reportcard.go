@@ -321,7 +321,7 @@ func vipCheck(f HostFacts) []Check {
 	vip, _, err := net.ParseCIDR(f.VIPAddr)
 	if err != nil || vip.To4() == nil {
 		return []Check{{"vip", Refuse, fmt.Sprintf("the service address %q is not a valid IPv4 address/prefix", f.VIPAddr),
-			"set BRIARD_VIP to an address on this machine's LAN, in CIDR form (e.g. BRIARD_VIP=192.168.1.50/24)"}}
+			"set BRIARD_VIP_ADDR to an address on this machine's LAN, in CIDR form (e.g. BRIARD_VIP_ADDR=192.168.1.50/24)"}}
 	}
 	if f.HostCIDR == "" {
 		// We could not read the host's own address. Say nothing rather than refuse a host over a
@@ -336,12 +336,12 @@ func vipCheck(f HostFacts) []Check {
 	case !lan.Contains(vip):
 		return []Check{{"vip", Refuse,
 			fmt.Sprintf("the service address %s is not on this machine's LAN (%s)", vip, lan),
-			fmt.Sprintf("this node would claim an address nobody on your network can reach. Pick a free address inside %s and re-run: `BRIARD_VIP=<address>/%s curl -fsSL https://get.briard.io/install.sh | sudo sh`",
+			fmt.Sprintf("this node would claim an address nobody on your network can reach. Pick a free address inside %s and re-run: `BRIARD_VIP_ADDR=<address>/%s curl -fsSL https://get.briard.io/install.sh | sudo sh`",
 				lan, prefixOf(f.HostCIDR))}}
 	case vip.Equal(hostIP):
 		return []Check{{"vip", Refuse,
 			fmt.Sprintf("the service address %s is this machine's own address", vip),
-			"the guest claims the VIP as a second machine on your LAN, so it cannot be the host's address; set BRIARD_VIP to a free one"}}
+			"the guest claims the VIP as a second machine on your LAN, so it cannot be the host's address; set BRIARD_VIP_ADDR to a free one"}}
 	case f.VIPAnswered:
 		// The third refusal for this gate, alongside off-LAN and host's-own. It is the only one
 		// that needs the network rather than arithmetic, which is why it is checked last:
@@ -349,12 +349,12 @@ func vipCheck(f HostFacts) []Check {
 		// on one address.
 		return []Check{{"vip", Refuse,
 			fmt.Sprintf("the service address %s is already in use on this LAN (something answered for it)", vip),
-			fmt.Sprintf("pick a free address inside %s, or leave BRIARD_VIP unset and let your router assign one", lan)}}
+			fmt.Sprintf("pick a free address inside %s, or leave BRIARD_VIP_ADDR unset and let your router assign one", lan)}}
 	}
 	return []Check{{"vip", Pass, fmt.Sprintf("service address %s is on this machine's LAN (%s), and nothing answered for it", vip, lan), ""}}
 }
 
-// dhcpCheck answers the question an unset BRIARD_VIP asks: can this LAN give us an address?
+// dhcpCheck answers the question an unset BRIARD_VIP_ADDR asks: can this LAN give us an address?
 //
 // It cannot be answered with certainty short of actually leasing one, and the install is not the
 // place to take a lease we may not keep. So it reports EVIDENCE: this machine's own address being
@@ -370,7 +370,7 @@ func dhcpCheck(f HostFacts) []Check {
 	}
 	return []Check{{"vip", Warn,
 		"no service address set, and this machine's own address does not look DHCP-assigned",
-		"briard will ask your router for an address when it starts. If your network has no DHCP server, set one explicitly instead: `BRIARD_VIP=<free-address>/<prefix> curl -fsSL https://get.briard.io/install.sh | sudo sh`"}}
+		"briard will ask your router for an address when it starts. If your network has no DHCP server, set one explicitly instead: `BRIARD_VIP_ADDR=<free-address>/<prefix> curl -fsSL https://get.briard.io/install.sh | sudo sh`"}}
 }
 
 // prefixOf returns the "/24" part of a CIDR string, for quoting back in a fix line.

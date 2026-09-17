@@ -81,11 +81,26 @@ func versionBanner(version string) string {
 	return "briard-agent starting, version " + version
 }
 
-// defaultConfigFile is where install.sh writes this node's configuration ([B.150](a)). A constant
-// rather than a derived path, because the prefix is one ([B.157]): it is baked into the qemu
-// bundle's ELF interpreter too. The shipped unit states it in BRIARD_CONFIG so `systemctl cat`
-// answers the question; this is the answer for a hand-run agent, which is told nothing.
-const defaultConfigFile = "/opt/briard/config.env"
+// THE INSTALL LAYOUT, AND WHY IT IS HERE RATHER THAN IN THE INSTALLER ([B.157]).
+//
+// install.sh is fetched from the channel root and run once, so every value it writes is frozen
+// where no release can reach it. It therefore writes only what it COMPUTES about this host -- the
+// identifiers it minted, the operator's own overrides -- and every DEFAULT lives here, in a binary
+// the channel can fix. A node whose config.env is missing a key is not a broken node; it is a node
+// taking the shipped answer.
+//
+// The three roots are constants because the prefix is: /opt/briard is baked into the qemu bundle's
+// own ELF interpreter, so an install anywhere else produces a qemu that cannot execute.
+const (
+	prefixDir = "/opt/briard"
+	stateDir  = "/var/lib/briard"
+	runDir    = "/run/briard"
+
+	// defaultConfigFile is where install.sh writes this node's configuration ([B.150](a)). The
+	// shipped unit states it in BRIARD_CONFIG so `systemctl cat` answers the question; this is the
+	// answer for a hand-run agent, which is told nothing.
+	defaultConfigFile = prefixDir + "/config.env"
+)
 
 // loadConfigFile makes the file the DEFAULT layer under the environment, by setting only the keys
 // the environment has not already spoken for. Every os.Getenv below therefore reads it without
@@ -156,20 +171,25 @@ func ConfigFromEnv() Config {
 		}}
 	}
 	cfg := Config{
-		QEMUBinary:  env("QEMU", "qemu-system-x86_64"),
-		QEMUDataDir: os.Getenv("QEMU_DATADIR"), // "" -> qemu default; the bundle sets <prefix>/share/qemu
+		// The BUNDLED qemu, at the fixed prefix its own ELF interpreter names -- not whatever
+		// `qemu-system-x86_64` a distro happens to have on PATH, which is the one thing this
+		// product deliberately does not run on.
+		QEMUBinary:  env("QEMU", prefixDir+"/qemu/bin/qemu-system-x86_64"),
+		QEMUDataDir: env("QEMU_DATADIR", prefixDir+"/qemu/share/qemu"),
 		Accel:       env("ACCEL", "kvm:tcg"),
 		// `max` = every feature the accelerator can give the guest, which under KVM is the
 		// host's own CPU. The escape hatch (BRIARD_CPU=qemu64 at the installer, CPU= here) is
 		// for a host where the passthrough itself is the suspect -- one env line beats a release.
-		CPUModel:    env("CPU", "max"),
-		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
-		Cores:       atoi(os.Getenv("CORES"), 2),
-		GuestDisk:   os.Getenv("GUEST_DISK"),
-		GuestImage:  os.Getenv("GUEST_IMAGE"),
-		DataDisk:    os.Getenv("DATA_DISK"),
-		StateDisk:   os.Getenv("STATE_DISK"),
-		ControlSock: env("CONTROL_SOCK", "/run/briard-ctl.sock"),
+		CPUModel: env("CPU", "max"),
+		MemoryMB: atoi(os.Getenv("MEMORY_MB"), 2048),
+		Cores:    atoi(os.Getenv("CORES"), 2),
+		// The four disks, at the layout install.sh lays them down in. GuestDisk is CATTLE (rebuilt
+		// on the image at every launch); the other two are PET, beside this node's identity.
+		GuestDisk:   env("GUEST_DISK", prefixDir+"/guest.qcow2"),
+		GuestImage:  env("GUEST_IMAGE", prefixDir+"/guest-image/nixos.qcow2"),
+		DataDisk:    env("DATA_DISK", stateDir+"/data.img"),
+		StateDisk:   env("STATE_DISK", stateDir+"/state.img"),
+		ControlSock: env("CONTROL_SOCK", runDir+"/ctl.sock"),
 		// QEMU's own control channel -- the VM, not the guest OS inside it. Without
 		// it the host's only way to stop a guest is killing qemu, i.e. a power cut to the
 		// machine whose job is not losing data. Its own directory, because platform.Launch
@@ -181,17 +201,24 @@ func ConfigFromEnv() Config {
 		AdminSock: env("ADMIN_SOCK", "/run/briard/admin.sock"),
 		// The guest's admin port ([V3b.31i]), beside the control socket it mirrors.
 		AdminPortSock: env("ADMIN_PORT_SOCK", "/run/briard-admin.sock"),
-		ServiceTap:    os.Getenv("SERVICE_TAP"),
-		SystemTap:     os.Getenv("SYSTEM_TAP"),
-		WitnessTap:    os.Getenv("WITNESS_TAP"),  // eth3 private witness link; "" -> no witness NIC
-		NetMode:       os.Getenv("NET_MODE"),     // "" (bridge, default) | "macvtap"
-		VIPParent:     os.Getenv("VIP_PARENT"),   // bridge substrate only: the NIC the guest builds VIP_DEV on
-		NetWrapBin:    os.Getenv("NET_WRAP_BIN"), // the fd-passing launch wrapper; required for NET_MODE=macvtap
-		// BRIARD_NIC, under the name the installer has always used for it -- the agent asks the
-		// same question the report card did, so it reads the same override ([B.150](b)).
-		NICOverride:  os.Getenv("BRIARD_NIC"),
+		// THE GUEST'S THREE NICS, by the name of the host device behind each. `declared` and not
+		// `env`: an explicitly EMPTY entry is how a node says it has no such NIC, and the default
+		// must not overrule it ([V3b.26c]). Unset -- every shipped install, whose config.env names
+		// a tap only when the operator did -- takes the shipped names.
+		ServiceTap: declared("SERVICE_TAP", "briard0"),                      // eth2, where the VIP lives
+		SystemTap:  declared("SYSTEM_TAP", "briard-drbd0"),                  // eth1, the node IP and DRBD
+		WitnessTap: declared("WITNESS_TAP", "briard-priv0"),                 // eth3, the private host<->guest link
+		NetMode:    os.Getenv("NET_MODE"),                                   // derived by the agent; "" -> it decides
+		VIPParent:  os.Getenv("VIP_PARENT"),                                 // bridge substrate only: the NIC the guest builds VIP_DEV on
+		NetWrapBin: env("NET_WRAP_BIN", prefixDir+"/agent/briard-net-wrap"), // the fd-passing launch wrapper
+		// The device the guest's L2 hangs off, when an operator named one. The agent asks the same
+		// question the report card did, so it reads the same override ([B.150](b)).
+		NICOverride:  os.Getenv("NIC"),
 		PrivHostCIDR: os.Getenv("PRIV_HOST_CIDR"), // the host's end of the private link, e.g. 10.11.9.1/24
-		SerialLog:    os.Getenv("GUEST_SERIAL"),
+		// The guest's serial console, captured to the host. Under macvtap the host cannot reach the
+		// guest over the network at all, so this file is the only witness to anything inside the VM.
+		// `declared`, because an empty entry is how BRIARD_GUEST_SERIAL= switches capture off.
+		SerialLog: declared("GUEST_SERIAL", "/var/log/briard-guest-console.log"),
 		// Host-side witness-forwarder identity. Bin + the anchor cert/key/ca; a managed
 		// pairing directive (MeshSpec.Witness) starts the forwarder with these. Unset -> a pairing
 		// that needs the cloud witness fails fast (before any DRBD change).
@@ -201,19 +228,22 @@ func ConfigFromEnv() Config {
 		WitnessCA:    os.Getenv("WITNESS_CA"),
 		Node:         node,
 		Role:         role,
-		SystemDev:    os.Getenv("SYSTEM_DEV"),  // e.g. eth1 (the system NIC); "" -> leave it unaddressed
-		SystemCIDR:   os.Getenv("SYSTEM_CIDR"), // this node's node IP, e.g. 10.0.0.1/24
+		// The guest's own kernel names for those NICs, which follow qemu's -netdev ORDER and are
+		// therefore ours rather than an operator's. `declared` for the same reason the taps are:
+		// "" is how a node says it addresses no system NIC and claims no VIP.
+		SystemDev:  declared("SYSTEM_DEV", "eth1"),
+		SystemCIDR: os.Getenv("SYSTEM_CIDR"), // this node's node IP, e.g. 10.0.0.1/24
 		// The host's own end of the system subnet, and the guest's name for the private NIC.
 		// install.sh sets all three together or none of them: a host address with no device to
 		// route it over, or a device with no address, is a half-built path.
 		SystemHostCIDR: os.Getenv("SYSTEM_HOST_CIDR"), // e.g. 10.0.0.129/32
 		WitnessDev:     env("WITNESS_DEV", "eth3"),
-		WitnessCIDR:    os.Getenv("WITNESS_CIDR"), // the guest's end of the private link, e.g. 10.11.9.2/24
-		PodSubnet:      os.Getenv("POD_SUBNET"),   // the pool private service networks come from, e.g. 10.12.7
-		VIPDev:         os.Getenv("VIP_DEV"),      // e.g. eth2 on a data node; "" -> this node claims no VIP (a witness)
-		VIPAddr:        os.Getenv("VIP_ADDR"),     // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
-		FlockID:        os.Getenv("FLOCK_ID"),     // flock-scoped VIP MAC seed; "" -> fall back to the node name
-		FlockName:      os.Getenv("FLOCK_NAME"),   // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
+		WitnessCIDR:    os.Getenv("WITNESS_CIDR"),   // the guest's end of the private link, e.g. 10.11.9.2/24
+		PodSubnet:      os.Getenv("POD_SUBNET"),     // the pool private service networks come from, e.g. 10.12.7
+		VIPDev:         declared("VIP_DEV", "eth2"), // "" -> this node claims no VIP (a witness)
+		VIPAddr:        os.Getenv("VIP_ADDR"),       // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
+		FlockID:        os.Getenv("FLOCK_ID"),       // flock-scoped VIP MAC seed; "" -> fall back to the node name
+		FlockName:      os.Getenv("FLOCK_NAME"),     // flock-scoped VISIBLE name for mDNS; "" -> publish nothing
 		Resource: drbd.Resource{
 			Name:   env("RESOURCE", "r0"),
 			Device: env("DEVICE", "/dev/drbd0"),
@@ -243,24 +273,25 @@ func ConfigFromEnv() Config {
 		// now means "ask the guest what address it actually holds" (guest.ResolveHealthURL, via
 		// VIP_DEV): the only source that can be right on a LAN we have never seen. Setting it
 		// explicitly still pins a probe target.
-		HealthURL:       disklessOr(role, "", os.Getenv("HEALTH_URL")),
-		StatusEvery:     durEnv("STATUS_EVERY", 10*time.Second),
+		HealthURL: disklessOr(role, "", os.Getenv("HEALTH_URL")),
+		// 5s, which is what every installed node has run at since the installer started writing it.
+		StatusEvery:     durEnv("STATUS_EVERY", 5*time.Second),
 		BringUpBudget:   durEnv("BRINGUP_BUDGET", 5*time.Minute),
-		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),                   // the OS-upgrade bound, incl. the degraded wait before a revert
-		ControllerURL:   os.Getenv("CONTROLLER_URL"),                                // "" -> standalone, no north-bound report
-		ControllerToken: os.Getenv("CONTROLLER_TOKEN"),                              // bearer on seam calls; "" -> no auth
-		AssignmentCache: env("ASSIGNMENT_CACHE", "/var/lib/briard/assignment.json"), // cold-boot cache
-		NotifyURL:       os.Getenv("NOTIFY_URL"),                                    // ntfy topic URL for alerts; "" -> log-only
-		TelemetryPath:   os.Getenv("TELEMETRY_PATH"),                                // out-of-band soak collector file; "" -> don't write
-		MetricsWindow:   durEnv("METRICS_WINDOW", time.Hour),                        // cloud aggregate rollup bucket; soak shortens it to exercise rollover
+		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),             // the OS-upgrade bound, incl. the degraded wait before a revert
+		ControllerURL:   os.Getenv("CONTROLLER_URL"),                          // "" -> standalone, no north-bound report
+		ControllerToken: os.Getenv("CONTROLLER_TOKEN"),                        // bearer on seam calls; "" -> no auth
+		AssignmentCache: env("ASSIGNMENT_CACHE", stateDir+"/assignment.json"), // cold-boot cache
+		NotifyURL:       os.Getenv("NOTIFY_URL"),                              // ntfy topic URL for alerts; "" -> log-only
+		TelemetryPath:   os.Getenv("TELEMETRY_PATH"),                          // out-of-band soak collector file; "" -> don't write
+		MetricsWindow:   durEnv("METRICS_WINDOW", time.Hour),                  // cloud aggregate rollup bucket; soak shortens it to exercise rollover
 		// A TEST FIXTURE, read here so it has one home rather than a stray Getenv in the observe
-		// loop. agent-watchdog.nix sets it to wedge that goroutine on purpose; nothing else does,
-		// install.sh writes no such variable, and unset is a no-op. See wedgeForTest.
-		WedgeFIFO: os.Getenv("BRIARD_WEDGE_FIFO"),
+		// loop. agent-watchdog.nix sets it to wedge that goroutine on purpose; nothing else does, and
+		// unset is a no-op. See wedgeForTest.
+		WedgeFIFO: os.Getenv("WEDGE_FIFO"),
 		// The other test fixture, read here for the same reason and with the same contract:
 		// install-macvtap sets it to drive a re-parent without waiting out the shipped tier;
-		// install.sh writes no such key and 0 is the shipped behaviour. See Config.ReparentTier.
-		ReparentTier: durEnv("BRIARD_REPARENT_TIER", 0),
+		// 0 is the shipped behaviour. See Config.ReparentTier.
+		ReparentTier: durEnv("REPARENT_TIER", 0),
 		// Services is NOT read from the environment, and there is nothing here to read it from:
 		// what a node runs is installed at runtime and rebuilt from the node-local manifest cache
 		// at bring-up (Run -> installedServices), or read off the volume when this node promotes
@@ -272,10 +303,10 @@ func ConfigFromEnv() Config {
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; a service catalog is not a web page.
 		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache:      env("SERVICE_CACHE", "/var/lib/briard/services"),
-		MeshCache:         env("MESH_CACHE", "/var/lib/briard/mesh.json"),
+		ServiceCache:      env("SERVICE_CACHE", stateDir+"/services"),
+		MeshCache:         env("MESH_CACHE", stateDir+"/mesh.json"),
 		ChannelURL:        env("CHANNEL_URL", "https://get.briard.io"),
-		GuestReleaseCache: env("GUEST_RELEASE_CACHE", "/var/lib/briard/guest-release.json"),
+		GuestReleaseCache: env("GUEST_RELEASE_CACHE", stateDir+"/guest-release.json"),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
 		// the signed CATALOG (service install), not self-update any more: since [B.86a] the
@@ -283,8 +314,8 @@ func ConfigFromEnv() Config {
 		// keyring file, and the agent only watches the arm flag. Base/RunDir/Unit default in
 		// newSelfUpdater. Version is baked at build time (buildVersion), overridable by env for
 		// tests -- it is the running binary's own id, so a committed update reports the new one.
-		UpdateKeyring: readFileOrNil(os.Getenv("UPDATE_KEYRING")),
-		UpdateBase:    os.Getenv("UPDATE_BASE"),
+		UpdateKeyring: readFileOrNil(env("UPDATE_KEYRING", prefixDir+"/keyring.pem")),
+		UpdateBase:    env("UPDATE_BASE", prefixDir+"/agent"),
 		UpdateRunDir:  os.Getenv("UPDATE_RUN_DIR"),
 		UpdateUnit:    os.Getenv("UPDATE_UNIT"),
 		Version:       env("AGENT_VERSION", buildVersion),
@@ -379,6 +410,20 @@ func atoi(s string, def int) int {
 func durEnv(k string, def time.Duration) time.Duration {
 	if d, err := time.ParseDuration(os.Getenv(k)); err == nil {
 		return d
+	}
+	return def
+}
+
+// declared is env() for a key whose EMPTY VALUE IS A DECISION.
+//
+// env() cannot express one: it falls back to the default for an explicitly empty entry, which is
+// right for a URL or a duration and wrong for a device name, where "" is how a node says it has no
+// such NIC ([V3b.26c]'s substrate fork). So the default here applies only when the key is not
+// declared at all -- which is exactly the shipped install, whose config.env carries a key only when
+// the operator named it ([B.157]).
+func declared(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok {
+		return v
 	}
 	return def
 }
