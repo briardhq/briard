@@ -21,4 +21,4 @@
 # PATH and the SHAPE are load-bearing: this file must stay at the repo root and must evaluate
 # to the hash string alone. Move it, or wrap it in an attrset, and the sibling's build breaks.
 # (Loudly — it imports rather than greps — but it breaks.)
-"sha256-4d/F5wfaBgNfrt0bv6IuElUAR/wVr7yG8BYOX0dSq6c="
+"sha256-RnFZM0SQsxoN/fhud+dP33+DLwmfbHJcEjk1xnPsVeo="

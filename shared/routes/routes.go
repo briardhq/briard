@@ -372,3 +372,20 @@ func Normalise(host string) string {
 	}
 	return strings.TrimSuffix(h, ".")
 }
+
+// FlockHostName is the flock's OWN name — `briard-<flock>.local`, the one a household types to
+// reach this node's dashboard and the SRV target nothing else composes. It lives here for the
+// reason HostName does: every rule for building a name belongs to one function, so a second name
+// form ([V3b.14]) is one change rather than one per language.
+//
+// The publisher composes nothing: it claims the names this package builds, so the door and the
+// agent cannot disagree about what a flock is called ([B.152]).
+//
+// An empty flock name yields no name at all, the same rule HostName follows: a node with no minted
+// name publishes nothing rather than `briard-.local`, which is worse than silence.
+func FlockHostName(flock string) string {
+	if flock == "" {
+		return ""
+	}
+	return "briard-" + flock + ".local"
+}
