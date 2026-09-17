@@ -23,10 +23,15 @@ package main
 // ([B.129] is what that hid: inbound mDNS dropped on the macvtap while egress worked perfectly).
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"briard.io/shared/routes"
 	pmdns "github.com/pion/mdns/v2"
@@ -257,4 +262,163 @@ func (r *mdnsResponder) close() {
 		r.conn = nil
 	}
 	r.cur = mdnsWorld{}
+}
+
+// The four runtime files this reads, and the household NICs it answers on.
+//
+// ⚠️ PAIRED WITH guest-image/configuration.nix, which writes three of them and names the same
+// interfaces -- the pairing the topology word already uses ("PAIRED with the Go const
+// guestagent.topologyEnvPath"). They are constants rather than flags because nothing chooses them
+// per deployment: the image fixes the paths and names the NICs, and a flag would only be a second
+// place for the same value to be wrong.
+const (
+	// vipEnvPath is the agent's configured VIP; vipLivePath is what briard-vip ACTUALLY claimed,
+	// which under DHCP is the only one that knows. Last wins, exactly as the unit's
+	// EnvironmentFile ordering did.
+	vipEnvPath  = "/run/briard/vip.env"
+	vipLivePath = "/run/briard/vip.live"
+	// mdnsEnvPath carries FLOCK_NAME, written by the agent's net.mdnsname and never baked: it is
+	// PET identity arriving at a CATTLE image. Absent means the flock has no minted name, which
+	// is a state, not a fault.
+	mdnsEnvPath = "/run/briard/mdns.env"
+	// mdnsPublishedPath is what the host reads back every observe cycle (net.mdnspublished),
+	// BARE -- no `briard-` prefix and no `.local`. Absent means this node publishes nothing, which
+	// is the normal answer on a Secondary.
+	mdnsPublishedPath = "/run/briard/mdns.published"
+	// mdnsWatch is how long a change takes to reach the wire. Lag, not a race: nothing waits on a
+	// name within a deadline, and an install prints the name from the agent's own knowledge.
+	mdnsWatch = 2 * time.Second
+)
+
+// householdNICs are the interfaces a household is on, and the exclusions are the point: never the
+// interfaces podman creates ([V3b.30](a) -- a veth appearing mid-probe is what wedged avahi), and
+// never the host link. Whichever of these exist are used; none existing is a fault worth failing
+// on, because a responder answering on no interface is a name that resolves nowhere.
+var householdNICs = []string{"eth1", "eth2", "eth3"}
+
+// mdnsIfaces resolves the household NICs that exist on this node.
+func mdnsIfaces() ([]net.Interface, error) {
+	var out []net.Interface
+	for _, name := range householdNICs {
+		ifi, err := net.InterfaceByName(name)
+		if err != nil {
+			continue
+		}
+		out = append(out, *ifi)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("mdns: none of %v exist, so there is nowhere to answer", householdNICs)
+	}
+	return out, nil
+}
+
+// envValue reads one KEY=VALUE out of a systemd EnvironmentFile. Absent files and absent keys are
+// "", never errors: every one of them has a legitimate empty state (no VIP yet, no minted name).
+func envValue(path, key string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var val string
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != key {
+			continue
+		}
+		// Last wins within a file, as systemd does.
+		val = strings.Trim(strings.TrimSpace(v), `"'`)
+	}
+	return val
+}
+
+// mdnsVIP is the address every name resolves to: what briard-vip actually claimed, falling back to
+// what the agent configured.
+//
+// ⚠️ IT IS THE RECORDED ADDRESS, NOT THE INTERFACE'S. Reading the device would be the ground truth
+// net.vip reports, but a household NIC can carry the node's own address as well as the VIP
+// ([V3b.26]'s node-IP doctrine), and picking between them here would be a SECOND rule for which
+// address is the VIP. The live file is the existing one.
+func mdnsVIP(livePath, cfgPath string) string {
+	addr := envValue(livePath, "VIP_ADDR")
+	if addr == "" {
+		addr = envValue(cfgPath, "VIP_ADDR")
+	}
+	addr, _, _ = strings.Cut(addr, "/") // the prefix length is the claimer's business, not the name's
+	return strings.TrimSpace(addr)
+}
+
+// serveMDNS keeps the wire matching the node's state until ctx ends.
+//
+// ⚠️ THE FIRST PASS IS SYNCHRONOUS AND ITS ERROR IS THE CALLER'S TO ESCALATE. A door that cannot
+// publish is a node a `.local`-only household cannot reach at all, so the failure belongs in the
+// promoter chain rather than in a log line -- which is the whole lesson of the daemon this
+// replaces ([B.151]: avahi died, said nothing, and the name was gone for days). Having NOTHING to
+// publish is not that failure and never fails: a node with no minted flock name serves HTTP and
+// says nothing on the LAN.
+func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) error {
+	tick := func() error {
+		flock := envValue(mdnsEnvPath, "FLOCK_NAME")
+		if err := resp.set(mdnsWorldFor(mdnsVIP(vipLivePath, vipEnvPath), flock, tbl.current().table)); err != nil {
+			return err
+		}
+		return writePublished(mdnsPublishedPath, flock, resp.published())
+	}
+	if err := tick(); err != nil {
+		return err
+	}
+	go func() {
+		t := time.NewTicker(mdnsWatch)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				// AFTER the first pass, a failure is logged and retried rather than fatal: the
+				// inputs move under us (converge rewrites the table, a lease is renewed), and
+				// tearing the front door down over a transient read would trade a name for the
+				// whole household's HTTP.
+				if err := tick(); err != nil {
+					log.Printf("reverse-proxy: mdns: %v", err)
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+// writePublished records the flock name this node is REALLY answering for, bare -- no `briard-`
+// prefix and no `.local` -- where net.mdnspublished reads it. Publishing nothing REMOVES the file,
+// because absent is how a Secondary says "none" and an empty file would be a name of length zero.
+//
+// It is derived from what the responder is actually serving, never from what it was asked to
+// serve: the host reads this every cycle to answer "what name does this node really have", and
+// echoing the request would rebuild the failure the read-back exists to end (V3.19).
+func writePublished(path, flock string, names []string) error {
+	want := routes.FlockHostName(flock)
+	serving := false
+	for _, n := range names {
+		if n == want && want != "" {
+			serving = true
+			break
+		}
+	}
+	if !serving {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("mdns: clearing %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(flock+"\n"), 0o644); err != nil {
+		return fmt.Errorf("mdns: recording the published name: %w", err)
+	}
+	return nil
+}
+
+// world is what is currently on the wire, for the one line the door logs at startup.
+func (r *mdnsResponder) world() mdnsWorld {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cur
 }

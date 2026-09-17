@@ -126,6 +126,24 @@ func main() {
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *listen, err)
 	}
+	// THE HOUSEHOLD NAME, BOUND BEFORE READY for the same reason the listeners are. A door that
+	// cannot answer `.local` is a node a household without a [V3c.4] `*.casa` name cannot reach at
+	// all, so the failure belongs in the promoter chain rather than in a log line nobody reads --
+	// which is exactly how the daemon this replaces went missing for two days ([B.151]).
+	// HAVING NOTHING TO PUBLISH IS NOT THAT FAILURE: a node whose flock has no minted name binds
+	// nothing, says nothing, and serves HTTP.
+	ifaces, err := mdnsIfaces()
+	if err != nil {
+		log.Fatalf("reverse-proxy: %v", err)
+	}
+	// No cleanup path: the process exiting closes the sockets, so the unit.s lifetime IS the
+	// record.s lifetime -- the one property the publisher it replaces got right.
+	resp := newMDNSResponder(ifaces)
+	if err := serveMDNS(context.Background(), resp, tbl); err != nil {
+		log.Fatalf("reverse-proxy: %v", err)
+	}
+	log.Printf("reverse-proxy: mdns answering for %s", resp.world().describe())
+
 	_ = sdnotify.Ready()
 	go func() {
 		// Cert/key come from TLSConfig.GetCertificate, so ServeTLS takes empty paths.

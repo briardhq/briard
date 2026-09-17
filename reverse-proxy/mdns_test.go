@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"briard.io/shared/routes"
@@ -153,4 +154,100 @@ func TestBothNodesOfAFlockPublishTheSameRecords(t *testing.T) {
 			"then need an announcement to correct a record, and this ships without one",
 			peer.describe(), primary.describe())
 	}
+}
+
+// The three runtime files are read, never inherited from the environment: the door is long-lived
+// and the values move under it -- a lease renewed, a flock renamed -- where a process that read
+// its environment once would answer with yesterday's name until someone restarted it.
+func TestTheVIPIsWhatWasCLAIMEDNotWhatWasConfigured(t *testing.T) {
+	dir := t.TempDir()
+	cfg, live := dir+"/vip.env", dir+"/vip.live"
+	write(t, cfg, "VIP_DEV=eth2\nVIP_ADDR=192.168.1.50/24\n")
+
+	// No live file yet: the configured address is all there is, and the prefix is the claimer's
+	// business rather than the name's.
+	if got := mdnsVIP(live, cfg); got != "192.168.1.50" {
+		t.Errorf("with no live file the VIP read %q, want the configured 192.168.1.50", got)
+	}
+	// Once briard-vip has claimed one, THAT is the address -- under DHCP it is the only thing
+	// that knows, and a name pointing at the configured-but-not-taken address resolves nowhere.
+	write(t, live, "VIP_ADDR=192.168.1.100/24\n")
+	if got := mdnsVIP(live, cfg); got != "192.168.1.100" {
+		t.Errorf("the VIP read %q, want the CLAIMED 192.168.1.100", got)
+	}
+	// And a node that has claimed nothing publishes nothing, rather than a name pointing at an
+	// address nobody holds.
+	write(t, live, "VIP_ADDR=\n")
+	write(t, cfg, "VIP_DEV=eth2\n")
+	if got := mdnsVIP(live, cfg); got != "" {
+		t.Errorf("with nothing claimed the VIP read %q, want empty", got)
+	}
+}
+
+// systemd's EnvironmentFile shape, and the empty states that are NOT errors: a file that does not
+// exist yet is a node that has not got there, not a node that is broken.
+func TestEnvValueReadsTheUnitsFileShape(t *testing.T) {
+	dir := t.TempDir()
+	p := dir + "/mdns.env"
+	if got := envValue(p, "FLOCK_NAME"); got != "" {
+		t.Errorf("an absent file read %q, want empty", got)
+	}
+	write(t, p, "# a comment\nFLOCK_NAME=\"brave-elf\"\nOTHER=x\n")
+	if got := envValue(p, "FLOCK_NAME"); got != "brave-elf" {
+		t.Errorf("read %q, want brave-elf unquoted", got)
+	}
+	if got := envValue(p, "MISSING"); got != "" {
+		t.Errorf("an absent key read %q, want empty", got)
+	}
+	// Last wins, as systemd does.
+	write(t, p, "FLOCK_NAME=old\nFLOCK_NAME=brave-yak\n")
+	if got := envValue(p, "FLOCK_NAME"); got != "brave-yak" {
+		t.Errorf("read %q, want the LAST value brave-yak", got)
+	}
+}
+
+// What the host reads back every observe cycle. It is derived from what is really being served, so
+// a node that publishes nothing says so by the file's ABSENCE -- the answer a Secondary gives.
+func TestThePublishedNameIsWhatIsServedNotWhatWasAsked(t *testing.T) {
+	p := t.TempDir() + "/mdns.published"
+	w := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
+
+	if err := writePublished(p, "brave-elf", w.names); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, p); got != "brave-elf\n" {
+		t.Errorf("recorded %q, want the BARE flock name -- no briard- prefix and no .local", got)
+	}
+	// Serving nothing removes it: absent is how a Secondary says "none", and an empty file would
+	// be a name of length zero.
+	if err := writePublished(p, "brave-elf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("publishing nothing left %s behind (%v), so the host would read a stale name", p, err)
+	}
+	// And a node serving names it was not asked for records nothing: the file answers "what is
+	// this node really called", never "what did somebody ask for".
+	if err := writePublished(p, "brave-yak", w.names); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("a name that is NOT being served was recorded as published")
+	}
+}
+
+func write(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
