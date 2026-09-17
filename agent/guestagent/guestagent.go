@@ -1582,20 +1582,21 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err := x.WriteFile(mdnsEnvPath, []byte("FLOCK_NAME="+req.Name+"\n")); err != nil {
 				return nil, err
 			}
-			// try-restart, NOT restart: republish only where a name is already published. A
-			// Secondary holds no VIP, so briard-mdns is stopped there (it is partOf briard-vip)
-			// and starting it would publish a name for an address this node does not hold.
+			// NOTHING IS RESTARTED, and nothing needs to be: the door publishes the names and
+			// re-reads this file on its own tick ([B.152]), so a rename reaches the wire by
+			// itself — on a Primary, which is the only node whose door is running, and therefore
+			// the only node that could publish a name for an address it holds.
 			//
 			// The rename applies WITHOUT touching addressing -- no VIP re-assert, no MAC, no DHCP
 			// client-id, no DRBD state. That is the property the three-way identifier split was
-			// for, and this line is where it is cashed in.
+			// for, and these two writes are where it is cashed in.
 			//
 			// The per-service names are derived from this one ([B.48]), so they move with it --
-			// in the routing table the front door matches on AND in the records the publisher
-			// claims, which are the same list precisely so that a rename cannot leave a name
-			// published that nothing routes.
+			// in the routing table the front door matches on AND in the records it answers,
+			// which are now the same list read once, so a rename cannot leave a name published
+			// that nothing routes.
 			renameRoutes(x, req.Name)
-			return nil, run("systemctl", "try-restart", mdnsUnit)
+			return nil, nil
 		case verbNetMDNSPublished:
 			// The name avahi ESTABLISHED, which is not always the name we asked for: on a
 			// collision it conflict-renames to `<name>-2` and tells nobody. Reporting the
@@ -1764,17 +1765,17 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 const vipEnvPath = "/run/briard/vip.env"
 
 const (
-	// mdnsEnvPath is the EnvironmentFile briard-mdns.service reads the flock's visible name from.
+	// mdnsEnvPath carries the flock's visible name to the front door, which publishes it.
 	// Written by net.mdnsname, never baked: it is PET identity reaching a CATTLE image, and baking
 	// identity into a shared image is the mistake V3.19 was.
+	//
+	// ⚠️ PAIRED with reverse-proxy/mdns.go's const of the same path, which re-reads it on a tick,
+	// so a rename needs no unit restarted and no ordering between the two.
 	mdnsEnvPath = "/run/briard/mdns.env"
-	// mdnsPublishedPath is where briard-mdns records the name avahi actually ESTABLISHED, parsed
-	// from avahi-publish's own output. Absent means nothing is published -- the normal state of a
-	// Secondary, which holds no VIP and therefore publishes no name.
+	// mdnsPublishedPath is where the door records the name it is REALLY answering for, bare.
+	// Absent means nothing is published -- the normal state of a Secondary, which holds no VIP,
+	// runs no door, and therefore publishes no name.
 	mdnsPublishedPath = "/run/briard/mdns.published"
-	// mdnsUnit is restarted to republish after a rename. try-restart, so a node that is not
-	// serving stays quiet: there is no name to correct where no name is published.
-	mdnsUnit = "briard-mdns.service"
 )
 
 // podSubnetPath records the pool this guest allocates private service networks from, written by

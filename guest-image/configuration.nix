@@ -1,3 +1,6 @@
+    # NOTHING TO POKE FOR THE NAME: the door re-reads the live file on its own tick and the
+    # records follow the address within seconds ([B.152]). A unit to restart here was what the
+    # name cost when a separate publisher held it.
 # Briard VM unit image.
 #
 # The workload + DRBD 9 + drbd-reactor run *inside* this VM; the host agent runs
@@ -68,8 +71,6 @@ let
     "briard-vip.service"
     "briard-reverse-proxy.service"
     "briard-dashboard.service"
-    "briard-mdns.service"
-    "briard-mdns-services.service"
   ];
   # A hold step with one body per topology ([B.145c]). The word decides; a missing word is
   # "node storage has not run on this boot", and an unknown one names itself rather than
@@ -125,326 +126,6 @@ let
     . ${vipLivePath}
     exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
   '';
-  # The FLOCK's visible name, handed down by the agent (net.mdnsname) and NOT baked: it is pet
-  # identity arriving at a cattle image, which is the distinction V3.19 was found for.
-  # How long a publisher waits for avahi to confirm what it published before it gives up and lets
-  # systemd restart it. Shared by both publishers, and for the flock name it is still the BACKSTOP
-  # rather than the working path -- the settle wait below is what keeps that one out of the failure
-  # V3.22 measured. For the SERVICE records it is load-bearing: they are created while converge is
-  # starting containers, so podman's bridge and veths appear inside their probe window and avahi
-  # wedges the group ([V3b.30](a), measured on two runs of one closure). See vipPublish, settled.
-  mdnsEstablishSecs = 15;
-
-  # How long the published address must sit still before we publish it, and how long we are willing
-  # to wait for that. avahi wedges permanently if the address moves inside its probe window, which
-  # is under a second (V3.22, measured 0/6 vs 6/6).
-  mdnsSettleSecs = 2;
-  mdnsSettleMaxSecs = 20;
-
-  # The publisher's stdout, as a fifo rather than a pipe, so the reader stays in the main shell and
-  # the publisher's pid remains killable. See vipPublish.
-  mdnsFifoPath = "/run/briard/mdns.fifo";
-
-  mdnsEnvPath = "/run/briard/mdns.env";
-  # The name avahi ACTUALLY established, which the host reads back over net.mdnspublished.
-  mdnsPublishedPath = "/run/briard/mdns.published";
-  # The front door's routing table (shared/routes.Path), written by converge. BOTH the proxy and
-  # the service-name publisher read this one file -- the publisher with jq, so that there is no
-  # pre-flattened second copy for anyone to read while it is stale. Restated here rather than
-  # shared, the same way mdnsEnvPath and vipEnvPath are: a /run path is a two-sided contract with
-  # the agent, and the Go side owns it.
-  routesPath = "/run/briard/routes.json";
-  # How often the service-name publisher notices that the routing table changed. Lag, not a race:
-  # nothing is waiting on a name to appear within a deadline, and an install prints the name it
-  # just created from the agent's own knowledge, not from avahi.
-  mdnsWatchSecs = 2;
-
-  # Publish the VIP under `briard-<flock name>.local`.
-  #
-  # The name is FLOCK-scoped, and that is a correction rather than a detail (V3.20). It used to be
-  # `briard-$(hostname).local` -- node-scoped -- while the address it resolves to is the VIP, which
-  # is flock-scoped and moves. So on failover the name changed identity while the thing it pointed
-  # at did not: not merely unfriendly, incoherent. FLOCK_NAME has no such problem, because the
-  # whole flock has one.
-  #
-  # The address still comes from VIP_ADDR with its prefix stripped -- the same single source the
-  # VIP itself is claimed from, so the name can never point somewhere the address is not.
-  #
-  # ⚠️ WHY THIS IS NOT `exec`, AND WHY stdbuf. avahi-publish prints `Established under name 'X'`,
-  # and on a collision `Name collision, picking new name 'X'` -- it renames itself and tells no
-  # one. That output is the ONLY place the truth about the published name appears, so this reads
-  # it and records it. Two traps, both silent if got wrong:
-  #   - `exec` would replace this shell and leave nothing to read the output.
-  #   - stdout to a PIPE is full-buffered by libc, so without `stdbuf -oL` the line would sit in a
-  #     4 KiB buffer for the entire lifetime of a long-running publisher and arrive only at exit.
-  #     The read-back would then be empty forever, while everything looked fine -- a vacuous green
-  #     of exactly the kind V3.19 was.
-  # The process still holds the record for as long as it runs (avahi withdraws on exit), so the
-  # unit's lifetime is the record's lifetime.
-  #
-  # ⚠️ WHY A FIFO AND A PID RATHER THAN A PIPELINE, which is what this was until V3.22. As
-  # `avahi-publish | while read`, the loop is the RIGHT side of a pipe and therefore a subshell,
-  # and the publisher's pid is not knowable from inside it. That is fatal to the deadline below:
-  # breaking out of the loop does not end the pipeline, because the shell waits for EVERY member
-  # to exit and a hung avahi-publish never does -- so the script blocked forever, one line short
-  # of `exit 1`, having already printed that it was giving up. **Measured, not reasoned**: the
-  # first version of this fix logged `did not establish a name within 15s` at exactly the deadline
-  # and then never restarted, which is a more embarrassing version of the very bug it fixes -- a
-  # failure detected, announced, and not acted on. Reading from a fifo keeps the loop in the MAIN
-  # shell, so `$pub` exists, the trap can kill it, and `exit 1` is reachable.
-  #   - `pipefail` mattered in the pipeline form and is kept for the same reason it was added: a
-  #     publisher that dies must not be read as a clean exit.
-  vipPublish = pkgs.writeShellScript "briard-vip-publish" ''
-    set -euo pipefail
-    : >${mdnsPublishedPath}
-    # ---- WAIT FOR THE ADDRESS TO STOP MOVING BEFORE PUBLISHING -----------------------------
-    # THE ROOT CAUSE, measured rather than guessed (V3.22). avahi wedges its entry group -- for
-    # good, silently, neither established nor refused -- if the address it is publishing is
-    # withdrawn and re-added while the group is still probing. Reproduced in isolation:
-    #
-    #   del+add 0.5s after avahi-publish starts   -> established 0/6
-    #   same, but wait for the address to settle  -> established 6/6
-    #   del+add at 0.1s -> wedged; at 1.0s+       -> fine
-    #
-    # So the vulnerable window is under a second, and it is exactly the window we were aiming at:
-    # briard-vip applies the address optimistically, finishes, this unit starts immediately, and
-    # dhcpcd -- started with -b, so it returns before it has a lease -- re-applies the SAME address
-    # ~0.5s later as del+add. Dead centre. That is why it hit on the first install onto a real
-    # household LAN rather than being the rare event a retry is meant for.
-    #
-    # It watches the PUBLISHED ADDRESS specifically, not the whole interface: IPv6 churn (SLAAC on
-    # a dual-stack router adds records for ~9s) never wedged it in the reproduction, so waiting for
-    # that too would delay every promotion for nothing.
-    dev="$VIP_DEV"
-    want="''${VIP_ADDR%%/*}"
-    # Nothing to wait for if we have no address: the publish below will fail on its own terms,
-    # and stalling the full 20s first would turn a broken state into a slow broken state.
-    stable=0; waited=0
-    [ -n "$want" ] || waited=${toString mdnsSettleMaxSecs}
-    while [ "$stable" -lt ${toString mdnsSettleSecs} ] && [ "$waited" -lt ${toString mdnsSettleMaxSecs} ]; do
-      if ${pkgs.iproute2}/bin/ip -o -4 addr show dev "$dev" 2>/dev/null |
-         ${pkgs.gnugrep}/bin/grep -qF " $want/"; then
-        stable=$((stable+1))
-      else
-        stable=0
-      fi
-      ${pkgs.coreutils}/bin/sleep 1
-      waited=$((waited+1))
-    done
-    # Not fatal when it never settles: publishing anyway is strictly better than not publishing,
-    # and the establishment deadline below is exactly the backstop for that case.
-    if [ "$stable" -lt ${toString mdnsSettleSecs} ]; then
-      echo "briard-mdns: $want never held still on $dev for ${toString mdnsSettleSecs}s (waited ''${waited}s); publishing anyway" >&2
-    fi
-
-    rm -f ${mdnsFifoPath}
-    ${pkgs.coreutils}/bin/mkfifo -m 0600 ${mdnsFifoPath}
-    ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R \
-      "briard-''${FLOCK_NAME}.local" "''${VIP_ADDR%%/*}" >${mdnsFifoPath} 2>&1 &
-    pub=$!
-    # Killing the publisher is what makes the deadline REAL rather than merely announced: a hung
-    # avahi-publish outlives this script otherwise, and systemd would be waiting on a process that
-    # is doing nothing. `|| true` because it is normal for it to be gone already.
-    trap 'kill "$pub" 2>/dev/null || true; rm -f ${mdnsFifoPath}' EXIT
-    while :; do
-      # A DEADLINE, BUT ONLY UNTIL THE NAME IS ESTABLISHED. avahi-publish can hang forever with
-      # its entry group never confirmed and never refused -- measured in the field (V3.22): the
-      # publisher started 400ms before dhcpcd re-applied the address, avahi logged the interface
-      # "no longer relevant" and back, and the group was never established again. The process
-      # stayed up, printed nothing, exited never; the unit was `active` and the name resolved
-      # nowhere for five minutes, ending only when an unrelated agent restart cycled the unit.
-      # Restart=on-failure cannot help a process that does not fail. So: if nothing arrives
-      # before the deadline, treat the silence as the failure it is and fall through to the
-      # exit-1 tail below, which is the same path a refusal already takes.
-      #
-      # The timeout applies ONLY while unestablished -- after that avahi-publish is legitimately
-      # silent for the whole life of the record, and a deadline on every read would kill a
-      # perfectly healthy publisher on a quiet LAN. Establishment itself is sub-second in
-      # practice (0.9s on both field boots), so ${toString mdnsEstablishSecs}s is slack, not a race.
-      if [ -s ${mdnsPublishedPath} ]; then
-        IFS= read -r line || break
-      else
-        IFS= read -r -t ${toString mdnsEstablishSecs} line || {
-          echo "briard-mdns: avahi did not establish a name within ${toString mdnsEstablishSecs}s -- giving up so systemd retries" >&2
-          break
-        }
-      fi
-      printf '%s\n' "$line"
-      case "$line" in
-        "Established under name '"*|"Name collision, picking new name '"*)
-          # `...name 'briard-brave-elf.local'.` -> `brave-elf`. Recorded BARE, so the host is
-          # handed the name and not a label it would have to unwrap the same way twice.
-          n="''${line#*\'}"; n="''${n%%\'*}"; n="''${n%.local}"; n="''${n#briard-}"
-          printf '%s\n' "$n" >${mdnsPublishedPath}
-          ;;
-      esac
-    done <${mdnsFifoPath}
-    # REACHING HERE IS ALWAYS A FAILURE, and saying so is the point. avahi-publish holds the record
-    # only while it runs, so if it has returned, the name is gone -- yet it exits 0 even when the
-    # daemon refused it, which systemd logged for two days as `briard-mdns.service: Deactivated
-    # successfully` while nothing at all was published. A publisher that no-ops quietly is the same
-    # disease as a name that resolves nowhere. Exiting non-zero turns it into a restart and a
-    # journal line somebody can find.
-    if [ -s ${mdnsPublishedPath} ]; then
-      echo "briard-mdns: the publisher exited; the name is no longer published" >&2
-    else
-      echo "briard-mdns: avahi never established a name (refused, exited first, or never answered)" >&2
-    fi
-    exit 1
-  '';
-
-  # The PER-SERVICE mDNS names ([B.48]): one `briard-<flock>-<service>.local` A record per routed
-  # service, all pointing at the VIP, so that the front door's Host-based routing has names to be
-  # reached by. The list is written by converge (shared/routes.HostsPath) from the same composed
-  # table the proxy routes on -- so a name that is published but not routed, or routed but not
-  # published, is not expressible.
-  #
-  # ⚠️ A SEPARATE PUBLISHER FROM briard-mdns, deliberately, and this is the containment that made
-  # per-service names acceptable at all. The flock's own name is the node's one canonical contact
-  # address, and V3.22 is what a wedged avahi publisher costs: five minutes of a name resolving
-  # nowhere while the unit read `active`. Folding N records into that process would put the
-  # household's most important name behind a publisher that now churns on every install; split, a
-  # service-name publisher that wedges takes only the service names with it, and briard-mdns keeps
-  # its settle-wait untouched. The split is NOT a licence to skip the rest of what V3.22 bought:
-  # this publisher wedged the same way the moment anything asserted its records ([V3b.30](a)), so
-  # it now carries its own establishment deadline and read-back (settled, below). What stays
-  # unshared is the settle-wait, which is about the VIP moving and belongs where the VIP is
-  # resolved.
-  #
-  # ⚠️ IT WATCHES THE FILE RATHER THAN BEING RESTARTED. An install writes the table while this is
-  # already running, and a rename rewrites it too, so the alternative was a `systemctl restart`
-  # from inside converge -- which is both a cross-component call and, worse, a no-op exactly when
-  # it is needed most: before the first install this unit may be inactive, and `try-restart` on an
-  # inactive unit publishes nothing while reporting success. Polling the mtime has no such state.
-  # ${toString mdnsWatchSecs}s of lag on a name is nothing; a name that never appears is not.
-  #
-  # A NODE WITH NOTHING TO PUBLISH STILL RUNS. It holds no records and watches: that is the shipped
-  # zero-service state, and it is what makes the first install's names appear without anyone
-  # having to start anything.
-  mdnsServicesPublish = pkgs.writeShellScript "briard-mdns-services-publish" ''
-    set -uo pipefail
-    addr="''${VIP_ADDR%%/*}"
-    if [ -z "$addr" ]; then
-      echo "briard-mdns-services: no VIP address; nothing to point the service names at" >&2
-      exit 1
-    fi
-    pids=""
-    stamp=""
-    # avahi withdraws a record when its publisher exits, so killing these IS the withdrawal --
-    # both on a re-publish and on the demote that stops this unit.
-    withdraw() {
-      [ -n "$pids" ] || return 0
-      kill $pids 2>/dev/null || true
-      wait $pids 2>/dev/null || true
-      pids=""
-    }
-    # THE READ-BACK, which is what makes "publishing" a claim rather than a hope ([V3b.30](a)).
-    #
-    # ⚠️ MEASURED 2026-09-01, on THREE RUNS OF A BYTE-IDENTICAL CLOSURE (nixosTest/mosquitto):
-    # twice no record established at all -- with the avahi-publish processes alive, silent, and
-    # exiting never -- while the flock's own name, published three seconds earlier by the other
-    # publisher, resolved fine and a manual publish issued at that moment established instantly.
-    # The daemon is healthy and only the existing groups are wedged, so nothing but NEW groups
-    # clears them. It is V3.22's wedge one level down, and the window is structural rather than
-    # unlucky: converge rewrites the routing table and starts the containers at the same instant,
-    # podman creates a bridge and a veth, and avahi re-probes every group when an interface
-    # appears.
-    #
-    # ⚠️ IT HAS TO BE THE PUBLISHER'S OWN `Established under name`, and the cheaper check that is
-    # NOT good enough was measured too: asking the local daemon to resolve the name comes back
-    # SUCCESSFUL for a group that is merely registered, probing or wedged -- the record is in its
-    # registry either way -- so a read-back through avahi-resolve passes while nothing on the LAN
-    # can see the name. That is the same vacuous green in a new place. The line the client prints
-    # is the daemon telling it the group reached ESTABLISHED, and it is the only signal that means
-    # what we need it to mean.
-    #
-    # PER-PUBLISHER FILES, not vipPublish's fifo: a fifo needs a reader in the main shell and the
-    # pid bookkeeping that goes with it, which is affordable for one publisher and not for N. A
-    # file on tmpfs that stdbuf keeps line-fresh is the same signal with none of that, and it
-    # doubles as the diagnostic to print when the deadline passes.
-    #
-    # Failure exits rather than warns, for the reason vipPublish exits: a restart IS the cure, and
-    # `Restart=on-failure` is already there. A publisher that no-ops quietly is the same disease as
-    # a name that resolves nowhere.
-    outDir=/run/briard/mdns-services
-    settled() {
-      [ "$k" -gt 0 ] || return 0
-      waited=0
-      while [ "$waited" -lt ${toString mdnsEstablishSecs} ]; do
-        ok=1
-        for f in "$outDir"/*.log; do
-          ${pkgs.gnugrep}/bin/grep -q "Established under name" "$f" 2>/dev/null || ok=0
-        done
-        [ "$ok" = 1 ] && return 0
-        ${pkgs.coreutils}/bin/sleep 1
-        waited=$((waited+1))
-      done
-      return 1
-    }
-    trap 'withdraw' EXIT
-    while :; do
-      now=$(${pkgs.coreutils}/bin/stat -c %Y ${routesPath} 2>/dev/null || echo none)
-      if [ "$now" != "$stamp" ]; then
-        stamp="$now"
-        withdraw
-        n=0
-        m=0
-        k=0
-        rm -rf "$outDir"; mkdir -p "$outDir"
-        # An ABSENT file is the state before this node has ever converged -- at boot, or on a node
-        # that has not promoted. Not an error and not worth a shell diagnostic every time: it means
-        # nothing is routed, which is exactly what publishing zero names says.
-        #
-        # THE NAMES ARE READ, NEVER COMPOSED. Every rule for building one lives in
-        # shared/routes.HostName, so a second name form (`*.casa`, [V3b.14]) is a change in one Go
-        # function rather than in a Go function and a shell format string that must agree.
-        if [ -r ${routesPath} ]; then
-          while IFS= read -r host; do
-            [ -n "$host" ] || continue
-            # -R: allow this name to coexist with other records for the same address. NOT unique,
-            # which is what makes a duplicate silently shadow rather than fail (measured 2026-08-23)
-            # -- the reason these names are flock-scoped and not bare `homeassistant.local`.
-            # Output to its own file, line-buffered, because settled reads it: see settled.
-            k=$((k+1))
-            ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -a -R "$host" "$addr" >"$outDir/$k.log" 2>&1 &
-            pids="$pids $!"
-            n=$((n+1))
-          done < <(${pkgs.jq}/bin/jq -r '.services[]?.hosts[]? // empty' ${routesPath} 2>/dev/null)
-          # THE SERVICE RECORDS ([V3b.30](a)). Same file, same withdrawal, one more loop -- the
-          # difference from the names above is who does the looking: a name is what someone types,
-          # a service record is what an appliance BROWSES for. Tasmota- and ESPHome-class firmware
-          # finds its broker by asking for `_mqtt._tcp` and nothing else.
-          #
-          # -H POINTS THE SRV RECORD AT THE SERVICE'S OWN NAME -- the A record published in the
-          # loop above, which resolves to the VIP. Never at the guest's own hostname, which is
-          # what avahi-publish would use by default: that name is node-scoped, so every device on
-          # the LAN would be sent to the machine that has just stopped being Primary. Both halves
-          # come out of this one process, so a service record cannot outlive the name it targets.
-          #
-          # READ AS TSV, NEVER COMPOSED, for the same reason the host names are: the instance
-          # label is built once, in shared/routes.InstanceName. jq's @tsv is also what makes the
-          # field split safe -- it escapes an embedded tab or newline rather than emitting one,
-          # and shared/routes refuses them upstream of that.
-          while IFS="$(${pkgs.coreutils}/bin/printf '\t')" read -r host name type port; do
-            [ -n "$host" ] && [ -n "$name" ] || continue
-            # Output kept and line-buffered, for the reason the address loop above gives.
-            k=$((k+1))
-            ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.avahi}/bin/avahi-publish -s -H "$host" "$name" "$type" "$port" >"$outDir/$k.log" 2>&1 &
-            pids="$pids $!"
-            m=$((m+1))
-          done < <(${pkgs.jq}/bin/jq -r '.services[]? | (.hosts[0]? // empty) as $h | .announce[]? | [$h, .name, .type, .port] | @tsv' ${routesPath} 2>/dev/null)
-        fi
-        echo "briard-mdns-services: publishing $n service name(s) and $m service record(s) at $addr" >&2
-        if ! settled; then
-          echo "briard-mdns-services: avahi did not establish all $k record(s) within ${toString mdnsEstablishSecs}s -- giving up so systemd retries with fresh entry groups" >&2
-          ${pkgs.gnugrep}/bin/grep -H "" "$outDir"/*.log >&2 || true
-          exit 1
-        fi
-      fi
-      ${pkgs.coreutils}/bin/sleep ${toString mdnsWatchSecs}
-    done
-  '';
-
   # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
   # that ARP-claimed it, a router that repooled while the flock had no primary -- because "the
   # address changed" does not care why it changed.
@@ -523,9 +204,9 @@ let
     # it has already yielded. (vipLivePath above is /run -- tmpfs, nothing to sync.)
     { printf '%s\n' "$addr" >${vipAddrFile} && ${pkgs.coreutils}/bin/sync -f ${vipAddrFile}; } 2>/dev/null || true
     VIP_DEV="''${interface}" ${vipArping} || true
-    # try-restart, not restart: republish the name only where a name is already published. On a
-    # node that is not currently serving there is nothing to correct.
-    ${pkgs.systemd}/bin/systemctl try-restart briard-mdns.service || true
+    # THE NAME NEEDS NOTHING FROM HERE. The door publishes it and re-reads this file on its own
+    # tick, so the records follow the address within seconds with no unit to poke and no ordering
+    # between the two to get wrong ([B.152]).
     exit 0
   '';
 
@@ -681,21 +362,20 @@ let
       # harnesses, where this unit's NIC is eth1 -- the DRBD link, which must never lease.
       ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
     elif [ -n "$addr" ]; then
-      # ⚠️ `brd +` IS LOAD-BEARING, and it is what stops V3.22 at the source rather than dodging
-      # it. dhcpcd is about to be handed the SAME address by the lease. If what we put on differs
-      # from what it wants, it does not update -- it DELETES and re-adds, and that withdrawal
-      # inside avahi's probe window is what wedged the mDNS name permanently. `ip addr add X/24`
-      # leaves the broadcast unset; dhcpcd wants X.X.X.255. Measured, one variable at a time,
-      # against a real dnsmasq (lab/avahi-repro5-deladd.nix), counting RTM_DELADDR:
+      # ⚠️ `brd +` IS LOAD-BEARING: it keeps the VIP CONTINUOUSLY PRESENT across the lease. dhcpcd
+      # is about to be handed the SAME address, and if what we put on differs from what it wants
+      # it does not update -- it DELETES and re-adds. `ip addr add X/24` leaves the broadcast
+      # unset; dhcpcd wants X.X.X.255. Measured, one variable at a time, against a real dnsmasq
+      # (lab/avahi-repro5-deladd.nix), counting RTM_DELADDR:
       #
-      #   ip addr replace X/24                 -> 1 delete   (today's behaviour)
+      #   ip addr replace X/24                 -> 1 delete
       #   ip addr replace X/24 brd +           -> 0 deletes
       #   ...also with noprefixroute, or the full dhcpcd shape -> 0
       #
-      # So the broadcast alone is the whole difference, and with it dhcpcd updates in place:
-      # avahi never sees the address leave, and the wedge has nothing to trigger on. The settle
-      # wait in vipPublish stays as well -- a lease that comes back DIFFERENT is a real del+add
-      # that no flag can remove.
+      # So the broadcast alone is the whole difference. A withdrawal here is no longer able to
+      # wedge a name -- the responder claims names without probing ([B.152]) -- but an address
+      # that blinks is still an address that is briefly not there, for the ARP cache of every
+      # device mid-connection. V3.22 is the epoch record of what it used to cost.
       ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
       # A lease-holder here, never a gate: -b returns immediately, so nothing downstream of this
       # unit waits on a DHCP server. Failing to start it is not failing to serve -- the address
@@ -1515,15 +1195,20 @@ in
     #     RENAME MUST NEVER RISK THE ADDRESS. The router's list and the mDNS name therefore differ,
     #     which costs one line of installer wording and buys an identity that is safe to change.
     #
-    #     A PROMOTER CHAIN MEMBER since [B.125], where it used to be bound to briard-vip the way
-    #     the front door is (wantedBy + partOf). The three things that binding bought are all
-    #     still true, and the chain states them more strongly: the name appears only when this
-    #     node actually holds the VIP, it points at the VIP rather than at whatever else the guest
-    #     is addressed on, and on a pair only the PRIMARY publishes — so the two nodes of ONE
-    #     flock never collide with each other. What membership ADDS is that a node which cannot
-    #     publish hands the resource on instead of serving addresses nobody can reach. Two
-    #     DIFFERENT flocks in one house still can, and avahi resolves that by renaming one of them
-    #     silently, which is why the published name is read back rather than assumed.
+    #     PUBLISHED BY THE FRONT DOOR ([B.152]), which is a promoter chain member, so the name
+    #     appears only when this node actually holds the VIP, points at the VIP rather than at
+    #     whatever else the guest is addressed on, and is claimed by the PRIMARY alone — the two
+    #     nodes of ONE flock never collide with each other. Membership is also what makes a node
+    #     that cannot publish hand the resource on rather than serve addresses nobody can reach:
+    #     a household with no [V3c.4] `*.casa` name has `.local` and nothing else, so a name that
+    #     does not resolve is a service that cannot be reached.
+    #
+    #     ⚠️ TWO DIFFERENT FLOCKS DRAWING THE SAME WORD PAIR BOTH ANSWER IT, at different
+    #     addresses, and neither renames: the responder claims names and does not probe, which is
+    #     what removes the entire class of wedged-entry-group failures ([B.152] weighs the trade).
+    #     The odds are the word list's — one pair in 178,928 — and the household-visible symptom
+    #     is a name that resolves to whichever answer arrives first. `briard-<flock>` is what keeps
+    #     that at a collision between flocks rather than between a flock and an HAOS box.
     # Ten-minute lease renewal, for as long as this node holds the VIP.
     #
     # NOT A CHAIN MEMBER, deliberately and for [V3b.5c]'s reason: a renewal that fails must never
@@ -1531,9 +1216,8 @@ in
     # the real consequence of a renewal going wrong is a NAK, which dhcpcd's own hook handles as
     # an address change rather than as a unit failure.
     #
-    # wantedBy + partOf briard-vip is the binding briard-mdns's comment above describes: the timer
-    # starts when the node takes the VIP and stops when it gives it up, so it cannot tick on a
-    # standby. `wantedBy` is a WEAK reference on purpose -- a timer that will not start must not
+    # wantedBy + partOf briard-vip: the timer starts when the node takes the VIP and stops when it
+    # gives it up, so it cannot tick on a standby. `wantedBy` is a WEAK reference on purpose -- a timer that will not start must not
     # keep the VIP from coming up.
     systemd.timers.briard-vip-renew = {
       description = "Renew the Briard VIP's DHCP lease every ten minutes";
@@ -1559,140 +1243,6 @@ in
       };
     };
 
-    systemd.services.briard-mdns = {
-      description = "Briard mDNS name for the VIP";
-      # A PROMOTER CHAIN MEMBER ([B.125]): reactor writes PartOf=drbd-services@<res>.target and
-      # Requires=/After= briard-vip, so the START binding wantedBy used to express is the chain's
-      # now. avahi-daemon is NOT a member, so its ordering stays stated here.
-      #
-      # ⚠️ partOf briard-vip STAYS, for RESTART propagation rather than for start ([B.125](b)).
-      # briard-vip may now be retried, and its ExecStop withdraws the address and can take the NIC
-      # down -- which is the V3.22 wedge trigger for a publisher that keeps running across it: an
-      # established entry group whose interface goes away and returns is exactly what was "never
-      # established again" in the field. Carrying these two with a VIP restart means they
-      # re-establish cleanly instead of holding a record through the churn.
-      partOf = [ "briard-vip.service" ];
-      after = [ "briard-vip.service" "avahi-daemon.service" ];
-      requires = [ "avahi-daemon.service" ];
-      serviceConfig = {
-        # The address briard-vip ACTUALLY claimed, so the name cannot drift from it. Two sources,
-        # last wins: the agent-written config, and the live file that records what was really
-        # taken -- which under DHCP is the only one that knows. Both are REQUIRED ([V3b.16a]): this
-        # unit can only run downstream of a briard-vip that ran, which can only run downstream of
-        # an agent that configured it, so an absent file is a broken node and not a bare one.
-        #
-        # FLOCK_NAME comes from the agent (net.mdnsname) and has NO baked fallback on purpose: a
-        # node with no minted name must publish nothing rather than publish a guess, and
-        # `briard-.local` is worse than silence. ConditionPathExists enforces that, and it is the
-        # one file here whose absence is NOT a fault: it tracks whether the flock has a minted name
-        # (FLOCK_NAME="" -> net.mdnsname deliberately writes nothing), never whether an agent is
-        # present. So the unit stays inactive rather than failing in a restart loop.
-        EnvironmentFile = [ vipEnvPath vipLivePath mdnsEnvPath ];
-        # avahi-publish holds the record for as long as it runs and withdraws it on exit, so the
-        # unit's lifetime IS the record's lifetime -- no cleanup path to get wrong on demotion.
-        ExecStart = "${vipPublish}";
-        Restart = "on-failure";
-        # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
-        # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
-        # volume and demotes the node on ONE crash, measured, with a peer taking the resource
-        # about half the time. `direct` restarts through activating instead of failed, so
-        # dependents are not notified of the temporary failure. It is also what lets the
-        # StartLimit below finally accumulate: the unit is no longer torn down and started
-        # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
-        # and still hands the resource on -- which is what this budget always claimed to do.
-        # NOT on briard-primary-storage/services/vip: for those, failure really does mean this node
-        # must not hold the volume.
-        RestartMode = "direct";
-        RestartSec = 2;
-      };
-      unitConfig = chainMemberFailure // {
-        ConditionPathExists = mdnsEnvPath;
-        # THE ESCALATION BUDGET, and it is ours alone ([B.125]). drbd-reactor starts the chain once
-        # and never watches it again -- it has no retry counter -- so what turns a broken unit into
-        # a failover is systemd reaching the failed state.
-        #
-        # ⚠️ THE BUDGET DOES NOT CURRENTLY DO WHAT THE REST OF THIS COMMENT DESCRIBES, measured
-        # 2026-09-02 ([V3b.5](c)). The reading below is that `Restart=` POSTPONES the failover
-        # until the start limit is exceeded, and every number here is tuned on it. It does not: the
-        # target `Requires=` this unit, so the FIRST crash already stops the target, demotes the
-        # resource and unmounts the data volume -- and the rebuild starts this unit fresh, so the
-        # counter reads `restart counter is at 1` on every cycle and the limit is never reached.
-        # The numbers are left exactly as they were rather than re-tuned around a mechanism that
-        # is not running; what needs fixing is the propagation, not the budget. Everything below
-        # is the ORIGINAL rationale, kept because it is what the numbers mean once (c) lands.
-        #
-        # THE SEMANTICS ARE BACK TO FRONT FROM THE OBVIOUS READING, so tune them deliberately:
-        # with Burst held constant, a LARGER interval is STRICTER -- it demands fewer than Burst
-        # starts across a wider window. It is also what decides whether the limit fires at all,
-        # since it only ever trips when Burst x failure-cycle < Interval. That is exactly why the
-        # 5-in-10s DEFAULT never fired here: a cycle of RestartSec plus the establishment deadline
-        # is 17-37s, so a 10s window never held more than one start and this unit would have
-        # restarted forever without escalating.
-        #
-        # 300/5 IS A JUDGEMENT, NOT A MEASUREMENT, and it is the same on all three `simple` chain
-        # members deliberately -- one number to reason about until something gives us a reason for
-        # more. It buys ~85s of trying for a publisher and ~10s for the front door, whose cycle is
-        # ~2s; that asymmetry is known and accepted rather than overlooked. [B.125](b) holds what
-        # would justify changing it: how long a healthy publisher takes to establish on a cold
-        # household LAN, and how long the door can lose :80 to its own previous instance.
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
-      };
-    };
-
-    # 3b. the per-service mDNS names -- the other half of Host-based routing ([B.48]). See
-    #     mdnsServicesPublish for why this is a second publisher rather than more work inside
-    #     briard-mdns, and why it watches its input instead of being restarted.
-    #
-    #     A chain member beside briard-mdns since [B.125]: the records point at the VIP, so they
-    #     must exist only where the VIP does and vanish when it moves. Ordered after briard-mdns,
-    #     not because it depends on it, but because the address-settle wait lives there and
-    #     publishing into avahi's probe window is what wedged it (V3.22) -- letting the flock's
-    #     name establish first means these start on an address that has already held still. Under
-    #     the chain that ordering is reactor's Requires=/After= on the previous member, so it is
-    #     no longer stated twice.
-    #
-    #     NO ConditionPathExists on the hosts file: an empty or absent list is a node with nothing
-    #     routed, which is the shipped state, and the watcher's whole job is to be already running
-    #     when the first install writes one.
-    systemd.services.briard-mdns-services = {
-      description = "Briard mDNS names for the routed services";
-      # A chain member too ([B.125]); see briard-mdns above, including why partOf briard-vip stays
-      # for restart propagation. Reactor orders it after briard-mdns, the previous member.
-      partOf = [ "briard-vip.service" ];
-      after = [ "briard-vip.service" "briard-mdns.service" "avahi-daemon.service" ];
-      requires = [ "avahi-daemon.service" ];
-      serviceConfig = {
-        # The address briard-vip ACTUALLY claimed, same two files and same last-wins order as
-        # briard-mdns: a service name must never point at an address this node did not take.
-        EnvironmentFile = [ vipEnvPath vipLivePath ];
-        ExecStart = "${mdnsServicesPublish}";
-        Restart = "on-failure";
-        # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
-        # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
-        # volume and demotes the node on ONE crash, measured, with a peer taking the resource
-        # about half the time. `direct` restarts through activating instead of failed, so
-        # dependents are not notified of the temporary failure. It is also what lets the
-        # StartLimit below finally accumulate: the unit is no longer torn down and started
-        # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
-        # and still hands the resource on -- which is what this budget always claimed to do.
-        # NOT on briard-primary-storage/services/vip: for those, failure really does mean this node
-        # must not hold the volume.
-        RestartMode = "direct";
-        RestartSec = 2;
-      };
-      # THE SAME GUARD briard-mdns CARRIES, and for the same reason: a node with no minted flock
-      # name has no per-service names either (they are composed from it), so there is nothing to
-      # publish and the unit must stay inactive rather than fail in a restart loop. Measured
-      # 2026-08-31 without it: 56 restarts in one test run, on a rig that had no name and no VIP
-      # env -- noise that would have hidden a real failure of this unit.
-      unitConfig = chainMemberFailure // {
-        ConditionPathExists = mdnsEnvPath;
-        # The same budget, for the same reason -- see briard-mdns above ([B.125]).
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
-      };
-    };
     # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443.
     #
     #    A PROMOTER CHAIN MEMBER since [B.125], where it used to ride briard-vip (wantedBy +
@@ -1753,8 +1303,8 @@ in
         # ([B.138]); the real one says READY at listen within milliseconds, so 10 s is generous.
         TimeoutStartSec = 10;
       };
-      # The same budget as the publishers, deliberately identical -- see briard-mdns above for the
-      # semantics and why the number is a judgement ([B.125]). It matters more here than the shape
+      # A RESTART BUDGET, and the number is a judgement rather than a measurement ([B.125]):
+      # five starts in five minutes, after which the member gives up and the resource moves. It matters more here than the shape
       # suggests: with no StartLimit at all systemd's 5-in-10s default applies, and at RestartSec=2
       # that IS reachable, so a door would hand the resource on after ~10s of trying. That is eager
       # for one whose likeliest transient is losing the race for :80 to its own previous instance
@@ -1847,146 +1397,6 @@ in
       "net.ipv4.conf.default.arp_announce" = 2;
     };
 
-    # mDNS, so the node has a NAME and not just an address (V3.19d). Responder only -- the guest
-    # answers for the one name it publishes and browses for nothing.
-    #
-    # ⚠️ THE NAME NEVER PUBLISHED, from 2026-08-07 until this fix, and it took two wrong guesses
-    # and a real console to find out why. briard-mdns died every single time with
-    #
-    #     Failed to create entry group: Not permitted
-    #
-    # and the error names the failing call precisely: ENTRY GROUP, i.e. the `EntryGroupNew` D-Bus
-    # method, which avahi refuses outright when `disable-user-service-publishing=yes` -- the NixOS
-    # default, since `publish.userServices` defaults to false. Nothing about the address is even
-    # reached. avahi-daemon.conf(5) describes that setting as blocking "user applications
-    # publishing SERVICES", which is what sent the first fix at `publish.addresses` instead: with
-    # addresses enabled the daemon was demonstrably registering records of its own
-    # (`Registering new address record for 192.168.1.119 on eth2.IPv4`) while briard-mdns kept
-    # failing at the step before. Both are needed -- and in this module they collapse anyway,
-    # since `publish-addresses = userServices || addresses`.
-    #
-    # Nothing noticed for two days because nothing had ever RESOLVED the name: the V3.19 assertion
-    # stopped at "the unit is configured", which was true and worthless. A name believed present
-    # and published nowhere -- V3.19's own failure shape, inside V3.19's own fix.
-    #
-    # The fear behind it was real and is handled by INTERFACE instead. Avahi's default is to
-    # publish an A record for every address on every interface under its own hostname; measured on
-    # the real machine that produced V3.19, `giouli-desktop.local` resolved to `172.18.0.1` -- a
-    # **Docker bridge**, not the LAN address. eth0 is qemu's SLIRP net (10.0.2.15), an address that
-    # would be a name resolving to nowhere.
-    #
-    # ⚠️ AN ALLOW-LIST, NOT A DENY-LIST, AND THAT IS A FIX RATHER THAN A PREFERENCE ([V3b.30](a)).
-    # Denying eth0 kept the guest's OWN interfaces honest but said nothing about the ones podman
-    # creates, and those are the ones that broke it. MEASURED across ten runs of
-    # nixosTest/mosquitto: converge writes the routing table and starts the containers in the same
-    # instant, podman brings up its bridge and a veth, avahi logs `New relevant interface
-    # veth0.IPv4 for mDNS` and RE-PROBES every entry group -- and a group caught in that window
-    # wedges for good, neither established nor refused. It happened on about half of runs; it took
-    # the per-service names down with it every time, silently, INCLUDING AFTER the publisher had
-    # already logged `Established under name` (so a one-shot read-back cannot see it, and a restart
-    # lands in the same window). A household hits exactly this on every install and every
-    # promotion that starts a service.
-    #
-    # So the household's NICs are named and everything else is invisible to avahi, which removes
-    # the trigger rather than reacting to it -- and it is the right shape anyway: a pod-internal
-    # bridge has no business carrying the household's names, and a browse from the guest used to
-    # show its own records arriving on `podman1` and `veth0`.
-    #
-    # eth1/eth2 are BOTH here because which one carries the VIP is not fixed -- production puts it
-    # on eth2, the agent-less harnesses use the baked eth1 default -- and pinning one would break
-    # the other. The list is the guest's whole NIC set minus eth0, so a future NIC needs a line
-    # here; that is the cost of an allow-list, and it is paid in the one place a reader looks.
-    #
-    # ⚠️ ONE RE-PROBE REMAINS, and it is harmless where the old one was not: under BRIDGE mode the
-    # guest MAKES eth2 itself, as a macvlan child, after avahi has started (platform/qemu.go). That
-    # interface IS allowed, so avahi re-probes when it appears -- but it appears during network
-    # setup, before anything has a routing table to publish from, rather than in the middle of a
-    # promotion. The wedge needed a new interface DURING a publish.
-    #
-    # ⚠️ eth3, THE PRIVATE HOST<->GUEST LINK, IS ALLOWED, and it is the one interface whose
-    # inclusion is a decision rather than a default ([V3b.19]). The host running this guest is the
-    # ONE machine on the LAN that cannot hear it: macvtap isolates a parent NIC from its own
-    # children, and a switch does not reflect a frame to the port it came from -- so the guest's
-    # multicast reaches every machine in the house except the one it lives in. eth3 is a plain tap
-    # (platform/qemu.go keeps it NetBridge even under macvtap, deliberately), so it is the only
-    # path by which the household's own machine can resolve the household's own name.
-    #
-    # The auto-address fear above does not reach the name a household is GIVEN. briard-mdns
-    # publishes an EXPLICIT address -- the VIP, stripped from the same VIP_ADDR the node claimed --
-    # and an explicit `avahi-publish -a` record is interface-independent, so what eth3 carries is
-    # the VIP and never 10.11.9.2. That distinction is what makes allowing eth3 safe rather than
-    # merely useful: the private address is TRANSPORT and must never become identity. It is
-    # node-scoped, while the VIP and the name are flock-scoped and survive a failover it does not.
-    # Reaching that VIP from the host is the route the agent maintains (platform/route.go).
-    #
-    # What the daemon may auto-publish is `briard-node-<id>.local`, the node id -- on eth3 that
-    # resolves to 10.11.9.2, which is true, node-scoped, and a name no household is ever given, on a
-    # two-host point-to-point wire. The name they ARE given is published explicitly by briard-mdns,
-    # is flock-scoped, and carries the VIP and nothing else.
-    #
-    # Responder-only stands: `nssmdns4 = false` below, so nothing in this guest RESOLVES a .local
-    # name through libc. The guest's two host-facing dependencies (the witness forwarder, the
-    # deadman gate) are fixed addresses precisely because they must work when everything else is
-    # dead, and a service that wants discovery (Home Assistant's zeroconf) does its own multicast
-    # rather than going through NSS.
-    services.avahi = {
-      enable = true;
-      # The household's NICs and nothing else -- not eth0, and not the interfaces podman creates.
-      # eth3 is here on purpose ([V3b.19]); the exclusions are the point ([V3b.30](a)). See above.
-      allowInterfaces = [ "eth1" "eth2" "eth3" ];
-      publish.enable = true;
-      publish.userServices = true; # THE gate: without it EntryGroupNew is refused and nothing publishes
-      publish.addresses = true;
-      publish.workstation = false; # no _workstation._tcp browsing bait
-      publish.hinfo = false; # no CPU/OS disclosure on a household LAN
-      nssmdns4 = false; # nothing in the guest resolves .local names; it only answers
-    };
-
-    # ⚠️ A STALE PID FILE MUST NOT COST THIS NODE ITS PROMOTION ([B.151]).
-    #
-    # A previous avahi that exited without cleaning up leaves /run/avahi-daemon/pid behind, and the
-    # next start dies on it:
-    #
-    #   avahi-daemon[923]: Process 424 died: No such process; trying to remove PID file.
-    #   avahi-daemon[923]: open(/run/avahi-daemon//pid): File exists
-    #   avahi-daemon[923]: Failed to create PID file: File exists
-    #
-    # That is not a naming inconvenience. briard-mdns REQUIRES avahi-daemon and the publishers are
-    # promoter-chain members ([B.125]), so a failed avahi fails the ordered chain, the promotion
-    # fails, and the node hands the resource on. Measured on the 2026-09-16 nightly, where node1
-    # promoted, died here, and handed off to node2 -- ON A LONE NODE THERE IS NOWHERE TO HAND TO,
-    # and the household simply has no front door.
-    #
-    # ⚠️ THE `+` IS THE WHOLE FIX, and without it this line silently does nothing. Upstream's unit
-    # sets ProtectSystem=strict with no ReadWritePaths, so /run is mounted READ-ONLY inside the
-    # unit's namespace (measured: a strict unit sees `/run ro,nosuid,nodev` and `touch` fails) --
-    # which is also why avahi's own "trying to remove PID file" cannot succeed. `+` runs the
-    # command outside that namespace, with full privileges; a first attempt WITHOUT it failed
-    # exactly as before and the `-` prefix swallowed the error, so the rig saw no change at all.
-    #
-    # `-` is kept for the honest case -- no stale file -- and systemd never runs ExecStartPre while
-    # the unit is active, so this can never unlink a LIVE pid.
-    systemd.services.avahi-daemon.serviceConfig.ExecStartPre = [
-      "+-${pkgs.coreutils}/bin/rm -f /run/avahi-daemon/pid"
-    ];
-
-    # ...AND A DEAD AVAHI COMES BACK BY ITSELF ([B.151]). Upstream's unit sets no `Restart=`, so
-    # any death is permanent until something starts it again -- and since briard-mdns REQUIRES it
-    # and the publishers are chain members ([B.125]), permanent means this node cannot promote.
-    #
-    # It really does die transiently. On the 2026-09-16 nightly avahi exited between
-    # `avahi-daemon 0.8 starting up` and its NSS-support check, in the exact window where
-    # nscd/nsncd was being stopped and restarted underneath it by the early-boot resolvconf churn
-    # -- the run that passed got through the same check moments before the same churn. Clearing
-    # the stale pid above makes the NEXT start able to succeed; this is what makes a next start
-    # happen at all.
-    #
-    # ⚠️ IT DOES NOT RESCUE THE PROMOTION THAT WAS IN FLIGHT. briard-mdns fails the moment its
-    # dependency does, so the chain fails and the resource moves; what this buys is that the node
-    # is healthy again afterwards rather than needing a reboot. Making the CHAIN retry is a
-    # different decision and belongs to [B.125], not here.
-    systemd.services.avahi-daemon.serviceConfig.Restart = "on-failure";
-    systemd.services.avahi-daemon.serviceConfig.RestartSec = 1;
   }
 
   # THE LONE NODE'S TARGET ([B.145c]): the promoter chain with no promoter. A home with one

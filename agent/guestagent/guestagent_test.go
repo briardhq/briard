@@ -540,11 +540,11 @@ func TestSetMDNSNameWritesNameAndRepublishes(t *testing.T) {
 	if got := f.files[mdnsEnvPath]; got != "FLOCK_NAME=brave-elf\n" {
 		t.Errorf("%s = %q, want FLOCK_NAME=brave-elf", mdnsEnvPath, got)
 	}
-	// try-restart, not restart: a Secondary publishes no name, and starting the unit there would
-	// announce a name for an address this node does not hold.
-	want := []string{"systemctl", "try-restart", mdnsUnit}
-	if len(f.runs) != 1 || !reflect.DeepEqual(f.runs[0], want) {
-		t.Errorf("runs = %v, want exactly one %v", f.runs, want)
+	// A RENAME RUNS NOTHING ([B.152]). The door re-reads this file on its own tick, so shelling
+	// out to make the rename take effect would be a second way to do it -- and the one that can
+	// fire on a Secondary, which runs no door and holds no address to publish a name for.
+	if len(f.runs) != 0 {
+		t.Errorf("a rename ran %v; renaming writes two files and does nothing else", f.runs)
 	}
 	// The VIP's own file must be untouched -- a rename that rewrote it would put every rename
 	// through the addressing path this design exists to keep it out of.

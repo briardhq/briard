@@ -286,11 +286,12 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 		t.Fatalf("health probe asked about %q, want the installed service by name", f.healthOf)
 	}
 	// THE CHAIN IS NOT TOUCHED, and that is the whole shape change. It is static
-	// (data -> services -> vip -> door -> the two mDNS publishers, [B.125]) and the installed service is
-	// not a member of it, which is what makes a service crash unable to demote the node.
+	// (data -> services -> vip -> door, [B.125]; the door carries the household's names, [B.152])
+	// and the installed service is not a member of it, which is what makes a service crash unable
+	// to demote the node.
 	if !slices.Equal(cfg.Promoter, []string{
 		"briard-primary-storage.service", "briard-services.service", "briard-vip.service",
-		"briard-reverse-proxy.service", "briard-dashboard.service", "briard-mdns.service", "briard-mdns-services.service",
+		"briard-reverse-proxy.service", "briard-dashboard.service",
 	}) {
 		t.Fatalf("install changed the promoter chain to %v — it must be static", cfg.Promoter)
 	}

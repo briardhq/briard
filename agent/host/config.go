@@ -34,24 +34,19 @@ import (
 // It takes no arguments, and that is the end state [V3b.3](e1) was after: the chain is the same
 // units on every anchor in the fleet, so there is nothing to decide and nothing to pass.
 //
-// THE TWO mDNS PUBLISHERS ARE MEMBERS ([B.125]), and that is a correction rather than an addition.
-// They hung off briard-vip as `wantedBy` + `partOf`, on the reasoning that a naming failure must
-// not fail a household over -- which undervalued the name. On a node with no `.casa` domain the
-// front door routes `byHost` against the service's own `.local` names, so a request to the bare
-// VIP matches nothing: there is NO address path to a service, and a node whose publishers are dead
-// is unreachable while every other part of it reports healthy. That is what the promoter is for.
-// Membership also means they never run on the node that LOST the promotion race -- reactor gives
-// every member `Requires=drbd-promote@<res>.service`, so their jobs fail with 'dependency' and
-// never execute, where `wantedBy` used to start them into a node that had claimed no address.
+// THE FRONT DOOR IS A MEMBER ([B.125]) AND CARRIES THE HOUSEHOLD'S mDNS NAMES ([B.152]). On a node
+// with no `.casa` domain the door routes `byHost` against the service's own `.local` names, so a
+// request to the bare VIP matches nothing: the NAME is the only path to a service, and a node that
+// cannot publish is unreachable while every other part of it reports healthy. That is what the
+// promoter is for. Publishing and answering being one member is also what makes them impossible to
+// disagree — the door answers for exactly the names it routes.
+// Membership means it never runs on the node that LOST the promotion race: reactor gives every
+// member `Requires=drbd-promote@<res>.service`, so its job fails with 'dependency' and never
+// executes, where a `wantedBy` binding would start it into a node that had claimed no address.
 //
-// THE FRONT DOOR IS A MEMBER FOR THE SAME REASON ([B.125]): every name the publishers claim
-// resolves to the VIP, where the door is the only thing that answers, so a node with no door is a
-// node whose services are unreachable however healthy the rest of it looks.
-//
-// ORDER IS THE DEPENDENCY: reactor writes `Requires=`/`After=` the PREVIOUS member. The door comes
-// after briard-vip and BEFORE the publishers, so a node only claims names once the thing that
-// serves them has started -- publishing a name nothing answers is the failure mode the order
-// exists to avoid.
+// ORDER IS THE DEPENDENCY: reactor writes `Requires=`/`After=` the PREVIOUS member, so the door
+// starts only once briard-vip holds the address its names resolve to. Publishing a name that
+// nothing answers is the failure mode the order exists to avoid.
 func promoterUnits() []string {
 	return []string{
 		"briard-primary-storage.service",
@@ -59,8 +54,6 @@ func promoterUnits() []string {
 		"briard-vip.service",
 		"briard-reverse-proxy.service",
 		"briard-dashboard.service",
-		"briard-mdns.service",
-		"briard-mdns-services.service",
 	}
 }
 
