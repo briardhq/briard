@@ -853,15 +853,6 @@ if command -v systemctl >/dev/null 2>&1; then
 		say "starting briard-agent (+ the daily update timer)"
 		systemctl start briard-agent.service briard-update.timer
 	fi
-	# A REINSTALL OVER A NODE THAT PREDATES [B.150](d) still has the old network unit, enabled and
-	# ordered Before= the agent. Left behind it would re-run a net-up.sh this install no longer
-	# writes, fail, and -- because the agent no longer Requires= it -- do so invisibly, leaving a
-	# failed unit on an otherwise healthy node forever. Take it out with its script.
-	if systemctl list-unit-files briard-net.service >/dev/null 2>&1; then
-		systemctl disable --now briard-net.service 2>/dev/null || true
-	fi
-	rm -f "$UNIT_DIR/briard-net.service" "$PREFIX/net-up.sh"
-	systemctl daemon-reload
 	# Lead with the NAME and keep the address as the fallback. The name is the one that stays true
 	# if the address ever moves, and the address is the one that still works if a client's mDNS
 	# does not (Android is the usual offender). Naming both costs a line and removes a support
