@@ -61,6 +61,12 @@ let
     mkdir -p "$H" "$G"
     install -m0755 ${agent}/bin/briard-agent        "$H/briard-agent"
     install -m0755 ${../scripts/briard-net-wrap.sh} "$H/briard-net-wrap"
+    # The units, shipped verbatim ([B.157]). Ordinary artifacts from here on: the manifest hashes
+    # them, the signature covers them, and the install below copies them out of the VERIFIED set
+    # rather than rendering them -- which is the property this channel exists to exercise.
+    install -m0644 ${../scripts/units/briard-agent.service}  "$H/briard-agent.service"
+    install -m0644 ${../scripts/units/briard-update.service} "$H/briard-update.service"
+    install -m0644 ${../scripts/units/briard-update.timer}   "$H/briard-update.timer"
     # Deterministic tar, same flags as the release script: the bundle is a directory in the store
     # and the channel contract wants one file.
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
@@ -1107,6 +1113,16 @@ pkgs.testers.runNixOSTest {
     host.succeed("test -x /opt/briard/agent/briard-exec")
     host.succeed("test -x /opt/briard/agent/briard-commit")
     host.succeed("test -x /opt/briard/agent/briard-agent")
+
+    # THE UNITS WERE COPIED OUT OF THE VERIFIED SET, NOT RENDERED ([B.157]). Byte-identical to what
+    # the channel published is the whole claim, and it is the one assertion that fails the moment
+    # somebody reintroduces a heredoc: a rendered unit can match every directive below and still
+    # not be the file the signature covered. The channel's copy is the one `--fetch-install`
+    # verified against the signed manifest before install.sh ever saw it.
+    for u in ("briard-agent.service", "briard-update.service", "briard-update.timer"):
+        host.succeed(f"cmp /run/systemd/system/{u} /srv/host/{V}/linux/{u}")
+    print("the three units are byte-identical to the signed channel's")
+
     unit = host.succeed("systemctl cat briard-agent.service")
     for want in (
         "Type=notify",

@@ -1,0 +1,93 @@
+# briard-agent.service -- SHIPPED VERBATIM, not generated.
+#
+# It is a signed artifact of the host chain (scripts/publish-release.sh stages it, the manifest
+# hashes it, install.sh copies it), which is the whole reason it is a file: install.sh is outside
+# the versioning system, so a unit it wrote by heredoc was frozen where no release could reach it
+# and unsigned into the bargain. Every path in it is /opt/briard, which the qemu bundle's own ELF
+# interpreter already bakes -- there is no prefix to interpolate ([B.157]).
+#
+# The values the agent DECIDES anything from are not here; they are in /opt/briard/config.env,
+# which the agent can rewrite ([B.150](a)).
+[Unit]
+Description=briard host agent (single node)
+# ⚠️ [Unit], not [Service]: systemd ignores it in the wrong section and says so on every start. A
+# failed trial followed by its revert must never latch the unit as dead -- the revert path is by
+# construction a burst of rapid start failures, which would trip the start limiter and leave the
+# node down for the one reason self-update exists to avoid.
+StartLimitIntervalSec=0
+# ⚠️ NO ORDERING AND NO DEPENDENCIES, deliberately ([B.150](d)). A network unit in `Requires=` means
+# a cable out at boot takes the node fully dark, with nothing left running to report, retry or
+# answer the admin door. And not `network-online.target` either: NetworkManager's notion of
+# "online" is a poor approximation of "I have a default route", and NetworkManager-wait-online adds
+# up to 90s to every boot. The agent polls for the condition it actually needs.
+[Service]
+# WHAT IS LEFT HERE IS THE EXECUTION ENVIRONMENT, NOT CONFIGURATION ([B.150](a)). Every value the
+# agent decides anything from lives in config.env beside it; these three cannot, and each for its own
+# structural reason rather than by taste.
+#
+# The agent shells out to systemd-run/systemctl AND to `ip` by name (the route to its own guest's
+# VIP over the private link, [V3b.19]); give it a PATH that resolves them on a stock host
+# (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
+# `ip` in particular lives in *sbin on a stock host, which is why both are listed and neither is
+# decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
+# It cannot move to the file: systemd SETS a PATH for every service, so the environment would
+# already have spoken and the file's value would correctly lose.
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
+# Where the file is. Stated rather than left to the agent's baked default (agent/host/config.go),
+# so `systemctl cat briard-agent` answers the question an operator is about to ask next.
+Environment=BRIARD_CONFIG=/opt/briard/config.env
+# GOTRACEBACK=all is what makes the watchdog below worth having (V3.32). Its default signal is
+# SIGABRT, and Go answers SIGABRT by dumping goroutine stacks and dying -- so a trip leaves the
+# stack of every goroutine at the moment the agent wedged, which is the diagnosis for a bug whose
+# whole difficulty is leaving no evidence. Go's default, "single", dumps only the CURRENT
+# goroutine, and at signal-delivery time that is an arbitrary one: useless here. Restarting the
+# agent is the lesser half of this feature; the traceback is the half that closes the bug.
+# It cannot move to the file either: the Go RUNTIME reads it, before any of our code runs, so an
+# agent that set it from its own config would set it too late to mean anything.
+Environment=GOTRACEBACK=all
+Type=notify
+NotifyAccess=main
+# READY=1 means THE AGENT started -- config read, loop entered -- not that the node is healthy.
+# It deliberately does NOT have to cover BringUpBudget: the agent signals ready before it brings
+# the guest up, which is what lets the watchdog cover bring-up and the recovery ladder instead of
+# arming only after a node first converges (an agent whose guest never converges would otherwise
+# never arm one at all). What it DOES cover, on a trial boot that staged a new qemu, is the
+# candidate's smoke test of that qemu ([B.86b]) -- a scratch machine booted and killed on first
+# sign of life, bounded by its own 20s so the agent can still write down WHY it refused before
+# the start fails; this window is sized to sit comfortably above that, not to a config read.
+TimeoutStartSec=60
+# The watchdog: systemd kills the unit if the agent stops sending WATCHDOG=1 for this long, and
+# Restart= brings it back. Sized by the longest GAP between pings, not by the longest thing the
+# agent legitimately does -- the agent beats between its bounded steps and takes a lease across the
+# long ones, so a ten-minute recovery is covered without widening this. WATCHDOG_USEC (which
+# systemd derives from this line) is the agent's only source for its ping interval, so this number
+# has exactly one definition.
+WatchdogSec=20
+# Self-update's on-disk half (B.84). ExecStart is the frozen picker, not the agent: it chooses the
+# committed binary or an armed candidate. ExecStartPost is the commit, and systemd runs it ONLY
+# after READY=1 -- which IS the gate. A candidate that will not exec, panics, or hangs before loop
+# entry never sends READY, so the start fails, the commit never runs, and the next start finds the
+# single-use flag already consumed and falls back to the committed binary. The revert is implicit
+# and timerless; nothing has to remember to undo anything. (UPDATE_BASE, the directory the agent
+# stages INTO, is in config.env with the rest of the values; the wrappers bake it themselves.)
+ExecStart=/opt/briard/agent/briard-exec
+ExecStartPost=/opt/briard/agent/briard-commit
+# Roll the guest's serial capture if it has outgrown its cap. UNCONDITIONAL, and the script decides
+# whether there is anything to do: a node with the console switched off has no GUEST_SERIAL in
+# config.env and the script exits 0 on reading that. Keeping the DECISION in the script rather than
+# in whether this line exists is what lets this file be one static thing for every node.
+#
+# Not `ExecStartPre=-`: a leading `-` makes systemd ignore the failure, and the failures worth
+# seeing here (an unwritable /var/log) are exactly the ones that would go quiet. The script's own
+# contract is to exit 0 -- a node must never fail to start because a log could not be rotated.
+ExecStartPre=/opt/briard/console-rotate.sh
+Restart=on-failure
+RestartSec=3
+# Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
+# SIGTERM already unwinds cooperatively (signal.NotifyContext), but the recovery and rollback legs
+# run on deliberately DETACHED contexts so they cannot be cancelled halfway, and rebootGuest alone
+# budgets BringUpBudget+3*shutdownGrace. At 90s a forced restart SIGKILLs the agent partway through
+# a recovery -- the one moment the machine can least afford it.
+TimeoutStopSec=600
+[Install]
+WantedBy=multi-user.target

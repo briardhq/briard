@@ -1,0 +1,16 @@
+# briard-update.service -- SHIPPED VERBATIM, not generated. A signed artifact of the host chain
+# that install.sh copies into place; see briard-agent.service for why ([B.157]).
+[Unit]
+Description=briard update: converge this node's agent to the release channel ([B.86a])
+After=network-online.target
+Wants=network-online.target
+[Service]
+# oneshot, NOT templated: `systemctl start` blocks on it (so a trigger gets the exit status for
+# free) and a start against a running job merges into it (so the unit is its own lock).
+Type=oneshot
+# The script shells out to curl/wget, stat, mktemp and systemctl by name; a unit's default PATH is
+# minimal and on NixOS it does not reach curl at all (same line, same reason, as briard-agent).
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
+ExecStart=/opt/briard/agent/briard-update
+# The bootstrap pull plus one artifact, on a household link. Generous; the timer retries daily.
+TimeoutStartSec=1800

@@ -1,0 +1,12 @@
+# briard-update.timer -- SHIPPED VERBATIM, not generated. A signed artifact of the host chain
+# that install.sh copies into place; see briard-agent.service for why ([B.157]).
+[Unit]
+Description=briard update check (daily, in the small hours, following stable)
+[Timer]
+# Local small hours, spread over three hours so a fleet does not hit the channel as one, and
+# Persistent so a node that was off at the time runs it when it comes back.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=3h
+Persistent=true
+[Install]
+WantedBy=timers.target

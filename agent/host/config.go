@@ -81,9 +81,10 @@ func versionBanner(version string) string {
 	return "briard-agent starting, version " + version
 }
 
-// defaultConfigFile is where install.sh writes this node's configuration ([B.150](a)). Baked
-// rather than required, so a hand-run agent needs nothing; BRIARD_CONFIG points elsewhere when
-// the install used a non-default BRIARD_PREFIX (the same reason UPDATE_BASE is written down).
+// defaultConfigFile is where install.sh writes this node's configuration ([B.150](a)). A constant
+// rather than a derived path, because the prefix is one ([B.157]): it is baked into the qemu
+// bundle's ELF interpreter too. The shipped unit states it in BRIARD_CONFIG so `systemctl cat`
+// answers the question; this is the answer for a hand-run agent, which is told nothing.
 const defaultConfigFile = "/opt/briard/config.env"
 
 // loadConfigFile makes the file the DEFAULT layer under the environment, by setting only the keys

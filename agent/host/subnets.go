@@ -41,8 +41,8 @@ const subnetsName = "subnets"
 const drawBudget = 60 * time.Second
 
 // subnetsPath derives the record from ASSIGNMENT_CACHE's directory, exactly as the LAN record
-// does -- that directory IS the node's pet state dir, and deriving keeps a non-default
-// BRIARD_STATE working without being told twice.
+// does -- that directory IS the node's pet state dir, and deriving keeps a harness that points
+// ASSIGNMENT_CACHE elsewhere working without being told twice.
 func (cfg Config) subnetsPath() string {
 	if cfg.AssignmentCache == "" {
 		return ""

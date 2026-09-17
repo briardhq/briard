@@ -194,12 +194,13 @@ func hostCIDR(dev string) string {
 // installRoot is the filesystem the install will land on. /opt and /var/lib can be separate
 // mounts, so measure the deepest existing ancestor of the prefix rather than assuming "/": on a
 // reinstall /opt/briard already exists and is the honest thing to measure, and on a fresh host the
-// walk ends at / anyway. BRIARD_PREFIX is honoured so the card measures where install.sh writes.
+// walk ends at / anyway.
+//
+// The prefix is a CONSTANT, not a knob ([B.157]): the qemu bundle bakes it into its own ELF
+// interpreter, so an install anywhere else produces a qemu that cannot execute. This used to read
+// BRIARD_PREFIX, which nothing set and which could not have worked if anything had.
 func installRoot() string {
-	p := os.Getenv("BRIARD_PREFIX")
-	if p == "" {
-		p = "/opt/briard"
-	}
+	p := "/opt/briard"
 	for p != "/" && p != "." {
 		if exists(p) {
 			return p

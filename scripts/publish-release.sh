@@ -11,7 +11,8 @@
 #   install.sh                          unsigned, outside every chain (see below)
 #   host/
 #     <version>/linux/                  manifest.json(+.sig), briard-agent, briard-net-wrap,
-#                                       qemu-bundle.tar.zst
+#                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
+#                                       briard-{agent,update}.service, briard-update.timer
 #     <version>/windows/                manifest.json(+.sig), qemu-bundle-windows.tar.zst
 #                                       (the Windows arm, [V3b.27](b); no consumer until v5)
 #     latest/{linux,windows}/           manifest.json(+.sig), briard-agent (linux)
@@ -295,6 +296,13 @@ stage)
 	H="$DIR/host/$V/linux"; mkdir -p "$H"
 	install -m0755 "$(out_of .#artifacts.agent)/bin/briard-agent"        "$H/briard-agent"
 	install -m0755 "$(out_of .#artifacts.net-wrap)/bin/briard-net-wrap"  "$H/briard-net-wrap"
+	# The systemd units, shipped verbatim rather than written by install.sh ([B.157]). Read from
+	# the working tree like install.sh below, not from a store path: they are static text with no
+	# build step. They are ordinary artifacts from here on -- the manifest hashes them and the
+	# signature covers them, which install.sh's heredocs never were.
+	install -m0644 scripts/units/briard-agent.service   "$H/briard-agent.service"
+	install -m0644 scripts/units/briard-update.service  "$H/briard-update.service"
+	install -m0644 scripts/units/briard-update.timer    "$H/briard-update.timer"
 	# qemu-bundle is a DIRECTORY in the store (bin/ lib/ share/ PROVENANCE) and the contract
 	# wants one file, so it is tarred here.
 	dtar "$H/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .

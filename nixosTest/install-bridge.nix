@@ -50,6 +50,11 @@ let
     mkdir -p "$out/qemu"
     cp ${agent}/bin/briard-agent "$out/briard-agent"
     cp ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
+    # The units, shipped verbatim ([B.157]): install.sh copies them out of staging rather than
+    # writing them, so a staging dir without them is one it refuses.
+    cp ${../scripts/units/briard-agent.service}  "$out/briard-agent.service"
+    cp ${../scripts/units/briard-update.service} "$out/briard-update.service"
+    cp ${../scripts/units/briard-update.timer}   "$out/briard-update.timer"
     cp -r ${qemuBundle}/. "$out/qemu/"
     # THE GUEST BUNDLE ([B.86j]/[B.138]): the briard binaries the host pushes into the guest at
     # bring-up. Without it the guest runs the image's firmware, which REFUSES every non-firmware

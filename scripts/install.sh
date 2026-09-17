@@ -32,10 +32,17 @@
 set -eu
 
 # ---- knobs (env-overridable; the tests pin the deterministic ones) ------------------
-PREFIX="${BRIARD_PREFIX:-/opt/briard}"
-STATE="${BRIARD_STATE:-/var/lib/briard}"
-RUNDIR="${BRIARD_RUN:-/run/briard}"
-UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
+# ⚠️ THE THREE PATHS ARE CONSTANTS, NOT KNOBS ([B.157]). /opt/briard is baked into the qemu
+# bundle's own ELF interpreter (/opt/briard/qemu/lib/ld-linux...), into the agent's default config
+# path and into the CLI's UPDATE_BASE default, so an install anywhere else produces a qemu that
+# cannot execute. They are named here because the script reads better for it, and because the
+# shipped unit files spell the same paths -- a move changes both.
+PREFIX=/opt/briard
+STATE=/var/lib/briard
+RUNDIR=/run/briard
+# The one real knob of the four: NixOS's /etc/systemd/system is a read-only store path, so the
+# install rigs point this at /run/systemd/system.
+UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}"
 
 # The device the guest's L2 hangs off. Empty -- every ordinary install -- means the agent selects
 # the one holding the default route and re-asks at every start. Naming a BRIDGE is how a user who
@@ -91,8 +98,9 @@ CPU_MODEL="${BRIARD_CPU:-max}"
 
 # The guest's serial console (its kernel + systemd), captured to the host. Under macvtap the host
 # cannot reach the guest over the network at all, so this file is the only witness to anything that
-# happens inside the VM, and it is what every field diagnosis runs on. Set BRIARD_CONSOLE= to opt out.
-CONSOLE="${BRIARD_CONSOLE:-/var/log/briard-guest-console.log}"
+# happens inside the VM, and it is what every field diagnosis runs on. Set BRIARD_CONSOLE= (empty)
+# to opt out -- `-` and not `:-` below, so that empty reads as a DECISION rather than as unset.
+CONSOLE="${BRIARD_CONSOLE-/var/log/briard-guest-console.log}"
 CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # roll to .prev past 32 MiB, so the capture costs at most 2x
 
 # The signed release channel root. Under it, one directory per release CHAIN -- `host/` (agent,
@@ -431,12 +439,11 @@ if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
 fi
 say "VM disk created"
 
-# ---- 6. the units: the agent ------------------------------------------------------
-say "writing systemd units to $UNIT_DIR"
+# ---- 6. what the units run: the generated scripts and the config file ---------------
+# The three unit FILES are shipped and copied at the end of this step; everything between here and
+# there is what they point at -- the console rotator, the self-update pivot pair, the node's
+# config file and the update script. Each is generated because each bakes a value.
 mkdir -p "$UNIT_DIR"
-# ⚠️ THE AGENT UNIT HAS NO NETWORK DEPENDENCY, and must not grow one ([B.150](d)). Any ordering we
-# could write is either before the device exists or a `Requires=` that takes the node dark when a
-# cable is out. The agent polls for the condition it actually needs and stays answerable meanwhile.
 
 # The console capture, and the one thing it needs that qemu will not do: a bound.
 #
@@ -449,18 +456,21 @@ mkdir -p "$UNIT_DIR"
 #
 # A script on disk rather than an inline `ExecStartPre=/bin/sh -c ...`: systemd expands `$f` in a
 # unit line as one of ITS environment variables, so every shell variable would need `$$` and every
-# quote would have to survive both parsers. It can be read and run
-# by a human debugging the thing at 2am.
+# quote would have to survive both parsers. It can be read and run by a human debugging the thing
+# at 2am.
+#
+# ⚠️ WRITTEN UNCONDITIONALLY, even where the console is switched off, because the unit that calls
+# it is now a static shipped file ([B.157]) and must not fork on what this install chose. The empty
+# case is the SCRIPT's to answer, which it does on its first line.
 CONSOLE_CONF=""
-CONSOLE_PRE=""
-if [ -n "$CONSOLE" ]; then
-	cat > "$PREFIX/console-rotate.sh" <<EOF
+cat > "$PREFIX/console-rotate.sh" <<EOF
 #!/bin/sh
 # Roll the guest console if it has grown past the cap. Runs as briard-agent's ExecStartPre.
 # ALWAYS exits 0: a node must never fail to start because a log could not be rotated.
 set -u
 f="$CONSOLE"
 max=$CONSOLE_MAX
+[ -n "\$f" ] || exit 0   # the console is off on this node; there is nothing to roll
 if [ -f "\$f" ]; then
 	s=\$(stat -c%s "\$f" 2>/dev/null || echo 0)
 	[ "\$s" -gt "\$max" ] 2>/dev/null && mv -f "\$f" "\$f.prev" 2>/dev/null
@@ -477,17 +487,15 @@ fi
 chmod 0640 "\$f" 2>/dev/null || true
 exit 0
 EOF
-	chmod +x "$PREFIX/console-rotate.sh"
+chmod +x "$PREFIX/console-rotate.sh"
+if [ -n "$CONSOLE" ]; then
 	mkdir -p "$(dirname "$CONSOLE")"
 	# NOTE what the rotation does NOT bound, stated rather than implied: the check runs when the
 	# AGENT starts, not when a guest launches, so a guest crash-looping under one long-lived agent
 	# keeps appending past the cap until something restarts the agent. Bounding that needs a writer
 	# we control instead of a qemu chardev, which is a bigger change than this file deserves.
-	# CONSOLE_CONF is a value (it goes in config.env); CONSOLE_PRE is a unit line, and stays one.
 	CONSOLE_CONF="GUEST_SERIAL=$CONSOLE"
-	CONSOLE_PRE="ExecStartPre=$PREFIX/console-rotate.sh"
 fi
-
 # The fd-passing launch wrapper, which the agent renders the guest launch behind under macvtap.
 # NET_MODE is NOT written: the agent derives it from the device ([B.150](c)), and writing it here
 # would be install-time frozen and free to disagree with what the machine turns out to be. The
@@ -524,6 +532,8 @@ KEY_CONF=""
 [ -f "$KEYRING" ] && KEY_CONF="UPDATE_KEYRING=$KEYRING"
 
 # ---- the self-update PIVOT (B.84) -------------------------------------------------------
+# $RUNDIR was created with the other directories; the flags inside it are tmpfs by virtue of
+# living under /run, which is what makes a power loss mid-trial revert for free.
 # Two frozen wrapper scripts and the unit fields that use them: the on-disk half of self-update,
 # without which the Go half stages a binary the unit does not run from and reports success.
 #
@@ -658,86 +668,6 @@ UPDATE_BASE=$UPDATE_BASE
 EOF
 chmod 0600 "$PREFIX/config.env"
 
-# $RUNDIR itself is already created up with the other directories; the flags inside it are tmpfs
-# by virtue of living under /run, which is what makes a power loss mid-trial revert for free.
-cat > "$UNIT_DIR/briard-agent.service" <<EOF
-[Unit]
-Description=briard host agent (single node)
-# ⚠️ [Unit], not [Service]: systemd ignores it in the wrong section and says so on every start. A
-# failed trial followed by its revert must never latch the unit as dead -- the revert path is by
-# construction a burst of rapid start failures, which would trip the start limiter and leave the
-# node down for the one reason self-update exists to avoid.
-StartLimitIntervalSec=0
-# ⚠️ NO ORDERING AND NO DEPENDENCIES, deliberately ([B.150](d)). A network unit in \`Requires=\` means
-# a cable out at boot takes the node fully dark, with nothing left running to report, retry or
-# answer the admin door. And not \`network-online.target\` either: NetworkManager's notion of
-# "online" is a poor approximation of "I have a default route", and NetworkManager-wait-online adds
-# up to 90s to every boot. The agent polls for the condition it actually needs.
-[Service]
-# WHAT IS LEFT HERE IS THE EXECUTION ENVIRONMENT, NOT CONFIGURATION ([B.150](a)). Every value the
-# agent decides anything from lives in config.env above; these three cannot, and each for its own
-# structural reason rather than by taste.
-#
-# The agent shells out to systemd-run/systemctl AND to \`ip\` by name (the route to its own guest's
-# VIP over the private link, [V3b.19]); give it a PATH that resolves them on a stock host
-# (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
-# \`ip\` in particular lives in *sbin on a stock host, which is why both are listed and neither is
-# decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
-# It cannot move to the file: systemd SETS a PATH for every service, so the environment would
-# already have spoken and the file's value would correctly lose.
-Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
-# Where the file is. The one thing the unit must still say, for the same reason the wrappers bake
-# UPDATE_BASE: BRIARD_PREFIX is a knob, so the path is not knowable from a constant.
-Environment=BRIARD_CONFIG=$PREFIX/config.env
-# GOTRACEBACK=all is what makes the watchdog below worth having (V3.32). Its default signal is
-# SIGABRT, and Go answers SIGABRT by dumping goroutine stacks and dying -- so a trip leaves the
-# stack of every goroutine at the moment the agent wedged, which is the diagnosis for a bug whose
-# whole difficulty is leaving no evidence. Go's default, "single", dumps only the CURRENT
-# goroutine, and at signal-delivery time that is an arbitrary one: useless here. Restarting the
-# agent is the lesser half of this feature; the traceback is the half that closes the bug.
-# It cannot move to the file either: the Go RUNTIME reads it, before any of our code runs, so an
-# agent that set it from its own config would set it too late to mean anything.
-Environment=GOTRACEBACK=all
-Type=notify
-NotifyAccess=main
-# READY=1 means THE AGENT started -- config read, loop entered -- not that the node is healthy.
-# It deliberately does NOT have to cover BringUpBudget: the agent signals ready before it brings
-# the guest up, which is what lets the watchdog cover bring-up and the recovery ladder instead of
-# arming only after a node first converges (an agent whose guest never converges would otherwise
-# never arm one at all). What it DOES cover, on a trial boot that staged a new qemu, is the
-# candidate's smoke test of that qemu ([B.86b]) -- a scratch machine booted and killed on first
-# sign of life, bounded by its own 20s so the agent can still write down WHY it refused before
-# the start fails; this window is sized to sit comfortably above that, not to a config read.
-TimeoutStartSec=60
-# The watchdog: systemd kills the unit if the agent stops sending WATCHDOG=1 for this long, and
-# Restart= brings it back. Sized by the longest GAP between pings, not by the longest thing the
-# agent legitimately does -- the agent beats between its bounded steps and takes a lease across the
-# long ones, so a ten-minute recovery is covered without widening this. WATCHDOG_USEC (which
-# systemd derives from this line) is the agent's only source for its ping interval, so this number
-# has exactly one definition.
-WatchdogSec=20
-# Self-update's on-disk half (B.84). ExecStart is the frozen picker, not the agent: it chooses the
-# committed binary or an armed candidate. ExecStartPost is the commit, and systemd runs it ONLY
-# after READY=1 -- which IS the gate. A candidate that will not exec, panics, or hangs before loop
-# entry never sends READY, so the start fails, the commit never runs, and the next start finds the
-# single-use flag already consumed and falls back to the committed binary. The revert is implicit
-# and timerless; nothing has to remember to undo anything. (UPDATE_BASE, the directory the agent
-# stages INTO, is in config.env with the rest of the values; the wrappers bake it themselves.)
-ExecStart=$PREFIX/agent/briard-exec
-ExecStartPost=$PREFIX/agent/briard-commit
-$CONSOLE_PRE
-Restart=on-failure
-RestartSec=3
-# Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
-# SIGTERM already unwinds cooperatively (signal.NotifyContext), but the recovery and rollback legs
-# run on deliberately DETACHED contexts so they cannot be cancelled halfway, and rebootGuest alone
-# budgets BringUpBudget+3*shutdownGrace. At 90s a forced restart SIGKILLs the agent partway through
-# a recovery -- the one moment the machine can least afford it.
-TimeoutStopSec=600
-[Install]
-WantedBy=multi-user.target
-EOF
-
 # ---- the update unit BELOW the agent ([B.86a]) ------------------------------------------
 # The updater must not be shipped by the thing it updates. An agent that runs fine and has a bug
 # in fetch/verify/stage can never be replaced -- no reflex covers it, and it fails fleet-wide at
@@ -807,34 +737,20 @@ report "\$(printf '%s\n' "\$out" | tail -n1)"
 exit \$rc
 EOF
 chmod +x "$PREFIX/agent/briard-update"
-cat > "$UNIT_DIR/briard-update.service" <<EOF
-[Unit]
-Description=briard update: converge this node's agent to the release channel ([B.86a])
-After=network-online.target
-Wants=network-online.target
-[Service]
-# oneshot, NOT templated: \`systemctl start\` blocks on it (so a trigger gets the exit status for
-# free) and a start against a running job merges into it (so the unit is its own lock).
-Type=oneshot
-# The script shells out to curl/wget, stat, mktemp and systemctl by name; a unit's default PATH is
-# minimal and on NixOS it does not reach curl at all (same line, same reason, as briard-agent).
-Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
-ExecStart=$PREFIX/agent/briard-update
-# The bootstrap pull plus one artifact, on a household link. Generous; the timer retries daily.
-TimeoutStartSec=1800
-EOF
-cat > "$UNIT_DIR/briard-update.timer" <<EOF
-[Unit]
-Description=briard update check (daily, in the small hours, following stable)
-[Timer]
-# Local small hours, spread over three hours so a fleet does not hit the channel as one, and
-# Persistent so a node that was off at the time runs it when it comes back.
-OnCalendar=*-*-* 03:00:00
-RandomizedDelaySec=3h
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
+# ---- the units: copied, not written ([B.157]) ---------------------------------------
+# The three unit files are SHIPPED ARTIFACTS of the host chain, so they arrive in the staging dir
+# beside the agent binary and are hashed by the same signed manifest. Copying them rather than
+# rendering them is the whole point: a unit written here by heredoc is frozen where no release can
+# reach it, and unsigned into the bargain. Every path in them is /opt/briard, which is a constant
+# on every install (see the top of this file), so there is nothing left to interpolate.
+#
+# Refused rather than skipped when one is missing: a staging dir without briard-agent.service is
+# one this host cannot run briard from, and finding that out at the first boot is worse than here.
+say "installing the systemd units to $UNIT_DIR"
+for u in briard-agent.service briard-update.service briard-update.timer; do
+	[ -f "$HOSTSRC/$u" ] || die "$u is absent from staging; this release cannot be installed"
+	install -m0644 "$HOSTSRC/$u" "$UNIT_DIR/$u"
+done
 
 if command -v systemctl >/dev/null 2>&1; then
 	say "registering briard with systemd"

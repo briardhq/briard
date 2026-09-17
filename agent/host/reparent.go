@@ -79,7 +79,8 @@ type networkRecord struct {
 
 // networkRecordPath puts the record beside the assignment and mesh caches -- ASSIGNMENT_CACHE's
 // directory is the node's pet state dir, and deriving from it rather than from a second config
-// key is what keeps a non-default BRIARD_STATE working without being told twice.
+// key is what keeps a harness that points ASSIGNMENT_CACHE elsewhere working without being told
+// twice.
 func (cfg Config) networkRecordPath() string {
 	if cfg.AssignmentCache == "" {
 		return ""
