@@ -207,7 +207,7 @@ func worthHonouring(p netip.Prefix) bool {
 
 // LANProbe returns the flock draw's second question: is another flock already living on this
 // candidate subnet? It asks the household's own L2 by ARP -- the same mechanism DESIGN §4 already
-// names for validating BRIARD_VIP, so this adds a caller rather than a mechanism.
+// names for validating BRIARD_VIP_ADDR, so this adds a caller rather than a mechanism.
 //
 // ⚠️ THE TEMPORARY ROUTE IS WHY THIS WORKS AT ALL. A candidate subnet is by construction one this
 // host has no address in, so a datagram to it leaves by the default route -- to the router's MAC,

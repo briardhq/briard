@@ -172,7 +172,7 @@ pkgs.testers.runNixOSTest {
         # The test DECLARES the address it is about to curl. install.sh has no default any more
         # (V3.19c step 3): unset means DHCP, and this L2 has no server. Stating it here is the
         # point of the change -- a default every test agreed with is what hid the baked VIP.
-        "BRIARD_VIP=192.168.1.100/24 "
+        "BRIARD_VIP_ADDR=192.168.1.100/24 "
         "sh ${installScript}"
     )
 

@@ -49,9 +49,10 @@ const (
 	agentUnit = "briard-agent.service"
 	guestUnit = "briard-guest.service"
 
-	// Where scripts/install.sh captures the guest's serial console by default (BRIARD_CONSOLE).
-	// Only a fallback: consolePath asks the node what it is ACTUALLY configured with, so a node
-	// that moved or disabled it is reported truthfully rather than read from here.
+	// THE AGENT'S OWN default for the guest's serial console, copied here for the same reason the
+	// unit names above are copied, and pinned the same way: a test asserts this literal equals what
+	// ConfigFromEnv answers with GUEST_SERIAL unset. Since [B.157] config.env carries the key only
+	// when an operator named one, so this is the path on an ORDINARY node -- not a guess about one.
 	defaultConsole = "/var/log/briard-guest-console.log"
 
 	// The node's configuration file, for a node whose unit does not name it. Copied from
@@ -304,11 +305,19 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 				conf = v
 			}
 		}
-		if path := configValue(conf, "GUEST_SERIAL"); path != "" {
+		// ⚠️ ABSENT IS NOT OFF. config.env carries GUEST_SERIAL only when an operator named one
+		// ([B.157]) -- an ordinary node has no line, and the AGENT defaults it, so a reader that
+		// treated the missing key as "capture is off" would contradict the file sitting on disk.
+		// That is the bug the rig caught. Only an explicitly EMPTY entry means off.
+		path, named := configValue(conf, "GUEST_SERIAL")
+		if !named {
+			path = defaultConsole
+		}
+		if path != "" {
 			return path, "", nil
 		}
 		return "", "", fmt.Errorf("this node does not capture the guest console "+
-			"(%s sets no GUEST_SERIAL) — reinstall without BRIARD_CONSOLE= to enable it", conf)
+			"(%s sets GUEST_SERIAL to nothing) — reinstall without BRIARD_GUEST_SERIAL= to enable it", conf)
 	}
 	// No systemd to ask (a container, a test rig, not root). Fall back, but SAY it is a guess.
 	path := s.env("GUEST_SERIAL")
@@ -496,12 +505,18 @@ func filterLines(lines []string, filter string) []string {
 // four rules, and the duplication is not left to trust: a test in this package feeds an awkward
 // fixture to both implementations and asserts they agree. Keep it that way if either changes.
 //
-// An unreadable or missing file is the empty string -- the caller's "this node captures no
-// console" branch, which is the honest answer when the node cannot say otherwise.
-func configValue(path, key string) string {
+// ⚠️ IT REPORTS THREE STATES, NOT TWO, because the agent's own reader does ([B.157]'s `declared`):
+// a key that is ABSENT takes the shipped default, a key set to EMPTY is a decision to switch the
+// thing off, and those must not collapse into one answer. Collapsing them is exactly the bug that
+// reached the runner: config.env stopped carrying GUEST_SERIAL (the agent defaults it), and a
+// reader that read absent as "" told every node it captured no console.
+//
+// An unreadable or missing file is (", false) -- absent, so the caller takes the default, which is
+// what the agent running on that node would have done too.
+func configValue(path, key string) (string, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -512,9 +527,9 @@ func configValue(path, key string) string {
 		}
 		k, v, ok := strings.Cut(line, "=")
 		if ok && strings.TrimSpace(k) == key {
-			return strings.TrimSpace(v)
+			return strings.TrimSpace(v), true
 		}
 	}
 	_ = sc.Err()
-	return ""
+	return "", false
 }

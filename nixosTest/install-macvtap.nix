@@ -452,7 +452,7 @@ pkgs.testers.runNixOSTest {
     # DELTA 4 (THE PROOF): the OFF-BOX client reaches Briard at the VIP through the macvtap --
     # AT AN ADDRESS NOBODY IN THIS TEST CHOSE.
     #
-    # BRIARD_VIP is unset above, so the guest asked the router and the router decided. We find out
+    # BRIARD_VIP_ADDR is unset above, so the guest asked the router and the router decided. We find out
     # the way a household would: by reading the lease table. Discovering it here rather than
     # asserting a constant is the whole point -- a test that knows the address in advance cannot
     # tell "we acquired one" from "we claimed the one we always claimed", which is exactly the

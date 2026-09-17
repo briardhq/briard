@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"briard.io/agent/guestagent/deadman"
+	"briard.io/agent/host"
 	"briard.io/shared/notify"
 )
 
@@ -102,7 +103,7 @@ func TestAlertsReadsBothSurfaces(t *testing.T) {
 func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 	src := fakeSources(t, "", errors.New("exit status 1"), "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
-		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConfig(t)}, nil // no GUEST_SERIAL
+		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConsole(t)}, nil // no GUEST_SERIAL
 	}
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
@@ -122,7 +123,7 @@ func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 func TestAlertsQualifiesTheAllClearWhenPartiallyBlind(t *testing.T) {
 	src := fakeSources(t, "", nil, "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
-		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConfig(t)}, nil // console not captured
+		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConsole(t)}, nil // console not captured
 	}
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
@@ -152,7 +153,7 @@ func TestConsolePathDistinguishesNotInstalledFromNotCaptured(t *testing.T) {
 	t.Run("not captured", func(t *testing.T) {
 		src := *base
 		src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
-			return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConfig(t)}, nil
+			return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConsole(t)}, nil
 		}
 		if _, _, err := src.consolePath(context.Background()); err == nil ||
 			!strings.Contains(err.Error(), "does not capture") {
@@ -261,12 +262,19 @@ func TestReadVerbsRejectArguments(t *testing.T) {
 	}
 }
 
-// noConfig names a config file that does not exist, in a directory that does. The stubs use it so
-// "this node captures no console" is a fact about the FIXTURE rather than about whether the
-// machine running the tests happens to have a real /opt/briard/config.env on it.
-func noConfig(t *testing.T) string {
+// noConsole writes a config.env that switches the capture OFF -- GUEST_SERIAL named, and named
+// EMPTY, which is the only thing that means off ([B.157]'s `declared`).
+//
+// ⚠️ NOT an absent file and NOT a missing key: both of those mean "take the shipped default", which
+// is what an ordinary node has. Writing the fixture the other way is precisely the mistake that
+// reached the runner -- the stub said "no console" where a real node says "the default one".
+func noConsole(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "config.env")
+	p := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(p, []byte("NODE=n1\nGUEST_SERIAL=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // ⚠️ THE REGRESSION THIS FILE EXISTS FOR ([B.157]). consolePath asked systemd for GUEST_SERIAL,
@@ -321,21 +329,28 @@ func TestConfigValueFollowsTheFormatsFourRules(t *testing.T) {
 	}, "\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []struct{ key, want string }{
-		{"SPACED", "/var/log/spaced.log"}, // both halves trimmed
-		{"EMPTY", ""},                     // a key with no value reads as absent
-		{"NOEQUALS", ""},                  // a line with no `=` is skipped, not a key
-		{"VIP_ADDR", "192.168.1.50/24"},   // a `/` in a value is just a value
-		{"URL", "http://host:8099/x=y"},   // only the FIRST `=` splits
-		{"DUPLICATE", "first"},            // first wins, as the agent's env layering does
-		{"GUEST_SERIAL", ""},              // a comment is not a setting
-		{"MISSING", ""},                   // absent
+	// ⚠️ THE THIRD COLUMN IS THE ONE THAT MATTERED. "named, and named empty" and "not named at all"
+	// are different answers -- the first is a decision to switch a thing off, the second means take
+	// the shipped default -- and collapsing them is the bug that reached the runner.
+	for _, c := range []struct {
+		key, want string
+		named     bool
+	}{
+		{"SPACED", "/var/log/spaced.log", true}, // both halves trimmed
+		{"EMPTY", "", true},                     // NAMED empty: a decision, not an absence
+		{"NOEQUALS", "", false},                 // a line with no `=` is skipped, not a key
+		{"VIP_ADDR", "192.168.1.50/24", true},   // a `/` in a value is just a value
+		{"URL", "http://host:8099/x=y", true},   // only the FIRST `=` splits
+		{"DUPLICATE", "first", true},            // first wins, as the agent's env layering does
+		{"GUEST_SERIAL", "", false},             // a comment is not a setting
+		{"MISSING", "", false},                  // absent
 	} {
-		if got := configValue(conf, c.key); got != c.want {
-			t.Errorf("configValue(%q) = %q, want %q", c.key, got, c.want)
+		got, named := configValue(conf, c.key)
+		if got != c.want || named != c.named {
+			t.Errorf("configValue(%q) = (%q, %v), want (%q, %v)", c.key, got, named, c.want, c.named)
 		}
 	}
-	if got := configValue(filepath.Join(t.TempDir(), "absent"), "GUEST_SERIAL"); got != "" {
+	if got, named := configValue(filepath.Join(t.TempDir(), "absent"), "GUEST_SERIAL"); got != "" || named {
 		t.Errorf("a missing file read as %q, want empty", got)
 	}
 }
@@ -352,5 +367,55 @@ func TestDefaultConfigFileMatchesTheShippedUnit(t *testing.T) {
 	if !strings.Contains(string(b), want) {
 		t.Errorf("the shipped unit does not carry %q -- the CLI's fallback and the installed "+
 			"node's config path have drifted", want)
+	}
+}
+
+// ⚠️ THE PIN THAT WOULD HAVE CAUGHT [B.157]'s RUNNER FAILURE, and the reason it is worth a test
+// rather than a comment.
+//
+// `briard logs` resolves the console path from config.env, falling back to a literal copied here.
+// The agent resolves the SAME question with its own default. While install.sh wrote GUEST_SERIAL
+// into config.env the two never had to agree; the moment it stopped (defaults moved to config.go),
+// the fallback became the answer for every ordinary node -- and a stale copy would tell a user
+// their console is somewhere it is not, on the one verb they reach for when things are wrong.
+//
+// A test may import agent/host where the shipped code may not (same rule as alertMarker above):
+// this is not in the binary, so the five-dependency budget is unaffected.
+func TestDefaultConsoleMatchesTheAgents(t *testing.T) {
+	// Cleared, so what is compared is the AGENT'S DEFAULT and not this process's environment.
+	os.Unsetenv("GUEST_SERIAL")
+	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
+	if got := host.ConfigFromEnv().SerialLog; got != defaultConsole {
+		t.Errorf("the CLI falls back to %q while the agent captures to %q", defaultConsole, got)
+	}
+}
+
+// ⚠️ THE ORDINARY NODE, and the case no unit test covered until the rig failed on it.
+//
+// config.env carries GUEST_SERIAL only when an operator named one ([B.157]), so on every normal
+// install the key is simply ABSENT and the AGENT's default decides where the console goes. A reader
+// that treats absent as "capture is off" contradicts the file sitting on disk -- which is exactly
+// what `briard logs` did on install-macvtap: the console was there, non-empty, correctly moded, and
+// the verb said the node did not capture one.
+//
+// The fixture is therefore a REAL node's config.env: identifiers, no GUEST_SERIAL line.
+func TestConsolePathDefaultsWhenTheConfigNamesNoConsole(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(conf, []byte("NODE=briard-node-abc123\nFLOCK_NAME=brave-elf\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := fakeSources(t, "", nil, "")
+	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
+		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + conf}, nil
+	}
+	path, note, err := src.consolePath(context.Background())
+	if err != nil {
+		t.Fatalf("consolePath: %v -- an ordinary node was told it captures no console", err)
+	}
+	if path != defaultConsole {
+		t.Errorf("path = %q, want the agent's default %q", path, defaultConsole)
+	}
+	if note != "" {
+		t.Errorf("note = %q, want none -- this is the node's real path, not a guess", note)
 	}
 }

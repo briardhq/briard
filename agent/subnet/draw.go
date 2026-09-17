@@ -60,7 +60,7 @@ func (d Draw) Complete() bool { return d.System != "" && d.Priv != "" && d.Pod !
 // exclusions reject under 10% of the pool, so sixteen consecutive rejections by chance is a
 // number with more zeros than this comment -- which is the point: reaching it means the host
 // really does have 10/8 carved up, and then we must REFUSE rather than invent. That is DESIGN
-// §4's existing posture for the VIP ("no DHCP server and no BRIARD_VIP -> refuse, naming the
+// §4's existing posture for the VIP ("no DHCP server and no BRIARD_VIP_ADDR -> refuse, naming the
 // variable"), and the alternative is a node that installs green and cannot serve half the house.
 //
 // It is also a wall-clock bound, because the flock draw ARP-probes each surviving candidate:
