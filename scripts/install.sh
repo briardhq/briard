@@ -1,211 +1,115 @@
 #!/bin/sh
 # briard one-command install.
 #
-#   curl -fsSL https://get.briard.io/install.sh | sh
+#   curl -fsSL https://get.briard.io/install.sh | sudo sh
 #
-# Brings a stock single-node Linux host to GREEN: the guest's NICs as macvtap children of the
-# host NIC (no bridge, no host-IP move), a guest VM (booted by our BUNDLED qemu -- no distro qemu) holding
-# the VIP, a data volume the guest lays out (DRBD only once a peer exists), and Briard answering at the VIP
-# on the LAN. No cloud, no name (rung 0).
+# Brings a stock single-node Linux host to GREEN: a guest VM on our BUNDLED qemu holding the VIP,
+# its NICs hung off the host's own NIC, a data volume the guest lays out (DRBD only once a peer
+# exists), and Briard answering at the VIP on the LAN. No cloud, no name.
 #
-# It installs NO SERVICE. A node is a node first: ready, replicating, able to fail
-# over -- and then you choose what runs on it. So the VIP answers with Briard's own page
-# rather than a workload nobody picked, and HEALTH_URL probes that front door, which is the
-# one address that answers whether or not anything is installed.
+# ⚠️ THIS SCRIPT IS OUTSIDE THE VERSIONING SYSTEM. It is fetched from the channel root and run
+# once; nothing it writes can be reached by a release afterwards. So it configures only what never
+# changes -- where things live, which identifiers are minted, which units exist -- and every
+# decision that is a property of THIS MACHINE ON THE DAY IT IS ASKED belongs to the agent, which
+# re-asks it at every start and ships fixes through the channel. Which device the guest's L2 hangs
+# off, which substrate that implies, which addresses this node numbers itself from and whether the
+# tun driver is loaded are all the agent's ([B.150]). Adding one back here is the mistake.
+#
+# It installs NO SERVICE. A node is a node first: ready, replicating, able to fail over -- then you
+# choose what runs on it. So the VIP answers with Briard's own page, and the health probe watches
+# that front door, the one address that answers whether or not anything is installed.
 #
 # Cattle/pet FHS:
-#   /opt/briard   = cattle: signed, self-updating binaries + qemu bundle + guest image, plus
-#                   config.env -- everything the agent is told about this host ([B.150](a)).
-#                   `rm -rf /opt/briard` + reinstall = a fresh host.
-#   /var/lib/briard = pet: the DRBD data volume + identity -- survives reinstall.
-#   /run/briard   = tmpfs flags.
-#   /var/log/briard-guest-console.log = the guest's serial console. NEITHER cattle nor pet: a
-#                   host log, kept out of both so it outlives the cattle reset (the console you
-#                   want is the one from the boot that made you reinstall) and stays off the
-#                   replicated volume (it is node-local). Rolled to .prev past BRIARD_CONSOLE_MAX.
+#   /opt/briard     = cattle: signed self-updating binaries + qemu bundle + guest image, plus
+#                     config.env. `rm -rf /opt/briard` + reinstall = a fresh host.
+#   /var/lib/briard = pet: the data volume, this node's identifiers, the subnets it drew.
+#   /run/briard     = tmpfs flags.
+#   /var/log/briard-guest-console.log = the guest's serial console. Neither cattle nor pet: a host
+#                     log, so it outlives a cattle reset and stays off the replicated volume.
 #
-# Artifact source: BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging
-# dir (the hermetic install tests, and a future offline install). Unset = the
-# signed network fetch over the channel -- assertion (e), not yet wired here.
+# BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the hermetic install
+# tests, and a future offline install). Unset = the signed network fetch over the channel.
 set -eu
 
-# ---- knobs (env-overridable; the test pins the deterministic ones) -----------------
+# ---- knobs (env-overridable; the tests pin the deterministic ones) ------------------
 PREFIX="${BRIARD_PREFIX:-/opt/briard}"
 STATE="${BRIARD_STATE:-/var/lib/briard}"
 RUNDIR="${BRIARD_RUN:-/run/briard}"
-# The device the guest's L2 hangs off; empty = the one holding the default route. It is passed
-# through to the agent rather than resolved here ([B.150](b)+(d)): the card validates it before
-# anything is written, and the agent re-asks at every start, because the answer is a property of
-# the machine on the day it is asked. BRIARD_BRIDGE went with the bridge-building code -- naming a
-# bridge for us to create was the gesture [B.150](c) deleted; name an existing one with BRIARD_NIC.
+UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
+
+# The device the guest's L2 hangs off. Empty -- every ordinary install -- means the agent selects
+# the one holding the default route and re-asks at every start. Naming a BRIDGE is how a user who
+# already built one gets us to join it: the substrate is derived from the device, never chosen, so
+# a bridge parent gets one port and the guest makes its own service identity on top, and anything
+# else gets macvtap children. We never create a bridge.
 NIC="${BRIARD_NIC:-}"
-TAP="${BRIARD_TAP:-briard0}"          # the guest's service NIC (eth2, the VIP)
-# THE SYSTEM SUBNET -- this node's own address, and the one canonical way anything reaches it
-# (DESIGN §4). Assigned on EVERY install including a lone one, rather than arriving with a
-# cloud pairing as it used to: a standalone install is a single-node flock, so it is node-id 0 and
-# takes .1. Nothing about a node having an address is a property of having a peer, and making it
-# one left the lone node -- the tier that has it worst -- as the only shape with no address at all
-# ([V3b.26b]).
-#
-# FLOCK-SCOPED AND NOT DURABLE. The subnet belongs to the flock, exactly as the service MAC does
-# (deriveMAC over the flock id): an unpaired island derives its own, and on adoption the ADOPTER's
-# subnet survives while the joiner renumbers into it (DESIGN §1.2). So this address is canonical
-# within a flock epoch and no longer -- never a bookmark, never a stored config, never a DNS
-# record. That is the VIP's and the name's job, and they survive both a failover and an adoption.
-#
-# ⚠️ NO LONGER A NUMBER WRITTEN HERE, and that is the whole of [V3b.26f]. It used to default to
-# 10.0.0 -- one of the most common real household subnets there is, the one every Xfinity gateway
-# ships -- while both subnets ride ONE L2 by design, so a home whose LAN was 10.0.0.x collided
-# head-on, and [V3b.26b] made that live rather than latent by giving every install an address.
-# The subnet is now DRAWN per home in step 4b, checked against the network this machine can
-# actually see, and every address positional in it is derived there alongside it.
-#
-# This variable is the escape hatch and the only thing the draw can be told: set it to a bare
-# "10.42.7" to pin the subnet. Empty means draw one, which is every normal install.
-SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-}"
-DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # the guest's system NIC (eth1) -- its node IP, and where DRBD binds
-# THE PRIVATE HOST<->GUEST LINK (the guest's eth3). A plain tap, on neither the bridge nor the
-# macvtap parent: a point-to-point wire between this host and its own guest. Substrate-independent
-# by construction -- macvtap deliberately isolates guest from host, so without this the host has NO
-# network path to the VM it runs.
-#
-# ADDRESSED AT BOTH ENDS, and [V3b.26b] measured why it cannot be unnumbered even though nothing
-# routes by those addresses: avahi joins the IPv4 mDNS group on an interface only if that interface
-# HAS a v4 address, so an unnumbered link answers a name query over IPv6 link-local alone -- which
-# works until the household's host has IPv6 off, and DESIGN §4.3 puts our addressing on v4
-# indefinitely. Pure substrate all the same: the traffic that matters rides this host's own
-# system-subnet /32s over it, and both ends pin a permanent neighbour rather than ARP across it.
-#
-# It is created on EVERY install, not only on a managed cloud-witness pairing as it used to be.
-# Two things ride it and neither is optional on the tier that has it worst:
-#   - the deadman's reboot gate (deadman/gate.go), which is how the host rung avoids power-cycling
-#     a node whose departure would cost a peer its quorum. Gating it on pairing put the guard on
-#     paired multi-anchor nodes -- which survive a reboot anyway -- and left it absent on the lone
-#     node, where a wrong reboot is a real outage.
-#   - the host-side witness-forwarder on a managed pairing, which listens at PRIV_HOST_IP:7789 and
-#     has always needed this address to exist.
-# ⚠️ PRIV_HOST_CIDR IS ON ITS WAY OUT AS A PRODUCT ADDRESS, and survives for exactly one consumer:
-# the cloud-witness forwarder, whose address the mesh composer still hands out fleet-constant
-# (cloud/server/pair.go). The reboot gate and the host's route to the VIP have already moved to
-# this node's own addresses ([V3b.26b]), which is why SYSTEM_HOST_CIDR is derived beside it in
-# step 4b.
-#
-# ⚠️ THE LINK'S ADDRESSING IS NOT GOING ANYWHERE, and reading the line above as "the subnet goes"
-# is a mistake this comment has already caused once. 10.11.R is L2 SUBSTRATE, not an L3 product
-# subnet: on Linux, macvtap leaves host and guest unable to route each other's subnets directly,
-# and these addresses on eth3 are what both routing tables hang that routing off. Address-less
-# alternatives were tried and were more complex than this. It may narrow to a /30, and it does not
-# exist AT ALL on a Windows host -- which is exactly why NO BRIARD CODE MAY REFERENCE IT: code that
-# dials this range cannot run on a host that never had it. What retires is the forwarder's USE of
-# the address, not the link's addressing.
+
+# The guest's three NICs, by the name of the host device behind each:
+TAP="${BRIARD_TAP:-briard0}"                # eth2, the service NIC -- where the VIP lives
+DRBD_TAP="${BRIARD_DRBD_TAP:-briard-drbd0}" # eth1, the system NIC -- this node's node IP, and where DRBD binds
+# eth3, the private host<->guest link: a plain tap on neither the parent nor the bridge, and the
+# host's only network path to the VM it runs (macvtap deliberately isolates the two). It is
+# addressed at both ends, because avahi joins the IPv4 mDNS group only on an interface that has a
+# v4 address. Pure L2 substrate: it does not exist on a Windows host, so NO BRIARD CODE MAY
+# REFERENCE ITS RANGE -- code that dials it could not run there.
 PRIV_TAP="${BRIARD_PRIV_TAP:-briard-priv0}"
-# The link's subnet, drawn in step 4b exactly like the flock's above and for a quieter version of
-# the same reason. It cannot collide at L2 -- a point-to-point tap reaches no LAN -- but the
-# HOST'S ROUTING TABLE IS SHARED, so a household on the link's subnet gives the host two identical
-# on-link /24s, one via its LAN NIC and one via our tap, and Linux picks between them by metric
-# and insertion order. Both directions can then break and neither choice is ours ([V3b.26f]).
-# Set to a bare "10.11.203" to pin it; empty means draw.
-PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
-# The guest's private-service pool ([B.48](a)): 10.12.R, guest-internal, never configured on this
-# host. The host holding no address and no route in it is what makes a pod unreachable from outside
-# the guest by construction -- there is nothing here to enforce, and that is the design.
-POD_SUBNET="${BRIARD_POD_SUBNET:-}"
-# ⚠️ THERE IS NO NET-SUBSTRATE KNOB, and `BRIARD_NET_MODE` is gone ([B.150](c)). The substrate is
-# DERIVED from the device the guest's L2 hangs off: if that device is a BRIDGE, the agent adds one
-# port to it and the guest makes its own service identity on top (the Linux clone of the Windows
-# shape, DESIGN §4); otherwise the guest's NICs are macvtap children of it -- L2 citizenship with
-# no bridge and no host-IP move, which is the shape every Linux node ships in.
-#
-# A knob was the wrong shape for it twice over. It could disagree with the machine (bridge mode on
-# a host with no bridge meant building one, which is the ninety lines [B.150](c) deleted), and it
-# had to be answered at INSTALL time, frozen into a script, on a machine whose devices change.
-# Asking the device is a question with one true answer, and one the agent can re-ask.
-#
-# `BRIARD_NIC` is still the escape hatch, and it is now the only one: it names the device, and the
-# device decides the substrate. It may name a bridge -- that is how `install-bridge.nix` drives
-# the Windows topology, and how a user who has already built a bridge gets us to join it.
-# The service address, in CIDR form -- it must carry a prefix because it is an address ON THE
-# USER'S LAN, and the LAN's prefix is not ours to assume. Until V3.19 this was a bare address that
-# fed only HEALTH_URL (the address the HOST probes) while the guest claimed a *baked* one, so
-# setting it moved the probe off the real VIP instead of moving the VIP. It now reaches the guest.
-#
-# UNSET MEANS DHCP, and there is deliberately no default (V3.19c step 3). Any address we could
-# pick here is a guess about someone else's network, whereas a lease is the router TELLING us the
-# answer -- from inside its own pool, so it will not hand the same address to anyone else while we
-# hold it. A static default squats an address the router still believes it owns. It also removes
-# the last place our lab's subnet reached the product path, which is exactly why the original
-# defect was invisible: the default matched the lab, so every test agreed with it.
+
+# The three private ranges this node numbers itself from: the flock's system subnet, the private
+# link's, and the guest-internal pod pool. Each is DRAWN by the agent against the network this
+# machine can see, recorded in $STATE/subnets and kept for the life of the node (agent/subnet,
+# agent/host/subnets.go). Set one to a bare "10.42.7" to pin it -- the escape hatch for a machine
+# whose 10/8 is carved up enough that the draw refuses.
+BRIARD_SYSTEM_SUBNET="${BRIARD_SYSTEM_SUBNET:-}"
+BRIARD_PRIV_SUBNET="${BRIARD_PRIV_SUBNET:-}"
+BRIARD_POD_SUBNET="${BRIARD_POD_SUBNET:-}"
+
+# The service address, in CIDR form -- it is an address on the USER'S LAN and the LAN's prefix is
+# not ours to assume. UNSET MEANS DHCP, and there is deliberately no default: any address we could
+# pick is a guess about someone else's network, while a lease is the router telling us the answer
+# out of its own pool.
 VIP="${BRIARD_VIP:-}"
 VIP_IP="${VIP%%/*}"   # the bare address; EMPTY under DHCP, where nobody knows it yet
-# The pet data volume: THICK-allocated (see step 6) and sized for a real service's data, not for a
-# test fixture. 1G was the fixture's size and it is not a Home Assistant's: `.storage` plus the
-# recorder SQLite outgrows it in months, and growing a DRBD-backed volume afterwards is not a
-# one-liner. Written in whole GiB -- the dd fallback parses it that way.
+
+# The pet data volume: thick-allocated (step 5), sized for a real service's data. Home Assistant's
+# `.storage` plus the recorder SQLite outgrows a gigabyte in months, and growing a DRBD-backed
+# volume afterwards is not a one-liner. Whole GiB -- the dd fallback parses it that way.
 DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
-# The data volume's ENCRYPTION POLICY, decided here and pushed to the guest at every bring-up
-# ([V3b.33](d)). "auto" -- the default and what almost every install should use -- encrypts
-# wherever the GUEST's CPU has AES and runs in the clear where it does not, which is a
-# hardware-determined split the machine card reports. "off" is somebody deciding otherwise;
-# "adiantum" is the cipher for hardware with no AES acceleration (Pi 4 and older, pre-AES-NI x86),
-# a documented opt-in and never promoted.
-#
+
+# The data volume's encryption policy, pushed to the guest at every bring-up. "auto" encrypts
+# wherever the guest's CPU has AES and runs in the clear where it does not; "off" is somebody
+# deciding otherwise; "adiantum" is the cipher for hardware with no AES acceleration (Pi 4 and
+# older, pre-AES-NI x86), a documented opt-in.
 # ⚠️ IT APPLIES AT FORMAT TIME ONLY. Changing it on an installed node does not convert its volume:
-# that is a live `pvmove` between a plaintext and an encrypted PV, which the seam exists to make
-# possible and which is a verb, not a config flip.
+# that is a live `pvmove` between a plaintext and an encrypted PV -- a verb, not a config flip.
 DATA_ENCRYPTION="${BRIARD_DATA_ENCRYPTION:-auto}"
+
 # The guest's CPU model. "max" = every feature the accelerator can expose, which under KVM is this
-# host's own CPU: qemu's DEFAULT (qemu64) is below x86-64-v2 and costs the guest aes/sha-ni/sse4.2
-# (so software TLS, sha256 and crc32c) plus the CPUID bits its kernel needs to mitigate Spectre.
-# Passing the host CPU through is free for us because a briard guest never migrates and never
-# saves RAM state. Set BRIARD_CPU=qemu64 to fall back if a host's passthrough is ever the suspect.
+# host's own CPU; qemu's default (qemu64) is below x86-64-v2 and costs the guest aes/sha-ni/sse4.2
+# plus the CPUID bits its kernel needs to mitigate Spectre. Free for us -- a briard guest never
+# migrates and never saves RAM state. BRIARD_CPU=qemu64 falls back where passthrough is the suspect.
 CPU_MODEL="${BRIARD_CPU:-max}"
+
 # The guest's serial console (its kernel + systemd), captured to the host. Under macvtap the host
-# CANNOT reach the guest over the network at all, so this file is the ONLY witness to anything that
-# happens inside the VM -- and it is what every field diagnosis this epoch actually ran on (V3.20's
-# mDNS name, V3.21's address family, V3.22's wedged publisher, V3.23's lost address).
-#
-# It was missing here until now, and the shape of the miss is the point: install-macvtap.nix lays a
-# GUEST_SERIAL drop-in over the unit this script writes, and lab/container.nix sets it too, so every
-# rig that debugs a guest granted itself the witness while every REAL install discarded it. The
-# stranger who meets the next defect had nothing to look at and nothing to send us.
-#
-# Neither cattle nor pet: NOT under $PREFIX, because the console you most want is the one from the
-# boot that made you `rm -rf /opt/briard`, so it has to outlive the cattle reset -- and NOT on the
-# replicated volume, because it is node-local by nature and node-local writes onto a replicated
-# volume are the exact mistake V3.26b just swept. A host log belongs in /var/log.
-# Set BRIARD_CONSOLE= (empty) to opt out.
+# cannot reach the guest over the network at all, so this file is the only witness to anything that
+# happens inside the VM, and it is what every field diagnosis runs on. Set BRIARD_CONSOLE= to opt out.
 CONSOLE="${BRIARD_CONSOLE:-/var/log/briard-guest-console.log}"
-# Roll to .prev past this size, so the capture costs at most 2x it on disk. See the rotate script.
-CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # 32 MiB
-# This node's name and this flock's name are NOT constants and NOT knobs: both are minted into pet
-# state in step 6b, once $STATE exists and the agent binary is on disk. See there for why they are
-# two identifiers rather than the one hardcoded `guest` this used to be.
-UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}" # /run/systemd/system for a read-only-/etc host
-# BRIARD_NET_GUARD_SECS and BRIARD_NET_PEER are gone with the thing they guarded ([B.150](c)): the
-# watchdog that reverted a bridge enslave, and the LAN host it pinged to decide whether we had cut
-# the operator's own SSH session. Nothing takes a device away from the host any more, so there is
-# no footing to lose and nothing to confirm.
-# The signed release channel ROOT (network fetch). Under it, one directory per release CHAIN --
-# `host/` (agent, net-wrap, qemu) and `guest/` (the OS image) -- each holding one directory per
-# version plus the two pointers `stable` and `latest`, which are byte-copies of one version's
-# signed manifest ([B.86e]; the tree is spelled out in scripts/publish-release.sh). The bucket
-# also serves `catalog/` (live runtime content the agent fetches for `briard service install`)
-# and THIS script at the root: independent lifecycles, each in a namespace of its own.
-#
-# This script stays at the ROOT, because `curl -fsSL https://get.briard.io/install.sh | sudo sh`
-# is the advertised command and the one path that is not ours to move.
+CONSOLE_MAX="${BRIARD_CONSOLE_MAX:-33554432}" # roll to .prev past 32 MiB, so the capture costs at most 2x
+
+# The signed release channel root. Under it, one directory per release CHAIN -- `host/` (agent,
+# net-wrap, qemu) and `guest/` (the OS image) -- each holding one directory per version plus the
+# pointers `stable` and `latest`, which are byte-copies of one version's signed manifest
+# (scripts/publish-release.sh spells the tree out). The bucket also serves `catalog/` and THIS
+# script at the root, each on its own lifecycle.
 CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
-# WHICH release: `stable` (what strangers get, the tested pair by construction), `latest` (what
-# was published most recently -- how a release is proven before it is promoted), or an exact
-# host id (`v3.<date>.<rev>`; its guest release is the one the host manifest names, [B.86i]). One
-# selector for both chains.
+# WHICH release: `stable` (what strangers get, a tested pair by construction), `latest` (what was
+# published most recently -- how a release is proven before promotion), or an exact host id
+# (`v3.<date>.<rev>`; its guest release is the one the host manifest names). One selector, both chains.
 RELEASE="${BRIARD_RELEASE:-stable}"
 KEYRING="${BRIARD_KEYRING:-$PREFIX/keyring.pem}"       # the bundled release public key (verify root)
 
-# The release signing public key(s), embedded at release time. install.sh is fetched over TLS from
-# the release channel, so the key travels WITH the script (the standard installer-carries-the-pubkey
-# pattern) -- a placeholder in the source tree that the release pipeline fills. Used only when no
-# keyring is already on disk (BRIARD_KEYRING unset and no prior install).
+# The release signing public key(s), embedded at release time: this script is fetched over TLS from
+# the channel, so the key travels with it (the installer-carries-the-pubkey pattern). A placeholder
+# in the source tree that the release pipeline fills. Used only when no keyring is on disk.
 RELEASE_KEYRING_PEM='__BRIARD_RELEASE_KEYRING_PEM__'
 
 say() { printf 'briard: %s\n' "$*"; }
@@ -235,15 +139,9 @@ fetch_url() { # url dest -- TLS download for the bootstrap agent (curl or wget, 
 
 # ---- 1. the gate's agent -- the ONLY artifact staged before the host is admitted ----
 # The report card needs an executable agent to run, so exactly that much is staged here and not a
-# byte more. Everything heavy (the qemu bundle, the 2.5 GB guest image) waits until step 3, AFTER
-# admission.
-#
-# It used to be the other way round: step 1 staged the whole set -- and on the network path
-# DOWNLOADED it first, so a refusal could be preceded by ~6 GB of writes -- and only then ran the
-# card, whose refusal line still claimed "nothing was changed". Two things were wrong with that.
-# The claim was false; and the DISK CHECK was measuring a disk the installer had already eaten
-# into, so a host that genuinely met the 8 GB floor could be refused for failing to meet it after
-# we spent 3 GB of it. Both are fixed by asking before taking.
+# byte more: everything heavy (the qemu bundle, the 2.5 GB guest image) waits until step 3, AFTER
+# admission. Asking before taking is what lets the refusal say "nothing was installed" truthfully,
+# and what keeps the card's DISK CHECK measuring a disk the installer has not already eaten into.
 mkdir -p "$PREFIX/agent" "$STATE" "$RUNDIR"
 if [ -n "${BRIARD_ARTIFACTS:-}" ]; then
 	# Offline / hermetic-test path: install from an already-verified local staging dir.
@@ -256,11 +154,10 @@ if [ -n "${BRIARD_ARTIFACTS:-}" ]; then
 	# so the install steps read one shape.
 	HOSTSRC="$src"; GUESTSRC="$src"
 else
-	# Signed network fetch (assertion e). Bootstrap a briard-agent over TLS -- the release channel's
-	# integrity anchors this FIRST binary -- then let it fetch+verify the whole set (qemu bundle,
-	# guest image, and a fresh briard-agent) against the bundled release keyring, refusing any
-	# tampered/unsigned artifact. The bootstrap agent only RUNS the verified fetch; the binaries that
-	# land under /opt are the Ed25519-verified set, so a compromised bootstrap can't seed bad cattle.
+	# Signed network fetch. Bootstrap a briard-agent over TLS -- the channel's integrity anchors
+	# this FIRST binary -- then let it fetch and verify the whole set against the bundled release
+	# keyring. The bootstrap only RUNS the verified fetch; what lands under /opt is the
+	# Ed25519-verified set, so a compromised bootstrap cannot seed bad cattle.
 	if [ ! -f "$KEYRING" ]; then
 		case "$RELEASE_KEYRING_PEM" in
 		*"BEGIN PUBLIC KEY"*) printf '%s\n' "$RELEASE_KEYRING_PEM" >"$KEYRING" ;;
@@ -268,15 +165,13 @@ else
 		esac
 	fi
 	say "bootstrapping the installer agent from $CHANNEL (host/$RELEASE) ..."
-	# The bootstrap lands under $PREFIX, NOT $RUNDIR: Debian (and Ubuntu) mount /run `noexec`, so a
-	# bootstrap staged there cannot be executed at all -- the install died on `Permission denied`
-	# before it fetched a single artifact. $PREFIX is where the agent lives anyway, so if it is
-	# noexec the install has no home on this host regardless; /run has no claim to being executable.
+	# Under $PREFIX, NOT $RUNDIR: Debian and Ubuntu mount /run `noexec`, so a bootstrap staged
+	# there cannot be executed at all. $PREFIX is where the agent lives anyway.
 	#
-	# From the TARGET's path, never a fixed one: the bootstrap is the binary that parses the
-	# manifest, and a stale bootstrap that cannot parse a newer manifest is exactly the
-	# forward-compat bricking [B.86] exists to prevent. `briard-agent` is the one artifact the
-	# channel duplicates under its pointers for precisely this fetch.
+	# Fetched from the TARGET's path, never a fixed one: the bootstrap is the binary that parses
+	# the manifest, and a stale one that cannot parse a newer manifest is exactly the
+	# forward-compat bricking the channel layout exists to prevent ([B.86]). `briard-agent` is the
+	# one artifact the channel duplicates under its pointers for this fetch.
 	boot="$PREFIX/bootstrap-agent"
 	fetch_url "$CHANNEL/host/$RELEASE/linux/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/host/$RELEASE/linux"
 	chmod +x "$boot"
@@ -291,19 +186,15 @@ else
 fi
 
 # ---- 2. the machine report card (the admission gate) -------------------------------
-# Refuse-with-the-fix-named on an unbringable host, before we fetch gigabytes, touch networking or
-# boot a VM -- never a half-install (assertion c, already built).
+# Refuse-with-the-fix-named on an unbringable host, before we fetch gigabytes or boot a VM --
+# never a half-install.
 say "checking host readiness ..."
-# VIP_ADDR is passed because the card cannot judge an address it is not told about. It is the one
-# check that compares OUR intent against THIS LAN, and without it the gate admitted a machine whose
-# home network the service address was not even on (V3.19).
-# BRIARD_NIC is passed for a variation on the same reason: since [B.150](b) the card SELECTS the
-# device the guest's L2 will hang off -- the default route unless told otherwise -- and validates
-# it by creating a throwaway macvtap on it. Without the override the card would judge a different
-# device than the install is about to use, which is the worst possible half-truth: a green card
-# and an unreachable guest.
-# NET_MODE is NOT passed any more ([B.150](c)): the card derives the substrate from the device it
-# selected, so it cannot be told one the machine will not end up on.
+# The card is told the two things it cannot infer. VIP_ADDR, because judging a service address
+# against THIS LAN is the one check that compares our intent with the household's network.
+# BRIARD_NIC, because the card SELECTS the device the guest's L2 will hang off and validates it by
+# creating a throwaway macvtap on it -- judging a different device than the install will use is the
+# worst possible half-truth, a green card and an unreachable guest. The substrate is not passed at
+# all: the card derives it from the device, so it cannot be told one the machine will not be on.
 if ! VIP_ADDR="$VIP" BRIARD_NIC="$NIC" "$CARD_AGENT" --report-card; then
 	# Leave the box as we found it: on the network path the bootstrap agent is the one thing we
 	# put down, so take it back rather than claim "nothing was changed" while it sits there.
@@ -316,11 +207,8 @@ fi
 # image are the self-updating cattle; the base guest image is read-only backing.
 mkdir -p "$PREFIX/guest-image"
 if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
-	# Now that the host is admitted, let the bootstrap fetch+verify the whole set (qemu bundle,
-	# guest image, and a fresh briard-agent) against the bundled release keyring, refusing any
-	# tampered/unsigned artifact. The bootstrap agent only RUNS the verified fetch; the binaries
-	# that land under /opt are the Ed25519-verified set, so a compromised bootstrap can't seed bad
-	# cattle.
+	# The host is admitted: now the bootstrap fetches and verifies the whole set (qemu bundle, guest
+	# image, a fresh briard-agent) against the bundled keyring, refusing anything unsigned.
 	src="$PREFIX/staging"
 	rm -rf "$src"
 	say "fetching + verifying the signed artifact set (host/$RELEASE + guest) ..."
@@ -414,114 +302,18 @@ AGENT="$PREFIX/agent/briard-agent"
 QEMU="$PREFIX/qemu/bin/qemu-system-x86_64"
 QEMU_DATADIR="$PREFIX/qemu/share/qemu"
 
-# ---- 4. host footprint: the tun module ---------------------------------------------
-modprobe tun 2>/dev/null || true
-[ -e /dev/net/tun ] || die "/dev/net/tun absent (kernel built without CONFIG_TUN)"
-mkdir -p /etc/modules-load.d && printf 'tun\n' > /etc/modules-load.d/briard.conf
-
-# ---- 4b. the two private subnets: draw them, then keep them -------------------------
-# THE FLOCK SUBNET AND THE PRIVATE LINK, drawn here rather than written into this script.
+# ---- 4. networking -----------------------------------------------------------------
+# NOTHING IS CONFIGURED HERE. The agent owns the whole of it: which device the guest's L2 hangs
+# off, whether that device's being a bridge makes the substrate one port or two macvtap children,
+# the addresses on the host's side, and the tun driver behind them. All of it converges on the
+# agent's ordinary status tick, out of a binary the channel can fix ([B.150]).
 #
-# Why here and not with the other identifiers in step 6b, where they belong by nature: step 5 is
-# about to BUILD the substrate out of these numbers, so they have to exist first. The agent binary
-# landed in step 3, which is the earliest they can.
-#
-# PET, exactly like the node id and the flock name below. Re-running the installer is a routine
-# thing in this alpha ([[alpha-reinstall-only-policy]]), and a re-run that redrew would renumber a
-# live node -- silently breaking a mesh whose peers still hold the old address. So the draw happens
-# once, on a machine that has never drawn; after that this file is the answer. Delete it to redraw.
-#
-# The draw itself is in the BINARY (agent/subnet) for the same reason --mint-flock-name is: it is a
-# table of conventional occupants, a prefix cut over this host's own routes and an ARP probe of the
-# candidate, and none of that should exist twice in two languages.
-SUBNET_FILE="$STATE/subnets"
-# READ FIRST, DRAW ONLY WHAT IS MISSING. The order matters and it is not the obvious one: drawing
-# whenever the file is incomplete and then reading the result would RENUMBER a live node the day a
-# third subnet is added, which is precisely what this pet file exists to prevent. So each value is
-# taken from the first source that has it -- the environment, then the recorded file, then a fresh
-# draw -- and a node that predates a pool gains only that pool.
-#
-# Parsed with sed rather than sourced. The file is ours and root-owned, but a `.` makes every line
-# in it executable and there is no reason to hand that power to a file we need three numbers out
-# of. The pattern doubles as the format's assertion: anything that is not a bare 10.a.b reads as
-# absent, and the guards below fire rather than the substrate being built out of a typo.
-subnet_line() { sed -n "s/^$1=\(10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)\$/\1/p" "$2" 2>/dev/null; }
-if [ -s "$SUBNET_FILE" ]; then
-	[ -n "$SYSTEM_SUBNET" ] || SYSTEM_SUBNET="$(subnet_line SYSTEM_SUBNET "$SUBNET_FILE")"
-	[ -n "$PRIV_SUBNET" ] || PRIV_SUBNET="$(subnet_line PRIV_SUBNET "$SUBNET_FILE")"
-	[ -n "$POD_SUBNET" ] || POD_SUBNET="$(subnet_line POD_SUBNET "$SUBNET_FILE")"
-fi
-if [ -z "$SYSTEM_SUBNET" ] || [ -z "$PRIV_SUBNET" ] || [ -z "$POD_SUBNET" ]; then
-	if ! "$AGENT" --draw-subnets >"$SUBNET_FILE.new"; then
-		rm -f "$SUBNET_FILE.new" # never leave a half-drawn file where the next run could read it
-		die "could not draw this node's subnets; set BRIARD_SYSTEM_SUBNET, BRIARD_PRIV_SUBNET and BRIARD_POD_SUBNET to ranges this network has free"
-	fi
-	[ -n "$SYSTEM_SUBNET" ] || SYSTEM_SUBNET="$(subnet_line SYSTEM_SUBNET "$SUBNET_FILE.new")"
-	[ -n "$PRIV_SUBNET" ] || PRIV_SUBNET="$(subnet_line PRIV_SUBNET "$SUBNET_FILE.new")"
-	[ -n "$POD_SUBNET" ] || POD_SUBNET="$(subnet_line POD_SUBNET "$SUBNET_FILE.new")"
-	rm -f "$SUBNET_FILE.new"
-fi
-[ -n "$SYSTEM_SUBNET" ] || die "no system subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_SYSTEM_SUBNET"
-[ -n "$PRIV_SUBNET" ] || die "no private-link subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_PRIV_SUBNET"
-[ -n "$POD_SUBNET" ] || die "no pod subnet in $SUBNET_FILE; remove the file to redraw, or set BRIARD_POD_SUBNET"
-# Record what this node ACTUALLY numbers itself from, the env overrides included. Otherwise a
-# BRIARD_SYSTEM_SUBNET set on one run and forgotten on the next renumbers a live node back to the
-# drawn value in silence -- the exact failure the pet file exists to prevent, arriving by the
-# escape hatch instead of by the draw.
-printf 'SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\nPOD_SUBNET=%s\n' "$SYSTEM_SUBNET" "$PRIV_SUBNET" "$POD_SUBNET" >"$SUBNET_FILE" ||
-	die "could not record this node's subnets at $SUBNET_FILE"
-chmod 0644 "$SUBNET_FILE" # not a secret: the addresses are on the wire the moment the guest boots
-say "this node numbers itself from $SYSTEM_SUBNET.0/24 (its own address is $SYSTEM_SUBNET.1)"
-
-# Everything below is DERIVED, and the derivation is positional on purpose: a /24 whose addresses
-# are read off the node-id needs no allocator, no state and no agreement beyond the subnet itself.
-SYSTEM_CIDR="$SYSTEM_SUBNET.1/24"   # the guest's eth1 -- this node's node IP
-# The HOST's own address on that subnet. It needs one because a standby has no LAN presence and
-# must still be dialable by its guest (the witness forwarder) and able to answer on-link, and
-# because the guest needs somewhere to reply to when the host dials IT (the reboot gate).
-#
-# A /32, and on the private tap rather than on the LAN NIC: under macvtap the host cannot reach
-# its own guest over the LAN at all, so the tap is the only path, and a /32 keeps the tap from
-# claiming a subnet route that would then compete with the guest's. Guests take .1/.2/.3 by
-# node-id; hosts take the same index 128 higher, so the two never collide and a glance at an
-# address says which side of the pair it is.
-SYSTEM_HOST_IP="$SYSTEM_SUBNET.129"
-# ⚠️ THE PREFIX IS SUBSTRATE-DEPENDENT, and this is the macvtap value. Under macvtap the host is
-# ISOLATED from its own guest on the LAN, so this address lives on the private tap and must be a
-# /32: a /24 there would claim an on-link route for the whole system subnet over a wire that
-# reaches exactly one machine, competing with the route the guest's own peers need. Where the
-# selected device turns out to be a BRIDGE the host is genuinely on that L2 and the honest prefix
-# is the subnet's -- the AGENT re-prefixes it, because the agent is what learns which of the two
-# this host is ([B.150](c), applySubstrate).
-SYSTEM_HOST_CIDR="$SYSTEM_HOST_IP/32"
-PRIV_HOST_CIDR="$PRIV_SUBNET.1/24"
-PRIV_GUEST_CIDR="$PRIV_SUBNET.2/24"
-
-# ---- 5. networking -----------------------------------------------------------------
-# THERE IS NOTHING HERE ANY MORE, and that is [B.150](c)+(d).
-#
-# This step used to build the guest's L2 and write `net-up.sh` to rebuild it at every boot: a
-# generated script with this host's NIC, device names, addresses and gateway baked into a heredoc,
-# run by `briard-net.service`, which the agent unit `Requires=`d. Every decision in it was frozen
-# at install time where no release could reach it, and the bugs that live in a file like that are
-# the ones that surface off-box days later (ALLMULTI's expiring mDNS cache; [B.106]'s accept_ra).
-# The agent converges it now, on its ordinary status tick, out of a binary that self-updates.
-#
-# The bridge half is GONE rather than moved, and that is the other half of the cut: we never
-# CREATE a bridge. Enslaving the host's own NIC meant taking a device away from NetworkManager,
-# moving the host's address and default route onto a bridge of ours, and arming a self-cancelling
-# watchdog to undo all of it if doing so cut the operator's own SSH session -- ninety lines whose
-# entire job was surviving a gesture we had no business making. If the device this host selects IS
-# a bridge, the agent adds one port to it; otherwise it macvtaps. The user owns the bridge either
-# way, exactly as they do on the Windows shape this clones ([V3b.26c]). `BRIARD_NET_MODE` went
-# with it: the substrate is DERIVED from the device, not chosen by a knob.
-#
-# One thing still has to be true here, and it is checked rather than assumed: the fd-passing launch
+# One thing still has to be true, and it is checked rather than assumed: the fd-passing launch
 # wrapper must be staged. Without it the agent cannot attach a macvtap to qemu, and that failure
 # belongs at the install rather than at the first guest launch.
 [ -n "$NET_WRAP" ] || die "the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC"
 
-# ---- 6. disks: the pet data volume + the (cattle) guest overlay ---------------------
+# ---- 5. disks: the pet data volume + the (cattle) guest overlay ---------------------
 # data.img is the node's data disk (the guest lays LUKS/LVM/btrfs on it; DRBD only once a
 # peer exists) -- pet, created once, preserved across a
 # reinstall. The guest overlay is cattle: a writable qcow2 backed by the
@@ -554,11 +346,8 @@ if [ ! -f "$DATA" ]; then
 fi
 # The flock's identity -- PET, so it survives the `rm -rf /opt/briard` cattle reset along with the
 # data it belongs to. The VIP's MAC derives from it, so keeping it is what keeps this node's address
-# stable across a reinstall, and (once pairing carries it) across a failover to a second node.
-#
-# It also ends something quietly true of every install so far: the service MAC derived from NODE,
-# which install.sh hardcodes to "guest" -- so EVERY briard node on earth presented the SAME service
-# MAC. Harmless across houses, an L2 collision inside one. A per-install random id fixes that.
+# stable across a reinstall, and (once pairing carries it) across a failover to a second node. It is
+# per-install random: a MAC derived from anything shared would collide inside a house that runs two.
 FLOCK_ID_FILE="$STATE/flock-id"
 if [ ! -s "$FLOCK_ID_FILE" ]; then
 	# /proc/sys/kernel/random/uuid is on every Linux we target and needs no coreutils.
@@ -570,9 +359,8 @@ fi
 FLOCK_ID="$(cat "$FLOCK_ID_FILE")"
 [ -n "$FLOCK_ID" ] || die "the flock id at $FLOCK_ID_FILE is empty; remove it to regenerate"
 
-# ---- 6b. the other two identifiers -------------------------------------------------
-# THREE identifiers, one job each. Until V3.20 there was one string -- the literal `guest` -- doing
-# all of these at once, which is why nothing a household could see was renameable:
+# ---- 5b. the other two identifiers -------------------------------------------------
+# THREE identifiers, one job each:
 #
 #   node id     node-scoped,  hidden   DRBD `on <name>`, guest hostname, cloud key   <- below
 #   flock id    flock-scoped, hidden   service MAC -> DHCP client-id -> THE LEASE     <- above
@@ -643,16 +431,12 @@ if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
 fi
 say "VM disk created"
 
-# ---- 7. the units: the agent ------------------------------------------------------
+# ---- 6. the units: the agent ------------------------------------------------------
 say "writing systemd units to $UNIT_DIR"
 mkdir -p "$UNIT_DIR"
-# briard-net.service is GONE ([B.150](d)), and so is the `Requires=` that made it the agent's
-# start dependency. A `Type=oneshot` unit structurally cannot do the adaptation the network needs
-# -- a macvtap cannot be re-parented, so changing parents means relaunching the guest, which only
-# the thing that runs the guest can sequence -- and the ordering it carried (`After=
-# network-pre.target`) was explicitly BEFORE the network was configured, which is the one moment
-# the device we want to select does not exist yet. The agent polls for the condition it actually
-# needs instead, so the unit below ends with no [Unit] dependencies at all.
+# ⚠️ THE AGENT UNIT HAS NO NETWORK DEPENDENCY, and must not grow one ([B.150](d)). Any ordering we
+# could write is either before the device exists or a `Requires=` that takes the node dark when a
+# cable is out. The agent polls for the condition it actually needs and stays answerable meanwhile.
 
 # The console capture, and the one thing it needs that qemu will not do: a bound.
 #
@@ -726,27 +510,31 @@ NET_CONF="NET_WRAP_BIN=$NET_WRAP"
 CATALOG_CONF=""
 [ -n "${BRIARD_CATALOG_URL:-}" ] && CATALOG_CONF="CATALOG_URL=$BRIARD_CATALOG_URL"
 
+# The three private ranges, PINNED. Each is written only when the operator named one; unset --
+# every ordinary install -- means the agent draws it against the network this machine can see,
+# records it and keeps it.
+SYS_SUBNET_CONF=""
+[ -n "$BRIARD_SYSTEM_SUBNET" ] && SYS_SUBNET_CONF="SYSTEM_SUBNET=$BRIARD_SYSTEM_SUBNET"
+PRIV_SUBNET_CONF=""
+[ -n "$BRIARD_PRIV_SUBNET" ] && PRIV_SUBNET_CONF="PRIV_SUBNET=$BRIARD_PRIV_SUBNET"
+POD_SUBNET_CONF=""
+[ -n "$BRIARD_POD_SUBNET" ] && POD_SUBNET_CONF="POD_SUBNET=$BRIARD_POD_SUBNET"
+
 KEY_CONF=""
 [ -f "$KEYRING" ] && KEY_CONF="UPDATE_KEYRING=$KEYRING"
 
 # ---- the self-update PIVOT (B.84) -------------------------------------------------------
-# Two frozen wrapper scripts and the unit fields that use them. Until this existed the shipped
-# install had the Go half of self-update switched ON (KEY_CONF above) and none of the on-disk half
-# it acts through: an agent-update staged a binary into a directory the unit did not run from,
-# armed a flag nothing on disk consumed, restarted onto the SAME binary, and reported success --
-# and since nothing cleared the flag it did that again every cycle, bouncing the agent until a
-# reboot cleared /run. An update that silently does nothing, on a loop.
+# Two frozen wrapper scripts and the unit fields that use them: the on-disk half of self-update,
+# without which the Go half stages a binary the unit does not run from and reports success.
 #
 # FROZEN, and that is the whole safety property: these two scripts are dumb, agent-INDEPENDENT
 # shell, so a bug in the volatile agent can never wedge the mechanism that replaces it. They are
 # the verbatim pair proven in nixosTest/agent-selfupdate.nix -- change one and change both, and
-# see install-macvtap.nix, which now proves the SHIPPED pair rather than a unit a test wrote for
-# itself.
+# see install-macvtap.nix, which proves the SHIPPED pair rather than a unit a test wrote for itself.
 #
-# UPDATE_BASE is the fix for the third leg: selfupdate.Layout defaults to /var/lib/briard while
-# ExecStart runs out of $PREFIX/agent, so a staged candidate landed on the wrong side of the
-# gate -- and on a possibly different filesystem, which would break the atomic-rename commit even
-# once the wrappers existed. Point it at the directory the committed binary actually lives in.
+# UPDATE_BASE must be the directory ExecStart runs from: a candidate staged anywhere else is on
+# the wrong side of the gate, and possibly on another filesystem, which breaks the atomic-rename
+# commit below.
 UPDATE_BASE="$PREFIX/agent"
 cat > "$PREFIX/agent/briard-exec" <<EOF
 #!/bin/sh
@@ -796,17 +584,12 @@ EOF
 chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
 # ---- the node's configuration: A FILE, NOT THE UNIT ([B.150](a)) -------------------------
 # Everything the agent is told about this host lives here, and the agent reads it with the
-# environment layered ON TOP (agent/host/config.go, loadConfigFile) -- so a rig that exports a
-# variable still wins, exactly as it did when these were `Environment=` lines.
+# environment layered ON TOP (agent/host/config.go, loadConfigFile), so a rig that exports a
+# variable still wins.
 #
-# THE UNIT CANNOT CARRY THEM ANY MORE, because a unit written at install time is frozen where no
-# release can reach it, and several of these are decisions made from what this host could see on
-# the day it was installed: which NIC, which addresses, which substrate. What the host can see
-# changes -- a NIC is replaced, a cable moves to a different segment -- and a decision the agent
-# can revisit has to live somewhere the agent can rewrite. That is this file.
-#
-# Written like console-rotate.sh beside it: plain, readable, and
-# greppable by a human debugging the thing at 2am. 0600 because it is root's business alone.
+# A FILE BECAUSE A UNIT CANNOT BE REWRITTEN. Some of these are decisions the agent revisits, and a
+# decision it can revisit has to live somewhere it can rewrite. Plain and greppable at 2am; 0600
+# because it is root's business alone.
 cat > "$PREFIX/config.env" <<EOF
 # briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
 # '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is
@@ -823,61 +606,46 @@ DATA_ENCRYPTION=$DATA_ENCRYPTION
 STATE_DISK=$STATE_DISK
 CONTROL_SOCK=$RUNDIR/ctl.sock
 NODE=$NODE_NAME
-# Unified NIC layout: SYSTEM_TAP -> the guest's eth1 (this node's node IP, and the DRBD NIC --
-# DRBD replicates over loopback until a pairing gives it a peer); SERVICE_TAP -> eth2, where the VIP
-# lives (VIP_DEV), held ready so a second anchor can join without a guest reboot.
+# The NIC layout, by the device name behind each guest NIC. SYSTEM_TAP -> eth1, this node's node IP
+# and where DRBD binds (it replicates over loopback until a pairing gives it a peer); SERVICE_TAP ->
+# eth2, where the VIP lives, held ready so a second anchor can join without a guest reboot.
 #
-# SYSTEM_DEV/SYSTEM_CIDR are set on EVERY install now, single node included. They used to be left
-# unset here ("single-node needs no DRBD address, just the NIC present") and to arrive only with a
-# cloud pairing -- which made a lone node the one shape in the fleet with no address of its own,
-# and left everything that must reach it (the reboot gate above all) with nothing to aim at but a
-# baked private-link constant ([V3b.26b]).
+# THE ADDRESSES ON THEM ARE NOT HERE. This node numbers itself at convergence and records the
+# result in $STATE/subnets (agent/host/subnets.go); writing an address here would freeze it where
+# no release and no re-parent could revisit it.
 SYSTEM_TAP=$DRBD_TAP
 SYSTEM_DEV=eth1
-SYSTEM_CIDR=$SYSTEM_CIDR
-SYSTEM_HOST_CIDR=$SYSTEM_HOST_CIDR
-WITNESS_CIDR=$PRIV_GUEST_CIDR
-POD_SUBNET=$POD_SUBNET
-# ⚠️ THIS FILE CARRIES THE MACVTAP SHAPE, AND THE AGENT NARROWS IT ([B.150](c)). The substrate
-# fork ([V3b.26c]) used to be decided here, by BRIARD_NET_MODE, and delivered as these values
-# being empty or set. It is now the answer to "is the device the guest's L2 hangs off a bridge",
-# which only the agent can ask -- so what is written here is the shape every Linux node ships in,
-# and \`applySubstrate\` blanks SERVICE_TAP / WITNESS_TAP / WITNESS_CIDR and sets VIP_PARENT on the
-# node that turns out to be on a bridge.
-#
-# Empty still reads exactly as unset everywhere downstream: qemu renders no second or third NIC,
-# the node route and the VIP route both no-op on an absent WITNESS_TAP, and the host-side
-# service-MAC pin has nowhere to go -- correct, because on that substrate the MAC is the guest's
-# to hold. VIP_PARENT is the other side of the same coin: it names the NIC the guest builds
-# VIP_DEV on when nothing on the host built it.
+# ⚠️ THIS FILE CARRIES THE MACVTAP SHAPE, AND THE AGENT NARROWS IT ([B.150](c)). The substrate is
+# the answer to "is the device the guest's L2 hangs off a bridge", which only the agent can ask, so
+# what is written here is the shape every Linux node ships in and \`applySubstrate\` blanks
+# SERVICE_TAP / WITNESS_TAP and sets VIP_PARENT on the node that turns out to be on a bridge.
+# Empty reads exactly as unset downstream: qemu renders no second or third NIC, and the routes that
+# would ride them no-op.
 SERVICE_TAP=$TAP
-# WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). Set on
-# every install now, not just a managed pairing: the host's recovery rung reads the guest's reboot
-# gate over it, and that guard matters MOST on the single node this env never used to reach. The
-# name is historical -- the cloud-witness forwarder was its first user, not its only one.
+# WITNESS_TAP -> the guest's eth3, the private host<->guest link (see PRIV_TAP above). The name is
+# historical: the cloud-witness forwarder was its first user, not its only one -- the host's
+# recovery rung reads the guest's reboot gate over it, on every node including a lone one.
 WITNESS_TAP=$PRIV_TAP
-# The HOST's end of that link. It reached the agent only when the agent took the network over
-# ([B.150](d)) -- before that it was baked into net-up.sh and existed nowhere else.
-PRIV_HOST_CIDR=$PRIV_HOST_CIDR
 # The device the guest's L2 hangs off, when the operator named one. Empty is every ordinary
 # install: the agent selects the device holding the default route, and re-asks at every start.
 BRIARD_NIC=$NIC
 VIP_DEV=eth2
 VIP_ADDR=$VIP
 FLOCK_ID=$FLOCK_ID
-# The visible name, passed so the agent can hand it to the guest for mDNS. It reaches the guest
-# over the control channel like the VIP does, NOT baked into the image -- the image is cattle and
-# this is pet, and baking an identity into a shared image is the mistake V3.19 was.
+# The visible name, handed to the guest for mDNS over the control channel like the VIP is. NEVER
+# baked into the image: the image is cattle and an identity is pet.
 FLOCK_NAME=$FLOCK_NAME
 $NET_CONF
 $KEY_CONF
 $CATALOG_CONF
+$SYS_SUBNET_CONF
+$PRIV_SUBNET_CONF
+$POD_SUBNET_CONF
 $CONSOLE_CONF
-# NO HEALTH_URL. It used to bake the address a second time, and under DHCP there is nothing to
-# bake -- the address is acquired inside the guest at promotion, so only the guest knows it. The
-# agent asks (VIP_DEV above is how it knows where to look) and rebuilds the probe target each
-# cycle. Writing an address twice is writing two things that can disagree, and the one that
-# would silently win here gates readiness, the OS health gate and a rollback.
+# NO HEALTH_URL. Under DHCP the address is acquired inside the guest at promotion, so only the
+# guest knows it: the agent asks (VIP_DEV says where to look) and rebuilds the probe target each
+# cycle. Writing the address twice is writing two things that can disagree, and the one that would
+# silently win here gates readiness, the OS health gate and a rollback.
 STATUS_EVERY=5s
 ASSIGNMENT_CACHE=$STATE/assignment.json
 # The release channel root, for the guest chain ([B.86d]): the agent resolves guest/<target>
@@ -895,19 +663,16 @@ chmod 0600 "$PREFIX/config.env"
 cat > "$UNIT_DIR/briard-agent.service" <<EOF
 [Unit]
 Description=briard host agent (single node)
-# [Unit], not [Service] -- and it lived in the wrong section until [V3b.21d], where systemd
-# ignored it and said so on every start of every node we have ever installed. A failed trial
-# followed by its revert must never latch the unit as dead: the revert path is by construction
-# a burst of rapid start failures, so it can trip systemd's start limiter and leave the node
-# down for the one reason self-update exists to avoid.
+# ⚠️ [Unit], not [Service]: systemd ignores it in the wrong section and says so on every start. A
+# failed trial followed by its revert must never latch the unit as dead -- the revert path is by
+# construction a burst of rapid start failures, which would trip the start limiter and leave the
+# node down for the one reason self-update exists to avoid.
 StartLimitIntervalSec=0
-# ⚠️ NO ORDERING AND NO DEPENDENCIES, deliberately ([B.150](d)). Not \`Requires=briard-net.service\`,
-# which is what used to be here: a failed network unit meant the agent never started, so a cable
-# out at boot took the node fully dark -- nothing left running to report, retry, or answer the
-# admin door. And not \`network-online.target\` either: NetworkManager's notion of "online" is a
-# poor approximation of "I have a default route", and NetworkManager-wait-online adds up to 90s to
-# every boot. The agent polls for the condition it actually needs, which replaces the ordering
-# rather than joining it.
+# ⚠️ NO ORDERING AND NO DEPENDENCIES, deliberately ([B.150](d)). A network unit in \`Requires=\` means
+# a cable out at boot takes the node fully dark, with nothing left running to report, retry or
+# answer the admin door. And not \`network-online.target\` either: NetworkManager's notion of
+# "online" is a poor approximation of "I have a default route", and NetworkManager-wait-online adds
+# up to 90s to every boot. The agent polls for the condition it actually needs.
 [Service]
 # WHAT IS LEFT HERE IS THE EXECUTION ENVIRONMENT, NOT CONFIGURATION ([B.150](a)). Every value the
 # agent decides anything from lives in config.env above; these three cannot, and each for its own
@@ -1112,17 +877,11 @@ if command -v systemctl >/dev/null 2>&1; then
 	# stays `briard-<mac tail>`, derived in-guest from the NIC's own address, because changing a
 	# hostname mid-lease is a change no one can predict a server's reaction to and a rename must
 	# never risk the address. So the wording says "a briard- client", which is true of both.
-	# The service line, and the reason it is a branch rather than a constant. "no service is
-	# installed on it yet" is true of a FIRST install and false of a cattle reinstall: the service
-	# manifests are PET ($STATE/services/, beside the identity), so the agent rebuilds the promoter
-	# chain from them at bring-up and the services come back on their own. Measured 2026-08-10 --
-	# a reinstall printed "no service is installed" while Home Assistant was already on its way back
-	# up, which is the same false claim [V3.28] just took out of the front door, in a third place.
-	#
-	# Unlike the front door, this script CAN see the inventory: the files are right there, and they
-	# are the very files the agent reads. Best-effort on the names (a manifest whose shape we cannot
-	# parse still gets a true sentence, just a vaguer one). A DIRECTORY since [V3b.3](a) -- one
-	# manifest per service, verbatim, because a manifest's content hash is the service identity.
+	# The service line is a BRANCH rather than a constant: "no service is installed on it yet" is
+	# true of a first install and false of a cattle reinstall, because the service manifests are pet
+	# ($STATE/services/, one file per service) and the agent brings them back on its own. The files
+	# are right there and they are the very files the agent reads, so this script can say which.
+	# Best-effort on the names: a manifest we cannot parse still gets a true sentence, a vaguer one.
 	svcs=""
 	for f in "$STATE"/services/*.json; do
 		[ -f "$f" ] || continue

@@ -51,6 +51,11 @@ type Draw struct {
 	Pod string
 }
 
+// Complete reports whether every range is answered. A partial set is not a usable one -- the node
+// would build half a substrate out of it -- so it is the caller's cue to draw, and a draw fills
+// only what is missing, so a node that predates a pool gains only that pool.
+func (d Draw) Complete() bool { return d.System != "" && d.Priv != "" && d.Pod != "" }
+
 // attempts bounds each draw. Statistically absurd as a bound on bad luck -- the conventional
 // exclusions reject under 10% of the pool, so sixteen consecutive rejections by chance is a
 // number with more zeros than this comment -- which is the point: reaching it means the host

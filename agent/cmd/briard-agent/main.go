@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
@@ -18,9 +17,7 @@ import (
 	"time"
 
 	"briard.io/agent/cli"
-	"briard.io/agent/nic"
 	"briard.io/agent/reportcard"
-	"briard.io/agent/subnet"
 	"briard.io/shared/flockname"
 	"briard.io/shared/sdnotify"
 )
@@ -75,14 +72,9 @@ func runDaemon(args []string) {
 	}
 }
 
-// drawTimeout bounds --draw-subnets end to end. It is generous because the flock draw ARP-probes
-// the LAN and an unanswered probe costs ~750ms, and it exists because an install must not be able
-// to hang on a network question: past this, the draw fails and the installer says so.
-const drawTimeout = 60 * time.Second
-
-// cardTimeout bounds --report-card end to end, for the same reason drawTimeout bounds the draw:
-// the card ARP-probes a named VIP and creates a throwaway macvtap, and neither may become a way
-// for an install to hang. Generous against the sum of its bounded parts, not against any one.
+// cardTimeout bounds --report-card end to end: the card ARP-probes a named VIP and creates a
+// throwaway macvtap, and neither may become a way for an install to hang. Generous against the sum
+// of its bounded parts, not against any one.
 const cardTimeout = 30 * time.Second
 
 // runInternal is the flag-shaped surface: helpers an installer, a release pipeline or a unit file
@@ -102,7 +94,6 @@ func runInternal(args []string) {
 	stageGuest := fs.String("guest", "", "with --stage-manifest --chain host: the guest release this host release is published beside ([B.86i])")
 	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain guest: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
 	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
-	drawSubnets := fs.Bool("draw-subnets", false, "draw this node's two private subnets, checked against this machine's own network, and print them as SYSTEM_SUBNET=/PRIV_SUBNET= -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
 	_ = fs.Parse(args)
 
@@ -120,29 +111,6 @@ func runInternal(args []string) {
 			log.Fatalf("mint-flock-name: %v", err)
 		}
 		fmt.Fprintln(os.Stdout, name)
-		return
-	}
-
-	// The two private subnets this node numbers itself from. Same category and same argument as
-	// --mint-flock-name above: install.sh invokes it, it prints one thing, it exits -- and it is in
-	// the BINARY rather than in the shell because the draw is not a random number. It is a table of
-	// conventional occupants to avoid, a prefix cut over the host's own routes, and an ARP probe of
-	// the candidate, none of which a shell script should be asked to hold twice.
-	//
-	// It draws unconditionally; the installer owns the decision to CALL it (BRIARD_SYSTEM_SUBNET
-	// wins, and a node that already drew keeps what it has). A refusal is fatal on purpose: the
-	// alternative is inventing a subnet on a machine that told us it has no room, which installs
-	// green and cannot serve half the house.
-	if *drawSubnets {
-		ctx, cancel := context.WithTimeout(context.Background(), drawTimeout)
-		defer cancel()
-		d, err := subnet.Pick(subnet.Observe(ctx), rand.Reader, subnet.LANProbe(ctx, nic.DefaultRoute()))
-		if err != nil {
-			log.Fatalf("draw-subnets: %v", err)
-		}
-		if err := subnet.Report(os.Stdout, d); err != nil {
-			log.Fatalf("draw-subnets: %v", err)
-		}
 		return
 	}
 

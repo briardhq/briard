@@ -293,7 +293,12 @@ func ConfigFromEnv() Config {
 	} else {
 		cfg.Promoter = promoterUnits()
 	}
-	return cfg
+	// The addresses this node numbers itself from, derived from the record it already holds
+	// (subnets.go). A PURE READ, so every consumer of a Config -- the CLI, the dashboard, a
+	// hand-run agent -- sees the same addresses the running agent does, with no network work and
+	// no way for a process with no business numbering anything to draw. The DRAW belongs to
+	// convergence and happens in exactly one place.
+	return cfg.applyDraw(cfg.recordedSubnets())
 }
 
 // parsePeers parses the PEERS env into the full DRBD connection mesh. It is the

@@ -6,3 +6,5 @@ import (
 )
 
 func ip(context.Context, ...string) ([]byte, error) { return nil, errors.ErrUnsupported }
+
+func loadTun(context.Context) {}

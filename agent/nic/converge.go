@@ -105,7 +105,10 @@ func Converge(ctx context.Context, s Spec) error {
 	// The parent is brought up only when we are about to CREATE something on it -- a first
 	// convergence, or one after a reboot took our devices with it. On a pass that finds
 	// everything present there is nothing to build and no reason to touch the host's own NIC.
+	// The tun driver is loaded on the same pass and for the same reason: nothing below can open
+	// /dev/net/tun until it exists, and nothing else on a stock host will have asked for it.
 	if !s.built() {
+		loadTun(ctx)
 		if err := ensureUp(ctx, s.Parent); err != nil {
 			return err
 		}

@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -231,10 +232,34 @@ func LANProbe(ctx context.Context, nic string) func(netip.Addr) bool {
 	}
 }
 
-// Report renders a drawn set for install.sh: three shell-shaped lines on stdout, nothing else.
-// The installer parses them with sed rather than sourcing the file, so this format is a contract
-// with one regexp -- keep it boring.
+// Report renders a drawn set as the node's record: three shell-shaped lines, nothing else. It is
+// read back by Parse and greppable by a human and a rig, so keep it boring.
 func Report(w io.Writer, d Draw) error {
 	_, err := fmt.Fprintf(w, "SYSTEM_SUBNET=%s\nPRIV_SUBNET=%s\nPOD_SUBNET=%s\n", d.System, d.Priv, d.Pod)
 	return err
+}
+
+// recorded matches one line of what Report wrote. The pattern IS the format's assertion: anything
+// that is not a bare 10.a.b reads as ABSENT, so a truncated or hand-mangled record leaves that
+// field empty and the caller draws it again rather than numbering a node out of a typo.
+var recorded = regexp.MustCompile(`(?m)^(SYSTEM_SUBNET|PRIV_SUBNET|POD_SUBNET)=(10\.\d{1,3}\.\d{1,3})$`)
+
+// Parse reads a record back. A field the record does not carry comes back empty -- which is how a
+// node that predates a pool gains only that pool, rather than being renumbered wholesale.
+//
+// Never a shell `source`, on a file that holds three numbers: there is no reason to give it the
+// power to run anything.
+func Parse(b []byte) Draw {
+	var d Draw
+	for _, m := range recorded.FindAllSubmatch(b, -1) {
+		switch string(m[1]) {
+		case "SYSTEM_SUBNET":
+			d.System = string(m[2])
+		case "PRIV_SUBNET":
+			d.Priv = string(m[2])
+		case "POD_SUBNET":
+			d.Pod = string(m[2])
+		}
+	}
+	return d
 }

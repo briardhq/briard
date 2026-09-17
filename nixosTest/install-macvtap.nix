@@ -543,10 +543,17 @@ pkgs.testers.runNixOSTest {
     print(f"flock name={flock_name!r} node id={node_id!r}")
 
     # THE DRAWN SUBNETS ([V3b.26f]). Neither number is ours to spell any more: both are drawn per
-    # home at install and checked against the network the host can see, so every assertion below
-    # reads what this install actually chose. A rig that kept spelling 10.0.0.1 would not merely
-    # fail -- the NEGATIVE assertions ("the name must not resolve to the private address") would
-    # pass VACUOUSLY, which is the one way a test lies while staying green.
+    # home and checked against the network the host can see, so every assertion below reads what
+    # this install actually chose. A rig that kept spelling 10.0.0.1 would not merely fail -- the
+    # NEGATIVE assertions ("the name must not resolve to the private address") would pass
+    # VACUOUSLY, which is the one way a test lies while staying green.
+    #
+    # THE AGENT DREW THEM, not install.sh. The two halves are asserted together because either
+    # alone is satisfiable by the old shape: the agent SAYS it numbered this node, and config.env
+    # carries no address it could have been told instead. A node numbered by a file written once
+    # at install is a node no release can renumber and no re-parent can re-check.
+    host.succeed("journalctl -u briard-agent | grep -q 'this node numbers itself from'")
+    host.fail("grep -q '^SYSTEM_CIDR=' /opt/briard/config.env")
     subnets = host.succeed("cat /var/lib/briard/subnets")
     system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
     priv_subnet = host.succeed("sed -n 's/^PRIV_SUBNET=//p' /var/lib/briard/subnets").strip()

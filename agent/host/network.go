@@ -158,15 +158,27 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 	// selection that comes up empty here is not a failure: the devices are up, and an agent that
 	// did not build them has no business insisting on which parent they hang off.
 	if cfg.linksPresent() {
-		if sel := nic.Select(cfg.NICOverride); sel.Dev != "" {
-			spec := cfg.netSpec(sel.Dev, sel.Bridge)
-			cfg = cfg.applySubstrate(sel.Bridge)
-			cfg.net = &spec
-			logf("network: the guest's L2 is already up on %s (%s)", sel.Dev, substrateName(sel.Bridge))
-		} else {
-			logf("network: the guest's L2 is already up; this agent did not build it and will not touch it")
+		sel := nic.Select(cfg.NICOverride)
+		// NUMBERED BEFORE THE SPEC IS BUILT, because the spec is made of this node's addresses
+		// (subnets.go). It does not violate the no-probing rule above: a node that has drawn
+		// before -- every restart, every self-update -- reads its record and touches nothing, and
+		// a rig states its own address, which is the guard that stops a draw dead. What is left is
+		// a product node whose record is gone, where probing is exactly right. A draw that REFUSES
+		// falls through to the wait below rather than building a substrate with no addresses in it.
+		numbered, err := cfg.numberThisNode(ctx, sel.Dev, logf)
+		if err == nil {
+			cfg = numbered
+			if sel.Dev != "" {
+				spec := cfg.netSpec(sel.Dev, sel.Bridge)
+				cfg = cfg.applySubstrate(sel.Bridge)
+				cfg.net = &spec
+				logf("network: the guest's L2 is already up on %s (%s)", sel.Dev, substrateName(sel.Bridge))
+			} else {
+				logf("network: the guest's L2 is already up; this agent did not build it and will not touch it")
+			}
+			return cfg, nil
 		}
-		return cfg, nil
+		logf("network: %v", err)
 	}
 	var said string
 	for {
@@ -174,16 +186,21 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 		sel := nic.Choose(step, cfg.NICOverride)
 		var spec nic.Spec
 		var err error
+		var numbered Config
 		if sel.Usable() {
-			spec = cfg.netSpec(sel.Dev, sel.Bridge)
-			err = nic.Converge(step, spec)
+			// The draw is bounded by its own budget rather than by this tick (subnets.go), so it
+			// is given ctx and not step.
+			if numbered, err = cfg.numberThisNode(ctx, sel.Dev, logf); err == nil {
+				spec = numbered.netSpec(sel.Dev, sel.Bridge)
+				err = nic.Converge(step, spec)
+			}
 		}
 		cancel()
 		if sel.Usable() && err == nil {
 			if said != "" {
 				logf("network: %s is usable again", sel.Dev)
 			}
-			cfg = cfg.applySubstrate(spec.Bridge)
+			cfg = numbered.applySubstrate(spec.Bridge)
 			cfg.net = &spec
 			logf("network: the guest's L2 hangs off %s (%s)", spec.Parent, substrateName(spec.Bridge))
 			return cfg, nil
