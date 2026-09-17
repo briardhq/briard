@@ -479,6 +479,15 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// The watchdog keep-alive, built before anything that could block so every operation below is
 	// covered. nil outside systemd. Set on the local cfg, which is the copy every call below takes.
 	cfg.beat = newBeat(logf)
+	// WHO THIS NODE IS, minted once on a node that has never minted ([B.157], identity.go). FIRST,
+	// because everything below is keyed to it: the DRBD `on <name>`, the VM's UUID, the service
+	// MAC, the cloud's key for this node and the name the household types. A node that cannot write
+	// down its own identity must not go on to use one -- it would mint a different id at the next
+	// boot and stop recognising its own replicated metadata.
+	cfg, iderr := cfg.mintIdentity(logf)
+	if iderr != nil {
+		return fmt.Errorf("host: %w", iderr)
+	}
 	// The telemetry writer, built once here and for the same reason the beat is: it must outlive
 	// any single observe() call, since the re-dial loop below runs many of them and a second
 	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.

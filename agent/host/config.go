@@ -2,6 +2,7 @@ package host
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -150,7 +151,15 @@ func loadConfigFile(path string) {
 // peer wiring + witness topology is separate; the cloud-enrollment config source is the controller.
 func ConfigFromEnv() Config {
 	loadConfigFile(env("BRIARD_CONFIG", defaultConfigFile))
-	node := env("NODE", "guest")
+	// THIS NODE'S OWN NAME, resolved before the struct because the DRBD self-peer below is named
+	// after it. Three tiers, the same order every value here uses: the environment, then the record
+	// this node minted for itself (identity.go), then the literal every install answered to before
+	// [V3.20] gave each one its own.
+	id := recordedIdentity(filepath.Dir(env("ASSIGNMENT_CACHE", stateDir+"/assignment.json")))
+	node := env("NODE", id.node)
+	if node == "" {
+		node = defaultNodeName
+	}
 	role := model.Role(env("ROLE", string(model.RoleAnchor)))
 	// The full connection mesh comes from PEERS (identical on every node — DRBD
 	// matches self by the `on <name>` stanza to the guest hostname). With PEERS
@@ -330,7 +339,7 @@ func ConfigFromEnv() Config {
 	// hand-run agent -- sees the same addresses the running agent does, with no network work and
 	// no way for a process with no business numbering anything to draw. The DRAW belongs to
 	// convergence and happens in exactly one place.
-	return cfg.applyDraw(cfg.recordedSubnets())
+	return cfg.applyDraw(cfg.recordedSubnets()).applyIdentity(id)
 }
 
 // parsePeers parses the PEERS env into the full DRBD connection mesh. It is the

@@ -572,6 +572,16 @@ pkgs.testers.runNixOSTest {
     node_id = host.succeed("cat /var/lib/briard/node-id").strip()
     print(f"flock name={flock_name!r} node id={node_id!r}")
 
+    # ⚠️ THE AGENT MINTED THEM, not install.sh ([B.157]) -- asserted because the files alone cannot
+    # say who wrote them, and "who" is the whole of the change: a Windows host runs this same Go and
+    # can reuse none of a POSIX script. The agent says so once, on the boot that minted.
+    host.succeed("journalctl -u briard-agent | grep -q 'identity: this install is called'")
+    host.succeed(f"journalctl -u briard-agent | grep -q 'identity: this machine is {node_id}'")
+    # ...and it minted ONCE. The replicated volume's metadata is keyed to the node id, so a second
+    # start that re-minted would leave the guest unable to recognise its own disk -- the reinstall
+    # below re-runs install.sh over this same pet state, which is exactly that second start.
+    assert host.succeed("grep -c . /var/lib/briard/node-id").strip() == "1", "the node id is not one line"
+
     # THE DRAWN SUBNETS ([V3b.26f]). Neither number is ours to spell any more: both are drawn per
     # home and checked against the network the host can see, so every assertion below reads what
     # this install actually chose. A rig that kept spelling 10.0.0.1 would not merely fail -- the
@@ -600,8 +610,11 @@ pkgs.testers.runNixOSTest {
         for l in host.succeed("cat /opt/briard/config.env").splitlines()
         if l and not l.startswith("#")
     )
+    # ⚠️ NO IDENTIFIERS. NODE, FLOCK_ID and FLOCK_NAME left this file in [B.157]: the AGENT mints
+    # them into pet state at its first start, so config.env now carries only paths to things this
+    # install laid down. Their reappearing here would mean the installer had taken back a decision
+    # a Windows host has to make too.
     computed = {
-        "NODE", "FLOCK_ID", "FLOCK_NAME",                          # minted here
         "QEMU", "QEMU_DATADIR", "NET_WRAP_BIN",                     # staged here
         "GUEST_IMAGE", "GUEST_DISK", "DATA_DISK", "STATE_DISK",     # created here
     }
@@ -995,6 +1008,11 @@ pkgs.testers.runNixOSTest {
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q -- '-uuid '")
     assert state_uuid == host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), "the reinstall's guest reformatted the state disk"
     NODE, STATE_IMG = host.succeed("cat /var/lib/briard/node-id").strip(), "/var/lib/briard/state.img"
+    # ⚠️ THE REINSTALL IS THE AGENT'S SECOND START, which since [B.157] is the boot that could
+    # re-mint. It must not: the node id keys the DRBD metadata on the pet volume this reinstall
+    # deliberately kept, and the VM UUID derives from it, so a fresh one is a guest that no longer
+    # recognises its own disk. (The state-disk check above would catch it too, by a longer route.)
+    assert NODE == node_id, f"the reinstall re-minted the node id: {node_id!r} -> {NODE!r}"
     # The guest's machine-id, read off the state disk (journald keeps the journal under
     # /var/log/journal/<machine-id>/, which is /journal/<machine-id>/ on the disk): it must be
     # the UUID the host derives from the node name (host.deriveUUID, mirrored here), which is

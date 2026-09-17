@@ -18,7 +18,6 @@ import (
 
 	"briard.io/agent/cli"
 	"briard.io/agent/reportcard"
-	"briard.io/shared/flockname"
 	"briard.io/shared/sdnotify"
 )
 
@@ -93,29 +92,12 @@ func runInternal(args []string) {
 	stageMinHost := fs.String("min-host", "", "with --stage-manifest --chain guest: the oldest host release this guest tolerates (Manifest.MinHost)")
 	stageGuest := fs.String("guest", "", "with --stage-manifest --chain host: the guest release this host release is published beside ([B.86i])")
 	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain guest: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
-	mintFlockName := fs.Bool("mint-flock-name", false, "print a fresh random flock name (e.g. brave-elf) and exit -- install.sh uses this once")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
 	_ = fs.Parse(args)
 
-	// Mint the household-visible name. An installer-internal helper rather than a `briard`
-	// subcommand: it is not an operator verb, it is the same category as --report-card and
-	// --fetch-install (install.sh invokes it, it prints one thing, it exits).
-	//
-	// It lives in the BINARY rather than in install.sh because the word list is 846 words and a
-	// CONTRACT: the cloud admits a claimed name by validating it against that very list
-	// (shared/flockname), so a shell copy would be a second list to keep in step -- the
-	// cross-boundary drift the pairing tests exist to catch, invented on purpose for no reason.
-	if *mintFlockName {
-		name, err := flockname.Generate()
-		if err != nil {
-			log.Fatalf("mint-flock-name: %v", err)
-		}
-		fmt.Fprintln(os.Stdout, name)
-		return
-	}
-
 	// The release pipeline's manifest writer, and it is HERE rather than in the shell script that
-	// calls it for exactly the reason --mint-flock-name is: the manifest is a CONTRACT between the
+	// calls it for exactly the reason the identifiers moved into the agent ([B.157]): the manifest
+	// is a CONTRACT between the
 	// publisher and every installing node, and it used to have two implementations -- a printf
 	// loop in publish-release.sh (hand-assembling JSON, including `"mode":493`, which is 0o755
 	// written in decimal by a human) and the struct in agent/install. Writing it with the same
@@ -180,8 +162,8 @@ func runInternal(args []string) {
 	// the alternative is the SIGTERM systemd would otherwise send QEMU, which the guest
 	// experiences as a power cut.
 	//
-	// A flag rather than a `briard` subcommand for the same reason as --report-card and
-	// --mint-flock-name: nobody types it. It is plumbing between the agent and a unit file the
+	// A flag rather than a `briard` subcommand for the same reason as
+	// --report-card: nobody types it. It is plumbing between the agent and a unit file the
 	// agent itself wrote.
 	//
 	// NEVER FATAL, and that is the load-bearing part. A non-zero exit here would make systemd
