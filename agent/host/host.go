@@ -131,6 +131,10 @@ type Config struct {
 	GuestImage  string // the image the guest disk is an overlay on ([B.86h]): what an OS update swaps; "" -> none
 	DataDisk    string
 	StateDisk   string // the node-local state disk ([B.86g]); "" -> none
+	// DataSize is how big the data volume is made when this node has none yet, in whole GiB
+	// ("4G"). It is read only at provisioning: growing an existing DRBD-backed volume is a verb,
+	// not a config change ([B.154] holds that question).
+	DataSize    string
 	ControlSock string
 	// QMPSock is the host end of QEMU's monitor -- the channel to the VM itself, as opposed
 	// to ControlSock, which reaches the guest OS inside it. It is what makes a
@@ -488,6 +492,13 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if iderr != nil {
 		return fmt.Errorf("host: %w", iderr)
 	}
+	// AND THE DISKS IT RUNS ON, made once, before anything tries to attach them (disks.go). Beside
+	// the identity because they are the same kind of thing: pet state this node needs to exist and
+	// that only the first start can create. A failure here is fatal on purpose -- a guest launched
+	// with a `-drive` for a file nobody made is a boot that fails further from its cause.
+	if err := cfg.provisionDisks(logf); err != nil {
+		return err
+	}
 	// The telemetry writer, built once here and for the same reason the beat is: it must outlive
 	// any single observe() call, since the re-dial loop below runs many of them and a second
 	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.
@@ -811,6 +822,7 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 		MemoryMB:      cfg.MemoryMB,
 		Cores:         cfg.Cores,
 		DiskImage:     cfg.GuestDisk,
+		BaseImage:     cfg.GuestImage,
 		DataDisk:      cfg.DataDisk,
 		StateDisk:     cfg.StateDisk,
 		MachineUUID:   deriveUUID(cfg.Node),

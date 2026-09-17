@@ -191,13 +191,18 @@ func ConfigFromEnv() Config {
 		// `max` = every feature the accelerator can give the guest, which under KVM is the
 		// host's own CPU. The escape hatch (BRIARD_CPU=qemu64 at the installer, CPU= here) is
 		// for a host where the passthrough itself is the suspect -- one env line beats a release.
-		CPUModel:    env("CPU", "max"),
-		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
-		Cores:       atoi(os.Getenv("CORES"), 2),
-		GuestDisk:   os.Getenv("GUEST_DISK"),
-		GuestImage:  os.Getenv("GUEST_IMAGE"),
-		DataDisk:    os.Getenv("DATA_DISK"),
-		StateDisk:   os.Getenv("STATE_DISK"),
+		CPUModel:   env("CPU", "max"),
+		MemoryMB:   atoi(os.Getenv("MEMORY_MB"), 2048),
+		Cores:      atoi(os.Getenv("CORES"), 2),
+		GuestDisk:  os.Getenv("GUEST_DISK"),
+		GuestImage: os.Getenv("GUEST_IMAGE"),
+		DataDisk:   os.Getenv("DATA_DISK"),
+		StateDisk:  os.Getenv("STATE_DISK"),
+		// The data volume's size, and the only thing about these disks the agent defaults: it is a
+		// number rather than a path, so no rig depends on its absence. Sized for a real service's
+		// data -- Home Assistant's `.storage` plus the recorder SQLite outgrows a gigabyte in
+		// months, and growing a DRBD-backed volume afterwards is not a one-liner.
+		DataSize:    env("DATA_SIZE", "4G"),
 		ControlSock: env("CONTROL_SOCK", runDir+"/ctl.sock"),
 		// QEMU's own control channel -- the VM, not the guest OS inside it. Without
 		// it the host's only way to stop a guest is killing qemu, i.e. a power cut to the

@@ -65,12 +65,6 @@ VIP="${BRIARD_VIP_ADDR:-}"
 VIP_IP="${VIP%%/*}"   # the bare address, for the closing message; EMPTY under DHCP
 NIC="${BRIARD_NIC:-}"
 
-# The pet data volume's size, because this script allocates it (step 5). Sized for a real service's
-# data: Home Assistant's `.storage` plus the recorder SQLite outgrows a gigabyte in months, and
-# growing a DRBD-backed volume afterwards is not a one-liner. Whole GiB -- the dd fallback parses
-# it that way.
-DATA_SIZE="${BRIARD_DATA_SIZE:-4G}"
-
 # The release signing public key(s), embedded at release time: this script is fetched over TLS from
 # the channel, so the key travels with it (the installer-carries-the-pubkey pattern). A placeholder
 # in the source tree that the release pipeline fills. Used only when no keyring is on disk.
@@ -275,57 +269,24 @@ ln -sfn "$PREFIX/agent/briard-agent" /usr/local/bin/briard 2>/dev/null ||
 # belongs at the install rather than at the first guest launch.
 [ -n "$NET_WRAP" ] || die "the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC"
 
-# ---- 5. disks: the pet data volume + the (cattle) guest overlay ---------------------
-# data.img is the node's data disk (the guest lays LUKS/LVM/btrfs on it; DRBD only once a
-# peer exists) -- pet, created once, preserved across a
-# reinstall. The guest overlay is cattle: a writable qcow2 backed by the
-# read-only base image, recreated every install (the base may have moved).
+# ---- 5. where this node's disks GO -- the agent makes them ([B.157]) ----------------
+# THREE PATHS AND NO mkfs. The agent creates each of these at its first start, before it launches
+# anything that would attach one (agent/host/disks.go, agent/platform/alloc.go) -- thick for the
+# data volume, sparse for the state disk, a qcow2 overlay on the image for the guest's OS disk.
+#
+# So what is left here is the LAYOUT: which path each one takes on this host, which is this
+# script's decision because it is the one that knows where it put the image and the state dir.
+# The agent makes what the paths name, and makes nothing it was not told about -- an empty path is
+# how a harness says "this node has no such disk", and inventing one would hand qemu a `-drive`
+# for a file nobody created.
+#
+# ⚠️ The exclusivity that guarded the data volume ([B.126]) moved WITH it and got stronger on the
+# way: `[ ! -f ]` is true for "absent" and for "present but unstat-able" alike, and the allocation
+# writes from byte 0 -- so the creation has to BE the proof of absence. It was a `noclobber`
+# subshell here; it is O_EXCL there, which is the same idea the kernel answers directly.
 DATA="$STATE/data.img"
-if [ ! -f "$DATA" ]; then
-	# ⚠️ CREATE IT EXCLUSIVELY, and the test above is not enough on its own ([B.126]): `[ ! -f ]`
-	# is true for "absent" AND for "present but cannot be stat'd", and the dd fallback below
-	# writes from byte 0 -- so the test alone would let an unreadable-but-present data volume be
-	# zeroed. noclobber makes the CREATION the proof of absence: it refuses if anything is there,
-	# so "I could not tell" can no longer route into a destructive write.
-	if ! (set -o noclobber; : >"$DATA") 2>/dev/null; then
-		die "$DATA already exists but could not be read -- refusing to touch it; move it aside if this node really is new"
-	fi
-	say "creating the $DATA_SIZE data volume at $DATA -- your services' data lives here"
-	# THICK, not sparse. This is the one volume whose failure mode is unacceptable: DRBD replicates
-	# it and the guest writes service data into it, so a `truncate` sparse file that the host cannot
-	# actually back turns into ENOSPC *underneath a replicated filesystem*, mid-write, on the node
-	# holding the primary role. Allocating it up front makes "is there room for this node's data?"
-	# a question answered once, at install time, by a command that either succeeds or refuses --
-	# rather than months later, by a write that fails. fallocate is the fast path (extent
-	# reservation, no I/O); dd is the portable fallback for filesystems without it.
-	if ! fallocate -l "$DATA_SIZE" "$DATA" 2>/dev/null; then
-		say "fallocate unavailable; preallocating with dd (slower)"
-		if ! dd if=/dev/zero of="$DATA" bs=1M count="$(($(echo "$DATA_SIZE" | tr -d 'Gg') * 1024))" status=none; then
-			rm -f "$DATA"
-			die "could not allocate the ${DATA_SIZE} data volume at $DATA (out of disk?)"
-		fi
-	fi
-fi
-
-# THE STATE DISK ([B.86g]): node-local, beside the data disk and like it PET -- it holds the
-# guest's podman storage (the service images, content-addressed and worth every byte not
-# re-pulled), its journal and the deadman's backoff state; a reinstall or a rescue must not cost
-# those. Sparse, so the 8 GiB is a ceiling and not a charge against the report card's floor;
-# the guest formats it on first boot when it finds no filesystem, so no mkfs is needed here.
 STATE_DISK="$STATE/state.img"
-if [ ! -e "$STATE_DISK" ]; then
-	truncate -s 8G "$STATE_DISK" || die "could not create the state disk at $STATE_DISK"
-	chmod 0600 "$STATE_DISK"
-	say "created the guest's state disk at $STATE_DISK (formatted by the guest on first boot)"
-fi
-OVERLAY="$PREFIX/guest.qcow2"   # cattle: recreated each install, dropped by `rm -rf /opt/briard`
-say "creating the VM disk at $OVERLAY"
-rm -f "$OVERLAY"
-if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
-	-b "$PREFIX/guest-image/nixos.qcow2" -F qcow2 "$OVERLAY"; then
-	die "qemu-img create failed (rc=$?)"
-fi
-say "VM disk created"
+OVERLAY="$PREFIX/guest.qcow2"   # cattle: rebuilt on the image at every launch, not just at install
 
 # ---- 6. the node's own files: the agent's scripts, its config, its units ------------
 # SIX FILES, and only ONE of them is generated. The three scripts and the three units are shipped
@@ -394,13 +355,15 @@ EOF
 # rather than a table this script has to keep in step with config.go.
 #
 # The exclusions are the names that configure THE INSTALL rather than the node: where to fetch
-# from, which release, where the units go, how big the data volume is -- and BRIARD_CONFIG, which
-# names this very file, so copying it in would be a node telling itself where it already is.
+# from, which release, and where the units go -- plus BRIARD_CONFIG, which names this very file, so
+# copying it in would be a node telling itself where it already is. The list shrank when the disks
+# moved ([B.157]): BRIARD_DATA_SIZE is an ordinary knob now, because the AGENT allocates the volume
+# and therefore the size is a value the node holds rather than a step this script performs.
 #
 # Sorted, so two installs given the same environment produce byte-identical files. Values are
 # single-line by the format's own rule, which is what makes a line-oriented copy correct.
 env | grep '^BRIARD_[A-Z0-9_]*=' |
-	grep -Ev '^BRIARD_(ARTIFACTS|RELEASE|UNIT_DIR|DATA_SIZE|CONFIG)=' |
+	grep -Ev '^BRIARD_(ARTIFACTS|RELEASE|UNIT_DIR|CONFIG)=' |
 	sed 's/^BRIARD_//' | LC_ALL=C sort >> "$PREFIX/config.env"
 chmod 0600 "$PREFIX/config.env"
 

@@ -104,6 +104,17 @@ func (s QEMUSpec) BackingFile(ctx context.Context) (string, error) {
 // The data disk is not named here, not passed here, and not reachable from here. That is the
 // separation the whole verb rests on, and it is kept by the signature rather than by a comment.
 func (s QEMUSpec) RebuildOverlay(ctx context.Context) (backing string, err error) {
+	// A NODE THAT HAS NO OVERLAY YET gets one here ([B.157]). install.sh used to lay the first one
+	// down with the same `qemu-img create` this function ends in, which meant the installer owned
+	// a step the agent already performs at every launch -- and a Windows host would have had to
+	// own it a second time. The BASE is the config's, not something read back off a disk that does
+	// not exist; without one there is nothing to bootstrap from and the read below says so.
+	if _, statErr := os.Stat(s.DiskImage); os.IsNotExist(statErr) && s.BaseImage != "" {
+		if err := s.createOverlay(ctx, s.BaseImage); err != nil {
+			return "", err
+		}
+		return s.BaseImage, nil
+	}
 	backing, err = s.BackingFile(ctx)
 	if err != nil {
 		return "", err
@@ -125,14 +136,23 @@ func (s QEMUSpec) RebuildOverlay(ctx context.Context) (backing string, err error
 	if err := os.Remove(s.DiskImage); err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("platform: discard %s: %w", s.DiskImage, err)
 	}
-	out, err := exec.CommandContext(ctx, s.qemuImg(), "create", "-f", "qcow2",
-		"-b", backing, "-F", "qcow2", s.DiskImage).CombinedOutput()
-	if err != nil {
+	if err := s.createOverlay(ctx, backing); err != nil {
 		// The overlay is gone and could not be replaced: say so plainly, because this is the one
 		// state this function can leave behind that a human has to fix.
-		return "", fmt.Errorf("platform: recreate %s on %s: %w: %s -- the old overlay has already "+
-			"been discarded, so this node needs its disk laid down again (reinstall)",
-			s.DiskImage, backing, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("%w -- the old overlay has already been discarded, so this node needs "+
+			"its disk laid down again (reinstall)", err)
 	}
 	return backing, nil
+}
+
+// createOverlay lays a fresh qcow2 over base at s.DiskImage. The one qemu-img invocation both the
+// bootstrap and the rebuild share, so the two can never drift into creating different disks.
+func (s QEMUSpec) createOverlay(ctx context.Context, base string) error {
+	out, err := exec.CommandContext(ctx, s.qemuImg(), "create", "-f", "qcow2",
+		"-b", base, "-F", "qcow2", s.DiskImage).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("platform: create %s on %s: %w: %s",
+			s.DiskImage, base, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

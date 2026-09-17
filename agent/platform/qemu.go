@@ -38,6 +38,11 @@ type QEMUSpec struct {
 	MemoryMB  int
 	Cores     int
 	DiskImage string // guest OS disk; empty in kernel/initrd boots
+	// BaseImage is the read-only image DiskImage is an overlay ON ([B.86h]) -- what an OS update
+	// swaps. It is what lets RebuildOverlay lay the overlay down on a node that has none yet
+	// ([B.157]) rather than only rebuild one it can read the backing out of; empty leaves that
+	// bootstrap to whoever made the disk.
+	BaseImage string
 	DataDisk  string // backing block device for the DRBD volume -> guest /dev/vdb
 	// StateDisk is the node-local STATE disk ([B.86g]): the one place the guest keeps what the
 	// host cannot push and a restart must not cost -- podman's storage, the journal, the deadman's
