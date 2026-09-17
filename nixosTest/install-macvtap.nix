@@ -483,10 +483,31 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         "tr -d '\\r' < /var/log/briard-guest-console.log | grep -aqE 'Linux version|NixOS|systemd'"
     )
-    # It must not be world-readable: it carries the household's hostnames and addresses.
+    # It must not be world-readable: it carries the household's hostnames and addresses. The mode
+    # is the AGENT's since [B.157] -- applied at every launch before qemu opens the file, so an
+    # install that predates it is tightened rather than trusted.
     mode = host.succeed("stat -c%a /var/log/briard-guest-console.log").strip()
     assert mode in ("600", "640"), f"the guest console is mode {mode} -- readable beyond root"
     print("the INSTALLER's own guest-console capture is live, non-empty and not world-readable")
+
+    # ...AND THE OPERATOR CAN REACH IT BY THE VERB, which is a different claim from the file being
+    # right, and the one that was false ([B.157]). `briard logs` resolved the path by asking systemd
+    # for GUEST_SERIAL, which stopped being on the unit when [B.150](a) moved the node's values into
+    # config.env -- so every installed node was told it captured no console while the capture sat
+    # here. Nothing caught it: the only test stubbed the lookup with an answer it wrote itself.
+    #
+    # Run on the REAL install, and asserted on CONTENT rather than on exit status: the verb reports
+    # an unreadable surface without failing, by design, so a status check would pass on exactly the
+    # bug this is here for.
+    logs = host.succeed("/opt/briard/agent/briard-agent logs -guest -n 40")
+    assert "does not capture the guest console" not in logs, (
+        f"`briard logs` cannot find this node's console:\n{logs}"
+    )
+    assert "guessed" not in logs, f"`briard logs` fell back to guessing the path:\n{logs}"
+    assert "/var/log/briard-guest-console.log" in logs, (
+        f"`briard logs` does not name the console it read:\n{logs}"
+    )
+    print("`briard logs` resolves the console through config.env on a real install")
 
     # What a stranger actually gets. The bare address is a name the front door does not route,
     # so it forwards to the household dashboard ([V3b.31b]) -- which REFUSES a browser with no

@@ -50,9 +50,14 @@ const (
 	guestUnit = "briard-guest.service"
 
 	// Where scripts/install.sh captures the guest's serial console by default (BRIARD_CONSOLE).
-	// Only a fallback: consolePath asks systemd what the unit is ACTUALLY configured with, so a
-	// node that moved or disabled it is reported truthfully rather than read from here.
+	// Only a fallback: consolePath asks the node what it is ACTUALLY configured with, so a node
+	// that moved or disabled it is reported truthfully rather than read from here.
 	defaultConsole = "/var/log/briard-guest-console.log"
+
+	// The node's configuration file, for a node whose unit does not name it. Copied from
+	// agent/host's defaultConfigFile for the same reason the unit names above are copied, and
+	// pinned the same way: a test in this package asserts the two literals are identical.
+	defaultConfigFile = "/opt/briard/config.env"
 
 	// What an alert line begins with, on every surface. It is notify.LogMarker, copied for the
 	// same reason as the unit names above — shared/notify reaches an ntfy endpoint over HTTP, so
@@ -264,14 +269,23 @@ func (s *logSources) readGuest(ctx context.Context, filter string) surface {
 	return sf
 }
 
-// consolePath answers where this node's guest console actually is, asking SYSTEMD rather than
-// assuming the default: the path is a unit environment variable the installer writes, and it can
-// be moved or switched off entirely (BRIARD_CONSOLE=). A node with capture disabled gets a
-// straight answer -- "not captured here" -- instead of a stale file from an earlier install,
-// which would be the worst of the three outcomes: content, believed current, that is not.
+// consolePath answers where this node's guest console actually is, asking THE NODE rather than
+// assuming the default: the path can be moved or switched off entirely (BRIARD_CONSOLE=), and a
+// node with capture disabled gets a straight answer -- "not captured here" -- instead of a stale
+// file from an earlier install, which would be the worst of the three outcomes: content, believed
+// current, that is not.
+//
+// ⚠️ TWO HOPS, AND BOTH ARE THE NODE'S OWN WORD. systemd is asked where the config file is
+// (BRIARD_CONFIG on the unit), and the config file is asked where the console is (GUEST_SERIAL).
+// Asking systemd for GUEST_SERIAL directly is what this used to do, and it stopped being true the
+// moment [B.150](a) moved the node's values off the frozen unit and into a file the agent can
+// rewrite: `systemctl show` reports what the UNIT declares, so the lookup found nothing and this
+// verb told every installed node it captured no console while the capture sat on disk. It survived
+// because the only test stubbed unitProps with a GUEST_SERIAL it wrote itself
+// ([[verification-assertions-must-fail]]); install-macvtap now runs the verb on a real install.
 //
 // Returns (path, note, err). A non-empty note replaces the surface's header when the path was
-// guessed rather than read from the unit, so the reader can tell one from the other.
+// guessed rather than read from the node, so the reader can tell one from the other.
 func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 	if s.consoleFlag != "" {
 		return s.consoleFlag, "", nil
@@ -284,16 +298,17 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 		if ls := props["LoadState"]; ls != "" && ls != "loaded" {
 			return "", "", fmt.Errorf("%s is not installed on this machine (LoadState=%s)", agentUnit, ls)
 		}
+		conf := defaultConfigFile
 		for kv := range strings.FieldsSeq(props["Environment"]) {
-			if v, ok := strings.CutPrefix(kv, "GUEST_SERIAL="); ok {
-				if v == "" {
-					break
-				}
-				return v, "", nil
+			if v, ok := strings.CutPrefix(kv, "BRIARD_CONFIG="); ok && v != "" {
+				conf = v
 			}
 		}
+		if path := configValue(conf, "GUEST_SERIAL"); path != "" {
+			return path, "", nil
+		}
 		return "", "", fmt.Errorf("this node does not capture the guest console "+
-			"(%s sets no GUEST_SERIAL) — reinstall without BRIARD_CONSOLE= to enable it", agentUnit)
+			"(%s sets no GUEST_SERIAL) — reinstall without BRIARD_CONSOLE= to enable it", conf)
 	}
 	// No systemd to ask (a container, a test rig, not root). Fall back, but SAY it is a guess.
 	path := s.env("GUEST_SERIAL")
@@ -469,4 +484,37 @@ func filterLines(lines []string, filter string) []string {
 		}
 	}
 	return out
+}
+
+// configValue reads one key out of the node's config file (/opt/briard/config.env), the format
+// install.sh writes and agent/host's loadConfigFile reads: KEY=value one per line, blank lines and
+// `#` comments ignored, whitespace either side of the `=` trimmed, and nothing else parsed.
+//
+// A SECOND READER OF THE SAME FORMAT, and that is a real cost accepted for a reason. Importing
+// agent/host here would pull the whole orchestrator -- drbd, platform, cloud, net/http -- into a
+// package deliberately kept to five dependencies (the unit names above say why). The format is
+// four rules, and the duplication is not left to trust: a test in this package feeds an awkward
+// fixture to both implementations and asserts they agree. Keep it that way if either changes.
+//
+// An unreadable or missing file is the empty string -- the caller's "this node captures no
+// console" branch, which is the honest answer when the node cannot say otherwise.
+func configValue(path, key string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(k) == key {
+			return strings.TrimSpace(v)
+		}
+	}
+	_ = sc.Err()
+	return ""
 }

@@ -49,12 +49,19 @@ func fakeSources(t *testing.T, journal string, journalErr error, consoleBody str
 			t.Fatal(err)
 		}
 	}
+	// A node's console path lives in ITS CONFIG FILE, not on its unit ([B.150](a)) -- so the fake
+	// is shaped the way a shipped node is: the unit names the config file, the config file names
+	// the console. A fake that put GUEST_SERIAL on the unit is exactly what hid [B.157]'s bug.
+	conf := filepath.Join(dir, "config.env")
+	if err := os.WriteFile(conf, []byte("NODE=n1\nGUEST_SERIAL="+path+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return &logSources{
 		journal: func(context.Context, ...string) ([]byte, error) {
 			return []byte(journal), journalErr
 		},
 		unitProps: func(context.Context, string, ...string) (map[string]string, error) {
-			return map[string]string{"LoadState": "loaded", "Environment": "NODE=n1 GUEST_SERIAL=" + path}, nil
+			return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + conf}, nil
 		},
 		readFile: os.ReadFile,
 		env:      func(string) string { return "" },
@@ -95,7 +102,7 @@ func TestAlertsReadsBothSurfaces(t *testing.T) {
 func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 	src := fakeSources(t, "", errors.New("exit status 1"), "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
-		return map[string]string{"LoadState": "loaded", "Environment": "NODE=n1"}, nil // no GUEST_SERIAL
+		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConfig(t)}, nil // no GUEST_SERIAL
 	}
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
@@ -115,7 +122,7 @@ func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 func TestAlertsQualifiesTheAllClearWhenPartiallyBlind(t *testing.T) {
 	src := fakeSources(t, "", nil, "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
-		return map[string]string{"LoadState": "loaded", "Environment": "NODE=n1"}, nil // console not captured
+		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConfig(t)}, nil // console not captured
 	}
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
@@ -145,7 +152,7 @@ func TestConsolePathDistinguishesNotInstalledFromNotCaptured(t *testing.T) {
 	t.Run("not captured", func(t *testing.T) {
 		src := *base
 		src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
-			return map[string]string{"LoadState": "loaded", "Environment": "NODE=n1"}, nil
+			return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConfig(t)}, nil
 		}
 		if _, _, err := src.consolePath(context.Background()); err == nil ||
 			!strings.Contains(err.Error(), "does not capture") {
@@ -251,5 +258,99 @@ func TestReadVerbsRejectArguments(t *testing.T) {
 		if code := Main(context.Background(), []string{verb, "extra"}, &out, &errOut); code != 2 {
 			t.Errorf("%s with a stray argument: exit = %d, want 2", verb, code)
 		}
+	}
+}
+
+// noConfig names a config file that does not exist, in a directory that does. The stubs use it so
+// "this node captures no console" is a fact about the FIXTURE rather than about whether the
+// machine running the tests happens to have a real /opt/briard/config.env on it.
+func noConfig(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "config.env")
+}
+
+// ⚠️ THE REGRESSION THIS FILE EXISTS FOR ([B.157]). consolePath asked systemd for GUEST_SERIAL,
+// which was true until [B.150](a) moved the node's values off the frozen unit and into config.env
+// -- after which `systemctl show` reported nothing and this verb told every installed node it
+// captured no console while the capture sat on disk. It stayed green because the only test stubbed
+// unitProps with a GUEST_SERIAL it had written itself.
+//
+// So the stub here carries what a SHIPPED unit carries: BRIARD_CONFIG and nothing else. A
+// consolePath that goes back to reading GUEST_SERIAL from the unit fails this.
+func TestConsolePathReadsTheNodesConfigFileNotTheUnit(t *testing.T) {
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "config.env")
+	if err := os.WriteFile(conf, []byte(
+		"# briard node configuration\nNODE=briard-node-abc123\nGUEST_SERIAL=/var/log/elsewhere.log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := fakeSources(t, "", nil, "")
+	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
+		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + conf}, nil
+	}
+	path, note, err := src.consolePath(context.Background())
+	if err != nil {
+		t.Fatalf("consolePath: %v", err)
+	}
+	if path != "/var/log/elsewhere.log" {
+		t.Errorf("path = %q, want the config file's GUEST_SERIAL", path)
+	}
+	if note != "" {
+		t.Errorf("note = %q, want none -- the path was read, not guessed", note)
+	}
+}
+
+// configValue is a SECOND reader of the format agent/host's loadConfigFile owns, and the four
+// rules are the whole contract: blank lines and `#` comments ignored, first `=` splits, both
+// halves trimmed, nothing else parsed. This table is the contract written down -- change either
+// implementation and change this, or the two drift where nothing would notice.
+func TestConfigValueFollowsTheFormatsFourRules(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(conf, []byte(strings.Join([]string{
+		"# a comment that mentions GUEST_SERIAL=/wrong/path",
+		"",
+		"   ",
+		"  SPACED   =   /var/log/spaced.log   ",
+		"EMPTY=",
+		"NOEQUALS",
+		"VIP_ADDR=192.168.1.50/24",
+		"URL=http://host:8099/x=y",
+		"# DUPLICATE=first-wins does not apply to a commented line",
+		"DUPLICATE=first",
+		"DUPLICATE=second",
+	}, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ key, want string }{
+		{"SPACED", "/var/log/spaced.log"}, // both halves trimmed
+		{"EMPTY", ""},                     // a key with no value reads as absent
+		{"NOEQUALS", ""},                  // a line with no `=` is skipped, not a key
+		{"VIP_ADDR", "192.168.1.50/24"},   // a `/` in a value is just a value
+		{"URL", "http://host:8099/x=y"},   // only the FIRST `=` splits
+		{"DUPLICATE", "first"},            // first wins, as the agent's env layering does
+		{"GUEST_SERIAL", ""},              // a comment is not a setting
+		{"MISSING", ""},                   // absent
+	} {
+		if got := configValue(conf, c.key); got != c.want {
+			t.Errorf("configValue(%q) = %q, want %q", c.key, got, c.want)
+		}
+	}
+	if got := configValue(filepath.Join(t.TempDir(), "absent"), "GUEST_SERIAL"); got != "" {
+		t.Errorf("a missing file read as %q, want empty", got)
+	}
+}
+
+// The CLI's fallback config path must be the one the SHIPPED unit names, and the unit file is the
+// thing an installed node actually gets -- so it is the pin, not a second literal in a comment.
+// Same discipline as the alertMarker pairing above: the test may read what the code may not.
+func TestDefaultConfigFileMatchesTheShippedUnit(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "units", "briard-agent.service"))
+	if err != nil {
+		t.Fatalf("read the shipped unit: %v", err)
+	}
+	want := "Environment=BRIARD_CONFIG=" + defaultConfigFile
+	if !strings.Contains(string(b), want) {
+		t.Errorf("the shipped unit does not carry %q -- the CLI's fallback and the installed "+
+			"node's config path have drifted", want)
 	}
 }
