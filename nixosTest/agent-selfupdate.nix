@@ -73,8 +73,10 @@ let
   crashCand = candidate "crash" ""; # exits 1 immediately → start fails → revert
   hangCand = candidate "hang" ""; # blocks without READY → TimeoutStartSec → revert
   # The three frozen wrappers — dumb shell, agent-INDEPENDENT (a bug in the volatile agent can
-  # never wedge the update mechanism), verbatim the ones scripts/install.sh writes. Change one,
-  # change both.
+  # never wedge the update mechanism). The SHIPPED ones are scripts/agent/*, and they hard-code the
+  # install layout ([B.157]); these are the same LOGIC over this rig's own paths, because the rig
+  # runs nothing at /opt/briard. Change one, change both -- and install-macvtap is what proves the
+  # shipped files themselves, on a real install.
   briardExec = pkgs.writeShellScript "briard-exec" ''
     set -eu
     if [ -e ${updateFlag} ]; then

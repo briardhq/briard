@@ -11,6 +11,15 @@ Type=oneshot
 # The script shells out to curl/wget, stat, mktemp and systemctl by name; a unit's default PATH is
 # minimal and on NixOS it does not reach curl at all (same line, same reason, as briard-agent).
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
+# The node's own configuration, so the script READS CHANNEL_URL and UPDATE_KEYRING rather than
+# having them written into it ([B.157]). config.env is already KEY=value, one per line, unquoted,
+# which is exactly what systemd parses here.
+#
+# ⚠️ The leading `-` means "start anyway if the file is absent", and here that is the point rather
+# than a failure being hidden: config.env carries a key only when an operator named one, so an
+# ordinary node has nothing to deliver -- and a node that has lost the file entirely is a node this
+# unit is the last thing on the box able to repair. The script carries its own default for both.
+EnvironmentFile=-/opt/briard/config.env
 ExecStart=/opt/briard/agent/briard-update
 # The bootstrap pull plus one artifact, on a household link. Generous; the timer retries daily.
 TimeoutStartSec=1800

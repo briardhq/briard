@@ -67,6 +67,9 @@ let
     install -m0644 ${../scripts/units/briard-agent.service}  "$H/briard-agent.service"
     install -m0644 ${../scripts/units/briard-update.service} "$H/briard-update.service"
     install -m0644 ${../scripts/units/briard-update.timer}   "$H/briard-update.timer"
+    install -m0755 ${../scripts/agent/briard-exec}    "$H/briard-exec"
+    install -m0755 ${../scripts/agent/briard-commit}  "$H/briard-commit"
+    install -m0755 ${../scripts/agent/briard-update}  "$H/briard-update"
     # Deterministic tar, same flags as the release script: the bundle is a directory in the store
     # and the channel contract wants one file.
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
@@ -1169,7 +1172,13 @@ pkgs.testers.runNixOSTest {
     # verified against the signed manifest before install.sh ever saw it.
     for u in ("briard-agent.service", "briard-update.service", "briard-update.timer"):
         host.succeed(f"cmp /run/systemd/system/{u} /srv/host/{V}/linux/{u}")
-    print("the three units are byte-identical to the signed channel's")
+    # ...and so were the agent's three frozen scripts. Same claim, and the one that matters most
+    # for these: they are what performs a self-update, so "the file on disk is the file that was
+    # signed" is the property the whole pivot rests on.
+    for s in ("briard-exec", "briard-commit", "briard-update"):
+        host.succeed(f"cmp /opt/briard/agent/{s} /srv/host/{V}/linux/{s}")
+        host.succeed(f"test -x /opt/briard/agent/{s}")
+    print("the units and the agent's scripts are byte-identical to the signed channel's")
 
     unit = host.succeed("systemctl cat briard-agent.service")
     for want in (
@@ -1284,6 +1293,15 @@ pkgs.testers.runNixOSTest {
     # from `enable --now`.
     host.succeed("systemctl is-active briard-update.timer")
     host.succeed("systemctl cat briard-update.service | grep -q '^Type=oneshot'")
+    # ⚠️ THE ENVIRONMENTFILE IS LOAD-BEARING FROM HERE DOWN, and worth naming because it is easy to
+    # read the next lines as proving something else. briard-update is shipped verbatim ([B.157]), so
+    # it no longer has this channel's URL written into it: it reads CHANNEL_URL out of config.env,
+    # which the unit delivers. Every `update host` round trip below reaches the stub at :8099 ONLY
+    # through that path -- break the EnvironmentFile and the script falls back to its own
+    # https://get.briard.io default, which this VM cannot reach, and they fail.
+    host.succeed("systemctl cat briard-update.service | grep -q '^EnvironmentFile=-/opt/briard/config.env'")
+    host.succeed("grep -q '^CHANNEL_URL=http://127.0.0.1:8099$' /opt/briard/config.env")
+    host.fail("grep -q '127.0.0.1:8099' /opt/briard/agent/briard-update")
     host.succeed("test -s /opt/briard/agent/manifest.json && test -s /opt/briard/guest-image/manifest.json")
     host.succeed(f"grep -q '\"version\":\"{V}\"' /opt/briard/agent/manifest.json")
     host.succeed(f"grep -q '\"version\":\"{GV}\"' /opt/briard/guest-image/manifest.json")

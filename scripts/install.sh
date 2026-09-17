@@ -394,74 +394,28 @@ if ! "$PREFIX/qemu/bin/qemu-img" create -f qcow2 \
 fi
 say "VM disk created"
 
-# ---- 6. what the units run: the generated scripts and the config file ---------------
-# The three unit FILES are shipped and copied at the end of this step; everything between here and
-# there is what they point at: the self-update pivot pair, the node's config file and the update
-# script. Each is generated because each bakes a value.
+# ---- 6. the node's own files: the agent's scripts, its config, its units ------------
+# SIX FILES, and only ONE of them is generated. The three scripts and the three units are shipped
+# artifacts copied out of the verified staging dir ([B.157]); config.env is written here because it
+# is the only one whose content is about THIS host.
 mkdir -p "$UNIT_DIR"
 
-
-# ---- the self-update PIVOT (B.84) -------------------------------------------------------
-# $RUNDIR was created with the other directories; the flags inside it are tmpfs by virtue of
-# living under /run, which is what makes a power loss mid-trial revert for free.
-# Two frozen wrapper scripts and the unit fields that use them: the on-disk half of self-update,
-# without which the Go half stages a binary the unit does not run from and reports success.
+# ---- the agent's three frozen scripts: copied, not written ([B.157]) -----------------
+# briard-exec and briard-commit are self-update's on-disk pivot ([B.84]); briard-update is the
+# fetch, which must not be shipped by the thing it updates ([B.86a]) -- an agent that runs fine
+# and has a bug in fetch/verify/stage could otherwise never be replaced, fleet-wide at once.
 #
-# FROZEN, and that is the whole safety property: these two scripts are dumb, agent-INDEPENDENT
-# shell, so a bug in the volatile agent can never wedge the mechanism that replaces it. They are
-# the verbatim pair proven in nixosTest/agent-selfupdate.nix -- change one and change both, and
-# see install-macvtap.nix, which proves the SHIPPED pair rather than a unit a test wrote for itself.
-#
-# UPDATE_BASE must be the directory ExecStart runs from: a candidate staged anywhere else is on
-# the wrong side of the gate, and possibly on another filesystem, which breaks the atomic-rename
-# commit below.
-UPDATE_BASE="$PREFIX/agent"
-cat > "$PREFIX/agent/briard-exec" <<EOF
-#!/bin/sh
-# Pick the binary this boot runs: a staged candidate if one is armed, else the committed one.
-# \`run\` is the daemon subcommand -- since [V3b.23] a bare invocation prints the help, so this line
-# and the units are what start an agent. This script is frozen at install time and never rewritten
-# (B.84), which is why that change arrives by REINSTALL rather than by update (alpha policy).
-set -eu
-if [ -e $RUNDIR/update ]; then
-	mv $RUNDIR/update $RUNDIR/trial   # consume SINGLE-USE (rename, not delete): a crash
-	exec $UPDATE_BASE/briard-agent.next run   #   cannot re-trial forever, and briard-commit can
-else                                      #   still tell a trial boot from a normal one
-	rm -f $RUNDIR/trial               # discard a failed trial's marker -- this IS the revert
-	exec $UPDATE_BASE/briard-agent run
-fi
-EOF
-cat > "$PREFIX/agent/briard-commit" <<EOF
-#!/bin/sh
-# ExecStartPost: systemd runs this ONLY after READY=1, so reaching it means the trial started.
-set -eu
-if [ -e $RUNDIR/trial ]; then
-	mv $UPDATE_BASE/briard-agent.next $UPDATE_BASE/briard-agent   # atomic same-fs commit
-	# The candidate's signed manifest commits WITH it ([B.86a]): it is what the next update run
-	# compares the channel against, so a binary that moved without its manifest would be
-	# re-staged on every tick. Existence-guarded so a candidate staged without one still commits.
-	if [ -e $UPDATE_BASE/manifest.json.next ]; then
-		mv $UPDATE_BASE/manifest.json.next $UPDATE_BASE/manifest.json
-	fi
-	# The rest of the host bundle commits WITH the agent ([B.86b]), each existence-guarded: an
-	# update stages only what the release changed, so a partial set is the normal case. qemu is
-	# a LINK to a tree, and -T is load-bearing: without it, \`mv qemu.next qemu\` onto a link to a
-	# directory would move the staged link INSIDE that directory, silently. With it the commit is
-	# one rename(2) of the link; the previous tree stays until the agent prunes it.
-	if [ -e $UPDATE_BASE/briard-net-wrap.next ]; then
-		mv -T $UPDATE_BASE/briard-net-wrap.next $UPDATE_BASE/briard-net-wrap
-	fi
-	if [ -L $UPDATE_BASE/qemu.next ]; then
-		mv -T $UPDATE_BASE/qemu.next $UPDATE_BASE/qemu
-	fi
-	# The guest bundle ([B.86j]): the same link-to-a-tree shape as qemu, the same -T.
-	if [ -L $UPDATE_BASE/guest.next ]; then
-		mv -T $UPDATE_BASE/guest.next $UPDATE_BASE/guest
-	fi
-	rm -f $RUNDIR/trial
-fi
-EOF
-chmod +x "$PREFIX/agent/briard-exec" "$PREFIX/agent/briard-commit"
+# FROZEN, which is the safety property, and SHIPPED, which is new. Frozen means dumb,
+# agent-INDEPENDENT shell, so a bug in the volatile agent cannot wedge the mechanism that replaces
+# it -- unchanged by where the file comes from. Shipping means the three are signed artifacts of
+# the host chain rather than heredocs this script renders, so they are versioned, diffable, and
+# covered by the same manifest as the binary they start. They carry no interpolation at all now:
+# every path in them is the fixed prefix.
+say "installing the agent's scripts"
+for s in briard-exec briard-commit briard-update; do
+	[ -f "$HOSTSRC/$s" ] || die "$s is absent from staging; this release cannot be installed"
+	install -m0755 "$HOSTSRC/$s" "$PREFIX/agent/$s"
+done
 # ---- the node's configuration: A FILE, NOT THE UNIT ([B.150](a)) -------------------------
 # Everything the agent is told about this host lives here, and the agent reads it with the
 # environment layered ON TOP (agent/host/config.go, loadConfigFile), so a rig that exports a
@@ -502,75 +456,6 @@ env | grep '^BRIARD_[A-Z0-9_]*=' |
 	sed 's/^BRIARD_//' | LC_ALL=C sort >> "$PREFIX/config.env"
 chmod 0600 "$PREFIX/config.env"
 
-# ---- the update unit BELOW the agent ([B.86a]) ------------------------------------------
-# The updater must not be shipped by the thing it updates. An agent that runs fine and has a bug
-# in fetch/verify/stage can never be replaced -- no reflex covers it, and it fails fleet-wide at
-# once. So the FETCH lives here, in a third frozen script and a oneshot, not in the agent:
-# every run pulls a FRESH briard-agent from the target's pointer over TLS and lets THAT binary
-# do the Ed25519-verified fetch (install.sh's own bootstrap pattern, on a timer). The script's
-# entire knowledge is the channel root, the artifact name, one flag on the fetched binary, the
-# pivot's on-disk contract and armed-at -- no product knowledge, so nothing in the product can
-# ever make it need a new release. It is the same outer layer the Windows warden will be.
-#
-# It arms and STOPS. The running agent restarts itself at its safe point (once outcomes have
-# drained -- announce-before-act); forcing is the backstop, and only for an arm the agent has
-# ignored for longer than the grace, so the case where forcing is risky and the case where it
-# happens never overlap. Three triggers, all \`systemctl start\` of this one unit: the cloud's
-# agent-update directive (writes the target first), the timer (daily, jittered into the small
-# hours, following stable -- the mass-converge path, and the only one that works when the agent
-# is dead), and \`briard update host\`. systemd merges a start into a running job, so the unit
-# is its own mutual exclusion. The target is a MESSAGE, read and unlinked; the result likewise.
-#
-# The timer runs EVERYWHERE, this free install included: an OSS node that never converges is
-# precisely the un-updatable fleet this exists to prevent. Updates are not the paid feature;
-# rollout control is. The off switch is \`systemctl disable briard-update.timer\` and nothing
-# else. The channel poll is an anonymous plain GET carrying no node id, flock name or version.
-cat > "$PREFIX/agent/briard-update" <<EOF
-#!/bin/sh
-# briard-update: converge this node's agent to the release channel. Frozen at install ([B.86a]).
-set -eu
-CHANNEL=$CHANNEL
-KEYRING=$KEYRING
-BASE=$UPDATE_BASE
-RUN=$RUNDIR
-GRACE=5400   # seconds an armed update may sit before the restart is forced (1.5h)
-report() { printf '%s\n' "\$*" | tee "\$RUN/update-result"; }
-# (1) Unfinished business: an update armed longer than the grace is forced; a younger one is
-#     left to the agent's own safe point. Never on the same run that armed -- see (3).
-if [ -e "\$RUN/update" ]; then
-	age=\$(( \$(date +%s) - \$(stat -c %Y "\$RUN/update") ))
-	if [ "\$age" -ge "\$GRACE" ]; then
-		systemctl restart briard-agent.service
-		report "forced the restart: an update had been armed for \${age}s"
-	else
-		report "an update is already armed; the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)"
-	fi
-	exit 0
-fi
-# (2) The target, as a message: stable | latest | an exact id. Absent means stable.
-target=stable
-if [ -f "\$RUN/update-target" ]; then
-	target=\$(head -n1 "\$RUN/update-target")
-	rm -f "\$RUN/update-target"
-fi
-# (3) A fresh agent FROM THE TARGET does the verified fetch. Under \$BASE, not /run: Debian mounts
-#     /run noexec. Its last stdout line is the verdict; its stderr goes to the journal.
-tmp=\$(mktemp -d "\$BASE/.update.XXXXXX"); trap 'rm -rf "\$tmp"' EXIT
-url="\$CHANNEL/host/\$target/linux/briard-agent"
-if command -v curl >/dev/null 2>&1; then curl -fsSL "\$url" -o "\$tmp/briard-agent"
-elif command -v wget >/dev/null 2>&1; then wget -qO "\$tmp/briard-agent" "\$url"
-else report "need curl or wget to fetch \$url"; exit 1; fi || { report "could not fetch a bootstrap agent from \$url"; exit 1; }
-chmod +x "\$tmp/briard-agent"
-set +e
-out=\$(BRIARD_CHANNEL_URL="\$CHANNEL" BRIARD_KEYRING="\$KEYRING" UPDATE_BASE="\$BASE" UPDATE_RUN_DIR="\$RUN" \\
-	"\$tmp/briard-agent" --fetch-update "\$target" 2>&1)
-rc=\$?
-set -e
-printf '%s\n' "\$out" >&2
-report "\$(printf '%s\n' "\$out" | tail -n1)"
-exit \$rc
-EOF
-chmod +x "$PREFIX/agent/briard-update"
 # ---- the units: copied, not written ([B.157]) ---------------------------------------
 # The three unit files are SHIPPED ARTIFACTS of the host chain, so they arrive in the staging dir
 # beside the agent binary and are hashed by the same signed manifest. Copying them rather than

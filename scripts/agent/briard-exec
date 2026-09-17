@@ -1,0 +1,24 @@
+#!/bin/sh
+# briard-exec: pick the binary this boot runs -- a staged candidate if one is armed, else the
+# committed one. The ExecStart of briard-agent.service, and half of self-update's on-disk pivot
+# ([B.84]); briard-commit beside it is the other half. Change one and change both.
+#
+# SHIPPED VERBATIM and FROZEN ([B.157]): a signed artifact of the host chain that install.sh copies
+# into place. FROZEN is the safety property -- dumb, agent-INDEPENDENT shell, so a bug in the
+# volatile agent can never wedge the mechanism that replaces it -- and shipping does not touch it.
+# What it adds is that the file is versioned, diffable and covered by the release signature.
+#
+# THE LOGIC IS PROVEN TWICE: nixosTest/agent-selfupdate.nix drives the same shape over a rig's own
+# paths (every failure mode: crash, hang, tamper, power loss), and install-macvtap.nix drives THESE
+# FILES on a real install. Change one and change both.
+#
+# `run` is the daemon subcommand: a bare invocation prints the help ([V3b.23]), so this line and
+# the unit are what start an agent.
+set -eu
+if [ -e /run/briard/update ]; then
+	mv /run/briard/update /run/briard/trial        # consume SINGLE-USE (rename, not delete): a
+	exec /opt/briard/agent/briard-agent.next run   #   crash cannot re-trial forever, and
+else                                               #   briard-commit can still tell a trial boot
+	rm -f /run/briard/trial                        #   from a normal one. Discarding the marker
+	exec /opt/briard/agent/briard-agent run        #   IS the revert.
+fi

@@ -1,0 +1,35 @@
+#!/bin/sh
+# briard-commit: the ExecStartPost of briard-agent.service, and the other half of self-update's
+# on-disk pivot ([B.84]). systemd runs it ONLY after READY=1, so reaching it means the trial
+# started -- which IS the gate. A candidate that will not exec, panics, or hangs before loop entry
+# never sends READY, so the start fails, this never runs, and the next start finds the single-use
+# flag already consumed and falls back to the committed binary. The revert is implicit and
+# timerless; nothing has to remember to undo anything.
+#
+# SHIPPED VERBATIM and FROZEN ([B.157]) -- see briard-exec, which this is the pair of.
+set -eu
+if [ -e /run/briard/trial ]; then
+	mv /opt/briard/agent/briard-agent.next /opt/briard/agent/briard-agent   # atomic same-fs commit
+	# The candidate's signed manifest commits WITH it ([B.86a]): it is what the next update run
+	# compares the channel against, so a binary that moved without its manifest would be
+	# re-staged on every tick. Existence-guarded so a candidate staged without one still commits.
+	if [ -e /opt/briard/agent/manifest.json.next ]; then
+		mv /opt/briard/agent/manifest.json.next /opt/briard/agent/manifest.json
+	fi
+	# The rest of the host bundle commits WITH the agent ([B.86b]), each existence-guarded: an
+	# update stages only what the release changed, so a partial set is the normal case. qemu is
+	# a LINK to a tree, and -T is load-bearing: without it, `mv qemu.next qemu` onto a link to a
+	# directory would move the staged link INSIDE that directory, silently. With it the commit is
+	# one rename(2) of the link; the previous tree stays until the agent prunes it.
+	if [ -e /opt/briard/agent/briard-net-wrap.next ]; then
+		mv -T /opt/briard/agent/briard-net-wrap.next /opt/briard/agent/briard-net-wrap
+	fi
+	if [ -L /opt/briard/agent/qemu.next ]; then
+		mv -T /opt/briard/agent/qemu.next /opt/briard/agent/qemu
+	fi
+	# The guest bundle ([B.86j]): the same link-to-a-tree shape as qemu, the same -T.
+	if [ -L /opt/briard/agent/guest.next ]; then
+		mv -T /opt/briard/agent/guest.next /opt/briard/agent/guest
+	fi
+	rm -f /run/briard/trial
+fi

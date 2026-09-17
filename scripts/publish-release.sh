@@ -11,6 +11,7 @@
 #   install.sh                          unsigned, outside every chain (see below)
 #   host/
 #     <version>/linux/                  manifest.json(+.sig), briard-agent, briard-net-wrap,
+#                                       briard-{exec,commit,update},
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
 #     <version>/windows/                manifest.json(+.sig), qemu-bundle-windows.tar.zst
@@ -303,6 +304,12 @@ stage)
 	install -m0644 scripts/units/briard-agent.service   "$H/briard-agent.service"
 	install -m0644 scripts/units/briard-update.service  "$H/briard-update.service"
 	install -m0644 scripts/units/briard-update.timer    "$H/briard-update.timer"
+	# The agent's three frozen scripts, same reasoning: self-update's pivot pair and the updater,
+	# shipped verbatim rather than rendered by install.sh ([B.157]). 0755 -- the manifest records a
+	# mode only when it is not the 0644 default, and these are run.
+	install -m0755 scripts/agent/briard-exec    "$H/briard-exec"
+	install -m0755 scripts/agent/briard-commit  "$H/briard-commit"
+	install -m0755 scripts/agent/briard-update  "$H/briard-update"
 	# qemu-bundle is a DIRECTORY in the store (bin/ lib/ share/ PROVENANCE) and the contract
 	# wants one file, so it is tarred here.
 	dtar "$H/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .
