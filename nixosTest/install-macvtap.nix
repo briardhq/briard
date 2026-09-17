@@ -414,6 +414,15 @@ pkgs.testers.runNixOSTest {
     assert m, f"the installer printed no one-time link; its closing lines: {install_out.strip().splitlines()[-6:]}"
     install_link_host, install_code = m.group(1), m.group(2)
     assert "sudo briard dashboard" in install_out, "the installer no longer says how to get another link"
+    # ⚠️ AND THE CLOSING BLOCK IS THE AGENT'S OWN WORDS ([B.157]). install.sh prints what
+    # `briard dashboard` said rather than re-rendering the same facts in shell -- which is what lets
+    # the "what is on this node" sentence live in versioned Go. The verb's exact phrasing is the
+    # assertion: install.sh used to write its own ("open this on any device on your network"), so a
+    # regression to a shell-rendered block fails here rather than reading identically to a human.
+    assert "open this in a browser within" in install_out, (
+        f"the installer re-renders the dashboard block instead of printing the verb's output; "
+        f"its closing lines: {install_out.strip().splitlines()[-6:]}"
+    )
 
     # DELTA 1: NO bridge, and the host IP NEVER left eth1 (macvtap's invasiveness win).
     host.fail("ip link show br-briard")

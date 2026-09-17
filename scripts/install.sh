@@ -8,12 +8,21 @@
 # exists), and Briard answering at the VIP on the LAN. No cloud, no name.
 #
 # ⚠️ THIS SCRIPT IS OUTSIDE THE VERSIONING SYSTEM. It is fetched from the channel root and run
-# once; nothing it writes can be reached by a release afterwards. So it configures only what never
-# changes -- where things live, which identifiers are minted, which units exist -- and every
-# decision that is a property of THIS MACHINE ON THE DAY IT IS ASKED belongs to the agent, which
-# re-asks it at every start and ships fixes through the channel. Which device the guest's L2 hangs
-# off, which substrate that implies, which addresses this node numbers itself from and whether the
-# tun driver is loaded are all the agent's ([B.150]). Adding one back here is the mistake.
+# once; nothing it writes can be reached by a release afterwards. So it does only what never
+# changes: fetch and verify, lay the files down, say where they went, register the units, report.
+#
+# EVERYTHING ELSE IS THE AGENT'S ([B.157]), and there are two tests for whether something belongs
+# here, the second wider than the first:
+#
+#   1. would a RELEASE ever need to change it?  Which device the guest's L2 hangs off, which
+#      substrate that implies, which addresses this node numbers itself from, whether the tun
+#      driver is loaded -- all revisited at every start, none of them frozen here ([B.150]).
+#   2. would a WINDOWS installer have to write it again?  The disks, the identifiers, the console's
+#      rotation. None of those is a decision a release revisits, so the first test alone would have
+#      left them in this file -- and left a PowerShell installer to reimplement every one.
+#
+# Adding something back here means answering both. The agent is Go that already cross-compiles;
+# this is shell that runs on exactly one kind of host.
 #
 # It installs NO SERVICE. A node is a node first: ready, replicating, able to fail over -- then you
 # choose what runs on it. So the VIP answers with Briard's own page, and the health probe watches
@@ -22,7 +31,8 @@
 # Cattle/pet FHS:
 #   /opt/briard     = cattle: signed self-updating binaries + qemu bundle + guest image, plus
 #                     config.env. `rm -rf /opt/briard` + reinstall = a fresh host.
-#   /var/lib/briard = pet: the data volume, this node's identifiers, the subnets it drew.
+#   /var/lib/briard = pet: the data volume, the state disk, this node's identifiers and the
+#                     subnets it drew -- all of them the AGENT's to create and keep.
 #   /run/briard     = tmpfs flags.
 #   /var/log/briard-guest-console.log = the guest's serial console. Neither cattle nor pet: a host
 #                     log, so it outlives a cattle reset and stays off the replicated volume.
@@ -62,7 +72,6 @@ KEYRING="${BRIARD_UPDATE_KEYRING:-$PREFIX/keyring.pem}"
 # we could pick is a guess about someone else's network) and the device the guest's L2 hangs off
 # (unset = the agent selects the one holding the default route, and re-asks at every start).
 VIP="${BRIARD_VIP_ADDR:-}"
-VIP_IP="${VIP%%/*}"   # the bare address, for the closing message; EMPTY under DHCP
 NIC="${BRIARD_NIC:-}"
 
 # The release signing public key(s), embedded at release time: this script is fetched over TLS from
@@ -79,6 +88,7 @@ die() { printf 'briard: ERROR: %s\n' "$*" >&2; exit 1; }
 # printed link opened on a phone, not a failure -- and never waited on: xdg-open may block until
 # the browser exits.
 open_for_user() {
+	[ -n "${1:-}" ] || return 0   # the report carried no link: nothing to hand over
 	[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || return 0
 	[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
 	command -v xdg-open >/dev/null 2>&1 || return 0
@@ -415,44 +425,24 @@ if command -v systemctl >/dev/null 2>&1; then
 		waited=$((waited + 2))
 	done
 
-	# The service line is a BRANCH rather than a constant: "no service is installed on it yet" is
-	# true of a first install and false of a cattle reinstall, because the service manifests are pet
-	# ($STATE/services/, one file per service) and the agent brings them back on its own. The files
-	# are right there and they are the very files the agent reads, so this script can say which.
-	# Best-effort on the names: a manifest we cannot parse still gets a true sentence, a vaguer one.
-	svcs=""
-	for f in "$STATE"/services/*.json; do
-		[ -f "$f" ] || continue
-		name=$(grep -o '"name":"[^"]*"' "$f" 2>/dev/null | head -1 | cut -d'"' -f4)
-		[ -n "$name" ] || name="a service"
-		svcs="${svcs:+$svcs, }$name"
-	done
-	if [ -n "$svcs" ]; then
-		SERVICE_NOTE="$svcs is already installed on it and is coming back up"
-	else
-		SERVICE_NOTE="no service is installed on it yet"
-	fi
-	# Lead with the NAME and keep the address as the fallback. The name is the one that stays true
-	# if the address ever moves, and the address is the one that still works if a client's mDNS
-	# does not (Android is the usual offender). Naming both costs a line and removes a support
-	# round-trip; naming only the address is what made the docs wrong in every house but ours.
-	#
-	# Under DHCP we cannot name the address at all: it is acquired inside the guest at promotion,
-	# which has not happened yet. So the name carries the whole message, and we say where the
-	# address will show up rather than inventing one to print -- printing a plausible-but-wrong
-	# address is the exact failure this item exists to end.
+	# THE NAME, AND ONLY THE NAME ([B.157]). The address is deliberately not here any more: under
+	# DHCP there is none to print yet, and offering a second way in made the sentence long to say
+	# a thing that is true of fewer installs than it sounds. The name is the one that stays true
+	# when the address moves, and it is what the front door routes on.
 	#
 	# NOTE what this deliberately does NOT promise: that the router's client list shows this same
 	# name. It does not, and that is a decision rather than an oversight (V3.20) -- DHCP option 12
 	# stays `briard-<mac tail>`, derived in-guest from the NIC's own address, because changing a
 	# hostname mid-lease is a change no one can predict a server's reaction to and a rename must
-	# never risk the address. So the wording says "a briard- client", which is true of both.
+	# never risk the address.
+	#
+	# WHAT IS ON THE NODE is not said here either. That sentence reads the node's own state to talk
+	# to a person, which is a thing that changes -- so it is the agent's, printed by the dashboard
+	# verb below, which is the same answer a household gets running it a month from now.
 	if [ -z "$FLOCK_NAME" ]; then
-		say "installed. the agent is still starting; it will record this install's name at $STATE/flock-name -- $SERVICE_NOTE"
-	elif [ -n "$VIP_IP" ]; then
-		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ (or http://$VIP_IP/) -- $SERVICE_NOTE"
+		say "installed. the agent is still starting; it will record this install's name at $STATE/flock-name"
 	else
-		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/ -- it takes its address from your router, where it shows up as a \"briard-\" client -- $SERVICE_NOTE"
+		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/"
 	fi
 	# THE LINK IS THE LAST THING THE INSTALLER PRINTS ([V3b.31h]). The dashboard's only door is a
 	# one-time link the agent mints ([V3b.31b]), and the guest has to be up for it -- so wait for
@@ -462,25 +452,31 @@ if command -v systemctl >/dev/null 2>&1; then
 	# DHCP. Then mint once, the way `sudo briard dashboard` does. Past the bound the sentence says
 	# how instead, as it always did: a link printed before the door is up would 503 in the
 	# household's face, and a link that expired during a slow boot would be worse.
-	link=""
+	#
+	# ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here ([B.157]). `briard dashboard` says
+	# what is on the node and hands over the link; this script shows what it said. The two used to
+	# be separate renderings of the same facts -- an install-time sentence in shell and an any-time
+	# one in Go -- which is two things that can disagree about a household's own node.
+	report=""
 	if command -v journalctl >/dev/null 2>&1; then
 		waited=0
 		while [ "$waited" -lt 180 ]; do
 			if journalctl -u briard-agent --since "$UNITS_STARTED" --no-pager 2>/dev/null | grep -q 'primary=true.*healthy=true'; then
-				link=$("$PREFIX/agent/briard-agent" dashboard 2>/dev/null | grep -oE 'https?://[^ ]+/\?code=[0-9a-f]+' | head -1) || link=""
-				[ -n "$link" ] && break
+				report=$("$PREFIX/agent/briard-agent" dashboard 2>/dev/null) || report=""
+				[ -n "$report" ] && break
 			fi
 			sleep 5
 			waited=$((waited + 5))
 		done
 	fi
-	if [ -n "$link" ]; then
-		say "your dashboard is ready. open this on any device on your network (it works once, within 10 minutes):"
+	if [ -n "$report" ]; then
+		say "your dashboard is ready:"
 		say ""
-		say "    $link"
-		say ""
+		printf '%s\n' "$report"
 		say "another link, any time: sudo briard dashboard"
-		open_for_user "$link"
+		# The desktop hand-off needs the bare URL, so it is picked back out of what was printed
+		# rather than minted a second time -- a second mint would burn the link just shown.
+		open_for_user "$(printf '%s' "$report" | grep -oE 'https?://[^ ]+/\?code=[0-9a-f]+' | head -1)"
 	else
 		say "the guest is still booting. once it answers, get a one-time link to your dashboard with: sudo briard dashboard"
 	fi

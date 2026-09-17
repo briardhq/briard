@@ -571,6 +571,12 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "briard: %s: %s\n", o.State, o.Detail)
 		return 1
 	}
+	// What the browser is about to show, before the link to it ([B.157]). The installer prints this
+	// verb's output as the last thing an install says, so the sentence that used to be its own shell
+	// scan lives here -- and a household running the verb a month later gets the same answer.
+	if line := installedLine(installedServices(serviceCacheDir)); line != "" {
+		fmt.Fprintf(stdout, "%s.\n\n", line)
+	}
 	fmt.Fprintf(stdout, "open this in a browser within %s (it works once):\n\n  %s\n\n", dashboard.TTL, o.Detail)
 	return 0
 }
