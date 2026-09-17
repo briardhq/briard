@@ -600,7 +600,11 @@ pkgs.testers.runNixOSTest {
         for l in host.succeed("cat /opt/briard/config.env").splitlines()
         if l and not l.startswith("#")
     )
-    computed = {"NODE", "FLOCK_ID", "FLOCK_NAME"}
+    computed = {
+        "NODE", "FLOCK_ID", "FLOCK_NAME",                          # minted here
+        "QEMU", "QEMU_DATADIR", "NET_WRAP_BIN",                     # staged here
+        "GUEST_IMAGE", "GUEST_DISK", "DATA_DISK", "STATE_DISK",     # created here
+    }
     copied = {"CHANNEL_URL", "UPDATE_KEYRING"}  # exactly what channelEnv carried
     assert set(keys) == computed | copied, (
         f"config.env is {keys}: unexpected {sorted(set(keys) - computed - copied)}, "

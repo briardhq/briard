@@ -171,24 +171,24 @@ func ConfigFromEnv() Config {
 		}}
 	}
 	cfg := Config{
-		// The BUNDLED qemu, at the fixed prefix its own ELF interpreter names -- not whatever
-		// `qemu-system-x86_64` a distro happens to have on PATH, which is the one thing this
-		// product deliberately does not run on.
-		QEMUBinary:  env("QEMU", prefixDir+"/qemu/bin/qemu-system-x86_64"),
-		QEMUDataDir: env("QEMU_DATADIR", prefixDir+"/qemu/share/qemu"),
+		// ⚠️ THE BUNDLE AND THE DISKS ARE NOT DEFAULTED, and that is the other half of [B.157]'s
+		// rule: install.sh writes paths to what it CREATED OR STAGED -- the qemu tree it extracted,
+		// the disks it allocated -- because those are facts about this host, not defaults. An empty
+		// one is a decision too: it is how every agent-* rig says "no state disk", "no -L", "no
+		// backing image", and a default would hand qemu a path to a file that is not there.
+		QEMUBinary:  env("QEMU", "qemu-system-x86_64"),
+		QEMUDataDir: os.Getenv("QEMU_DATADIR"),
 		Accel:       env("ACCEL", "kvm:tcg"),
 		// `max` = every feature the accelerator can give the guest, which under KVM is the
 		// host's own CPU. The escape hatch (BRIARD_CPU=qemu64 at the installer, CPU= here) is
 		// for a host where the passthrough itself is the suspect -- one env line beats a release.
-		CPUModel: env("CPU", "max"),
-		MemoryMB: atoi(os.Getenv("MEMORY_MB"), 2048),
-		Cores:    atoi(os.Getenv("CORES"), 2),
-		// The four disks, at the layout install.sh lays them down in. GuestDisk is CATTLE (rebuilt
-		// on the image at every launch); the other two are PET, beside this node's identity.
-		GuestDisk:   env("GUEST_DISK", prefixDir+"/guest.qcow2"),
-		GuestImage:  env("GUEST_IMAGE", prefixDir+"/guest-image/nixos.qcow2"),
-		DataDisk:    env("DATA_DISK", stateDir+"/data.img"),
-		StateDisk:   env("STATE_DISK", stateDir+"/state.img"),
+		CPUModel:    env("CPU", "max"),
+		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
+		Cores:       atoi(os.Getenv("CORES"), 2),
+		GuestDisk:   os.Getenv("GUEST_DISK"),
+		GuestImage:  os.Getenv("GUEST_IMAGE"),
+		DataDisk:    os.Getenv("DATA_DISK"),
+		StateDisk:   os.Getenv("STATE_DISK"),
 		ControlSock: env("CONTROL_SOCK", runDir+"/ctl.sock"),
 		// QEMU's own control channel -- the VM, not the guest OS inside it. Without
 		// it the host's only way to stop a guest is killing qemu, i.e. a power cut to the
@@ -205,12 +205,12 @@ func ConfigFromEnv() Config {
 		// `env`: an explicitly EMPTY entry is how a node says it has no such NIC, and the default
 		// must not overrule it ([V3b.26c]). Unset -- every shipped install, whose config.env names
 		// a tap only when the operator did -- takes the shipped names.
-		ServiceTap: declared("SERVICE_TAP", "briard0"),                      // eth2, where the VIP lives
-		SystemTap:  declared("SYSTEM_TAP", "briard-drbd0"),                  // eth1, the node IP and DRBD
-		WitnessTap: declared("WITNESS_TAP", "briard-priv0"),                 // eth3, the private host<->guest link
-		NetMode:    os.Getenv("NET_MODE"),                                   // derived by the agent; "" -> it decides
-		VIPParent:  os.Getenv("VIP_PARENT"),                                 // bridge substrate only: the NIC the guest builds VIP_DEV on
-		NetWrapBin: env("NET_WRAP_BIN", prefixDir+"/agent/briard-net-wrap"), // the fd-passing launch wrapper
+		ServiceTap: declared("SERVICE_TAP", "briard0"),      // eth2, where the VIP lives
+		SystemTap:  declared("SYSTEM_TAP", "briard-drbd0"),  // eth1, the node IP and DRBD
+		WitnessTap: declared("WITNESS_TAP", "briard-priv0"), // eth3, the private host<->guest link
+		NetMode:    os.Getenv("NET_MODE"),                   // derived by the agent; "" -> it decides
+		VIPParent:  os.Getenv("VIP_PARENT"),                 // bridge substrate only: the NIC the guest builds VIP_DEV on
+		NetWrapBin: os.Getenv("NET_WRAP_BIN"),               // the fd-passing launch wrapper install.sh staged
 		// The device the guest's L2 hangs off, when an operator named one. The agent asks the same
 		// question the report card did, so it reads the same override ([B.150](b)).
 		NICOverride:  os.Getenv("NIC"),

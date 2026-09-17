@@ -227,13 +227,37 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	if len(cfg.Resource.Peers) != 1 || cfg.Resource.Peers[0].Name != "n1" {
 		t.Errorf("single self-peer expected, got %+v", cfg.Resource.Peers)
 	}
-	// ⚠️ THE BUNDLED qemu, not a distro one on PATH. install.sh stopped writing QEMU into
-	// config.env ([B.157]) -- a path to a fixed prefix is a default, and defaults live in
-	// config.go -- so this is what every shipped node launches with now. A bare
-	// `qemu-system-x86_64` would be the product silently running something it never tested against,
-	// which is the one thing bundling qemu exists to prevent.
-	if cfg.MemoryMB != 2048 || cfg.QEMUBinary != "/opt/briard/qemu/bin/qemu-system-x86_64" {
+	if cfg.MemoryMB != 2048 || cfg.QEMUBinary != "qemu-system-x86_64" {
 		t.Errorf("VM defaults wrong: mem=%d bin=%q", cfg.MemoryMB, cfg.QEMUBinary)
+	}
+}
+
+// ⚠️ NOTHING THE INSTALL LAID DOWN IS DEFAULTED, and this is the assertion that says so ([B.157]).
+//
+// install.sh writes paths to files it CREATED OR STAGED -- the qemu tree it extracted, the disks it
+// allocated -- because those are facts about this host. The agent must not invent them, and the
+// reason is concrete: an empty value is how every agent-* rig says "I have no state disk, no
+// backing image, no -L directory". Default them and the agent hands qemu `-drive file=...` for a
+// file that is not there, and the guest never boots -- on five rigs at once, none of which would
+// have caught it before a nixosTest ran.
+//
+// The taps and device names are the OTHER rule (they default, through `declared`), which is why
+// both are asserted and neither is left to be inferred from the other.
+func TestConfigFromEnv_TheInstallsOwnPathsAreNeverInvented(t *testing.T) {
+	for _, k := range []string{
+		"QEMU_DATADIR", "GUEST_DISK", "GUEST_IMAGE", "DATA_DISK", "STATE_DISK", "NET_WRAP_BIN",
+	} {
+		os.Unsetenv(k)
+		t.Cleanup(func() { os.Unsetenv(k) })
+	}
+	c := ConfigFromEnv()
+	for _, g := range []struct{ name, got string }{
+		{"QEMUDataDir", c.QEMUDataDir}, {"GuestDisk", c.GuestDisk}, {"GuestImage", c.GuestImage},
+		{"DataDisk", c.DataDisk}, {"StateDisk", c.StateDisk}, {"NetWrapBin", c.NetWrapBin},
+	} {
+		if g.got != "" {
+			t.Errorf("unset %s = %q, want empty -- the agent invented a path to a file nobody made", g.name, g.got)
+		}
 	}
 }
 

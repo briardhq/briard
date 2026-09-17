@@ -426,10 +426,14 @@ done
 # because it is root's business alone.
 #
 # ⚠️ TWO KINDS OF LINE, AND ONLY TWO ([B.157]). What this script COMPUTED about this host -- the
-# identifiers it minted, the wrapper it staged -- and what the OPERATOR said, copied verbatim from
-# the environment. There is deliberately no third kind: no defaults, and no value written just to
-# write it down. A key that is absent is a key the agent answers from its own shipped default,
-# which a release can change and a line in this file could not.
+# identifiers it minted, the files it created or staged -- and what the OPERATOR said, copied
+# verbatim from the environment. There is deliberately no third kind: NO DEFAULTS. A key that is
+# absent is a key the agent answers from its own shipped default, which a release can change and a
+# line in this file could not.
+#
+# The line between the first kind and a default is "did this install make the thing the path names".
+# It did make the disks and extract the qemu tree, so those are facts about this host -- and an
+# agent handed no STATE_DISK must not invent one, because every agent-* rig runs exactly that way.
 cat > "$PREFIX/config.env" <<EOF
 # briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
 # '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is
@@ -439,6 +443,16 @@ cat > "$PREFIX/config.env" <<EOF
 NODE=$NODE_NAME
 FLOCK_ID=$FLOCK_ID
 FLOCK_NAME=$FLOCK_NAME
+# The bundle and the disks THIS INSTALL laid down. Paths to files it created or staged, so they
+# are facts about this host rather than defaults -- and their absence is a decision too, which is
+# why the agent defaults none of them: an empty one is how a harness says it has no such disk.
+QEMU=$PREFIX/qemu/bin/qemu-system-x86_64
+QEMU_DATADIR=$PREFIX/qemu/share/qemu
+NET_WRAP_BIN=$NET_WRAP
+GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
+GUEST_DISK=$OVERLAY
+DATA_DISK=$DATA
+STATE_DISK=$STATE_DISK
 EOF
 
 # The operator's own settings, copied verbatim. EVERY `BRIARD_*` in the environment lands here with
