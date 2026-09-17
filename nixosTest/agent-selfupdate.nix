@@ -84,6 +84,11 @@ let
         exec ${nextBin}                   #   can't re-trial forever, and briard-commit can
     else                                  #   still tell a trial boot from a normal one
         rm -f ${trialMarker}              # discard a failed trial's marker — this IS the revert
+        # ...and the set that marker was the verdict on ([B.157]): a non-trial start with staged
+        # files present is by the invariant the aftermath of a failed trial, or of an arm that /run
+        # could not keep across a reboot. Both leave a candidate nothing can ever trial.
+        rm -f ${nextBin} ${nextManifest} ${nextNetWrap} ${nextQemu}
+        rm -f ${updateFlag}               # an arm that appeared mid-delete: see the shipped picker
         exec ${agentBin}
     fi
   '';
@@ -240,7 +245,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("briard-agent.service", timeout=60)
     machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
     machine.succeed("journalctl -u briard-agent | grep -q 'mode=crash'")  # the crash candidate ran
-    machine.succeed("test -e ${nextBin}")  # NOT committed — still staged, inert
+    machine.fail("test -e ${nextBin}")   # NOT committed, and the revert boot discarded it ([B.157])
     assert " v2" in committed(), f"crash candidate was wrongly committed, committed={committed()!r}"
     assert "crash" not in committed(), f"crash candidate leaked into committed, committed={committed()!r}"
     print("2) crash candidate reverted to v2")
@@ -254,7 +259,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("journalctl -u briard-agent | grep -q 'mode=hang'")  # the hang candidate ran
     machine.wait_for_unit("briard-agent.service", timeout=60)
     machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
-    machine.succeed("test -e ${nextBin}")  # NOT committed
+    machine.fail("test -e ${nextBin}")   # NOT committed, and the revert boot discarded it ([B.157])
     assert " v2" in committed(), f"hang candidate was wrongly committed, committed={committed()!r}"
     print("3) hang candidate reverted to v2 via TimeoutStartSec")
 
@@ -270,9 +275,11 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("briard-agent.service")
     assert " v2" in committed(), f"power loss did not revert, committed={committed()!r}"
     machine.fail("grep -q ' v3' ${agentBin}")  # the armed-but-lost update never committed
-    machine.succeed("test -e ${nextBin}")      # v3 stays inert on disk (safe direction)
+    # The armed-but-lost set is DISCARDED by the picker ([B.157]): the arm lived in tmpfs, so
+    # nothing can ever trial these files again, and until this they sat there until a later fetch
+    # happened to overwrite them -- which this test used to paper over with its own `rm` below.
+    machine.fail("test -e ${nextBin}")
     machine.fail("test -e ${trialMarker}")     # no trial marker → no revert code path ran
-    machine.succeed("rm -f ${nextBin}")
     print("4) power loss mid-arm ran committed v2, no commit, no revert code")
 
     # === 5) THE UPDATE UNIT BELOW THE AGENT ([B.86a]): with no target message (the timer's
@@ -419,11 +426,13 @@ pkgs.testers.runNixOSTest {
     machine.fail(f"test -e /var/lib/briard/qemu-{OLD}")
     print("8) a pin below stable refused; accepted once stable moved to it (downgrade to the floor), and only the agent was fetched")
 
-    # === 9) A FAILED TRIAL LEAVES THE BUNDLE STAGED AND INERT, AND THE NEXT RELEASE DROPS IT
-    #        ([B.86b]): a release with a NEW qemu whose agent crashes reverts whole -- the committed
-    #        qemu link never moves, qemu.next and its tree stay -- and a later release that does
-    #        NOT change qemu discards that stale qemu.next before staging, so the commit that
-    #        follows can never pair this agent with that qemu. [[verification-assertions-must-fail]]
+    # === 9) A FAILED TRIAL DISCARDS THE BUNDLE IT STAGED, AND THE NEXT RELEASE CANNOT INHERIT IT
+    #        ([B.86b], [B.157]): a release with a NEW qemu whose agent crashes reverts whole -- the
+    #        committed qemu link never moves, and the revert boot drops the staged LINK while
+    #        keeping the extracted TREE (the expensive half, reusable on a retry). A later release
+    #        that does NOT change qemu would have dropped a stale qemu.next before staging anyway,
+    #        so the commit that follows can never pair this agent with that qemu by either route.
+    #        Both being true is the point. [[verification-assertions-must-fail]]
     machine.succeed("rm -f ${nextBin} ${nextManifest} ${updateFlag}")  # un-arm scenario 8's pin
     V9 = "v3.20260908.ddddddd"
     publish(V9, "${crashCand}", pointers=("latest",), qemu="bundle2")
@@ -436,16 +445,23 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("grep -q ' v4' ${agentBin}", timeout=30)
     assert " v4" in committed(), f"a crashing candidate committed: {committed()!r}"
     assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "the qemu link moved on a FAILED trial"
-    assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V9}", "the refused qemu did not stay staged"
+    # The refused set is DISCARDED by the revert boot ([B.157]) rather than left lying. The staged
+    # LINK goes; the extracted TREE stays, which is the half that must survive -- it is the
+    # expensive one, and a retry of this release reuses it by name instead of pulling it again.
+    machine.fail("test -e ${nextQemu}")
+    machine.succeed(f"test -d /var/lib/briard/qemu-{V9}")
     machine.succeed(f"cmp ${manifest} /srv/host/{V4}/linux/manifest.json")
     machine.fail("test -e ${updateFlag}")
-    print(f"9a) {V9}'s trial crashed: reverted whole, qemu link still {V4}'s, its qemu.next left inert")
+    print(f"9a) {V9}'s trial crashed: reverted whole, qemu link still {V4}'s, its staged link discarded")
 
     V10 = "v3.20260909.eeeeeee"
     publish(V10, "${readyV2}", pointers=("latest",))   # back on the FIRST bundle == the installed one
     out = machine.succeed("${realAgent} update host -to latest -base /var/lib/briard -run /run/briard").strip()
     assert f"staged {V10} (agent), armed" in out, f"unexpected: {out!r}"
-    machine.fail("test -e ${nextQemu}")     # the stale link is GONE before this release is armed
+    # Still gone before this release is armed. It was the revert boot that removed it ([B.157]); the
+    # fetch would have too (DiscardNextBundle), and both being true is the point -- neither is the
+    # only thing standing between a stale link and a partial commit.
+    machine.fail("test -e ${nextQemu}")
     machine.succeed(f"test -d /var/lib/briard/qemu-{V9}")  # the tree is not the verb's to remove
     machine.succeed("systemctl restart briard-agent.service")
     machine.wait_for_unit("briard-agent.service")

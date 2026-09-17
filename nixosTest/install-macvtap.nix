@@ -1409,9 +1409,21 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'host bundle update to .* failed and rolled back'", timeout=60)
     host.fail("test -e /run/briard/update-failure")             # taken by the agent that came back
     assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "a refused qemu was committed"
-    assert host.succeed("readlink /opt/briard/agent/qemu.next").strip() == f"qemu-{V3}", "the refused qemu did not stay staged"
     host.succeed(f"grep -q '\"version\":\"{V2}\"' /opt/briard/agent/manifest.json")
     host.fail("test -e /run/briard/trial && test -e /run/briard/update")
+    # ⚠️ THE REFUSED SET IS DISCARDED, not merely left inert ([B.157], mirroring the guest picker's
+    # rule since [B.148]). This used to assert that qemu.next still POINTED at the refused release
+    # -- which was the observable form of "it was never used" at a time when nothing cleaned up.
+    # The property was always inertness, and gone is the stronger form of it: the revert boot is a
+    # non-trial start with staged files present, which is by the invariant the aftermath of a
+    # failed trial.
+    for n in ("briard-agent", "manifest.json", "briard-net-wrap", "qemu", "guest"):
+        host.fail(f"test -e /opt/briard/agent/{n}.next")
+    # ...and the EXTRACTED TREE survives, which is the half that must not be discarded: it is the
+    # expensive part (a downloaded, verified, unpacked bundle), and the fetch path reuses it by name
+    # on a retry of the same release rather than pulling it again. Deleting the link is not deleting
+    # the tree, and nothing said so before this line.
+    host.succeed(f"test -d /opt/briard/agent/qemu-{V3}")
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
 

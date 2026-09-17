@@ -20,5 +20,23 @@ if [ -e /run/briard/update ]; then
 	exec /opt/briard/agent/briard-agent.next run   #   crash cannot re-trial forever, and
 else                                               #   briard-commit can still tell a trial boot
 	rm -f /run/briard/trial                        #   from a normal one. Discarding the marker
-	exec /opt/briard/agent/briard-agent run        #   IS the revert.
+	                                               #   IS the revert.
+	# A NON-TRIAL START WITH STAGED FILES PRESENT IS THE AFTERMATH OF A FAILED TRIAL, and the
+	# invariant is that staged files exist only between a stage and its verdict -- so discard them.
+	# The guest picker has said exactly this since [B.148]; the host said nothing and left a dead
+	# candidate on disk until the next fetch happened to overwrite it.
+	#
+	# It also clears the set an arm could not survive to trial: the arm lives in /run, so a reboot
+	# before the agent's own safe point loses the flag and strands the files it pointed at.
+	rm -f /opt/briard/agent/briard-agent.next /opt/briard/agent/manifest.json.next \
+		/opt/briard/agent/briard-net-wrap.next /opt/briard/agent/qemu.next \
+		/opt/briard/agent/guest.next
+	# ⚠️ AND THE ARM, IF ONE APPEARED WHILE WE WERE DELETING. The window is narrow -- a fetch has to
+	# stage AND arm between the test above and the removals -- but the outcome without this line is
+	# the worst state the pivot has: the next boot trials a set we gutted, briard-commit accepts a
+	# PARTIAL bundle (new agent, old qemu tree), and the single-use flag is already spent, so there
+	# is nothing left to revert and the node needs a reinstall. Dropping a fresh stage costs a day
+	# (the timer re-runs, and `briard update host` is always there) and cannot do that.
+	rm -f /run/briard/update
+	exec /opt/briard/agent/briard-agent run
 fi
