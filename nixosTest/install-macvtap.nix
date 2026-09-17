@@ -1303,11 +1303,14 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl restart briard-agent.service || true")
     host.wait_until_succeeds("systemctl is-active briard-agent.service", timeout=180)
     host.succeed("sha256sum -c /tmp/committed.sha")             # came back on the COMMITTED binary
-    host.succeed("test -e /opt/briard/agent/briard-agent.next")  # the broken one was NOT committed
+    # The broken candidate was not committed -- which the line above already proves -- and since
+    # [B.157] the revert boot also DISCARDED it, so it cannot sit there until some later fetch
+    # happens to overwrite it. This used to assert the opposite and then `rm` the file by hand two
+    # lines down, which is the leftover being recognised as litter without being called one.
+    host.fail("test -e /opt/briard/agent/briard-agent.next")
     host.succeed("test ! -e /run/briard/trial")                 # and cannot be re-trialled
     host.succeed("test ! -e /run/briard/update")
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-    host.succeed("rm -f /opt/briard/agent/briard-agent.next")
     print("the shipped unit commits a good agent update and reverts a broken one")
 
     # THE SHIPPED UPDATE UNIT BELOW THE AGENT ([B.86a]). agent-selfupdate.nix proves the
