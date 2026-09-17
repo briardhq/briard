@@ -42,6 +42,13 @@ let
       # avahi-browse as well: this node is also where the broker's own announcement is OBSERVED,
       # and observing it from the machine that publishes it would prove nothing.
       environment.systemPackages = [ pkgs.mosquitto pkgs.avahi ];
+      # ⚠️ AND THE DAEMON THOSE TOOLS TALK TO, which this node runs for ITSELF ([B.152]).
+      # `avahi-resolve` and `avahi-browse` are D-Bus clients: with no local daemon they fail with
+      # "Failed to create client object: Daemon not running" -- which reads as a name that did not
+      # resolve while proving nothing about the LAN. The household's other machine is a machine
+      # that speaks mDNS, and saying so here is the same dependency install-macvtap's client makes
+      # visible rather than inherits from whatever the product happens to ship.
+      services.avahi = { enable = true; nssmdns4 = true; };
     };
 in
 pkgs.testers.runNixOSTest {
