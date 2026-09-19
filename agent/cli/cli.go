@@ -447,65 +447,6 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return 0
 }
 
-// runOS is `briard os upgrade <closure>` — move THIS node to a system closure.
-// Sugar over `directive upgrade-system`, which already worked: the admin socket carries no kind
-// allowlist, so the mechanism was reachable before this verb existed. What the verb adds is a
-// name a human would guess and an honest description of what happens.
-//
-// WHO IT IS FOR. A cloudless node — the free tier's single-anchor island — receives no directives
-// at all, so this is its ONLY route to a new OS. It is also the operator's escape hatch on a
-// managed node: the per-home upgrade window binds the cloud's pusher, never a human standing at
-// the machine, so this runs at any hour by design.
-//
-// SINGLE STEP, NO ORCHESTRATION. It upgrades the node it runs on. On an HA pair a serving node
-// will DECLINE — going down would hand the house to a peer, which is a failover to sequence and
-// not a node's decision about itself — and that refusal is reported as such rather than dressed
-// up as a failure.
-func runOS(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) < 1 || args[0] != "upgrade" {
-		fmt.Fprint(stderr, "briard os: want `upgrade <closure>`\n")
-		return 2
-	}
-	fs := flag.NewFlagSet("briard os upgrade", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprint(stderr, "briard os upgrade: want exactly one system closure store path\n")
-		return 2
-	}
-	closure := fs.Arg(0)
-	if !strings.HasPrefix(closure, "/nix/store/") {
-		// Caught here rather than in the agent because the agent's refusal would arrive after a
-		// staging attempt, and "that is not a store path" is a typo a human should be told about
-		// immediately.
-		fmt.Fprintf(stderr, "briard os upgrade: %q is not a /nix/store path\n", closure)
-		return 2
-	}
-	fmt.Fprintf(stdout, "upgrading to %s (staging, then activate + health-gate; this can take minutes)\n", closure)
-	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveUpgradeSystem, Payload: closure})
-	if err != nil {
-		fmt.Fprintf(stderr, "briard: %v\n", err)
-		return 1
-	}
-	switch o.State {
-	case api.OutcomeDone:
-		fmt.Fprint(stdout, "upgraded and healthy\n")
-		return 0
-	case api.OutcomeRolledBack:
-		// The distinction an operator most needs, and the one the exit code alone cannot carry:
-		// the node is back where it started rather than broken. That includes the HA refusal,
-		// which never touched anything -- so the detail matters, not just the state.
-		fmt.Fprintf(stderr, "not applied; the node is unchanged and serving: %s\n", o.Detail)
-		return 1
-	default:
-		fmt.Fprintf(stderr, "upgrade failed: %s\n", o.Detail)
-		return 1
-	}
-}
-
 func sockDefault() string {
 	if s := os.Getenv("ADMIN_SOCK"); s != "" {
 		return s
