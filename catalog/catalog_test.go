@@ -37,7 +37,7 @@ func TestEveryPublishedEntryParses(t *testing.T) {
 				t.Fatalf("a node would refuse this entry: %v", err)
 			}
 			// The filename is what the node requests (`<name>.json`), so a manifest whose name
-			// differs is one no `briard service install <name>` can ever reach.
+			// differs is one no `briard app install <name>` can ever reach.
 			if want := strings.TrimSuffix(path, ".json"); m.Name != want {
 				t.Errorf("entry is served as %q but names itself %q", want, m.Name)
 			}

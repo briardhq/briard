@@ -73,38 +73,39 @@ const (
 var commands = []command{
 	{
 		name: "alerts", group: groupEveryday,
-		synopsis: "what this node has warned about",
-		detail: "Reads this node's own log surfaces directly and names any it could not read, so an\n" +
+		synopsis: "what this machine has warned about",
+		detail: "Reads this machine's own log surfaces directly and names any it could not read, so an\n" +
 			"empty result is never a guess. A free install talks to no server of ours, so nothing is\n" +
 			"pushed to you — this is how you ask. Run it when something looks off, or on a timer.",
 		run: runAlerts, probe: []string{"-h"},
 	},
 	{
 		name: "logs", group: groupEveryday,
-		synopsis: "what this node has logged (-follow to stream)",
-		detail: "Reads both surfaces together: the host agent's journal and the guest's own serial\n" +
-			"console, which is the only view into the VM's boot and kernel. A bug report wants both.",
+		synopsis: "what this machine has logged (-follow to stream)",
+		detail: "Reads both surfaces together: the agent's own journal and the serial console of the\n" +
+			"system briard runs your apps in, which is the only view into its boot and kernel. A bug\n" +
+			"report wants both.",
 		run: runLogs, probe: []string{"-h"},
 	},
 	{
-		name: "service", args: "install <name>", group: groupEveryday,
-		synopsis: "install a catalogued service on this node",
-		detail: "The name is an entry in the signed catalog. The install pulls the image, puts its data\n" +
-			"on the replicated volume, and starts it behind a health gate that reverts the node if it\n" +
-			"does not come up. It blocks until the node reaches a terminal state.",
+		name: "app", args: "install <name>", group: groupEveryday,
+		synopsis: "install an app from the catalog on this machine",
+		detail: "The name is an entry in the signed catalog. The install downloads the image, puts its\n" +
+			"data on the replicated volume, and starts it behind a health gate that reverts the machine\n" +
+			"if it does not come up. It blocks until the machine reaches a terminal state.",
 		run: runService, probe: []string{"install", "-h"},
 	},
 	{
 		name: "handover", group: groupEveryday,
-		synopsis: "hand this node's work to a peer (a planned failover)",
-		detail: "For when you are about to take this machine away: the peer picks the work up, rather\n" +
-			"than the flock discovering the loss on its own.",
+		synopsis: "hand this machine's work to the other machine (a planned failover)",
+		detail: "For when you are about to take this machine away: the other machine picks the work up,\n" +
+			"rather than your home discovering the loss on its own.",
 		run: runHandover, probe: []string{"-h"},
 	},
 	{
-		name: "dashboard", group: groupEveryday,
-		synopsis: "print a one-time link that opens this home's dashboard, trusted",
-		detail: "The link is the dashboard's only door: the browser that opens it becomes a trusted\n" +
+		name: "open", group: groupEveryday,
+		synopsis: "print a one-time link that opens this home's Briard page, trusted",
+		detail: "The link is the Briard page's only door: the browser that opens it becomes a trusted\n" +
 			"device, and the code in it works once, for ten minutes. Run it again for a fresh link --\n" +
 			"that is also how a browser that lost its session gets back in. Home Assistant's first\n" +
 			"user is named after the account this runs under (-name, -user, -lang override).",
@@ -112,14 +113,14 @@ var commands = []command{
 	},
 	{
 		name: "rescue", group: groupRepair,
-		synopsis: "rebuild this node's guest from its image (-yes to confirm)",
-		detail: "Destructive to the guest's own disk, never to the replicated data volume. It asks for\n" +
+		synopsis: "rebuild briard on this machine from its image (-yes to confirm)",
+		detail: "Destructive to briard's own system disk, never to the replicated data volume. It asks for\n" +
 			"-yes because there is no undo for the rebuild itself.",
 		run: runRescue, probe: []string{"-h"},
 	},
 	{
 		name: "update", args: "<host|guest>", group: groupRepair,
-		synopsis: "update this node's agent, or its guest OS, from the release channel now",
+		synopsis: "update this machine's agent, or its guest OS, from the release channel now",
 		detail: "Both resolve `latest` (-to changes that). host starts the same update unit the nightly\n" +
 			"timer and the cloud use and prints how it ended: already at the target, staged and armed\n" +
 			"(the agent restarts itself at its next safe point; `systemctl restart briard-agent`\n" +
@@ -215,7 +216,7 @@ func runHelp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, "briard — administer the node this command runs on.\n\nUsage: briard <command> [options]\n")
+	fmt.Fprint(w, "briard — administer the machine this command runs on.\n\nUsage: briard <command> [options]\n")
 	for _, g := range []string{groupEveryday, groupRepair} {
 		fmt.Fprintf(w, "\n%s\n", g)
 		for _, c := range commands {
@@ -227,11 +228,11 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `
   help [command]               this message, or one command's options
 
-`+"`alerts`"+` and `+"`logs`"+` read this node's logs, and `+"`update`"+` starts a systemd unit; all three
-work even when the agent is down. The rest talk to the running briard-agent over its admin socket
-(`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
+`+"`alerts`"+` and `+"`logs`"+` read this machine's logs, and `+"`update`"+` starts a systemd unit; all
+three work even when the agent is down. The rest talk to the running briard-agent over its admin
+socket (`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
 
-This node does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`
+This machine does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`
 is how you ask it what is wrong. Run it when something looks off, or on a schedule.
 
 `)
@@ -272,30 +273,31 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 }
 
 // runService is the first verb that is SUGAR over `directive` rather than a separate mechanism —
-// which is the shape every later verb should copy. `briard service install ha` is exactly
+// which is the shape every later verb should copy. `briard app install ha` is exactly
 // `briard directive service-install ha`, so there is one path through the agent and the CLI adds
-// only a name a human would guess.
+// only a name a human would guess. (The verb a user types is `app`; *service* stays the
+// engineering term in identifiers and on the wire — [V3c.10].)
 //
 // It blocks until the node reaches a terminal state, because an install is a maintenance
 // operation on a live promoted resource: returning early would leave an operator guessing whether
 // the thing they just did is still happening.
 func runService(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 || args[0] != "install" {
-		fmt.Fprint(stderr, "briard service: want `install <name>`\n")
+		fmt.Fprint(stderr, "briard app: want `install <name>`\n")
 		return 2
 	}
-	fs := flag.NewFlagSet("briard service install", flag.ContinueOnError)
+	fs := flag.NewFlagSet("briard app install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprint(stderr, "briard service install: want exactly one service name\n")
+		fmt.Fprint(stderr, "briard app install: want exactly one app name\n")
 		return 2
 	}
 	name := fs.Arg(0)
-	fmt.Fprintf(stdout, "installing %s (this takes a few minutes; the node stays up)\n", name)
+	fmt.Fprintf(stdout, "installing %s (this takes a few minutes; the machine stays up)\n", name)
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveServiceInstall, Payload: name})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
@@ -319,9 +321,9 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stdout, "  the front door at / does not route to it yet\n")
 		return 0
 	case api.OutcomeRolledBack:
-		// The distinction an operator most needs: the node is back as it was, so this is a failed
-		// install rather than a broken node.
-		fmt.Fprintf(stderr, "%s did not come up; the node was reverted and is unchanged: %s\n", name, o.Detail)
+		// The distinction an operator most needs: the machine is back as it was, so this is a
+		// failed install rather than a broken machine.
+		fmt.Fprintf(stderr, "%s did not come up; the machine was reverted and is unchanged: %s\n", name, o.Detail)
 		return 1
 	default:
 		fmt.Fprintf(stderr, "%s install failed: %s\n", name, o.Detail)
@@ -359,7 +361,7 @@ func runRescue(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("briard rescue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
-	yes := fs.Bool("yes", false, "confirm: discard this node's guest OS disk and rebuild it")
+	yes := fs.Bool("yes", false, "confirm: discard this machine's briard system disk and rebuild it")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -371,19 +373,19 @@ func runRescue(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		// Say what survives as well as what goes. An operator reaching for this is usually unsure
 		// whether they are about to lose their data, and the answer -- no -- is the thing that
 		// decides whether they run it.
-		fmt.Fprint(stderr, `briard rescue: this discards the guest's OS disk and rebuilds it from
-the signed image it was installed from. The node comes back with a factory code
-half and re-pulls its service images, which needs working network.
+		fmt.Fprint(stderr, `briard rescue: this discards briard's own system disk and rebuilds it
+from the signed image it was installed from. The machine comes back with a
+factory code half and downloads its apps again, which needs working network.
 
-Your DATA IS NOT TOUCHED: the replicated volume, this node's identity and the
-service it is pinned to all survive. What is lost is anything written to the
-guest's own OS disk since install.
+Your DATA IS NOT TOUCHED: the replicated volume, this machine's identity and the
+app versions it is pinned to all survive. What is lost is anything written to
+briard's own system disk since install.
 
 Read `+"`briard logs`"+` first. Re-run with -yes when you have.
 `)
 		return 2
 	}
-	fmt.Fprint(stdout, "rebuilding the guest from its backing image (the data disk is not touched)\n")
+	fmt.Fprint(stdout, "rebuilding briard from its backing image (the data disk is not touched)\n")
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveRescue})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
@@ -401,8 +403,8 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs := flag.NewFlagSet("briard handover", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
-	keepMasked := fs.Bool("keep-masked", false, "stay ineligible afterwards (release with -unmask); for a node about to reboot")
-	unmask := fs.Bool("unmask", false, "release a -keep-masked node; hands nothing over")
+	keepMasked := fs.Bool("keep-masked", false, "stay ineligible afterwards (release with -unmask); for a machine about to reboot")
+	unmask := fs.Bool("unmask", false, "release a -keep-masked machine; hands nothing over")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -422,9 +424,9 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		mode = "keep-masked"
 	}
 	if *unmask {
-		fmt.Fprint(stdout, "releasing this node to hold the resource again\n")
+		fmt.Fprint(stdout, "releasing this machine to hold the resource again\n")
 	} else {
-		fmt.Fprint(stdout, "handing this node's work to a peer (the front door moves; connections drop)\n")
+		fmt.Fprint(stdout, "handing this machine's work to the other machine (the front door moves; connections drop)\n")
 	}
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveHandover, Payload: mode})
 	if err != nil {
@@ -439,9 +441,9 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		fmt.Fprint(stdout, "released\n")
 		return 0
 	}
-	// Deliberately not "n2 is now serving": this node cannot see who took over, and a CLI that
+	// Deliberately not "n2 is now serving": this machine cannot see who took over, and a CLI that
 	// claimed it would be inventing the one fact the operator came for.
-	fmt.Fprint(stdout, "handed over — check which peer took it (`drbdadm role r0` on each node)\n")
+	fmt.Fprint(stdout, "handed over — check which machine took it (`drbdadm role r0` on each)\n")
 	return 0
 }
 
@@ -540,11 +542,13 @@ func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 	return o, nil
 }
 
-// runDashboard asks the agent for a one-time dashboard link ([V3b.31b]). The account details
-// ride along because THIS is where the OS account is visible: the agent is a service with no
-// SUDO_USER, and the guest knows nothing about the host's users at all.
+// runDashboard is `briard open`: it asks the agent for a one-time link to the Briard page
+// ([V3b.31b]; the verb a user types is `open`, and *dashboard* stays the engineering name of the
+// guest unit and the directive — [V3c.10]). The account details ride along because THIS is where
+// the OS account is visible: the agent is a service with no SUDO_USER, and the guest knows
+// nothing about the host's users at all.
 func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("briard dashboard", flag.ContinueOnError)
+	fs := flag.NewFlagSet("briard open", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
 	name := fs.String("name", accountName(), "the display name for Home Assistant's first user")
@@ -554,7 +558,7 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprint(stderr, "briard dashboard: takes no arguments\n")
+		fmt.Fprint(stderr, "briard open: takes no arguments\n")
 		return 2
 	}
 	payload, err := json.Marshal(map[string]string{"name": *name, "username": *user, "language": *lang})

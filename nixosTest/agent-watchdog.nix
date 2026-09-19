@@ -261,7 +261,7 @@ pkgs.testers.runNixOSTest {
     # `briard-agent <verb>` IS the CLI (a bare first argument is a subcommand, main.go), and the
     # admin socket is the default on both sides. Flags BEFORE the name: Go's flag package stops at
     # the first non-flag argument, so `install fixture -sock ...` would leave the flag positional.
-    rc, out = host.execute("${agent}/bin/briard-agent service install fixture 2>&1")
+    rc, out = host.execute("${agent}/bin/briard-agent app install fixture 2>&1")
     took = int(host.succeed("date +%s").strip()) - t_dir0
     print(f"service install returned rc={rc} after {took}s:\n{out}")
 

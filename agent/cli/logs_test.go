@@ -81,7 +81,7 @@ func TestAlertsReadsBothSurfaces(t *testing.T) {
 			"[  942.1] briard-deadman: alert [warning] briard n1: host agent unreachable — degraded, holding\n")
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
-	if code := render(&out, &errOut, surfaces, 20, "no alerts on this node"); code != 0 {
+	if code := render(&out, &errOut, surfaces, 20, "no alerts on this machine"); code != 0 {
 		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
 	got := out.String()
@@ -107,7 +107,7 @@ func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 	}
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
-	code := render(&out, &errOut, surfaces, 20, "no alerts on this node")
+	code := render(&out, &errOut, surfaces, 20, "no alerts on this machine")
 	if code != 1 {
 		t.Errorf("exit = %d, want 1 when NO surface could be read", code)
 	}
@@ -127,11 +127,11 @@ func TestAlertsQualifiesTheAllClearWhenPartiallyBlind(t *testing.T) {
 	}
 	var out, errOut bytes.Buffer
 	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
-	if code := render(&out, &errOut, surfaces, 20, "no alerts on this node"); code != 0 {
+	if code := render(&out, &errOut, surfaces, 20, "no alerts on this machine"); code != 0 {
 		t.Fatalf("exit = %d, want 0 with one surface readable", code)
 	}
 	got := out.String()
-	if !strings.Contains(got, "not the whole node") {
+	if !strings.Contains(got, "not the whole machine") {
 		t.Errorf("the all-clear was stated unqualified while a surface was down:\n%s", got)
 	}
 }

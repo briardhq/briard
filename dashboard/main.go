@@ -7,7 +7,7 @@
 // proof of access to the `briard` CLI (whoever can drive it owns the node), so the CLI has the
 // agent mint a code, the agent hands it to this guest (shared/dashboard), and the first browser to
 // present it becomes a trusted device: a per-device token in an HttpOnly cookie, its hash on the
-// replicated volume. No briard password exists; `briard dashboard` re-mints, which is the reset.
+// replicated volume. No briard password exists; `briard open` re-mints, which is the reset.
 // The page lists the trusted devices and revokes one -- from the registry only ([V3b.31f]).
 //
 // WHY THE BUTTON NEEDS THAT: "Open Home Assistant" creates HA's first user and hands out its
@@ -201,17 +201,17 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 	defer a.mu.Unlock()
 	raw, err := os.ReadFile(a.handoffPath)
 	if err != nil {
-		http.Error(w, "no code is outstanding; run `briard dashboard` on the node to get one\n", http.StatusForbidden)
+		http.Error(w, "no code is outstanding; run `briard open` on the machine to get one\n", http.StatusForbidden)
 		return
 	}
 	var h dashboard.Handoff
 	if err := json.Unmarshal(raw, &h); err != nil {
-		http.Error(w, "the handoff does not parse; run `briard dashboard` again\n", http.StatusForbidden)
+		http.Error(w, "the handoff does not parse; run `briard open` again\n", http.StatusForbidden)
 		return
 	}
 	if h.Expired(a.now()) {
 		_ = os.Remove(a.handoffPath)
-		http.Error(w, "that code has expired; run `briard dashboard` on the node for a fresh one\n", http.StatusForbidden)
+		http.Error(w, "that code has expired; run `briard open` on the machine for a fresh one\n", http.StatusForbidden)
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(h.Code), []byte(code)) != 1 {
@@ -300,7 +300,7 @@ func (a *app) addDevice(tok, agent string) error {
 // profile -- a minted code becomes a refresh token that carries no per-device handle, so there
 // is nothing here to look it up by, and the page says so next to the list. A device revoking
 // ITSELF is a sign-out: the cookie goes with it. The last device may go too -- an empty
-// registry is the state the install starts in, and `briard dashboard` is the way back.
+// registry is the state the install starts in, and `briard open` is the way back.
 func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
 	id := r.FormValue("id")
 	a.mu.Lock()
@@ -671,7 +671,7 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ha := a.findHomeAssistant()
 	if ha == nil {
-		http.Error(w, "Home Assistant is not installed on this node\n", http.StatusNotFound)
+		http.Error(w, "Home Assistant is not installed on this machine\n", http.StatusNotFound)
 		return
 	}
 	origin := scheme(r) + "://" + ha.host

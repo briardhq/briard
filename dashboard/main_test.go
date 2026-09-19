@@ -421,7 +421,7 @@ func TestNotInstalled(t *testing.T) {
 	}
 }
 
-// reissue writes a fresh handoff, the way `briard dashboard` does for the next device, and
+// reissue writes a fresh handoff, the way `briard open` does for the next device, and
 // redeems it with the given user agent.
 func (r *rig) reissue(agent string) *http.Cookie {
 	r.t.Helper()

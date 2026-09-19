@@ -29,7 +29,7 @@
   <h1>Briard</h1>
   <p>This browser is not yet trusted by this home.</p>
   <form method="post" action="/join"><button type="submit">Ask a trusted device to let me in</button></form>
-  <p class="muted">Or, on the machine that runs Briard, run <code>sudo briard dashboard</code> and open the address it prints.</p>
+  <p class="muted">Or, on the machine that runs Briard, run <code>sudo briard open</code> and open the address it prints.</p>
 </main></body></html>{{end}}
 
 {{define "join"}}<!doctype html>
@@ -73,23 +73,23 @@
       <p>Installing… {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%). This page refreshes itself.</p>
       <progress max="100" value="{{.Percent}}"></progress>
       {{else}}
-      <p>Installing… the node is pulling the image, which takes a minute or two. This page refreshes itself.</p>
+      <p>Installing… downloading Home Assistant, which takes a minute or two. This page refreshes itself.</p>
       {{end}}
       <p class="muted">Started at {{.Install.Since}}.</p>
     {{else if and .Install .Install.Failed}}
       <p>Could not install Home Assistant: {{.Install.Detail}}</p>
       <form method="post" action="/install/home-assistant"><button type="submit">Try again</button></form>
-      <p class="muted">Or, on the machine that runs Briard: <code>sudo briard service install home-assistant</code></p>
+      <p class="muted">Or, on the machine that runs Briard: <code>sudo briard app install home-assistant</code></p>
     {{else}}
-      <p class="muted">Not installed on this node yet.</p>
+      <p class="muted">Not installed on this machine yet.</p>
       <form method="post" action="/install/home-assistant"><button type="submit">Set up Home Assistant</button></form>
     {{end}}
   </div>
   {{end}}
-  {{if .Services}}<p class="muted">Services on this node: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
+  {{if .Services}}<p class="muted">Apps on this machine: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
   <div class="card">
     <h2>Trusted devices</h2>
-    <p class="muted">Browsers that can open this page. Lost one? Revoke it; it can come back only through <code>sudo briard dashboard</code>.</p>
+    <p class="muted">Browsers that can open this page. Lost one? Revoke it; it can come back only through <code>sudo briard open</code>.</p>
     <ul class="devices">
       {{range .Devices}}<li>
         <span title="{{.Agent}}">{{.Label}}</span> <span class="muted">— added {{.Added}}{{if .This}} · this device{{end}}</span>

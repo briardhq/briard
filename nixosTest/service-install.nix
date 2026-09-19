@@ -1,7 +1,7 @@
 # INSTALLING A SERVICE AT RUNTIME, on the shape a stranger actually installs.
 #
 # A shipped node boots with NO service: it mounts, promotes, and serves a landing page
-# at the VIP. This test takes that node and puts a service on it the way `briard service install`
+# at the VIP. This test takes that node and puts a service on it the way `briard app install`
 # does, then asserts the node ends up serving it — install -> promote -> serve, which is the
 # integration bar for the free tier (failover of a runtime-installed service is a flock concern,
 # not v3's: on briard free each node is an isolated island).

@@ -334,7 +334,7 @@ const (
 	//                        manifest itself: shipping the document down this channel would make the
 	//                        directive a second delivery path for signed content, and the node would
 	//                        then be trusting the sender rather than the signature. Sent by the cloud,
-	//                        or injected locally by `briard service install` over the admin socket
+	//                        or injected locally by `briard app install` over the admin socket
 	//                        — both land in the same dispatch.
 	DirectiveServicePrewarm = "service-prewarm" // Payload = a CATALOG NAME, as service-install. Renders
 	//                        The quadlet units and pulls the images WITHOUT touching the promoter chain,

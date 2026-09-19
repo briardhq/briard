@@ -286,9 +286,9 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 	want := map[string]string{
 		"alerts":    groupEveryday,
 		"logs":      groupEveryday,
-		"service":   groupEveryday,
+		"app":       groupEveryday,
 		"handover":  groupEveryday,
-		"dashboard": groupEveryday,
+		"open":      groupEveryday,
 		"rescue":    groupRepair,
 		"update":    groupRepair,
 		"directive": groupRepair,
@@ -375,7 +375,7 @@ func TestServiceInstallPrintsWhereToReachIt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: tc.detail})
 			var out, errOut bytes.Buffer
-			if code := Main(context.Background(), []string{"service", "install", "-sock", sock, "home-assistant"}, &out, &errOut); code != 0 {
+			if code := Main(context.Background(), []string{"app", "install", "-sock", sock, "home-assistant"}, &out, &errOut); code != 0 {
 				t.Fatalf("exit = %d, want 0 (stderr: %q)", code, errOut.String())
 			}
 			if !strings.Contains(out.String(), tc.want) {

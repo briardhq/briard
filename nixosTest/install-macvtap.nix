@@ -413,9 +413,9 @@ pkgs.testers.runNixOSTest {
     m = re.search(r"http://(briard-[a-z0-9-]+\.local)/\?code=([0-9a-f]{64})", install_out)
     assert m, f"the installer printed no one-time link; its closing lines: {install_out.strip().splitlines()[-6:]}"
     install_link_host, install_code = m.group(1), m.group(2)
-    assert "sudo briard dashboard" in install_out, "the installer no longer says how to get another link"
+    assert "sudo briard open" in install_out, "the installer no longer says how to get another link"
     # ⚠️ AND THE CLOSING BLOCK IS THE AGENT'S OWN WORDS ([B.157]). install.sh prints what
-    # `briard dashboard` said rather than re-rendering the same facts in shell -- which is what lets
+    # `briard open` said rather than re-rendering the same facts in shell -- which is what lets
     # the "what is on this node" sentence live in versioned Go. The verb's exact phrasing is the
     # assertion: install.sh used to write its own ("open this on any device on your network"), so a
     # regression to a shell-rendered block fails here rather than reading identically to a human.
@@ -570,7 +570,7 @@ pkgs.testers.runNixOSTest {
         if page_after is None:
             time.sleep(5)
     assert page_after, "the host's outcome never reached the page (the dashboard still says installing, or forgot the ask)"
-    assert "sudo briard service install home-assistant" in page_after and "Try again" in page_after, page_after
+    assert "sudo briard app install home-assistant" in page_after and "Try again" in page_after, page_after
     assert "no admin port" not in page_after, "the dashboard found no port -- qemu did not expose it to the guest"
     print("the admin port carried the button's directive to the host and the host's refusal back")
 

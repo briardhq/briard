@@ -6,7 +6,7 @@
 // of access to the `briard` CLI ([V3b.31a](a)) -- whoever can drive it already owns the node --
 // so the CLI asks the agent to mint a code, the agent hands it to the guest here, and the browser
 // that presents it becomes a trusted device. Nothing about a person is authenticated beyond that,
-// on purpose: there is no briard password to invent, hide or reset, and `briard dashboard` IS the
+// on purpose: there is no briard password to invent, hide or reset, and `briard open` IS the
 // reset.
 //
 // It also carries what the host knows about the OS account, because that is where the account

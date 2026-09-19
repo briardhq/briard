@@ -71,7 +71,7 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	return nil
 }
 
-// Reach is the sentence `briard service install` ends on: where the household now finds the
+// Reach is the sentence `briard app install` ends on: where the household now finds the
 // thing it just installed.
 //
 // LEAD WITH THE NAME, the doctrine install.sh already prints under -- the name stays true if the

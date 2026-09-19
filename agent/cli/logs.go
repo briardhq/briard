@@ -151,7 +151,7 @@ func runAlerts(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	src := defaultSources()
 	src.consoleFlag = *console
 	surfaces := src.collect(ctx, only(), 0, *since, alertMarker)
-	return render(stdout, stderr, surfaces, *n, "no alerts on this node")
+	return render(stdout, stderr, surfaces, *n, "no alerts on this machine")
 }
 
 // runLogs is `briard logs` — the same two surfaces, unfiltered. The verb that makes a support
@@ -316,7 +316,7 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 		if path != "" {
 			return path, "", nil
 		}
-		return "", "", fmt.Errorf("this node does not capture the guest console "+
+		return "", "", fmt.Errorf("this machine does not capture the guest console "+
 			"(%s sets GUEST_SERIAL to nothing) — reinstall without BRIARD_GUEST_SERIAL= to enable it", conf)
 	}
 	// No systemd to ask (a container, a test rig, not root). Fall back, but SAY it is a guess.
@@ -436,7 +436,7 @@ func (s *logSources) tailFile(ctx context.Context, path string, emit func(string
 // to every operator who has ever run a log command.
 //
 // The same reasoning governs the all-clear line, which was wrong on its first run and is the
-// reason this note exists. "no alerts on this node" is a claim about the NODE, and it is only
+// reason this note exists. "no alerts on this machine" is a claim about the MACHINE, and it is only
 // true when every surface was read; with one surface down the honest sentence is narrower, and
 // naming which surface is missing is the difference between a report and a reassurance.
 func render(stdout, stderr io.Writer, surfaces []surface, tail int, empty string) int {
@@ -460,12 +460,12 @@ func render(stdout, stderr io.Writer, surfaces []surface, tail int, empty string
 		}
 	}
 	if ok == 0 {
-		fmt.Fprint(stderr, "briard: no log surface on this node could be read (are you root?)\n")
+		fmt.Fprint(stderr, "briard: no log surface on this machine could be read (are you root?)\n")
 		return 1
 	}
 	if total == 0 {
 		if len(missing) > 0 {
-			fmt.Fprintf(stdout, "\n%s — but the %s surface could not be read, so this is not the whole node.\n",
+			fmt.Fprintf(stdout, "\n%s — but the %s surface could not be read, so this is not the whole machine.\n",
 				empty, strings.Join(missing, " and "))
 		} else {
 			fmt.Fprintf(stdout, "\n%s.\n", empty)

@@ -22,7 +22,7 @@ type handoffWriter interface {
 // THE CODE IS MINTED HERE, ON THE HOST, and nowhere else. Identity is the host's ([[logic-on-host]]),
 // and what this code proves is that its holder could drive the CLI on this machine -- so the
 // mint sits behind the local door, and the guest only ever receives one. A fresh directive is a
-// fresh code: the previous one is overwritten, which is how `briard dashboard` doubles as the
+// fresh code: the previous one is overwritten, which is how `briard open` doubles as the
 // reset when a browser lost its session.
 func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	var h dashboard.Handoff
@@ -34,7 +34,7 @@ func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Dir
 	if cfg.FlockName == "" {
 		// Without a name there is no address to print: the dashboard answers at the node's own
 		// mDNS name, and net.mdnsname publishes nothing for an unnamed flock.
-		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no flock name, so the dashboard has no address"}
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine has no name yet, so the Briard page has no address"}
 	}
 	code, err := dashboard.NewCode()
 	if err != nil {

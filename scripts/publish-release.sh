@@ -488,7 +488,7 @@ publish)
 			# The versioned directory: artifacts first, manifest pair last (same ordering
 			# argument as the pointers). No --delete anywhere in this script any more: nothing is
 			# ever overwritten, so there is nothing to clean up — and the bucket ALSO holds
-			# `catalog/` (live runtime content the agent fetches for `briard service install`,
+			# `catalog/` (live runtime content the agent fetches for `briard app install`,
 			# produced by nothing in this repo), which a wide --delete would silently remove.
 			aws s3 sync "$DIR/$c/$rel" "$bucket/$c/$rel/" --endpoint-url "$endpoint" \
 				--exclude manifest.json --exclude manifest.json.sig --exclude "*/*" --no-progress

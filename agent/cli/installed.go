@@ -19,7 +19,7 @@ import (
 // file no release can reach.
 //
 // So it is here, on the verb the installer already calls at exactly that moment, and it answers the
-// SAME question when a household runs `sudo briard dashboard` a month later.
+// SAME question when a household runs `sudo briard open` a month later.
 //
 // ⚠️ THE MANIFEST'S OWN PARSER, not a second reader of the format. The cache holds each service's
 // manifest verbatim -- the bytes the catalog published and the agent verified -- so shared/manifest
@@ -74,9 +74,9 @@ func installedLine(names []string) string {
 	case 0:
 		return ""
 	case 1:
-		return names[0] + " is installed on this node"
+		return names[0] + " is installed on this machine"
 	default:
 		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1] +
-			" are installed on this node"
+			" are installed on this machine"
 	}
 }

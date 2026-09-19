@@ -64,9 +64,9 @@ func TestInstalledLine(t *testing.T) {
 		want string
 	}{
 		{nil, ""},
-		{[]string{"home-assistant"}, "home-assistant is installed on this node"},
-		{[]string{"home-assistant", "mosquitto"}, "home-assistant and mosquitto are installed on this node"},
-		{[]string{"a", "b", "c"}, "a, b and c are installed on this node"},
+		{[]string{"home-assistant"}, "home-assistant is installed on this machine"},
+		{[]string{"home-assistant", "mosquitto"}, "home-assistant and mosquitto are installed on this machine"},
+		{[]string{"a", "b", "c"}, "a, b and c are installed on this machine"},
 	} {
 		if got := installedLine(c.in); got != c.want {
 			t.Errorf("installedLine(%v) = %q, want %q", c.in, got, c.want)

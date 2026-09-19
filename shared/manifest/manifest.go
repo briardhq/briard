@@ -1,5 +1,5 @@
 // Package manifest is the Briard service manifest: the signed, published description of a
-// catalogued service, and the thing `briard service install` acts on.
+// catalogued service, and the thing `briard app install` acts on.
 //
 // THREE PROPERTIES, none of them incidental:
 //

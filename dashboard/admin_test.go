@@ -110,7 +110,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(body, "catalog: no such service") || !strings.Contains(body, "sudo briard service install home-assistant") || !strings.Contains(body, "Try again") || strings.Contains(body, `http-equiv="refresh"`) {
+	if !strings.Contains(body, "catalog: no such service") || !strings.Contains(body, "sudo briard app install home-assistant") || !strings.Contains(body, "Try again") || strings.Contains(body, `http-equiv="refresh"`) {
 		t.Errorf("a refused install is not surfaced with its reason, the CLI and a retry, or the page still polls: %s", body)
 	}
 	// Try again, and this time the host does it: the routes table lists HA, the ordinary card
@@ -159,7 +159,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(body, "no admin port") || !strings.Contains(body, "sudo briard service install home-assistant") {
+	if !strings.Contains(body, "no admin port") || !strings.Contains(body, "sudo briard app install home-assistant") {
 		t.Errorf("a host without the port is not surfaced: %s", body)
 	}
 }

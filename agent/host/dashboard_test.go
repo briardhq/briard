@@ -46,8 +46,8 @@ func TestDashboardMintsACodeAndReportsTheURL(t *testing.T) {
 
 func TestDashboardNeedsAFlockNameAndAGuest(t *testing.T) {
 	g := &fakeHandoff{}
-	if o := (Config{}).applyDashboard(context.Background(), g, api.Directive{Kind: api.DirectiveDashboard}, t.Logf); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "flock name") {
-		t.Errorf("unnamed flock = %+v; want failed, naming the flock", o)
+	if o := (Config{}).applyDashboard(context.Background(), g, api.Directive{Kind: api.DirectiveDashboard}, t.Logf); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "has no name yet") {
+		t.Errorf("unnamed flock = %+v; want failed, saying the machine is unnamed", o)
 	}
 	g.err = errors.New("channel down")
 	if o := (Config{FlockName: "x"}).applyDashboard(context.Background(), g, api.Directive{Kind: api.DirectiveDashboard}, t.Logf); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "channel down") {

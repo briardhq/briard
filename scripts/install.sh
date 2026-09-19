@@ -416,7 +416,7 @@ if command -v systemctl >/dev/null 2>&1; then
 	#
 	# Bounded, and the bound is generous because the thing being waited on is a first boot on
 	# somebody's spare desktop. Past it the message still goes out, naming the file instead.
-	say "waiting for the guest to come up (up to 3 minutes)..."
+	say "briard is starting (up to 3 minutes)..."
 	FLOCK_NAME=""
 	waited=0
 	while [ "$waited" -lt 180 ]; do
@@ -437,23 +437,23 @@ if command -v systemctl >/dev/null 2>&1; then
 	# never risk the address.
 	#
 	# WHAT IS ON THE NODE is not said here either. That sentence reads the node's own state to talk
-	# to a person, which is a thing that changes -- so it is the agent's, printed by the dashboard
+	# to a person, which is a thing that changes -- so it is the agent's, printed by the `open`
 	# verb below, which is the same answer a household gets running it a month from now.
 	if [ -z "$FLOCK_NAME" ]; then
 		say "installed. the agent is still starting; it will record this install's name at $STATE/flock-name"
 	else
-		say "installed. the guest is booting; briard will answer at http://briard-$FLOCK_NAME.local/"
+		say "installed. briard is starting; it will answer at http://briard-$FLOCK_NAME.local/"
 	fi
 	# THE LINK IS THE LAST THING THE INSTALLER PRINTS ([V3b.31h]). The dashboard's only door is a
 	# one-time link the agent mints ([V3b.31b]), and the guest has to be up for it -- so wait for
 	# it, bounded, on the agent's OWN word: the status line it logs once the node is primary and
 	# the chain (the front door, the dashboard) passed its health gate. That is the same signal
 	# the tier-4 rig waits on, and it is local -- no name to resolve, no address to know under
-	# DHCP. Then mint once, the way `sudo briard dashboard` does. Past the bound the sentence says
+	# DHCP. Then mint once, the way `sudo briard open` does. Past the bound the sentence says
 	# how instead, as it always did: a link printed before the door is up would 503 in the
 	# household's face, and a link that expired during a slow boot would be worse.
 	#
-	# ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here ([B.157]). `briard dashboard` says
+	# ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here ([B.157]). `briard open` says
 	# what is on the node and hands over the link; this script shows what it said. The two used to
 	# be separate renderings of the same facts -- an install-time sentence in shell and an any-time
 	# one in Go -- which is two things that can disagree about a household's own node.
@@ -462,7 +462,7 @@ if command -v systemctl >/dev/null 2>&1; then
 		waited=0
 		while [ "$waited" -lt 180 ]; do
 			if journalctl -u briard-agent --since "$UNITS_STARTED" --no-pager 2>/dev/null | grep -q 'primary=true.*healthy=true'; then
-				report=$("$PREFIX/agent/briard-agent" dashboard 2>/dev/null) || report=""
+				report=$("$PREFIX/agent/briard-agent" open 2>/dev/null) || report=""
 				[ -n "$report" ] && break
 			fi
 			sleep 5
@@ -470,15 +470,15 @@ if command -v systemctl >/dev/null 2>&1; then
 		done
 	fi
 	if [ -n "$report" ]; then
-		say "your dashboard is ready:"
+		say "your Briard page is ready:"
 		say ""
 		printf '%s\n' "$report"
-		say "another link, any time: sudo briard dashboard"
+		say "another link, any time: sudo briard open"
 		# The desktop hand-off needs the bare URL, so it is picked back out of what was printed
 		# rather than minted a second time -- a second mint would burn the link just shown.
 		open_for_user "$(printf '%s' "$report" | grep -oE 'https?://[^ ]+/\?code=[0-9a-f]+' | head -1)"
 	else
-		say "the guest is still booting. once it answers, get a one-time link to your dashboard with: sudo briard dashboard"
+		say "briard is still starting. once it answers, get a one-time link to your Briard page with: sudo briard open"
 	fi
 else
 	# Belt, not the gate: the report card refuses a host that is not systemd-booted before anything
