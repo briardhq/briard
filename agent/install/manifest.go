@@ -13,9 +13,12 @@ import (
 )
 
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
-// the manifest cannot list itself, nor its signature. Nothing else is excluded, because nothing
-// else lives in a release directory -- install.sh sits at the channel root, outside every chain
-// ([B.86e]); a release directory holds exactly what its manifest names.
+// the manifest cannot list itself, nor its signature. Nothing else is excluded, because a
+// release directory holds exactly what its manifest names -- INSTALL.SH INCLUDED, since
+// [B.159](a) made it an ordinary artifact of host/<version>/linux that `promote` byte-copies to
+// the channel root. Excluding it would re-open what that item was filed against: the root copy
+// is served unsigned, because the one-liner fetches it before anything exists that could verify
+// a signature, and this manifest hashing it is the only thing that ties those bytes to a release.
 var notArtifacts = map[string]bool{
 	ManifestName:             true,
 	ManifestName + sigSuffix: true,

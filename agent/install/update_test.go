@@ -586,3 +586,43 @@ func TestWriteManifestPairingFields(t *testing.T) {
 		}
 	}
 }
+
+// [B.159](a) install.sh is an ORDINARY ARTIFACT of the host chain's linux arm, hashed and
+// mode-recorded like every other file in the directory.
+//
+// This looks tautological -- WriteManifest walks the directory, so of course it is included --
+// and that is exactly why it is worth pinning. The excluded set is a hand-written map, and the
+// comment beside it used to say install.sh lived outside every chain; an agent re-reading that
+// sentence and "tidying" the installer back out of the manifest would break the one property the
+// unsigned root copy has. `verify` asserts the root equals these bytes, so no hash here means
+// nothing at all ties what a stranger curls to a release we signed.
+func TestWriteManifestCarriesTheInstaller(t *testing.T) {
+	stage := t.TempDir()
+	os.WriteFile(filepath.Join(stage, "briard-agent"), []byte("agent"), 0o755)
+	os.WriteFile(filepath.Join(stage, "install.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755)
+	if err := WriteManifest(stage, ChainHost, PlatformLinux, "v3.20260920.abc1234", "", "", "guest.20260920.def5678", ""); err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	b, _ := os.ReadFile(filepath.Join(stage, ManifestName))
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	var got *Entry
+	for i := range m.Artifacts {
+		if m.Artifacts[i].Name == "install.sh" {
+			got = &m.Artifacts[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("install.sh is not in the host manifest, so the root copy is pinned by nothing: %+v", m.Artifacts)
+	}
+	// The mode matters as much as the hash: a 0644 installer is one a node cannot run, and the
+	// manifest records a mode only when it is not the default, so an omitted one is a real bug.
+	if got.Mode != 0o755 {
+		t.Errorf("install.sh mode = %#o, want 0755 (the manifest records the executable bit)", got.Mode)
+	}
+	if got.SHA256 == "" || got.Size == 0 {
+		t.Errorf("install.sh entry carries no hash or size: %+v", got)
+	}
+}

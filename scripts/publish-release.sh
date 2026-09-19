@@ -8,9 +8,12 @@
 #
 # THE TREE, at <BRIARD_CHANNEL_URL> (default https://get.briard.io) — [B.86e]:
 #
-#   install.sh                          unsigned, outside every chain (see below)
+#   install.sh                          a byte-copy of host/stable/linux/install.sh, laid by
+#                                       `promote` ([B.159](a)); unsigned where it is SERVED, since
+#                                       the one-liner fetches it before any verification exists
 #   host/
 #     <version>/linux/                  manifest.json(+.sig), briard-agent, briard-net-wrap,
+#                                       install.sh,
 #                                       briard-{exec,commit,update},
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
@@ -50,9 +53,14 @@
 #                      the signed hash, so the manifest pins the compressed bytes (what the
 #                      network carries). The agent itself is never compressed: the bootstrap
 #                      fetches it with curl before anything exists that could decompress it.
-#   install.sh         at the channel root, fetched by the one-liner before any verification
-#                      exists — which is why the repo being public and readable IS the answer
-#                      to the `curl | sh` objection.
+#   install.sh         an ORDINARY ARTIFACT of host/<version>/linux — hashed by the manifest and
+#                      covered by its signature like everything else ([B.159](a)) — which is also
+#                      byte-copied to the channel root by `promote`. The root copy is fetched by
+#                      the one-liner before any verification exists, which is why the repo being
+#                      public and readable IS the answer to the `curl | sh` objection; `verify`
+#                      asserts the two are the same bytes, which is the only thing tying the
+#                      unsigned root to the signed set. It resolves `stable` by default on both
+#                      paths and is never stamped with its own id — see `stage` for why.
 #
 # VERSIONED DIRECTORIES ARE IMMUTABLE — the property is AN ID NEVER NAMES TWO DIFFERENT
 # BYTE-SETS, not that bytes live forever. The guest image is not bit-reproducible (timestamps,
@@ -92,9 +100,11 @@
 #   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests
 #   sign     [DIR]        detached-sign every manifest and lay the `latest` pointers
 #                         (needs $RELEASE_SIGN_KEY, no credential)
-#   publish  [DIR]        upload the versioned dirs, move `latest`, upload install.sh
+#   publish  [DIR]        upload the versioned dirs and move `latest` (NOT the root install.sh,
+#                         which promote lays -- [B.159](a))
 #                         (needs the credential, no key; refuses an already-published version)
-#   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm
+#   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm, and its
+#                         install.sh to the channel root
 #                         (default: whatever host/latest names; refuses a same-date promotion)
 #   gc       [--keep V]…  DELETE versioned dirs no pointer names and nothing pins, older than
 #                         the 30-day floor — whole releases, never files
@@ -319,6 +329,41 @@ stage)
 	# qemu bundle (a tarred directory), hash-skipped by the update path when unchanged.
 	dtar "$H/guest-bundle.tar" -C "$(out_of .#artifacts.guest-bundle)" .
 	zst "$H/guest-bundle.tar" "$H/guest-bundle.tar.zst"
+	# install.sh, WITH THE RELEASE PUBKEY EMBEDDED, AS AN ARTIFACT OF THIS RELEASE ([B.159](a)).
+	# The source tree carries a placeholder and the script dies on it by design ("the embedded key
+	# is a build placeholder"), so shipping it unsubstituted would publish an installer that
+	# refuses to install.
+	#
+	# It sits in the host chain's linux arm, which buys it exactly the three things [B.157] bought
+	# the frozen scripts and the units: versioned, diffable, and covered by the release signature.
+	# It is ALSO byte-copied to the channel root -- but only by `promote`, never by `publish`. The
+	# root URL is what the advertised one-liner fetches on every `stable` install, so writing it
+	# at publish time was the one thing that made publishing a release a live change to what
+	# strangers run, and [B.159] exists because it stops being one. That root copy is still
+	# fetched before anything exists that could verify it -- unchanged, and why the repo being
+	# public and this script readable is the real answer to the `curl | sh` objection.
+	#
+	# ⚠️ IT KEEPS DEFAULTING TO `RELEASE=stable` AND IS NOT STAMPED WITH ITS OWN ID. Stamping would
+	# make the deeper link self-contained, and would also make the ROOT copy name an exact id --
+	# so an installer somebody saved to disk months ago would silently install THAT release rather
+	# than healing forward to current stable, which is the property "old installer, new artifacts"
+	# rests on. Installing an exact id passes BRIARD_RELEASE beside the URL instead.
+	[ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key (embedded into install.sh)"
+	grep -q "BEGIN PUBLIC KEY" "$RELEASE_PUBKEY" || die "$RELEASE_PUBKEY is not a PEM PUBLIC KEY"
+	awk -v keyfile="$RELEASE_PUBKEY" '
+		/^RELEASE_KEYRING_PEM=/ {
+			printf "RELEASE_KEYRING_PEM='"'"'"
+			while ((getline line < keyfile) > 0) print line
+			printf "'"'"'\n"
+			next
+		} { print }' scripts/install.sh > "$H/install.sh"
+	chmod 0755 "$H/install.sh"
+	grep -q "__BRIARD_RELEASE_KEYRING_PEM__" "$H/install.sh" \
+		&& die "the keyring placeholder survived — the published installer would refuse to install"
+	grep -q "BEGIN PUBLIC KEY" "$H/install.sh" \
+		|| die "no public key landed in the staged install.sh"
+	sh -n "$H/install.sh" || die "the staged install.sh is not valid shell after substitution"
+
 	# The manifest, written BY THE AGENT rather than by this script: the format is a contract
 	# between the publisher and every installing node, and it used to have two implementations
 	# (a printf loop here, hand-assembling `"mode":493`, and the struct in agent/install). The
@@ -361,28 +406,12 @@ stage)
 		jq -e . "$m/manifest.json" >/dev/null || die "the manifest at $m is not valid JSON"
 	done
 
-	# install.sh, WITH THE RELEASE PUBKEY EMBEDDED. The source tree carries a placeholder, and
-	# the script dies on it by design ("the embedded key is a build placeholder") — so shipping
-	# the file unsubstituted would publish an installer that refuses to install. It is the one
-	# artifact deliberately OUTSIDE the signed set, because the one-liner fetches it before
-	# anything can verify anything: the key travels with the script over TLS (the standard
-	# installer-carries-the-pubkey pattern), which is why the repo being public and the script
-	# readable is the real answer to the `curl | sh` objection.
-	[ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key (embedded into install.sh)"
-	grep -q "BEGIN PUBLIC KEY" "$RELEASE_PUBKEY" || die "$RELEASE_PUBKEY is not a PEM PUBLIC KEY"
-	awk -v keyfile="$RELEASE_PUBKEY" '
-		/^RELEASE_KEYRING_PEM=/ {
-			printf "RELEASE_KEYRING_PEM='"'"'"
-			while ((getline line < keyfile) > 0) print line
-			printf "'"'"'\n"
-			next
-		} { print }' scripts/install.sh > "$DIR/install.sh"
-	chmod 0755 "$DIR/install.sh"
-	grep -q "__BRIARD_RELEASE_KEYRING_PEM__" "$DIR/install.sh" \
-		&& die "the keyring placeholder survived — the published installer would refuse to install"
-	grep -q "BEGIN PUBLIC KEY" "$DIR/install.sh" \
-		|| die "no public key landed in the staged install.sh"
-	sh -n "$DIR/install.sh" || die "the staged install.sh is not valid shell after substitution"
+	# THE CHANNEL ROOT'S COPY, byte-identical to the signed artifact staged above ([B.159](a)) --
+	# `cp`, so "the root serves exactly one release's installer" is true by construction rather
+	# than by two renders agreeing. It is staged here because the tree under $DIR is meant to BE
+	# the tree the channel holds, which is what lets tier 4's `STAGE_DIR` binding serve it as-is;
+	# on the live channel this path is laid by `promote` alone.
+	cp -p "$H/install.sh" "$DIR/install.sh"
 
 	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
 	say "staged $V:"
@@ -504,8 +533,12 @@ publish)
 		done
 	done
 
-	# ...and the installer itself, at the root the one-liner names.
-	aws s3 cp "$DIR/install.sh" "$bucket/install.sh" --endpoint-url "$endpoint" --no-progress
+	# ⚠️ THE ROOT install.sh IS NOT WRITTEN HERE ([B.159](a)). It rode this step until the
+	# versioned copy existed, and that is what made a publish a live change to every `stable`
+	# install: the root URL is what the advertised one-liner fetches, so a publish swung the
+	# installer for strangers before anything had tested the release it came from. The installer
+	# is now a signed artifact of `host/<V>/linux/`, uploaded with the rest of that directory
+	# above, and `promote` byte-copies it to the root alongside the pointer it moves.
 
 	{
 		for c in $CHAINS; do
@@ -513,7 +546,6 @@ publish)
 		done
 		# A reused guest moved (or kept) the live pointer by server-side copy; purge it the same.
 		[ -z "$GUEST_REUSED" ] || for f in manifest.json.sig manifest.json; do echo "$CHANNEL/guest/latest/$f"; done
-		echo "$CHANNEL/install.sh"
 	} | purge_edge
 	say "published — now run: ./scripts/publish-release.sh verify   (then, once the evidence is in: promote)"
 	;;
@@ -536,6 +568,14 @@ promote)
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm"); p=$(sub stable "$arm"); tag="$c.${arm:-flat}"
 			have_key "$bucket/$c/$rel/manifest.json" "$endpoint" || die "$c/$rel is not published; nothing to promote"
+			# [B.159](a): the root installer is a byte-copy of the promoted release's, so that
+			# release has to carry one. A release staged before [B.159] does not, and promoting it
+			# would move every pointer and leave the root serving the PREVIOUS installer — the
+			# silent half-promotion this whole check loop exists to refuse.
+			if [ "$c" = host ] && [ "$arm" = linux ]; then
+				have_key "$bucket/$c/$rel/install.sh" "$endpoint" ||
+					die "$c/$rel carries no install.sh — it was staged before [B.159](a); re-stage and publish it"
+			fi
 			if curl -fsS "$CHANNEL/$c/$p/manifest.json" -o "$tmp/$tag.stable.json" 2>/dev/null; then
 				cur=$(jq -r .version "$tmp/$tag.stable.json")
 				if [ "$cur" = "$v" ]; then
@@ -569,12 +609,23 @@ promote)
 			fi
 		done
 	done
+	# THE CHANNEL ROOT'S INSTALLER, byte-copied from the release just promoted ([B.159](a)) and
+	# laid LAST, after every pointer — so the root can never advertise a `stable` that is not
+	# there yet, which is the ordering the first publish of this tree got wrong.
+	#
+	# Unconditional, rather than folded into the pointer loop above: the pointer may already name
+	# $V (a re-run, or a promote that died after the pointers moved) while the root still serves
+	# the previous release's installer, and repairing exactly that half-laid state is what a
+	# re-run is for.
+	copy_key "host/$V/linux/install.sh" "$bucket" "install.sh" "$endpoint"
+	say "install.sh at the root -> host/$V/linux/install.sh"
 	{
 		for c in $CHAINS; do
 			for a in $(arms_of "$c"); do arm=${a#-}
 				for f in $POINTER_FILES; do echo "$CHANNEL/$c/$(sub stable "$arm")/$f"; done
 			done
 		done
+		echo "$CHANNEL/install.sh"
 	} | purge_edge
 	say "promoted $V — now run: ./scripts/publish-release.sh verify"
 	;;
@@ -721,6 +772,25 @@ verify)
 	curl -fsS "$CHANNEL/install.sh" -o "$tmp/install.sh" || die "install.sh is not fetchable at $CHANNEL/install.sh"
 	grep -q "BRIARD_CHANNEL_URL:-$CHANNEL" "$tmp/install.sh" ||
 		die "the served install.sh does not default to $CHANNEL — it would look for the tree in the wrong place"
+	# ...and it is the PROMOTED RELEASE'S installer, byte for byte ([B.159](a)). Since the root
+	# copy is unsigned by construction — the one-liner fetches it before anything exists that
+	# could verify a signature — this equality is the only thing that ties it to the signed set
+	# at all: matching `host/stable/linux/install.sh` makes it exactly as trustworthy as that
+	# manifest, which the loop above already verified against the release key. Without it the
+	# root could serve any installer at all and every check above would still pass.
+	#
+	# Skipped only when nothing is promoted yet (a fresh tree), which the loop above already
+	# reported; the sha of a 404 would otherwise read as a mismatch and bury that.
+	if curl -fsS "$CHANNEL/host/stable/linux/manifest.json" -o "$tmp/stable.json" 2>/dev/null; then
+		sv=$(jq -r .version "$tmp/stable.json")
+		want=$(jq -r '.artifacts[] | select(.name=="install.sh") | .sha256' "$tmp/stable.json")
+		[ -n "$want" ] ||
+			die "host/stable ($sv) names no install.sh — it was published before [B.159](a), so nothing pins what the root serves"
+		got=$(sha256sum "$tmp/install.sh" | cut -d' ' -f1)
+		[ "$got" = "$want" ] ||
+			die "the root install.sh is NOT host/stable/linux/install.sh ($got != $want) — a promote that did not finish, or a hand-edited root"
+		say "install.sh at the root is host/$sv/linux/install.sh, byte for byte"
+	fi
 	say "$CHANNEL verifies end to end: every pointer signed, every artifact matching, install.sh served at the root and pointing here"
 	;;
 
