@@ -222,7 +222,7 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// Nobody's name — the bare IP, the node's own name, a stale name, a typo. The dashboard,
 		// which is where the household finds out what this node runs and gets into it.
 		if f.fallback == nil {
-			http.Error(w, "nothing answers at this name on this node\n", http.StatusServiceUnavailable)
+			http.Error(w, "nothing answers at this name on this machine\n", http.StatusServiceUnavailable)
 			return
 		}
 		f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, f.fallback)))
