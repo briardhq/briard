@@ -1335,16 +1335,31 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 						*pending = append(*pending, o)
 					}
 				}
-				// Once a staged agent-update's outcome has drained (this report acked the
-				// prior cycle's outcomes and none are pending), restart the unit so the
-				// pivot trials the new binary. Deferring past the outcome ack keeps announce-
-				// before-act intact; the restart is detached, so the guest is undisturbed.
-				if su != nil && su.Armed() && len(*pending) == 0 {
-					logf("agent-update: armed and acked -- restarting to trial the staged binary")
-					if err := su.Restart(ctx); err != nil {
-						logf("agent-update: restart request failed (will retry next cycle): %v", err)
-					}
-				}
+			}
+		}
+		// AN ARMED CANDIDATE IS TRIALLED HERE, in the loop body rather than under `rep != nil`
+		// ([B.86a] put it there; [B.147] moved it out). The arm flag is a LOCAL fact written by
+		// the frozen unit below the agent, so gating it on a cloud reporter made it unreachable
+		// on exactly the nodes that have none: a free install left a verified candidate staged
+		// until the updater's own grace forced a restart on a LATER timer tick, a day out. The
+		// nightly cadence belongs to the FETCH -- a fleet-wide question, hence the spread and
+		// the persistence -- and never described when to act on a candidate already staged.
+		//
+		// `len(*pending) == 0` is announce-before-act, unchanged: where a cloud exists it learns
+		// an outcome before the binary swaps, and a failed report keeps its outcomes pending, so
+		// this waits for them. On a standalone node it is vacuous by construction -- a local
+		// directive's outcome goes back to the CLI and is never appended -- which is what lets
+		// one gate serve both instead of a second call site under `rep == nil`.
+		//
+		// THIS IS THE SAFE POINT the CLI and the installer promise. The loop is a single
+		// goroutine and every leg that must not be interrupted -- bring-up, recovery, a cloud or
+		// a local directive -- runs to completion inside one iteration, so reaching this line is
+		// itself the proof that none is in flight. The restart is detached and the guest is
+		// re-adopted rather than relaunched, so acting now costs the household nothing.
+		if su != nil && su.Armed() && len(*pending) == 0 {
+			logf("agent-update: armed -- restarting to trial the staged binary")
+			if err := su.Restart(ctx); err != nil {
+				logf("agent-update: restart request failed (will retry next cycle): %v", err)
 			}
 		}
 		select {

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/cloud"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/overlay"
@@ -677,6 +678,107 @@ func TestObserveNoCloudNoPlannedOp(t *testing.T) {
 	if up.imageTarget.Version != "" || up.rescued {
 		t.Errorf("no cloud reachable -> no planned op, but the upgrader ran: %+v", up)
 	}
+}
+
+// armedConfig builds an observe-loop Config whose self-updater reads a scratch run dir, with or
+// without the arm flag the frozen update unit leaves there. The unit name is one no systemd on
+// this machine can act on: what these tests check is the DECISION to trial a candidate, and the
+// restart itself is systemd's -- nixosTest/agent-selfupdate.nix drives that end to end.
+func armedConfig(t *testing.T, armed bool) Config {
+	t.Helper()
+	run := t.TempDir()
+	if armed {
+		if err := os.WriteFile(filepath.Join(run, "update"), nil, 0o644); err != nil {
+			t.Fatalf("write arm flag: %v", err)
+		}
+	}
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	cfg.UpdateBase = t.TempDir()
+	cfg.UpdateRunDir = run
+	cfg.UpdateUnit = "briard-agent-selfupdate-test.service"
+	return cfg
+}
+
+// trialLine is the log line the loop emits at the instant it decides to trial a candidate,
+// before it asks systemd for anything.
+const trialLine = "armed -- restarting to trial"
+
+// observeLogging runs one observe loop, collecting its log and ending it as soon as `stop`
+// appears (so a decision that fires every tick costs exactly one attempt) or the deadline bites.
+func observeLogging(t *testing.T, cfg Config, rep cloud.CloudClient, pending *[]api.DirectiveOutcome, stop string) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	var log []string
+	logf := func(f string, a ...any) {
+		line := fmt.Sprintf(f, a...)
+		log = append(log, line)
+		if strings.Contains(line, stop) {
+			cancel()
+		}
+	}
+	if err := cfg.observe(ctx, fakeStatus{}, nil, nil, nil, rep, nil, "", nil, pending, logf); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	return log
+}
+
+// updateLog keeps only the self-update lines, so a failure prints the decision trail and not
+// forty status lines.
+func updateLog(log []string) []string {
+	return slices.DeleteFunc(slices.Clone(log), func(l string) bool { return !strings.Contains(l, "agent-update") })
+}
+
+func trialled(log []string) bool {
+	return slices.ContainsFunc(log, func(l string) bool { return strings.Contains(l, trialLine) })
+}
+
+// [B.147] A STANDALONE NODE ACTS ON AN ARMED CANDIDATE. The check used to sit inside the
+// report-succeeded branch, which needs a cloud reporter — so on a free install (no controller
+// URL, hence rep == nil) it was unreachable, and a staged, verified binary waited for the frozen
+// unit's grace to force a restart on a LATER timer tick, up to a day out. Seen live on a test
+// node holding a committed manifest one release behind its own staged candidate.
+func TestObserveTrialsArmedCandidateWithoutCloud(t *testing.T) {
+	log := observeLogging(t, armedConfig(t, true), nil, &[]api.DirectiveOutcome{}, trialLine)
+	if !trialled(log) {
+		t.Errorf("a standalone node left an armed candidate untrialled over %d cycles; self-update log = %v", len(log), updateLog(log))
+	}
+}
+
+// The control that keeps the one above honest: with no flag there is nothing to trial, so a loop
+// that restarted on every cycle would pass that test and fail this one.
+func TestObserveLeavesAnUnarmedNodeAlone(t *testing.T) {
+	log := observeLogging(t, armedConfig(t, false), nil, &[]api.DirectiveOutcome{}, trialLine)
+	if trialled(log) {
+		t.Errorf("restarted to trial a candidate that was never armed; self-update log = %v", updateLog(log))
+	}
+}
+
+// ANNOUNCE-BEFORE-ACT SURVIVES THE MOVE: an outcome the cloud has not taken keeps the candidate
+// waiting, so the controller never learns of an intent from a binary that has already been
+// replaced. A failed report is the state that holds outcomes pending without a directive
+// round-trip, which is what makes it drivable here.
+func TestObserveWaitsForUnannouncedOutcomes(t *testing.T) {
+	pending := []api.DirectiveOutcome{{ID: "d1", State: api.OutcomeDone}}
+	log := observeLogging(t, armedConfig(t, true), unreachableCloud{}, &pending, trialLine)
+	if trialled(log) {
+		t.Errorf("trialled a candidate with an outcome still unannounced; self-update log = %v", updateLog(log))
+	}
+}
+
+// unreachableCloud is a reporter whose every call fails, so outcomes handed to observe stay
+// pending — the state announce-before-act exists to wait out.
+type unreachableCloud struct{}
+
+func (unreachableCloud) Register(context.Context, api.NodeInfo) (api.Assignment, error) {
+	return api.Assignment{}, errors.New("controller unreachable")
+}
+func (unreachableCloud) Report(context.Context, api.ReportRequest) ([]api.Directive, error) {
+	return nil, errors.New("controller unreachable")
+}
+func (unreachableCloud) ReportMetrics(context.Context, string, []api.MetricAggregate) error {
+	return errors.New("controller unreachable")
 }
 
 func TestSnapshot_StatusErrorIsUnhealthy(t *testing.T) {
