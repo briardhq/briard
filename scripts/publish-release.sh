@@ -78,12 +78,20 @@
 # that is all. A revert commit is a new rev with today's date, so it is a forward move for every
 # node, and it needs no old bytes — which is why `gc` can delete them (owner, 2026-09-09).
 #
-# `latest` moves on every publish; `stable` moves only on `promote`, and promotion is meant to
-# be evidence-driven (canary converged, fleet healthy for a real window) — never a release-day
-# action. The publish sequence in the operator skill tests a release at `latest` before anyone
-# promotes it. `promote` refuses a build whose date equals the currently promoted one: the
-# timer's stable path orders on the date field alone ([B.86a]), so a same-date promotion would
-# be invisible to it. A same-day fix-up takes the next day's number.
+# PUBLISHING POINTS NOTHING AT A RELEASE ([B.159]). `publish` uploads versioned directories and
+# stops; `latest` moves that pointer once the gates have passed on the exact id, and `promote`
+# moves `stable` and the root installer once the evidence is in. The order matters because it is
+# what lets a gate run on the bytes the CDN actually serves: an id nothing names is fetchable by
+# whoever knows it — they are commit-derived and this repo is public, so untagged is not private
+# — but it is advertised by no path, taken by no timer, and installed by no stranger. A release
+# that fails its gate is simply never pointed at, and `gc` collects it.
+#
+# `stable` is the one that matters: every installed node converges to it nightly and there is no
+# canary on that path, so promotion is meant to be evidence-driven (the canary converged, the
+# fleet stayed healthy for a real window) — never a release-day action. `promote` refuses a build
+# whose date equals the currently promoted one: the timer's stable path orders on the date field
+# alone ([B.86a]), so a same-date promotion would be invisible to it, and would only LOOK like a
+# release. A same-day fix-up takes the next day's number.
 #
 # SIGNING AND PUBLISHING ARE SEPARATE SUBCOMMANDS ON PURPOSE. `sign` needs the key and no
 # credential; `publish` needs the credential and no key. Either secret alone is inert — a
@@ -100,16 +108,23 @@
 #   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests
 #   sign     [DIR]        detached-sign every manifest and lay the `latest` pointers
 #                         (needs $RELEASE_SIGN_KEY, no credential)
-#   publish  [DIR]        upload the versioned dirs and move `latest` (NOT the root install.sh,
-#                         which promote lays -- [B.159](a))
+#   publish  [DIR]        upload the versioned dirs and NOTHING ELSE -- no pointer, no root
+#                         install.sh, so the release reaches nobody until it is pointed at
+#                         ([B.159](b))
 #                         (needs the credential, no key; refuses an already-published version)
+#   latest   [VERSION]    move `latest` onto a published release, both chains — the second half
+#                         of publishing, run once the gates have passed on that exact id
+#                         (default: the version staged in the default DIR)
 #   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm, and its
 #                         install.sh to the channel root
 #                         (default: whatever host/latest names; refuses a same-date promotion)
 #   gc       [--keep V]…  DELETE versioned dirs no pointer names and nothing pins, older than
 #                         the 30-day floor — whole releases, never files
-#   verify                fetch stable + latest of every chain and arm from the LIVE channel and
-#                         check them the way a client does
+#   verify   [VERSION]    fetch stable + latest of every chain and arm from the LIVE channel and
+#                         check them the way a client does — plus the root installer against
+#                         host/stable's. With a VERSION: that release where it was published,
+#                         both arms and the guest it pairs with, which is what a publish is
+#                         followed by while no pointer names it yet ([B.159](b))
 #
 # Env:
 #   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
@@ -256,6 +271,78 @@ purge_edge() {
 # won, so the live channel 404'd its manifest until a hand-run `cp` restored it. Pointers are
 # never synced, only cp'd, one file at a time.)
 POINTER_FILES="briard-agent briard-agent.exe manifest.json.sig manifest.json"
+
+# Move ONE chain/arm's pointer onto a published version, server-side, in POINTER_FILES order.
+# <chain> <version> <arm> <pointer> <bucket> <endpoint>
+#
+# ⚠️ ONE IMPLEMENTATION FOR BOTH POINTERS ([B.159](b)). `latest` and `stable` differ entirely in
+# what they MEAN -- one says a release exists, the other that every node should take it, and the
+# guards around them share nothing -- but moving one is the same act, and it used to be written
+# twice: `publish` uploaded the pointer from the LOCAL staged directory while `promote` copied it
+# server-side. The local upload was the weaker of the two, because it re-uploaded bytes rather
+# than copying the ones that had just been published, so nothing checked that the pointer named
+# what the versioned directory actually holds. A server-side copy cannot disagree.
+move_pointer() {
+	local c=$1 v=$2 arm=$3 ptr=$4 bucket=$5 endpoint=$6 rel p f
+	rel=$(sub "$v" "$arm"); p=$(sub "$ptr" "$arm")
+	for f in $POINTER_FILES; do
+		have_key "$bucket/$c/$rel/$f" "$endpoint" || continue
+		copy_key "$c/$rel/$f" "$bucket" "$c/$p/$f" "$endpoint"
+	done
+}
+
+# Verify ONE served directory: the manifest's signature, that it names the chain and arm its path
+# implies (and the version asked for, when one is), and that every artifact it lists DOWNLOADS and
+# matches. <base-url> <chain> <arm> <want-version|"">; $tmp, $PUB and $CHANNEL come from `verify`.
+#
+# ⚠️ ONE IMPLEMENTATION FOR A POINTER AND FOR AN EXACT ID ([B.159](b)). A pointer is just a
+# manifest at a path, so the checks are identical and the URL is the only thing that differs --
+# which is exactly why this is a function rather than a second copy of the loop. Duplicating a
+# signature check is how one copy quietly stops being run.
+#
+# It never checks a manifest against itself: every artifact is fetched from where the MANIFEST
+# says it lives (the versioned directory), not from the path the manifest came from.
+verify_manifest_at() {
+	local base=$1 c=$2 arm=$3 want=$4 v ch pl vdir label
+	label=${base#"$CHANNEL"/}
+	curl -fsS "$base/manifest.json" -o "$tmp/manifest.json" || die "no manifest at $base"
+	curl -fsS "$base/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $base"
+	# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure here is the
+	# whole point of the check — an unsigned or re-signed channel must not read as green.
+	ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
+		-in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
+		|| die "the live manifest at $base does NOT verify against $PUB"
+	v=$(jq -r .version "$tmp/manifest.json")
+	ch=$(jq -r .chain "$tmp/manifest.json"); pl=$(jq -r '.platform // ""' "$tmp/manifest.json")
+	[ "$ch" = "$c" ] && [ "$pl" = "$arm" ] ||
+		die "$base serves a manifest for '$ch/$pl' — a crossed wire the client would refuse"
+	# Asked for an exact id: the directory must not merely verify, it must be the one named. A
+	# typo'd id that happened to resolve would otherwise gate the wrong release.
+	[ -z "$want" ] || [ "$v" = "$want" ] || die "$base names $v, not the $want it was asked for"
+	VERIFIED_V=$v
+	vdir="$c/$(sub "$v" "$arm")"
+	say "$label -> $v (signature verifies)"
+	if [ -f "$tmp/$c.${arm:-flat}.$v.ok" ]; then echo "    (artifacts of $vdir already verified)"; return 0; fi
+	jq -r '.artifacts[] | "\(.name) \(.sha256) \(.size)"' "$tmp/manifest.json" |
+	while read -r name sum size; do
+		curl -fsS "$CHANNEL/$vdir/$name" -o "$tmp/$name" || die "$name is in the $label manifest but not served at $vdir/"
+		got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
+		gotsize=$(stat -c%s "$tmp/$name")
+		[ "$got" = "$sum" ] || die "$vdir/$name: sha256 $got != manifest $sum"
+		[ "$gotsize" = "$size" ] || die "$vdir/$name: size $gotsize != manifest $size"
+		echo "    ok  $vdir/$name  ($gotsize bytes)"
+		# A POINTER serves its own bootstrap copy, which must be the SAME bytes the manifest
+		# pins, or install.sh runs a bootstrap that is not the release it then installs. On a
+		# versioned path $base IS $vdir, so this re-reads the file just checked — cheap, and it
+		# keeps both callers on one path rather than adding a branch to skip it.
+		case "$name" in briard-agent|briard-agent.exe)
+			curl -fsS "$base/$name" -o "$tmp/$name.ptr" || die "$name is not served under $base (the bootstrap install.sh curls)"
+			[ "$(sha256sum "$tmp/$name.ptr" | cut -d' ' -f1)" = "$sum" ] || die "$base/$name differs from $vdir/$name"
+			echo "    ok  $label/$name  (bootstrap copy matches)"
+		esac
+	done
+	touch "$tmp/$c.${arm:-flat}.$v.ok"
+}
 # ⚠️ EVERY SERVER-SIDE (s3->s3) COPY BELOW CARRIES `--copy-props none`. awscli2's `cp` between two
 # S3 keys reads the source object's tags first (GetObjectTagging) so it can carry them across, and
 # R2 does not implement that API -- without the flag the call dies `NotImplemented`. The FIRST
@@ -488,6 +575,10 @@ publish)
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm")
 			[ -f "$DIR/$c/$rel/manifest.json.sig" ] || die "$c/$rel is unsigned — run \`sign\` before publishing"
+			# The staged `latest` pointer is not uploaded any more ([B.159](b)), but it is still
+			# required here: the staged tree is meant to BE the channel's shape, and tier 4's
+			# STAGE_DIR binding serves it from that directory and installs from `latest`. A stage
+			# missing it would fail the gate for a reason that has nothing to do with the release.
 			[ -f "$DIR/$c/$(sub latest "$arm")/manifest.json" ] || die "$c has no latest pointer for $rel — run \`sign\`"
 			! have_key "$bucket/$c/$rel/manifest.json" "$endpoint" ||
 				die "$c/$rel is ALREADY PUBLISHED and versioned directories are immutable (see header) — to re-point, \`promote\`; to ship a fix, commit and stage again"
@@ -495,59 +586,87 @@ publish)
 	done
 
 	for c in $CHAINS; do
-		if [ "$c" = guest ] && [ -n "$GUEST_REUSED" ]; then
-			# Nothing to upload, but `latest` must name the pair: a reuse of the STABLE image after
-			# a newer latest one would otherwise leave guest/latest and host/latest's `guest`
-			# disagreeing. Server-side copies, in POINTER_FILES order, only when it differs.
-			cur=$(curl -fsS "$CHANNEL/guest/latest/manifest.json" 2>/dev/null | jq -r .version || true)
-			if [ "$cur" = "$GV" ]; then
-				say "guest/latest already names $GV (reused, unchanged inputs)"
-			else
-				for f in $POINTER_FILES; do
-					have_key "$bucket/guest/$GV/$f" "$endpoint" || continue
-					copy_key "guest/$GV/$f" "$bucket" "guest/latest/$f" "$endpoint"
-				done
-				say "guest/latest -> $GV (reused, unchanged inputs; nothing uploaded)"
-			fi
-			continue
-		fi
+		# A reused guest is already in the bucket, checked above; there is nothing to upload and
+		# no pointer to move here any more ([B.159](b)).
+		[ "$c" = guest ] && [ -n "$GUEST_REUSED" ] && continue
 		v=$(staged_version "$DIR/$c")
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm")
-			# The versioned directory: artifacts first, manifest pair last (same ordering
-			# argument as the pointers). No --delete anywhere in this script any more: nothing is
-			# ever overwritten, so there is nothing to clean up — and the bucket ALSO holds
-			# `catalog/` (live runtime content the agent fetches for `briard app install`,
-			# produced by nothing in this repo), which a wide --delete would silently remove.
+			# The versioned directory: artifacts first, manifest pair last. No --delete anywhere
+			# in this script any more: nothing is ever overwritten, so there is nothing to clean
+			# up — and the bucket ALSO holds `catalog/` (live runtime content the agent fetches
+			# for `briard app install`, produced by nothing in this repo), which a wide --delete
+			# would silently remove.
 			aws s3 sync "$DIR/$c/$rel" "$bucket/$c/$rel/" --endpoint-url "$endpoint" \
 				--exclude manifest.json --exclude manifest.json.sig --exclude "*/*" --no-progress
 			aws s3 cp "$DIR/$c/$rel/manifest.json.sig" "$bucket/$c/$rel/manifest.json.sig" --endpoint-url "$endpoint" --no-progress
 			aws s3 cp "$DIR/$c/$rel/manifest.json"     "$bucket/$c/$rel/manifest.json"     --endpoint-url "$endpoint" --no-progress
-			# ...and only now the pointer, so `latest` never names bytes that are not there yet.
-			p=$(sub latest "$arm")
-			for f in $POINTER_FILES; do
-				[ -f "$DIR/$c/$p/$f" ] || continue
-				aws s3 cp "$DIR/$c/$p/$f" "$bucket/$c/$p/$f" --endpoint-url "$endpoint" --no-progress
-			done
-			say "published $c/$rel, $p -> $v"
+			say "published $c/$rel"
 		done
 	done
 
-	# ⚠️ THE ROOT install.sh IS NOT WRITTEN HERE ([B.159](a)). It rode this step until the
-	# versioned copy existed, and that is what made a publish a live change to every `stable`
-	# install: the root URL is what the advertised one-liner fetches, so a publish swung the
-	# installer for strangers before anything had tested the release it came from. The installer
-	# is now a signed artifact of `host/<V>/linux/`, uploaded with the rest of that directory
-	# above, and `promote` byte-copies it to the root alongside the pointer it moves.
+	# ⚠️ NOTHING THAT POINTS AT A RELEASE IS WRITTEN HERE, AND THAT IS THE POINT ([B.159]).
+	# `publish` used to move `latest` and overwrite the root install.sh in the same breath as the
+	# upload, which made publishing a release a live change to what the fleet and what strangers
+	# get — so the only place a gate could stand was BEFORE the upload, on bytes the CDN had never
+	# served. An id nothing names reaches nobody: it is fetchable by whoever knows it (the ids are
+	# commit-derived and the repo is public, so "untagged" is not "private"), signed, immutable,
+	# and advertised by not one path. That is what lets the gates run on the bytes the CDN
+	# actually serves. `latest` is moved by the `latest` subcommand once they pass; `stable` and
+	# the root install.sh by `promote`.
+	#
+	# The cost, stated rather than discovered: a release that fails its gate is dead bytes in the
+	# bucket until `gc` — immutable, named by no pointer, which is precisely the state `gc` was
+	# written to collect.
+	#
+	# NOTHING NEEDS PURGING EITHER. Only pointer paths and the root installer are ever
+	# overwritten, and this step now writes neither; a versioned directory is immutable, so the
+	# edge has nothing stale to hold.
+	say "published — now run: ./scripts/publish-release.sh verify $(cat "$DIR/VERSION" 2>/dev/null || echo '<version>')"
+	say "   nothing points at it yet: \`latest\` once the gates pass, \`promote\` once the evidence is in"
+	;;
 
+latest)
+	# MOVE `latest` ONTO A PUBLISHED RELEASE ([B.159](b)) — the second half of a publish, run once
+	# the gates have passed on the exact id. Separate from `publish` because that is the whole
+	# point of the item: uploading is inert, and this is the step that makes a release visible.
+	#
+	# It is NOT `promote` with a different argument, though it shares `move_pointer` with it.
+	# `stable` is what every installed node converges to and what a stranger gets, so promotion
+	# carries the no-same-date rule, the root installer and an evidence bar. `latest` says only
+	# "this exists and the gates liked it": it is what `briard update host` takes by default and
+	# what a cloud canary pins. Two decisions, one mechanism.
+	need nix; need curl; need jq
+	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
+	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+	V="${2:-}"
+	if [ -z "$V" ]; then
+		V=$(cat "$STAGE_DEFAULT/VERSION" 2>/dev/null) || die "no version given and no $STAGE_DEFAULT/VERSION to read one from"
+		say "no version given — taking the staged $V"
+	fi
+	# The PAIR moves together or not at all, the same obligation `promote` carries: `latest` on
+	# both chains must name the two releases that were staged, gated and verified beside each
+	# other. The host manifest is where that pairing lives ([B.86i]), so it is read from the
+	# PUBLISHED manifest rather than from anything local — this verb is about what is in the
+	# bucket, and a stage directory may be a different build by now.
+	have_key "$bucket/host/$V/linux/manifest.json" "$endpoint" || die "host/$V is not published; nothing to point at"
+	GV=$(curl -fsS "$CHANNEL/host/$V/linux/manifest.json" | jq -r '.guest // ""') || die "cannot read host/$V/linux to find its guest pair"
+	[ -n "$GV" ] || die "host/$V names no guest release — published before [B.86i]; stage and publish again"
+	have_key "$bucket/guest/$GV/manifest.json" "$endpoint" ||
+		die "host/$V pairs with guest/$GV, which the bucket does not hold — the pair cannot be pointed at"
+	for a in $(arms_of host); do arm=${a#-}
+		move_pointer host "$V" "$arm" latest "$bucket" "$endpoint"
+		say "host/$(sub latest "$arm") -> $V"
+	done
+	move_pointer guest "$GV" "" latest "$bucket" "$endpoint"
+	say "guest/latest -> $GV"
 	{
-		for c in $CHAINS; do
-			[ -d "$DIR/$c/latest" ] && find "$DIR/$c/latest" -type f | sed "s|^$DIR/|$CHANNEL/|"
+		for a in $(arms_of host); do arm=${a#-}
+			for f in $POINTER_FILES; do echo "$CHANNEL/host/$(sub latest "$arm")/$f"; done
 		done
-		# A reused guest moved (or kept) the live pointer by server-side copy; purge it the same.
-		[ -z "$GUEST_REUSED" ] || for f in manifest.json.sig manifest.json; do echo "$CHANNEL/guest/latest/$f"; done
+		for f in $POINTER_FILES; do echo "$CHANNEL/guest/latest/$f"; done
 	} | purge_edge
-	say "published — now run: ./scripts/publish-release.sh verify   (then, once the evidence is in: promote)"
+	say "latest -> $V (guest $GV) — now run: ./scripts/publish-release.sh verify"
 	;;
 
 promote)
@@ -600,11 +719,7 @@ promote)
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm"); p=$(sub stable "$arm"); tag="$c.${arm:-flat}"
 			if [ "$(jq -r .version "$tmp/$tag.stable.json" 2>/dev/null)" != "$v" ]; then
-				# Server-side copies, in POINTER_FILES order and for the same reason.
-				for f in $POINTER_FILES; do
-					have_key "$bucket/$c/$rel/$f" "$endpoint" || continue
-					copy_key "$c/$rel/$f" "$bucket" "$c/$p/$f" "$endpoint"
-				done
+				move_pointer "$c" "$v" "$arm" stable "$bucket" "$endpoint"
 				say "promoted $c/$p -> $v"
 			fi
 		done
@@ -698,6 +813,32 @@ verify)
 	PUB="${RELEASE_PUBKEY:-${RELEASE_SIGN_KEY:-}}"
 	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+	# ONE EXACT RELEASE, NAMED ([B.159](b)) — what follows a `publish` now that publishing points
+	# nothing at the release. The same checks a pointer gets, at the versioned path, plus the
+	# guest it pairs with. No pointer check and no root installer, because this release is not
+	# claiming to be either yet; that is the whole state being verified.
+	if [ -n "${2:-}" ]; then
+		V="$2"
+		say "verifying $V where it was published — no pointer names it yet"
+		for a in $(arms_of host); do arm=${a#-}
+			verify_manifest_at "$CHANNEL/host/$(sub "$V" "$arm")" host "$arm" "$V"
+		done
+		GV=$(curl -fsS "$CHANNEL/host/$V/linux/manifest.json" | jq -r '.guest // ""') ||
+			die "cannot read host/$V/linux — is $V published?"
+		[ -n "$GV" ] || die "host/$V names no guest release — published before [B.86i]; stage and publish again"
+		verify_manifest_at "$CHANNEL/guest/$GV" guest "" "$GV"
+		# The installer a gate on this id will actually curl ([B.159](a)). Its BYTES are already
+		# checked — it is an artifact of the linux arm above — so what this adds is that the
+		# deeper URL serves it, which is the one the gate names: the advertised root URL still
+		# serves the PROMOTED release and cannot reach this one at all.
+		curl -fsS -o /dev/null "$CHANNEL/host/$V/linux/install.sh" ||
+			die "host/$V/linux/install.sh is not served — an install gate on $V has no installer to fetch"
+		say "$V verifies: both arms, guest $GV, every artifact matching, and its own install.sh served"
+		say "   install it with: BRIARD_RELEASE=$V, fetching $CHANNEL/host/$V/linux/install.sh"
+		exit 0
+	fi
+
 	# EVERY CHAIN, EVERY ARM, BOTH POINTERS. A pointer is a manifest at a path, so verifying one
 	# is verifying all of them with the path changed — and a pointer nobody verifies is a pointer
 	# nobody knows is broken until a stranger (or the timer, fleet-wide) runs into it.
@@ -707,45 +848,16 @@ verify)
 		for a in $(arms_of "$c"); do arm=${a#-}
 			for p in stable latest; do
 				rel=$(sub "$p" "$arm"); base="$CHANNEL/$c/$rel"
-				if ! curl -fsS "$base/manifest.json" -o "$tmp/manifest.json" 2>/dev/null; then
+				# `stable` may not exist yet on a fresh tree; that is said out loud rather than
+				# failed, because the first publish of the tree is the one run where it is
+				# expected. A missing `latest` stays fatal: since [B.159](b) a release can sit
+				# published with nothing naming it, but that is what `verify <VERSION>` is for —
+				# reaching here means the pointers are being checked, and one of them is gone.
+				if ! curl -fsS -o /dev/null "$base/manifest.json" 2>/dev/null; then
 					[ "$p" = stable ] && { say "WARNING: no $c/$rel yet — nothing promoted here"; continue; }
 					die "no manifest at $base"
 				fi
-				curl -fsS "$base/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $base"
-				# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure
-				# here is the whole point of the check — an unsigned or re-signed channel must
-				# not read as green.
-				ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
-				        -in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
-					|| die "the live manifest at $base does NOT verify against $PUB"
-				v=$(jq -r .version "$tmp/manifest.json")
-				ch=$(jq -r .chain "$tmp/manifest.json"); pl=$(jq -r '.platform // ""' "$tmp/manifest.json")
-				[ "$ch" = "$c" ] && [ "$pl" = "$arm" ] ||
-					die "$base serves a manifest for '$ch/$pl' — a crossed wire the client would refuse"
-				vdir="$c/$(sub "$v" "$arm")"
-				say "$c/$rel -> $v (signature verifies)"
-				# ...and every artifact matches what the signed manifest claims, fetched from
-				# WHERE THE MANIFEST SAYS (the versioned directory), by DOWNLOADING, not by
-				# trusting the manifest against itself. A version already checked under the
-				# other pointer is not downloaded twice.
-				if [ -f "$tmp/$c.${arm:-flat}.$v.ok" ]; then echo "    (artifacts of $vdir already verified)"; continue; fi
-				jq -r '.artifacts[] | "\(.name) \(.sha256) \(.size)"' "$tmp/manifest.json" |
-				while read -r name sum size; do
-					curl -fsS "$CHANNEL/$vdir/$name" -o "$tmp/$name" || die "$name is in the $c/$rel manifest but not served at $vdir/"
-					got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
-					gotsize=$(stat -c%s "$tmp/$name")
-					[ "$got" = "$sum" ] || die "$vdir/$name: sha256 $got != manifest $sum"
-					[ "$gotsize" = "$size" ] || die "$vdir/$name: size $gotsize != manifest $size"
-					echo "    ok  $vdir/$name  ($gotsize bytes)"
-					# The pointer's own bootstrap copy must be the SAME bytes the manifest pins,
-					# or install.sh runs a bootstrap that is not the release it then installs.
-					case "$name" in briard-agent|briard-agent.exe)
-						curl -fsS "$base/$name" -o "$tmp/$name.ptr" || die "$name is not served under $base (the bootstrap install.sh curls)"
-						[ "$(sha256sum "$tmp/$name.ptr" | cut -d' ' -f1)" = "$sum" ] || die "$base/$name differs from $vdir/$name"
-						echo "    ok  $c/$rel/$name  (bootstrap copy matches)"
-					esac
-				done
-				touch "$tmp/$c.${arm:-flat}.$v.ok"
+				verify_manifest_at "$base" "$c" "$arm" ""
 			done
 		done
 	done
@@ -795,6 +907,6 @@ verify)
 	;;
 
 *)
-	die "usage: publish-release.sh {stage|sign|publish|promote|gc|verify} [ARGS]  (see header)"
+	die "usage: publish-release.sh {stage|sign|publish|latest|promote|gc|verify} [ARGS]  (see header)"
 	;;
 esac
