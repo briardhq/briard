@@ -429,6 +429,11 @@ pkgs.testers.runNixOSTest {
     assert "older than stable" in out, f"the pin failed, but not on the stable floor: {out!r}"
     # And the unit's own verdict reached the journal: this refusal travels through the frozen
     # updater, so the line an operator greps for at 2am has to be there and not only on a console.
+    print("DIAG2 unit state: " + machine.succeed("systemctl show -p Id,Result,ExecMainStatus,NRestarts briard-update.service"))
+    print("DIAG2 -u count: " + machine.succeed("journalctl -u briard-update --no-pager | grep -c 'older than stable' || true"))
+    print("DIAG2 -b count: " + machine.succeed("journalctl -b --no-pager | grep -c 'older than stable' || true"))
+    print("DIAG2 -u tail: " + machine.succeed("journalctl -u briard-update --no-pager -n 12 | cat -v"))
+    print("DIAG2 identifier: " + machine.succeed("journalctl -b --no-pager | grep 'older than stable' | head -2 | cat -v || true"))
     machine.wait_until_succeeds("journalctl -u briard-update | grep -q 'older than stable'", timeout=30)
     machine.fail("test -e ${nextBin}")
     machine.succeed(f"cp /srv/host/{OLD}/linux/manifest.json /srv/host/{OLD}/linux/manifest.json.sig /srv/host/stable/linux/")
