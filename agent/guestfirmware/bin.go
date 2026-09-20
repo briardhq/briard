@@ -143,6 +143,13 @@ const (
 	ranSuffix        = ".ran"    // what the picker exec'd on the last start: trial | pushed | baked
 )
 
+// BinDir is exported because the unit the PUSHED AGENT writes for itself has to name the
+// committed path ([B.160], agent/guestagent/units.go) -- the same path this package's commit
+// creates, so a second spelling of it would be a second thing to keep in step. It stays a
+// function rather than a const for the reason the override exists: a rig that dresses a stub
+// moves the directory.
+func BinDir() string { return binDir() }
+
 func binDir() string {
 	if d := os.Getenv("BRIARD_BIN_DIR"); d != "" {
 		return d
@@ -464,7 +471,7 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 // READY -- it cannot, it is outside the guest -- it watches the PORT, which this process opens
 // two statements earlier. So the real window was [port open, commit], and in it the host
 // reconnects, handshakes, judges the guest dressed and starts sending bring-up verbs, while
-// briard-node-storage.service names <binDir>/briard-guest-agent DIRECTLY (configuration.nix:
+// briard-node-storage.service names <binDir>/briard-guest-agent DIRECTLY (agent/guestagent/units.go:
 // through the picker it would arm a trial every time storage came up). Measured 2026-09-11 on
 // the fleet tier (os-reboot.sh, run 34576181211): storage bring-up reached the guest 12 ms
 // before the commit did, exec'd a path that did not exist yet, 203/EXEC -- and because

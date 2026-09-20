@@ -62,6 +62,50 @@ let
   # only thing a shell unit needs to know about the spec. PAIRED with the Go const
   # guestagent.topologyEnvPath and the two values its topologyEnv writes.
   topologyEnvPath = "/run/briard/topology.env";
+  # ── THE IMAGE'S HALF OF A UNIT THE AGENT WRITES ([B.160]) ────────────────────────────────────
+  #
+  # THE IMAGE CONTRIBUTES THE CLOSURE; THE PUSHED AGENT CONTRIBUTES THE UNIT. Since [B.86j] the
+  # image bakes exactly one binary and every other briard binary rides the host bundle -- but the
+  # units that start them were left behind here, and a unit is mostly an ExecStart plus the
+  # environment that binary needs, so the two moved on different cadences. Measured: a pushed
+  # agent asked its older image for a unit that image did not define, and the node crash-looped 53
+  # times with the household's app gone ([B.159](c)). The agent writes the units it owns into
+  # /run/systemd/system at every start now -- the only place it can, since NixOS makes
+  # /etc/systemd/system a read-only store path -- so a unit can never be older than the binary
+  # that wrote it, and the whole defect class is unrepresentable rather than merely detectable.
+  #
+  # WHAT STAYS HERE IS THE PART A PUSHED BINARY CANNOT CARRY: the store paths. A unit's PATH is a
+  # closure reference rather than a bare command, and an agent that guessed one would fail at
+  # block-device time, which is the worst moment this product has. So the image publishes ONE
+  # profile at a fixed path and the agent names that path: no manifest, no schema, nothing to
+  # version between the two halves.
+  #
+  # WHOLE PACKAGES, NOT NAMED COMMANDS, and that is the point rather than laziness: a pushed agent
+  # that starts calling `lvs` must not need a new image to do it. Naming commands would put the
+  # skew back one level down. The list is the same one the units carried in their own `path =`, so
+  # the move leaves the closure unchanged.
+  #
+  # ⚠️ AN OLDER IMAGE HAS NO PROFILE AT ALL, and that is the good failure: the agent stats this
+  # directory before it renders and refuses to serve when it is missing, so its trial fails, the
+  # committed agent comes back, and the node keeps running the release it had. Refusing the
+  # upgrade is what this buys; stopping the host from OFFERING it is [B.159](e)'s floor, which is
+  # still wanted for genuine on-disk migrations.
+  guestTools = pkgs.buildEnv {
+    name = "briard-guest-tools";
+    paths = [
+      pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange/vgs -- the `bin` output, already in this closure
+      pkgs.cryptsetup
+      pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here ([V3b.33](a))
+      pkgs.drbd # drbdadm create-md / new-current-uuid, and drbdmeta for the lone-node probe
+      pkgs.btrfs-progs # mkfs.btrfs, once, on the LV node storage just created ([B.145a])
+      pkgs.coreutils # install, test, rm
+      config.systemd.package # systemctl start drbd@<res>.target
+    ];
+    pathsToLink = [ "/bin" "/sbin" ];
+  };
+  # PAIRED with the Go const guestagent.defaultToolsBin, which is what an agent-written unit puts
+  # on its PATH. Different languages, so no shared import; the agent-side comment names this back.
+  toolsEtc = "briard/tools";
   # THE CHAIN, stated once: the seven promoter units in start order, the same list the host's
   # promoterUnits() hands drbd-reactor. The hold resets them, and the lone node's target (the
   # mkMerge tail of this file) carries them.
@@ -649,6 +693,12 @@ in
     environment.etc."drbd-reactor.toml".text = ''
       snippets = "${reactorSnippetDir}"
     '';
+
+    # THE TOOL PROFILE AN AGENT-WRITTEN UNIT PUTS ON ITS PATH ([B.160], `guestTools` above says
+    # why it exists at all). A fixed path in /etc rather than a store path the agent would have to
+    # be told: the whole point is that the two halves share a NAME and nothing else, so an agent
+    # and an image that both speak B.160 need no handshake to agree.
+    environment.etc.${toolsEtc}.source = guestTools;
     systemd.tmpfiles.rules = [
       "d /run/briard 0755 root root -"
       "d ${reactorSnippetDir} 0755 root root -"
@@ -969,43 +1019,13 @@ in
     # the resource, and stops them in reverse on demote. So they run on the primary
     # and nowhere else.
 
-    # 0. node storage — every tier this node holds, and the DRBD resource on top of them
-    # ([V3b.33](d)). NOT a chain member and NOT started at boot: the HOST starts it, once per
-    # bring-up, after writing /run/briard/node-storage.json.
-    #
-    # `wantedBy = [ ]` is the statement. Because the agent it execs is PUSHED ([B.139]), storage
-    # bring-up provably cannot run before the host has dressed the guest -- which is fine (the
-    # host is always present at guest start: `-no-reboot`, and the agent is the guest's sole
-    # supervisor) and turns something accidental into something stated.
-    #
-    # It runs on EVERY node, witness included: a diskless node builds no tier and still needs its
-    # `.res` written and its resource attached.
-    systemd.services.briard-node-storage = {
-      description = "Briard node storage (tiers, and the DRBD resource on top of them)";
-      wantedBy = [ ];
-      path = [
-        pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange -- the `bin` output, already in this closure
-        pkgs.cryptsetup
-        pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here ([V3b.33](a))
-        pkgs.drbd # drbdadm create-md / new-current-uuid
-        pkgs.btrfs-progs # mkfs.btrfs, once, on the LV this unit just created ([B.145a])
-        pkgs.coreutils # install, test, rm
-        config.systemd.package # systemctl start drbd@<res>.target
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        # ⚠️ NO RemainAfterExit, and that is deliberate rather than an omission: the host starts
-        # this unit at EVERY bring-up, including a re-adopt of a warm guest, and `systemctl start`
-        # on a unit that stayed "active" would be a silent no-op -- the `.res` never re-asserted,
-        # the attach never re-tried. Every step it takes is idempotent by construction (a
-        # returning node activates its VG and stops), so re-running is the cheaper guarantee.
-        RemainAfterExit = false;
-        # THROUGH THE PIVOT'S binDir DIRECTLY ([B.86j], [B.138]), never through the picker: the
-        # picker's trial flag is keyed by the binary's NAME, so a unit that reached the agent
-        # through it would arm a trial every time storage came up.
-        ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --node-storage";
-      };
-    };
+    # 0. node storage — NOT DEFINED HERE ANY MORE ([B.160]). The pushed agent writes
+    # briard-node-storage.service into /run/systemd/system at every start, from the closure
+    # `guestTools` publishes above (agent/guestagent/units.go carries the unit and the reasoning
+    # that used to sit here). It is the first unit to move because it is the one that measurably
+    # broke: it is a chain member of nothing, `wantedBy = [ ]`, started by the host's storage.node
+    # verb alone -- so its whole dependency graph is the host's timing, and moving it moves
+    # nothing else.
 
     # 1. primary storage — format on first use, mount the replicated volume ([V3b.33](d)). The
     # FILESYSTEM half: node storage did the block work on every node, and this runs only where the

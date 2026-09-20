@@ -17,6 +17,8 @@
 //	                                    from the spec the host wrote (briard-node-storage)
 //	briard-guest-agent --primary-storage      format on first use + mount the replicated volume
 //	briard-guest-agent --primary-storage-stop unmount it (briard-primary-storage's ExecStop)
+//	briard-guest-agent --write-units    render the units the agent owns ([B.160]); `run --guest`
+//	                                    does this itself, so only an agent-less rig invokes it
 //	briard-guest-agent --test-launch    the cheap self-test a staged copy passes before it is
 //	                                    trialled ([B.138]): execs, parses, sees the port device
 package main
@@ -103,6 +105,7 @@ func runInternal(args []string) {
 	nodeStorage := fs.Bool("node-storage", false, "build every tier /run/briard/node-storage.json names and attach the resource -- briard-node-storage.service's ExecStart")
 	primaryStorage := fs.Bool("primary-storage", false, "format on first use, mount the replicated volume -- briard-primary-storage.service's ExecStart")
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
+	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
 	_ = fs.Parse(args)
 
@@ -121,6 +124,18 @@ func runInternal(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	if *writeUnits {
+		// FOR A GUEST WITH NO HOST ([B.160]). In the product this is the first thing `run --guest`
+		// does, so nothing invokes this flag; the nixosTest machines have no host to dress them
+		// and no control channel to serve, and this is how they get the product's own units
+		// instead of a harness's copy of them (nixosTest/lib.nix). A rig that declared its own
+		// would be a rig that cannot notice the product changing them.
+		if err := guestagent.WriteUnits(ctx, guestfirmware.NewOSExecutor()); err != nil {
+			log.Fatalf("write-units: %v", err)
+		}
+		return
+	}
 
 	if *primaryStorage || *primaryStorageStop {
 		// A PROMOTER CHAIN MEMBER, so the exit code is load-bearing: a non-zero ExecStart fails
@@ -178,11 +193,21 @@ func runInternal(args []string) {
 // guestStopGrace bounds the case where even that is not enough -- the host's clean-shutdown
 // timing ([B.51], [B.127]) depends on this process actually ending.
 func runGuest(ctx context.Context) error {
+	x := guestfirmware.NewOSExecutor()
+	// THE UNITS THIS BINARY OWNS, BEFORE ANYTHING ELSE ([B.160]): the guest image no longer
+	// defines them, so nothing this agent is about to do -- the trial verdict below, the host's
+	// first bring-up verb after the port -- can name a unit until it has been written. Ordering
+	// it ahead of the trial is also what makes a trial honest: a staged agent is judged on the
+	// units IT writes, not on the ones its predecessor left behind.
+	if err := guestagent.WriteUnits(ctx, x); err != nil {
+		return err
+	}
 	// THE PUSH PROTOCOL'S START-TIME DUTY ([B.138]), before the port: a trial start is the
 	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
 	// verdict exits here, port never opened, so the host's reconnect meets the committed agent
 	// and reads the old release. A non-trial start with a staged set left behind discards it.
-	x := guestfirmware.NewOSExecutor()
+	// A failed trial's own restart lands back at WriteUnits above, so the committed agent's
+	// units replace the candidate's on the way back down -- the revert is the same mechanism.
 	if err := guestfirmware.BinStartup(ctx, x, log.Printf); err != nil {
 		return err
 	}

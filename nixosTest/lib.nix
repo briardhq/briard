@@ -359,6 +359,12 @@ let
           esac
           shift
         done
+        # THE UNIT BEFORE THE START ([B.160]). briard-node-storage.service is written by the
+        # agent, not by the image, and the stand-in that writes it is ordered before
+        # multi-user.target -- but the framework's backdoor shell is not, so a rig that runs this
+        # command the moment it can would race the render. Starting the oneshot is the barrier:
+        # it blocks until the render has finished and is a no-op once it has (RemainAfterExit).
+        ${pkgs.systemd}/bin/systemctl start briard-test-write-units.service
         mkdir -p /run/briard
         rm -f /run/briard/node-storage.json
         ${pkgs.jq}/bin/jq --argjson s "$seed" --arg m "$mode" --argjson r "$replicated" --arg c "$convert" \
@@ -380,6 +386,32 @@ let
         briard-dashboard = "${pkgs.dashboard}/bin/dashboard";
         briard-guest-agent = "${config.briard.agentPackage}/bin/briard-guest-agent";
       };
+      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR UNITS ([B.160]) ───────────────────────────
+      # The image no longer defines the units the agent owns; the pushed agent writes them into
+      # /run/systemd/system as the first thing `run --guest` does. These machines run no
+      # `run --guest` -- there is no host on the other end of a control channel -- so the unit
+      # files would never appear and every rig that starts one would fail on a unit that does
+      # not exist.
+      #
+      # IT RUNS THE PRODUCT'S OWN RENDERER rather than declaring the units here, and that is the
+      # same rule the storage stand-in below follows: a harness that re-implements the thing
+      # under test cannot notice the product changing it. What the harness supplies is the
+      # TRIGGER the host would have supplied, and nothing else.
+      #
+      # After the tmpfiles that link preDressed into the pivot's binDir -- the binary this unit
+      # runs is one of them.
+      systemd.services.briard-test-write-units = {
+        description = "Harness stand-in for the host's dress: render the agent's own units ([B.160])";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "systemd-tmpfiles-setup.service" ];
+        before = [ "multi-user.target" ];
+        path = [ pkgs.systemd ]; # systemctl daemon-reload
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --write-units";
+        };
+      };
       virtualisation.emptyDiskImages = mkIf (!diskless) [ 256 ];
       networking.interfaces.eth1.ipv4.addresses = [
         {
@@ -391,10 +423,10 @@ let
       # Primary-only half, which in the product runs btrfs from the guest agent unit's own PATH
       # and converge from briard-services'. install_fixture runs both from a test shell, so both
       # have to be reachable there.
-      # lvm2/cryptsetup are the SEAM's tooling ([V3b.33]) in a test shell: the product carries them
-      # in briard-node-storage.service's own unit PATH, and a rig that has to look at the stack it
-      # built -- `dmsetup deps`, `cryptsetup isLuks`, `pvs` -- runs from outside any unit. Free in
-      # size: both are already in this guest's closure.
+      # lvm2/cryptsetup are the SEAM's tooling ([V3b.33]) in a test shell: the product reaches them
+      # through the image's tool profile, which is briard-node-storage's whole PATH ([B.160]), and a
+      # rig that has to look at the stack it built -- `dmsetup deps`, `cryptsetup isLuks`, `pvs` --
+      # runs from outside any unit. Free in size: both are already in this guest's closure.
       environment.systemPackages = [ pkgs.curl pkgs.lvm2.bin pkgs.cryptsetup testStorage ]
         ++ lib.optionals (allFixtures != [ ]) [ pkgs.btrfs-progs config.briard.agentPackage ];
       # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes

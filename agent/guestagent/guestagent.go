@@ -59,7 +59,7 @@ const (
 // accidental into something stated.
 //
 // ⚠️ "DRESSED" HAS TO MEAN COMMITTED, not staged, and for a while it did not ([B.148]). The unit
-// names <binDir>/briard-guest-agent directly (configuration.nix says why it must not go through
+// names <binDir>/briard-guest-agent directly (units.go says why it must not go through
 // the picker), so it can only start once the commit has moved the staged file onto that name.
 // The commit used to be the agent unit's ExecStartPost, which systemd runs AFTER the port is
 // open and answering -- so this verb could arrive, and did, in the window where the path did not
