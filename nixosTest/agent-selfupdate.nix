@@ -420,12 +420,15 @@ pkgs.testers.runNixOSTest {
     #        the stub divergence explained in the header only works through a pointer.
     OLD = "v3.20260201.ccccccc"
     publish(OLD, "${realAgent}", pointers=())
-    machine.fail(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard")
-    # ⚠️ WAIT, DO NOT SNAPSHOT. The verb returned 0.1s ago and journald seals its file on its own
-    # schedule, so `succeed` here asks whether a line written milliseconds earlier has landed yet
-    # — a race that reads as "the refusal never happened". Still a real assertion: it fails on
-    # timeout if the line never appears, which is the case it exists for. (The same seam as the
-    # 7 other journal greps in these two rigs that already wait.)
+    # THE REFUSAL'S OWN WORDS, not just a non-zero exit ([[verification-assertions-must-fail]]).
+    # `fail` passes on ANY non-zero exit -- a missing release, an unreadable manifest, a verb that
+    # no longer exists -- so the exit code alone cannot say the FLOOR is what refused. Asserting
+    # the CLI's own output is what distinguishes "refused because it is below stable" from
+    # "failed for some other reason and the journal happened to carry the phrase from earlier".
+    out = machine.fail(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard")
+    assert "older than stable" in out, f"the pin failed, but not on the stable floor: {out!r}"
+    # And the unit's own verdict reached the journal: this refusal travels through the frozen
+    # updater, so the line an operator greps for at 2am has to be there and not only on a console.
     machine.wait_until_succeeds("journalctl -u briard-update | grep -q 'older than stable'", timeout=30)
     machine.fail("test -e ${nextBin}")
     machine.succeed(f"cp /srv/host/{OLD}/linux/manifest.json /srv/host/{OLD}/linux/manifest.json.sig /srv/host/stable/linux/")

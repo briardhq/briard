@@ -1674,18 +1674,21 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"mkdir -p {d} && echo not-an-image > {d}/nixos.qcow2.zst")  # a real file (the writer skips links); never fetched, the refusal comes first
     host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain guest --release {GNEW} --system ${guestDisk.system} --min-host v3.20991231.zzzzzzz")
     host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
-    host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW}")
-    # ⚠️ WAIT, DO NOT SNAPSHOT — same seam as agent-selfupdate step 8: the alert was emitted ~5ms
-    # before the verb returned, and journald had not sealed it when a bare `succeed` looked.
-    # TEMPORARY DIAGNOSTIC ([B.159]): the refusal fires and the text is on the console, but this
-    # grep finds nothing while other `-u briard-agent` greps in this same run match. Print what
-    # the journal actually holds rather than theorising about it.
-    print("DIAG locale: " + host.succeed("locale 2>&1 | head -3"))
-    print("DIAG rolled-back lines: " + host.succeed("journalctl -u briard-agent --no-pager | grep -c 'rolled back' || true"))
-    print("DIAG guest-release lines: " + host.succeed("journalctl -u briard-agent --no-pager | grep -c 'older than the guest release requires' || true"))
-    print("DIAG alert lines: " + host.succeed("journalctl -u briard-agent --no-pager | grep -c 'alert .warning.' || true"))
-    print("DIAG whole boot: " + host.succeed("journalctl -b --no-pager | grep -c 'failed and rolled back' || true"))
-    print("DIAG tail: " + host.succeed("journalctl -u briard-agent --no-pager -n 5 | cat -v | tail -5"))
+    # ⚠️ WAIT FOR THE ADMIN DOOR BEFORE KNOCKING ON IT. The section above ends in a refused
+    # bundle push and a relaunch, so the agent can still be re-opening its socket here -- and
+    # `host.fail` passes on ANY non-zero exit, including "cannot reach the agent". Measured
+    # ([B.159], three rig rounds): the verb failed because nothing was listening, the refusal
+    # never happened, and only the journal grep below noticed. Same lesson upgrade.sh carries
+    # in its own words.
+    host.wait_until_succeeds("test -S /run/briard/admin.sock", timeout=60)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'healthy=true'", timeout=120)
+    # THE REFUSAL'S OWN WORDS, not just a non-zero exit ([[verification-assertions-must-fail]]).
+    # This is the assertion that cannot pass for the wrong reason: an unreachable agent, a
+    # mistyped release, a verb that no longer exists all exit non-zero and all fail HERE.
+    out = host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW}")
+    assert "older than the guest release requires" in out, f"the verb failed, but not on min_host: {out!r}"
+    # And the escalation reached the journal -- a refusal the owner never hears about is the
+    # failure mode the alert exists for.
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the guest release requires'", timeout=30)
     host.fail("/opt/briard/agent/briard-agent update vm -to guest.20990101.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
