@@ -159,6 +159,15 @@ type Manifest struct {
 	// decides whether a stage re-publishes the guest chain or reuses the release that already
 	// serves these exact inputs. Empty on the host chain.
 	Inputs string `json:"inputs,omitempty"`
+	// MinUpgradeFrom is the UPGRADE FLOOR ([B.159](e)): the oldest INSTALLED release this one can
+	// be installed over. Empty means no floor, which is the normal state. It is the mirror image
+	// of MinHost and must not be confused with it -- MinHost points from the guest at the host
+	// (inner declaring a minimum on the outer, so the host upgrades first), while this points
+	// from a release at its OWN PAST. Those are the only two directions a floor may ever point;
+	// a floor from the host at the guest is forbidden, because a host that needs a newer image
+	// upgrades the image rather than waiting for it. Written from install.MinUpgradeFrom, a
+	// constant in the tree, so the release carries its own floor rather than being told one.
+	MinUpgradeFrom string `json:"min_upgrade_from,omitempty"`
 }
 
 // Fetcher downloads and verifies one chain's signed artifact set into a staging directory.

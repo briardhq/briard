@@ -24,6 +24,11 @@ func man(chain, platform, version string) Manifest {
 // The comparison rules of [B.86a], one row each, including the ones that must REFUSE.
 func TestDecide(t *testing.T) {
 	host := func(v string) *Manifest { m := man(ChainHost, PlatformLinux, v); return &m }
+	hostFloor := func(v, floor string) *Manifest {
+		m := man(ChainHost, PlatformLinux, v)
+		m.MinUpgradeFrom = floor
+		return &m
+	}
 	old, cur, next := "v3.20260901.aaaaaaa", "v3.20260905.bbbbbbb", "v3.20260910.ccccccc"
 	sameDay := "v3.20260905.ddddddd"
 	stable := host(cur)
@@ -50,6 +55,17 @@ func TestDecide(t *testing.T) {
 		{"exact whose manifest names another version is refused", next, *host(cur), host(old), stable, false, ErrManifest},
 		{"a crossed chain is refused, not compared", TargetStable, *host(next), func() *Manifest { m := man(ChainGuest, "", "guest.20260901.x"); return &m }(), nil, false, ErrWrongChain},
 		{"a non-numeric date field is refused", TargetStable, *host("v3.dirty"), host(cur), nil, false, ErrManifest},
+		// THE UPGRADE FLOOR ([B.159](e)). The floor is a fact about (installed, offered), not
+		// about the target word, so all three targets are floored -- the release cannot complete
+		// the upgrade whichever word asked for it. A fresh install has no past to be too old for.
+		{"the floor refuses an older installed release on stable", TargetStable, *hostFloor(next, cur), host(old), nil, false, ErrTooOldToUpgrade},
+		{"the floor refuses on latest too -- no target crosses it", TargetLatest, *hostFloor(next, cur), host(old), nil, false, ErrTooOldToUpgrade},
+		{"the floor refuses an exact pin too", next, *hostFloor(next, cur), host(old), stable, false, ErrTooOldToUpgrade},
+		{"at the floor's own date is allowed (dates, not ids -- the accepted blind spot)", TargetStable, *hostFloor(next, cur), host(sameDay), nil, true, nil},
+		{"above the floor is allowed", TargetStable, *hostFloor(next, old), host(cur), nil, true, nil},
+		{"a fresh install is never floored", TargetStable, *hostFloor(next, cur), nil, nil, true, nil},
+		{"no floor declared is the normal state", TargetStable, *host(next), host(old), nil, true, nil},
+		{"a floor with no date field is a malformed manifest, not a refusal", TargetStable, *hostFloor(next, "v3.dirty"), host(old), nil, false, ErrManifest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := Decide(tc.target, tc.want, tc.have, tc.stable)
@@ -637,5 +653,71 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 func TestUpdateVMDirectiveKindIsWhatTheJournalSays(t *testing.T) {
 	if DirectiveUpdateVM != "update-vm" {
 		t.Fatalf("DirectiveUpdateVM = %q — the fleet tests wait on `directive update-vm` by text", DirectiveUpdateVM)
+	}
+}
+
+// THE FLOOR IS A FACT ABOUT THE TREE, so the binary that writes a manifest is the one that
+// answers it ([B.159](e)) -- there is no flag and nothing for a publish to remember. Host chain
+// only: the guest image is replaced whole and has no past of its own to be too old for.
+//
+// ⚠️ The floor is EMPTY in this tree, which is the normal state and also why this test sets it:
+// a wiring assertion against a value that never varies could not fail, and the failure it exists
+// to catch is exactly the silent one -- a manifest published with no floor on a release that
+// declared one, which refuses nothing and is indistinguishable from a release that declared
+// nothing.
+func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
+	was := MinUpgradeFrom
+	t.Cleanup(func() { MinUpgradeFrom = was })
+	MinUpgradeFrom = "v3.20260920.abc1234"
+
+	read := func(t *testing.T, chain, platform, version, system, minHost string) Manifest {
+		t.Helper()
+		stage := t.TempDir()
+		os.WriteFile(filepath.Join(stage, "artifact"), []byte("x"), 0o644)
+		if err := WriteManifest(stage, chain, platform, version, system, minHost, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(stage, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m Manifest
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		if chain == ChainHost && !strings.Contains(string(b), `"min_upgrade_from"`) {
+			t.Errorf("the host manifest JSON carries no min_upgrade_from key: %s", b)
+		}
+		if chain == ChainGuest && strings.Contains(string(b), `"min_upgrade_from"`) {
+			t.Errorf("the guest manifest JSON carries a min_upgrade_from key: %s", b)
+		}
+		return m
+	}
+
+	if got := read(t, ChainHost, PlatformLinux, "v3.20260921.bbb2222", "", "").MinUpgradeFrom; got != MinUpgradeFrom {
+		t.Errorf("host min_upgrade_from = %q, want the tree's %q", got, MinUpgradeFrom)
+	}
+	if got := read(t, ChainGuest, "", "guest.20260921.bbb2222", "/nix/store/x-nixos-system", "").MinUpgradeFrom; got != "" {
+		t.Errorf("guest min_upgrade_from = %q, want empty — the guest chain declares no floor", got)
+	}
+}
+
+// THE REFUSAL IS A PRODUCT SURFACE, not just an error value ([B.159](e)). A node that cannot be
+// upgraded any further has exactly one remedy under the alpha's reinstall-only policy, and the
+// refusal is where its owner finds that out -- so the words are asserted, not just the sentinel.
+// Both ids appear because "too old" is meaningless without the pair: what is installed, and what
+// it would have to be.
+func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
+	want := man(ChainHost, PlatformLinux, "v3.20260921.bbb2222")
+	want.MinUpgradeFrom = "v3.20260920.aaa1111"
+	have := man(ChainHost, PlatformLinux, "v3.20260910.ccc3333")
+	_, err := Decide(TargetStable, want, &have, nil)
+	if !errors.Is(err, ErrTooOldToUpgrade) {
+		t.Fatalf("err = %v, want ErrTooOldToUpgrade", err)
+	}
+	for _, s := range []string{"reinstall", have.Version, want.Version, want.MinUpgradeFrom} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("the refusal does not say %q: %v", s, err)
+		}
 	}
 }

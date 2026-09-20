@@ -83,7 +83,16 @@ func WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs
 	if err != nil {
 		return fmt.Errorf("install: read staging dir %s: %w", dir, err)
 	}
-	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinHost: minHost, Guest: guest, Inputs: inputs}
+	// THE FLOOR IS TAKEN FROM THE TREE, NEVER FROM A PARAMETER ([B.159](e)). Every other fact
+	// here is something the pipeline knows and this function is told; the floor is something the
+	// CODE knows, so the binary that writes the manifest is the right one to answer it. Host
+	// chain only: the guest image is replaced whole and has no past of its own to be too old
+	// for, and a floor there would be a second answer to a question nobody asked yet.
+	floor := ""
+	if chain == ChainHost {
+		floor = MinUpgradeFrom
+	}
+	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinHost: minHost, Guest: guest, Inputs: inputs, MinUpgradeFrom: floor}
 	for _, e := range ents {
 		if e.IsDir() || notArtifacts[e.Name()] {
 			continue
