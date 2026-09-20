@@ -261,7 +261,7 @@ let
   agentSelfupdate = import ./agent-selfupdate.nix {
     inherit pkgs;
     stub = selfupdateStub;
-    agent = agentPkg; # the REAL agent: the bootstrap the update unit pulls, and `briard update host`
+    agent = agentPkg; # the REAL agent: the bootstrap the update unit pulls, and `briard update self`
   };
 
 

@@ -348,8 +348,8 @@ pkgs.testers.runNixOSTest {
     qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
 
-    out = host.succeed("${agent}/bin/briard-agent update guest -sock /run/briard/admin.sock -to latest").strip()
-    assert f"now running {GV2}" in out, f"briard update guest said: {out!r}"
+    out = host.succeed("${agent}/bin/briard-agent update vm -sock /run/briard/admin.sock -to latest").strip()
+    assert f"now running {GV2}" in out, f"briard update vm said: {out!r}"
     host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: booted {GV2}, health-gating'")
     host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: {GV2} committed'")
     # The guest runs the NEXT image's closure (the manifest named it; the boot proved it), on a
@@ -372,7 +372,7 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"mkdir -p /srv/guest/{GV3} && cp /srv/guest/{GV2}/nixos.qcow2.zst /srv/guest/{GV3}/")
     host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/guest/{GV3} --chain guest --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-host {V}")
     sign_and_point(GV3, ("latest",))
-    host.fail("${agent}/bin/briard-agent update guest -sock /run/briard/admin.sock -to latest")
+    host.fail("${agent}/bin/briard-agent update vm -sock /run/briard/admin.sock -to latest")
     host.succeed(f"journalctl -u briard-agent | grep -q \"not {GV3}'s system\"")
     host.succeed("journalctl -u briard-agent | grep -q 'OS upgrade rolled back to'")
     host.succeed(f"grep -q '\"version\":\"{GV2}\"' /tmp/guest-release.json")  # the record never moved

@@ -150,7 +150,7 @@ func assertNoOrphans(t *testing.T, l selfupdate.Layout) {
 }
 
 // An installed manifest equal to the target is a no-op: nothing staged, nothing armed, and the
-// line says so — `briard update host` on an up-to-date node must not bounce the agent.
+// line says so — `briard update self` on an up-to-date node must not bounce the agent.
 func TestUpdateIsANoOpAtTheTarget(t *testing.T) {
 	c := goodChannel(t)
 	u, l := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])

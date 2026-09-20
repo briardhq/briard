@@ -36,7 +36,7 @@ else                                               #   briard-commit can still t
 	# the worst state the pivot has: the next boot trials a set we gutted, briard-commit accepts a
 	# PARTIAL bundle (new agent, old qemu tree), and the single-use flag is already spent, so there
 	# is nothing left to revert and the node needs a reinstall. Dropping a fresh stage costs a day
-	# (the timer re-runs, and `briard update host` is always there) and cannot do that.
+	# (the timer re-runs, and `briard update self` is always there) and cannot do that.
 	rm -f /run/briard/update
 	exec /opt/briard/agent/briard-agent run
 fi

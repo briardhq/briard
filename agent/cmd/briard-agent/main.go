@@ -147,7 +147,7 @@ func runInternal(args []string) {
 	// pulled from the channel, never on the committed one -- so this is the suspect side doing
 	// the verified fetch, and the one line it prints last on stdout is the unit's verdict (the
 	// unit relays it to whoever started the run: the cloud's directive, the timer's journal, or
-	// `briard update host`). Host-only, like --fetch-install.
+	// `briard update self`). Host-only, like --fetch-install.
 	if *fetchUpdate != "" {
 		line, err := runFetchUpdate(ctx, *fetchUpdate)
 		if err != nil {

@@ -276,7 +276,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	// A rolled-back swap reports rolled back and leaves the record where it was.
 	c2, key2 := newGuestChannel(t)
 	w2 := withImage(t, c2, guestMan("guest.20260911.rrrrrrr", "/nix/store/r-nixos-system", ""), "img")
-	c2.publish(t, w2, install.TargetLatest)
+	c2.publish(t, w2, install.TargetStable)
 	cfg2 := guestCfg(t, c2, key2)
 	cfg2.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	up3 := &fakeUpgrader{imageRolledBack: true, imageErr: errors.New("booted the wrong system")}
@@ -294,7 +294,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 	c, key := newGuestChannel(t)
 	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "the new image")
-	c.publish(t, want, install.TargetLatest)
+	c.publish(t, want, install.TargetStable)
 	c.bodies["guest/"+want.Version+"/"+guestImageArtifact] = []byte("not the signed bytes")
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
@@ -315,7 +315,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 
 	noImage := guestMan("guest.20260912.iiiiiii", "/nix/store/i-nixos-system", "")
 	noImage.Artifacts = []install.Entry{{Name: "README"}} // a release that ships no image at all
-	c.publish(t, noImage, install.TargetLatest)
+	c.publish(t, noImage, install.TargetStable)
 	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "ships no "+guestImageArtifact) {
 		t.Errorf("outcome = %+v", o)
@@ -328,7 +328,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	c, key := newGuestChannel(t)
 	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "img")
-	raw := c.publish(t, want, install.TargetLatest)
+	raw := c.publish(t, want, install.TargetStable)
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	os.WriteFile(cfg.GuestReleaseCache, raw, 0o644) // the record says: at want
@@ -346,5 +346,30 @@ func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(cfg2.GuestReleaseCache); string(b) != string(raw) {
 		t.Error("the record was not corrected to the release the guest runs")
+	}
+}
+
+// AN EMPTY PAYLOAD RESOLVES `stable`, NOT `latest` ([B.159](f)). The two pointers name different
+// releases here on purpose, because that is the only shape in which the default is observable:
+// a directive carrying no target is what an operator or a cloud sends when they mean "just
+// update", and until this it walked the node onto whatever was published last -- a release the
+// channel points at precisely so that it can be PROVEN before promotion. The assertion is which
+// release the node took, never that it took one.
+func TestUpdateGuestEmptyPayloadTakesStableNotLatest(t *testing.T) {
+	c, key := newGuestChannel(t)
+	promoted := withImage(t, c, guestMan("guest.20260910.sssssss", "/nix/store/s-nixos-system", ""), "the promoted image")
+	unproven := withImage(t, c, guestMan("guest.20260911.lllllll", "/nix/store/l-nixos-system", ""), "the unproven image")
+	c.publish(t, promoted, install.TargetStable)
+	c.publish(t, unproven, install.TargetLatest)
+	cfg := guestCfg(t, c, key)
+	cfg.GuestImage = filepath.Join(t.TempDir(), "guest-image", "nixos.qcow2")
+	os.MkdirAll(filepath.Dir(cfg.GuestImage), 0o755)
+	up := &fakeUpgrader{}
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
+	if o.State != api.OutcomeDone || up.imageTarget.Version != promoted.Version {
+		t.Fatalf("outcome %+v, image %+v — want the node on %s", o, up.imageTarget, promoted.Version)
+	}
+	if strings.Contains(o.Detail, unproven.Version) {
+		t.Fatalf("the node took the unproven release: %+v", o)
 	}
 }

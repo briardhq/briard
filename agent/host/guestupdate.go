@@ -29,7 +29,7 @@ import (
 // its own OS from a channel -- which an OSS install could not do at all until now.
 //
 // Three triggers, mirroring the host chain: the cloud (a closure, as before), `briard update
-// guest` (this directive, over the admin socket, resolving `latest` by default) and a timer
+// vm` (this directive, over the admin socket, resolving `stable` by default) and a timer
 // INSIDE the agent (this directive with `stable`, nightly). The timer living inside the agent is
 // correct and not an inconsistency with the host chain's frozen unit: the bootstrap problem is
 // agent-only. A broken agent that cannot upgrade the guest is not bricked, because the host
@@ -50,7 +50,7 @@ type systemReader interface {
 }
 
 // applyGuestUpdate is the update-guest directive ([B.86d]): resolve d.Payload (a target:
-// `latest`, `stable`, or an exact guest id; "" is latest) on the guest chain and, if due, run
+// `latest`, `stable`, or an exact guest id; "" is stable) on the guest chain and, if due, run
 // the OS upgrade to the closure it names. The outcome is the upgrade's own -- done, rolled back,
 // failed -- and a refusal before anything moved (an unverifiable manifest, a host too old, a pin
 // below the floor) is a failure that names its reason.
@@ -59,8 +59,10 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	target := d.Payload
+	// AN EMPTY PAYLOAD IS `stable`, not `latest` ([B.159](f)). Every update target on every path
+	// defaults to the promoted pointer; `latest` is proven by a canary that names it on purpose.
 	if target == "" {
-		target = install.TargetLatest
+		target = install.TargetStable
 	}
 	if up == nil {
 		logf("directive kind=update-guest ignored (no guest on this node)")
@@ -260,7 +262,7 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 		al := notify.Alert{
 			Level: notify.Warning,
 			Title: "Briard: automatic OS updates are off on this node",
-			Body:  fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update guest` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
+			Body:  fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update vm` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
 		}
 		logf("%s", notify.LogLine(al))
 		if n != nil {

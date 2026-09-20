@@ -374,17 +374,17 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test -x ${qemuLink}/bin/qemu-system-x86_64")  # the public path resolves through it
     print(f"5b) young arm left alone, old arm forced, {V4} committed with its manifest, shim and qemu link")
 
-    # === 6) `briard update host` — the human trigger, on the REAL agent binary, through the
+    # === 6) `briard update self` — the human trigger, on the REAL agent binary, through the
     #        same unit: a message in, the unit's verdict out, no admin socket. Up to date → a
     #        no-op that says so and bounces nothing. ===
     inv_before = invocation()
-    out = machine.succeed("${realAgent} update host -base /var/lib/briard -run /run/briard").strip()
+    out = machine.succeed("${realAgent} update self -base /var/lib/briard -run /run/briard").strip()
     assert f"already at {V4}" in out, f"unexpected CLI output: {out!r}"
     machine.fail("test -e ${resultMsg}")   # the CLI consumed its result
     machine.fail("test -e ${targetMsg}")   # and the unit consumed its target
     machine.fail("test -e ${updateFlag}")
-    assert invocation() == inv_before, "an up-to-date `briard update host` bounced the agent"
-    print("6) briard update host: already at the target, nothing armed, nothing restarted")
+    assert invocation() == inv_before, "an up-to-date `briard update self` bounced the agent"
+    print("6) briard update self: already at the target, nothing armed, nothing restarted")
 
     # === 7) REFUSE-AND-STAY through the unit: a release whose served bytes differ from what
     #        its signed manifest pins is refused by the fresh bootstrap's hash check — nothing
@@ -393,17 +393,25 @@ pkgs.testers.runNixOSTest {
     V5 = "v3.20260907.bbbbbbb"
     publish(V5, "${readyV4}", pointers=("latest",))
     machine.succeed(f"install -m755 ${evilCand} /srv/host/{V5}/linux/briard-agent")  # tamper AFTER signing
-    machine.fail("${realAgent} update host -base /var/lib/briard -run /run/briard")
+    # ⚠️ THE DEFAULT IS `stable`, AND HERE IT IS OBSERVABLE ON THE REAL BINARY ([B.159](f)):
+    # V5 sits at `latest` alone, so the bare verb must not reach it at all. Before the default
+    # moved, this very line is what fetched the tampered bytes -- which is why the refusals
+    # below now have to name `latest` on purpose, and why this assertion goes first: a default
+    # that silently drifted back would make every refusal under it fire for the wrong reason.
+    out = machine.succeed("${realAgent} update self -base /var/lib/briard -run /run/briard").strip()
+    assert f"already at {V4}" in out, f"the bare verb did not take stable: {out!r}"
+    machine.fail("test -e ${nextBin}")
+    machine.fail("${realAgent} update self -to latest -base /var/lib/briard -run /run/briard")
     machine.succeed("journalctl -u briard-update | grep -q 'does not match the signed manifest'")
     machine.fail("test -e ${nextBin}")
     machine.fail("test -e ${updateFlag}")
     assert " v4" in committed(), f"a refused update changed the committed binary, committed={committed()!r}"
     # An UNSIGNED pointer (signature removed) is refused before anything is fetched.
     machine.succeed("rm /srv/host/latest/linux/manifest.json.sig")
-    machine.fail("${realAgent} update host -base /var/lib/briard -run /run/briard")
+    machine.fail("${realAgent} update self -to latest -base /var/lib/briard -run /run/briard")
     machine.fail("test -e ${nextBin}")
     assert " v4" in committed(), f"an unsigned manifest changed the committed binary, committed={committed()!r}"
-    print("7) tampered artifact + unsigned manifest refused through the unit — committed v4 kept")
+    print("7) the bare verb stayed on stable; tampered artifact + unsigned manifest at `latest` refused through the unit — committed v4 kept")
 
     # === 8) THE FLOOR: an exact pin OLDER than stable is refused loudly; the same pin is
     #        accepted once stable is moved down to it (the failable control). ===
@@ -412,11 +420,11 @@ pkgs.testers.runNixOSTest {
     #        the stub divergence explained in the header only works through a pointer.
     OLD = "v3.20260201.ccccccc"
     publish(OLD, "${realAgent}", pointers=())
-    machine.fail(f"${realAgent} update host -to {OLD} -base /var/lib/briard -run /run/briard")
+    machine.fail(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard")
     machine.succeed("journalctl -u briard-update | grep -q 'older than stable'")
     machine.fail("test -e ${nextBin}")
     machine.succeed(f"cp /srv/host/{OLD}/linux/manifest.json /srv/host/{OLD}/linux/manifest.json.sig /srv/host/stable/linux/")
-    out = machine.succeed(f"${realAgent} update host -to {OLD} -base /var/lib/briard -run /run/briard").strip()
+    out = machine.succeed(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard").strip()
     # DOWNLOAD ONLY WHAT CHANGED ([B.86b]): this release ships the same shim and qemu bytes the
     # installed manifest ({V4}'s) pins, so neither is fetched or staged -- the agent alone moves.
     assert f"staged {OLD} (agent), armed" in out, f"a pin at the moved floor was refused, or fetched more than changed: {out!r}"
@@ -436,7 +444,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("rm -f ${nextBin} ${nextManifest} ${updateFlag}")  # un-arm scenario 8's pin
     V9 = "v3.20260908.ddddddd"
     publish(V9, "${crashCand}", pointers=("latest",), qemu="bundle2")
-    out = machine.succeed("${realAgent} update host -to latest -base /var/lib/briard -run /run/briard").strip()
+    out = machine.succeed("${realAgent} update self -to latest -base /var/lib/briard -run /run/briard").strip()
     assert f"staged {V9} (agent, qemu), armed" in out, f"unexpected: {out!r}"   # the shim is unchanged
     assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V9}"
     machine.succeed(f"cmp /var/lib/briard/qemu-{V9}/PROVENANCE /root/bundle2/PROVENANCE")
@@ -456,7 +464,7 @@ pkgs.testers.runNixOSTest {
 
     V10 = "v3.20260909.eeeeeee"
     publish(V10, "${readyV2}", pointers=("latest",))   # back on the FIRST bundle == the installed one
-    out = machine.succeed("${realAgent} update host -to latest -base /var/lib/briard -run /run/briard").strip()
+    out = machine.succeed("${realAgent} update self -to latest -base /var/lib/briard -run /run/briard").strip()
     assert f"staged {V10} (agent), armed" in out, f"unexpected: {out!r}"
     # Still gone before this release is armed. It was the revert boot that removed it ([B.157]); the
     # fetch would have too (DiscardNextBundle), and both being true is the point -- neither is the

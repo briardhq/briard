@@ -119,12 +119,13 @@ var commands = []command{
 		run: runRescue, probe: []string{"-h"},
 	},
 	{
-		name: "update", args: "<host|guest>", group: groupRepair,
-		synopsis: "update this machine's agent, or its guest OS, from the release channel now",
-		detail: "Both resolve `latest` (-to changes that). host starts the same update unit the nightly\n" +
+		name: "update", args: "<self|vm>", group: groupRepair,
+		synopsis: "update briard's own software, or the VM it runs apps in, from the release channel now",
+		detail: "Both resolve `stable` (-to takes latest or an exact id). self is every briard binary this\n" +
+			"machine runs, inside the VM as well as out; it starts the same update unit the nightly\n" +
 			"timer and the cloud use and prints how it ended: already at the target, staged and armed\n" +
 			"(the agent restarts itself at its next safe point; `systemctl restart briard-agent`\n" +
-			"applies it now), or refused and why; it works even when the agent is down. guest asks the\n" +
+			"applies it now), or refused and why; it works even when the agent is down. vm asks the\n" +
 			"agent to move the OS to the release's closure, health-gated, and reports the outcome.",
 		run: runUpdate, probe: []string{"-h"},
 	},

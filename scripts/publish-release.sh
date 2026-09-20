@@ -634,8 +634,9 @@ latest)
 	# It is NOT `promote` with a different argument, though it shares `move_pointer` with it.
 	# `stable` is what every installed node converges to and what a stranger gets, so promotion
 	# carries the no-same-date rule, the root installer and an evidence bar. `latest` says only
-	# "this exists and the gates liked it": it is what `briard update host` takes by default and
-	# what a cloud canary pins. Two decisions, one mechanism.
+	# "this exists and the gates liked it": it is what a cloud canary pins and what `briard update
+	# self -to latest` asks for by name — nothing arrives at it by default any more ([B.159](f)).
+	# Two decisions, one mechanism.
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")

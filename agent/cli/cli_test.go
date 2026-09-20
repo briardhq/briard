@@ -401,13 +401,13 @@ func TestAccountLang(t *testing.T) {
 	}
 }
 
-// `briard update guest` ([B.86d]) is the guest chain's human trigger: it submits the local
+// `briard update vm` ([B.86d]) is the guest chain's human trigger: it submits the local
 // update-guest directive with the target, and reports the upgrade's outcome -- a refusal
 // (rolled back, node serving) distinguished from a breakage, as `os upgrade` once did.
 func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "now running guest.20260910.n"})
 	var out, errOut bytes.Buffer
-	if code := Main(context.Background(), []string{"update", "guest", "-sock", sock, "-to", "stable"}, &out, &errOut); code != 0 {
+	if code := Main(context.Background(), []string{"update", "vm", "-sock", sock, "-to", "stable"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
 	ds := seen()
@@ -419,11 +419,11 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	}
 	for _, c := range []struct{ state, detail, want string }{
 		{api.OutcomeRolledBack, "reboot needs a handover", "unchanged and serving"},
-		{api.OutcomeFailed, "older than the guest release requires", "briard update guest:"},
+		{api.OutcomeFailed, "older than the guest release requires", "briard update vm:"},
 	} {
 		sock, _ := fakeAgent(t, api.DirectiveOutcome{State: c.state, Detail: c.detail})
 		var out, errOut bytes.Buffer
-		if code := Main(context.Background(), []string{"update", "guest", "-sock", sock}, &out, &errOut); code != 1 {
+		if code := Main(context.Background(), []string{"update", "vm", "-sock", sock}, &out, &errOut); code != 1 {
 			t.Errorf("%s exited %d, want 1", c.state, code)
 		}
 		if !strings.Contains(errOut.String(), c.want) || !strings.Contains(errOut.String(), c.detail) {
@@ -434,5 +434,31 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	var out2, errOut2 bytes.Buffer
 	if code := Main(context.Background(), []string{"os", "upgrade", "/nix/store/x"}, &out2, &errOut2); code == 0 {
 		t.Error("`briard os upgrade` still exists")
+	}
+}
+
+// THE DEFAULT IS `stable`, AND THE OLD VERBS ARE GONE ([B.159](f), [B.159](i)). Both halves are
+// asserted here rather than read off the flag declaration. The default is the only thing between
+// an admin typing four words and a release nothing has promoted -- `latest` exists to be proven
+// by a canary that names it on purpose. And the alpha ships no aliases
+// ([[alpha-reinstall-only-policy]]), so `host` and `guest` have to fail loudly rather than
+// quietly keep working: a rename nobody can observe is a rename that did not happen.
+func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "already running guest.20260910.n"})
+	var out, errOut bytes.Buffer
+	if code := Main(context.Background(), []string{"update", "vm", "-sock", sock}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
+	}
+	if ds := seen(); len(ds) != 1 || ds[0].Payload != install.TargetStable {
+		t.Fatalf("agent saw %+v, want one update-guest for %q", ds, install.TargetStable)
+	}
+	for _, verb := range []string{"host", "guest"} {
+		var out, errOut bytes.Buffer
+		if code := Main(context.Background(), []string{"update", verb, "-sock", sock}, &out, &errOut); code != 2 {
+			t.Errorf("`briard update %s` exited %d, want 2 -- the retired verb still works", verb, code)
+		}
+		if !strings.Contains(errOut.String(), "unknown side") {
+			t.Errorf("`briard update %s` stderr = %q, want it to name the unknown side", verb, errOut.String())
+		}
 	}
 }

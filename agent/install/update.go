@@ -64,7 +64,7 @@ type Decision struct {
 //     revert a cloud pin that shares a date with stable; the constraint sits in the publish path
 //     instead (promote refuses a same-date build).
 //   - `latest` / an exact id: install when the full id differs. These force past the ordering
-//     but still no-op at equality, or `briard update host` would bounce an up-to-date agent.
+//     but still no-op at equality, or `briard update self` would bounce an up-to-date agent.
 //   - An exact id may be OLDER than the installed one (a bad release must be revocable without
 //     reinstalling every home) but NEVER older than stable: unbounded, a buggy or compromised
 //     agent could name any old signed release; floored, the worst it reaches is a build we
@@ -398,7 +398,7 @@ func HostSatisfies(minHost, host string) error {
 		return fmt.Errorf("%w: this host's release id %q has no date to compare min_host %s against", ErrHostTooOld, host, minHost)
 	}
 	if have < need {
-		return fmt.Errorf("%w: host %s < min_host %s — update the host first (`briard update host`); a host that can no longer update is outside its support window and must be reinstalled", ErrHostTooOld, host, minHost)
+		return fmt.Errorf("%w: host %s < min_host %s — update briard first (`briard update self`); a host that can no longer update is outside its support window and must be reinstalled", ErrHostTooOld, host, minHost)
 	}
 	return nil
 }
