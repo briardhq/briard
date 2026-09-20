@@ -73,7 +73,11 @@ let
   # the agent, so guestfirmware/bin.go BinNames is now the only place the names and their order
   # live. This module cares about one name at a time -- whichever its picker was handed.
   # briard-bin-exec <name> <baked|-> [args...]
-  exec = pkgs.writeShellScript "briard-bin-exec" ''
+  # A PACKAGE, not a bare script, since [B.160]: the units that go through the picker are written
+  # by the pushed agent now, and an agent can only name a fixed path -- so the picker joins the
+  # image's tool profile under its own name (configuration.nix, guestTools) instead of being
+  # interpolated as a store path into a baked unit.
+  exec = pkgs.writeShellScriptBin "briard-bin-exec" ''
     set -eu
     name=$1; baked=$2; shift 2
     # Each choice is said on stderr (the journal, forwarded to the console): a rig that watches a
@@ -110,10 +114,10 @@ in
 {
   options.briard.pivot = {
     exec = lib.mkOption {
-      type = lib.types.path;
+      type = lib.types.package;
       default = exec;
       readOnly = true;
-      description = "The picker every dressed unit's ExecStart goes through: briard-bin-exec <name> <baked|-> [args].";
+      description = "The picker every dressed unit's ExecStart goes through, as a package providing bin/briard-bin-exec <name> <baked|-> [args].";
     };
     binDir = lib.mkOption {
       type = lib.types.str;

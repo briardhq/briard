@@ -8,55 +8,17 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
+	"briard.io/shared/chain"
 	"briard.io/shared/model"
 	"briard.io/shared/nodestorage"
 )
 
-// promoterUnits is the ordered drbd-reactor promoter chain for a data node: mount the DRBD
-// volume -> converge this node to what the volume says it runs -> claim the VIP. The front door
-// is not a member: it rides briard-vip (wantedBy + partOf) inside the guest, so it tracks the
-// primary role without the host needing to name it.
-//
-// IT IS STATIC, and that is what makes converge-at-promotion possible ([V3b.3](f)). The chain is
-// what drbd-reactor promotes WITH, but the volume is only readable AFTER promotion — so the
-// start-list cannot name the services themselves. briard-services is the unit that, once the
-// mount exists, reads the manifests, renders and starts them. The runtime-installed services are
-// therefore NOT members, which is also what makes "a service error alerts but never demotes"
-// mechanically true: drbd-reactor never sees them, so a crashed container cannot deactivate the
-// target. A constant chain is what the baked slot's always was; restoring it generalises the
-// trick to N services.
-//
-// Nothing here is conditional on a service existing any more. The old conditional membership
-// existed because naming a unit the guest does not define fails the WHOLE ordered chain, and a
-// zero-service node has no service unit to name — but briard-services is defined
-// unconditionally by the guest image, exactly as briard-primary-storage and briard-vip are, so there is
-// nothing left to make conditional.
-//
-// It takes no arguments, and that is the end state [V3b.3](e1) was after: the chain is the same
-// units on every anchor in the fleet, so there is nothing to decide and nothing to pass.
-//
-// THE FRONT DOOR IS A MEMBER ([B.125]) AND CARRIES THE HOUSEHOLD'S mDNS NAMES ([B.152]). On a node
-// with no `.casa` domain the door routes `byHost` against the service's own `.local` names, so a
-// request to the bare VIP matches nothing: the NAME is the only path to a service, and a node that
-// cannot publish is unreachable while every other part of it reports healthy. That is what the
-// promoter is for. Publishing and answering being one member is also what makes them impossible to
-// disagree — the door answers for exactly the names it routes.
-// Membership means it never runs on the node that LOST the promotion race: reactor gives every
-// member `Requires=drbd-promote@<res>.service`, so its job fails with 'dependency' and never
-// executes, where a `wantedBy` binding would start it into a node that had claimed no address.
-//
-// ORDER IS THE DEPENDENCY: reactor writes `Requires=`/`After=` the PREVIOUS member, so the door
-// starts only once briard-vip holds the address its names resolve to. Publishing a name that
-// nothing answers is the failure mode the order exists to avoid.
-func promoterUnits() []string {
-	return []string{
-		"briard-primary-storage.service",
-		"briard-services.service",
-		"briard-vip.service",
-		"briard-reverse-proxy.service",
-		"briard-dashboard.service",
-	}
-}
+// promoterUnits is the ordered drbd-reactor promoter chain for a data node, from the ONE
+// definition both halves of the bundle read ([B.160], shared/chain). The host hands it to
+// drbd-reactor as the start-list; the guest agent writes the same order into every member's
+// Requires=/After= and into the lone node's target. shared/chain carries why the list is what
+// it is, and why nothing in it is conditional.
+func promoterUnits() []string { return chain.Members() }
 
 // buildVersion is the agent's release id, stamped at build time:
 //

@@ -8,7 +8,7 @@
 { pkgs, guestModule }:
 
 let
-  inherit (pkgs.lib) concatMapStringsSep mkForce mkIf;
+  inherit (pkgs.lib) concatMapStringsSep mkIf;
   inherit (pkgs) lib;
 
   # The REAL renderer, as a helper binary. Shared with service-install.nix so a fixture installed
@@ -378,7 +378,22 @@ let
     in
     { config, ... }:
     {
-      imports = [ guestModule ];
+      # HOW LONG A NODE REFUSES TO PROMOTE after one of its chain members gave up. A field node
+      # runs the agent's own 300s ([V3b.5](c), agent/guestagent/units.go defaultHoldSecs); this
+      # option exists for exactly one reason and always did -- the contract rigs drive the whole
+      # hold lifecycle and cannot wait five minutes. It is declared HERE rather than in the
+      # product module since [B.160], because the unit is the agent's now and an option the image
+      # no longer reads would be a lie. What it configures is the renderer's environment, below.
+      imports = [
+        guestModule
+        {
+          options.briard.promotionHoldSecs = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 300;
+            description = "Seconds a node refuses promotion after a promoter chain member exhausts its start limit.";
+          };
+        }
+      ];
       # No host pushes the guest's binaries into a nixosTest machine ([B.138], [B.139]): the
       # image bakes only the firmware, so link the pushed set in as if a host had dressed it.
       briard.pivot.preDressed = {
@@ -406,6 +421,7 @@ let
         after = [ "systemd-tmpfiles-setup.service" ];
         before = [ "multi-user.target" ];
         path = [ pkgs.systemd ]; # systemctl daemon-reload
+        environment.BRIARD_PROMOTION_HOLD_SECS = toString config.briard.promotionHoldSecs;
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -440,16 +456,13 @@ let
       # where their private DRBD address lives. That co-location is the reason briard-vip only
       # takes the NIC down when the address came from DHCP.
       #
-      # EnvironmentFile is dropped with it: the product REQUIRES /run/briard/vip.env now
-      # ([V3b.16a]), and there is no agent here to write one. Stating both halves is the harness
-      # declaring its own configuration -- the same rule the reactor snippet above follows.
-      systemd.services.briard-vip.serviceConfig = {
-        Environment = mkForce [
-          "VIP_DEV=${vipDev}"
-          "VIP_ADDR=${vipAddr}"
-        ];
-        EnvironmentFile = mkForce [ ];
-      };
+      # ⚠️ IT IS STATED ONCE NOW, in the tmpfiles symlink below ([B.160]). briard-vip used to
+      # carry a `serviceConfig.Environment` override of the same two values beside it, because
+      # the unit was a NixOS one this file could reach; it is written by the agent at runtime
+      # now and cannot be. Nothing is lost -- the override was already redundant with the file,
+      # which the product REQUIRES as an EnvironmentFile ([V3b.16a]) and which the mDNS
+      # publishers read anyway -- and one statement of an address is one fewer thing that can
+      # disagree with itself.
       # /etc/drbd.conf is the one file drbdadm looks for at a path we do not choose, so the harness
       # states it here (the shipped image states the identical glob in disk-image.nix, which these
       # nodes do not import).

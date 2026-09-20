@@ -36,28 +36,11 @@ let
   # The one-time format marker and the snapshots directory left with it: both are the pushed
   # agent's now (agent/guestagent's dataFormatMarker and snapshotsDir), because the unit that
   # reads one and makes the other is Go rather than shell.
-  tlsDir = "${btrfsRoot}/tls"; # cert/key on the DRBD volume (replicated, survive failover)
-  # The VIP's address AND device are both agent-determined: net.configure writes VIP_ADDR +
-  # VIP_DEV here, and briard-vip.service reads this file and NOTHING ELSE. Nothing is baked, so
-  # there is nothing to fall back to and no address or NIC anyone has to attribute after the fact.
-  #
-  # The address used to be baked outright ("v0 fixed service VIP, not a knob"). That made the
-  # product work on the one subnet our lab happens to use and **fail green** on every other:
-  # the readiness probe runs in-guest, against an address the guest itself owns, so a node no
-  # one in the house could reach still reported ready (V3.19). The LAN owns that value now.
-  #
-  # The DEVICE went the same way, and it took a field failure to earn it: a guest that reboots
-  # while its host agent is absent has no /run (tmpfs), so briard-vip ran on the baked `eth1` --
-  # the DRBD replication NIC -- claimed the service address there, and took a SECOND DHCP lease
-  # doing it, because the client-id is derived from that NIC's own MAC ([V3b.16]). The baked
-  # device was only ever the agent-less harnesses' fallback, and a fallback every test agrees
-  # with is indistinguishable from a default nobody chose. Deleting it is safe for exactly one
-  # reason, and that reason is the whole of [V3b.16a]: drbd-reactor no longer starts at boot, so
-  # nothing can read this file before the agent has written it (see drbd-reactor.service below).
-  #
-  # The harnesses DECLARE their own device and address (nixosTest/lib.nix, and the driver-based
-  # tests via VIP_DEV/VIP_ADDR), which turns an inherited assumption into a stated one.
-  vipEnvPath = "/run/briard/vip.env";
+  # ⚠️ THE TLS DIRECTORY AND THE VIP's ENV FILE ARE NOT NAMED HERE ANY MORE ([B.160]). Both were
+  # read only by units -- the front door's `-cert`/`-key`, briard-vip's EnvironmentFile -- and
+  # those are the pushed agent's now, which already had its own spellings of both
+  # (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath). The SCRIPTS below still write and read
+  # the VIP's live/stored addresses, which is why vipLivePath and vipAddrFile stay.
   # The topology word node-storage writes beside vip.env ([B.145c]): `flock` or `alone`, and the
   # only thing a shell unit needs to know about the spec. PAIRED with the Go const
   # guestagent.topologyEnvPath and the two values its topologyEnv writes.
@@ -93,37 +76,63 @@ let
   guestTools = pkgs.buildEnv {
     name = "briard-guest-tools";
     paths = [
+      # The PACKAGES an agent-written unit's PATH resolves against -- the same lists those units
+      # carried in their own `path =` before they moved.
       pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange/vgs -- the `bin` output, already in this closure
       pkgs.cryptsetup
       pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here ([V3b.33](a))
       pkgs.drbd # drbdadm create-md / new-current-uuid, and drbdmeta for the lone-node probe
       pkgs.btrfs-progs # mkfs.btrfs, once, on the LV node storage just created ([B.145a])
-      pkgs.coreutils # install, test, rm
-      config.systemd.package # systemctl start drbd@<res>.target
-    ];
+      pkgs.coreutils # install, test, rm; sleep, for the hold
+      pkgs.util-linux # mount/umount/mountpoint/findmnt, the primary-storage half
+      pkgs.iproute2 # ip, for the VIP
+      pkgs.iputils # arping, for the gratuitous announcement
+      config.systemd.package # systemctl, journalctl
+      # ⚠️ THE BASELINE NixOS GAVE EVERY SERVICE FOR FREE, restated because nothing gives it to a
+      # runtime unit. nixpkgs defaults `systemd.services.<n>.path` to coreutils + findutils +
+      # gnugrep + gnused + systemd and APPENDS each unit's own list to it, so every unit deleted
+      # from this file had these five whether it asked or not. Leaving them out would have made
+      # the move a quiet PATH narrowing on the promotion path -- the one place a missing command
+      # costs a household its house. With them the agent-written units are a strict superset of
+      # what the baked ones had.
+      pkgs.findutils
+      pkgs.gnugrep
+      pkgs.gnused
+      # The MODULE's podman, not `pkgs.podman` -- naming the latter ships a second,
+      # differently-wrapped copy of the runtime ([B.5]).
+      config.virtualisation.podman.package
+      # And the NAMED TOOLS a unit's ExecStart points at directly, because systemd wants an
+      # absolute path for the first word and the agent can only know a fixed one.
+      config.briard.pivot.exec # briard-bin-exec, the frozen picker the doors go through
+      vipArping
+      vipDown
+      vipRenew
+      vipUp
+    ]
+    ++ holdSteps;
     pathsToLink = [ "/bin" "/sbin" ];
   };
   # PAIRED with the Go const guestagent.defaultToolsBin, which is what an agent-written unit puts
   # on its PATH. Different languages, so no shared import; the agent-side comment names this back.
   toolsEtc = "briard/tools";
-  # THE CHAIN, stated once: the seven promoter units in start order, the same list the host's
-  # promoterUnits() hands drbd-reactor. The hold resets them, and the lone node's target (the
-  # mkMerge tail of this file) carries them.
-  chainMembers = [
-    "briard-primary-storage.service"
-    "briard-services.service"
-    "briard-vip.service"
-    "briard-reverse-proxy.service"
-    "briard-dashboard.service"
-  ];
+  # ⚠️ THE CHAIN IS NOT STATED HERE ANY MORE ([B.160]). It was one of four copies -- this one, the
+  # lone node's target, the hold's stop-and-reset lists, and the host's promoterUnits() -- kept in
+  # step by hand. The units that named it are written by the pushed agent now, from the one Go
+  # definition both halves of the bundle read (shared/chain), and the steps below take it as
+  # arguments instead of baking it.
   # A hold step with one body per topology ([B.145c]). The word decides; a missing word is
   # "node storage has not run on this boot", and an unknown one names itself rather than
   # guessing -- both are failures of the step, and what a failed step means is the unit's to say
   # (ExecCondition skips, ExecStartPre escalates).
+  #
+  # A NAMED TOOL IN THE PROFILE SINCE [B.160], because the unit that runs these is written by the
+  # pushed agent and can only name a fixed path. The split is the item's: the image keeps the
+  # dispatch and the commands -- they are store paths and they do not change with a release --
+  # and the agent passes in the one thing only it knows, the chain's members, as `"$@"`.
   byTopology =
     name:
     { flock, alone }:
-    pkgs.writeShellScript name ''
+    pkgs.writeShellScriptBin name ''
       set -u
       if [ ! -r ${topologyEnvPath} ]; then
         echo "${name}: no ${topologyEnvPath}; node storage has not run on this boot" >&2
@@ -165,7 +174,7 @@ let
   # the same unit that resolved the address, and whether systemd re-reads an EnvironmentFile
   # between an ExecStart and an ExecStartPost is exactly the kind of thing that must not be the
   # reason a gratuitous ARP names the wrong address. Sourcing it is one line and no assumption.
-  vipArping = pkgs.writeShellScript "briard-vip-arping" ''
+  vipArping = pkgs.writeShellScriptBin "briard-vip-arping" ''
     set -eu
     . ${vipLivePath}
     exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
@@ -186,32 +195,86 @@ let
   # A lease that EXPIRES needs nothing from this hook either: the interface then holds no
   # address, net.vip reports "" as ground truth, and the node reads not-ready by the same rule
   # that covers every other addressless data node. The honest signal already flows.
-  # WHAT HANDS THE RESOURCE ON WHEN A CHAIN MEMBER GIVES UP ([V3b.5](c)), and it has to be a
-  # STATE hook rather than a dependency, which is the whole finding.
+  # ── THE HOLD'S STEPS ([V3b.5](c), [B.145c]), AS IMAGE-SIDE TOOLS ([B.160]) ───────────────────
   #
-  # `Requires=` is JOB-level: systemd consults it when a stop or restart job is enqueued on the
-  # depended-upon unit, and never against that unit's state (`transaction.c`, atom
-  # UNIT_ATOM_PROPAGATE_STOP on UNIT_REQUIRED_BY). That is why the promoter target's default
-  # `Requires=` on its members demoted this node on EVERY crash: `Restart=` enqueues its
-  # auto-restart with job mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the
-  # target, which stops drbd-promote@ (PartOf) -- measured, and it took the resource away from a
-  # live peer in 2 of 5 door crashes. With `target-as = Wants` (agent/drbd/config.go) nothing
-  # upstream reacts to a member at all, which is right for a crash and wrong for a member that
-  # has genuinely given up.
+  # The unit that runs them is written by the pushed agent, so what lives here is only what the
+  # agent cannot carry: the topology dispatch and the store paths. Every step that used to bake
+  # the chain's member list takes it as arguments instead, which is why the list could leave this
+  # file entirely.
   #
-  # OnFailure= is the missing half: `unit.c` fires it on the transition INTO UNIT_FAILED, with no
-  # reference to restart mode. Under `RestartMode=direct` a member never enters that state while
-  # it is being auto-restarted, so this stays silent through the transient crashes and fires
-  # exactly once -- when the start limit is exhausted and the unit really has stopped trying.
-  #
-  # It points at OUR hold unit rather than upstream's drbd-demote-or-escalate@ directly, and the
-  # reason is ordering: reactor re-promotes ~2s after a demote completes, so the mask that says
-  # "not me, for now" has to go on BEFORE the demote, not after it. briard-promotion-hold does
-  # both in that order and carries the same FailureAction=reboot for a demote DRBD refuses.
-  chainMemberFailure = {
-    OnFailure = "briard-promotion-hold.service";
-    OnFailureJobMode = "replace-irreversibly";
-  };
+  # THE ORDER IS THE DESIGN: mask BEFORE demoting. Measured on a lone node, drbd-reactor
+  # re-promotes about 2s after a demote completes, so a hold bolted on AFTER the demote loses
+  # that race. Masking first means the promotion is REFUSED rather than undone -- `systemctl
+  # start drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's role never
+  # moves, and there is no second mount/unmount cycle to pay for. The mask is also the ONLY lever
+  # that says "not me, for now": everything else reactor offers is either DRBD's own decision or
+  # a static handicap biasing WHICH node wins a race. `--runtime` puts it in /run, so a reboot
+  # clears it and a hold can never outlive the boot that might have fixed its cause.
+  holdSteps = [
+    # ⚠️ ONLY A NODE THAT HOLDS THE RESOURCE MAY HAND IT ON, and this guard is not defensive
+    # programming -- without it the STANDBY masks itself on every boot. Measured: a member whose
+    # start job fails with result `dependency` fires `OnFailure=` exactly like one that failed on
+    # its own, and on the node that loses the promotion race every member does ("Multiple
+    # primaries not allowed by config" -> drbd-promote@ fails -> "Dependency failed for ..." ->
+    # "Triggering OnFailure= dependencies"). So the loser ran this and masked itself for the whole
+    # hold, which at 300s is a standby that cannot take over for five minutes after a boot.
+    #
+    # It was harmless right up until it wasn't: the loser fired OnFailure into upstream's
+    # drbd-demote-or-escalate@ too, which demoted an already-Secondary node and exited 0. The same
+    # trigger only became dangerous when the action grew a five-minute mask.
+    #
+    # ⚠️ AND ON A LONE NODE THE GUARD IS ALWAYS MET ([B.145c]): there is no loser to protect and
+    # nobody else who could be holding the volume, so every member failure is this node's own to
+    # hold -- and to restart from, below.
+    (byTopology "briard-hold-only-if-holding" {
+      flock = "${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'";
+      alone = "exit 0";
+    })
+    # A lone node needs no mask: nothing re-promotes during its hold, because the release below is
+    # the only thing that starts its target.
+    (byTopology "briard-hold-refuse" {
+      flock = "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target && ${config.systemd.package}/bin/systemctl daemon-reload";
+      alone = ":";
+    })
+    # STEP 2 STOPS drbd-promote@, NOT THE TARGET, and that is a barrier rather than a preference.
+    # Measured: `systemctl stop drbd-services@r0.target` returns as soon as the TARGET is down --
+    # `Stopped target` at 62.386, `Stopping briard-vip` at 62.388, the shim running at 62.412
+    # while the volume was still mounted, exit 11, reboot. The members are `After=drbd-promote@`,
+    # so on the way down they stop BEFORE it: waiting for the promote unit is the only spelling
+    # that waits for all of them. Its own ExecStop is also the ordinary demote, so the confirm
+    # below is a confirmation rather than the thing doing the work.
+    #
+    # The lone node has no promote unit to wait on, so its stop NAMES every unit -- the target and
+    # then the members in reverse, which the AGENT passes in ([B.160]): a stop of several units
+    # returns when all of them are down.
+    (byTopology "briard-hold-stop" {
+      flock = "${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service";
+      alone = ''${config.systemd.package}/bin/systemctl stop "$@"'';
+    })
+    # The ONE escalation, the same cell in both topologies: a demote DRBD refused, or an unmount
+    # something still holds open. A node stuck holding a volume it has declared it cannot serve is
+    # the one thing nothing else recovers from -- on a flock because the peer cannot take over,
+    # alone because the restart below would mount on top of it. Whoever attempts the demote has to
+    # own what happens when DRBD refuses it, which is the unit's FailureAction=reboot.
+    (byTopology "briard-hold-confirm" {
+      flock = "${pkgs.drbd}/lib/drbd/scripts/drbd-service-shim.sh secondary-or-escalate r0";
+      alone = "! ${pkgs.util-linux}/bin/mountpoint -q ${btrfsRoot} || ${pkgs.util-linux}/bin/umount ${btrfsRoot}";
+    })
+    # The release. The unit marks this and the resets `-`: a hold that cannot tidy up must still
+    # end, because leaving the mask on is the one outcome worse than releasing early.
+    (byTopology "briard-hold-release" {
+      flock = "${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target; ${config.systemd.package}/bin/systemctl daemon-reload";
+      alone = ":";
+    })
+    # Alone, the restart is ours ([B.145c]): no reactor re-promotes, so the hold starts the chain
+    # it stopped -- hold-and-restart, forever, and no reboot, which is what a flock does through
+    # its reactor. `--no-block`, because this runs inside the hold's own stop and the start must
+    # not wait on it. The target is `$1`, from the agent, for the same reason the stop list is.
+    (byTopology "briard-hold-restart" {
+      flock = ":";
+      alone = ''${config.systemd.package}/bin/systemctl start --no-block "$1"'';
+    })
+  ];
 
   vipHook = pkgs.writeShellScript "briard-vip-dhcp-hook" ''
     set -u
@@ -247,7 +310,7 @@ let
     # actively WRONG. Losing this write to the page cache leaves the flock remembering an address
     # it has already yielded. (vipLivePath above is /run -- tmpfs, nothing to sync.)
     { printf '%s\n' "$addr" >${vipAddrFile} && ${pkgs.coreutils}/bin/sync -f ${vipAddrFile}; } 2>/dev/null || true
-    VIP_DEV="''${interface}" ${vipArping} || true
+    VIP_DEV="''${interface}" ${vipArping}/bin/briard-vip-arping || true
     # THE NAME NEEDS NOTHING FROM HERE. The door publishes it and re-reads this file on its own
     # tick, so the records follow the address within seconds with no unit to poke and no ordering
     # between the two to get wrong ([B.152]).
@@ -352,7 +415,7 @@ let
   # a DHCP client on it and claim an address the flock's primary owns. The units below already
   # make it unreachable, since the timer lives and dies with briard-vip; this is what keeps it
   # safe under a hand-run `systemctl start` too.
-  vipRenew = pkgs.writeShellScript "briard-vip-renew" ''
+  vipRenew = pkgs.writeShellScriptBin "briard-vip-renew" ''
     set -eu
     pidfile="$(${pkgs.dhcpcd}/sbin/dhcpcd -P "$VIP_DEV")"
     if [ ! -s "$pidfile" ] || ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
@@ -377,7 +440,7 @@ let
   # detecting it is dhcpcd's job, afterwards, rather than a cost every failover pays to find
   # someone else's pre-existing condition. When it does find one it yields, the address changes,
   # and that is handled by the one address-changed path -- which does not care what caused it.
-  vipUp = pkgs.writeShellScript "briard-vip-up" ''
+  vipUp = pkgs.writeShellScriptBin "briard-vip-up" ''
     set -eu
     ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" up
     mkdir -p "$(dirname ${vipLivePath})"
@@ -488,7 +551,7 @@ let
   # -x exits the lease holder WITHOUT releasing (-k is the one that releases). A release hands
   # the address back for the router to give away before the peer can claim it, which is the one
   # thing a floating service address must never do.
-  vipDown = pkgs.writeShellScript "briard-vip-down" ''
+  vipDown = pkgs.writeShellScriptBin "briard-vip-down" ''
     set -u
     # Captured BEFORE sourcing the live file, which sets VIP_ADDR to what we actually claimed.
     # The two are different questions: what we were configured with decides whether this NIC is
@@ -573,24 +636,6 @@ in
   # not a service one: an image has to be RESIDENT before anything renders against it, because
   # nothing on the failover path may pull. Used by the fleet's upgrade demo to pre-stage the
   # target of a rotation. Empty by default — the shipped image carries no workload.
-  # HOW LONG A NODE REFUSES TO PROMOTE AFTER ONE OF ITS CHAIN MEMBERS GAVE UP ([V3b.5](c)).
-  #
-  # 300s is a judgement, not a measurement, and the trade is legible: a fault that TRAVELS with the
-  # replicated volume (a bad routes table, a corrupt cert, a name that collides LAN-wide) is hit
-  # identically by whoever promotes next, so the resource ping-pongs with a period of roughly this
-  # value -- five minutes is about twelve hand-overs an hour, each costing a mount cycle and a
-  # service restart. Longer is calmer and sidelines a recovered node for longer. A node-local fault
-  # (memory pressure, a failing disk, a leaked process holding :80) does not ping-pong at all: the
-  # peer simply keeps serving and this node's hold expires against a resource it cannot have.
-  #
-  # It is an OPTION rather than a constant so the contract test can drive the full lifecycle in
-  # seconds. Nothing else varies it; a node in the field runs the default.
-  options.briard.promotionHoldSecs = lib.mkOption {
-    type = lib.types.ints.positive;
-    default = 300;
-    description = "Seconds a node refuses promotion after a promoter chain member exhausts its start limit.";
-  };
-
   options.briard.stagedImages = lib.mkOption {
     type = lib.types.listOf lib.types.package;
     default = [ ];
@@ -871,198 +916,27 @@ in
       ];
     };
 
-    # THE HAND-OVER, AND THE REFUSAL TO TAKE IT STRAIGHT BACK ([V3b.5](c)). One unit owns the whole
-    # sequence because the ORDER is the design: mask BEFORE demoting.
+    # ── THE PROMOTER CHAIN IS NOT DEFINED HERE ANY MORE ([B.160]) ────────────────────────────
     #
-    # Measured on a lone node: drbd-reactor re-promotes about 2s after a demote completes. So a
-    # hold bolted on AFTER the demote loses that race, and the tidy-looking alternative -- leave
-    # the members' OnFailure pointing at upstream's drbd-demote-or-escalate@ and hang a hold off
-    # its success -- cannot work. Masking first means the promotion is REFUSED rather than
-    # undone: `systemctl start drbd-services@r0.target` fails outright, drbd-promote@ never runs,
-    # DRBD's role never moves, and there is no second mount/unmount cycle to pay for.
+    # Every unit the pushed binaries are started by -- briard-node-storage, the five chain
+    # members, the VIP's renewal pair, the hold that hands the resource on, and the lone node's
+    # target -- is written by the guest agent into /run/systemd/system at its own start
+    # (agent/guestagent/units.go, which carries the unit texts and all the reasoning that used to
+    # sit here). What the image still owns is above: the tool profile those units name, and the
+    # hold's per-topology steps, which take the chain's members as arguments rather than baking
+    # them.
     #
-    # THE MASK IS THE ONLY LEVER THAT SAYS "NOT ME, FOR NOW". Everything else reactor offers is
-    # either DRBD's own decision (may_promote, quorum) or a static handicap biasing WHICH node wins
-    # a race -- preferred-nodes, sleep-before-promote-factor, fencing-promote-delay, the automatic
-    # disk-state sleep. None of them is a local, temporary refusal. `drbd-reactorctl evict` uses
-    # exactly this mask, and `--keep-masked` is exactly this hold without the timer.
+    # WHY THE WHOLE CHAIN AND NOT ONLY THE UNITS THAT EXEC A PUSHED BINARY: the member list can
+    # only have ONE owner. The hold enumerates the members to stop and to reset, the target folds
+    # the ordering onto them, and briard-vip sits in the middle of the list -- so leaving any of
+    # them baked would put the list on both sides of the seam with nothing checking the two
+    # agree, which is this item's own defect at one remove.
     #
-    # WHY THE ESCALATION LIVES HERE rather than in upstream's unit: whoever attempts the demote has
-    # to own what happens when DRBD refuses it. `secondary-or-escalate` exits non-zero when
-    # `drbdsetup secondary` is refused -- something still holds the device open -- and this unit's
-    # FailureAction=reboot is the answer, for the reason upstream gives: DRBD is single-primary, so
-    # a node stuck Primary after declaring it cannot serve blocks its peer from taking over, and
-    # nothing else recovers from that. Note it runs AFTER the target stop above, so by then the
-    # ordinary demote (drbd-promote@'s own ExecStop) has already had its turn and this is a
-    # confirmation, not a race -- the shim returns 0 for "already secondary anyways".
-    #
-    # `--runtime` puts the mask in /run, so a reboot clears it: a hold can never outlive the boot
-    # that might have fixed its cause.
-    #
-    # RELEASE CLEARS THE START LIMIT TOO, and that is not housekeeping. Without the reset, the
-    # member is still inside its StartLimitIntervalSec window when the hold ends, so the next
-    # promotion starts a member systemd immediately refuses -- and the hold length would be
-    # silently pinned to that window. Two numbers that must agree are two numbers that can drift;
-    # this makes promotionHoldSecs a free parameter instead.
-    systemd.services.briard-promotion-hold = {
-      description = "Briard: hand the resource on, and refuse to take it back for a while";
-      wantedBy = [ ];
-      serviceConfig = {
-        Type = "simple";
-        # ⚠️ ONLY A NODE THAT HOLDS THE RESOURCE MAY HAND IT ON, and this guard is not defensive
-        # programming -- without it the STANDBY masks itself on every boot. Measured: a member whose
-        # start job fails with result `dependency` fires `OnFailure=` exactly like one that failed
-        # on its own, and on the node that loses the promotion race every member does
-        # ("Multiple primaries not allowed by config" -> drbd-promote@ fails -> "Dependency failed
-        # for ... briard-reverse-proxy" -> "Triggering OnFailure= dependencies"). So the loser ran
-        # this unit and masked itself for the whole hold, which at the shipped 300s is a standby
-        # that cannot take over for five minutes after a boot -- and if the primary died in that
-        # window, nobody would serve.
-        #
-        # It was harmless right up until it wasn't: the loser fired OnFailure into upstream's
-        # drbd-demote-or-escalate@ too, which demoted an already-Secondary node and exited 0
-        # ("already secondary anyways", per the shim). The same trigger only became dangerous when
-        # the action grew a five-minute mask.
-        #
-        # ExecCondition rather than ExecStartPre: 1..254 SKIPS the unit and does NOT mark it
-        # failed, so a Secondary quietly declines instead of failing into FailureAction=reboot.
-        #
-        # ⚠️ AND NOTHING ABOUT DRESS TRIALS HERE, deliberately ([B.138]). A dress restarts the
-        # front door and the dashboard onto pushed binaries to see whether they really start, so
-        # it can provoke exactly the failure this unit answers -- but a single failed start never
-        # reaches here: an auto-restart under `RestartMode=direct` skips failed/inactive and skips
-        # `OnFailure=`, for a start that failed as much as for a crash while running. What reaches
-        # here is a member with no restart LEFT, the start limit spent. A trial costs up to three
-        # of the doors' five starts, so the trial CLEARS the counter before it begins
-        # (`systemctl reset-failed`, agent/guestfirmware/bin.go) and the arithmetic cannot reach the
-        # limit. An earlier cut made this unit's ExecCondition conditional on a
-        # "trial-in-progress" flag instead; the owner removed it (2026-09-08): the upgrade path is
-        # already intricate, and a rule that makes the demote hook itself conditional -- with a
-        # flag lifetime to get wrong -- buys a rarely-exercised branch where a budget reset with
-        # plain semantics does the same job.
-        #
-        # ⚠️ AND ON A LONE NODE THE GUARD IS ALWAYS MET ([B.145c]): there is no loser to protect
-        # and nobody else who could be holding the volume, so every member failure is this
-        # node's own to hold -- and to restart from, below.
-        ExecCondition = "${byTopology "briard-hold-only-if-holding" {
-          flock = "${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'";
-          alone = "exit 0";
-        }}";
-        # 1. refuse promotion, 2. stop the chain (this IS the demote), 3. confirm we really are
-        #    Secondary or escalate. Each is its own ExecStartPre so a failure names its own step,
-        #    and each has its lone-node body ([B.145c]) -- the same three steps by symmetry, with
-        #    the volume standing where the resource stands.
-        #
-        # STEP 2 STOPS drbd-promote@, NOT THE TARGET, and that is a barrier rather than a
-        # preference. Measured: `systemctl stop drbd-services@r0.target` returns as soon as the
-        # TARGET is down -- `Stopped target` at 62.386, `Stopping briard-vip` at 62.388, the shim
-        # running at 62.412 while the volume was still mounted, exit 11, reboot. The members are
-        # `After=drbd-promote@`, so on the way down they stop BEFORE it: waiting for the promote
-        # unit is the only spelling that waits for all of them. Its own ExecStop is also the
-        # ordinary demote, so step 3 is a confirmation (the shim returns 0 for "already
-        # secondary anyways") rather than the thing doing the work. The lone node has no promote
-        # unit to wait on, so its stop NAMES every member, in reverse: a stop of several units
-        # returns when all of them are down.
-        ExecStartPre = [
-          # A lone node needs no mask: nothing re-promotes during its hold, because the release
-          # below is the only thing that starts its target.
-          "${byTopology "briard-hold-refuse" {
-            flock = "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target && ${config.systemd.package}/bin/systemctl daemon-reload";
-            alone = ":";
-          }}"
-          "-${byTopology "briard-hold-stop" {
-            flock = "${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service";
-            alone = "${config.systemd.package}/bin/systemctl stop briard-chain.target ${lib.concatStringsSep " " (lib.reverseList chainMembers)}";
-          }}"
-          # The ONE escalation, the same cell in both topologies: a demote DRBD refused, or an
-          # unmount something still holds open. A node stuck holding a volume it has declared it
-          # cannot serve is the one thing nothing else recovers from -- on a flock because the
-          # peer cannot take over, alone because the restart below would mount on top of it.
-          "${byTopology "briard-hold-confirm" {
-            flock = "${pkgs.drbd}/lib/drbd/scripts/drbd-service-shim.sh secondary-or-escalate r0";
-            alone = "! ${pkgs.util-linux}/bin/mountpoint -q ${btrfsRoot} || ${pkgs.util-linux}/bin/umount ${btrfsRoot}";
-          }}"
-        ];
-        ExecStart = "${pkgs.coreutils}/bin/sleep ${toString config.briard.promotionHoldSecs}";
-        # The release. `-` on the unmask and the resets: a hold that cannot tidy up must still end,
-        # because leaving the mask on is the one outcome worse than releasing early.
-        ExecStopPost = [
-          "-${byTopology "briard-hold-release" {
-            flock = "${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target; ${config.systemd.package}/bin/systemctl daemon-reload";
-            alone = ":";
-          }}"
-          "-${config.systemd.package}/bin/systemctl reset-failed ${lib.concatStringsSep " " chainMembers}"
-          # Alone, the restart is ours ([B.145c]): no reactor re-promotes, so the hold starts the
-          # chain it stopped -- hold-and-restart, forever, and no reboot, which is what a flock
-          # does through its reactor. `--no-block`, because this runs inside the hold's own stop
-          # and the start must not wait on it.
-          "-${byTopology "briard-hold-restart" {
-            flock = ":";
-            alone = "${config.systemd.package}/bin/systemctl start --no-block briard-chain.target";
-          }}"
-          # LAST, and the reason is FailureAction=reboot above: a node that reboots because it
-          # could not release the resource must leave the reason on disk first, and the journal
-          # is otherwise still in RAM when the reboot happens.
-          "-${config.systemd.package}/bin/journalctl --sync"
-        ];
-      };
-      unitConfig = {
-        # The stuck-Primary escalation. Reachable only through a demote DRBD refused, never through
-        # an ordinary member failure -- those end in a clean stop and a sleep.
-        FailureAction = "reboot";
-      };
-    };
-
-
-    # The ordered failover unit. Each piece has wantedBy = [] so it never starts on
-    # its own — drbd-reactor starts them, in this order, only after it has promoted
-    # the resource, and stops them in reverse on demote. So they run on the primary
-    # and nowhere else.
-
-    # 0. node storage — NOT DEFINED HERE ANY MORE ([B.160]). The pushed agent writes
-    # briard-node-storage.service into /run/systemd/system at every start, from the closure
-    # `guestTools` publishes above (agent/guestagent/units.go carries the unit and the reasoning
-    # that used to sit here). It is the first unit to move because it is the one that measurably
-    # broke: it is a chain member of nothing, `wantedBy = [ ]`, started by the host's storage.node
-    # verb alone -- so its whole dependency graph is the host's timing, and moving it moves
-    # nothing else.
-
-    # 1. primary storage — format on first use, mount the replicated volume ([V3b.33](d)). The
-    # FILESYSTEM half: node storage did the block work on every node, and this runs only where the
-    # volume is actually mounted, which is the one node that promoted. The cut between the two is
-    # by SCOPE, and it is the one the product already had.
-    systemd.services.briard-primary-storage = {
-      description = "Briard primary storage (the replicated volume, mounted on the primary)";
-      wantedBy = [ ];
-      # The tools the pushed agent shells out to: mount/umount/mountpoint (util-linux),
-      # mkfs.btrfs, and mkdir/rm. A unit's default PATH is minimal, and the agent names these by
-      # command rather than by store path -- so the unit is where they are resolved.
-      path = [ pkgs.util-linux pkgs.btrfs-progs pkgs.coreutils ];
-      serviceConfig = {
-        # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
-        # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
-        # oneshot that exits cleanly is never restarted -- so the policy is uniform across the
-        # chain rather than "the simple ones retry and the oneshots get exactly one attempt",
-        # which is what the absence of a directive used to mean and nobody had decided.
-        Restart = "on-failure";
-        RestartSec = 2;
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # THROUGH THE PIVOT'S binDir DIRECTLY ([B.86j], [B.138]), never through the picker, whose
-        # trial flag is keyed by the binary's NAME. This was the last inline-shell unit in the
-        # chain; storage is code we expect to change, so it belongs on the side that moves with
-        # the host bundle rather than frozen in this image. ⚠️ It follows that the MOUNT now
-        # depends on the pushed bundle -- an exposure that already existed (briard-services is a
-        # chain member running the pushed agent, and a guest with no good bundle cannot serve
-        # anything), but a decision rather than a side effect.
-        ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --primary-storage";
-        ExecStop = "${config.briard.pivot.binDir}/briard-guest-agent --primary-storage-stop";
-      };
-      unitConfig = chainMemberFailure // {
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
-      };
-    };
+    # WHAT STAYS BAKED, and each for its own reason: briard-guest-agent and briard-deadman
+    # (disk-image.nix) supervise the agent's ARRIVAL, so they cannot be written by it -- AGENTS
+    # §5's frozen-by-necessity line, drawn inside the guest; drbd-reactor and upstream's
+    # drbd-* units are not ours; and briard-stage below is a build-time fact about this image
+    # (`config.briard.stagedImages`), which no pushed binary knows.
 
     # Podman belongs to the guest OS, not to any service: it is the runtime a service will be
     # installed INTO, by the renderer, at runtime ([V3b.3](f)). There is no declared container
@@ -1086,280 +960,6 @@ in
           set -eu
           ${lib.concatMapStringsSep "\n" (img: "podman load -i ${img}") config.briard.stagedImages}
         '';
-      };
-    };
-
-    # 2. services — CONVERGE-AT-PROMOTION ([V3b.3](f)). Once the volume is mounted, read every
-    #    manifest under its `.services/`, render, warm and start them. This node makes itself
-    #    match the VOLUME, so what a node was told — or whether it was even up when the install
-    #    ran — stops deciding what the household gets after a failover.
-    #
-    #    IT IS A CHAIN MEMBER, AND STATICALLY SO. The chain is what drbd-reactor promotes WITH,
-    #    but the volume is only readable AFTER promotion — so the start-list cannot name the
-    #    services themselves, and goes back to being constant: `data -> services -> vip` on every
-    #    data node. A constant chain is what made converge-at-promotion possible for the baked
-    #    payload slot; this generalises the trick to N runtime-installed services. The unit is
-    #    defined unconditionally for the same reason briard-primary-storage is: naming a unit the guest does
-    #    not define fails the WHOLE ordered chain.
-    #
-    #    ITS FAILURE IS LOUD, BY POSITION. A promoter fails the whole promotion if a member
-    #    fails, and the VIP comes after this — so a node that cannot converge never takes the
-    #    service address, and a primary with no address is already reported unhealthy. That is
-    #    deliberate: built as a side-effect that shrugs, converge would put fallible work (render,
-    #    possibly a pull) on the promotion path and leave the silent-healthy hole exactly as
-    #    dangerous. Same shape, and the same reason, as the deleted `briard-converge`'s refusal:
-    #    a gate that shrugs is not a gate.
-    #
-    #    THE SERVICE UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "a service error
-    #    alerts but never demotes" mechanically true — drbd-reactor never sees them, so a crashed
-    #    container cannot deactivate the target. The consequences are handled where they land: a
-    #    crash is the container unit's own Restart= (agent/quadlet), and the STOP is ExecStop
-    #    below, because reverse-order chain unwinding would otherwise leave containers running on
-    #    a volume about to be unmounted.
-    systemd.services.briard-services = {
-      description = "Briard services, converged from the replicated volume at promotion";
-      wantedBy = [ ];
-      after = [ "briard-primary-storage.service" ];
-      requires = [ "briard-primary-storage.service" ];
-      path = [
-        pkgs.coreutils # ls/mkdir/rm, for reading the volume and owning the quadlet dir
-        pkgs.systemd # systemctl daemon-reload + start/stop of the rendered units
-        # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
-        # differently-wrapped copy of the runtime ([B.5]).
-        config.virtualisation.podman.package
-      ];
-      serviceConfig = {
-        # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
-        # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
-        # oneshot that exits cleanly is never restarted -- so the policy is uniform across the
-        # chain rather than "the simple ones retry and the oneshots get exactly one attempt",
-        # which is what the absence of a directive used to mean and nobody had decided.
-        Restart = "on-failure";
-        RestartSec = 2;
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # THE PUSHED AGENT, BY ITS COMMITTED PATH ([B.139]) -- not the firmware, which serves the
-        # push protocol alone, and not through the picker, whose arm flag is keyed by binary name
-        # and belongs to the agent's own unit. This member runs only at promotion, and the host
-        # dresses the guest before rejoin, so the binary is always there by the time drbd-reactor
-        # reaches this rung.
-        ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --converge";
-        ExecStop = "${config.briard.pivot.binDir}/briard-guest-agent --converge-stop";
-      };
-      unitConfig = chainMemberFailure // {
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
-      };
-    };
-
-    # 3. vip — claim the service address and gratuitous-ARP it so the L2 segment
-    #    learns its (new) home. BOTH the address and the device are agent-determined
-    #    (net.configure writes VIP_ADDR + VIP_DEV to ${vipEnvPath}). Under the
-    #    unified NIC layout eth1 is always the DRBD NIC and the VIP lives on
-    #    eth2 — the installer sets VIP_DEV=eth2 even single-node (eth1 sits idle until
-    #    a pairing addresses it), so a second anchor can join without a guest reboot.
-    #
-    #    THE FILE IS REQUIRED, not optional, and there is no baked device or address behind it
-    #    ([V3b.16a]). It can only be missing if something started this unit that the agent did not
-    #    configure — which the promoter gate makes impossible, since drbd-reactor itself is
-    #    agent-started. So "no VIP configuration" is now an error rather than a guess, and the one
-    #    guess it used to make claimed the service address on the replication NIC ([V3b.16]).
-    systemd.services.briard-vip = {
-      description = "Briard service VIP";
-      wantedBy = [ ];
-      path = [ pkgs.iproute2 pkgs.iputils ];
-      serviceConfig = {
-        # THE SAME BUDGET AS EVERY OTHER CHAIN MEMBER ([B.125](b)). A oneshot may carry
-        # Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a
-        # oneshot that exits cleanly is never restarted -- so the policy is uniform across the
-        # chain rather than "the simple ones retry and the oneshots get exactly one attempt",
-        # which is what the absence of a directive used to mean and nobody had decided.
-        Restart = "on-failure";
-        RestartSec = 2;
-        Type = "oneshot";
-        RemainAfterExit = true;
-        EnvironmentFile = vipEnvPath;
-        # Resolve-claim-record: static address, else the flock's replicated one, else DHCP.
-        # It brings the NIC up itself (the framework does that for the nixosTests; a disk-image
-        # guest's NIC may still be down) -- idempotent, and it has to happen before DHCP can ask.
-        ExecStart = "${vipUp}";
-        ExecStartPost = "-${vipArping}";
-        ExecStop = "${vipDown}";
-      };
-      unitConfig = chainMemberFailure // {
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
-      };
-    };
-
-    # 3b. the NAME — publish `briard-<flock name>.local` for the VIP over mDNS, so the address a
-    #     user is given is true on every LAN instead of only on ours. The README could previously
-    #     only quote an IP, which is exactly the kind of claim that is wrong in someone else's
-    #     house.
-    #
-    #     FLOCK-scoped, and this was a CORRECTION (V3.20): it published `briard-$(hostname).local`,
-    #     a node-scoped name, pointing at the VIP, which is flock-scoped and moves. On failover the
-    #     name changed identity while the thing it resolved to did not. The flock has exactly one
-    #     name, so the mismatch is gone by construction.
-    #
-    #     SINGLE-label, deliberately, and this was MEASURED rather than assumed (V3.19d): on a
-    #     stock Ubuntu 24.04 client, `<name>.briard.local` publishes fine and then **does not
-    #     resolve** — `mdns4_minimal`, the resolver in Debian/Ubuntu's nsswitch, handles exactly
-    #     one label before `.local`. A hierarchy would have shipped a name nothing on the LAN could
-    #     look up. The `briard-` prefix keeps N flocks distinguishable on one LAN.
-    #
-    #     ⚠️ IT DOES NOT MATCH THE DHCP HOSTNAME, and that is deliberate (V3.20). Option 12 stays
-    #     `briard-<mac tail>`, derived in-guest from the NIC's own address: changing a hostname
-    #     mid-lease is a change whose effect on an arbitrary household's DHCP server nobody can
-    #     predict — a second client-list entry, or a buggy server moving the address — and a
-    #     RENAME MUST NEVER RISK THE ADDRESS. The router's list and the mDNS name therefore differ,
-    #     which costs one line of installer wording and buys an identity that is safe to change.
-    #
-    #     PUBLISHED BY THE FRONT DOOR ([B.152]), which is a promoter chain member, so the name
-    #     appears only when this node actually holds the VIP, points at the VIP rather than at
-    #     whatever else the guest is addressed on, and is claimed by the PRIMARY alone — the two
-    #     nodes of ONE flock never collide with each other. Membership is also what makes a node
-    #     that cannot publish hand the resource on rather than serve addresses nobody can reach:
-    #     a household with no [V3c.4] `*.casa` name has `.local` and nothing else, so a name that
-    #     does not resolve is a service that cannot be reached.
-    #
-    #     ⚠️ TWO DIFFERENT FLOCKS DRAWING THE SAME WORD PAIR BOTH ANSWER IT, at different
-    #     addresses, and neither renames: the responder claims names and does not probe, which is
-    #     what removes the entire class of wedged-entry-group failures ([B.152] weighs the trade).
-    #     The odds are the word list's — one pair in 178,928 — and the household-visible symptom
-    #     is a name that resolves to whichever answer arrives first. `briard-<flock>` is what keeps
-    #     that at a collision between flocks rather than between a flock and an HAOS box.
-    # Ten-minute lease renewal, for as long as this node holds the VIP.
-    #
-    # NOT A CHAIN MEMBER, deliberately and for [V3b.5c]'s reason: a renewal that fails must never
-    # be able to demote a serving node. Nothing Requires it, its failure propagates nowhere, and
-    # the real consequence of a renewal going wrong is a NAK, which dhcpcd's own hook handles as
-    # an address change rather than as a unit failure.
-    #
-    # wantedBy + partOf briard-vip: the timer starts when the node takes the VIP and stops when it
-    # gives it up, so it cannot tick on a standby. `wantedBy` is a WEAK reference on purpose -- a timer that will not start must not
-    # keep the VIP from coming up.
-    systemd.timers.briard-vip-renew = {
-      description = "Renew the Briard VIP's DHCP lease every ten minutes";
-      wantedBy = [ "briard-vip.service" ];
-      partOf = [ "briard-vip.service" ];
-      timerConfig = {
-        # First one ten minutes after the VIP is taken (the lease is fresh at promotion, so an
-        # immediate renewal would be pure noise), then every ten minutes after each run.
-        OnActiveSec = "10min";
-        OnUnitActiveSec = "10min";
-        AccuracySec = "30s";
-      };
-    };
-    systemd.services.briard-vip-renew = {
-      description = "Renew the Briard VIP's DHCP lease";
-      after = [ "briard-vip.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        # VIP_DEV, the same source briard-vip itself reads: the renewer must act on the interface
-        # that was actually claimed, not on a second opinion about which one that is.
-        EnvironmentFile = vipEnvPath;
-        ExecStart = "${vipRenew}";
-      };
-    };
-
-    # 4. the front door — answer the VIP on :80 and terminate HTTPS on :443.
-    #
-    #    A PROMOTER CHAIN MEMBER since [B.125], where it used to ride briard-vip (wantedBy +
-    #    partOf) and stay out of the reactor start-list. The reason it moved is the reason the
-    #    mDNS publishers did: every name they claim resolves to the VIP, and this is the only
-    #    thing that answers there, so a node with no door serves nothing while reporting healthy.
-    #    It still tracks the primary role exactly as before -- reactor writes PartOf=<target> --
-    #    and it is ordered BEFORE the publishers so a node claims names only once the door that
-    #    serves them has started.
-    #
-    #    Cert/key live on the DRBD volume (${tlsDir}) so they replicate + survive failover; the
-    #    proxy hot-reloads them, so a renewal is gap-free. ⚠️ A MISSING CERT IS STILL NOT A
-    #    FAILURE, and that property is the door's own, not the old wantedBy's: :443 simply does
-    #    not answer until a cert exists while :80 keeps serving, which is the *shipped* state of a
-    #    free node, since a cert needs a domain. Membership would be wrong if the door failed on
-    #    it -- it does not.
-    systemd.services.briard-reverse-proxy = {
-      description = "Briard front door (serves the VIP on :80/:443)";
-      after = [ "briard-vip.service" "briard-services.service" ];
-      serviceConfig = {
-        # NO -backend, and no -routes either: the front door has no single backend at all as of
-        # [B.48], and the table it does route on has a compiled-in default (shared/routes.Path)
-        # that this unit deliberately does not restate. Naming the path here would put the same
-        # /run path in two places with nothing checking they agree -- and it is not a knob a node
-        # ever varies, unlike the cert paths, which live on the replicated volume this module
-        # defines.
-        #
-        # ORDERED AFTER briard-services, which is what makes the table exist before the door reads
-        # it: converge writes it as part of the same promotion, one chain member earlier. The door
-        # reloads the file on mtime anyway, so an install that lands later needs nothing from
-        # systemd -- this ordering only spares a freshly-promoted node from a few seconds of
-        # serving its own page over services it already runs.
-        # THROUGH THE PIVOT ([B.86j], [B.138], pivot.nix): the picker runs the copy the host pushed,
-        # and nothing else -- the image bakes no door. READY means "listening" (reverse-proxy says it
-        # after both binds), which is what a trial agent reads as its verdict on the pushed copy;
-        # the commit is the agent unit's, for the whole set.
-        Type = "notify";
-        ExecStart = "${config.briard.pivot.exec} briard-reverse-proxy -"
-          + " -http :80 -listen :443"
-          + " -cert ${tlsDir}/fullchain.pem -key ${tlsDir}/key.pem"
-          # Every name the table does not route -- the bare IP, the node's own name -- goes to the
-          # dashboard ([V3b.31b]); the door has no page of its own.
-          + " -fallback http://127.0.0.1:8087";
-        Restart = "on-failure";
-        # A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without this, the
-        # auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data
-        # volume and demotes the node on ONE crash, measured, with a peer taking the resource
-        # about half the time. `direct` restarts through activating instead of failed, so
-        # dependents are not notified of the temporary failure. It is also what lets the
-        # StartLimit below finally accumulate: the unit is no longer torn down and started
-        # fresh on every cycle, so a member that genuinely gives up still reaches `failed`
-        # and still hands the resource on -- which is what this budget always claimed to do.
-        # NOT on briard-primary-storage/services/vip: for those, failure really does mean this node
-        # must not hold the volume.
-        RestartMode = "direct";
-        RestartSec = 2;
-        # A staged copy that execs but never says READY must fail inside the trial agent's watch
-        # ([B.138]); the real one says READY at listen within milliseconds, so 10 s is generous.
-        TimeoutStartSec = 10;
-      };
-      # A RESTART BUDGET, and the number is a judgement rather than a measurement ([B.125]):
-      # five starts in five minutes, after which the member gives up and the resource moves. It matters more here than the shape
-      # suggests: with no StartLimit at all systemd's 5-in-10s default applies, and at RestartSec=2
-      # that IS reachable, so a door would hand the resource on after ~10s of trying. That is eager
-      # for one whose likeliest transient is losing the race for :80 to its own previous instance
-      # during a failover, and it is the asymmetry [B.125](b) holds open.
-      unitConfig = chainMemberFailure // {
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
-      };
-    };
-
-    # THE HOUSEHOLD DASHBOARD ([V3b.31b]): loopback only, behind the door, which forwards every
-    # name it does not route here. A chain member for the reason the door is one -- its device
-    # registry lives on the volume, and only the primary has it -- under the same [V3b.5](c)
-    # settings: RestartMode=direct so a transient crash is a restart in place, the hold on giving
-    # up. It reads the routing table converge wrote and Home Assistant's control token, both on
-    # /run; it writes only under /var/lib/briard/dashboard.
-    systemd.services.briard-dashboard = {
-      description = "Briard household dashboard (behind the front door)";
-      after = [ "briard-primary-storage.service" "briard-services.service" ];
-      serviceConfig = {
-        # THROUGH THE PIVOT ([B.138], pivot.nix): the copy the host pushed, and nothing else -- the
-        # image bakes no dashboard. Type=notify, READY at listen, so a trial agent reads this
-        # unit's start as its verdict on the pushed copy.
-        Type = "notify";
-        ExecStart = "${config.briard.pivot.exec} briard-dashboard - -listen 127.0.0.1:8087";
-        Restart = "on-failure";
-        RestartMode = "direct";
-        RestartSec = 2;
-        # A staged copy that execs but never says READY must fail inside the trial agent's watch
-        # ([B.138]); the real one says READY at listen within milliseconds, so 10 s is generous.
-        TimeoutStartSec = 10;
-      };
-      unitConfig = chainMemberFailure // {
-        StartLimitIntervalSec = 300;
-        StartLimitBurst = 5;
       };
     };
 
@@ -1417,34 +1017,6 @@ in
       "net.ipv4.conf.default.arp_announce" = 2;
     };
 
-  }
-
-  # THE LONE NODE'S TARGET ([B.145c]): the promoter chain with no promoter. A home with one
-  # diskful member runs no DRBD, so nothing generates drbd-services@r0.target for it; this static
-  # target carries the IDENTICAL member list in the identical order, with the same Wants/After the
-  # reactor writes onto its target and the same PartOf + Requires/After-the-previous it writes onto
-  # each member -- so a lone node and a flock run one chain, and the members cannot tell which
-  # target started them. A lone node's bring-up ends in `systemctl start` of this (the guest's
-  # chain.start verb) where a flock's ends in starting drbd-reactor; `wantedBy = [ ]` so nothing
-  # else can. Folded onto the members here rather than written into each unit, so the list is
-  # stated once (chainMembers, the same seven the hold above resets).
-  {
-    systemd.targets.briard-chain = {
-      description = "Briard: the promoter chain, on a node that runs no promoter";
-      wantedBy = [ ];
-      wants = chainMembers;
-      after = chainMembers;
-    };
-    systemd.services = lib.listToAttrs (
-      lib.imap0 (
-        i: unit:
-        lib.nameValuePair (lib.removeSuffix ".service" unit) {
-          partOf = [ "briard-chain.target" ];
-          requires = lib.optional (i > 0) (lib.elemAt chainMembers (i - 1));
-          after = lib.optional (i > 0) (lib.elemAt chainMembers (i - 1));
-        }
-      ) chainMembers
-    );
   }
   ];
 }

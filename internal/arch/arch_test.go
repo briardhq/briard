@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"briard.io/shared/chain"
 )
 
 // moduleRoot returns the repo root (the dir containing go.mod).
@@ -275,6 +277,56 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 		}
 		if !ok {
 			t.Errorf("flake.nix guestInputPackages hashes %s, which the firmware does not link (drop it, or the guest chain churns for nothing)", h)
+		}
+	}
+}
+
+// THE RIG'S COPY OF THE PROMOTER CHAIN, HELD TO THE PRODUCT'S ([B.160]).
+//
+// nixosTest/lib.nix writes its own drbd-reactor snippet, because two rigs supply a reactor
+// config the harness did not bake and both used to restate the member list by hand. Nix cannot
+// import Go, so the list is genuinely duplicated there -- and the comment that used to say "kept
+// in step BY HAND" is exactly the kind of promise nothing enforces.
+//
+// A rig whose list is SHORT does not merely differ, it never starts the missing members: the
+// door and the dashboard became members at [B.125], and a stale snippet would promote a node
+// that serves nothing while every assertion about the mount and the VIP still passes. That is
+// the failure this guard exists for, and it is invisible to every other test.
+//
+// Reading the nix as text rather than evaluating it is the point: `nix eval` needs the whole
+// module system and a working store, and this has to run inside the per-commit `go test`.
+func TestRigPromoterSnippetMatchesTheChain(t *testing.T) {
+	root := moduleRoot(t)
+	b, err := os.ReadFile(filepath.Join(root, "nixosTest", "lib.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	i := strings.Index(s, "promoterSnippet =")
+	if i < 0 {
+		t.Fatal("nixosTest/lib.nix has no promoterSnippet")
+	}
+	// The `units = [ ... ];` list inside it, which is the copy under test.
+	j := strings.Index(s[i:], "units = [")
+	if j < 0 {
+		t.Fatal("promoterSnippet has no units list")
+	}
+	body := s[i+j:]
+	end := strings.Index(body, "];")
+	if end < 0 {
+		t.Fatal("promoterSnippet's units list is unterminated")
+	}
+	var got []string
+	for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(body[:end], -1) {
+		got = append(got, m[1])
+	}
+	want := chain.Members()
+	if len(got) != len(want) {
+		t.Fatalf("the rig's promoter chain has %d members, shared/chain has %d:\n rig: %v\n ours: %v", len(got), len(want), got, want)
+	}
+	for k := range want {
+		if got[k] != want[k] {
+			t.Errorf("promoter chain position %d: the rig says %q, shared/chain says %q -- ORDER is the dependency, not a preference", k, got[k], want[k])
 		}
 	}
 }

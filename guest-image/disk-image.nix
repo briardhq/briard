@@ -328,7 +328,7 @@ let
           # a commit systemd ran after READY ran after the host's first bring-up verbs too, and
           # those start units that exec the committed path. It is the agent's own job now.
           Type = "notify";
-          ExecStart = "${config.briard.pivot.exec} briard-guest-agent ${briardFirmware}/bin/briard-guest-firmware run --guest";
+          ExecStart = "${config.briard.pivot.exec}/bin/briard-bin-exec briard-guest-agent ${briardFirmware}/bin/briard-guest-firmware run --guest";
           Restart = "always";
           RestartSec = 1;
         };
