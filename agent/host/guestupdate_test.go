@@ -172,7 +172,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			up := &fakeUpgrader{}
-			o := tc.cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest, Payload: tc.target}, running, up, nil, t.Logf)
+			o := tc.cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM, Payload: tc.target}, running, up, nil, t.Logf)
 			if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, tc.want) {
 				t.Errorf("outcome = %+v, want failed mentioning %q", o, tc.want)
 			}
@@ -188,7 +188,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	// Tampered after signing: refused by the signature, before any decision.
 	c.bodies["guest/latest/manifest.json"] = []byte(`{"chain":"guest","version":"guest.20260910.nnnnnnn","system":"/nix/store/evil","artifacts":[{"name":"x"}]}`)
 	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, running, up, nil, t.Logf)
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, running, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || up.imageTarget.Version != "" {
 		t.Errorf("a tampered manifest was acted on: %+v (image %+v)", o, up.imageTarget)
 	}
@@ -246,7 +246,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	cfg.GuestImage = filepath.Join(t.TempDir(), "guest-image", "nixos.qcow2")
 	os.MkdirAll(filepath.Dir(cfg.GuestImage), 0o755)
 	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{ID: "d1", Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{ID: "d1", Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
 	if o.State != api.OutcomeDone || o.ID != "d1" || !strings.Contains(o.Detail, "now running "+want.Version) {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
@@ -268,7 +268,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 
 	// Now running it: a no-op that names the release; nothing staged again.
 	up2 := &fakeUpgrader{}
-	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest, Payload: install.TargetStable}, stubSystem{want.System}, up2, nil, t.Logf)
+	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM, Payload: install.TargetStable}, stubSystem{want.System}, up2, nil, t.Logf)
 	if o.State != api.OutcomeDone || !strings.Contains(o.Detail, "already running "+want.Version) || up2.imageTarget.Version != "" {
 		t.Errorf("second run: %+v (image %+v)", o, up2.imageTarget)
 	}
@@ -280,7 +280,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	cfg2 := guestCfg(t, c2, key2)
 	cfg2.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	up3 := &fakeUpgrader{imageRolledBack: true, imageErr: errors.New("booted the wrong system")}
-	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up3, nil, t.Logf)
+	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/x"}, up3, nil, t.Logf)
 	if o.State != api.OutcomeRolledBack || !strings.Contains(o.Detail, "wrong system") {
 		t.Errorf("rolled-back swap reported %+v", o)
 	}
@@ -299,7 +299,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "does not match the signed manifest") {
 		t.Errorf("outcome = %+v", o)
 	}
@@ -316,7 +316,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 	noImage := guestMan("guest.20260912.iiiiiii", "/nix/store/i-nixos-system", "")
 	noImage.Artifacts = []install.Entry{{Name: "README"}} // a release that ships no image at all
 	c.publish(t, noImage, install.TargetStable)
-	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
+	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "ships no "+guestImageArtifact) {
 		t.Errorf("outcome = %+v", o)
 	}
@@ -333,14 +333,14 @@ func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	os.WriteFile(cfg.GuestReleaseCache, raw, 0o644) // the record says: at want
 	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/moved-by-cloud"}, up, nil, t.Logf)
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/moved-by-cloud"}, up, nil, t.Logf)
 	if o.State != api.OutcomeDone || up.imageTarget.Version != want.Version {
 		t.Errorf("a stale record suppressed the upgrade: %+v (image %+v)", o, up.imageTarget)
 	}
 
 	cfg2 := guestCfg(t, c, key) // no record, guest already on the closure
 	up2 := &fakeUpgrader{}
-	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{want.System}, up2, nil, t.Logf)
+	o = cfg2.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{want.System}, up2, nil, t.Logf)
 	if o.State != api.OutcomeDone || up2.imageTarget.Version != "" {
 		t.Fatalf("outcome = %+v, image %+v", o, up2.imageTarget)
 	}
@@ -365,7 +365,7 @@ func TestUpdateGuestEmptyPayloadTakesStableNotLatest(t *testing.T) {
 	cfg.GuestImage = filepath.Join(t.TempDir(), "guest-image", "nixos.qcow2")
 	os.MkdirAll(filepath.Dir(cfg.GuestImage), 0o755)
 	up := &fakeUpgrader{}
-	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateGuest}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
+	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/o-nixos-system"}, up, nil, t.Logf)
 	if o.State != api.OutcomeDone || up.imageTarget.Version != promoted.Version {
 		t.Fatalf("outcome %+v, image %+v — want the node on %s", o, up.imageTarget, promoted.Version)
 	}

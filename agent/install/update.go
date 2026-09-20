@@ -369,13 +369,20 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 	return &m
 }
 
-// DirectiveUpdateGuest is the LOCAL directive kind of the guest chain ([B.86d]): `briard update
-// guest` and the agent's own nightly timer submit it through the admin door; the payload is a
-// target (`latest`, `stable`, an exact guest id; "" is latest). It is deliberately NOT in
+// DirectiveUpdateVM is the LOCAL directive kind of the guest chain ([B.86d]): `briard update vm`
+// and the agent's own nightly timer submit it through the admin door; the payload is a target
+// (`stable`, `latest`, an exact guest id; "" is stable — [B.159](f)). It is deliberately NOT in
 // shared/api: the cloud names closures (`upgrade-system`) and the wire allowlist stays closed --
 // a kind that never crosses to the cloud does not belong in the contract that says what can.
 // It lives here rather than in agent/host so the CLI and the host share one spelling.
-const DirectiveUpdateGuest = "update-guest"
+//
+// ⚠️ IT WAS `update-guest` UNTIL [B.159](i), and the rename was safe for the reason the comment
+// above already gives: nothing carries this kind across a version boundary. The cloud never
+// emits it, the CLI reaches a binary it is symlinked to, the timer is in-process, and no spool
+// persists a kind across an upgrade. What DID read the old spelling was the journal -- the fleet
+// tests wait on these lines by text -- and every one of those waits fails by timeout rather than
+// passing vacuously, which is what made the rename cheap to prove.
+const DirectiveUpdateVM = "update-vm"
 
 // ErrHostTooOld is the min_host refusal: this host predates what a guest release tolerates.
 var ErrHostTooOld = errors.New("install: this host is older than the guest release requires")

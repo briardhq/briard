@@ -402,7 +402,7 @@ func TestAccountLang(t *testing.T) {
 }
 
 // `briard update vm` ([B.86d]) is the guest chain's human trigger: it submits the local
-// update-guest directive with the target, and reports the upgrade's outcome -- a refusal
+// update-vm directive with the target, and reports the upgrade's outcome -- a refusal
 // (rolled back, node serving) distinguished from a breakage, as `os upgrade` once did.
 func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "now running guest.20260910.n"})
@@ -411,8 +411,8 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
 	ds := seen()
-	if len(ds) != 1 || ds[0].Kind != install.DirectiveUpdateGuest || ds[0].Payload != "stable" {
-		t.Fatalf("agent saw %+v, want one update-guest for stable", ds)
+	if len(ds) != 1 || ds[0].Kind != install.DirectiveUpdateVM || ds[0].Payload != "stable" {
+		t.Fatalf("agent saw %+v, want one update-vm for stable", ds)
 	}
 	if !strings.Contains(out.String(), "now running guest.20260910.n") {
 		t.Errorf("stdout = %q", out.String())
@@ -450,7 +450,7 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
 	if ds := seen(); len(ds) != 1 || ds[0].Payload != install.TargetStable {
-		t.Fatalf("agent saw %+v, want one update-guest for %q", ds, install.TargetStable)
+		t.Fatalf("agent saw %+v, want one update-vm for %q", ds, install.TargetStable)
 	}
 	for _, verb := range []string{"host", "guest"} {
 		var out, errOut bytes.Buffer

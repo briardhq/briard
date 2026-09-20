@@ -626,3 +626,16 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 		t.Errorf("install.sh entry carries no hash or size: %+v", got)
 	}
 }
+
+// THE KIND IS A STRING THE JOURNAL AND A HUMAN BOTH READ ([B.159](i)), so its VALUE is pinned
+// here and not only its identifier. Every Go call site names the constant, which means a changed
+// value compiles, passes every table above, and breaks exactly two things this suite cannot see:
+// `briard directive <kind>` typed by hand at a node, and the fleet tests that wait on
+// `directive update-vm …` lines by text (lab/tests/integration/os-reboot.sh, os-rollback.sh).
+// Those waits fail by TIMEOUT, so without this the cheapest signal for a one-character slip is a
+// fleet run measured in tens of minutes.
+func TestUpdateVMDirectiveKindIsWhatTheJournalSays(t *testing.T) {
+	if DirectiveUpdateVM != "update-vm" {
+		t.Fatalf("DirectiveUpdateVM = %q — the fleet tests wait on `directive update-vm` by text", DirectiveUpdateVM)
+	}
+}

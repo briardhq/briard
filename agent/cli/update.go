@@ -35,7 +35,7 @@ import (
 //
 // VM ([B.86d]) IS an injector, and correctly so: the guest OS is moved by the agent (stage
 // from the cache, switch or reboot, health-gate, commit or revert), so there is nothing to do
-// when the agent is down but bring the agent back. It submits the update-guest directive --
+// when the agent is down but bring the agent back. It submits the update-vm directive --
 // the same one the agent's own nightly timer submits -- and reports the upgrade's outcome the
 // way `directive upgrade-system` would, with the release named. ⚠️ The DIRECTIVE KIND keeps its
 // name: it is a wire word, and the fleet tests read it out of journals.
@@ -88,7 +88,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 0
 	case "vm":
 		fmt.Fprintf(stdout, "resolving guest/%s and upgrading if due (stage, then activate + health-gate; this can take minutes)\n", *target)
-		o, err := submit(ctx, *sock, api.Directive{Kind: install.DirectiveUpdateGuest, Payload: *target})
+		o, err := submit(ctx, *sock, api.Directive{Kind: install.DirectiveUpdateVM, Payload: *target})
 		if err != nil {
 			fmt.Fprintf(stderr, "briard: %v\n", err)
 			return 1

@@ -49,7 +49,7 @@ type systemReader interface {
 	SystemPath(ctx context.Context) (string, error)
 }
 
-// applyGuestUpdate is the update-guest directive ([B.86d]): resolve d.Payload (a target:
+// applyGuestUpdate is the update-vm directive ([B.86d]): resolve d.Payload (a target:
 // `latest`, `stable`, or an exact guest id; "" is stable) on the guest chain and, if due, run
 // the OS upgrade to the closure it names. The outcome is the upgrade's own -- done, rolled back,
 // failed -- and a refusal before anything moved (an unverifiable manifest, a host too old, a pin
@@ -65,14 +65,14 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		target = install.TargetStable
 	}
 	if up == nil {
-		logf("directive kind=update-guest ignored (no guest on this node)")
+		logf("directive kind=update-vm ignored (no guest on this node)")
 		return failed("no guest on this node")
 	}
 	// Fail closed, as every verifier here does: no key, no release. The same PEM the catalog
 	// path verifies with (service.go), parsed the same way.
 	kr, err := selfupdate.NewKeyring(cfg.UpdateKeyring)
 	if err != nil || kr.Len() == 0 {
-		logf("directive kind=update-guest refused: no usable release keyring on this node (%v)", err)
+		logf("directive kind=update-vm refused: no usable release keyring on this node (%v)", err)
 		return failed("no release keyring on this node; a guest release cannot be verified")
 	}
 	f := &install.Fetcher{BaseURL: cfg.ChannelURL, Chain: install.ChainGuest, Keyring: kr, Logf: logf}
@@ -80,7 +80,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	defer cancel()
 	want, raw, err := f.Manifest(rctx, target)
 	if err != nil {
-		logf("directive update-guest: resolving %s failed: %v", target, err)
+		logf("directive update-vm: resolving %s failed: %v", target, err)
 		return failed(err.Error())
 	}
 	var stable *install.Manifest
@@ -103,11 +103,11 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 			// this node, and the remedy (update the host, or reinstall) is theirs to take.
 			escalate(ctx, n, logf, "this node", "guest OS update", want.Version, err)
 		}
-		logf("directive update-guest refused: %v", err)
+		logf("directive update-vm refused: %v", err)
 		return failed(err.Error())
 	}
 	if !dec.Install {
-		logf("directive update-guest: %s", dec.Reason)
+		logf("directive update-vm: %s", dec.Reason)
 		if running == want.System && (have == nil || have.Version != want.Version) {
 			// The guest is on this release's closure but the record did not say so (the cloud
 			// moved it by closure, or the record was lost): make the record true.
@@ -115,33 +115,33 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		}
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: dec.Reason}
 	}
-	logf("directive update-guest: %s — staging %s's image", dec.Reason, want.Version)
+	logf("directive update-vm: %s — staging %s's image", dec.Reason, want.Version)
 	// THE IMAGE, STAGED BEFORE ANYTHING STOPS ([B.86h]): fetched and verified into a private
 	// dir beside the image in use (same filesystem, so the swap is a rename), expanded, and
 	// placed at nextImage(). A fetch or hash failure returns here with the node untouched.
 	uctx, cancel := cfg.beat.budget(ctx, cfg.UpgradeBudget)
 	defer cancel()
 	if err := cfg.stageGuestImage(uctx, f, want, logf); err != nil {
-		logf("directive update-guest: staging failed, node unchanged: %v", err)
+		logf("directive update-vm: staging failed, node unchanged: %v", err)
 		escalate(ctx, n, logf, "this node", "guest OS image stage", want.Version, err)
 		return failed(err.Error())
 	}
 	back, err := up.ImageUpgrade(uctx, want)
 	switch {
 	case errors.Is(err, ErrHandoverRequired):
-		logf("directive update-guest DECLINED, node untouched and serving: %v", err)
+		logf("directive update-vm DECLINED, node untouched and serving: %v", err)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: err.Error()}
 	case err != nil && back:
-		logf("directive update-guest rolled back: %v", err)
+		logf("directive update-vm rolled back: %v", err)
 		escalate(ctx, n, logf, "this node", "guest OS upgrade", want.Version, err)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: err.Error()}
 	case err != nil:
-		logf("directive update-guest FAILED without a clean rollback: %v", err)
+		logf("directive update-vm FAILED without a clean rollback: %v", err)
 		escalate(ctx, n, logf, "this node", "guest OS upgrade", want.Version, err)
 		return failed(err.Error())
 	}
 	cfg.rememberGuestRelease(raw, logf)
-	logf("directive update-guest applied: now running %s", want.Version)
+	logf("directive update-vm applied: now running %s", want.Version)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "now running " + want.Version}
 }
 
@@ -290,7 +290,7 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 		select {
 		case <-ctx.Done():
 			return
-		case local <- localRequest{d: api.Directive{Kind: install.DirectiveUpdateGuest, Payload: install.TargetStable}, resp: resp}:
+		case local <- localRequest{d: api.Directive{Kind: install.DirectiveUpdateVM, Payload: install.TargetStable}, resp: resp}:
 		}
 		select {
 		case <-ctx.Done():

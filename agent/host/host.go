@@ -1449,9 +1449,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		}
 		return cfg.applyServiceInstall(ctx, i, d, logf)
 	}
-	if d.Kind == install.DirectiveUpdateGuest || d.Kind == api.DirectiveUpgradeSystem {
+	if d.Kind == install.DirectiveUpdateVM || d.Kind == api.DirectiveUpgradeSystem {
 		// The guest chain: a release resolved on the channel, then the image swap ([B.86d]/[B.86h]).
-		// The cloud's `upgrade-system` and the local `update-guest` are the same operation with
+		// The cloud's `upgrade-system` and the local `update-vm` are the same operation with
 		// two spellings of the target -- an exact release id from the cloud, a target word or
 		// an id from the CLI and the timer -- so they are one path here.
 		return cfg.applyGuestUpdate(ctx, d, r, up, n, logf)
