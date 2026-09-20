@@ -721,3 +721,32 @@ func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
 		}
 	}
 }
+
+// THE NO-OP LINE IS A PRODUCT SURFACE, AND [B.159](f) MOVED WHICH BRANCH PRINTS IT. Before the
+// default became `stable`, a bare `briard update self` resolved `latest` and an up-to-date node
+// read "already at <id>"; the stable branch had its own wording and nobody met it, because
+// nothing reached it by default. The moment the default moved, two host-agent rigs went red on
+// the wording alone -- an hour of VM suite to catch a string, which is why it is asserted here.
+//
+// The distinction is worth keeping, not flattening: EQUAL means nothing is owed and reads as
+// "already at X" (what agent/cli/cli.go's help row promises the verb prints); genuinely PAST
+// stable is a pin, and saying so is the point.
+func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T) {
+	at := man(ChainHost, PlatformLinux, "v3.20260906.aaaaaaa")
+	d, err := Decide(TargetStable, at, &at, nil)
+	if err != nil || d.Install {
+		t.Fatalf("Decide = %+v, %v; want a no-op", d, err)
+	}
+	if !strings.Contains(d.Reason, "already at "+at.Version) {
+		t.Errorf("an up-to-date node reads %q, want `already at %s`", d.Reason, at.Version)
+	}
+	// A node PAST stable is a pin, and keeps the line that says so.
+	pinned := man(ChainHost, PlatformLinux, "v3.20260910.ccccccc")
+	d, err = Decide(TargetStable, at, &pinned, nil)
+	if err != nil || d.Install {
+		t.Fatalf("Decide = %+v, %v; want a no-op", d, err)
+	}
+	if !strings.Contains(d.Reason, "past stable") {
+		t.Errorf("a pinned node reads %q, want it to name the pin", d.Reason)
+	}
+}

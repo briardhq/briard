@@ -166,7 +166,17 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		if haveDate < wantDate {
 			return Decision{Install: true, Reason: fmt.Sprintf("stable moved to %s (installed %s)", want.Version, have.Version)}, nil
 		}
-		return Decision{Reason: fmt.Sprintf("installed %s is at or past stable %s; nothing to do", have.Version, want.Version)}, nil
+		// ⚠️ "AT OR PAST" IS FOR THE CASE IT DESCRIBES, AND EQUALITY IS NOT IT. A node sitting on
+		// the release stable names falls through to the shared `already at X` line below, which
+		// is what `briard update <self|vm>` promises to print (agent/cli/cli.go's help row) and
+		// what an operator reads as "nothing owed". Found by the rigs the moment [B.159](f) made
+		// `stable` the default: the bare verb started taking this branch instead of latest's, and
+		// two host-agent rigs asserting `already at <id>` went red on the wording alone.
+		// The longer line stays for what it actually means -- installed is genuinely PAST stable,
+		// which is a pin, and saying so is the point.
+		if have.Version != want.Version {
+			return Decision{Reason: fmt.Sprintf("installed %s is past stable %s; nothing to do", have.Version, want.Version)}, nil
+		}
 	case TargetLatest:
 		// latest is by construction never older than stable, so no floor to check.
 	default:
