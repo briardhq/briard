@@ -1675,7 +1675,9 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain guest --release {GNEW} --system ${guestDisk.system} --min-host v3.20991231.zzzzzzz")
     host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW}")
-    host.succeed("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the guest release requires'")
+    # ⚠️ WAIT, DO NOT SNAPSHOT — same seam as agent-selfupdate step 8: the alert was emitted ~5ms
+    # before the verb returned, and journald had not sealed it when a bare `succeed` looked.
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the guest release requires'", timeout=30)
     host.fail("/opt/briard/agent/briard-agent update vm -to guest.20990101.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
     print("the shipped node resolves its guest chain: already running the installed release; a release needing a newer host is refused loudly")

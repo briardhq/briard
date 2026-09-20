@@ -421,7 +421,12 @@ pkgs.testers.runNixOSTest {
     OLD = "v3.20260201.ccccccc"
     publish(OLD, "${realAgent}", pointers=())
     machine.fail(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard")
-    machine.succeed("journalctl -u briard-update | grep -q 'older than stable'")
+    # ⚠️ WAIT, DO NOT SNAPSHOT. The verb returned 0.1s ago and journald seals its file on its own
+    # schedule, so `succeed` here asks whether a line written milliseconds earlier has landed yet
+    # — a race that reads as "the refusal never happened". Still a real assertion: it fails on
+    # timeout if the line never appears, which is the case it exists for. (The same seam as the
+    # 7 other journal greps in these two rigs that already wait.)
+    machine.wait_until_succeeds("journalctl -u briard-update | grep -q 'older than stable'", timeout=30)
     machine.fail("test -e ${nextBin}")
     machine.succeed(f"cp /srv/host/{OLD}/linux/manifest.json /srv/host/{OLD}/linux/manifest.json.sig /srv/host/stable/linux/")
     out = machine.succeed(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard").strip()
