@@ -750,3 +750,33 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 		t.Errorf("a pinned node reads %q, want it to name the pin", d.Reason)
 	}
 }
+
+// THE FLOOR THIS TREE ACTUALLY DECLARES ([B.159](e), raised 2026-09-20). Pinned as a literal so
+// that raising or clearing it is a deliberate edit with a failing test beside it, never a drift:
+// the value decides whether every installed node below it is told to reinstall, which is the
+// loudest thing this product says to an owner.
+//
+// WHY THIS VALUE. Gate 3 measured what an upgrade from the pre-[B.160] `stable` does: the guest
+// image predates the tool profile, so the pushed agent is refused and the OLD guest agent stays;
+// the new host then sends it a node-storage request carrying `metaLV` ([B.145a], after that
+// stable), whose decoder refuses the unknown field -- and the host agent crash-loops, 42 restarts
+// with the household's apps unreachable. A floor turns that into one refusal that names the
+// remedy, with the node still serving its old release. Comparison is on the DATE, so every
+// release from 20260920 on can upgrade among themselves; everything older must reinstall.
+func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
+	const want = "v3.20260920.ec4d22a"
+	if MinUpgradeFrom != want {
+		t.Fatalf("MinUpgradeFrom = %q, want %q -- if this was deliberate, change the test and say why in the commit", MinUpgradeFrom, want)
+	}
+	// And it does what it says: a node on the pre-B.160 stable is refused, one from that day on is not.
+	me := man(ChainHost, PlatformLinux, "v3.20260921.aaaaaaa")
+	me.MinUpgradeFrom = MinUpgradeFrom
+	old := man(ChainHost, PlatformLinux, "v3.20260910.64a7834")
+	if _, err := Decide(TargetStable, me, &old, nil); !errors.Is(err, ErrTooOldToUpgrade) {
+		t.Errorf("the pre-B.160 stable is not refused: %v", err)
+	}
+	ok := man(ChainHost, PlatformLinux, "v3.20260920.ec4d22a")
+	if _, err := Decide(TargetStable, me, &ok, nil); err != nil {
+		t.Errorf("a release at the floor's own date was refused: %v", err)
+	}
+}
