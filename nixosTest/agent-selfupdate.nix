@@ -425,7 +425,7 @@ pkgs.testers.runNixOSTest {
     # no longer exists -- so the exit code alone cannot say the FLOOR is what refused. Asserting
     # the CLI's own output is what distinguishes "refused because it is below stable" from
     # "failed for some other reason and the journal happened to carry the phrase from earlier".
-    out = machine.fail(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard")
+    out = machine.fail(f"${realAgent} update self -to {OLD} -base /var/lib/briard -run /run/briard 2>&1")
     assert "older than stable" in out, f"the pin failed, but not on the stable floor: {out!r}"
     # And the unit's own verdict reached the journal: this refusal travels through the frozen
     # updater, so the line an operator greps for at 2am has to be there and not only on a console.

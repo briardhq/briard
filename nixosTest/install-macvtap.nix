@@ -1685,7 +1685,7 @@ pkgs.testers.runNixOSTest {
     # THE REFUSAL'S OWN WORDS, not just a non-zero exit ([[verification-assertions-must-fail]]).
     # This is the assertion that cannot pass for the wrong reason: an unreachable agent, a
     # mistyped release, a verb that no longer exists all exit non-zero and all fail HERE.
-    out = host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW}")
+    out = host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW} 2>&1")
     assert "older than the guest release requires" in out, f"the verb failed, but not on min_host: {out!r}"
     # And the escalation reached the journal -- a refusal the owner never hears about is the
     # failure mode the alert exists for.
