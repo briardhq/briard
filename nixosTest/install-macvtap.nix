@@ -1677,6 +1677,15 @@ pkgs.testers.runNixOSTest {
     host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW}")
     # ⚠️ WAIT, DO NOT SNAPSHOT — same seam as agent-selfupdate step 8: the alert was emitted ~5ms
     # before the verb returned, and journald had not sealed it when a bare `succeed` looked.
+    # TEMPORARY DIAGNOSTIC ([B.159]): the refusal fires and the text is on the console, but this
+    # grep finds nothing while other `-u briard-agent` greps in this same run match. Print what
+    # the journal actually holds rather than theorising about it.
+    print("DIAG locale: " + host.succeed("locale 2>&1 | head -3"))
+    print("DIAG rolled-back lines: " + host.succeed("journalctl -u briard-agent --no-pager | grep -c 'rolled back' || true"))
+    print("DIAG guest-release lines: " + host.succeed("journalctl -u briard-agent --no-pager | grep -c 'older than the guest release requires' || true"))
+    print("DIAG alert lines: " + host.succeed("journalctl -u briard-agent --no-pager | grep -c 'alert .warning.' || true"))
+    print("DIAG whole boot: " + host.succeed("journalctl -b --no-pager | grep -c 'failed and rolled back' || true"))
+    print("DIAG tail: " + host.succeed("journalctl -u briard-agent --no-pager -n 5 | cat -v | tail -5"))
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the guest release requires'", timeout=30)
     host.fail("/opt/briard/agent/briard-agent update vm -to guest.20990101.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
