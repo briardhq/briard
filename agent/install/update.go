@@ -17,11 +17,11 @@ import (
 )
 
 // THE UPDATE VERB ([B.86a]). `briard-agent --fetch-update <target>` is the narrowed fetch the
-// frozen update unit runs â on a FRESH binary it just pulled from the target's pointer, never on
+// frozen update unit runs — on a FRESH binary it just pulled from the target's pointer, never on
 // the committed one, so a fetch/verify/manifest bug in the running agent cannot prevent its own
 // replacement (install.sh's bootstrap pattern, on a timer). Everything here is therefore the
 // SUSPECT side's job: resolve the target, decide against the installed manifest, fetch and
-// verify the agent artifact, stage it beside its manifest, arm the trial â and STOP. It never
+// verify the agent artifact, stage it beside its manifest, arm the trial — and STOP. It never
 // restarts anything: the running agent restarts itself at its safe point, and the unit's
 // forcing after a grace is the backstop. That separation is what keeps "the case where forcing
 // is risky" and "the case where forcing happens" from ever overlapping.
@@ -60,7 +60,7 @@ var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to
 // from this tree can be installed OVER. Empty means no floor -- any installed release may
 // upgrade to it, which is the normal state and should stay the normal state.
 //
-// â ï¸ IT IS A CONSTANT IN THE TREE, NOT A FLAG, and that is the point. The floor is a fact about
+// ⚠️ IT IS A CONSTANT IN THE TREE, NOT A FLAG, and that is the point. The floor is a fact about
 // THE CODE -- "this release stopped being able to upgrade a node older than X" -- so it belongs
 // in the commit that makes it true, reviewable in the diff, and not in an operator's memory at
 // publish time. `--stage-manifest --chain host` reads it from here, so there is nothing to pass
@@ -73,7 +73,7 @@ var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to
 // it to reinstall, which in this product means a household's machine comes apart and goes back
 // together.
 //
-// â ï¸ THE FLOOR AND THE PUBLISH GATE INTERACT, and the interaction is not optional. Gate 3
+// ⚠️ THE FLOOR AND THE PUBLISH GATE INTERACT, and the interaction is not optional. Gate 3
 // ([B.159](c), lab/vanilla-linux/tests/upgrade.sh) drives `stable` -> the candidate; a floor
 // ABOVE the current stable makes that refusal correct and the gate red for a true reason. So a
 // release that raises the floor past stable has DELIBERATELY CLOSED its own upgrade path, and
@@ -102,7 +102,7 @@ type Decision struct {
 //
 //   - `stable`: install when date(have) < date(want). Ordering on the DATE FIELD ALONE, numerically:
 //     the epoch token only ever moves forward with the dates, and dropping it removes the trap
-//     where `v3` sorts before `v10`. No same-date rule, by decision â one would make the timer
+//     where `v3` sorts before `v10`. No same-date rule, by decision — one would make the timer
 //     revert a cloud pin that shares a date with stable; the constraint sits in the publish path
 //     instead (promote refuses a same-date build).
 //   - `latest` / an exact id: install when the full id differs. These force past the ordering
@@ -125,7 +125,7 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 	// cannot complete the upgrade. A node with nothing installed is a fresh install and has
 	// nothing to be too old for.
 	//
-	// â ï¸ THE ONE DIRECTION A FLOOR MAY POINT ([B.159](e)'s rule): outer-to-inner, with the older
+	// ⚠️ THE ONE DIRECTION A FLOOR MAY POINT ([B.159](e)'s rule): outer-to-inner, with the older
 	// SELF as the inner term. A release may refuse the past it cannot carry; it may never declare
 	// a minimum on a layer it is itself responsible for upgrading -- if the host needs a newer
 	// guest, the host upgrades the guest, it does not wait for one. That keeps the graph a DAG
@@ -146,7 +146,7 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		// tolerable: `promote` refuses a same-date build, so `stable` cannot cross a floor
 		// twice in one day.
 		if haveDate < floorDate {
-			return Decision{}, fmt.Errorf("%w: installed %s is older than %s's min_upgrade_from %s â this node cannot be upgraded to it and must be reinstalled",
+			return Decision{}, fmt.Errorf("%w: installed %s is older than %s's min_upgrade_from %s — this node cannot be upgraded to it and must be reinstalled",
 				ErrTooOldToUpgrade, have.Version, want.Version, want.MinUpgradeFrom)
 		}
 	}
@@ -157,7 +157,7 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 	switch target {
 	case TargetStable:
 		if have == nil {
-			return Decision{Install: true, Reason: "no installed manifest â taking stable " + want.Version}, nil
+			return Decision{Install: true, Reason: "no installed manifest — taking stable " + want.Version}, nil
 		}
 		haveDate, err := dateOf(have.Version)
 		if err != nil {
@@ -184,14 +184,14 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 			return Decision{}, fmt.Errorf("%w: asked for %s, manifest there names %s", ErrManifest, target, want.Version)
 		}
 		if stable == nil {
-			return Decision{}, fmt.Errorf("%w: cannot pin %s â no stable to floor against", ErrBelowFloor, target)
+			return Decision{}, fmt.Errorf("%w: cannot pin %s — no stable to floor against", ErrBelowFloor, target)
 		}
 		stableDate, err := dateOf(stable.Version)
 		if err != nil {
 			return Decision{}, err
 		}
 		if wantDate < stableDate {
-			return Decision{}, fmt.Errorf("%w: %s is older than stable %s â move stable to go there", ErrBelowFloor, target, stable.Version)
+			return Decision{}, fmt.Errorf("%w: %s is older than stable %s — move stable to go there", ErrBelowFloor, target, stable.Version)
 		}
 	}
 	if have != nil && have.Version == want.Version {
@@ -226,7 +226,7 @@ type Update struct {
 	Logf    func(string, ...any)
 }
 
-// Run returns the one line the run ended on â "already at â¦" or "staged â¦, armed" â and an
+// Run returns the one line the run ended on — "already at …" or "staged …, armed" — and an
 // error for a refusal (bad pin, bad signature, tampered artifact), in which case nothing was
 // staged and nothing armed (refuse-and-stay).
 func (u *Update) Run(ctx context.Context, target string) (string, error) {
@@ -246,7 +246,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	if target != TargetStable && target != TargetLatest {
 		s, _, err := u.Fetcher.fetchManifest(ctx, TargetStable)
 		if err != nil {
-			return "", fmt.Errorf("%w: cannot pin %s â reading stable failed: %v", ErrBelowFloor, target, err)
+			return "", fmt.Errorf("%w: cannot pin %s — reading stable failed: %v", ErrBelowFloor, target, err)
 		}
 		stable = &s
 	}
@@ -384,7 +384,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	if err := u.Layout.Arm(); err != nil {
 		return "", fmt.Errorf("install: arm: %w", err)
 	}
-	return fmt.Sprintf("staged %s (%s), armed â the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)",
+	return fmt.Sprintf("staged %s (%s), armed — the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)",
 		want.Version, strings.Join(staged, ", ")), nil
 }
 
@@ -437,7 +437,7 @@ func extractTree(ctx context.Context, tarball, dest string) error {
 }
 
 // installed reads the committed release's manifest; nil (and a log line) when absent or
-// unreadable, which Decide treats as "install" â the safe default.
+// unreadable, which Decide treats as "install" — the safe default.
 func (u *Update) installed(logf func(string, ...any)) *Manifest {
 	b, err := os.ReadFile(u.Layout.ManifestPath())
 	if err != nil {
@@ -454,12 +454,12 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 
 // DirectiveUpdateVM is the LOCAL directive kind of the guest chain ([B.86d]): `briard update vm`
 // and the agent's own nightly timer submit it through the admin door; the payload is a target
-// (`stable`, `latest`, an exact guest id; "" is stable â [B.159](f)). It is deliberately NOT in
+// (`stable`, `latest`, an exact guest id; "" is stable — [B.159](f)). It is deliberately NOT in
 // shared/api: the cloud names closures (`upgrade-system`) and the wire allowlist stays closed --
 // a kind that never crosses to the cloud does not belong in the contract that says what can.
 // It lives here rather than in agent/host so the CLI and the host share one spelling.
 //
-// â ï¸ IT WAS `update-guest` UNTIL [B.159](i), and the rename was safe for the reason the comment
+// ⚠️ IT WAS `update-guest` UNTIL [B.159](i), and the rename was safe for the reason the comment
 // above already gives: nothing carries this kind across a version boundary. The cloud never
 // emits it, the CLI reaches a binary it is symlinked to, the timer is in-process, and no spool
 // persists a kind across an upgrade. What DID read the old spelling was the journal -- the fleet
@@ -488,7 +488,7 @@ func HostSatisfies(minHost, host string) error {
 		return fmt.Errorf("%w: this host's release id %q has no date to compare min_host %s against", ErrHostTooOld, host, minHost)
 	}
 	if have < need {
-		return fmt.Errorf("%w: host %s < min_host %s â update briard first (`briard update self`); a host that can no longer update is outside its support window and must be reinstalled", ErrHostTooOld, host, minHost)
+		return fmt.Errorf("%w: host %s < min_host %s — update briard first (`briard update self`); a host that can no longer update is outside its support window and must be reinstalled", ErrHostTooOld, host, minHost)
 	}
 	return nil
 }
