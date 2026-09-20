@@ -1293,10 +1293,17 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// plain evict is therefore a restart. The stop names the first member beside the
 			// target: every other member Requires= it transitively, so that one stop waits for
 			// all of them, where a target's own stop job returns as soon as the target is down.
+			//
+			// ⚠️ THE MASK AND THE UNIT FILE ARE THE SAME PATH SINCE [B.160], because the target
+			// is rendered by this agent into the directory `mask --runtime` writes its /dev/null
+			// symlink into. Both directions go through the renderer so there is one owner:
+			// masking clears the file first (systemctl refuses outright over an existing one --
+			// measured on install-macvtap), and unmasking re-renders, because dropping the
+			// symlink otherwise leaves no unit at all.
 			if alone(x) {
 				switch {
 				case req.Unmask:
-					if err := run("systemctl", "unmask", "--runtime", chainTarget); err != nil {
+					if err := UnmaskRendered(ctx, x, chainTarget); err != nil {
 						return nil, err
 					}
 				default:
@@ -1304,7 +1311,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 						return nil, err
 					}
 					if req.KeepMasked {
-						return nil, run("systemctl", "mask", "--runtime", chainTarget)
+						return nil, MaskRendered(ctx, x, chainTarget)
 					}
 				}
 				return nil, run("systemctl", "start", chainTarget)

@@ -494,7 +494,21 @@ func WriteUnits(ctx context.Context, x Executor) error {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		if err := x.WriteFile(filepath.Join(dir, n), []byte(want[n])); err != nil {
+		p := filepath.Join(dir, n)
+		// ⚠️ A MASK LIVES AT THE SAME PATH AS THE UNIT, and that is systemd's design rather than
+		// a clash of ours: `systemctl mask --runtime <u>` IS a symlink from /run/systemd/system/<u>
+		// to /dev/null. So the renderer and the mask are two writers of one path, and the rule
+		// has to be that the mask wins -- otherwise an agent restart would silently un-refuse a
+		// node that had been told to stay out, which on the reboot path is a node reclaiming the
+		// house before anyone has verified its new generation ([B.145c], handover -keep-masked).
+		//
+		// Lstat, not Stat: a mask points at /dev/null, which exists, so following the link would
+		// make every mask look like an ordinary file. Our own renders are always regular files,
+		// so "symlink here" means "somebody masked this".
+		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := x.WriteFile(p, []byte(want[n])); err != nil {
 			return fmt.Errorf("guest units: write %s: %w", n, err)
 		}
 	}
@@ -550,6 +564,41 @@ func sweep(dir string, want map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// MaskRendered makes one of the units above unstartable, and UnmaskRendered puts it back.
+//
+// THEY EXIST BECAUSE THE RENDERER OWNS THE PATH A MASK WANTS ([B.160]). `systemctl mask
+// --runtime` refuses outright when a real file is already there -- measured on install-macvtap:
+// "Failed to mask unit: File '/run/systemd/system/briard-chain.target' already exists", which
+// broke `handover -keep-masked` on every lone node. So the file is removed first, and systemd is
+// still what defines a mask; we only get out of its way.
+//
+// The daemon-reload is not optional in either direction: systemd caches the unit file it loaded,
+// so a file swapped for a symlink (or back) is invisible until it re-reads -- the same reason the
+// hold's release pairs its `rm -f` with one.
+func MaskRendered(ctx context.Context, x Executor, unit string) error {
+	if err := os.Remove(filepath.Join(unitDir(), unit)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("guest units: clear %s before masking: %w", unit, err)
+	}
+	if out, err := x.Run(ctx, "systemctl", "mask", "--runtime", unit); err != nil {
+		return fmt.Errorf("guest units: mask %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := x.Run(ctx, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("guest units: daemon-reload after masking %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// UnmaskRendered drops the mask and RE-RENDERS, because removing the symlink leaves no unit file
+// at all -- the render that would have written one was skipped for as long as the mask stood.
+// Going through WriteUnits rather than writing the one file keeps one definition of what a unit
+// is, and its daemon-reload is the one this needs.
+func UnmaskRendered(ctx context.Context, x Executor, unit string) error {
+	if out, err := x.Run(ctx, "systemctl", "unmask", "--runtime", unit); err != nil {
+		return fmt.Errorf("guest units: unmask %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	return WriteUnits(ctx, x)
 }
 
 // isDir asks the question the refusal above actually cares about: a tool profile that is a FILE,

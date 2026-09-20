@@ -13,13 +13,30 @@ import (
 // diskExec is fakeExec with a REAL WriteFile. The thing under test is a file systemd can load,
 // so a fake that keeps writes in a map would let every assertion below pass over a renderer that
 // wrote nothing at all -- which is exactly the vacuity this item was created by.
-type diskExec struct{ fakeExec }
+type diskExec struct {
+	fakeExec
+	wrote []string // every path WriteFile was CALLED with, mask or not
+}
 
 func (d *diskExec) WriteFile(path string, data []byte) error {
+	d.wrote = append(d.wrote, path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// wroteTo reports whether the renderer ATTEMPTED this path. It is the only way to see the mask
+// guard work: os.WriteFile through a symlink to /dev/null opens the TARGET, so it succeeds,
+// writes nothing and leaves the symlink standing -- meaning the on-disk state looks identical
+// whether the guard is there or not. Asserting on the file alone would be vacuous.
+func (d *diskExec) wroteTo(path string) bool {
+	for _, p := range d.wrote {
+		if p == path {
+			return true
+		}
+	}
+	return false
 }
 
 // guestWithTools points the renderer at a temporary unit directory and a temporary tool profile,
@@ -367,5 +384,98 @@ func TestWriteUnitsSweepSparesEverythingElse(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
 			t.Errorf("the sweep removed %s, which is not the agent's to remove: %v", n, err)
 		}
+	}
+}
+
+// A MASK MUST SURVIVE A RENDER ([B.160]). `handover -keep-masked` exists so a machine about to
+// reboot for its own upgrade cannot take the house back before anyone has verified its new
+// generation -- and the agent restarts on that path. If the render overwrote the mask, the
+// refusal would last exactly until the next agent start, which is precisely when it is needed.
+//
+// The mask and the unit are one path because systemd defines a mask as a symlink to /dev/null
+// at the unit's own location, and that location is now ours.
+func TestWriteUnitsLeavesAMaskAlone(t *testing.T) {
+	dir, _ := guestWithTools(t)
+	f := &diskExec{}
+	if err := WriteUnits(context.Background(), f); err != nil {
+		t.Fatalf("WriteUnits: %v", err)
+	}
+	if err := MaskRendered(context.Background(), f, chain.Target); err != nil {
+		t.Fatalf("MaskRendered: %v", err)
+	}
+	// MaskRendered clears the file so `systemctl mask` is not refused over it -- the failure
+	// measured on install-macvtap, "File '/run/systemd/system/briard-chain.target' already
+	// exists". The fake systemctl writes no symlink, so stand one in as systemd would.
+	p := filepath.Join(dir, chain.Target)
+	if _, err := os.Lstat(p); !os.IsNotExist(err) {
+		t.Fatalf("masking did not clear the rendered file first: %v", err)
+	}
+	if err := os.Symlink(os.DevNull, p); err != nil {
+		t.Fatal(err)
+	}
+	f.wrote = nil // only the render AFTER the mask is the one under test
+	if err := WriteUnits(context.Background(), f); err != nil {
+		t.Fatalf("WriteUnits over a mask: %v", err)
+	}
+	fi, err := os.Lstat(p)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the render replaced a mask with a unit file, un-refusing a node that was told to stay out (mode=%v, err=%v)", fi.Mode(), err)
+	}
+	// AND IT DID NOT EVEN TRY. See wroteTo: a write through the mask would have succeeded
+	// silently into /dev/null, so the surviving symlink above proves nothing on its own.
+	if f.wroteTo(p) {
+		t.Errorf("the render wrote through the mask at %s -- into /dev/null, which looks like success", p)
+	}
+	// AND THE REST OF THE CHAIN IS STILL RENDERED: a mask on one unit must not stop the others
+	// being written, or a masked target would take the whole node's units with it.
+	if _, err := os.Stat(filepath.Join(dir, vipUnit)); err != nil {
+		t.Errorf("a mask on %s stopped %s being rendered: %v", chain.Target, vipUnit, err)
+	}
+}
+
+// AND UNMASKING PUTS THE UNIT BACK. Dropping the symlink leaves NO unit file, because every
+// render while the mask stood skipped it -- so an unmask that did not re-render would hand
+// `systemctl start` a unit that does not exist, which is the [B.159](c) crash by another road.
+//
+// The fake systemctl MODELS the one thing that matters here: `unmask --runtime` removes the
+// symlink. A fake that did nothing would leave the mask in place, the re-render would skip it
+// for the right reason, and the test would pass while asserting nothing.
+func TestUnmaskRenderedRestoresTheUnit(t *testing.T) {
+	dir, _ := guestWithTools(t)
+	p := filepath.Join(dir, chain.Target)
+	f := &diskExec{}
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "systemctl" && len(args) > 1 && args[0] == "unmask" {
+			if err := os.Remove(filepath.Join(dir, args[len(args)-1])); err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}
+	if err := WriteUnits(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(os.DevNull, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := UnmaskRendered(context.Background(), f, chain.Target); err != nil {
+		t.Fatalf("UnmaskRendered: %v", err)
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatalf("unmasking left no unit for `systemctl start` to find: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is still a mask after unmasking", chain.Target)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "Wants="+strings.Join(chain.Members(), " ")) {
+		t.Errorf("the restored target is not the rendered one:\n%s", b)
 	}
 }

@@ -1703,13 +1703,21 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 			t.Errorf("a lone node's pause/resume ran %v", r)
 		}
 	}
+	// ⚠️ BOTH MASK DIRECTIONS GO THROUGH THE RENDERER SINCE [B.160], because the chain target is
+	// a file this agent writes into the very directory `mask --runtime` wants to put its
+	// /dev/null symlink in. Masking clears the file first and reloads (systemd caches the unit
+	// it loaded, and refuses to mask over an existing file at all); unmasking re-renders,
+	// because dropping the symlink would otherwise leave no unit for the start below to find.
+	// The extra reloads in the want-lists are that, and they are the assertion: an evict that
+	// stopped reloading would mask a node that systemd still happily starts.
+	guestWithTools(t)
 	for _, tc := range []struct {
 		name               string
 		keepMasked, unmask bool
 		want               [][]string
 	}{
-		{"keep-masked", true, false, [][]string{{"systemctl", "stop", chainTarget, chainRoot}, {"systemctl", "mask", "--runtime", chainTarget}}},
-		{"unmask", false, true, [][]string{{"systemctl", "unmask", "--runtime", chainTarget}, {"systemctl", "start", chainTarget}}},
+		{"keep-masked", true, false, [][]string{{"systemctl", "stop", chainTarget, chainRoot}, {"systemctl", "mask", "--runtime", chainTarget}, {"systemctl", "daemon-reload"}}},
+		{"unmask", false, true, [][]string{{"systemctl", "unmask", "--runtime", chainTarget}, {"systemctl", "daemon-reload"}, {"systemctl", "start", chainTarget}}},
 		{"plain", false, false, [][]string{{"systemctl", "stop", chainTarget, chainRoot}, {"systemctl", "start", chainTarget}}},
 	} {
 		f.runs = nil
