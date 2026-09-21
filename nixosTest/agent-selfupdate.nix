@@ -319,7 +319,7 @@ pkgs.testers.runNixOSTest {
     publish(V4, "${readyV4}")
     # The node's installed release: an OLDER date, so stable is ahead of it.
     machine.succeed(
-        "printf '%s' '{\"chain\":\"host\",\"platform\":\"linux\",\"version\":\"v3.20260101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
+        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux\",\"version\":\"v3.20260101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
     )
     machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
     machine.wait_until_succeeds("curl -sf ${channel}/briard/stable/linux/manifest.json -o /dev/null", timeout=30)

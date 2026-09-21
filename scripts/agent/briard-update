@@ -46,7 +46,7 @@ fi
 # (3) A fresh agent FROM THE TARGET does the verified fetch. Under $BASE, not /run: Debian mounts
 #     /run noexec. Its last stdout line is the verdict; its stderr goes to the journal.
 tmp=$(mktemp -d "$BASE/.update.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
-url="$CHANNEL/host/$target/linux/briard-agent"
+url="$CHANNEL/briard/$target/linux/briard-agent"
 if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tmp/briard-agent"
 elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp/briard-agent" "$url"
 else report "need curl or wget to fetch $url"; exit 1; fi || { report "could not fetch a bootstrap agent from $url"; exit 1; }

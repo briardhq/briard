@@ -340,7 +340,7 @@ pkgs.testers.runNixOSTest {
     # The briard chain carries the platform level (this is its linux arm); the vm chain is flat.
     # Both pointers name this one release: install.sh and `briard update` both follow
     # `stable` ([B.159](f)), and the shipped update unit is exercised against both below.
-    for chain, ver, arm in (("host", V + "/linux", "/linux"), ("guest", GV, "")):
+    for chain, ver, arm in (("briard", V + "/linux", "/linux"), ("vm", GV, "")):
         d = f"/srv/{chain}/{ver}"
         host.succeed(f"mkdir -p {d} && ln -sf ${channel}/{chain}/{ver}/* {d}/")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")

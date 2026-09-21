@@ -178,7 +178,7 @@ let
   driverPkg = pkgs.callPackage ./driver/package.nix { };
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (the host agent)
   # THE GUEST BUNDLE ([B.86j]): every briard binary the guest runs, built with the HOST release's
-  # version because it ships in the host chain and is pushed by the host at every bring-up. The
+  # version because it ships in the briard chain and is pushed by the host at every bring-up. The
   # image bakes ONE binary, briard-guest-firmware ([B.139]: the push protocol alone, which is what
   # receives the first push); the AGENT, the door and the dashboard exist in the guest only once
   # pushed. One directory, `bin/<name>`, the names the guest's pivot and the push verbs agree on
