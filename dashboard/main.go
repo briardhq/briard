@@ -192,6 +192,19 @@ func (a *app) refuse(w http.ResponseWriter) {
 	_ = page.ExecuteTemplate(w, "refused", nil)
 }
 
+// refuseCode is a code that opens nothing: spent, unparseable, expired, or wrong. A browser that
+// already holds a session gets the dashboard it was asking for instead of the refusal -- the link
+// the terminal printed is the same link on the second click, and the code behind it is gone
+// because THIS browser spent it ([B.165]). An untrusted browser gets the refusal, which is all
+// reaching this port may ever teach it.
+func (a *app) refuseCode(w http.ResponseWriter, r *http.Request, msg string) {
+	if _, ok := a.session(r); ok {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	http.Error(w, msg, http.StatusForbidden)
+}
+
 // redeem turns the one-time code into a trusted device. The code is compared in constant time,
 // consumed on success (the file goes), and refused past its TTL. A wrong code does not consume
 // the right one: at 256 bits nobody is guessing it, and burning it would let a stranger deny the
@@ -201,21 +214,21 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 	defer a.mu.Unlock()
 	raw, err := os.ReadFile(a.handoffPath)
 	if err != nil {
-		http.Error(w, "no code is outstanding; run `briard open` on the machine to get one\n", http.StatusForbidden)
+		a.refuseCode(w, r, "no code is outstanding; run `briard open` on the machine to get one\n")
 		return
 	}
 	var h dashboard.Handoff
 	if err := json.Unmarshal(raw, &h); err != nil {
-		http.Error(w, "the handoff does not parse; run `briard open` again\n", http.StatusForbidden)
+		a.refuseCode(w, r, "the handoff does not parse; run `briard open` again\n")
 		return
 	}
 	if h.Expired(a.now()) {
 		_ = os.Remove(a.handoffPath)
-		http.Error(w, "that code has expired; run `briard open` on the machine for a fresh one\n", http.StatusForbidden)
+		a.refuseCode(w, r, "that code has expired; run `briard open` on the machine for a fresh one\n")
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(h.Code), []byte(code)) != 1 {
-		http.Error(w, "that is not the code\n", http.StatusForbidden)
+		a.refuseCode(w, r, "that is not the code\n")
 		return
 	}
 	if err := os.Remove(a.handoffPath); err != nil {
@@ -234,7 +247,7 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 		http.Error(w, "could not mint a session\n", http.StatusInternalServerError)
 		return
 	}
-	if err := a.addDevice(tok, r.UserAgent()); err != nil {
+	if err := a.addDevice(tok, r.UserAgent(), sessionToken(r)); err != nil {
 		log.Printf("dashboard: register device: %v", err)
 		http.Error(w, "could not register this device\n", http.StatusInternalServerError)
 		return
@@ -250,17 +263,26 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// sessionToken is the session the request carries, empty if it carries none.
+func sessionToken(r *http.Request) string {
+	c, err := r.Cookie(cookieName)
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
 // session says whether the request carries a registered device's token, and which device.
 func (a *app) session(r *http.Request) (device, bool) {
-	c, err := r.Cookie(cookieName)
-	if err != nil || c.Value == "" {
+	tok := sessionToken(r)
+	if tok == "" {
 		return device{}, false
 	}
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err != nil {
 		return device{}, false
 	}
-	want := hashToken(c.Value)
+	want := hashToken(tok)
 	for _, d := range reg.Devices {
 		if subtle.ConstantTimeCompare([]byte(d.Hash), []byte(want)) == 1 {
 			return d, true
@@ -282,7 +304,12 @@ type device struct {
 	Created time.Time `json:"created"`
 }
 
-func (a *app) addDevice(tok, agent string) error {
+// addDevice registers a session. `replaces` is the session the SAME browser was carrying, if any:
+// a browser holds one cookie, so the session this one replaces is retired in the same write
+// rather than left on the list forever -- a browser is listed exactly once, and a household using
+// the `briard open` link as a bookmark does not grow a Trusted devices list of rows nothing can
+// ever present again ([B.165]).
+func (a *app) addDevice(tok, agent, replaces string) error {
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -290,6 +317,17 @@ func (a *app) addDevice(tok, agent string) error {
 	id, err := newSecret()
 	if err != nil {
 		return err
+	}
+	if replaces != "" {
+		old := hashToken(replaces)
+		kept := make([]device, 0, len(reg.Devices))
+		for _, d := range reg.Devices {
+			if subtle.ConstantTimeCompare([]byte(d.Hash), []byte(old)) == 1 {
+				continue
+			}
+			kept = append(kept, d)
+		}
+		reg.Devices = kept
 	}
 	reg.Devices = append(reg.Devices, device{ID: id[:16], Hash: hashToken(tok), Agent: agent, Created: a.now()})
 	return a.writeState(devicesFile, reg)
@@ -452,7 +490,10 @@ func (a *app) approve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not mint a session\n", http.StatusInternalServerError)
 		return
 	}
-	if err := a.addDevice(tok, p.agent); err != nil {
+	// Nothing is replaced: this request's cookie is the APPROVER's, which keeps its own row, and
+	// the device being registered is the asker's -- untrusted by definition, or it would not be
+	// at the form.
+	if err := a.addDevice(tok, p.agent, ""); err != nil {
 		log.Printf("dashboard: register approved device: %v", err)
 		http.Error(w, "could not register the device\n", http.StatusInternalServerError)
 		return

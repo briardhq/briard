@@ -228,6 +228,38 @@ func TestExpiredCodeIsRefusedAndDropped(t *testing.T) {
 	}
 }
 
+// A SPENT CODE DOES NOT STRAND THE BROWSER THAT SPENT IT ([B.165]): the terminal prints one link
+// and a person clicks it twice, so a code that opens nothing falls back to the session the
+// browser is already carrying. A browser carrying none is refused exactly as before -- reaching
+// this port still teaches nothing.
+func TestASpentCodeFallsBackToTheSession(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	resp := r.do("GET", "/?code="+r.code, c, nil)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Errorf("second click on the link = %d %q, want 303 to /", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// Wrong, not just spent: it is the session that answers, not the code.
+	if resp := r.do("GET", "/?code=not-it", c, nil); resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("wrong code with a session = %d, want 303", resp.StatusCode)
+	}
+	// An outstanding code past its TTL, same.
+	r.app.now = func() time.Time { return time.Now().Add(dashboard.TTL + time.Minute) }
+	stale, _ := json.Marshal(dashboard.Handoff{Code: r.code, Issued: time.Now()})
+	must(t, os.WriteFile(r.app.handoffPath, stale, 0o600))
+	if resp := r.do("GET", "/?code="+r.code, c, nil); resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("expired code with a session = %d, want 303", resp.StatusCode)
+	}
+	// A cookie that is not a session is not a session.
+	if resp := r.do("GET", "/?code="+r.code, &http.Cookie{Name: cookieName, Value: "not-a-session"}, nil); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("spent code with a bogus cookie = %d, want 403", resp.StatusCode)
+	}
+	// And the fallback registers nothing: it is a redirect, not a redemption.
+	if reg := r.registry(); len(reg.Devices) != 1 {
+		t.Errorf("devices after the fallbacks = %d, want 1", len(reg.Devices))
+	}
+}
+
 // THE BUTTON, on a fresh Home Assistant: the first user is made from the account the host handed
 // over, analytics is marked with the CONTROL CHANNEL's token (the browser's code stays unspent),
 // and the browser is sent to HA's own onboarding page carrying that code and the state its
@@ -421,14 +453,14 @@ func TestNotInstalled(t *testing.T) {
 	}
 }
 
-// reissue writes a fresh handoff, the way `briard open` does for the next device, and
-// redeems it with the given user agent.
-func (r *rig) reissue(agent string) *http.Cookie {
+// reissue writes a fresh handoff, the way `briard open` does for the next device, and redeems it
+// with the given user agent -- carrying `as`, the session that browser already holds, if any.
+func (r *rig) reissue(agent string, as *http.Cookie) *http.Cookie {
 	r.t.Helper()
 	code, _ := dashboard.NewCode()
 	raw, _ := json.Marshal(dashboard.Handoff{Code: code, Name: "Kostas", Username: "kostas", Language: "el", Issued: time.Now()})
 	must(r.t, os.WriteFile(r.app.handoffPath, raw, 0o600))
-	resp := r.do("GET", "/?code="+code, nil, map[string]string{"User-Agent": agent})
+	resp := r.do("GET", "/?code="+code, as, map[string]string{"User-Agent": agent})
 	if resp.StatusCode != http.StatusSeeOther {
 		r.t.Fatalf("reissued redeem = %d, want 303", resp.StatusCode)
 	}
@@ -467,8 +499,8 @@ func (r *rig) registry() registry {
 // way back in.
 func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 	r := newRig(t)
-	laptop := r.reissue("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0")
-	phone := r.reissue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1")
+	laptop := r.reissue("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0", nil)
+	phone := r.reissue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", nil)
 	reg := r.registry()
 	if len(reg.Devices) != 2 {
 		t.Fatalf("registry holds %d devices, want 2", len(reg.Devices))
@@ -559,8 +591,50 @@ func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 	if raw, _ := os.ReadFile(filepath.Join(r.dir, "state", devicesFile)); !strings.Contains(string(raw), `"devices": []`) {
 		t.Errorf("registry after the last device left = %s; want an empty list, not null", raw)
 	}
-	if c := r.reissue("curl/8.0"); r.do("GET", "/", c, nil).StatusCode != http.StatusOK {
+	if c := r.reissue("curl/8.0", nil); r.do("GET", "/", c, nil).StatusCode != http.StatusOK {
 		t.Error("a fresh code does not trust a device again after the registry emptied")
+	}
+}
+
+// ONE BROWSER, ONE ROW ([B.165]): a household that keeps the `briard open` link as a bookmark
+// re-mints a session on a browser that already has one, and the row it replaces goes with it --
+// the list names devices, not visits. The retired cookie stops working, the browser's new one
+// works, and no other device is touched.
+func TestANewSessionRetiresTheOneItReplaces(t *testing.T) {
+	r := newRig(t)
+	laptop := r.reissue("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0", nil)
+	phone := r.reissue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", nil)
+	again := r.reissue("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0", laptop)
+	reg := r.registry()
+	if len(reg.Devices) != 2 {
+		t.Fatalf("devices after the laptop redeemed twice = %d, want 2", len(reg.Devices))
+	}
+	for _, d := range reg.Devices {
+		if d.Hash == hashToken(laptop.Value) {
+			t.Error("the replaced session is still on the list")
+		}
+	}
+	if resp := r.do("GET", "/", laptop, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the replaced cookie = %d, want 401", resp.StatusCode)
+	}
+	if resp := r.do("GET", "/", again, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("the laptop's new cookie = %d, want 200", resp.StatusCode)
+	}
+	if resp := r.do("GET", "/", phone, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("the phone = %d, want 200 (another device's row is not touched)", resp.StatusCode)
+	}
+	// A device let in by quick-connect replaces nothing: the request that approves it carries the
+	// APPROVER's cookie, and that device keeps its row.
+	j := r.ask(t, "curl/8.0")
+	r.approve(t, again, j.code)
+	if _, status := j.poll(t); status != http.StatusSeeOther {
+		t.Fatalf("collecting the approval = %d, want 303", status)
+	}
+	if resp := r.do("GET", "/", again, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("the approver after approving = %d, want 200", resp.StatusCode)
+	}
+	if reg := r.registry(); len(reg.Devices) != 3 {
+		t.Errorf("devices after quick-connect = %d, want 3", len(reg.Devices))
 	}
 }
 
