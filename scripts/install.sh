@@ -174,11 +174,17 @@ fi
 # Lay down /opt/briard from the staging dir. The agent binary + qemu bundle + guest
 # image are the self-updating cattle; the base guest image is read-only backing.
 mkdir -p "$PREFIX/guest-image"
+STAGING_OURS="" # the staging dir this script created, if any -- see [B.128] below
 if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	# The host is admitted: now the bootstrap fetches and verifies the whole set (qemu bundle, guest
 	# image, a fresh briard-agent) against the bundled keyring, refusing anything unsigned.
 	src="$PREFIX/staging"
 	rm -rf "$src"
+	# OURS TO DELETE, and the only staging dir that is ([B.128]). Recorded here, in the branch
+	# that CREATES it, rather than re-derived from BRIARD_ARTIFACTS at the far end of the script:
+	# the caller's artifact dir on the other branch is read-only and not ours, and deleting it
+	# would be a considerably worse bug than the leak this closes.
+	STAGING_OURS="$src"
 	say "fetching + verifying the signed artifact set (briard/$RELEASE + vm) ..."
 	# Both chains, all-or-nothing: the agent stages briard/ and vm/ under $src and only places
 	# $src once both have verified, so a briard bundle never lands without the VM image it was
@@ -391,6 +397,22 @@ for u in briard-agent.service briard-update.service briard-update.timer; do
 	[ -f "$HOSTSRC/$u" ] || die "$u is absent from staging; this release cannot be installed"
 	install -m0644 "$HOSTSRC/$u" "$UNIT_DIR/$u"
 done
+
+# ---- the staging dir goes ([B.128]) -------------------------------------------------
+# Every artifact above has been copied out, so what is left here is a second copy of the largest
+# thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- 1.2 GB,
+# measured on briard-test, which is 13% of a 9.5 GiB disk, held by nothing, on the same filesystem
+# as the thin guest overlay that must grow to hold every service image the household installs.
+#
+# ONLY OURS. $STAGING_OURS is empty on the BRIARD_ARTIFACTS path, whose staging dir belongs to
+# the caller (a Nix store path, in the install rigs) and must survive us.
+#
+# Last, and never fatal: this is space reclaimed from a finished install, not a step whose failure
+# means the install did not happen ([B.141]'s rule for the guest-bundle tarball, same reasoning).
+if [ -n "$STAGING_OURS" ]; then
+	say "removing the staging directory"
+	rm -rf "$STAGING_OURS" 2>/dev/null || true
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
 	say "registering briard with systemd"
