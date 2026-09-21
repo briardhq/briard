@@ -751,6 +751,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// The guest chain's nightly timer ([B.86d]) -- a standalone node converging its OS to
 	// vm/stable through the same door; a no-op goroutine on a managed or paired node.
 	go cfg.guestUpdateTimer(ctx, local, n, logf)
+	// The briard chain's nightly has no such door ([B.161](a)): its timer starts the frozen
+	// update unit directly, so a failed run's verdict reaches nobody. This watches that unit and
+	// tells the household when this node has stopped updating. Started here, beside the guest's
+	// timer and OUTSIDE the re-dial loop, so a bounced guest channel never re-announces a
+	// standing state.
+	go cfg.watchUpdates(ctx, n, logf)
 	// The guest's admin port feeds the same channel: a directive the household pressed a button
 	// for in the dashboard arrives here exactly as one the operator typed ([V3b.31i]).
 	go serveAdminPort(ctx, cfg.AdminPortSock, local, logf)

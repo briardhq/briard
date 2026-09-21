@@ -1346,6 +1346,50 @@ pkgs.testers.runNixOSTest {
     host.succeed("journalctl -u briard-update | grep -q 'could not fetch a bootstrap agent'")
     print("the shipped update unit, timer and CLI round-trip against the channel; an unknown pin fails loudly")
 
+    # ---- A NODE THAT HAS STOPPED UPDATING SAYS SO ([B.161](a)) -------------------------------
+    # Everything above reached the unit through a TRIGGER -- the CLI, and on a managed node the
+    # cloud's directive -- and a trigger hands the verdict to whoever asked for it. The TIMER does
+    # not, and the timer is the whole of updating on a standalone home: it starts the unit
+    # directly, so a failed run ends in that unit's journal and nothing on the node reads it. A
+    # household that had silently stopped updating looked exactly like one that was current, which
+    # is the failure the upgrade floor ([B.159](e)) exists to prevent arriving by the other door.
+    #
+    # The failure is induced on the TIMER'S OWN PATH, not the CLI's, and the difference is the
+    # point: `systemctl start` with no target message is literally what briard-update.timer does,
+    # nobody calls TakeResult, and the run's last line is therefore still on disk afterwards.
+    # Driving it through `briard update` instead would consume that message and quietly test a
+    # path that already had a reader.
+    host.succeed("systemctl reset-failed briard-update.service && rm -f /run/briard/update-result")
+    host.succeed("mv /srv/briard/stable/linux/briard-agent /root/hidden-agent")
+    host.fail("systemctl start briard-update.service")
+    host.succeed("systemctl is-failed briard-update.service")
+    host.succeed("test -s /run/briard/update-result")   # the message with no consumer
+    #
+    # ⚠️ THE ASSERTION IS THE ALERT, NOT THE FAILED RUN. `journalctl -u briard-update` was already
+    # green further up and proves only that the updater complained to itself. What is new here is
+    # that the AGENT noticed and wrote the household-facing line -- the one shape every alert on a
+    # node takes and the one `briard alerts` greps for, on both surfaces.
+    #
+    # The agent is restarted because the watcher reads the unit at start and then on a slow
+    # cadence, and an agent coming up onto a node that is ALREADY failing must report it: that is
+    # the no-priming half of the design, and restarting is how this rig reaches it.
+    host.succeed("systemctl restart briard-agent.service")
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -qF 'alert [warning] Briard: this node has stopped updating'",
+        timeout=120,
+    )
+    # The run's own last line rides along, because that is where the remedy lives: here "could not
+    # fetch", on a floored node the refusal that names reinstall in so many words. An alert that
+    # says only "something failed" gives the owner nothing to do.
+    host.succeed("journalctl -u briard-agent | grep -qF 'The update run said:'")
+    host.succeed("journalctl -u briard-agent | grep -q 'could not fetch a bootstrap agent'")
+    # Put the channel back and clear the unit, so the steps below meet the node they expect.
+    host.succeed("mv /root/hidden-agent /srv/briard/stable/linux/briard-agent")
+    host.succeed("systemctl reset-failed briard-update.service")
+    host.succeed("systemctl start briard-update.service")
+    host.fail("systemctl is-failed briard-update.service")
+    print("a run that failed on the timer's own path reached the household as an alert, carrying the updater's own last line")
+
     # ---- THE HOST BUNDLE ON THE SHIPPED LAYOUT ([B.86b]) ------------------------------------
     # qemu is reached through a LINK: the public /opt/briard/qemu (baked into the bundle's ELF
     # interpreter) is a fixed link onto /opt/briard/agent/qemu, which points at the installed

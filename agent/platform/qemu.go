@@ -751,3 +751,12 @@ func serialArgs(s QEMUSpec) []string {
 		"-serial", "chardev:"+DebugChardevID,
 	)
 }
+
+// UnitState is unitState for callers outside this package: one unit's ActiveState, read
+// through the same service-manager seam every other systemctl call goes through, so the host
+// agent does not grow a second way to ask systemd a question ([B.161](a)).
+//
+// The error return keeps unitState's meaning and it is the part a caller must not flatten: the
+// manager answers for units that do not exist as well ("inactive", exit 0), so an error is the
+// QUERY having failed, which is not an answer about the unit.
+func UnitState(unit string) (string, error) { return unitState(unit) }
