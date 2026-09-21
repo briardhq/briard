@@ -107,7 +107,7 @@ pkgs.testers.runNixOSTest {
         # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
-        # The guest chain ([B.86h]): the channel this rig serves, the keyring it mints, the record.
+        # The vm chain ([B.86h]): the channel this rig serves, the keyring it mints, the record.
         "--setenv=CHANNEL_URL=http://127.0.0.1:8099 --setenv=UPDATE_KEYRING=/root/keyring.pem --setenv=GUEST_RELEASE_CACHE=/tmp/guest-release.json "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=ADMIN_SOCK=/run/briard/admin.sock "
         "--setenv=NODE=guest --setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
@@ -326,30 +326,30 @@ pkgs.testers.runNixOSTest {
 
     print("the state disk survived the rescue untouched, and the guest kept its machine identity")
 
-    # === (6) THE OS MOVES BY IMAGE ([B.86h]). The guest chain's release is a whole image; the
+    # === (6) THE OS MOVES BY IMAGE ([B.86h]). The vm chain's release is a whole image; the
     #        agent fetches and verifies it, stages it beside the one in use, stops the guest,
     #        swaps the file, rebuilds the overlay, boots, proves the booted closure is the one the
     #        signed manifest names, health-gates, and drops the old image. Then the failable
     #        control: a release whose manifest names a closure its image does NOT boot is put
     #        back -- same file swapped the other way -- and the node is serving what it served.
     V = "${agent.version}"
-    GV = "guest." + V.split(".", 1)[1]
-    GV2 = "guest.20991230.next0000"
-    host.succeed("mkdir -p /srv/guest && cp -r ${channel}/guest/. /srv/guest/ && chmod -R u+w /srv/guest")
+    GV = "vm." + V.split(".", 1)[1]
+    GV2 = "vm.20991230.next0000"
+    host.succeed("mkdir -p /srv/vm && cp -r ${channel}/vm/. /srv/vm/ && chmod -R u+w /srv/vm")
     def sign_and_point(ver, pointers):
-        d = f"/srv/guest/{ver}"
+        d = f"/srv/vm/{ver}"
         host.succeed(f"${stub}/bin/briard-selfupdate-stub sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         for p in pointers:
-            host.succeed(f"mkdir -p /srv/guest/{p} && cp {d}/manifest.json {d}/manifest.json.sig /srv/guest/{p}/")
+            host.succeed(f"mkdir -p /srv/vm/{p} && cp {d}/manifest.json {d}/manifest.json.sig /srv/vm/{p}/")
     sign_and_point(GV, ("stable",))
     sign_and_point(GV2, ("latest",))
     host.succeed("systemd-run --unit=guest-channel --collect ${stub}/bin/briard-selfupdate-stub serve 127.0.0.1:8099 /srv")
-    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/guest/latest/manifest.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/vm/latest/manifest.json -o /dev/null", timeout=30)
     qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
 
-    out = host.succeed("${agent}/bin/briard-agent update vm -sock /run/briard/admin.sock -to latest").strip()
-    assert f"now running {GV2}" in out, f"briard update vm said: {out!r}"
+    out = host.succeed("${agent}/bin/briard-agent update -vm -sock /run/briard/admin.sock -to latest").strip()
+    assert f"now running {GV2}" in out, f"briard update -vm said: {out!r}"
     host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: booted {GV2}, health-gating'")
     host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: {GV2} committed'")
     # The guest runs the NEXT image's closure (the manifest named it; the boot proved it), on a
@@ -368,11 +368,11 @@ pkgs.testers.runNixOSTest {
     # THE FAILABLE CONTROL: a release whose signed manifest names a closure its image does not
     # boot. Same image bytes as GV2, manifest lying about the system -> the boot does not prove
     # the target -> the swap is undone and the node is back on GV2, serving.
-    GV3 = "guest.20991231.liar0000"
-    host.succeed(f"mkdir -p /srv/guest/{GV3} && cp /srv/guest/{GV2}/nixos.qcow2.zst /srv/guest/{GV3}/")
-    host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/guest/{GV3} --chain guest --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-host {V}")
+    GV3 = "vm.20991231.liar0000"
+    host.succeed(f"mkdir -p /srv/vm/{GV3} && cp /srv/vm/{GV2}/nixos.qcow2.zst /srv/vm/{GV3}/")
+    host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/vm/{GV3} --chain vm --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-briard {V}")
     sign_and_point(GV3, ("latest",))
-    host.fail("${agent}/bin/briard-agent update vm -sock /run/briard/admin.sock -to latest")
+    host.fail("${agent}/bin/briard-agent update -vm -sock /run/briard/admin.sock -to latest")
     host.succeed(f"journalctl -u briard-agent | grep -q \"not {GV3}'s system\"")
     host.succeed("journalctl -u briard-agent | grep -q 'OS upgrade rolled back to'")
     host.succeed(f"grep -q '\"version\":\"{GV2}\"' /tmp/guest-release.json")  # the record never moved

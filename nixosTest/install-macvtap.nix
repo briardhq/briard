@@ -56,8 +56,8 @@ let
   channel = pkgs.runCommand "briard-test-channel" {
     nativeBuildInputs = [ pkgs.zstd pkgs.openssl pkgs.gnutar ];
   } ''
-    V=${agent.version}; GV="guest.''${V#*.}"
-    H="$out/host/$V/linux"; G="$out/guest/$GV"
+    V=${agent.version}; GV="vm.''${V#*.}"
+    H="$out/briard/$V/linux"; G="$out/vm/$GV"
     mkdir -p "$H" "$G"
     install -m0755 ${agent}/bin/briard-agent        "$H/briard-agent"
     install -m0755 ${../scripts/briard-net-wrap.sh} "$H/briard-net-wrap"
@@ -75,7 +75,7 @@ let
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
         -cf qemu-bundle.tar -C ${qemuBundle} .
     zstd -19 -q --rm qemu-bundle.tar -o "$H/qemu-bundle.tar.zst"
-    # The guest bundle ([B.86j]): the guest's briard binaries, in the host chain, pushed into the
+    # The guest bundle ([B.86j]): the guest's briard binaries, in the briard chain, pushed into the
     # guest at bring-up. Same shape as the qemu bundle.
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
         -cf guest-bundle.tar -C ${guestBundle} .
@@ -84,11 +84,11 @@ let
     chmod 0644 "$H"/*.zst "$G"/*.zst
     # The production writer, not a re-implementation in Nix -- which would have tested this file
     # against itself and proven nothing about what a release actually publishes.
-    "$H/briard-agent" --stage-manifest "$H" --chain host --platform linux --release "$V" --guest "$GV"
+    "$H/briard-agent" --stage-manifest "$H" --chain briard --platform linux --release "$V" --vm "$GV"
     # The guest manifest names the closure the image boots and the oldest host that tolerates
     # it -- this release's own ([B.86d]), as publish-release.sh stamps it.
-    "$H/briard-agent" --stage-manifest "$G" --chain guest                  --release "$GV" \
-        --system ${guestDisk.system} --min-host "$V"
+    "$H/briard-agent" --stage-manifest "$G" --chain vm                  --release "$GV" \
+        --system ${guestDisk.system} --min-briard "$V"
   '';
   # ⚠️ THE CHANNEL IS SIGNED AT RUNTIME, NOT HERE, and that is a constraint rather than a
   # preference: a signing key committed to the repo trips `TestNoSecretMaterial` (internal/arch),
@@ -334,11 +334,11 @@ pkgs.testers.runNixOSTest {
     # A symlink farm over the read-only store, one versioned directory per chain: only the
     # signatures and the pointers need to be real files here. The pointer is what
     # `publish-release.sh sign`/`promote` lay: a byte-copy of the signed manifest, plus the
-    # bootstrap agent on the host chain (install.sh curls it from the pointer path).
+    # bootstrap agent on the briard chain (install.sh curls it from the pointer path).
     V = "${agent.version}"
-    GV = "guest." + V.split(".", 1)[1]
-    # The host chain carries the platform level (this is its linux arm); the guest is flat.
-    # Both pointers name this one release: install.sh and `briard update self` both follow
+    GV = "vm." + V.split(".", 1)[1]
+    # The briard chain carries the platform level (this is its linux arm); the vm chain is flat.
+    # Both pointers name this one release: install.sh and `briard update` both follow
     # `stable` ([B.159](f)), and the shipped update unit is exercised against both below.
     for chain, ver, arm in (("host", V + "/linux", "/linux"), ("guest", GV, "")):
         d = f"/srv/{chain}/{ver}"
@@ -348,21 +348,21 @@ pkgs.testers.runNixOSTest {
         for ptr in ("stable", "latest"):
             host.succeed(f"mkdir -p /srv/{chain}/{ptr}{arm} && cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}{arm}/")
     for ptr in ("stable", "latest"):
-        host.succeed(f"ln -sf ${channel}/host/{V}/linux/briard-agent /srv/host/{ptr}/linux/briard-agent")
+        host.succeed(f"ln -sf ${channel}/briard/{V}/linux/briard-agent /srv/briard/{ptr}/linux/briard-agent")
 
     host.succeed(
         f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
     )
-    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/host/stable/linux/manifest.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/briard/stable/linux/manifest.json -o /dev/null", timeout=30)
     # The manifests are SIGNED, the artifacts are COMPRESSED and live under the VERSIONED
     # directories only -- assert the shape before relying on it, so a channel that silently went
     # back to loose plaintext files, or grew a second image under a pointer, cannot pass as green.
-    host.succeed("curl -sf http://127.0.0.1:8099/host/stable/linux/manifest.json.sig -o /dev/null")
-    host.succeed("curl -sf http://127.0.0.1:8099/host/stable/linux/briard-agent -o /dev/null")
-    host.succeed("curl -sf http://127.0.0.1:8099/guest/stable/manifest.json.sig -o /dev/null")
-    host.succeed(f"curl -sf http://127.0.0.1:8099/guest/{GV}/nixos.qcow2.zst -o /dev/null")
-    host.fail(f"curl -sf http://127.0.0.1:8099/guest/{GV}/nixos.qcow2 -o /dev/null")
-    host.fail("curl -sf http://127.0.0.1:8099/guest/stable/nixos.qcow2.zst -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/briard/stable/linux/manifest.json.sig -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/briard/stable/linux/briard-agent -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/vm/stable/manifest.json.sig -o /dev/null")
+    host.succeed(f"curl -sf http://127.0.0.1:8099/vm/{GV}/nixos.qcow2.zst -o /dev/null")
+    host.fail(f"curl -sf http://127.0.0.1:8099/vm/{GV}/nixos.qcow2 -o /dev/null")
+    host.fail("curl -sf http://127.0.0.1:8099/vm/stable/nixos.qcow2.zst -o /dev/null")
 
     host.fail(
         "${channelEnv} BRIARD_NIC=nope999 sh ${installScript}"
@@ -1202,12 +1202,12 @@ pkgs.testers.runNixOSTest {
     # not be the file the signature covered. The channel's copy is the one `--fetch-install`
     # verified against the signed manifest before install.sh ever saw it.
     for u in ("briard-agent.service", "briard-update.service", "briard-update.timer"):
-        host.succeed(f"cmp /run/systemd/system/{u} /srv/host/{V}/linux/{u}")
+        host.succeed(f"cmp /run/systemd/system/{u} /srv/briard/{V}/linux/{u}")
     # ...and so were the agent's three frozen scripts. Same claim, and the one that matters most
     # for these: they are what performs a self-update, so "the file on disk is the file that was
     # signed" is the property the whole pivot rests on.
     for s in ("briard-exec", "briard-commit", "briard-update"):
-        host.succeed(f"cmp /opt/briard/agent/{s} /srv/host/{V}/linux/{s}")
+        host.succeed(f"cmp /opt/briard/agent/{s} /srv/briard/{V}/linux/{s}")
         host.succeed(f"test -x /opt/briard/agent/{s}")
     print("the units and the agent's scripts are byte-identical to the signed channel's")
 
@@ -1316,7 +1316,7 @@ pkgs.testers.runNixOSTest {
     # THE SHIPPED UPDATE UNIT BELOW THE AGENT ([B.86a]). agent-selfupdate.nix proves the
     # mechanism with stub candidates; this proves install.sh SHIPPED it: the frozen script, the
     # oneshot, the enabled timer, the installed manifests the verb compares against, and one
-    # real round trip through `briard update self` on this very node -- which pulls the
+    # real round trip through `briard update` on this very node -- which pulls the
     # bootstrap from the test channel's pointer, verifies the manifest, compares, and says the
     # node is already at the release it installed from. Not a no-op test: the same command with
     # a version the channel does not carry must fail through the same path.
@@ -1330,7 +1330,7 @@ pkgs.testers.runNixOSTest {
     # ⚠️ THE ENVIRONMENTFILE IS LOAD-BEARING FROM HERE DOWN, and worth naming because it is easy to
     # read the next lines as proving something else. briard-update is shipped verbatim ([B.157]), so
     # it no longer has this channel's URL written into it: it reads CHANNEL_URL out of config.env,
-    # which the unit delivers. Every `update self` round trip below reaches the stub at :8099 ONLY
+    # which the unit delivers. Every `update` round trip below reaches the stub at :8099 ONLY
     # through that path -- break the EnvironmentFile and the script falls back to its own
     # https://get.briard.io default, which this VM cannot reach, and they fail.
     host.succeed("systemctl cat briard-update.service | grep -q '^EnvironmentFile=-/opt/briard/config.env'")
@@ -1339,10 +1339,10 @@ pkgs.testers.runNixOSTest {
     host.succeed("test -s /opt/briard/agent/manifest.json && test -s /opt/briard/guest-image/manifest.json")
     host.succeed(f"grep -q '\"version\":\"{V}\"' /opt/briard/agent/manifest.json")
     host.succeed(f"grep -q '\"version\":\"{GV}\"' /opt/briard/guest-image/manifest.json")
-    out = host.succeed("/opt/briard/agent/briard-agent update self").strip()
-    assert f"already at {V}" in out, f"briard update self said: {out!r}"
+    out = host.succeed("/opt/briard/agent/briard-agent update").strip()
+    assert f"already at {V}" in out, f"briard update said: {out!r}"
     host.succeed("test ! -e /run/briard/update && test ! -e /run/briard/update-target && test ! -e /run/briard/update-result")
-    host.fail("/opt/briard/agent/briard-agent update self -to v3.20990101.nothere")
+    host.fail("/opt/briard/agent/briard-agent update -to v3.20990101.nothere")
     host.succeed("journalctl -u briard-update | grep -q 'could not fetch a bootstrap agent'")
     print("the shipped update unit, timer and CLI round-trip against the channel; an unknown pin fails loudly")
 
@@ -1364,23 +1364,23 @@ pkgs.testers.runNixOSTest {
     # (the binary's PT_INTERP names the committed prefix), before it commits. The agent bytes are
     # the installed ones: what this proves is the bundle path, not a new agent.
     def publish_pin(version, bundle_dir, guest_dir=None):
-        d = f"/srv/host/{version}/linux"
-        host.succeed(f"mkdir -p {d} && cp -L /srv/host/{V}/linux/briard-agent /srv/host/{V}/linux/briard-net-wrap {d}/")
+        d = f"/srv/briard/{version}/linux"
+        host.succeed(f"mkdir -p {d} && cp -L /srv/briard/{V}/linux/briard-agent /srv/briard/{V}/linux/briard-net-wrap {d}/")
         host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {bundle_dir} . | zstd -q -3 -o {d}/qemu-bundle.tar.zst")
         # The guest bundle rides every host release ([B.86j]): the installed one's bytes unless a
         # pin brings its own (the bad-bundle case below).
         if guest_dir:
             host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {guest_dir} . | zstd -q -3 -o {d}/guest-bundle.tar.zst")
         else:
-            host.succeed(f"cp -L /srv/host/{V}/linux/guest-bundle.tar.zst {d}/")
-        host.succeed(f"chmod 0644 {d}/*.zst && {d}/briard-agent --stage-manifest {d} --chain host --platform linux --release {version} --guest {GV}")
+            host.succeed(f"cp -L /srv/briard/{V}/linux/guest-bundle.tar.zst {d}/")
+        host.succeed(f"chmod 0644 {d}/*.zst && {d}/briard-agent --stage-manifest {d} --chain briard --platform linux --release {version} --vm {GV}")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     V2 = "v3.20991230.b86b0000"
-    host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/host/{V}/linux/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
+    host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/briard/{V}/linux/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
     host.succeed("echo b86b > /root/bundle2/PROVENANCE.b86b")
     publish_pin(V2, "/root/bundle2")
-    out = host.succeed(f"/opt/briard/agent/briard-agent update self -to {V2}").strip()
-    assert f"staged {V2} (agent, qemu), armed" in out, f"briard update self said: {out!r}"   # net-wrap unchanged: not fetched
+    out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V2}").strip()
+    assert f"staged {V2} (agent, qemu), armed" in out, f"briard update said: {out!r}"   # net-wrap unchanged: not fetched
     assert host.succeed("readlink /opt/briard/agent/qemu.next").strip() == f"qemu-{V2}"
     host.succeed(f"test -e /opt/briard/agent/qemu-{V2}/PROVENANCE.b86b")
     host.succeed("systemctl restart briard-agent.service")   # the trial: smoke test, READY, commit
@@ -1404,8 +1404,8 @@ pkgs.testers.runNixOSTest {
     V3 = "v3.20991231.b86bbad0"
     host.succeed("mkdir -p /root/bundle3/bin && printf '#!/bin/sh\\nexit 1\\n' > /root/bundle3/bin/qemu-system-x86_64 && chmod 755 /root/bundle3/bin/qemu-system-x86_64")
     publish_pin(V3, "/root/bundle3")
-    out = host.succeed(f"/opt/briard/agent/briard-agent update self -to {V3}").strip()
-    assert f"staged {V3} (agent, qemu), armed" in out, f"briard update self said: {out!r}"
+    out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V3}").strip()
+    assert f"staged {V3} (agent, qemu), armed" in out, f"briard update said: {out!r}"
     host.succeed("systemctl restart briard-agent.service || true")   # the trial refuses; the start FAILS
     host.wait_until_succeeds("systemctl is-active briard-agent.service", timeout=180)
     host.succeed("journalctl -u briard-agent | grep -q 'refused on this host: qemu smoke test: -version'")
@@ -1431,7 +1431,7 @@ pkgs.testers.runNixOSTest {
     print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
 
     # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ([B.86j], [B.138], [B.139]) ----------------------
-    # Every briard binary the guest runs rides the host chain: install.sh laid guest-<V>/bin/ and
+    # Every briard binary the guest runs rides the briard chain: install.sh laid guest-<V>/bin/ and
     # the `guest` link beside qemu's, and the FIRST bring-up dressed the guest -- the image booted
     # on its firmware -- briard-guest-firmware, the push protocol and the ONE binary the image
     # bakes ([B.139]); the guest AGENT, the door and the dashboard exist in the guest only once
@@ -1528,8 +1528,8 @@ pkgs.testers.runNixOSTest {
     host.succeed("printf '#!/bin/sh\\necho \"dashboard: test launch: no\" >&2\\nexit 1\\n' > /root/gbundle4/bin/briard-dashboard && chmod 755 /root/gbundle4/bin/*")
     publish_pin(V4, "/root/bundle2", "/root/gbundle4")
     trials_before = console_count("briard-bin-exec: briard-guest-agent: TRIAL")
-    out = host.succeed(f"/opt/briard/agent/briard-agent update self -to {V4}").strip()
-    assert f"staged {V4} (agent, guest), armed" in out, f"briard update self said: {out!r}"   # qemu unchanged since V2: not fetched
+    out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V4}").strip()
+    assert f"staged {V4} (agent, guest), armed" in out, f"briard update said: {out!r}"   # qemu unchanged since V2: not fetched
     host.succeed("systemctl restart briard-agent.service")
     host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REFUSED'", timeout=300)
@@ -1559,8 +1559,8 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"mkdir -p /root/gbundle5/bin && cp /opt/briard/agent/guest-{V}/bin/briard-guest-agent /opt/briard/agent/guest-{V}/bin/briard-dashboard /root/gbundle5/bin/")
     host.succeed("printf '#!/bin/sh\\ncase \"$1\" in --test-launch) echo ok; exit 0;; esac\\necho \"door: not today\" >&2\\nexit 1\\n' > /root/gbundle5/bin/briard-reverse-proxy && chmod 755 /root/gbundle5/bin/*")
     publish_pin(V5, "/root/bundle2", "/root/gbundle5")
-    out = host.succeed(f"/opt/briard/agent/briard-agent update self -to {V5}").strip()
-    assert f"staged {V5} (agent, guest), armed" in out, f"briard update self said: {out!r}"
+    out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V5}").strip()
+    assert f"staged {V5} (agent, guest), armed" in out, f"briard update said: {out!r}"
     host.succeed("systemctl restart briard-agent.service")
     host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
     assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V5}", "the guest link did not move on commit"
@@ -1657,22 +1657,22 @@ pkgs.testers.runNixOSTest {
 
     # ---- THE GUEST CHAIN ON THE SHIPPED NODE ([B.86d]) ---------------------------------------
     # The installed guest manifest names the closure the image boots; install.sh seeded the
-    # node-local record from it; the agent's config carries the channel root. `briard update vm`
-    # resolves guest/stable on the channel, verifies it, compares min_host with this host and
+    # node-local record from it; the agent's config carries the channel root. `briard update -vm`
+    # resolves vm/stable on the channel, verifies it, compares min_briard with this briard and
     # the closure with what the guest runs -- and says so: this node is already running it.
     host.succeed("grep -q '\"system\":\"${guestDisk.system}\"' /opt/briard/guest-image/manifest.json")
-    host.succeed(f"grep -q '\"min_host\":\"{V}\"' /opt/briard/guest-image/manifest.json")
+    host.succeed(f"grep -q '\"min_briard\":\"{V}\"' /opt/briard/guest-image/manifest.json")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")
     host.succeed("grep -q '^CHANNEL_URL=http://127.0.0.1:8099$' /opt/briard/config.env")
-    out = host.succeed("/opt/briard/agent/briard-agent update vm").strip()
-    assert f"already running {GV}" in out, f"briard update vm said: {out!r}"
+    out = host.succeed("/opt/briard/agent/briard-agent update -vm").strip()
+    assert f"already running {GV}" in out, f"briard update -vm said: {out!r}"
     # A guest release this host is too OLD for is refused before anything is staged, and the
     # refusal names the remedy -- the support window closing on a node must never be silent.
     # [[verification-assertions-must-fail]]: the same command with an unknown pin fails too.
-    GNEW = "guest.20991231.b86d0000"
-    d = f"/srv/guest/{GNEW}"
+    GNEW = "vm.20991231.b86d0000"
+    d = f"/srv/vm/{GNEW}"
     host.succeed(f"mkdir -p {d} && echo not-an-image > {d}/nixos.qcow2.zst")  # a real file (the writer skips links); never fetched, the refusal comes first
-    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain guest --release {GNEW} --system ${guestDisk.system} --min-host v3.20991231.zzzzzzz")
+    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain vm --release {GNEW} --system ${guestDisk.system} --min-briard v3.20991231.zzzzzzz")
     host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     # ⚠️ WAIT FOR THE ADMIN DOOR BEFORE KNOCKING ON IT. The section above ends in a refused
     # bundle push and a relaunch, so the agent can still be re-opening its socket here -- and
@@ -1685,14 +1685,14 @@ pkgs.testers.runNixOSTest {
     # THE REFUSAL'S OWN WORDS, not just a non-zero exit ([[verification-assertions-must-fail]]).
     # This is the assertion that cannot pass for the wrong reason: an unreachable agent, a
     # mistyped release, a verb that no longer exists all exit non-zero and all fail HERE.
-    out = host.fail(f"/opt/briard/agent/briard-agent update vm -to {GNEW} 2>&1")
-    assert "older than the guest release requires" in out, f"the verb failed, but not on min_host: {out!r}"
+    out = host.fail(f"/opt/briard/agent/briard-agent update -vm -to {GNEW} 2>&1")
+    assert "older than the vm release requires" in out, f"the verb failed, but not on min_briard: {out!r}"
     # And the escalation reached the journal -- a refusal the owner never hears about is the
     # failure mode the alert exists for.
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the guest release requires'", timeout=30)
-    host.fail("/opt/briard/agent/briard-agent update vm -to guest.20990101.nothere")
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the vm release requires'", timeout=30)
+    host.fail("/opt/briard/agent/briard-agent update -vm -to vm.20990101.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
-    print("the shipped node resolves its guest chain: already running the installed release; a release needing a newer host is refused loudly")
+    print("the shipped node resolves its vm chain: already running the installed release; a release needing a newer briard is refused loudly")
 
     # ---- CONVERGENCE RESTORES DRIFT, IT DOES NOT UNDO AN ACT ([B.150](d)) ---------------------
     #

@@ -15,7 +15,7 @@ import (
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
 // the manifest cannot list itself, nor its signature. Nothing else is excluded, because a
 // release directory holds exactly what its manifest names -- INSTALL.SH INCLUDED, since
-// [B.159](a) made it an ordinary artifact of host/<version>/linux that `promote` byte-copies to
+// [B.159](a) made it an ordinary artifact of briard/<version>/linux that `promote` byte-copies to
 // the channel root. Excluding it would re-open what that item was filed against: the root copy
 // is served unsigned, because the one-liner fetches it before anything exists that could verify
 // a signature, and this manifest hashing it is the only thing that ties those bytes to a release.
@@ -26,7 +26,7 @@ var notArtifacts = map[string]bool{
 
 // WriteManifest describes every artifact in dir and writes dir/manifest.json — the exact bytes
 // the release then signs and FetchVerified later reads. chain names the release line the
-// directory belongs to (ChainHost, ChainGuest), platform the arm within it ("" for a chain
+// directory belongs to (ChainBriard, ChainVM), platform the arm within it ("" for a chain
 // without that level) and version the release id; all go INSIDE the signed bytes, so a manifest
 // served from a pointer path can say which release it is and where its artifacts live.
 //
@@ -42,11 +42,11 @@ var notArtifacts = map[string]bool{
 // Entries are sorted by name so the same directory always produces the same bytes — the manifest
 // is signed, and a set that reordered itself would churn the signature for no reason.
 //
-// system, minHost and inputs are the guest chain's extra facts (Manifest.System / MinHost / Inputs) and
-// guest is the host chain's ([B.86i]: the guest release this host release pairs with); each is
-// refused on any other chain, because a host manifest naming a closure would be a lie the reader
-// has no way to catch.
-func WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs string) error {
+// system, minBriard and inputs are the vm chain's extra facts (Manifest.System / MinBriard /
+// Inputs) and vm is the briard chain's ([B.86i]: the vm release this briard release pairs with);
+// each is refused on any other chain, because a briard manifest naming a closure would be a lie
+// the reader has no way to catch.
+func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
 	if !validSegment(chain) {
 		return fmt.Errorf("install: bad chain name %q", chain)
 	}
@@ -58,26 +58,26 @@ func WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs
 	if !validSegment(version) || version == TargetStable || version == TargetLatest {
 		return fmt.Errorf("install: bad release version %q", version)
 	}
-	if (system != "" || minHost != "") && chain != ChainGuest {
-		return fmt.Errorf("install: system/min_host are guest-chain facts, not %s's", chain)
+	if (system != "" || minBriard != "") && chain != ChainVM {
+		return fmt.Errorf("install: system/min_briard are vm-chain facts, not %s's", chain)
 	}
 	if system != "" && !strings.HasPrefix(system, "/nix/store/") {
 		return fmt.Errorf("install: system %q is not a /nix/store path", system)
 	}
-	if guest != "" && chain != ChainHost {
-		return fmt.Errorf("install: guest names the host chain's pair, not %s's", chain)
+	if vm != "" && chain != ChainBriard {
+		return fmt.Errorf("install: vm names the briard chain's pair, not %s's", chain)
 	}
-	if guest != "" && (!validSegment(guest) || guest == TargetStable || guest == TargetLatest) {
-		return fmt.Errorf("install: bad guest release %q", guest)
+	if vm != "" && (!validSegment(vm) || vm == TargetStable || vm == TargetLatest) {
+		return fmt.Errorf("install: bad vm release %q", vm)
 	}
-	if inputs != "" && chain != ChainGuest {
-		return fmt.Errorf("install: inputs is a guest-chain fact, not %s's", chain)
+	if inputs != "" && chain != ChainVM {
+		return fmt.Errorf("install: inputs is a vm-chain fact, not %s's", chain)
 	}
 	if inputs != "" && !validHex(inputs) {
 		return fmt.Errorf("install: inputs %q is not a sha256 hex", inputs)
 	}
-	if minHost != "" && !validSegment(minHost) {
-		return fmt.Errorf("install: bad min_host %q", minHost)
+	if minBriard != "" && !validSegment(minBriard) {
+		return fmt.Errorf("install: bad min_briard %q", minBriard)
 	}
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -85,14 +85,14 @@ func WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs
 	}
 	// THE FLOOR IS TAKEN FROM THE TREE, NEVER FROM A PARAMETER ([B.159](e)). Every other fact
 	// here is something the pipeline knows and this function is told; the floor is something the
-	// CODE knows, so the binary that writes the manifest is the right one to answer it. Host
-	// chain only: the guest image is replaced whole and has no past of its own to be too old
-	// for, and a floor there would be a second answer to a question nobody asked yet.
+	// CODE knows, so the binary that writes the manifest is the right one to answer it. Briard
+	// chain only: the VM image is replaced whole and has no past of its own to be too old for,
+	// and a floor there would be a second answer to a question nobody asked yet.
 	floor := ""
-	if chain == ChainHost {
+	if chain == ChainBriard {
 		floor = MinUpgradeFrom
 	}
-	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinHost: minHost, Guest: guest, Inputs: inputs, MinUpgradeFrom: floor}
+	man := Manifest{Chain: chain, Platform: platform, Version: version, System: system, MinBriard: minBriard, VM: vm, Inputs: inputs, MinUpgradeFrom: floor}
 	for _, e := range ents {
 		if e.IsDir() || notArtifacts[e.Name()] {
 			continue

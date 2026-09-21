@@ -29,16 +29,16 @@ func runGuestShutdown(ctx context.Context, qmpSock string) error {
 }
 
 // runFetchInstall downloads + verifies the signed artifact sets of BOTH chains into dest
-// (assertion e), the network half of install.sh: the host bundle lands under dest/host and the
-// guest image under dest/guest, each beside the manifest that verified it. The channel root,
-// the release to install and the release keyring PEM come from the environment (install.sh
-// sets BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING, the last the bundled release
-// public key). It lives here, not main.go; the guest is its own main ([B.137]) and never links
+// (assertion e), the network half of install.sh: the briard bundle lands under dest/briard and
+// the VM image under dest/vm, each beside the manifest that verified it. The channel root, the
+// release to install and the release keyring PEM come from the environment (install.sh sets
+// BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING, the last the bundled release public
+// key). It lives here, not main.go; the guest is its own main ([B.137]) and never links
 // install/net/http (the trim).
 //
 // All-or-nothing across the two chains as well as within each: dest appears only once both
-// have verified, so install.sh never sees a host bundle without the guest image it was
-// published beside ([B.86e]: host/stable + guest/stable IS the tested pair, by construction).
+// have verified, so install.sh never sees a briard bundle without the VM image it was
+// published beside ([B.86e]: briard/stable + vm/stable IS the tested pair, by construction).
 func runFetchInstall(ctx context.Context, dest string) error {
 	base := os.Getenv("BRIARD_CHANNEL_URL")
 	if base == "" {
@@ -73,24 +73,24 @@ func runFetchInstall(ctx context.Context, dest string) error {
 			os.RemoveAll(tmp)
 		}
 	}()
-	// The host chain first -- it has a platform level and this binary installs the Linux arm --
-	// and then the guest release ITS MANIFEST NAMES ([B.86i]): the guest image is a function of its
+	// The briard chain first -- it has a platform level and this binary installs the Linux arm --
+	// and then the vm release ITS MANIFEST NAMES ([B.86i]): the VM image is a function of its
 	// inputs and is re-published only when they change, so its id is no longer derivable from the
-	// host id, and the host manifest is where the pairing lives. One selector still installs one
-	// tested pair; it is just the host side that resolves it.
-	hf := &install.Fetcher{BaseURL: base, Chain: install.ChainHost, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf}
-	if err := hf.FetchVerified(ctx, release, filepath.Join(tmp, install.ChainHost)); err != nil {
+	// briard id, and the briard manifest is where the pairing lives. One selector still installs
+	// one tested pair; it is just the briard side that resolves it.
+	bf := &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf}
+	if err := bf.FetchVerified(ctx, release, filepath.Join(tmp, install.ChainBriard)); err != nil {
 		return err
 	}
-	hm, err := install.ReadManifest(filepath.Join(tmp, install.ChainHost, install.ManifestName))
+	bm, err := install.ReadManifest(filepath.Join(tmp, install.ChainBriard, install.ManifestName))
 	if err != nil {
-		return fmt.Errorf("read the fetched host manifest: %w", err)
+		return fmt.Errorf("read the fetched briard manifest: %w", err)
 	}
-	if hm.Guest == "" {
-		return fmt.Errorf("host release %s names no guest release -- published before [B.86i]; the alpha reinstalls from a current channel", hm.Version)
+	if bm.VM == "" {
+		return fmt.Errorf("briard release %s names no vm release -- published before [B.86i]; the alpha reinstalls from a current channel", bm.Version)
 	}
-	gf := &install.Fetcher{BaseURL: base, Chain: install.ChainGuest, Keyring: kr, Logf: log.Printf}
-	if err := gf.FetchVerified(ctx, hm.Guest, filepath.Join(tmp, install.ChainGuest)); err != nil {
+	vf := &install.Fetcher{BaseURL: base, Chain: install.ChainVM, Keyring: kr, Logf: log.Printf}
+	if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, install.ChainVM)); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
@@ -100,7 +100,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	return nil
 }
 
-// runFetchUpdate is the update unit's verb ([B.86a]): resolve target on the host chain, decide
+// runFetchUpdate is the update unit's verb ([B.86a]): resolve target on the briard chain, decide
 // against the installed manifest, stage + arm the agent if due, and return the one line the run
 // ended on. The layout comes from the same env the agent unit carries (UPDATE_BASE /
 // UPDATE_RUN_DIR), which the frozen unit passes through -- so the candidate lands exactly where
@@ -123,7 +123,7 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 		return "", err
 	}
 	u := &install.Update{
-		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainHost, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf},
+		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf},
 		Layout:  selfupdate.New(os.Getenv("UPDATE_BASE"), os.Getenv("UPDATE_RUN_DIR")),
 		Logf:    log.Printf,
 	}
@@ -135,6 +135,6 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 // described by the same code that installs them (agent/install.WriteManifest). Host-side for
 // the same reason as runFetchInstall: it lives in the install package, which the guest
 // trim excludes.
-func runStageManifest(dir, chain, platform, version, system, minHost, guest, inputs string) error {
-	return install.WriteManifest(dir, chain, platform, version, system, minHost, guest, inputs)
+func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
+	return install.WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs)
 }

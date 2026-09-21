@@ -18,20 +18,20 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE GUEST CHAIN ([B.86d]). The guest OS is its own release line -- `guest.<date>.<rev>` beside
-// the host's `v3.<date>.<rev>` -- and its signed manifest names the CLOSURE the image boots
-// (Manifest.System) and the oldest host that tolerates it (Manifest.MinHost). Resolving a guest
-// release is therefore: fetch and verify the target's manifest, refuse it if this host is older
-// than it needs, compare its closure with what the guest runs, and hand the closure to the
-// existing OS-upgrade path (stage from the cache, switch or reboot, health-gate, commit or
-// revert). Nothing below the manifest changes: the cloud still names closures in
+// THE VM CHAIN ([B.86d]). The guest OS is its own release line -- `vm.<date>.<inputs>` beside
+// briard's `v3.<date>.<rev>` -- and its signed manifest names the CLOSURE the image boots
+// (Manifest.System) and the oldest briard that tolerates it (Manifest.MinBriard). Resolving a vm
+// release is therefore: fetch and verify the target's manifest, refuse it if the installed
+// briard is older than it needs, compare its closure with what the guest runs, and hand the
+// closure to the existing OS-upgrade path (stage from the cache, switch or reboot, health-gate,
+// commit or revert). Nothing below the manifest changes: the cloud still names closures in
 // `upgrade-system`, the guest's os.* verbs are untouched; what this adds is a node that can move
 // its own OS from a channel -- which an OSS install could not do at all until now.
 //
-// Three triggers, mirroring the host chain: the cloud (a closure, as before), `briard update
-// vm` (this directive, over the admin socket, resolving `stable` by default) and a timer
+// Three triggers, mirroring the briard chain: the cloud (a closure, as before), `briard update
+// --vm` (this directive, over the admin socket, resolving `stable` by default) and a timer
 // INSIDE the agent (this directive with `stable`, nightly). The timer living inside the agent is
-// correct and not an inconsistency with the host chain's frozen unit: the bootstrap problem is
+// correct and not an inconsistency with the briard chain's frozen unit: the bootstrap problem is
 // agent-only. A broken agent that cannot upgrade the guest is not bricked, because the host
 // timer fixes the agent and the agent then fixes the guest. Only the thing at the bottom needs
 // an updater beneath it.
@@ -50,9 +50,9 @@ type systemReader interface {
 }
 
 // applyGuestUpdate is the update-vm directive ([B.86d]): resolve d.Payload (a target:
-// `latest`, `stable`, or an exact guest id; "" is stable) on the guest chain and, if due, run
+// `latest`, `stable`, or an exact vm id; "" is stable) on the vm chain and, if due, run
 // the OS upgrade to the closure it names. The outcome is the upgrade's own -- done, rolled back,
-// failed -- and a refusal before anything moved (an unverifiable manifest, a host too old, a pin
+// failed -- and a refusal before anything moved (an unverifiable manifest, a briard too old, a pin
 // below the floor) is a failure that names its reason.
 func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r systemReader, up upgrader, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
@@ -75,7 +75,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		logf("directive kind=update-vm refused: no usable release keyring on this node (%v)", err)
 		return failed("no release keyring on this node; a guest release cannot be verified")
 	}
-	f := &install.Fetcher{BaseURL: cfg.ChannelURL, Chain: install.ChainGuest, Keyring: kr, Logf: logf}
+	f := &install.Fetcher{BaseURL: cfg.ChannelURL, Chain: install.ChainVM, Keyring: kr, Logf: logf}
 	rctx, cancel := context.WithTimeout(ctx, 2*time.Minute) // two small signed files, at most three
 	defer cancel()
 	want, raw, err := f.Manifest(rctx, target)
@@ -98,9 +98,9 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	have := cfg.cachedGuestRelease(logf)
 	dec, err := decideGuest(target, want, have, stable, running, cfg.Version)
 	if err != nil {
-		if errors.Is(err, install.ErrHostTooOld) {
+		if errors.Is(err, install.ErrBriardTooOld) {
 			// The one refusal an owner must hear about: it is the support window closing on
-			// this node, and the remedy (update the host, or reinstall) is theirs to take.
+			// this node, and the remedy (update briard, or reinstall) is theirs to take.
 			escalate(ctx, n, logf, "this node", "guest OS update", want.Version, err)
 		}
 		logf("directive update-vm refused: %v", err)
@@ -145,7 +145,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "now running " + want.Version}
 }
 
-// guestImageArtifact is the guest chain's image as the manifest names it (compressed; the
+// guestImageArtifact is the vm chain's image as the manifest names it (compressed; the
 // fetcher expands it to nixos.qcow2 after verifying the bytes the release signed).
 const guestImageArtifact = "nixos.qcow2.zst"
 
@@ -183,19 +183,19 @@ func (cfg Config) stageGuestImage(ctx context.Context, f *install.Fetcher, rel i
 	return nil
 }
 
-// decideGuest is the guest chain's comparison, pure so it can be enumerated. Order matters:
-// a release naming no closure cannot be applied at all; a host below the release's min_host
+// decideGuest is the vm chain's comparison, pure so it can be enumerated. Order matters:
+// a release naming no closure cannot be applied at all; a briard below the release's min_briard
 // is refused regardless of anything else (the one direction that can go wrong); a guest
 // already RUNNING the release's closure is at it whatever the record says; and only then do the
-// host chain's ordering rules apply -- stable forward on the date, latest/exact on the full id,
+// briard chain's ordering rules apply -- stable forward on the date, latest/exact on the full id,
 // an exact pin floored at stable. A record that names this very release while the guest runs
 // another closure is disbelieved (the cloud moved the node by closure since), so the release
 // is applied rather than reported as already there.
-func decideGuest(target string, want install.Manifest, have, stable *install.Manifest, running, hostVersion string) (install.Decision, error) {
+func decideGuest(target string, want install.Manifest, have, stable *install.Manifest, running, briardVersion string) (install.Decision, error) {
 	if want.System == "" {
 		return install.Decision{}, fmt.Errorf("%w: guest release %s names no system closure", install.ErrManifest, want.Version)
 	}
-	if err := install.HostSatisfies(want.MinHost, hostVersion); err != nil {
+	if err := install.BriardSatisfies(want.MinBriard, briardVersion); err != nil {
 		return install.Decision{}, err
 	}
 	if running != "" && running == want.System {
@@ -262,7 +262,7 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 		al := notify.Alert{
 			Level: notify.Warning,
 			Title: "Briard: automatic OS updates are off on this node",
-			Body:  fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update vm` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
+			Body:  fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update --vm` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
 		}
 		logf("%s", notify.LogLine(al))
 		if n != nil {
@@ -280,7 +280,7 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 	}
 	for {
 		next := nextGuestUpdateTick(time.Now(), loc)
-		logf("guest update: next automatic check of guest/stable at %s", next.Format(time.RFC3339))
+		logf("guest update: next automatic check of vm/stable at %s", next.Format(time.RFC3339))
 		select {
 		case <-ctx.Done():
 			return

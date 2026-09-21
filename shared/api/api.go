@@ -62,7 +62,7 @@ type NodeStatus struct {
 	// tenant to the node's identity is the cloud's job, so the controller keys storage on its own
 	// tenant, not this self-asserted value. Empty on a node that hasn't registered.
 	Tenant string `json:"tenant,omitempty"`
-	// System is the guest RELEASE this node runs (`guest.<date>.<rev>`, [B.86h]): the OS moves
+	// System is the guest RELEASE this node runs (`vm.<date>.<inputs>`, [B.86h]): the OS moves
 	// only by swapping the image, so the host is the authority and reports the release whose
 	// image its guest booted. Ground truth for the OS rollout -- the controller confirms the
 	// node reached the target release. Empty on a witness, or a node with no record.
@@ -309,7 +309,7 @@ const (
 const (
 	DirectiveNoop          = "noop"           // acknowledge only -- proves the round-trip
 	DirectiveLog           = "log"            // agent logs Payload -- push a marker/instruction to a node
-	DirectiveUpgradeSystem = "upgrade-system" // Payload = a GUEST RELEASE id (`guest.<date>.<rev>`) on the
+	DirectiveUpgradeSystem = "upgrade-system" // Payload = a VM RELEASE id (`vm.<date>.<inputs>`) on the
 	//                              release channel ([B.86h]). The node fetches and verifies that
 	//                              release's image, swaps it under a fresh OS disk, proves the boot
 	//                              against the signed manifest, health-gates, and swaps back on

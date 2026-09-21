@@ -222,19 +222,19 @@ let
     inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
     commonModules = [ { environment.etc."briard-os-version".text = "next\n"; } ];
   };
-  # A guest-chain channel holding both releases, laid out as publish-release.sh lays it (the
-  # manifests by the REAL writer, naming each image's closure and this host as min_host);
+  # A vm-chain channel holding both releases, laid out as publish-release.sh lays it (the
+  # manifests by the REAL writer, naming each image's closure and this briard as min_briard);
   # signed at runtime by the rig, like install-macvtap's. zstd -3 rather than the release
   # script's -19: the format is what is under test, not the ratio, and two 1.2 GB images at
   # -19 would cost the rig minutes for nothing.
   guestChannel = pkgs.runCommand "briard-test-guest-channel" { nativeBuildInputs = [ pkgs.zstd ]; } ''
-    V=${agentVersion}; GV="guest.''${V#*.}"; GV2="guest.20991230.next0000"
-    A="$out/guest/$GV"; B="$out/guest/$GV2"; mkdir -p "$A" "$B"
+    V=${agentVersion}; GV="vm.''${V#*.}"; GV2="vm.20991230.next0000"
+    A="$out/vm/$GV"; B="$out/vm/$GV2"; mkdir -p "$A" "$B"
     zstd -3 -q ${guestDisk}/nixos.qcow2     -o "$A/nixos.qcow2.zst"
     zstd -3 -q ${nextGuestDisk}/nixos.qcow2 -o "$B/nixos.qcow2.zst"
     chmod 0644 "$A"/*.zst "$B"/*.zst
-    ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain guest --release "$GV"  --system ${guestDisk.system}     --min-host "$V"
-    ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain guest --release "$GV2" --system ${nextGuestDisk.system} --min-host "$V"
+    ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain vm --release "$GV"  --system ${guestDisk.system}     --min-briard "$V"
+    ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain vm --release "$GV2" --system ${nextGuestDisk.system} --min-briard "$V"
   '';
   guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # B.10: rebuild the guest from its image, keep the data; B.86h: move it to a new image
 
@@ -261,7 +261,7 @@ let
   agentSelfupdate = import ./agent-selfupdate.nix {
     inherit pkgs;
     stub = selfupdateStub;
-    agent = agentPkg; # the REAL agent: the bootstrap the update unit pulls, and `briard update self`
+    agent = agentPkg; # the REAL agent: the bootstrap the update unit pulls, and `briard update`
   };
 
 

@@ -85,7 +85,7 @@ shows one command's options.
 | | |
 |---|---|
 | `sudo briard rescue` | rebuild briard on this machine from its image (`-yes` to confirm) |
-| `sudo briard update <self\|vm>` | update briard's own software, or the VM it runs apps in, from the release channel |
+| `sudo briard update [-vm]` | update briard's own software, or with `-vm` the VM it runs apps in, from the release channel |
 | `sudo briard directive <kind> [payload]` | submit a directive to the local agent |
 | `sudo briard run` | run the agent itself — the installer's units do this for you |
 

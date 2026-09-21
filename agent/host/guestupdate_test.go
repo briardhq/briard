@@ -26,15 +26,15 @@ import (
 )
 
 func guestMan(version, system, minHost string) install.Manifest {
-	return install.Manifest{Chain: install.ChainGuest, Version: version, System: system, MinHost: minHost,
+	return install.Manifest{Chain: install.ChainVM, Version: version, System: system, MinBriard: minHost,
 		Artifacts: []install.Entry{{Name: "nixos.qcow2.zst"}}}
 }
 
-// The guest chain's comparison ([B.86d]), one row each: the closure is the truth, min_host is
+// The vm chain's comparison ([B.86d]), one row each: the closure is the truth, min_briard is
 // the one direction that can go wrong, and the host chain's ordering rules apply after both.
 func TestDecideGuest(t *testing.T) {
 	const host = "v3.20260906.aaaaaaa"
-	old, cur, next := "guest.20260901.o", "guest.20260906.c", "guest.20260910.n"
+	old, cur, next := "vm.20260901.o", "vm.20260906.c", "vm.20260910.n"
 	sysOld, sysCur, sysNext := "/nix/store/o-nixos-system", "/nix/store/c-nixos-system", "/nix/store/n-nixos-system"
 	stable := guestMan(cur, sysCur, "")
 	for _, tc := range []struct {
@@ -53,17 +53,17 @@ func TestDecideGuest(t *testing.T) {
 		{"stable older than the record is a no-op (a pin survives the timer)", install.TargetStable, guestMan(old, sysOld, ""), ptr(guestMan(cur, sysCur, "")), nil, sysCur, false, nil, "nothing to do"},
 		{"no record installs", install.TargetStable, guestMan(cur, sysCur, ""), nil, nil, sysOld, true, nil, "no installed manifest"},
 		{"a record naming this release while the guest runs another closure is disbelieved", install.TargetLatest, guestMan(cur, sysCur, ""), ptr(guestMan(cur, sysCur, "")), nil, sysOld, true, nil, "no installed manifest"},
-		{"min_host at the host's date is satisfied", install.TargetLatest, guestMan(next, sysNext, host), nil, nil, sysCur, true, nil, ""},
-		{"min_host past the host refuses", install.TargetLatest, guestMan(next, sysNext, "v3.20260907.bbbbbbb"), nil, nil, sysCur, false, install.ErrHostTooOld, ""},
-		{"min_host refuses even when already running (the host is the problem)", install.TargetLatest, guestMan(next, sysNext, "v3.20270101.bbbbbbb"), nil, nil, sysNext, false, install.ErrHostTooOld, ""},
+		{"min_briard at briard's date is satisfied", install.TargetLatest, guestMan(next, sysNext, host), nil, nil, sysCur, true, nil, ""},
+		{"min_briard past briard refuses", install.TargetLatest, guestMan(next, sysNext, "v3.20260907.bbbbbbb"), nil, nil, sysCur, false, install.ErrBriardTooOld, ""},
+		{"min_briard refuses even when already running (briard is the problem)", install.TargetLatest, guestMan(next, sysNext, "v3.20270101.bbbbbbb"), nil, nil, sysNext, false, install.ErrBriardTooOld, ""},
 		{"no closure cannot be applied", install.TargetLatest, guestMan(next, "", ""), nil, nil, sysCur, false, install.ErrManifest, ""},
 		{"an exact pin below stable is refused", old, guestMan(old, sysOld, ""), ptr(guestMan(cur, sysCur, "")), &stable, sysCur, false, install.ErrBelowFloor, ""},
 		{"an exact pin at stable's date installs", cur, guestMan(cur, sysCur, ""), ptr(guestMan(next, sysNext, "")), &stable, sysNext, true, nil, ""},
-		{"a host id with no date cannot satisfy a min_host", install.TargetLatest, guestMan(next, sysNext, host), nil, nil, sysCur, false, install.ErrHostTooOld, ""},
+		{"a briard id with no date cannot satisfy a min_briard", install.TargetLatest, guestMan(next, sysNext, host), nil, nil, sysCur, false, install.ErrBriardTooOld, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hv := host
-			if strings.HasPrefix(tc.name, "a host id with no date") {
+			if strings.HasPrefix(tc.name, "a briard id with no date") {
 				hv = "dev"
 			}
 			d, err := decideGuest(tc.target, tc.want, tc.have, tc.stable, tc.running, hv)
@@ -126,8 +126,8 @@ func (c *guestChannel) publish(t *testing.T, m install.Manifest, pointers ...str
 		t.Fatal(err)
 	}
 	for _, p := range append([]string{m.Version}, pointers...) {
-		c.bodies["guest/"+p+"/manifest.json"] = mb
-		c.bodies["guest/"+p+"/manifest.json.sig"] = ed25519.Sign(c.priv, mb)
+		c.bodies["vm/"+p+"/manifest.json"] = mb
+		c.bodies["vm/"+p+"/manifest.json.sig"] = ed25519.Sign(c.priv, mb)
 	}
 	return mb
 }
@@ -147,16 +147,16 @@ func guestCfg(t *testing.T, c *guestChannel, key []byte) Config {
 	}
 }
 
-// Refusals that must leave the node untouched: a host below min_host (escalated -- it is the
+// Refusals that must leave the node untouched: a briard below min_briard (escalated -- it is the
 // support window closing), a release the channel does not carry, a tampered manifest, no
 // keyring, and an exact pin below stable.
 func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	c, key := newGuestChannel(t)
-	stable := guestMan("guest.20260906.ccccccc", "/nix/store/c-nixos-system", "")
+	stable := guestMan("vm.20260906.ccccccc", "/nix/store/c-nixos-system", "")
 	c.publish(t, stable, install.TargetStable)
-	tooNew := guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20270101.zzzzzzz")
+	tooNew := guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20270101.zzzzzzz")
 	c.publish(t, tooNew, install.TargetLatest)
-	old := guestMan("guest.20260101.ooooooo", "/nix/store/old-nixos-system", "")
+	old := guestMan("vm.20260101.ooooooo", "/nix/store/old-nixos-system", "")
 	c.publish(t, old)
 	cfg := guestCfg(t, c, key)
 	running := stubSystem{"/nix/store/x-nixos-system"}
@@ -165,8 +165,8 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 		name, target, want string
 		cfg                Config
 	}{
-		{"host too old", install.TargetLatest, "older than the guest release requires", cfg},
-		{"unknown pin", "guest.20990101.nothere", "404", cfg},
+		{"host too old", install.TargetLatest, "older than the vm release requires", cfg},
+		{"unknown pin", "vm.20990101.nothere", "404", cfg},
 		{"pin below stable", old.Version, "older than stable", cfg},
 		{"no keyring", install.TargetStable, "no release keyring", func() Config { c := cfg; c.UpdateKeyring = nil; return c }()},
 	} {
@@ -186,7 +186,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	}
 
 	// Tampered after signing: refused by the signature, before any decision.
-	c.bodies["guest/latest/manifest.json"] = []byte(`{"chain":"guest","version":"guest.20260910.nnnnnnn","system":"/nix/store/evil","artifacts":[{"name":"x"}]}`)
+	c.bodies["vm/latest/manifest.json"] = []byte(`{"chain":"vm","version":"vm.20260910.nnnnnnn","system":"/nix/store/evil","artifacts":[{"name":"x"}]}`)
 	up := &fakeUpgrader{}
 	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, running, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || up.imageTarget.Version != "" {
@@ -229,7 +229,7 @@ func withImage(t *testing.T, c *guestChannel, m install.Manifest, contents strin
 	zw.Close()
 	sum := sha256.Sum256(zb.Bytes())
 	m.Artifacts = []install.Entry{{Name: guestImageArtifact, SHA256: hex.EncodeToString(sum[:]), Size: int64(zb.Len())}}
-	c.bodies["guest/"+m.Version+"/"+guestImageArtifact] = zb.Bytes()
+	c.bodies["vm/"+m.Version+"/"+guestImageArtifact] = zb.Bytes()
 	return m
 }
 
@@ -240,7 +240,7 @@ func withImage(t *testing.T, c *guestChannel, m install.Manifest, contents strin
 // the staged image is the manifest's expanded artifact, byte for byte.
 func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	c, key := newGuestChannel(t)
-	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20260906.aaaaaaa"), "the new image")
+	want := withImage(t, c, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20260906.aaaaaaa"), "the new image")
 	raw := c.publish(t, want, install.TargetLatest, install.TargetStable)
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "guest-image", "nixos.qcow2")
@@ -275,7 +275,7 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 
 	// A rolled-back swap reports rolled back and leaves the record where it was.
 	c2, key2 := newGuestChannel(t)
-	w2 := withImage(t, c2, guestMan("guest.20260911.rrrrrrr", "/nix/store/r-nixos-system", ""), "img")
+	w2 := withImage(t, c2, guestMan("vm.20260911.rrrrrrr", "/nix/store/r-nixos-system", ""), "img")
 	c2.publish(t, w2, install.TargetStable)
 	cfg2 := guestCfg(t, c2, key2)
 	cfg2.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
@@ -293,9 +293,9 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 // no image cannot be applied at all.
 func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 	c, key := newGuestChannel(t)
-	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "the new image")
+	want := withImage(t, c, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "the new image")
 	c.publish(t, want, install.TargetStable)
-	c.bodies["guest/"+want.Version+"/"+guestImageArtifact] = []byte("not the signed bytes")
+	c.bodies["vm/"+want.Version+"/"+guestImageArtifact] = []byte("not the signed bytes")
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	up := &fakeUpgrader{}
@@ -313,7 +313,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 		t.Errorf("a refused stage left %d entries behind", len(ents))
 	}
 
-	noImage := guestMan("guest.20260912.iiiiiii", "/nix/store/i-nixos-system", "")
+	noImage := guestMan("vm.20260912.iiiiiii", "/nix/store/i-nixos-system", "")
 	noImage.Artifacts = []install.Entry{{Name: "README"}} // a release that ships no image at all
 	c.publish(t, noImage, install.TargetStable)
 	o = cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, stubSystem{"/nix/store/x"}, up, nil, t.Logf)
@@ -327,7 +327,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 // gets the record corrected without an upgrade.
 func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	c, key := newGuestChannel(t)
-	want := withImage(t, c, guestMan("guest.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "img")
+	want := withImage(t, c, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "img")
 	raw := c.publish(t, want, install.TargetStable)
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
@@ -357,8 +357,8 @@ func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 // release the node took, never that it took one.
 func TestUpdateGuestEmptyPayloadTakesStableNotLatest(t *testing.T) {
 	c, key := newGuestChannel(t)
-	promoted := withImage(t, c, guestMan("guest.20260910.sssssss", "/nix/store/s-nixos-system", ""), "the promoted image")
-	unproven := withImage(t, c, guestMan("guest.20260911.lllllll", "/nix/store/l-nixos-system", ""), "the unproven image")
+	promoted := withImage(t, c, guestMan("vm.20260910.sssssss", "/nix/store/s-nixos-system", ""), "the promoted image")
+	unproven := withImage(t, c, guestMan("vm.20260911.lllllll", "/nix/store/l-nixos-system", ""), "the unproven image")
 	c.publish(t, promoted, install.TargetStable)
 	c.publish(t, unproven, install.TargetLatest)
 	cfg := guestCfg(t, c, key)

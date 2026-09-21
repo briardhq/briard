@@ -749,7 +749,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// any single observe() call, which is the whole point of an out-of-band admin surface.
 	//
 	// The guest chain's nightly timer ([B.86d]) -- a standalone node converging its OS to
-	// guest/stable through the same door; a no-op goroutine on a managed or paired node.
+	// vm/stable through the same door; a no-op goroutine on a managed or paired node.
 	go cfg.guestUpdateTimer(ctx, local, n, logf)
 	// The guest's admin port feeds the same channel: a directive the household pressed a button
 	// for in the dashboard arrives here exactly as one the operator typed ([V3b.31i]).
@@ -2000,7 +2000,7 @@ func deriveUUID(node string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// currentSystem reports the guest RELEASE this node runs (`guest.<date>.<rev>`), what
+// currentSystem reports the guest RELEASE this node runs (`vm.<date>.<inputs>`), what
 // NodeStatus.System carries since [B.86h]: the OS moves only by swapping the image, so the host
 // is the authority on which release its guest boots, and the record it rewrites when an image
 // commits (the release's signed manifest, seeded by install.sh) is the truth. Empty for a

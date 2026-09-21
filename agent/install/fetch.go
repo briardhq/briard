@@ -40,15 +40,23 @@ import (
 )
 
 // THE CHANNEL TREE ([B.86e]). The channel root serves one directory per release CHAIN, and under
-// each chain one directory per version plus two POINTERS; the host chain adds one more level, the
-// PLATFORM, because a host bundle is built per host OS while the guest image is the same VM on
-// every host:
+// each chain one directory per version plus two POINTERS; the briard chain adds one more level,
+// the PLATFORM, because the briard bundle is built per host OS while the VM image is the same VM
+// on every host:
 //
-//	<root>/host/<version>/<platform>/   manifest.json(+.sig) and every artifact it names
-//	<root>/host/stable/<platform>/      a byte-copy of one version's signed manifest (+ briard-agent)
-//	<root>/host/latest/<platform>/      likewise
-//	<root>/guest/<version>/             manifest.json(+.sig), nixos.qcow2.zst
-//	<root>/guest/{stable,latest}/       manifest.json(+.sig)
+//	<root>/briard/<version>/<platform>/ manifest.json(+.sig) and every artifact it names
+//	<root>/briard/stable/<platform>/    a byte-copy of one version's signed manifest (+ briard-agent)
+//	<root>/briard/latest/<platform>/    likewise
+//	<root>/vm/<version>/                manifest.json(+.sig), nixos.qcow2.zst
+//	<root>/vm/{stable,latest}/          manifest.json(+.sig)
+//
+// THE CHAINS ARE NAMED FOR THE UPGRADE UNIT, NOT THE SIDE ([B.163]). `briard` is every briard
+// artifact wherever it lands -- the agent, net-wrap, the qemu bundle, the GUEST bundle
+// ([B.86j]), the frozen scripts, the units, install.sh -- and `vm` is the OS image and the
+// closure it boots. `host` and `guest` are runtime LOCATIONS (which journal, which agent, which
+// side of the virtio port a binary runs on) and name no release line: our binaries run on both
+// sides, so a chain named for a side lies about half of what it carries, and a word doing both
+// jobs leaves every refusal message speaking two vocabularies at once.
 //
 // A pointer is just a path serving a copy of a version's signed manifest: no pointer file, no
 // second signature format, one verified hop -- the signature verifies identically at any path,
@@ -60,17 +68,17 @@ import (
 // copied under the pointer paths, because install.sh has to curl a bootstrap before anything
 // exists that can parse a manifest.)
 //
-// The chains are release LINES, not flavours of one release: the host bundle (agent, qemu,
-// net-wrap) and the guest OS image move on different cadences and carry different version
-// series. The manifest names its chain and platform so a crossed wire -- a guest manifest served
-// where a host one was expected, a Windows bundle where the Linux one should be -- is refused by
-// the signature's own content rather than compared by eye. The chain is a FIELD rather than
-// something read off the version id's first token because that token is the epoch (`v3.`), which
-// moves forward over time; a series check keyed on it would refuse every update across an epoch
-// boundary, fleet-wide.
+// The chains are release LINES, not flavours of one release: the briard bundle (agent, qemu,
+// net-wrap, the guest's binaries) and the VM image move on different cadences and carry
+// different version series. The manifest names its chain and platform so a crossed wire -- a vm
+// manifest served where a briard one was expected, a Windows bundle where the Linux one should
+// be -- is refused by the signature's own content rather than compared by eye. The chain is a
+// FIELD rather than something read off the version id's first token because that token is the
+// epoch (`v3.`), which moves forward over time; a series check keyed on it would refuse every
+// update across an epoch boundary, fleet-wide.
 const (
-	ChainHost  = "host"  // briard-agent, briard-net-wrap, qemu-bundle.tar.zst — per platform
-	ChainGuest = "guest" // nixos.qcow2.zst — no platform level
+	ChainBriard = "briard" // briard-agent, briard-net-wrap, qemu-bundle.tar.zst, guest-bundle.tar.zst — per platform
+	ChainVM     = "vm"     // nixos.qcow2.zst — no platform level
 
 	// PlatformLinux is the host platform this binary installs on; the Windows arm
 	// (`windows`) is published beside it ([V3b.27](b)) with no consumer until v5.
@@ -137,34 +145,34 @@ type Entry struct {
 // release it is and where its artifacts live, and an unsigned sidecar could say anything.
 type Manifest struct {
 	Chain     string  `json:"chain"`
-	Platform  string  `json:"platform,omitempty"` // host chain only; the guest image has no platform
+	Platform  string  `json:"platform,omitempty"` // briard chain only; the VM image has no platform
 	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
-	// The guest chain names the CLOSURE, not just the image ([B.86d]): System is the store path of
+	// The vm chain names the CLOSURE, not just the image ([B.86d]): System is the store path of
 	// the NixOS toplevel the image boots -- the bytes still come from the binary cache and nix
 	// verifies them itself, so naming it adds no trust root, but it makes image and closure a PAIR
-	// (what an upgrade activates, and what a rescue must land on). MinHost is the oldest host
-	// release this guest tolerates: the host must tolerate old guests, the guest need never
-	// tolerate old hosts, and this field is what closes the one direction that can go wrong (an
-	// exact-pinned old host resolving guest/stable). Both are empty on the host chain.
-	System  string `json:"system,omitempty"`
-	MinHost string `json:"min_host,omitempty"`
-	// The pair, named from the host side ([B.86i]): Guest is the guest release this host release
-	// was published beside -- what an installer fetches after the host chain, and what `promote`
-	// moves guest/stable to. The guest chain stopped deriving its id from the commit (its image
-	// is a function of its INPUTS and is re-published only when they change), so the host
-	// manifest is the only place the pairing can live. Empty on the guest chain.
-	Guest string `json:"guest,omitempty"`
-	// Inputs is the guest image's input hash (sha256 hex, flake.nix guestInputs): the fact that
-	// decides whether a stage re-publishes the guest chain or reuses the release that already
-	// serves these exact inputs. Empty on the host chain.
+	// (what an upgrade activates, and what a rescue must land on). MinBriard is the oldest briard
+	// release this VM tolerates: briard must tolerate old VMs, the VM need never tolerate old
+	// briards, and this field is what closes the one direction that can go wrong (an
+	// exact-pinned old briard resolving vm/stable). Both are empty on the briard chain.
+	System    string `json:"system,omitempty"`
+	MinBriard string `json:"min_briard,omitempty"`
+	// The pair, named from the briard side ([B.86i]): VM is the vm release this briard release
+	// was published beside -- what an installer fetches after the briard chain, and what
+	// `promote` moves vm/stable to. The vm chain stopped deriving its id from the commit (its
+	// image is a function of its INPUTS and is re-published only when they change), so the
+	// briard manifest is the only place the pairing can live. Empty on the vm chain.
+	VM string `json:"vm,omitempty"`
+	// Inputs is the VM image's input hash (sha256 hex, flake.nix guestInputs): the fact that
+	// decides whether a stage re-publishes the vm chain or reuses the release that already
+	// serves these exact inputs. Empty on the briard chain.
 	Inputs string `json:"inputs,omitempty"`
 	// MinUpgradeFrom is the UPGRADE FLOOR ([B.159](e)): the oldest INSTALLED release this one can
 	// be installed over. Empty means no floor, which is the normal state. It is the mirror image
-	// of MinHost and must not be confused with it -- MinHost points from the guest at the host
-	// (inner declaring a minimum on the outer, so the host upgrades first), while this points
+	// of MinBriard and must not be confused with it -- MinBriard points from the VM at briard
+	// (inner declaring a minimum on the outer, so briard upgrades first), while this points
 	// from a release at its OWN PAST. Those are the only two directions a floor may ever point;
-	// a floor from the host at the guest is forbidden, because a host that needs a newer image
+	// a floor from briard at the VM is forbidden, because a briard that needs a newer image
 	// upgrades the image rather than waiting for it. Written from install.MinUpgradeFrom, a
 	// constant in the tree, so the release carries its own floor rather than being told one.
 	MinUpgradeFrom string `json:"min_upgrade_from,omitempty"`

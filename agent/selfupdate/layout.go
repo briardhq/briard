@@ -65,7 +65,7 @@ const DefaultBase = "/var/lib/briard"
 const DefaultRunDir = "/run/briard"
 
 // DefaultUpdateUnit is the frozen oneshot that fetches below the agent; every trigger — the
-// cloud's directive, the timer, `briard update self` — is a `systemctl start` of it, and systemd
+// cloud's directive, the timer, `briard update` — is a `systemctl start` of it, and systemd
 // merging a start into a running job is what makes the unit its own mutual exclusion.
 const DefaultUpdateUnit = "briard-update.service"
 

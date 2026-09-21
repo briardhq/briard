@@ -132,7 +132,7 @@ else
 		*) die "no release keyring at $KEYRING (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)" ;;
 		esac
 	fi
-	say "bootstrapping the installer agent from $CHANNEL (host/$RELEASE) ..."
+	say "bootstrapping the installer agent from $CHANNEL (briard/$RELEASE) ..."
 	# Under $PREFIX, NOT $RUNDIR: Debian and Ubuntu mount /run `noexec`, so a bootstrap staged
 	# there cannot be executed at all. $PREFIX is where the agent lives anyway.
 	#
@@ -141,7 +141,7 @@ else
 	# forward-compat bricking the channel layout exists to prevent ([B.86]). `briard-agent` is the
 	# one artifact the channel duplicates under its pointers for this fetch.
 	boot="$PREFIX/bootstrap-agent"
-	fetch_url "$CHANNEL/host/$RELEASE/linux/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/host/$RELEASE/linux"
+	fetch_url "$CHANNEL/briard/$RELEASE/linux/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/briard/$RELEASE/linux"
 	chmod +x "$boot"
 	# Fail with the REASON. A bootstrap that cannot exec (noexec mount, wrong arch, a dynamically
 	# linked binary whose interpreter this host lacks) is not a verification failure, and reporting
@@ -179,13 +179,13 @@ if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	# image, a fresh briard-agent) against the bundled keyring, refusing anything unsigned.
 	src="$PREFIX/staging"
 	rm -rf "$src"
-	say "fetching + verifying the signed artifact set (host/$RELEASE + guest) ..."
-	# Both chains, all-or-nothing: the agent stages host/ and guest/ under $src and only places
-	# $src once both have verified, so a host bundle never lands without the guest image it was
+	say "fetching + verifying the signed artifact set (briard/$RELEASE + vm) ..."
+	# Both chains, all-or-nothing: the agent stages briard/ and vm/ under $src and only places
+	# $src once both have verified, so a briard bundle never lands without the VM image it was
 	# published beside.
 	BRIARD_CHANNEL_URL="$CHANNEL" BRIARD_RELEASE="$RELEASE" BRIARD_KEYRING="$KEYRING" \
 		"$boot" --fetch-install "$src" || die "artifact verification failed; nothing installed"
-	HOSTSRC="$src/host"; GUESTSRC="$src/guest"
+	HOSTSRC="$src/briard"; GUESTSRC="$src/vm"
 	# The verified qemu bundle arrives as a tarball; expand it to the qemu/ tree the install step
 	# expects. Its bytes are already trusted (hash-checked against the signed manifest above).
 	# The tar is rooted at the bundle itself (bin/ lib/ share/ PROVENANCE), NOT at a qemu/ dir, so

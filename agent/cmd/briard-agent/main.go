@@ -82,16 +82,16 @@ const cardTimeout = 30 * time.Second
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-agent", flag.ExitOnError)
 	reportCard := fs.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
-	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release (host + guest chains) into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_RELEASE, BRIARD_KEYRING)")
+	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release (briard + vm chains) into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_RELEASE, BRIARD_KEYRING)")
 	fetchUpdate := fs.String("fetch-update", "", "resolve <target> (stable, latest, or a release id) on the channel, stage + arm this node's agent if due, then exit -- the frozen update unit's verb (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING, UPDATE_BASE, UPDATE_RUN_DIR)")
 	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
-	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (host, guest)")
-	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux, windows; empty for the guest chain)")
+	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (briard, vm)")
+	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux, windows; empty for the vm chain)")
 	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
-	stageSystem := fs.String("system", "", "with --stage-manifest --chain guest: the store path of the NixOS toplevel the image boots (Manifest.System)")
-	stageMinHost := fs.String("min-host", "", "with --stage-manifest --chain guest: the oldest host release this guest tolerates (Manifest.MinHost)")
-	stageGuest := fs.String("guest", "", "with --stage-manifest --chain host: the guest release this host release is published beside ([B.86i])")
-	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain guest: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
+	stageSystem := fs.String("system", "", "with --stage-manifest --chain vm: the store path of the NixOS toplevel the image boots (Manifest.System)")
+	stageMinBriard := fs.String("min-briard", "", "with --stage-manifest --chain vm: the oldest briard release this VM tolerates (Manifest.MinBriard)")
+	stageVM := fs.String("vm", "", "with --stage-manifest --chain briard: the vm release this briard release is published beside ([B.86i])")
+	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain vm: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
 	_ = fs.Parse(args)
 
@@ -108,7 +108,7 @@ func runInternal(args []string) {
 	// already linked -- and the guest agent is its own main ([B.137]), so the
 	// guest trim is unaffected.
 	if *stageManifest != "" {
-		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinHost, *stageGuest, *stageInputs); err != nil {
+		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinBriard, *stageVM, *stageInputs); err != nil {
 			log.Fatalf("stage-manifest: %v", err)
 		}
 		return
@@ -147,7 +147,7 @@ func runInternal(args []string) {
 	// pulled from the channel, never on the committed one -- so this is the suspect side doing
 	// the verified fetch, and the one line it prints last on stdout is the unit's verdict (the
 	// unit relays it to whoever started the run: the cloud's directive, the timer's journal, or
-	// `briard update self`). Host-only, like --fetch-install.
+	// `briard update`). Host-only, like --fetch-install.
 	if *fetchUpdate != "" {
 		line, err := runFetchUpdate(ctx, *fetchUpdate)
 		if err != nil {

@@ -1128,9 +1128,9 @@ func TestDeriveUUID(t *testing.T) {
 // node with no record reports nothing rather than guessing.
 func TestCurrentSystem(t *testing.T) {
 	rec := filepath.Join(t.TempDir(), "guest-release.json")
-	os.WriteFile(rec, []byte(`{"chain":"guest","version":"guest.20260906.abc1234","system":"/nix/store/x","artifacts":[{"name":"nixos.qcow2.zst"}]}`), 0o644)
+	os.WriteFile(rec, []byte(`{"chain":"vm","version":"vm.20260906.abc1234","system":"/nix/store/x","artifacts":[{"name":"nixos.qcow2.zst"}]}`), 0o644)
 	shipped := Config{GuestReleaseCache: rec}
-	if got := shipped.currentSystem(context.Background(), fakeStatus{}); got != "guest.20260906.abc1234" {
+	if got := shipped.currentSystem(context.Background(), fakeStatus{}); got != "vm.20260906.abc1234" {
 		t.Errorf("zero-service anchor: currentSystem = %q, want the recorded release", got)
 	}
 	witness := Config{Diskless: true, GuestReleaseCache: rec}

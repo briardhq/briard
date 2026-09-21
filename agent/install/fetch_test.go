@@ -44,10 +44,10 @@ func sha(b []byte) string {
 const testVersion = "v3.20260905.abc1234"
 
 func pointerPath(name string) string {
-	return ChainHost + "/" + TargetLatest + "/" + PlatformLinux + "/" + name
+	return ChainBriard + "/" + TargetLatest + "/" + PlatformLinux + "/" + name
 }
 func releasePath(name string) string {
-	return ChainHost + "/" + testVersion + "/" + PlatformLinux + "/" + name
+	return ChainBriard + "/" + testVersion + "/" + PlatformLinux + "/" + name
 }
 
 // channel is a fake signed release channel: a keyring holding one signer, a set of served
@@ -75,7 +75,7 @@ func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	mb, err := json.Marshal(Manifest{Chain: ChainHost, Platform: PlatformLinux, Version: testVersion, Artifacts: arts})
+	mb, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformLinux, Version: testVersion, Artifacts: arts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func (c *channel) serve() string {
 }
 
 func (c *channel) fetcher() *Fetcher {
-	return &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: c.kr}
+	return &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: c.kr}
 }
 
 // fetchLatest is what install.sh does: name the pointer, get whatever release it points at.
@@ -233,7 +233,7 @@ func TestFetchVerifiedRefusesUnsignedManifest(t *testing.T) {
 func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 	c := goodChannel(t)
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: nil} // no ring wired
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: nil} // no ring wired
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrNoKeyring)
 
 	// An EMPTY (but non-nil) ring is equally fail-closed.
@@ -242,7 +242,7 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest2 := stagedFresh(t)
-	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: empty}
+	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: empty}
 	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrNoKeyring)
 }
 
@@ -252,12 +252,12 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 // guest date against a host date and silently no-op, which is the failure [B.86a] names).
 func TestFetchVerifiedRefusesWrongChain(t *testing.T) {
 	c := goodChannel(t)
-	// Serve the host chain's (signed, chain:"host") manifest where the guest chain's would be.
+	// Serve the briard chain's (signed, chain:"briard") manifest where the vm chain's would be.
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainGuest+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainVM+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
 	}
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainGuest, Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainVM, Keyring: c.kr}
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
 }
 
@@ -458,7 +458,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	write("briard-agent", agent, 0o755)
 	write("nixos.qcow2.zst", zstdOf(t, guest), 0o644)
 
-	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion, "", "", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainBriard, PlatformLinux, testVersion, "", "", "", ""); err != nil {
 		t.Fatalf("WriteManifest: %v", err)
 	}
 	mb, err := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -469,8 +469,8 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if err := json.Unmarshal(mb, &man); err != nil {
 		t.Fatalf("the manifest we just wrote does not parse: %v", err)
 	}
-	if man.Chain != ChainHost || man.Platform != PlatformLinux || man.Version != testVersion {
-		t.Errorf("chain/platform/version = %q/%q/%q, want %q/%q/%q", man.Chain, man.Platform, man.Version, ChainHost, PlatformLinux, testVersion)
+	if man.Chain != ChainBriard || man.Platform != PlatformLinux || man.Version != testVersion {
+		t.Errorf("chain/platform/version = %q/%q/%q, want %q/%q/%q", man.Chain, man.Platform, man.Version, ChainBriard, PlatformLinux, testVersion)
 	}
 	if len(man.Artifacts) != 2 {
 		t.Fatalf("manifest lists %d artifacts, want 2: %+v", len(man.Artifacts), man.Artifacts)
@@ -487,7 +487,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 	// Running the writer AGAIN over its own output must not list the manifest as an artifact
 	// of itself -- the one file a release directory holds that the manifest cannot name.
-	if err := WriteManifest(stage, ChainHost, PlatformLinux, testVersion, "", "", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainBriard, PlatformLinux, testVersion, "", "", "", ""); err != nil {
 		t.Fatalf("WriteManifest (second pass): %v", err)
 	}
 	mb2, _ := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -517,7 +517,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 	c := &channel{t: t, priv: priv, kr: kr, bodies: bodies, missing: map[string]bool{}}
 	dest := stagedFresh(t)
-	if err := (&Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: PlatformLinux, Keyring: kr}).FetchVerified(context.Background(), TargetLatest, dest); err != nil {
+	if err := (&Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: kr}).FetchVerified(context.Background(), TargetLatest, dest); err != nil {
 		t.Fatalf("a manifest written by WriteManifest was refused by FetchVerified: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
@@ -545,8 +545,8 @@ func TestWriteManifestRefusesUnusableIds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range [][2]string{
-		{ChainHost, TargetStable}, {ChainHost, TargetLatest}, {ChainHost, ""}, {ChainHost, "../v3"},
-		{"", testVersion}, {"host/extra", testVersion}, {".host", testVersion},
+		{ChainBriard, TargetStable}, {ChainBriard, TargetLatest}, {ChainBriard, ""}, {ChainBriard, "../v3"},
+		{"", testVersion}, {"briard/extra", testVersion}, {".briard", testVersion},
 	} {
 		if err := WriteManifest(stage, tc[0], "", tc[1], "", "", "", ""); err == nil {
 			t.Errorf("WriteManifest(chain=%q, version=%q) was accepted", tc[0], tc[1])
@@ -582,7 +582,7 @@ func TestFetchVerifiedResolvesArtifactsAgainstTheManifestVersion(t *testing.T) {
 	// succeed; the real one must fail, because the manifest says the bytes live elsewhere.
 	moved := map[string][]byte{}
 	for name, b := range c.bodies {
-		if rest, ok := strings.CutPrefix(name, ChainHost+"/"+testVersion+"/"+PlatformLinux+"/"); ok {
+		if rest, ok := strings.CutPrefix(name, ChainBriard+"/"+testVersion+"/"+PlatformLinux+"/"); ok {
 			moved[pointerPath(rest)] = b
 		} else {
 			moved[name] = b
@@ -607,23 +607,23 @@ func TestFetchVerifiedAcceptsAnExactVersionTarget(t *testing.T) {
 }
 
 // The platform is the second half of the crossed-wire check: the Linux manifest (genuine,
-// signed, chain "host") served under the windows arm is refused, because the bundle it names
+// signed, chain "briard") served under the windows arm is refused, because the bundle it names
 // cannot run there and a host that installed it would find out at the next guest launch.
 func TestFetchVerifiedRefusesWrongPlatform(t *testing.T) {
 	c := goodChannel(t)
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainHost+"/"+TargetLatest+"/windows/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainBriard+"/"+TargetLatest+"/windows/"+n] = c.bodies[pointerPath(n)]
 	}
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Platform: "windows", Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: "windows", Keyring: c.kr}
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
 	// And a platform-less fetch of a platformed manifest, likewise (the guest chain's shape
 	// pointed at a host directory).
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainHost+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainBriard+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
 	}
 	dest2 := stagedFresh(t)
-	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainHost, Keyring: c.kr}
+	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Keyring: c.kr}
 	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrWrongChain)
 }
 
@@ -632,23 +632,23 @@ func TestFetchVerifiedRefusesWrongPlatform(t *testing.T) {
 func TestFetchVerifiedHandlesAPlatformlessChain(t *testing.T) {
 	c := goodChannel(t)
 	img := []byte("guest image bytes")
-	gv := "guest.20260905.abc1234"
-	mb, err := json.Marshal(Manifest{Chain: ChainGuest, Version: gv, Artifacts: []Entry{
+	gv := "vm.20260905.abc1234"
+	mb, err := json.Marshal(Manifest{Chain: ChainVM, Version: gv, Artifacts: []Entry{
 		{Name: "nixos.qcow2", SHA256: sha(img), Size: int64(len(img))},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.bodies[ChainGuest+"/"+TargetStable+"/"+ManifestName] = mb
-	c.bodies[ChainGuest+"/"+TargetStable+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
-	c.bodies[ChainGuest+"/"+gv+"/nixos.qcow2"] = img
+	c.bodies[ChainVM+"/"+TargetStable+"/"+ManifestName] = mb
+	c.bodies[ChainVM+"/"+TargetStable+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
+	c.bodies[ChainVM+"/"+gv+"/nixos.qcow2"] = img
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainGuest, Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainVM, Keyring: c.kr}
 	if err := f.FetchVerified(context.Background(), TargetStable, dest); err != nil {
 		t.Fatalf("guest chain: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
 	if err != nil || !bytes.Equal(got, img) {
-		t.Fatalf("guest image not staged from guest/%s/: %v", gv, err)
+		t.Fatalf("VM image not staged from vm/%s/: %v", gv, err)
 	}
 }

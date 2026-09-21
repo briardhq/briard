@@ -155,7 +155,7 @@ let
       # The BUILD this image is, readable on the console. Since [B.86i] it is the version the
       # image was built with: for the product image that is `guest-build.<inputs hash>` -- a
       # function of the image's inputs, never of the commit, so an unchanged image is the same
-      # build -- and a rig's disk carries the rig's version. The RELEASE id (`guest.<date>.<rev>`) is a
+      # build -- and a rig's disk carries the rig's version. The RELEASE id (`vm.<date>.<inputs>`) is a
       # channel fact: the manifest names it and the node's record follows it; the image itself
       # does not know which release it was published as, the way an OCI image does not know its tag.
       environment.etc."briard-release".text = agentVersion + "\n";

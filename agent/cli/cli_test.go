@@ -401,29 +401,29 @@ func TestAccountLang(t *testing.T) {
 	}
 }
 
-// `briard update vm` ([B.86d]) is the guest chain's human trigger: it submits the local
+// `briard update -vm` ([B.86d]) is the vm chain's human trigger: it submits the local
 // update-vm directive with the target, and reports the upgrade's outcome -- a refusal
 // (rolled back, node serving) distinguished from a breakage, as `os upgrade` once did.
 func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
-	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "now running guest.20260910.n"})
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "now running vm.20260910.n"})
 	var out, errOut bytes.Buffer
-	if code := Main(context.Background(), []string{"update", "vm", "-sock", sock, "-to", "stable"}, &out, &errOut); code != 0 {
+	if code := Main(context.Background(), []string{"update", "-vm", "-sock", sock, "-to", "stable"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
 	ds := seen()
 	if len(ds) != 1 || ds[0].Kind != install.DirectiveUpdateVM || ds[0].Payload != "stable" {
 		t.Fatalf("agent saw %+v, want one update-vm for stable", ds)
 	}
-	if !strings.Contains(out.String(), "now running guest.20260910.n") {
+	if !strings.Contains(out.String(), "now running vm.20260910.n") {
 		t.Errorf("stdout = %q", out.String())
 	}
 	for _, c := range []struct{ state, detail, want string }{
 		{api.OutcomeRolledBack, "reboot needs a handover", "unchanged and serving"},
-		{api.OutcomeFailed, "older than the guest release requires", "briard update vm:"},
+		{api.OutcomeFailed, "older than the vm release requires", "briard update -vm:"},
 	} {
 		sock, _ := fakeAgent(t, api.DirectiveOutcome{State: c.state, Detail: c.detail})
 		var out, errOut bytes.Buffer
-		if code := Main(context.Background(), []string{"update", "vm", "-sock", sock}, &out, &errOut); code != 1 {
+		if code := Main(context.Background(), []string{"update", "-vm", "-sock", sock}, &out, &errOut); code != 1 {
 			t.Errorf("%s exited %d, want 1", c.state, code)
 		}
 		if !strings.Contains(errOut.String(), c.want) || !strings.Contains(errOut.String(), c.detail) {
@@ -437,28 +437,30 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	}
 }
 
-// THE DEFAULT IS `stable`, AND THE OLD VERBS ARE GONE ([B.159](f), [B.159](i)). Both halves are
+// THE DEFAULT IS `stable`, AND THE OLD VERBS ARE GONE ([B.159](f), [B.163]). Both halves are
 // asserted here rather than read off the flag declaration. The default is the only thing between
-// an admin typing four words and a release nothing has promoted -- `latest` exists to be proven
+// an admin typing three words and a release nothing has promoted -- `latest` exists to be proven
 // by a canary that names it on purpose. And the alpha ships no aliases
-// ([[alpha-reinstall-only-policy]]), so `host` and `guest` have to fail loudly rather than
-// quietly keep working: a rename nobody can observe is a rename that did not happen.
+// ([[alpha-reinstall-only-policy]]), so every retired positional -- `host`/`guest`, then
+// `self`/`vm` -- has to fail loudly rather than quietly keep working: a rename nobody can observe
+// is a rename that did not happen. The chain is the FLAG now, and a positional word is refused
+// whatever it spells.
 func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
-	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "already running guest.20260910.n"})
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "already running vm.20260910.n"})
 	var out, errOut bytes.Buffer
-	if code := Main(context.Background(), []string{"update", "vm", "-sock", sock}, &out, &errOut); code != 0 {
+	if code := Main(context.Background(), []string{"update", "-vm", "-sock", sock}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
 	if ds := seen(); len(ds) != 1 || ds[0].Payload != install.TargetStable {
 		t.Fatalf("agent saw %+v, want one update-vm for %q", ds, install.TargetStable)
 	}
-	for _, verb := range []string{"host", "guest"} {
+	for _, verb := range []string{"host", "guest", "self", "vm"} {
 		var out, errOut bytes.Buffer
 		if code := Main(context.Background(), []string{"update", verb, "-sock", sock}, &out, &errOut); code != 2 {
 			t.Errorf("`briard update %s` exited %d, want 2 -- the retired verb still works", verb, code)
 		}
-		if !strings.Contains(errOut.String(), "unknown side") {
-			t.Errorf("`briard update %s` stderr = %q, want it to name the unknown side", verb, errOut.String())
+		if !strings.Contains(errOut.String(), "unexpected argument") {
+			t.Errorf("`briard update %s` stderr = %q, want it to refuse the positional word", verb, errOut.String())
 		}
 	}
 }

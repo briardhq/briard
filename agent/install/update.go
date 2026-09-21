@@ -26,7 +26,7 @@ import (
 // forcing after a grace is the backstop. That separation is what keeps "the case where forcing
 // is risky" and "the case where forcing happens" from ever overlapping.
 //
-// Scope is the HOST BUNDLE ([B.86b]): the agent, the guest launch shim and the qemu tree move
+// Scope is the BRIARD BUNDLE ([B.86b]): the agent, the guest launch shim and the qemu tree move
 // as one release, staged as .next siblings and committed together by briard-commit. Only
 // entries whose sha256 differs from the installed manifest's are fetched -- a JSON compare, no
 // hashing of the 86 MB qemu tree -- which is what keeps a daily tick at the agent's ~9 MB
@@ -36,8 +36,8 @@ import (
 // release that does not run on this host refuses itself whole and the pivot lands back on
 // the combination that was tested, never on agent N with qemu N-1.
 
-// The three artifacts of the host bundle, by the names the manifest (and install.sh) use.
-// Anything else a host manifest may one day carry is left to the release that knows it.
+// The three artifacts of the briard bundle, by the names the manifest (and install.sh) use.
+// Anything else a briard manifest may one day carry is left to the release that knows it.
 const (
 	artifactAgent   = "briard-agent"
 	artifactNetWrap = "briard-net-wrap"
@@ -63,7 +63,7 @@ var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to
 // ⚠️ IT IS A CONSTANT IN THE TREE, NOT A FLAG, and that is the point. The floor is a fact about
 // THE CODE -- "this release stopped being able to upgrade a node older than X" -- so it belongs
 // in the commit that makes it true, reviewable in the diff, and not in an operator's memory at
-// publish time. `--stage-manifest --chain host` reads it from here, so there is nothing to pass
+// publish time. `--stage-manifest --chain briard` reads it from here, so there is nothing to pass
 // and nothing to forget. Every other manifest fact the pipeline is TOLD; this one it IS.
 //
 // WHEN TO MOVE IT: when this release can no longer complete an upgrade from some older release
@@ -106,14 +106,14 @@ type Decision struct {
 //     revert a cloud pin that shares a date with stable; the constraint sits in the publish path
 //     instead (promote refuses a same-date build).
 //   - `latest` / an exact id: install when the full id differs. These force past the ordering
-//     but still no-op at equality, or `briard update self` would bounce an up-to-date agent.
+//     but still no-op at equality, or `briard update` would bounce an up-to-date agent.
 //   - An exact id may be OLDER than the installed one (a bad release must be revocable without
 //     reinstalling every home) but NEVER older than stable: unbounded, a buggy or compromised
 //     agent could name any old signed release; floored, the worst it reaches is a build we
 //     currently vouch for. To go below stable, move stable. A pin below the floor fails loudly.
 //
-// The chain/platform precondition is cheap and load-bearing: a crossed wire between the host and
-// guest chains would otherwise compare a guest date against a host date and silently no-op.
+// The chain/platform precondition is cheap and load-bearing: a crossed wire between the briard and
+// vm chains would otherwise compare a vm date against a briard date and silently no-op.
 func Decide(target string, want Manifest, have, stable *Manifest) (Decision, error) {
 	if have != nil && (have.Chain != want.Chain || have.Platform != want.Platform) {
 		return Decision{}, fmt.Errorf("%w: installed %s, offered %s", ErrWrongChain,
@@ -142,7 +142,7 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 				ErrTooOldToUpgrade, have.Version, want.MinUpgradeFrom)
 		}
 		// On the DATE, like every other ordering in this channel (owner, 2026-09-20). It
-		// inherits the same-day blind spot `min_host` has, and for the same reason it is
+		// inherits the same-day blind spot `min_briard` has, and for the same reason it is
 		// tolerable: `promote` refuses a same-date build, so `stable` cannot cross a floor
 		// twice in one day.
 		if haveDate < floorDate {
@@ -168,7 +168,7 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		}
 		// ⚠️ "AT OR PAST" IS FOR THE CASE IT DESCRIBES, AND EQUALITY IS NOT IT. A node sitting on
 		// the release stable names falls through to the shared `already at X` line below, which
-		// is what `briard update <self|vm>` promises to print (agent/cli/cli.go's help row) and
+		// is what `briard update` promises to print (agent/cli/cli.go's help row) and
 		// what an operator reads as "nothing owed". Found by the rigs the moment [B.159](f) made
 		// `stable` the default: the bare verb started taking this branch instead of latest's, and
 		// two host-agent rigs asserting `already at <id>` went red on the wording alone.
@@ -219,7 +219,7 @@ func dateOf(id string) (int64, error) {
 }
 
 // Update is one run of the verb: resolve target on the fetcher's chain/platform, decide against
-// the installed manifest, and stage + arm the changed parts of the host bundle when due.
+// the installed manifest, and stage + arm the changed parts of the briard bundle when due.
 type Update struct {
 	Fetcher *Fetcher
 	Layout  selfupdate.Layout
@@ -343,7 +343,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 			}
 			guestTree = tree
 		default:
-			logf("update: %s is not part of the host bundle this agent knows; left alone", a.Name)
+			logf("update: %s is not part of the briard bundle this agent knows; left alone", a.Name)
 		}
 	}
 	if agent == nil {
@@ -452,9 +452,9 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 	return &m
 }
 
-// DirectiveUpdateVM is the LOCAL directive kind of the guest chain ([B.86d]): `briard update vm`
+// DirectiveUpdateVM is the LOCAL directive kind of the vm chain ([B.86d]): `briard update --vm`
 // and the agent's own nightly timer submit it through the admin door; the payload is a target
-// (`stable`, `latest`, an exact guest id; "" is stable — [B.159](f)). It is deliberately NOT in
+// (`stable`, `latest`, an exact vm id; "" is stable — [B.159](f)). It is deliberately NOT in
 // shared/api: the cloud names closures (`upgrade-system`) and the wire allowlist stays closed --
 // a kind that never crosses to the cloud does not belong in the contract that says what can.
 // It lives here rather than in agent/host so the CLI and the host share one spelling.
@@ -467,28 +467,30 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 // passing vacuously, which is what made the rename cheap to prove.
 const DirectiveUpdateVM = "update-vm"
 
-// ErrHostTooOld is the min_host refusal: this host predates what a guest release tolerates.
-var ErrHostTooOld = errors.New("install: this host is older than the guest release requires")
+// ErrBriardTooOld is the min_briard refusal: the installed briard predates what a vm release
+// tolerates.
+var ErrBriardTooOld = errors.New("install: briard is older than the vm release requires")
 
-// HostSatisfies applies a guest release's min_host to this host's release id: nil when the host
-// is at or past it (ordered on the date field, as the stable path is), ErrHostTooOld otherwise.
-// An empty minHost places no requirement. The message names both remedies, because a host that
-// cannot update past the floor is a node outside its support window, and the answer there is
-// reinstall -- it must never drift silently ([B.86e]).
-func HostSatisfies(minHost, host string) error {
-	if minHost == "" {
+// BriardSatisfies applies a vm release's min_briard to the installed briard release id: nil when
+// briard is at or past it (ordered on the date field, as the stable path is), ErrBriardTooOld
+// otherwise. An empty minBriard places no requirement. The message names both remedies, because
+// a briard that cannot update past the floor is a node outside its support window, and the
+// answer there is reinstall -- it must never drift silently ([B.86e]). One vocabulary end to end
+// ([B.163]): the wire field, the thing compared and the remedy all say `briard`.
+func BriardSatisfies(minBriard, briard string) error {
+	if minBriard == "" {
 		return nil
 	}
-	need, err := dateOf(minHost)
+	need, err := dateOf(minBriard)
 	if err != nil {
 		return err
 	}
-	have, err := dateOf(host)
+	have, err := dateOf(briard)
 	if err != nil {
-		return fmt.Errorf("%w: this host's release id %q has no date to compare min_host %s against", ErrHostTooOld, host, minHost)
+		return fmt.Errorf("%w: the installed briard release id %q has no date to compare min_briard %s against", ErrBriardTooOld, briard, minBriard)
 	}
 	if have < need {
-		return fmt.Errorf("%w: host %s < min_host %s — update briard first (`briard update self`); a host that can no longer update is outside its support window and must be reinstalled", ErrHostTooOld, host, minHost)
+		return fmt.Errorf("%w: briard %s < min_briard %s — run `briard update` first; a briard that can no longer update is outside its support window and must be reinstalled", ErrBriardTooOld, briard, minBriard)
 	}
 	return nil
 }
