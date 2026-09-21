@@ -37,6 +37,35 @@ import (
 // because setting it on every tick would be a netlink write per device per 10 seconds forever.
 const ifAllmulti = 0x200
 
+// THE ARGV AND THE ONE PATH, RENDERED PURELY ([B.153], the shape agent/platform/route.go already
+// uses). Each of these carries a detail that cannot be inferred by reading the call site --
+// `type macvtap mode bridge`, `mode tap`, `allmulticast on`, the procfs knob's exact path -- and
+// the rationale for each lives at the caller, where the decision is. Pure so a unit test pins
+// them, instead of a 12-minute rig being the only thing that would notice one changing.
+
+// macvtapAddArgs renders the creation of one macvtap child of parent. `mode bridge` is the mode
+// that lets the children talk to EACH OTHER (the guest's two NICs); it does not make a bridge and
+// it does not reach the parent, which is the isolation agent/platform/route.go's /32 works around.
+func macvtapAddArgs(dev, parent string) []string {
+	return []string{"link", "add", "link", parent, "name", dev, "type", "macvtap", "mode", "bridge"}
+}
+
+// tapAddArgs renders the creation of a plain tap -- the private host<->guest link, and the bridge
+// substrate's one port.
+func tapAddArgs(dev string) []string { return []string{"tuntap", "add", dev, "mode", "tap"} }
+
+// allmulticastOnArgs renders the ALLMULTI set. See ensureMacvtap for why the guest is unreachable
+// by name without it, and why it goes on the CHILD.
+func allmulticastOnArgs(dev string) []string {
+	return []string{"link", "set", dev, "allmulticast", "on"}
+}
+
+// disableIPv6Path names the procfs knob that stops a device autoconfiguring. See ensureMacvtap for
+// why the host must not autoconfigure on a device carrying the GUEST's MAC ([B.106]).
+func disableIPv6Path(dev string) string {
+	return "/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6"
+}
+
 // Spec is the host-side L2 for one guest: which parent, and which devices on it. It is DERIVED
 // from the selected device rather than configured ([B.150](c)) -- if the parent is a bridge the
 // user owns, the guest gets one port on it and makes its own service identity inside; otherwise
@@ -226,7 +255,7 @@ func Converged(s Spec) bool {
 func ensureMacvtap(ctx context.Context, dev, parent string) error {
 	created := !exists("/sys/class/net/" + dev)
 	if created {
-		if out, err := ip(ctx, "link", "add", "link", parent, "name", dev, "type", "macvtap", "mode", "bridge"); err != nil {
+		if out, err := ip(ctx, macvtapAddArgs(dev, parent)...); err != nil {
 			return fmt.Errorf("nic: macvtap %s on %s: %s", dev, parent, firstLine(out, err))
 		}
 	}
@@ -241,7 +270,7 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 	// write FLUSHES what it already picked up, which is how an upgraded install gets repaired.
 	//
 	// A procfs write rather than sysctl(8), because this runs on stock hosts and on NixOS alike.
-	if p := "/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6"; exists(p) {
+	if p := disableIPv6Path(dev); exists(p) {
 		if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
 			return fmt.Errorf("nic: disable ipv6 on %s: %w", dev, err)
 		}
@@ -270,7 +299,7 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 	// help, because the gate is the per-child filter. Multicast only -- deliberately not
 	// promiscuous, which would pull every unicast frame on the segment off the wire for nothing.
 	if flags(dev)&ifAllmulti == 0 {
-		if out, err := ip(ctx, "link", "set", dev, "allmulticast", "on"); err != nil {
+		if out, err := ip(ctx, allmulticastOnArgs(dev)...); err != nil {
 			return fmt.Errorf("nic: allmulticast on %s: %s", dev, firstLine(out, err))
 		}
 	}
@@ -283,7 +312,7 @@ func ensureTap(ctx context.Context, dev string) error {
 	if exists("/sys/class/net/" + dev) {
 		return nil // exists: not ours to re-up (see the rule above Converge)
 	}
-	if out, err := ip(ctx, "tuntap", "add", dev, "mode", "tap"); err != nil {
+	if out, err := ip(ctx, tapAddArgs(dev)...); err != nil {
 		return fmt.Errorf("nic: tap %s: %s", dev, firstLine(out, err))
 	}
 	return ensureUp(ctx, dev)
@@ -331,8 +360,12 @@ func IsBridge(dev string) bool { return dev != "" && exists("/sys/class/net/"+de
 // ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6
 // at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
 // the tick does not chase a knob the machine does not have.
+//
+// It reads with os.ReadFile rather than through readText ([B.153]) because here the ERROR is the
+// answer: "no such file" means satisfied, while readText flattens an unreadable file and an empty
+// one to the same "".
 func ipv6Disabled(dev string) bool {
-	b, err := os.ReadFile("/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6")
+	b, err := os.ReadFile(disableIPv6Path(dev))
 	if err != nil {
 		return true
 	}
@@ -347,12 +380,13 @@ func up(dev string) bool {
 
 // flags reads /sys/class/net/<dev>/flags -- the raw IFF_ bitmap, which is where ALLMULTI is
 // visible at all (net.Interface does not carry it).
-func flags(dev string) int64 {
-	b, err := os.ReadFile("/sys/class/net/" + dev + "/flags")
-	if err != nil {
-		return 0
-	}
-	n, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(string(b)), "0x"), 16, 64)
+func flags(dev string) int64 { return parseIfFlags(readText("/sys/class/net/" + dev + "/flags")) }
+
+// parseIfFlags decodes that bitmap. Pure, so the `0x` hex the kernel renders it in is unit-tested
+// rather than trusted ([B.153]). An unreadable or unparseable value is 0 -- no flags set, which
+// sends Converged to false and makes the tick try to fix the device rather than assume it is fine.
+func parseIfFlags(text string) int64 {
+	n, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(text), "0x"), 16, 64)
 	if err != nil {
 		return 0
 	}
@@ -360,17 +394,23 @@ func flags(dev string) int64 {
 }
 
 // master names the bridge dev is a port of, "" when it is a port of nothing.
-//
-// filepath.Base, not a prefix trim: the symlink is a MULTI-LEVEL relative path
-// (`../../devices/virtual/net/br0`), so stripping one `../` leaves a path that matches no bridge
-// name — which would make Converged answer false forever and the tick re-converge on every pass.
 func master(dev string) string {
 	l, err := os.Readlink("/sys/class/net/" + dev + "/master")
 	if err != nil {
 		return ""
 	}
-	return filepath.Base(l)
+	return parseMaster(l)
 }
+
+// parseMaster takes the bridge name out of the `master` symlink's target. Pure, so the one detail
+// that cannot be inferred by reading it is unit-tested rather than trusted ([B.153]).
+//
+// ⚠️ filepath.Base, NOT a prefix trim. The target's depth depends on where the port's real sysfs
+// node lives: a virtual device is one level from its bridge (`../br0`), a physical NIC several
+// (`../../../../virtual/net/br0`). Stripping a single `../` leaves a path that matches no bridge
+// name on the second shape -- which would make Converged answer false forever and the tick
+// re-converge on every pass.
+func parseMaster(link string) string { return filepath.Base(link) }
 
 // hasAddr reports whether dev already holds exactly this address AND prefix. The prefix is part
 // of the question: the same address as a /32 and as a /24 are two different routing claims.

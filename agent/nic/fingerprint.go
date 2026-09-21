@@ -1,13 +1,11 @@
 package nic
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -89,22 +87,19 @@ func Read(ctx context.Context, dev string) Fingerprint {
 }
 
 // defaultGateway reads the next hop of the main table's default route on dev, from
-// /proc/net/route -- the same reader and the same table DefaultRoute uses, for the same reason.
-func defaultGateway(dev string) string {
-	fh, err := os.Open("/proc/net/route")
-	if err != nil {
-		return ""
-	}
-	defer fh.Close()
-	sc := bufio.NewScanner(fh)
-	sc.Scan() // header
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text()) // Iface Destination Gateway ...
-		if len(fields) < 3 || fields[0] != dev || fields[1] != "00000000" {
+// /proc/net/route -- the same file and the same table DefaultRoute uses, for the same reason.
+func defaultGateway(dev string) string { return parseDefaultGateway(readText(procRoute), dev) }
+
+// parseDefaultGateway pulls dev's default next hop out of /proc/net/route's text. Pure, so the
+// one detail that cannot be inferred by reading it -- the LITTLE-ENDIAN hex the address column is
+// rendered in -- is unit-tested rather than trusted ([B.153]).
+func parseDefaultGateway(text, dev string) string {
+	for _, f := range procTable(text) { // Iface Destination Gateway ...
+		if len(f) < 3 || f[0] != dev || f[1] != "00000000" {
 			continue
 		}
 		// Little-endian hex, which is how /proc/net/route has always rendered addresses.
-		n, err := strconv.ParseUint(fields[2], 16, 32)
+		n, err := strconv.ParseUint(f[2], 16, 32)
 		if err != nil {
 			return ""
 		}
@@ -112,7 +107,6 @@ func defaultGateway(dev string) string {
 		binary.LittleEndian.PutUint32(b[:], uint32(n))
 		return netip.AddrFrom4(b).String()
 	}
-	_ = sc.Err()
 	return ""
 }
 
@@ -140,30 +134,36 @@ func neighbourMAC(ctx context.Context, dev, ip string) string {
 	return ""
 }
 
-// arpTableMAC reads a RESOLVED entry for ip on dev out of /proc/net/arp. The flags column carries
-// ATF_COM (0x2) once an address actually replied; an unanswered probe leaves the row present but
-// incomplete, so the flag is the evidence rather than the row.
-func arpTableMAC(dev, ip string) string {
-	fh, err := os.Open("/proc/net/arp")
-	if err != nil {
-		return ""
-	}
-	defer fh.Close()
-	sc := bufio.NewScanner(fh)
-	sc.Scan() // header
-	for sc.Scan() {
-		f := strings.Fields(sc.Text()) // IP HWtype Flags HWaddress Mask Device
+// procARP is the kernel's IPv4 neighbour table as text.
+//
+// ⚠️ IPv4-ONLY, and legacy. It is the right file while addressing is v4 (DESIGN §4.3 says it
+// stays); the day it is not, this reader is the first thing that moves ([B.153]).
+const procARP = "/proc/net/arp"
+
+// arpTableMAC reads a RESOLVED entry for ip on dev out of /proc/net/arp.
+func arpTableMAC(dev, ip string) string { return parseARPMAC(readText(procARP), dev, ip) }
+
+// parseARPMAC pulls a resolved link address for ip on dev out of /proc/net/arp's text. Pure, so
+// the detail that cannot be inferred by reading it is unit-tested rather than trusted ([B.153]):
+// the flags column carries ATF_COM (0x2) once an address actually replied, and an unanswered probe
+// leaves the row PRESENT but incomplete -- so the flag is the evidence, never the row.
+func parseARPMAC(text, dev, ip string) string {
+	for _, f := range procTable(text) { // IP HWtype Flags HWaddress Mask Device
 		if len(f) < 6 || f[0] != ip || f[5] != dev {
 			continue
 		}
 		flags, err := strconv.ParseInt(strings.TrimPrefix(f[2], "0x"), 16, 64)
-		if err != nil || flags&0x2 == 0 || f[3] == "00:00:00:00:00:00" {
+		if err != nil || flags&atfCom == 0 || f[3] == "00:00:00:00:00:00" {
 			return ""
 		}
 		return f[3]
 	}
 	return ""
 }
+
+// atfCom is ATF_COM in /proc/net/arp's flags column: the entry is COMPLETE, i.e. something at
+// that address answered.
+const atfCom = 0x2
 
 // Relation is how a candidate LAN relates to the one recorded -- the thing that paces a
 // re-parent. Named for what it says about the WORLD rather than for how long to wait, so the

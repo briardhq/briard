@@ -13,7 +13,6 @@
 package nic
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -188,7 +187,9 @@ func Probe(ctx context.Context, dev string) error {
 	// A leaked probe device from a run killed between create and delete would make every later
 	// probe fail with EEXIST -- i.e. would condemn a perfectly good NIC. Clear it first.
 	_, _ = ip(ctx, "link", "del", probeDev)
-	out, err := ip(ctx, "link", "add", "link", dev, "name", probeDev, "type", "macvtap", "mode", "bridge")
+	// THE SAME ARGV THE INSTALL USES, from the same builder -- that identity is the whole claim
+	// this probe makes, so it is shared rather than restated ([B.153]).
+	out, err := ip(ctx, macvtapAddArgs(probeDev, dev)...)
 	if err != nil {
 		return fmt.Errorf("a macvtap could not be created on it (%s)", firstLine(out, err))
 	}
@@ -208,23 +209,54 @@ func firstLine(out []byte, err error) string {
 	return err.Error()
 }
 
-// DefaultRoute reads the interface owning the default route (destination 00000000) from
-// /proc/net/route -- the MAIN table, which is the point (see Choose). "" if none.
-func DefaultRoute() string {
-	f, err := os.Open("/proc/net/route")
+// procRoute is the kernel's routing table as text. Named once because two readers parse it for
+// two different columns, and their tests parse the same fixture.
+const procRoute = "/proc/net/route"
+
+// readText reads a small procfs or sysfs file whole. An unreadable file reads as "", which is the
+// answer every caller in this package wants: absence is "no evidence" here, never an error to
+// propagate (see Read's best-effort rule), and there is nothing a caller could do with the error
+// that "" does not already say.
+//
+// Reading whole rather than scanning is what lets the parser above it be pure ([B.153]): these
+// files are a few hundred bytes, and the split is what makes the format handling testable.
+func readText(path string) string {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Scan() // header
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text()) // Iface Destination Gateway Flags ...
-		if len(fields) >= 2 && fields[1] == "00000000" {
-			return fields[0]
+	return string(b)
+}
+
+// procTable splits a /proc/net table into its rows' fields, dropping the header line every one of
+// them carries. The header is the only thing these two files have in common, and skipping it is
+// the one step each parser would otherwise repeat.
+func procTable(text string) [][]string {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+	var rows [][]string
+	for _, l := range lines[1:] { // [0] is the header
+		if f := strings.Fields(l); len(f) > 0 {
+			rows = append(rows, f)
 		}
 	}
-	_ = sc.Err()
+	return rows
+}
+
+// DefaultRoute reads the interface owning the default route (destination 00000000) from
+// /proc/net/route -- the MAIN table, which is the point (see Choose). "" if none.
+func DefaultRoute() string { return parseDefaultRouteDev(readText(procRoute)) }
+
+// parseDefaultRouteDev pulls the default route's interface out of /proc/net/route's text. Pure, so
+// the format handling is unit-tested against real output rather than trusted ([B.153]).
+func parseDefaultRouteDev(text string) string {
+	for _, f := range procTable(text) { // Iface Destination Gateway Flags ...
+		if len(f) >= 2 && f[1] == "00000000" {
+			return f[0]
+		}
+	}
 	return ""
 }
 
