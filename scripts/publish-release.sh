@@ -106,7 +106,7 @@
 #
 # Subcommands:
 #   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests
-#   sign     [DIR]        detached-sign every manifest and lay the `latest` pointers
+#   sign     [DIR]        detached-sign every manifest
 #                         (needs $RELEASE_SIGN_KEY, no credential)
 #   publish  [DIR]        upload the versioned dirs and NOTHING ELSE -- no pointer, no root
 #                         install.sh, so the release reaches nobody until it is pointed at
@@ -493,13 +493,6 @@ stage)
 		jq -e . "$m/manifest.json" >/dev/null || die "the manifest at $m is not valid JSON"
 	done
 
-	# THE CHANNEL ROOT'S COPY, byte-identical to the signed artifact staged above ([B.159](a)) --
-	# `cp`, so "the root serves exactly one release's installer" is true by construction rather
-	# than by two renders agreeing. It is staged here because the tree under $DIR is meant to BE
-	# the tree the channel holds, which is what lets tier 4's `STAGE_DIR` binding serve it as-is;
-	# on the live channel this path is laid by `promote` alone.
-	cp -p "$H/install.sh" "$DIR/install.sh"
-
 	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
 	say "staged $V:"
 	for c in $CHAINS; do
@@ -524,7 +517,6 @@ sign)
 			say "vm chain: $(cat "$DIR/VM") is reused (unchanged inputs) -- nothing to sign"; continue
 		fi
 		v=$(staged_version "$DIR/$c") || die "no staged version under $DIR/$c — run \`stage\` first"
-		rm -rf "$DIR/$c/latest"
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm"); m="$DIR/$c/$rel/manifest.json"
 			[ -f "$m" ] || die "no manifest at $m"
@@ -534,17 +526,6 @@ sign)
 			n=$(stat -c%s "$m.sig")
 			[ "$n" = 64 ] || die "$m.sig is $n bytes, want a raw 64 — the verifier rejects anything else"
 			say "signed $c/$rel (64-byte detached Ed25519)"
-			# THE `latest` POINTER, laid here rather than in `publish`: a pointer is a byte-copy
-			# of the signed manifest, so it exists the moment the signature does — and a staged
-			# tree that already carries it is served AS-IS by the publish gate
-			# (lab/vanilla-linux), which installs from `latest` before anything is uploaded.
-			p="$DIR/$c/$(sub latest "$arm")"; mkdir -p "$p"
-			cp "$m" "$m.sig" "$p/"
-			for b in briard-agent briard-agent.exe; do
-				if [ -f "$DIR/$c/$rel/$b" ]; then cp -p "$DIR/$c/$rel/$b" "$p/$b"; fi
-			done
-			# A chain without arms ran its one (empty) arm; a chain with arms must not run an
-			# extra empty one after them.
 		done
 	done
 	;;
@@ -575,11 +556,6 @@ publish)
 		for a in $(arms_of "$c"); do arm=${a#-}
 			rel=$(sub "$v" "$arm")
 			[ -f "$DIR/$c/$rel/manifest.json.sig" ] || die "$c/$rel is unsigned — run \`sign\` before publishing"
-			# The staged `latest` pointer is not uploaded any more ([B.159](b)), but it is still
-			# required here: the staged tree is meant to BE the channel's shape, and tier 4's
-			# STAGE_DIR binding serves it from that directory and installs from `latest`. A stage
-			# missing it would fail the gate for a reason that has nothing to do with the release.
-			[ -f "$DIR/$c/$(sub latest "$arm")/manifest.json" ] || die "$c has no latest pointer for $rel — run \`sign\`"
 			! have_key "$bucket/$c/$rel/manifest.json" "$endpoint" ||
 				die "$c/$rel is ALREADY PUBLISHED and versioned directories are immutable (see header) — to re-point, \`promote\`; to ship a fix, commit and stage again"
 		done
