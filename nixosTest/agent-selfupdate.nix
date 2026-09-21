@@ -287,7 +287,7 @@ pkgs.testers.runNixOSTest {
     #        that binary verifies the manifest, fetches the artifact from the VERSIONED
     #        directory, stages it beside its manifest and ARMS — and does not restart anything.
     #        Then the forcing backstop: a young arm is left alone, an old one is forced. ===
-    V4 = "v3.20260906.aaaaaaa"
+    V4 = "v3.20990906.aaaaaaa"
     machine.succeed("mkdir -p /etc/briard /srv/briard/latest/linux /srv/briard/stable/linux")
     machine.succeed("${stubExe} keygen /root/release.key /etc/briard/keyring.pem")
     # The rest of the host bundle ([B.86b]): a launch shim, and a qemu "bundle" -- a tree with a
@@ -319,7 +319,7 @@ pkgs.testers.runNixOSTest {
     publish(V4, "${readyV4}")
     # The node's installed release: an OLDER date, so stable is ahead of it.
     machine.succeed(
-        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux\",\"version\":\"v3.20260101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
+        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux\",\"version\":\"v3.20990101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
     )
     machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
     machine.wait_until_succeeds("curl -sf ${channel}/briard/stable/linux/manifest.json -o /dev/null", timeout=30)
@@ -390,7 +390,7 @@ pkgs.testers.runNixOSTest {
     #        its signed manifest pins is refused by the fresh bootstrap's hash check — nothing
     #        staged, nothing armed, the verdict names it, the CLI exits non-zero.
     #        [[verification-assertions-must-fail]] — the refusal must actually fire. ===
-    V5 = "v3.20260907.bbbbbbb"
+    V5 = "v3.20990907.bbbbbbb"
     publish(V5, "${readyV4}", pointers=("latest",))
     machine.succeed(f"install -m755 ${evilCand} /srv/briard/{V5}/linux/briard-agent")  # tamper AFTER signing
     # ⚠️ THE DEFAULT IS `stable`, AND HERE IT IS OBSERVABLE ON THE REAL BINARY ([B.159](f)):
@@ -418,7 +418,7 @@ pkgs.testers.runNixOSTest {
     #        An EXACT target's bootstrap is pulled from its versioned directory (there is no
     #        pointer to duplicate it under), so this release's artifact must be the real agent:
     #        the stub divergence explained in the header only works through a pointer.
-    OLD = "v3.20260201.ccccccc"
+    OLD = "v3.20990201.ccccccc"
     publish(OLD, "${realAgent}", pointers=())
     # THE REFUSAL'S OWN WORDS, not just a non-zero exit ([[verification-assertions-must-fail]]).
     # `fail` passes on ANY non-zero exit -- a missing release, an unreadable manifest, a verb that
@@ -450,7 +450,7 @@ pkgs.testers.runNixOSTest {
     #        so the commit that follows can never pair this agent with that qemu by either route.
     #        Both being true is the point. [[verification-assertions-must-fail]]
     machine.succeed("rm -f ${nextBin} ${nextManifest} ${updateFlag}")  # un-arm scenario 8's pin
-    V9 = "v3.20260908.ddddddd"
+    V9 = "v3.20990908.ddddddd"
     publish(V9, "${crashCand}", pointers=("latest",), qemu="bundle2")
     out = machine.succeed("${realAgent} update -to latest -base /var/lib/briard -run /run/briard").strip()
     assert f"staged {V9} (agent, qemu), armed" in out, f"unexpected: {out!r}"   # the shim is unchanged
@@ -470,7 +470,7 @@ pkgs.testers.runNixOSTest {
     machine.fail("test -e ${updateFlag}")
     print(f"9a) {V9}'s trial crashed: reverted whole, qemu link still {V4}'s, its staged link discarded")
 
-    V10 = "v3.20260909.eeeeeee"
+    V10 = "v3.20990909.eeeeeee"
     publish(V10, "${readyV2}", pointers=("latest",))   # back on the FIRST bundle == the installed one
     out = machine.succeed("${realAgent} update -to latest -base /var/lib/briard -run /run/briard").strip()
     assert f"staged {V10} (agent), armed" in out, f"unexpected: {out!r}"
