@@ -534,7 +534,12 @@ publish)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	[ -f "$DIR/install.sh" ] || die "no install.sh in $DIR — run \`stage\` (it embeds the keyring)"
+	# The installer is an artifact of the LINUX ARM and lives nowhere else in a staging dir
+	# ([B.164]: stage lays no root copy, and `promote` is what puts one at the channel root). The
+	# check itself is unchanged: a staging dir carrying no installer was built before the keyring
+	# was embedded, and publishing it would ship a release nobody can install.
+	[ -f "$DIR/briard/$(staged_version "$DIR/briard")/linux/install.sh" ] ||
+		die "no install.sh under $DIR/briard/<version>/linux — run \`stage\` (it embeds the keyring)"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 
