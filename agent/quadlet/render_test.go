@@ -493,6 +493,135 @@ func TestSnapshotMemberTimeIsTheOrder(t *testing.T) {
 	}
 }
 
+// The retention ladder's fixtures ([B.143]). `now` is the moment the prune is asked about, and
+// every member is named by how long before it it was taken, so each case reads as the calendar
+// question it is.
+var retentionNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+
+func aged(trigger Trigger, ago time.Duration) string {
+	return SnapshotMember("home-assistant", trigger, retentionNow.Add(-ago))
+}
+
+func pruned(t *testing.T, members ...string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, n := range RetentionPrune(members, retentionNow) {
+		out[n] = true
+	}
+	return out
+}
+
+const day = 24 * time.Hour
+
+// TestRetentionKeepsThreeDaysOfEverything: the ordinary history, and the window a household
+// actually reaches for -- "it worked on Sunday" is a date, not a position in a list.
+func TestRetentionKeepsThreeDaysOfEverything(t *testing.T) {
+	young, old := aged(TriggerStart, 2*day), aged(TriggerStart, 4*day)
+	got := pruned(t, young, old)
+	if got[young] {
+		t.Errorf("a two-day-old start member was pruned inside the three-day window")
+	}
+	if !got[old] {
+		t.Errorf("a four-day-old start member survived the three-day window")
+	}
+}
+
+// TestRetentionCountsEachWindow is the SPACE bound, and the reason the ladder is not ages alone:
+// the rate limit admits a plain member every minute or two, so a crash-looping service takes on
+// the order of a thousand a day and every one of them would sit inside the three-day window.
+func TestRetentionCountsEachWindow(t *testing.T) {
+	var ring []string
+	for i := 0; i < RetainPerWindow+3; i++ {
+		ring = append(ring, aged(TriggerStart, time.Duration(i)*time.Hour)) // all well inside 3 days
+	}
+	got := pruned(t, ring...)
+	if len(got) != 3 {
+		t.Fatalf("pruned %d of %d members, want the 3 over the count: %v", len(got), len(ring), got)
+	}
+	for _, n := range ring[len(ring)-3:] { // the oldest three, since `aged` counts backwards
+		if !got[n] {
+			t.Errorf("%s is over the count and survived", n)
+		}
+	}
+}
+
+// TestRetentionKeepsTitledMembersForAWeek: the asymmetry the ring exists for. A member somebody's
+// action produced outlives the ordinary history, and a start member cannot crowd it out -- ten
+// restarts happen in an afternoon.
+func TestRetentionKeepsTitledMembersForAWeek(t *testing.T) {
+	upgrade := aged(TriggerUpgrade, 5*day)
+	undo := aged(TriggerRestoreBefore, 5*day)
+	var ring []string
+	for i := 0; i < RetainPerWindow+3; i++ {
+		ring = append(ring, aged(TriggerStart, time.Duration(i)*time.Hour))
+	}
+	got := pruned(t, append(ring, upgrade, undo)...)
+	if got[upgrade] {
+		t.Errorf("a five-day-old upgrade point was pruned")
+	}
+	if got[undo] {
+		t.Errorf("a five-day-old restore point was pruned -- it is the only undo a mis-click has")
+	}
+	if len(got) == 0 {
+		t.Error("nothing was pruned at all; the case proves nothing about the exemption")
+	}
+}
+
+// TestRetentionKeepsTheLastUpgradePointForAFortnight: "the update broke my house" is discovered
+// days later, so the one member that answers it gets a window nothing else needs.
+func TestRetentionKeepsTheLastUpgradePointForAFortnight(t *testing.T) {
+	recent, ancient := aged(TriggerUpgrade, 10*day), aged(TriggerUpgrade, 20*day)
+	got := pruned(t, recent, ancient)
+	if got[recent] {
+		t.Errorf("the most recent upgrade point was pruned at ten days")
+	}
+	if !got[ancient] {
+		t.Errorf("a twenty-day-old upgrade point survived the fortnight")
+	}
+	// ONE by construction: an older upgrade point inside the fortnight falls back to the windows
+	// above, so two of them do not both get the long window.
+	older := aged(TriggerUpgrade, 8*day)
+	if !pruned(t, aged(TriggerUpgrade, day), older)[older] {
+		t.Errorf("a superseded upgrade point kept the fortnight window; only the last one has it")
+	}
+}
+
+// TestRetentionOrdersByTimeNotName is the trap TestSnapshotMemberTimeIsTheOrder records, asserted
+// where it would do the damage: the trigger sits between the service and the stamp, so a ladder
+// that sorted names would keep "the newest ten" of whatever the alphabet put last.
+// The fixture is the one that tells the two orderings apart. Eleven start members, all young, and
+// one upgrade point that is the OLDEST thing here by a day but sorts LAST by name (`-upgrade-`
+// beats `-start-`). By time, the first window keeps the ten newest starts and prunes exactly one;
+// the upgrade point is kept by its own windows. By name, the upgrade point takes a slot in the
+// first window and a second start member is evicted to pay for it.
+func TestRetentionOrdersByTimeNotName(t *testing.T) {
+	var ring []string
+	for i := 0; i < RetainPerWindow+1; i++ {
+		ring = append(ring, aged(TriggerStart, time.Duration(i)*time.Hour))
+	}
+	upgrade := aged(TriggerUpgrade, 2*day)
+	got := pruned(t, append(ring, upgrade)...)
+	if got[upgrade] {
+		t.Errorf("the upgrade point was pruned; its own windows keep it")
+	}
+	oldestStart := ring[len(ring)-1]
+	if len(got) != 1 || !got[oldestStart] {
+		t.Fatalf("pruned %v, want only the oldest start member %q -- anything else means the ladder "+
+			"ranked members by NAME, where the trigger outweighs the stamp", got, oldestStart)
+	}
+}
+
+// TestRetentionNeverTouchesWhatItCannotName: the `.snapshots` directory is shared with whatever a
+// human or a future feature put there. The ring deletes only what it named.
+func TestRetentionNeverTouchesWhatItCannotName(t *testing.T) {
+	stranger := SnapshotsDir + "someones-copy-before-i-tried-something"
+	old := SnapshotsDir + "home-assistant-start-NOT-A-STAMP"
+	got := pruned(t, stranger, old, aged(TriggerStart, 9*day))
+	if got[stranger] || got[old] {
+		t.Errorf("the ladder returned a name it cannot parse: %v", got)
+	}
+}
+
 // TestDataContainerTakesARingMemberAtStart: the generic hook ([B.143]). Every catalogued service
 // gets a member at container start, which is the only boundary visible from outside the
 // container -- Home Assistant adds its own internal restarts through the inbound channel, and

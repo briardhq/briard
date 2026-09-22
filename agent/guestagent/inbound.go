@@ -203,7 +203,7 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 	// AFTER the take, never before: pruning first would mean a failed take leaves the ring
 	// shorter for nothing, and a ring at its bound is the state each take should restore rather
 	// than the state each take should find.
-	pruneRing(ctx, x, service)
+	pruneRing(ctx, x, service, at)
 	return "took " + path.Base(member), nil
 }
 
@@ -306,28 +306,12 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 	return at, true, nil
 }
 
-// plainMembersKept bounds the ring's prunable members per service.
+// pruneRing brings a service's ring back to what quadlet's retention ladder keeps — the three
+// windows, which is where the policy and its reasoning live. This is the enforcement, and it is
+// the GUEST's because the host is not in the start path on a promotion or a crash restart.
 //
-// ⚠️ PROVISIONAL. [B.143] leaves N to the owner, and the retention ladder it describes (desired
-// vs floor, DESIGN §5.1) is v5+ machinery that does not exist. What this constant is for is the
-// property that cannot wait: an unbounded ring on the replicated volume grows on every service
-// start, costs its space on every diskful peer, and arrives as [B.155]'s failure by a new road.
-// A bound that is merely defensible beats none at all.
-//
-// 20 is a judgement. Home Assistant restarts a handful of times on a busy day, so this is days of
-// history rather than hours, and the members cost nothing in themselves — btrfs is copy-on-write,
-// so two members either side of a quiet hour share every block. What they DO hold down is
-// anything deleted since: HA keeps its backups inside the snapshotted subvolume, so a member pins
-// whatever tars existed when it was taken (see the item's note). That is the argument for a
-// smaller N, and the argument for revisiting this once [B.140] moves those backups to the user
-// tier.
-const plainMembersKept = 20
-
-// pruneRing deletes a service's oldest PRUNABLE members until at most plainMembersKept remain.
-//
-// ⚠️ NEVER TITLED MEMBERS. quadlet.PrunedByCount says which triggers the count may evict, and it
-// is upgrade and restore points that it may not: a flat keep-last-N would evict the pre-upgrade
-// member within days of an ordinary restart cadence, which is the one case the ring exists for.
+// THE CLOCK COMES FROM THE CALLER, the same instant the take used. A prune that asked the clock
+// again would be answering a question one call later than the one it was asked.
 //
 // BEST-EFFORT, ALWAYS. The caller is holding a household's service stopped waiting for an answer,
 // so a member that will not delete is logged and stepped over — a ring one member too long is
@@ -335,17 +319,8 @@ const plainMembersKept = 20
 //
 // The sidecar goes with its member, and in that order: a member with no sidecar is the state the
 // take path refuses to leave behind, so the delete must not create one either.
-func pruneRing(ctx context.Context, x Executor, service string) {
-	var prunable []string
-	for _, n := range ringMembers(ctx, x, service) {
-		if _, tr, _, ok := quadlet.ParseSnapshotMember(n); ok && quadlet.PrunedByCount(tr) {
-			prunable = append(prunable, n)
-		}
-	}
-	if len(prunable) <= plainMembersKept {
-		return
-	}
-	for _, n := range prunable[:len(prunable)-plainMembersKept] {
+func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
+	for _, n := range quadlet.RetentionPrune(ringMembers(ctx, x, service), now) {
 		member := quadlet.SnapshotsDir + n
 		if _, err := x.Run(ctx, "btrfs", "subvolume", "delete", member); err != nil {
 			log.Printf("ring %s: could not prune %s: %v", service, n, err)

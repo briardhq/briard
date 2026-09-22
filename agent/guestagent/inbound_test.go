@@ -440,7 +440,7 @@ func deleted(f *fakeExec) []string {
 // diskful peer, and arrives as [B.155]'s failure by a new road. The bound is what keeps a
 // household's own restarts from filling the volume they are stored on.
 func TestRingIsBounded(t *testing.T) {
-	existing := ringOf("home-assistant", plainMembersKept+3)
+	existing := ringOf("home-assistant", quadlet.RetainPerWindow+3)
 	f := ringExec(existing...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 
@@ -448,7 +448,7 @@ func TestRingIsBounded(t *testing.T) {
 	// Three over the bound, so three go. (The member the take just added is not in the fake's
 	// listing, which is static -- what is under test is that the ring is brought TO the bound.)
 	if len(gone) != 3 {
-		t.Fatalf("pruned %d members, want 3 over the bound of %d: %v", len(gone), plainMembersKept, gone)
+		t.Fatalf("pruned %d members, want 3 over the count of %d: %v", len(gone), quadlet.RetainPerWindow, gone)
 	}
 	// THE OLDEST GO, and the order is the property: a ring that evicted the newest would keep
 	// history nobody wants and drop the state closest to whatever just went wrong.
@@ -468,22 +468,33 @@ func TestRingIsBounded(t *testing.T) {
 
 // TestRingKeepsTitledMembers is the asymmetry that makes the bound safe ([B.143]).
 //
-// A flat keep-last-N evicts the pre-upgrade member within days of Home Assistant's ordinary
-// restart cadence -- and "go back to the version before the update that broke my house" is the
-// case the whole ring exists for. So the count may evict plain members and nothing else.
+// One number over everything evicts the pre-upgrade member within days of Home Assistant's
+// ordinary restart cadence -- and "go back to the version before the update that broke my house"
+// is the case the whole ring exists for. So the windows are per set: a day's restarts cannot reach
+// a member the household's own action produced. Here the upgrade point is 90 hours old, PAST the
+// three-day window every member shares and inside the titled week that only it has.
 func TestRingKeepsTitledMembers(t *testing.T) {
 	base := time.Now().Add(-90 * time.Hour)
 	upgrade := strings.TrimPrefix(
 		quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, base),
 		quadlet.SnapshotsDir,
 	)
-	// The upgrade point is the OLDEST thing in the ring, so a count that ignored triggers would
-	// take it first.
-	f := ringExec(append([]string{upgrade}, ringOf("home-assistant", plainMembersKept+3)...)...)
+	// The restore point rides along because it is the one titled member with NO window of its own
+	// beyond the titled week -- so it is what fails if that week stops covering titled members,
+	// while the upgrade point would survive on its fortnight alone and prove nothing.
+	undo := strings.TrimPrefix(
+		quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, base),
+		quadlet.SnapshotsDir,
+	)
+	// Both are the OLDEST things in the ring, so a count that ignored triggers would take them first.
+	f := ringExec(append([]string{upgrade, undo}, ringOf("home-assistant", quadlet.RetainPerWindow+3)...)...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	for _, name := range deleted(f) {
 		if name == upgrade {
 			t.Fatalf("the pre-upgrade member was evicted by the count: %v", deleted(f))
+		}
+		if name == undo {
+			t.Fatalf("the restore point was evicted by the count: %v", deleted(f))
 		}
 	}
 	if len(deleted(f)) == 0 {
@@ -494,7 +505,7 @@ func TestRingKeepsTitledMembers(t *testing.T) {
 // TestRingLeavesAnotherServiceAlone: the bound is per service. One busy service must not evict
 // another's history -- they share a directory and nothing but the name separates them.
 func TestRingLeavesAnotherServiceAlone(t *testing.T) {
-	mine := ringOf("home-assistant", plainMembersKept+3)
+	mine := ringOf("home-assistant", quadlet.RetainPerWindow+3)
 	theirs := ringOf("mosquitto", 5)
 	f := ringExec(append(mine, theirs...)...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
@@ -505,13 +516,31 @@ func TestRingLeavesAnotherServiceAlone(t *testing.T) {
 	}
 }
 
+// TestRingPrunesByAgeAndNotOnlyByCount: the ladder's ages have to reach the disk, which means the
+// prune has to be asked about a CLOCK. A ring far under every count still loses what has aged out,
+// and a ring that only ever counted would keep this member for months.
+func TestRingPrunesByAgeAndNotOnlyByCount(t *testing.T) {
+	member := func(ago time.Duration) string {
+		return strings.TrimPrefix(
+			quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-ago)),
+			quadlet.SnapshotsDir)
+	}
+	old, recent := member(9*24*time.Hour), member(6*time.Hour)
+	f := ringExec(old, recent)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	got := deleted(f)
+	if len(got) != 1 || got[0] != old {
+		t.Fatalf("deleted %v, want just the nine-day-old member %q", got, old)
+	}
+}
+
 // TestRingUnderTheBoundPrunesNothing: the cheap case has to stay cheap, and a bound that deleted
 // something on an ordinary start would be a bound nobody could reason about.
 func TestRingUnderTheBoundPrunesNothing(t *testing.T) {
 	f := ringExec(ringOf("home-assistant", 3)...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	if g := deleted(f); len(g) != 0 {
-		t.Errorf("a ring of 3 under a bound of %d pruned %v", plainMembersKept, g)
+		t.Errorf("a ring of 3 inside every window pruned %v", g)
 	}
 }
 
