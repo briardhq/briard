@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
 )
@@ -43,6 +45,137 @@ func ringExec(members ...string) *fakeExec {
 		return nil, nil
 	}
 	return f
+}
+
+// restoreRig is a ring whose Home Assistant manifest names the container that holds the data, so
+// the registry can say where the restore marker would be ([B.143]). `marker` is that file's
+// content, or "" for a service with no restore in flight. Its `rm` really removes, because the
+// pending fact is consumed by one and a fake that kept it would hide a second titling.
+func restoreRig(marker string, members ...string) *fakeExec {
+	f := ringExec(members...)
+	f.files[manifestPath("home-assistant")] =
+		`{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
+			`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
+			`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
+	if marker != "" {
+		f.files[quadlet.DataRoot("home-assistant")+"/app/"+hass.RestoreMarker] = marker
+	}
+	inner := f.runFn
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "rm" && len(args) > 1 {
+			delete(f.files, args[len(args)-1])
+			return nil, nil
+		}
+		return inner(name, args)
+	}
+	return f
+}
+
+// tookMember is the member the ring just wrote, with the sidecar the picker will read.
+func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
+	t.Helper()
+	var took string
+	for _, r := range f.runs {
+		if len(r) > 4 && r[1] == "subvolume" && r[2] == "snapshot" && r[3] == "-r" {
+			took = r[5]
+		}
+	}
+	if took == "" {
+		t.Fatalf("nothing was snapshotted: %v", f.runs)
+	}
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(took)]), &meta); err != nil {
+		t.Fatalf("the member has no readable sidecar: %v", err)
+	}
+	return took, meta
+}
+
+// TestInboundTitlesTheBackupRestorePair ([B.143]) is the one operation only this channel can see.
+// Home Assistant's own restore unlinks its marker before the wipe, so nothing that polls from
+// outside can ever catch one in flight -- and the household ends up with two points whose titles
+// say what happened rather than two more "starting".
+func TestInboundTitlesTheBackupRestorePair(t *testing.T) {
+	f := restoreRig(`{"path": "/config/backups/e1a2b3c4.tar"}`)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	member, meta := tookMember(t, f)
+	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerRestoreBefore {
+		t.Errorf("trigger = %q, want the before half of the pair", tr)
+	}
+	if !strings.Contains(meta.Title, "before restoring") || !strings.Contains(meta.Title, "e1a2b3c4.tar") {
+		t.Errorf("title = %q, want it to name the backup being restored", meta.Title)
+	}
+
+	// THE SECOND HALF, after HA has consumed its own marker: nothing on the volume says a restore
+	// just happened, so this is the node-local fact doing the one job it exists for.
+	f2 := restoreRig("")
+	f2.files[restorePendingPath("home-assistant")] = f.files[restorePendingPath("home-assistant")]
+	serve(t, f2, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	member2, meta2 := tookMember(t, f2)
+	if _, tr, _, _ := quadlet.ParseSnapshotMember(member2); tr != quadlet.TriggerRestoreAfter {
+		t.Errorf("trigger = %q, want the after half of the pair", tr)
+	}
+	if !strings.Contains(meta2.Title, "after restoring") || !strings.Contains(meta2.Title, "e1a2b3c4.tar") {
+		t.Errorf("title = %q, want it to name the backup that was restored", meta2.Title)
+	}
+	// AND THE FACT IS SPENT. Left behind, it would title the next ordinary start as the second
+	// half of a restore that finished hours ago.
+	if _, ok := f2.files[restorePendingPath("home-assistant")]; ok {
+		t.Error("the restore fact survived the member it titled")
+	}
+}
+
+// TestInboundTakesThePairInsideTheRateLimit: a restore is two members minutes apart by
+// construction, and the rate limit exists for a crash loop's hundreds of identical ones. Skipping
+// half a pair would leave a household's own restore with no way back.
+func TestInboundTakesThePairInsideTheRateLimit(t *testing.T) {
+	recent := strings.TrimPrefix(
+		quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)),
+		quadlet.SnapshotsDir)
+	f := restoreRig(`{"path": "/config/backups/x.tar"}`, recent)
+	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if strings.Contains(resp.Detail, "still current") {
+		t.Fatalf("the rate limit skipped half a restore pair: %q", resp.Detail)
+	}
+	if _, meta := tookMember(t, f); !strings.Contains(meta.Title, "before restoring") {
+		t.Errorf("title = %q, want the pair's first half", meta.Title)
+	}
+}
+
+// TestInboundIgnoresAStaleRestoreFact: a restore that never completed leaves the fact behind, and
+// it lives in tmpfs so nothing else will clear it. Using it hours later would title an ordinary
+// start as the second half of something that never happened.
+func TestInboundIgnoresAStaleRestoreFact(t *testing.T) {
+	f := restoreRig("")
+	f.files[restorePendingPath("home-assistant")] =
+		fmt.Sprintf("%d\tbackup old.tar", time.Now().Add(-restorePendingTTL-time.Hour).Unix())
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	member, meta := tookMember(t, f)
+	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerStart {
+		t.Errorf("trigger = %q, want an ordinary start", tr)
+	}
+	if strings.Contains(meta.Title, "restoring") {
+		t.Errorf("title = %q, want an ordinary start's", meta.Title)
+	}
+}
+
+// TestBackupNameSurvivesWhateverTheMarkerSays: the content is Home Assistant's, its format has
+// changed upstream before, and it lands in a line an operator reads. Every shape has to end in
+// something safe to print.
+func TestBackupNameSurvivesWhateverTheMarkerSays(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"path": "/config/backups/a1b2.tar"}`: "backup a1b2.tar",
+		"/config/backups/plain.tar\n":          "backup plain.tar",
+		"":                                     "a backup",
+		"{}":                                   "a backup",
+		"/config/backups/we\x00ird\x1bname":    "backup weirdname",
+	} {
+		if got := backupName([]byte(body)); got != want {
+			t.Errorf("backupName(%q) = %q, want %q", body, got, want)
+		}
+	}
+	if got := backupName([]byte("/x/" + strings.Repeat("y", 500))); len(got) > 100 {
+		t.Errorf("backupName did not cap a long name: %d chars", len(got))
+	}
 }
 
 // serve sends one request as Home Assistant unless the body already carries its own token.

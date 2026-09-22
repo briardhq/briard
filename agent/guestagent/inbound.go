@@ -11,11 +11,13 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
+	"briard.io/shared/manifest"
 )
 
 // The INBOUND channel: the first thing in this system that lets a service's container ask the
@@ -160,27 +162,43 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 		return "", err
 	}
 	at := time.Now()
-	// THE RATE LIMIT IS CHECKED BEFORE ANYTHING IS READ OR WRITTEN, so the cheap refusal stays
-	// cheap under exactly the conditions that produce it — a crash loop, or a caller hammering
-	// the socket on purpose.
-	newest, found, err := newestMember(ctx, x, service)
-	if err != nil {
-		return "", err
-	}
-	if found && at.Sub(newest) < plainStartFloor {
-		return fmt.Sprintf("a member from %s ago is still current; not taking another", at.Sub(newest).Truncate(time.Second)), nil
-	}
 	// The manifest is on the volume, node-local to read — which is why this needs no host in the
 	// loop, and why it must not have one: the host is not in the start path on a promotion or a
 	// crash restart, which is most of what this channel exists to catch.
+	//
+	// IT IS READ BEFORE THE RATE LIMIT because the rate limit does not apply to every member: a
+	// titled one is never skipped, and which this is can only be known from the manifest (the
+	// registry's marker paths are per service and per container). The cheap refusal therefore
+	// costs one directory listing and one small read, and still writes nothing at all — the
+	// property that matters when the caller is a crash loop or something hammering the socket.
 	raw, err := x.ReadFile(manifestPath(service))
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
+	trigger, title := quadlet.TriggerStart, service+" starting"
+	switch backup, phase := restorePhase(ctx, x, service, raw, at); phase {
+	case restoreBefore:
+		trigger, title = quadlet.TriggerRestoreBefore, "before restoring "+backup
+	case restoreAfter:
+		trigger, title = quadlet.TriggerRestoreAfter, "after restoring "+backup
+	default:
+		// THE RATE LIMIT, and only here. A crash loop restarts every few seconds and would fill
+		// the picker with hundreds of identical plain members; the one that matters is the first,
+		// taken before whatever went wrong ever ran. A titled member is the opposite case — there
+		// are two of them at most, minutes apart by construction, and skipping one would leave a
+		// household's own restore with no way back.
+		newest, found, err := newestMember(ctx, x, service)
+		if err != nil {
+			return "", err
+		}
+		if found && at.Sub(newest) < plainStartFloor {
+			return fmt.Sprintf("a member from %s ago is still current; not taking another", at.Sub(newest).Truncate(time.Second)), nil
+		}
+	}
 	meta := quadlet.SnapshotMeta{
 		Service: service,
-		Trigger: quadlet.TriggerStart,
-		Title:   service + " starting",
+		Trigger: trigger,
+		Title:   title,
 		TakenAt: at,
 		// QUIESCED, because this runs in the unit's pre-start: the container is not up yet, and
 		// the previous instance of it was stopped by systemd before the unit was restarted.
@@ -195,7 +213,7 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("render the member's sidecar: %w", err)
 	}
-	member := quadlet.SnapshotMember(service, quadlet.TriggerStart, at)
+	member := quadlet.SnapshotMember(service, trigger, at)
 	run := func(name string, args ...string) error { _, err := x.Run(ctx, name, args...); return err }
 	if err := takeSnapshot(ctx, x, run, quadlet.DataRoot(service), member, string(sidecar)); err != nil {
 		return "", err
@@ -205,6 +223,109 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 	// than the state each take should find.
 	pruneRing(ctx, x, service, at)
 	return "took " + path.Base(member), nil
+}
+
+// THE BACKUP-RESTORE PAIR ([B.143]): the two members either side of a household restoring one of
+// Home Assistant's OWN backups, which is a different operation from restoring one of our members
+// and needs its own pair of points.
+//
+// THE SEQUENCE IT READS, and why nothing else in the system can read it. The household asks a live
+// HA for the restore; HA writes its marker inside /config and exits 100. The wrapper's
+// notification lands in the restart that follows and sees the marker — that is the *before* point,
+// taken on data HA has not touched yet. HA's restore process then unlinks the marker in a `finally`
+// right after parsing and BEFORE the wipe (V3b §6.2, "prevent a boot loop"), wipes /config, extracts
+// the tar, and exits 100 again. The second notification sees no marker at all, which is why the
+// *after* point cannot be recognised from the volume and needs the node-local fact below.
+//
+// IT DEGRADES TO A PLAIN START, always. A failover between the two notifications loses the fact
+// (it lives in tmpfs), an unfinished restore leaves one that expires, and either way the member is
+// an ordinary start member — a pair with one half missing is a smaller loss than a mislabelled
+// point, and every other path here keeps that same direction.
+type restoreStage int
+
+const (
+	restoreNone restoreStage = iota
+	restoreBefore
+	restoreAfter
+)
+
+// restorePendingTTL bounds how long the node-local fact may sit unclaimed. A restore that is going
+// to happen takes the time of one HA restart plus a tar extraction; a fact older than this belongs
+// to one that never completed, and using it would title an ordinary start hours later as the
+// second half of a restore that never happened.
+const restorePendingTTL = 6 * time.Hour
+
+func restorePendingPath(service string) string { return "/run/briard/restore-pending." + service }
+
+// restorePhase says which half of a backup restore this start is, if either, and what to call the
+// backup. The service name has already been checked as a path element by the caller.
+func restorePhase(ctx context.Context, x Executor, service string, rawManifest []byte, at time.Time) (string, restoreStage) {
+	m, _, err := manifest.Parse(rawManifest)
+	if err != nil {
+		return "", restoreNone // a manifest we cannot read tells us nothing about markers
+	}
+	for _, rel := range services.RestoreMarkers(m) {
+		body, err := x.ReadFile(quadlet.DataRoot(service) + "/" + rel)
+		if err != nil {
+			continue
+		}
+		name := backupName(body)
+		// The fact the second notification will need, since by then the marker is gone. Written
+		// best-effort: a member titled as the first half of a pair is right whether or not the
+		// second half can be titled at all.
+		if err := x.WriteFile(restorePendingPath(service), []byte(fmt.Sprintf("%d\t%s", at.Unix(), name))); err != nil {
+			log.Printf("ring %s: could not record the restore in flight (%v); its second point will read as a plain start", service, err)
+		}
+		return name, restoreBefore
+	}
+	body, err := x.ReadFile(restorePendingPath(service))
+	if err != nil {
+		return "", restoreNone
+	}
+	// Consumed on the way in, whatever it says: a fact left behind would title the NEXT start as
+	// the second half of a restore too.
+	if _, err := x.Run(ctx, "rm", "-f", restorePendingPath(service)); err != nil {
+		log.Printf("ring %s: could not clear the restore fact (%v)", service, err)
+	}
+	stamp, name, ok := strings.Cut(strings.TrimSpace(string(body)), "\t")
+	if !ok {
+		return "", restoreNone
+	}
+	secs, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || at.Sub(time.Unix(secs, 0)) > restorePendingTTL {
+		return "", restoreNone
+	}
+	return name, restoreAfter
+}
+
+// backupName is what the picker calls the backup, read out of HA's marker.
+//
+// BEST-EFFORT AND SANITISED, because the content is written by the service rather than by us: the
+// format has changed upstream before (a bare path, then JSON carrying one), and it lands in a line
+// an operator reads. So: the path under a "path" key if it parses as JSON, else the whole body if
+// it looks like one, reduced to its base name, stripped of anything unprintable and capped. A
+// marker we cannot read at all still titles the pair — "a backup" is the honest answer, and the
+// timestamps either side say which one it was.
+func backupName(body []byte) string {
+	raw := strings.TrimSpace(string(body))
+	var fields struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(body, &fields); err == nil && fields.Path != "" {
+		raw = fields.Path
+	}
+	name := path.Base(raw)
+	var b strings.Builder
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || b.Len() >= 80 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if name = b.String(); name == "" || name == "." || name == "/" || strings.HasPrefix(name, "{") {
+		return "a backup"
+	}
+	return "backup " + name
 }
 
 // takeSnapshot makes one ring member: the read-only subvolume and the sidecar beside it.
