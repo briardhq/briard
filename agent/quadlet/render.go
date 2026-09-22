@@ -278,6 +278,16 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// subvolume and would each take a member of the same bytes at every start.
 		if c.Mount != "" {
 			lines = append(lines, "ExecStartPre=-"+agentBin()+" --service-starting="+m.Name)
+			// AND THE OTHER HALF OF THE SAME QUESTION ([B.143]): a stop that ended cleanly leaves a
+			// marker saying this service's data was flushed, and the next start reads it to say
+			// what its member's bytes ARE. A node that dies writes nothing, so the member taken
+			// when a survivor promotes says crash-consistent — which it is.
+			//
+			// ⚠️ ExecStopPost, never ExecStop: it runs after the container is actually down, on
+			// every stop systemd performs, and it is the only place $SERVICE_RESULT exists. The
+			// leading `-` for the same reason the start hook has one — a household must never lose
+			// a service because a marker could not be written.
+			lines = append(lines, "ExecStopPost=-"+agentBin()+" --service-stopped="+m.Name)
 		}
 		out.Files[unit+".container"] = join(lines...)
 		out.Units = append(out.Units, unit+".service")

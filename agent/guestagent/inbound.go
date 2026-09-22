@@ -140,7 +140,10 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 	}
 	switch req.Verb {
 	case VerbServiceStarting:
-		detail, err := startingMember(ctx, x, service)
+		// FROM INSIDE A RUNNING CONTAINER: Home Assistant restarting itself, which is the one
+		// boundary nothing outside the container can see -- and one whose previous instance the
+		// clean-stop marker says nothing about.
+		detail, err := startingMember(ctx, x, service, false)
 		if err != nil {
 			return reply(inboundResponse{Error: err.Error()})
 		}
@@ -157,7 +160,10 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 // did not. It is stateless by construction: everything it decides, it decides from the ring on
 // disk and the manifest on the volume, so a handler process that has never run before reaches the
 // same answer as one that has.
-func startingMember(ctx context.Context, x Executor, service string) (string, error) {
+// containerStart says this is the CONTAINER's own start (the rendered unit's pre-start) rather than
+// a restart inside a container that stayed up -- the only caller that may read the clean-stop
+// marker, since the marker is a claim about the last container stop ([B.143]).
+func startingMember(ctx context.Context, x Executor, service string, containerStart bool) (string, error) {
 	if err := safeUnitName(service); err != nil { // the name becomes a path element
 		return "", err
 	}
@@ -175,7 +181,21 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
-	trigger, title := quadlet.TriggerStart, service+" starting"
+	// WHAT THE BYTES ARE, and only the container's own start may ask ([B.143]). The marker is a
+	// claim about the last STOP, so it belongs to the boundary where the container stopped and
+	// started again — not to Home Assistant restarting itself inside a container that never went
+	// down, where the previous instance ended the way HA's own restart ends and the marker has
+	// nothing to say about it.
+	cons, title := quadlet.Quiesced, service+" starting"
+	if containerStart {
+		if cons = consumeCleanStop(ctx, x, service); cons == quadlet.Crash {
+			// A promotion after the other node died, or this node's own power cut. Named for what
+			// is known — that nothing shut the service down — rather than for a cause this cannot
+			// tell apart.
+			title = service + " starting after an unclean stop"
+		}
+	}
+	trigger := quadlet.TriggerStart
 	switch backup, phase := restorePhase(ctx, x, service, raw, at); phase {
 	case restoreBefore:
 		trigger, title = quadlet.TriggerRestoreBefore, "before restoring "+backup
@@ -200,13 +220,11 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 		Trigger: trigger,
 		Title:   title,
 		TakenAt: at,
-		// QUIESCED, because this runs in the unit's pre-start: the container is not up yet, and
-		// the previous instance of it was stopped by systemd before the unit was restarted.
-		// ⚠️ The exception this cannot see is the first start after the OLD PRIMARY died holding
-		// the service — nothing stopped it there, so those bytes are crash-consistent under this
-		// same trigger. Labelling that honestly needs the failover trigger, which is not built;
-		// see quadlet.Consistency.
-		Consistency: quadlet.Quiesced,
+		// WHAT THE BYTES ARE, derived above rather than assumed here. A container start reads the
+		// clean-stop marker, because "nothing is running" and "the data was flushed" are different
+		// facts and a promotion after a dead primary is where they come apart; a restart inside a
+		// running container has no such question to ask.
+		Consistency: cons,
 		Manifest:    string(raw),
 	}
 	sidecar, err := json.Marshal(meta)
@@ -223,6 +241,64 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 	// than the state each take should find.
 	pruneRing(ctx, x, service, at)
 	return "took " + path.Base(member), nil
+}
+
+// THE CLEAN-STOP MARKER ([B.143]): the one fact that says whether a service's data was FLUSHED,
+// which is the question quadlet.Consistency actually asks and the one a stopped container does not
+// answer.
+//
+// ⚠️ A STOPPED CONTAINER IS NOT THE SAME FACT AS FLUSHED DATA. The member taken as a service
+// starts after a promotion has nothing running either — but the old primary never shut the service
+// down, so those bytes are whatever it left, and the same holds for the first start after a node's
+// own power cut. Labelling those `quiesced` because nothing was running at the take would be the
+// field saying the opposite of the truth precisely when it matters.
+//
+// SO THE STOP WRITES IT AND THE START CONSUMES IT. A container unit that stops cleanly runs
+// ExecStopPost with SERVICE_RESULT=success and the marker lands here; a node that dies writes
+// nothing. It lives on the REPLICATED volume beside the manifests, never inside the data
+// subvolume, because the node that reads it next may not be the node that wrote it — which is
+// exactly the failover case. Absent means crash-consistent, which is also what a service starting
+// for the first time on a volume somebody else provisioned would see, so provision writes one too.
+//
+// ⚠️ ITS LIMIT, stated rather than papered over: a clean unit stop is not proof the application
+// flushed. podman stops a container with a signal and a timeout, and a workload that ignores both
+// is killed while the unit still ends `success`. It is the same evidence the upgrade point has
+// claimed since [B.121] — one stop, believed — and it is strictly better than assuming every
+// start had one.
+func cleanStopPath(service string) string { return manifestDir + "/" + service + ".clean" }
+
+// RecordServiceStop writes that marker, or removes it when the stop was not clean. It is what the
+// rendered unit's ExecStopPost calls, and systemd's own SERVICE_RESULT is the evidence.
+func RecordServiceStop(ctx context.Context, x Executor, service, result string) error {
+	if err := safeUnitName(service); err != nil {
+		return err
+	}
+	if result != "success" {
+		// A failed, killed or timed-out stop leaves NO claim behind. Removing rather than leaving
+		// whatever was there keeps "absent means unflushed" true after a stop that half-happened.
+		_, err := x.Run(ctx, "rm", "-f", cleanStopPath(service))
+		return err
+	}
+	if err := x.WriteFile(cleanStopPath(service), []byte(result+"\n")); err != nil {
+		return err
+	}
+	// Flushed to the DRBD backing for the same reason the manifest is: the node that reads this is
+	// the one that promotes after this one goes away, and a claim still sitting in the writeback
+	// window is a claim the survivor never sees.
+	_, err := x.Run(ctx, "sync", "-f", cleanStopPath(service))
+	return err
+}
+
+// consumeCleanStop answers "was this service's data flushed by a clean stop", and spends the
+// answer: the moment the container runs again the claim stops being true.
+func consumeCleanStop(ctx context.Context, x Executor, service string) quadlet.Consistency {
+	if _, err := x.ReadFile(cleanStopPath(service)); err != nil {
+		return quadlet.Crash
+	}
+	if _, err := x.Run(ctx, "rm", "-f", cleanStopPath(service)); err != nil {
+		log.Printf("ring %s: could not spend the clean-stop marker (%v); the next member may claim more than it should", service, err)
+	}
+	return quadlet.Quiesced
 }
 
 // THE BACKUP-RESTORE PAIR ([B.143]): the two members either side of a household restoring one of
@@ -570,7 +646,7 @@ func ToolsBin() string { return toolsBin() }
 // yet to ask.
 func TakeStartMember(ctx context.Context, x Executor, service string) (string, error) {
 	ensureToolsOnPath()
-	return startingMember(ctx, x, service)
+	return startingMember(ctx, x, service, true)
 }
 
 // ensureToolsOnPath puts the image's tool profile on this process's PATH.

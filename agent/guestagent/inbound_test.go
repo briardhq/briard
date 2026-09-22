@@ -90,6 +90,69 @@ func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
 	return took, meta
 }
 
+// A CONTAINER START WHOSE DATA WAS NEVER FLUSHED ([B.143]). This is the case quadlet.Consistency
+// exists for and the one a stopped container cannot answer: after a promotion nothing is running
+// either, but the old primary never shut the service down.
+func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
+	f := restoreRig("") // no clean-stop marker: whatever held this service last did not stop, it died
+	if _, err := TakeStartMember(context.Background(), f, "home-assistant"); err != nil {
+		t.Fatal(err)
+	}
+	member, meta := tookMember(t, f)
+	if meta.Consistency != quadlet.Crash {
+		t.Errorf("consistency = %q, want crash -- nothing flushed this data", meta.Consistency)
+	}
+	if !strings.Contains(meta.Title, "unclean") {
+		t.Errorf("title = %q, want it to say the service was not shut down", meta.Title)
+	}
+	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerStart {
+		t.Errorf("trigger = %q -- an unclean start is still an ordinary start to the ladder", tr)
+	}
+}
+
+// TestACleanStopMakesTheNextMemberQuiesced, and SPENDS the claim: the marker says the last stop
+// flushed this data, which stops being true the moment the container runs again.
+func TestACleanStopMakesTheNextMemberQuiesced(t *testing.T) {
+	f := restoreRig("")
+	if err := RecordServiceStop(context.Background(), f, "home-assistant", "success"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TakeStartMember(context.Background(), f, "home-assistant"); err != nil {
+		t.Fatal(err)
+	}
+	if _, meta := tookMember(t, f); meta.Consistency != quadlet.Quiesced {
+		t.Errorf("consistency = %q, want quiesced after a clean stop", meta.Consistency)
+	}
+	if _, ok := f.files[cleanStopPath("home-assistant")]; ok {
+		t.Error("the marker outlived the start it described; the NEXT member would claim it too")
+	}
+}
+
+// TestAKilledStopClaimsNothing: systemd runs ExecStopPost whatever the result, so this path is
+// reached on a stop that timed out or was killed too -- and a claim written there would be the
+// field saying the opposite of the truth.
+func TestAKilledStopClaimsNothing(t *testing.T) {
+	f := restoreRig("")
+	f.files[cleanStopPath("home-assistant")] = "success\n" // a claim left by some earlier stop
+	if err := RecordServiceStop(context.Background(), f, "home-assistant", "timeout"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.files[cleanStopPath("home-assistant")]; ok {
+		t.Error("a timed-out stop left a claim that this service's data was flushed")
+	}
+}
+
+// TestAnInnerRestartDoesNotReadTheMarker: Home Assistant restarting itself is not a container
+// stop, so the marker has nothing to say about it -- and reading one there would mark every
+// ordinary HA restart crash-consistent, which is wrong and is also the most common member there is.
+func TestAnInnerRestartDoesNotReadTheMarker(t *testing.T) {
+	f := restoreRig("")
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if _, meta := tookMember(t, f); meta.Consistency != quadlet.Quiesced {
+		t.Errorf("consistency = %q, want quiesced: the app stopped itself and the container never went down", meta.Consistency)
+	}
+}
+
 // TestInboundTitlesTheBackupRestorePair ([B.143]) is the one operation only this channel can see.
 // Home Assistant's own restore unlinks its marker before the wipe, so nothing that polls from
 // outside can ever catch one in flight -- and the household ends up with two points whose titles

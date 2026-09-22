@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -2001,6 +2002,14 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	pin := manifestPath(req.Name)
 	if err := x.WriteFile(pin, []byte(req.Manifest)); err != nil {
 		return err
+	}
+	// THIS DATA IS EXACTLY WHAT WE JUST PUT THERE ([B.143]), so the next member may say so. Every
+	// caller of this verb has the service stopped: a fresh install creates the subvolume, an
+	// upgrade quiesced it before snapshotting, and a restore has just materialised a member over
+	// it. Without this, the first member after any of the three would read as crash-consistent —
+	// true of none of them, and loudest on the one path where a household is already anxious.
+	if err := RecordServiceStop(ctx, x, req.Name, "success"); err != nil {
+		log.Printf("service.provision %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
 	}
 	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
 	// it — protocol C acks a device write only once the peer holds it. Without this, a crash

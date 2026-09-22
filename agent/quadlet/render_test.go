@@ -684,4 +684,26 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	if side := r.Files["briard-home-assistant-sidecar.container"]; strings.Contains(side, "ExecStartPre=") {
 		t.Errorf("a container with no data of its own takes a member:\n%s", side)
 	}
+
+	// AND THE STOP HALF ([B.143]): a clean stop records that this service's data was flushed, so
+	// the next start's member can say what its bytes ARE. Without it every start after a container
+	// stop would read as crash-consistent -- which is what a promotion after a dead primary is,
+	// and what an ordinary restart is not.
+	var stop string
+	for _, l := range strings.Split(app, "\n") {
+		if strings.HasPrefix(l, "ExecStopPost=") {
+			stop = l
+		}
+	}
+	if stop == "" {
+		t.Fatalf("the data container records nothing when it stops:\n%s", app)
+	}
+	// ExecStopPost, never ExecStop: it runs after the container is down and is the only place
+	// systemd exposes $SERVICE_RESULT, which is the whole evidence for the claim.
+	if !strings.HasPrefix(stop, "ExecStopPost=-/") || !strings.HasSuffix(stop, "--service-stopped=home-assistant") {
+		t.Errorf("%q is not a `-`-prefixed absolute call naming this service", stop)
+	}
+	if side := r.Files["briard-home-assistant-sidecar.container"]; strings.Contains(side, "ExecStopPost=") {
+		t.Errorf("a container with no data of its own claims its stop flushed something:\n%s", side)
+	}
 }

@@ -126,6 +126,7 @@ func runInternal(args []string) {
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
 	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre ([B.143])")
+	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost ([B.143])")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -191,6 +192,21 @@ func runInternal(args []string) {
 			return
 		}
 		log.Printf("service-starting %s: %s", *serviceStarting, detail)
+		return
+	}
+
+	if *serviceStopped != "" {
+		// THE CLEAN-STOP MARKER ([B.143]), the other half of the question the member above
+		// answers: whether this service's data was FLUSHED, which a stopped container does not
+		// prove on its own. systemd's own $SERVICE_RESULT is the evidence, and it exists only in
+		// an ExecStopPost — which is why the rendered unit puts this there.
+		//
+		// NEVER FAILS A STOP, exactly as above: a marker that could not be written costs the next
+		// member its claim to be quiesced, which is the safe direction. The rendered line carries
+		// `-` as well.
+		if err := guestagent.RecordServiceStop(ctx, guestfirmware.NewOSExecutor(), *serviceStopped, os.Getenv("SERVICE_RESULT")); err != nil {
+			log.Printf("service-stopped %s: %v (the next member will read as crash-consistent)", *serviceStopped, err)
+		}
 		return
 	}
 
