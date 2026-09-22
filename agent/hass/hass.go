@@ -198,6 +198,22 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	}
 }
 
+// RestoreMarker is the file Home Assistant writes inside its config directory to say that a
+// restore of one of ITS OWN backups is in flight ([B.143]).
+//
+// The household asks a live HA for the restore; HA writes this and exits 100 to be restarted into
+// it. The restore then unlinks the marker in a `finally` right after parsing and BEFORE the wipe
+// (V3b §6.2, "prevent a boot loop"), so it exists only across the restart in between — which is
+// the window the s6 wrapper's notification lands in, and the reason that notification is the only
+// thing in the system that can see one.
+//
+// ⚠️ IT IS ALSO A LANDMINE INSIDE A RING MEMBER. A member taken while it is present carries it,
+// and HA's wipe deliberately keeps `backups/` — so restoring that member naively would hand HA
+// back both the request and the tar, and the household would land straight back where they were
+// trying to leave. Members are swept of it as they are materialised: services.RestoreMarkers
+// names it, and the guest's data.replace removes it from the staged copy.
+const RestoreMarker = ".HA_RESTORE"
+
 // Prepare materialises the control channel on this node, and is a no-op for every
 // other service.
 //

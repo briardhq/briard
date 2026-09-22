@@ -51,6 +51,32 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 	}
 }
 
+// TestRestoreMarkersAreHomeAssistantsAlone ([B.143]): the registry's default is nothing, and a
+// marker list that leaked to another service would have the restore path unlinking a file inside
+// somebody else's data on the strength of a name Home Assistant chose.
+//
+// RELATIVE TO THE DATA ROOT, with the container in the path: the guest resolves them against a
+// live subvolume and the restore against a staged copy, so an absolute path here would make that
+// verb able to unlink anywhere on the volume.
+func TestRestoreMarkersAreHomeAssistantsAlone(t *testing.T) {
+	ha := svc(hass.Name, 8123)
+	got := RestoreMarkers(ha)
+	if len(got) != 1 || got[0] != "app/"+hass.RestoreMarker {
+		t.Errorf("RestoreMarkers(home-assistant) = %v, want [app/%s]", got, hass.RestoreMarker)
+	}
+	for _, m := range []manifest.Manifest{svc(mosquitto.Name, 1883), svc("something-else", 8080)} {
+		if v := RestoreMarkers(m); v != nil {
+			t.Errorf("RestoreMarkers(%s) = %v, want nothing", m.Name, v)
+		}
+	}
+	// A container that keeps no state writes nothing of its own, and a marker named for it would
+	// point inside a directory the member does not have.
+	ha.Containers = append(ha.Containers, manifest.Container{Name: "sidecar", Image: image})
+	if got := RestoreMarkers(ha); len(got) != 1 {
+		t.Errorf("RestoreMarkers = %v, want only the container that holds the data", got)
+	}
+}
+
 // TestEachKnownServiceGetsItsOwn: the dispatch is keyed on the catalog name, and the two entries
 // must not bleed into each other.
 func TestEachKnownServiceGetsItsOwn(t *testing.T) {

@@ -893,7 +893,7 @@ func TestSidecarPathMatchesTheRenderer(t *testing.T) {
 func TestDataRestoreCommands(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.Restore(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1"); err != nil {
+	if err := g.Restore(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -906,6 +906,57 @@ func TestDataRestoreCommands(t *testing.T) {
 	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
+	}
+}
+
+// TestDataReplaceSweepsTheStagedCopyBeforeItGoesLive ([B.143]), and the order is the property: a
+// member taken around a household's own backup restore carries the request that started it, and
+// HA's wipe deliberately keeps the tar -- so an unswept restore hands HA both again and the
+// household lands straight back where they were trying to leave.
+//
+// ON THE STAGED COPY, never the live one. The rename is what makes any of this visible, so a crash
+// leaves either the old subvolume or a swept one and never a half-swept live one.
+func TestDataReplaceSweepsTheStagedCopyBeforeItGoesLive(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.Restore(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1", []string{"app/.HA_RESTORE"}); err != nil {
+		t.Fatal(err)
+	}
+	sweep, mv := -1, -1
+	for i, r := range f.runs {
+		if r[0] == "rm" {
+			if got, want := r[len(r)-1], "/data/ha.restoring/app/.HA_RESTORE"; got != want {
+				t.Errorf("swept %q, want the STAGED copy's %q", got, want)
+			}
+			sweep = i
+		}
+		if r[0] == "mv" {
+			mv = i
+		}
+	}
+	if sweep < 0 {
+		t.Fatalf("the marker was never swept: %v", f.runs)
+	}
+	if mv < 0 || sweep > mv {
+		t.Errorf("the sweep ran after the copy went live: %v", f.runs)
+	}
+}
+
+// TestDataReplaceRefusesAPathOutsideTheMember: the sweep list arrives over the channel, so it is
+// the one place this verb could be talked into unlinking something else on the volume. Relative
+// and inside the member, or refused.
+func TestDataReplaceRefusesAPathOutsideTheMember(t *testing.T) {
+	for _, bad := range []string{"/etc/passwd", "../../etc/passwd", "app/../../x", ""} {
+		f := &fakeExec{}
+		g := dial(t, f)
+		if err := g.Restore(context.Background(), "/data/ha", "/snap", []string{bad}); err == nil {
+			t.Errorf("sweep %q was accepted", bad)
+		}
+		for _, r := range f.runs {
+			if r[0] == "mv" {
+				t.Errorf("sweep %q: the copy went live anyway: %v", bad, f.runs)
+			}
+		}
 	}
 }
 
@@ -923,7 +974,7 @@ func TestDataRestoreRefusesAnUnusableRestorePoint(t *testing.T) {
 		return nil, nil
 	}}
 	g := dial(t, f)
-	if err := g.Restore(context.Background(), "/data/ha", "/snap"); err == nil {
+	if err := g.Restore(context.Background(), "/data/ha", "/snap", nil); err == nil {
 		t.Fatal("restore accepted a restore point it could not read")
 	}
 	for _, r := range f.runs {

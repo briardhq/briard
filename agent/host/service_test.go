@@ -46,6 +46,8 @@ type fakeInstaller struct {
 	prior        map[string]string
 	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
 	noMember     bool     // advertises everything BUT data.member: a guest older than the ring ([B.143])
+	noSweep      bool     // advertises data.restore but not data.replace: cannot sweep a member ([B.143])
+	swept        []string // the relative paths each Restore was asked to remove from the member
 	free         int64    // what storage.free reports as free (0 = plenty is NOT implied; tests set it)
 	freeErr      error    // storage.free failing: the gate logs and the install proceeds unmeasured
 	staleRemoved []string // unit files a render was told to remove: the collateral surface
@@ -156,10 +158,20 @@ func (f *fakeInstaller) Snapshot(_ context.Context, _, dest, sidecar string) err
 	f.sidecars = append(f.sidecars, sidecar) // what the picker reads back ([B.143])
 	return f.snapEr
 }
-func (f *fakeInstaller) Restore(_ context.Context, _, src string) error {
+func (f *fakeInstaller) Restore(_ context.Context, _, src string, sweep []string) error {
 	f.steps = append(f.steps, "restore:"+src)
+	f.swept = append(f.swept, sweep...)
 	return f.restoreEr
 }
+
+// RestoreWithoutSweep records itself DIFFERENTLY on purpose: "the old verb was used" is the fact
+// the revert's fallback case is about, and a step that read the same as the swept one would make
+// that case unable to fail ([B.143]).
+func (f *fakeInstaller) RestoreWithoutSweep(_ context.Context, _, src string) error {
+	f.steps = append(f.steps, "restore-unswept:"+src)
+	return f.restoreEr
+}
+func (f *fakeInstaller) SupportsRestoreSweep() bool { return !f.oldGuest && !f.noSweep }
 func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
 	f.steps = append(f.steps, "active?")
 	return f.active, nil
@@ -1808,6 +1820,45 @@ func TestRestoreRestartsTheServiceWhenTheUndoFails(t *testing.T) {
 	ci := strings.Index(joined, "converge")
 	if si < 0 || ci < si {
 		t.Errorf("the service was not converged back after the stop: %v", f.steps)
+	}
+}
+
+// TestRestoreSweepsTheBackupMarker ([B.143]): a member taken around a household's own backup
+// restore carries the request that started it, and HA's wipe keeps the tar -- so putting that
+// member back unswept replays the restore and lands them back where they were trying to leave.
+// The host names the markers from the member's OWN manifest, which is the one that says which
+// service and which container this member holds.
+func TestRestoreSweepsTheBackupMarker(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if len(f.swept) == 0 {
+		t.Fatalf("the restore swept nothing: %v", f.steps)
+	}
+	for _, p := range f.swept {
+		if !strings.HasSuffix(p, hass.RestoreMarker) {
+			t.Errorf("swept %q, want Home Assistant's restore marker", p)
+		}
+	}
+}
+
+// TestRestoreRefusesAGuestThatCannotSweep: the fallback here would put the data back and keep the
+// marker, which is the household's restore replaying itself. This path's alternative is leaving
+// them exactly as they are, so it refuses -- the revert's is no rollback at all, so it does not.
+func TestRestoreRefusesAGuestThatCannotSweep(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	f.noSweep = true
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	if strings.Contains(joined, "restore:") || strings.Contains(joined, "restore-unswept:") {
+		t.Errorf("the data was put back by a guest that cannot sweep: %v", f.steps)
+	}
+	if !strings.Contains(o.Detail, "nothing was changed") {
+		t.Errorf("the refusal does not say the node is untouched: %q", o.Detail)
 	}
 }
 

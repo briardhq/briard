@@ -150,7 +150,13 @@ const (
 	// have refused every path on every not-yet-rolled guest fleet-wide.
 	verbDataMember  = "data.member"
 	verbDataRestore = "data.restore" // replace the live subvolume with a snapshot
-	verbOSSystem    = "os.system"    // readlink -f /run/current-system -> closure store path
+	// verbDataReplace is that same swap with the SWEEP ([B.143]): the paths the host names are
+	// removed from the staged copy before it goes live, which is what stops a member taken around
+	// a household's own backup restore from replaying it. A name of its own rather than a field
+	// on data.restore, by the rule the floor raise taught: a field whose absence is silent is a
+	// guest reporting success for the old behaviour.
+	verbDataReplace = "data.replace"
+	verbOSSystem    = "os.system" // readlink -f /run/current-system -> closure store path
 )
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
@@ -349,7 +355,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataMember, verbDataMembers, verbDataRestore, verbImageEnsure,
+	verbDataSnapshot, verbDataMember, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -441,6 +447,12 @@ type snapshotRequest struct {
 	// than making one. A guest that ignored this field would leave unlabelled members behind,
 	// which is why adding it bumped the protocol rather than riding along optionally.
 	Sidecar string `json:"sidecar,omitempty"`
+	// Sweep is what data.replace removes from the staged copy before it goes live: paths relative
+	// to the subvolume root, named by the HOST out of the services registry ([B.143]). Only
+	// data.replace reads it, and that is the whole reason that verb has a name of its own — a
+	// guest taking this as an optional extra on data.restore would put the data back and keep the
+	// marker, reporting success while replaying the household's own restore.
+	Sweep []string `json:"sweep,omitempty"`
 }
 
 // serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
@@ -1018,13 +1030,20 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// (inbound.go). A second copy of "take a member" would be a second place for the
 			// collision rule and the sidecar invariant to drift.
 			return nil, takeSnapshot(ctx, x, run, req.DataDir, req.Path, req.Sidecar)
-		case verbDataRestore:
+		case verbDataRestore, verbDataReplace:
 			req, err := snapshotReq(payload)
 			if err != nil {
 				return nil, err
 			}
 			// Precondition: the host has stopped the service (bind released). Swap the
 			// live rw subvolume for a fresh rw snapshot of the RO restore point.
+			//
+			// ONE IMPLEMENTATION, TWO NAMES ([B.143]). data.replace is data.restore plus the
+			// sweep below, and it is a separate NAME because the sweep's absence is silent: an
+			// older guest handed a sweep list on data.restore would put the data back, ignore
+			// the field and report success, leaving a household's own restore to replay. The
+			// host calls data.replace and lets Supports refuse; data.restore stays for the
+			// direction we cannot control, the way data.snapshot did when data.member arrived.
 			//
 			// ⚠️ VERIFY, MATERIALISE, THEN DESTROY -- in that order, and the order IS the fix
 			// ([B.126]). This used to `btrfs subvolume delete <live>` unconditionally and only
@@ -1052,6 +1071,26 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			if err := run("btrfs", "subvolume", "snapshot", req.Path, staged); err != nil {
 				return nil, err
+			}
+			// THE SWEEP, ON THE STAGED COPY AND NOWHERE ELSE ([B.143]). A member taken around a
+			// household's own backup restore carries the request that started it, and HA's wipe
+			// deliberately keeps the tar — so putting that member back unswept would replay the
+			// restore and land the household exactly where they were trying to leave. Here, the
+			// live data is never touched: the rename below is what makes any of this visible, so
+			// a crash leaves either the old subvolume or a swept one, never a half-swept live
+			// one. Unconditional, because a member that happens to carry a marker nobody
+			// anticipated (a nightly landing in the seconds between HA writing one and consuming
+			// it) needs the same treatment and cannot be recognised as special.
+			//
+			// RELATIVE PATHS ONLY, resolved against the staged root here. An absolute path from
+			// the host would make this a verb that can unlink anywhere on the volume.
+			for _, rel := range req.Sweep {
+				if rel == "" || strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") {
+					return nil, fmt.Errorf("data.replace: %q is not a path inside the member", rel)
+				}
+				if err := run("rm", "-f", staged+"/"+rel); err != nil {
+					return nil, fmt.Errorf("sweep %s from the staged copy: %w", rel, err)
+				}
 			}
 			// Only now is the live copy expendable: its replacement is already on disk, so a
 			// crash from here leaves something to finish rather than nothing to recover.
@@ -2719,11 +2758,27 @@ func (g *Client) Snapshot(ctx context.Context, dataDir, dest, sidecar string) er
 // SupportsSnapshotMember reports whether this guest can take a titled ring member.
 func (g *Client) SupportsSnapshotMember() bool { return g.Supports(verbDataMember) }
 
-// Restore replaces the live dataDir subvolume with a fresh rw snapshot of src. The
-// caller must have stopped the service first (bind released).
-func (g *Client) Restore(ctx context.Context, dataDir, src string) error {
+// Restore replaces the live dataDir subvolume with a fresh rw snapshot of src, minus the relative
+// paths in sweep. The caller must have stopped the service first (bind released).
+//
+// ⚠️ IT SPEAKS data.replace, and a guest that does not advertise it must be REFUSED rather than
+// fallen back to data.restore ([B.143]): the fallback puts the data back and keeps the marker,
+// which is a household's own backup restore replaying itself. SupportsRestoreSweep is the gate,
+// and the one caller that may fall back anyway is the failed-upgrade revert, where the
+// alternative is no rollback at all — it says so at its call site.
+func (g *Client) Restore(ctx context.Context, dataDir, src string, sweep []string) error {
+	return g.c.Call(ctx, verbDataReplace, snapshotRequest{DataDir: dataDir, Path: src, Sweep: sweep}, nil)
+}
+
+// RestoreWithoutSweep is the frozen old verb, for the one caller that must put data back even on
+// a guest too old to sweep (agent/host's failed-upgrade revert). Nothing else may use it.
+func (g *Client) RestoreWithoutSweep(ctx context.Context, dataDir, src string) error {
 	return g.c.Call(ctx, verbDataRestore, snapshotRequest{DataDir: dataDir, Path: src}, nil)
 }
+
+// SupportsRestoreSweep reports whether this guest can materialise a member minus the markers a
+// household's own restore leaves behind.
+func (g *Client) SupportsRestoreSweep() bool { return g.Supports(verbDataReplace) }
 
 // SystemPath reads the guest's current system closure store path -- the code identity
 // recorded on a snapshot (node-independent, unlike a generation number) so code and

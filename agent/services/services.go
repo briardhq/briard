@@ -154,6 +154,33 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	return out
 }
 
+// RestoreMarkers names the files a service writes inside its own data to say "a restore of MY
+// backups is in flight" — paths relative to that service's data root, one per container that
+// keeps state ([B.143]). The default, as always here, is nothing.
+//
+// TWO CALLERS, ONE FACT, which is why it is one function. The guest's inbound take reads them to
+// TITLE the pair a household's own restore produces (*before* and *after* restoring a backup),
+// and the restore path SWEEPS them out of a member as it is materialised — so that putting such a
+// member back does not replay the restore it was taken around.
+//
+// RELATIVE, NEVER ABSOLUTE: the caller owns the root. The guest resolves them against the live
+// subvolume and the restore against a staged copy of it, and a verb carrying absolute paths would
+// be a verb that names a path, which is the thing the inbound channel's trust rules forbid.
+func RestoreMarkers(m manifest.Manifest) []string {
+	if m.Name != hass.Name {
+		return nil
+	}
+	var out []string
+	for _, c := range m.Containers {
+		// The container that holds the data is the one whose config directory HA writes into.
+		// The others share the subvolume and write nothing of their own.
+		if c.Mount != "" {
+			out = append(out, c.Name+"/"+hass.RestoreMarker)
+		}
+	}
+	return out
+}
+
 // Prepare materialises whatever Volumes promised, on THIS node, before the container starts.
 //
 // Called by converge, which contains a failure here to the one service: the rendered unit names

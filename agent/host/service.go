@@ -111,7 +111,13 @@ type serviceInstaller interface {
 	SupportsMembers() bool
 	EnsureImage(ctx context.Context, ref string) error
 	SupportsImageEnsure() bool
-	Restore(ctx context.Context, dataDir, src string) error
+	// Restore materialises a member over the live subvolume, MINUS the markers a household's own
+	// backup restore leaves in it ([B.143]) -- the guest's data.replace. RestoreWithoutSweep is
+	// the frozen old verb, for the revert's one case where no rollback is worse than a stale
+	// marker; nothing else may call it.
+	Restore(ctx context.Context, dataDir, src string, sweep []string) error
+	RestoreWithoutSweep(ctx context.Context, dataDir, src string) error
+	SupportsRestoreSweep() bool
 }
 
 // installBudget bounds the whole operation. Generous, because a first install legitimately pulls
@@ -932,7 +938,27 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 	// from under their units): releases the data subvolume's bind, which restore needs.
 	cfg.quiesce(rctx, g, next.ContainerUnits, logf)
 	if snap != "" {
-		if err := g.Restore(rctx, dataDir, snap); err != nil {
+		// SWEPT LIKE ANY OTHER MATERIALISED MEMBER ([B.143]): the pre-upgrade point can carry a
+		// household's in-flight backup restore like any other, and putting it back unswept would
+		// replay it. The markers come from the PRIOR manifest, which is what this member is
+		// pinned to.
+		//
+		// ⚠️ AND THIS IS THE ONE CALLER THAT FALLS BACK when the guest cannot sweep. Refusing here
+		// would leave a failed upgrade with no data rollback at all, which is a worse outcome than
+		// a marker nobody may ever have written; the restore path, whose alternative is simply
+		// leaving the household as they are, refuses instead.
+		var sweep []string
+		if pm, _, err := manifest.Parse([]byte(priorRaw)); err == nil {
+			sweep = services.RestoreMarkers(pm)
+		}
+		restore := g.Restore
+		if len(sweep) > 0 && !g.SupportsRestoreSweep() {
+			logf("revert %s: this guest cannot sweep a restored member; rolling the data back anyway", name)
+			restore = func(ctx context.Context, dataDir, src string, _ []string) error {
+				return g.RestoreWithoutSweep(ctx, dataDir, src)
+			}
+		}
+		if err := restore(rctx, dataDir, snap, sweep); err != nil {
 			// Data could not be rolled back. Do NOT converge — that would start the prior units
 			// on the poisoned data. Leaving this one service stopped is the safe end state:
 			// silent data corruption is not recoverable, a stopped service is.
@@ -1142,8 +1168,16 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		at, logf); err != nil {
 		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
 	}
-	// (4) THE DATA, keeping [B.126]'s verify -> materialise -> destroy order.
-	if err := g.Restore(ctx, dataDir, target.Member); err != nil {
+	// (4) THE DATA, keeping [B.126]'s verify -> materialise -> destroy order, and SWEPT of the
+	// markers a household's own backup restore leaves inside a member ([B.143]): a "before
+	// restoring backup" point put back unswept would hand HA the request and the tar again, and
+	// the household would land straight back where they were trying to leave. Refused rather than
+	// worked around on a guest that cannot sweep — this path's alternative is leaving them exactly
+	// as they are, which is no loss at all.
+	if !g.SupportsRestoreSweep() {
+		return stopped("this node's guest cannot put a point back safely (it predates the restore sweep); nothing was changed")
+	}
+	if err := g.Restore(ctx, dataDir, target.Member, services.RestoreMarkers(pm)); err != nil {
 		// Do NOT converge: that would start the service on data that is neither what it was nor
 		// what was asked for. A stopped service is recoverable; silent corruption is not.
 		return failed(fmt.Sprintf("restore the data (the service is left stopped): %v", err))
