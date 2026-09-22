@@ -18,9 +18,10 @@ besides. A household losing Home Assistant because a snapshot socket did not ans
 far worse trade than a ring missing one member -- the same trade the token mint and the
 integration planter next door already make.
 
-IT CANNOT SAY WHO IT IS, and that is not an omission. The socket is mounted into this container
-and no other, so the agent knows which service is calling from the socket the call arrived on.
-A field naming a service here would be a field a hostile custom component could set.
+IT CANNOT SAY WHO IT IS, and that is not an omission. It presents a TOKEN the node minted for
+this service and mounted read-only here; the agent maps that back to a name. A field naming a
+service would be a field a hostile custom component could set, and a token it can only have if
+it was given one.
 """
 
 import json
@@ -28,6 +29,7 @@ import socket
 import sys
 
 SOCKET = "/briard/inbound.sock"
+TOKEN = "/briard/inbound.token"
 
 # Generous but finite. The agent's work is one btrfs snapshot of this service's subvolume, which
 # is milliseconds; anything approaching this means something is wrong on the other side, and
@@ -36,6 +38,14 @@ TIMEOUT = 30
 
 
 def main():
+    try:
+        with open(TOKEN) as f:
+            token = f.read().strip()
+    except OSError as e:
+        # No token is the ordinary case on a service that was never given the channel, and on any
+        # node whose agent predates it. Neither is worth more than a line.
+        print(f"briard: no inbound token ({e}); starting without a snapshot", file=sys.stderr)
+        return
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(TIMEOUT)
@@ -47,7 +57,7 @@ def main():
         return
     try:
         with s:
-            s.sendall(json.dumps({"verb": "service.starting"}).encode() + b"\n")
+            s.sendall(json.dumps({"verb": "service.starting", "token": token}).encode() + b"\n")
             # One line, then done. The agent closes after answering, so an empty read is the
             # other end going away rather than a message we should keep waiting for.
             buf = b""

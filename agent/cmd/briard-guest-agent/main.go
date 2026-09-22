@@ -107,7 +107,6 @@ func runInternal(args []string) {
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
-	inbound := fs.String("inbound", "", "serve ONE inbound request for this service on stdin/stdout -- the socket-activated handler a service container's own calls reach ([B.143])")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -149,25 +148,6 @@ func runInternal(args []string) {
 		}
 		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("%s: %v", what, err)
-		}
-		return
-	}
-
-	if *inbound != "" {
-		// SOCKET ACTIVATION: systemd holds the bind and hands us the listening fd, so this
-		// process owns no path and leaks no socket file when it goes. It serves until idle and
-		// exits 0; the next connection starts a fresh one.
-		//
-		// ⚠️ THE SERVICE IS NAMED BY THE FLAG, never by the caller. The socket unit is
-		// instantiated per service (briard-inbound@<service>.socket) and its socket is mounted
-		// into that service's container alone, so the identity is a property of the transport.
-		// A request cannot say who it is; see the trust rules in agent/guestagent/inbound.go.
-		ln, err := guestagent.InboundListener()
-		if err != nil {
-			log.Fatalf("inbound: %v", err)
-		}
-		if err := guestagent.ServeInboundSocket(ctx, guestfirmware.NewOSExecutor(), *inbound, ln); err != nil {
-			log.Fatalf("inbound %s: %v", *inbound, err)
 		}
 		return
 	}
@@ -222,6 +202,20 @@ func runGuest(ctx context.Context) error {
 	if err := guestagent.WriteUnits(ctx, x); err != nil {
 		return err
 	}
+	// THE INBOUND CHANNEL ([B.143]): one socket, bound unconditionally, whether this node runs
+	// zero services or five. It needs no service list because a caller identifies itself with a
+	// token converge minted, so there is nothing to learn and nothing to re-learn when a
+	// promotion brings a service this process was never told about.
+	//
+	// ITS OWN GOROUTINE, and a failure to bind is logged rather than returned. The agent's job is
+	// serving the host; a service's own snapshot notifications are worth strictly less than that,
+	// and a node that would not serve its household because a socket path was busy is the wrong
+	// trade. Same posture the wrapper takes with `|| true`, one level up.
+	go func() {
+		if err := guestagent.ListenInbound(ctx, x); err != nil {
+			log.Printf("inbound channel: %v; services' own restarts will not be snapshotted", err)
+		}
+	}()
 	// THE PUSH PROTOCOL'S START-TIME DUTY ([B.138]), before the port: a trial start is the
 	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
 	// verdict exits here, port never opened, so the host's reconnect meets the committed agent

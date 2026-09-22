@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -198,8 +199,19 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	if !strings.HasSuffix(bind, ":rw") {
 		t.Errorf("bind = %q, want :rw -- connect(2) needs write permission on the socket", bind)
 	}
-	if !strings.HasPrefix(bind, InboundSocketPath("home-assistant")+":") {
-		t.Errorf("bind = %q, want the socket named for THIS service", bind)
+	if !strings.HasPrefix(bind, InboundSocket()+":") {
+		t.Errorf("bind = %q, want the one shared socket", bind)
+	}
+	// AND THE TOKEN, read-only: it is how the agent knows who called, and the container has no
+	// business changing it.
+	var tok string
+	for _, v := range primary {
+		if strings.Contains(v, InboundTokenMount) {
+			tok = v
+		}
+	}
+	if tok != InboundTokenPath("home-assistant")+":"+InboundTokenMount+":ro" {
+		t.Errorf("token bind = %q, want this service own token, read-only", tok)
 	}
 	for _, v := range secondary {
 		if strings.Contains(v, InboundMount) {
@@ -220,4 +232,76 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	if !WantsInboundAny(ha) {
 		t.Error("WantsInboundAny says Home Assistant does not want one")
 	}
+}
+
+// TestPrepareMintsAFreshInboundToken: the token is what the agent resolves a caller by, so it has
+// to exist before the container that will present it starts -- and Prepare is the one step that
+// runs on every converge, which is exactly the set of moments the mount it lands in is remade.
+//
+// FRESH EVERY TIME, like the HA control token next to it: /run is tmpfs, so a value cannot
+// outlive the boot that minted it and a token read out of a backup or a snapshot is worth
+// nothing.
+func TestPrepareMintsAFreshInboundToken(t *testing.T) {
+	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mount: "/config"}}}
+	f := &tokenExec{files: map[string]string{}}
+	// Prepare's own per-service work fails on this stub fixture, and that is deliberately not
+	// what is asserted: the mint runs AHEAD of the switch on the service name, so a service whose
+	// own preparation fails still leaves nothing half-identified behind. Its container never
+	// starts either -- converge skips it -- so the unused token simply rotates next time.
+	_ = Prepare(context.Background(), f, ha)
+	first := f.files[InboundTokenPath("home-assistant")]
+	if len(first) < 32 {
+		t.Fatalf("token = %q, want a credential rather than an identifier", first)
+	}
+	if !f.ran("chmod", "0600", InboundTokenPath("home-assistant")) {
+		t.Errorf("the token was left world-readable on /run: %v", f.runs)
+	}
+	_ = Prepare(context.Background(), f, ha)
+	if f.files[InboundTokenPath("home-assistant")] == first {
+		t.Error("the token did not rotate on the second converge")
+	}
+	// A service that gets no channel gets no token: the credential exists only where it is used.
+	mq := manifest.Manifest{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true}}}
+	_ = Prepare(context.Background(), f, mq)
+	if _, ok := f.files[InboundTokenPath("mosquitto")]; ok {
+		t.Error("mosquitto was minted an inbound token it cannot use")
+	}
+}
+
+// tokenExec records writes and commands; hass.Prepare's own steps fail harmlessly on it, which is
+// fine because this test is about what happens BEFORE the switch on the service name.
+type tokenExec struct {
+	files map[string]string
+	runs  [][]string
+}
+
+func (f *tokenExec) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.runs = append(f.runs, append([]string{name}, args...))
+	return nil, nil
+}
+func (f *tokenExec) WriteFile(path string, data []byte) error {
+	f.files[path] = string(data)
+	return nil
+}
+func (f *tokenExec) ReadFile(path string) ([]byte, error) {
+	if v, ok := f.files[path]; ok {
+		return []byte(v), nil
+	}
+	return nil, os.ErrNotExist
+}
+func (f *tokenExec) ran(want ...string) bool {
+	for _, r := range f.runs {
+		if len(r) == len(want) {
+			ok := true
+			for i := range want {
+				if r[i] != want[i] {
+					ok = false
+				}
+			}
+			if ok {
+				return true
+			}
+		}
+	}
+	return false
 }

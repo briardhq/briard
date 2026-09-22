@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"briard.io/agent/guestfirmware"
-	"briard.io/agent/services"
+
 	"briard.io/shared/chain"
 )
 
@@ -146,13 +146,6 @@ const (
 	vipRenewTimer      = "briard-vip-renew.timer"
 	reverseProxyUnit   = "briard-reverse-proxy.service"
 	dashboardUnit      = "briard-dashboard.service"
-	// The inbound channel's TEMPLATE pair, one instance per service ([B.143]). Templates rather
-	// than per-service unit files, and that is not a style preference: sweep() below deletes any
-	// `briard-*.service` in the unit dir that this map does not name, so a per-service unit
-	// written by converge would be swept away at the agent's next start. A template IS named
-	// here, and its instances are systemd's business rather than the renderer's.
-	inboundSocket = "briard-inbound@.socket"
-	inboundUnit   = "briard-inbound@.service"
 )
 
 // chainEdges is what makes the members an ordered chain on a node with no promoter, and what
@@ -441,54 +434,6 @@ RestartSec=2
 TimeoutStartSec=10
 `
 
-	// THE INBOUND CHANNEL ([B.143]), one instance per service, started by converge before the
-	// containers that reach it. NOT a chain member: a service's own snapshot notifications are
-	// not what "is this node serving" means, and a socket that will not bind must never be able
-	// to take a promotion down.
-	//
-	// SYSTEMD OWNS THE BIND, which is the whole reason this is socket-activated rather than a
-	// listener in the agent. Converge runs in TWO different processes -- the host's verb inside
-	// the long-running agent, and drbd-reactor's one-shot `--converge` on the promotion path --
-	// so an agent-owned listener would never learn about a service the other one promoted. A
-	// socket unit is learned by systemd once and survives both.
-	//
-	// 0600 AND ROOT, then bind-mounted into exactly one container. The socket file's mode is the
-	// only thing standing between this channel and every other container on the node, and the
-	// mount is the only thing that carries it into the one that may speak. Nothing in the
-	// protocol authenticates, because nothing in it needs to: the transport IS the identity
-	// (agent/guestagent/inbound.go's trust rules).
-	//
-	// %i IS THE SERVICE NAME, and it reaches the handler as the identity it serves. systemd
-	// unescapes it into the unit's own instance; the handler re-checks it is a single safe path
-	// element before deriving anything from it, because a unit instance is not a promise.
-	u[inboundSocket] = `[Unit]
-Description=Briard inbound channel for %i
-
-[Socket]
-ListenStream=` + services.InboundSocketPath("%i") + `
-SocketMode=0600
-RemoveOnStop=yes
-`
-
-	// The handler. Type=notify would be wrong (there is nothing to notify about) and
-	// RemainAfterExit worse: the point is that it comes up on the first connection and goes away
-	// when it has nothing to serve, so a household running one app carries one idle socket and
-	// no process at all.
-	//
-	// ⚠️ NO Restart=. A handler that exits non-zero has already answered its caller -- the
-	// protocol writes a response on every path, because the caller is holding a household's
-	// service stopped until it gets one -- so restarting would re-run work nobody is waiting for.
-	// The non-zero exit is for the journal.
-	u[inboundUnit] = `[Unit]
-Description=Briard inbound channel handler for %i
-
-[Service]
-Type=exec
-Environment=PATH=` + tools + `
-ExecStart=` + agent + ` --inbound=%i
-TimeoutStartSec=30
-`
-
 	// 5. THE HOUSEHOLD DASHBOARD ([V3b.31b]): loopback only, behind the door, which forwards
 	// every name it does not route here. A chain member for the reason the door is one -- its
 	// device registry lives on the volume, and only the primary has it -- under the same
@@ -664,6 +609,3 @@ func isDir(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
 }
-
-// InboundSocketUnit is the socket unit instance that serves one service's container ([B.143]).
-func InboundSocketUnit(service string) string { return "briard-inbound@" + service + ".socket" }

@@ -20,7 +20,10 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"os"
 
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
@@ -36,23 +39,53 @@ type Executor interface {
 	ReadFile(path string) ([]byte, error)
 }
 
-// InboundDir holds the per-service inbound sockets ([B.143]). ONE SOCKET PER SERVICE, mounted
-// into that service's container and no other: a caller's identity is then a property of the
-// transport rather than a claim in its request, which is what makes the channel safe to expose to
-// a workload at all (agent/guestagent/inbound.go's trust rules).
+// The inbound channel's node-side paths ([B.143]): ONE socket for every service, and one token
+// per service that says who is calling.
 //
-// It lives HERE rather than in agent/hass because it is not one service's knowledge: any service
-// whose entrypoint can be wrapped gets the same channel on the same terms. It cannot live in
-// agent/guestagent either -- that package imports this one, and the renderer needs the path.
-const InboundDir = "/run/briard/inbound"
+// ⚠️ THIS REPLACED A SOCKET PER SERVICE, and the swap is worth recording because the first
+// version was a reasonable-looking mistake. Per-service sockets made a caller's identity a
+// property of the transport -- structurally unforgeable, which is attractive when the caller is a
+// workload. But it also meant the listener set was a function of the SERVICE LIST, and the only
+// thing that knows that list is converge, which runs in two different processes (the host's verb
+// and drbd-reactor's one-shot). That forced systemd to own the binds, which forced template
+// units, a converge step to start instances, socket activation, fd inheritance and an idle-exit
+// handler -- and left the actual logic in a short-lived process while everything it needs to
+// reason about lives in the long-running agent. A large amount of machinery downstream of one
+// decision.
+//
+// A token buys the same property for a fraction of it: minted per service at converge, written
+// where only that service's container can read it, and resolved by the agent at request time --
+// which also means the agent needs no advance knowledge of the service list at all. The
+// long-running agent binds one socket, unconditionally, and never has to learn anything.
+//
+// It lives HERE rather than in agent/hass because it is not one service's knowledge, and not in
+// agent/guestagent because that package imports this one and the renderer needs the paths.
+const (
+	defaultInboundDir = "/run/briard/inbound"
+	// InboundMount is where the socket appears inside a participating container, and
+	// InboundTokenMount is where its token does. Fixed names: a client needs to know nothing
+	// about which service it is, because its token already says so.
+	InboundMount      = "/briard/inbound.sock"
+	InboundTokenMount = "/briard/inbound.token"
+)
 
-// InboundSocketPath is one service's socket on the node.
-func InboundSocketPath(service string) string { return InboundDir + "/" + service + ".sock" }
+// InboundDir is overridable for tests exactly as agent/guestagent's unitDir is, and for the same
+// reason: every path here is absolute on a real guest, so a test that could not move them could
+// only ever assert a refusal.
+func InboundDir() string {
+	if d := os.Getenv("BRIARD_INBOUND_DIR"); d != "" {
+		return d
+	}
+	return defaultInboundDir
+}
 
-// InboundMount is where that socket appears inside the container. A fixed name, so a client in
-// the container needs to know nothing about which service it is speaking for -- which is the same
-// property the trust rules depend on, seen from the other side.
-const InboundMount = "/briard/inbound.sock"
+// InboundSocket is the one listener, owned by the long-running guest agent.
+func InboundSocket() string { return InboundDir() + "/agent.sock" }
+
+// InboundTokenPath is where one service's token lives on the node. The agent resolves a caller
+// by reading this directory, so the filename IS the mapping -- there is no table to keep in step
+// and nothing to rebuild when a service arrives on a node that was not told about it.
+func InboundTokenPath(service string) string { return InboundDir() + "/" + service + ".token" }
 
 // WantsInbound reports whether a service's container gets the inbound channel.
 //
@@ -78,12 +111,18 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	case mosquitto.Name:
 		out = mosquitto.Volumes(m, c)
 	}
-	// ⚠️ READ-WRITE, and it has to be: connect(2) on a unix socket needs write permission on the
-	// socket file, so a read-only bind makes the channel unreachable from inside the container
-	// rather than merely read-only. It is also why this cannot be a file inside the service's
-	// existing `:ro` directory bind and needs a mount of its own.
 	if WantsInbound(m, c) {
-		out = append(out, InboundSocketPath(m.Name)+":"+InboundMount+":rw")
+		// ⚠️ THE SOCKET BIND IS READ-WRITE, and it has to be: connect(2) needs write permission
+		// on the socket file, so a read-only bind makes the channel unreachable from inside the
+		// container rather than merely read-only.
+		//
+		// THE FILE, NEVER ITS DIRECTORY. A directory mounted rw would let the container unlink
+		// or replace the socket -- and since this socket is now shared by every participating
+		// service, that would be one workload taking the channel away from the others.
+		out = append(out, InboundSocket()+":"+InboundMount+":rw")
+		// The token is read-only: the container proves who it is with it and has no business
+		// changing it. Rotating it is converge's, at the same moment it mints it.
+		out = append(out, InboundTokenPath(m.Name)+":"+InboundTokenMount+":ro")
 	}
 	return out
 }
@@ -94,6 +133,20 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // bind sources this writes, and podman creates a missing source as a root-owned directory, so a
 // service that cannot be prepared must not be started at all.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
+	// THE INBOUND TOKEN, for any service that gets the channel ([B.143]). Minted here because
+	// Prepare is the one step that runs on EVERY converge -- the installing primary, the survivor
+	// promoting into a service it was never told about, and every guest reboot -- which is
+	// exactly the set of moments the mount it lands in is (re)made.
+	//
+	// IT ROTATES PER CONVERGE, and that is the same custody the HA control token already has:
+	// /run is tmpfs, so a value cannot outlive the boot that minted it, and a token read out of
+	// a backup or a snapshot is worth nothing. Consumers know it from t=0 -- the container is
+	// started after this -- so there is no return channel and nothing to refresh.
+	if WantsInboundAny(m) {
+		if err := mintInboundToken(ctx, x, m.Name); err != nil {
+			return fmt.Errorf("services: mint %s's inbound token: %w", m.Name, err)
+		}
+	}
 	switch m.Name {
 	case hass.Name:
 		// The broker's port travels from one service's package to the other's HERE, which is the
@@ -245,4 +298,29 @@ func WantsInboundAny(m manifest.Manifest) bool {
 		}
 	}
 	return false
+}
+
+// mintInboundToken writes a fresh secret for one service, 0600, in the directory the agent
+// resolves callers from.
+//
+// 32 bytes of crypto/rand: this is a bearer credential for a channel that acts on a household's
+// data, so it is sized like one rather than like an identifier. The directory is created here
+// because Prepare is the earliest thing on every path that needs it, and the socket the agent
+// binds lives in the same place.
+func mintInboundToken(ctx context.Context, x Executor, service string) error {
+	if _, err := x.Run(ctx, "mkdir", "-p", InboundDir()); err != nil {
+		return err
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return err
+	}
+	if err := x.WriteFile(InboundTokenPath(service), []byte(hex.EncodeToString(buf))); err != nil {
+		return err
+	}
+	// The token is a credential, and /run is world-readable by default. The bind mount is what
+	// carries it into one container; the mode is what keeps it from every other reader on the
+	// node.
+	_, err := x.Run(ctx, "chmod", "0600", InboundTokenPath(service))
+	return err
 }

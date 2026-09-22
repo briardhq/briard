@@ -2,8 +2,8 @@ package guestagent
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,11 +11,11 @@ import (
 	"os"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 )
 
 // The INBOUND channel: the first thing in this system that lets a service's container ask the
@@ -36,11 +36,11 @@ import (
 // for Home Assistant that includes every custom component the household ever installed from HACS.
 // Before this channel a compromised Home Assistant could not reach the guest agent at all. So:
 //
-//   - THE CALLER DOES NOT NAME ITSELF. The service identity comes from WHICH socket the call
-//     arrived on, fixed when the listener was created, and is passed to Serve by the caller that
-//     owns the listener. Nothing in the request body can change it. A request that could name its
-//     own service would let any container act for any other.
-//   - NO VERB NAMES A PATH. Every path is derived from the service identity (quadlet.DataRoot,
+//   - THE CALLER DOES NOT NAME ITSELF. It presents a TOKEN minted per service at converge and
+//     mounted read-only into that service's container alone, and the agent maps that back to a
+//     name. A `service` field in the request would be a field a hostile custom component could
+//     set; a token it can only hold if it was given one.
+//   - NO VERB NAMES A PATH. Every path is derived from the resolved service (quadlet.DataRoot,
 //     quadlet.SnapshotMember). A verb taking a path is a verb that reads or writes anywhere the
 //     agent can.
 //   - NO VERB DESTROYS ANYTHING. Pruning, restoring and deleting stay on the host's side of the
@@ -50,16 +50,17 @@ import (
 //     arriving by a new road.
 //
 // ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session and no state carried
-// between calls: every answer is derived from the ring on disk and the manifest on the volume,
-// so a handler that has never run before reaches the same answer as one that has.
+// between calls: every answer is derived from the ring on disk and the manifest on the volume.
 //
-// SYSTEMD OWNS THE BIND (socket activation, briard-inbound@.socket), and that is not packaging
-// detail. Converge runs in TWO different processes — the host's verb inside the long-running
-// agent, and drbd-reactor's one-shot `--converge` on the promotion path — so a listener owned by
-// the agent would never learn about a service the other one promoted, and two listeners would
-// contend for one path. A socket unit is learned once and serves both. The handler inherits the
-// listening fd, serves connections one at a time, and exits when it has been idle a while;
-// systemd brings it back on the next connection.
+// ⚠️ THE FIRST BUILD GAVE EACH SERVICE ITS OWN SOCKET, and the token is what replaced it
+// (2026-09-22, the owner's call). Per-service sockets made identity a property of the transport,
+// which is genuinely stronger — but they also made the LISTENER SET a function of the service
+// list, and the only thing that knows that list is converge, which runs in two processes (the
+// host's verb and drbd-reactor's one-shot). That forced systemd to own the binds: template units,
+// a converge step to start instances, socket activation, fd inheritance, an idle-exit handler —
+// and it put the logic in a short-lived process while everything that logic reasons about lives
+// in the long-running agent. A great deal of machinery downstream of one decision, buying a
+// property a per-service secret already provides.
 
 // InboundVerb is a request this channel accepts. The set is closed and deliberately tiny; read
 // the trust rules above before adding to it.
@@ -72,9 +73,15 @@ const (
 	VerbServiceStarting InboundVerb = "service.starting"
 )
 
-// inboundRequest is one call. It carries no service name on purpose — see the trust rules.
+// inboundRequest is one call.
+//
+// It carries a TOKEN and never a service name, and the difference is the whole trust story: the
+// token was minted for one service and written where only that service's container can read it,
+// so a caller cannot name itself — it can only present something it was given. A `service` field
+// here would be a field a hostile custom component could set.
 type inboundRequest struct {
-	Verb InboundVerb `json:"verb"`
+	Verb  InboundVerb `json:"verb"`
+	Token string      `json:"token"`
 }
 
 // inboundResponse is the answer. Error is empty on success; Detail is for the caller's log and
@@ -94,15 +101,14 @@ type inboundResponse struct {
 // It is also the abuse bound. See the trust rules above.
 const plainStartFloor = 90 * time.Second
 
-// ServeInbound reads one request from r, serves it as `service`, and writes one response to w.
-//
-// `service` is the identity of the LISTENER, not of the caller: whoever owns the socket decides
-// what it speaks for, and the request cannot say otherwise.
+// ServeInbound reads one request from r, resolves who sent it, serves it, and writes one response
+// to w.
 //
 // An error is reported to the caller AND returned, because the two readers are different: the
 // caller logs it and carries on (it must never fail a household's service over this), while the
-// return value is what the handler process exits on so a human reading the journal sees it.
-func ServeInbound(ctx context.Context, x Executor, service string, r io.Reader, w io.Writer) error {
+// return value is what reaches the agent's journal for a human to read afterwards.
+func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) error {
+	var service string
 	reply := func(resp inboundResponse) error {
 		b, err := json.Marshal(resp)
 		if err != nil {
@@ -122,6 +128,13 @@ func ServeInbound(ctx context.Context, x Executor, service string, r io.Reader, 
 	dec := json.NewDecoder(io.LimitReader(r, 4<<10))
 	if err := dec.Decode(&req); err != nil {
 		return reply(inboundResponse{Error: "malformed request"})
+	}
+	// WHO IS CALLING, BEFORE WHAT THEY WANT. Resolution is the only thing that stands between a
+	// workload and this channel, so it happens once, up front, and nothing below it can be
+	// reached without it. The refusal deliberately says nothing about which tokens exist.
+	service, ok := resolveCaller(ctx, x, req.Token)
+	if !ok {
+		return reply(inboundResponse{Error: "unknown caller"})
 	}
 	switch req.Verb {
 	case VerbServiceStarting:
@@ -263,68 +276,105 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 	return at, true, nil
 }
 
-// inboundIdle is how long a handler waits for another connection before exiting. Short, because
-// the socket unit survives the handler and systemd starts a new one on the next connection: an
-// idle household carries one socket file and no process.
-const inboundIdle = 2 * time.Minute
-
-// InboundListener is the listening socket systemd passed us, at the well-known activation fd.
+// ListenInbound binds the one inbound socket and serves it until ctx ends.
 //
-// THE CONTRACT IS SYSTEMD'S ($LISTEN_FDS / $LISTEN_PID, sd_listen_fds): fds are handed over
-// starting at 3, and LISTEN_PID names the process they were meant for so an fd inherited by some
-// grandchild is not mistaken for an activation. We want exactly one, and more than one means the
-// unit was edited into something this code does not implement -- worth refusing rather than
-// guessing which.
-func InboundListener() (net.Listener, error) {
-	if pid := os.Getenv("LISTEN_PID"); pid != strconv.Itoa(os.Getpid()) {
-		return nil, fmt.Errorf("inbound: not socket-activated (LISTEN_PID=%q, pid=%d)", pid, os.Getpid())
+// IT RUNS IN THE LONG-RUNNING AGENT, which is the whole of the correction the token made
+// possible ([B.143], 2026-09-22). The first build gave each service its own socket, which made a
+// caller's identity a property of the transport -- and made the listener SET a function of the
+// service list, which only converge knows, which runs in two processes, which forced systemd to
+// own the binds: template units, socket activation, fd inheritance, a per-connection process. All
+// of it downstream of one decision, and it left the logic in a short-lived process while
+// everything that logic reasons about lives here.
+//
+// With a per-service token the identity is carried by the request and the listener needs to know
+// nothing in advance. One socket, bound unconditionally at agent start, whether this node runs
+// zero services or five.
+//
+// ⚠️ THE SOCKET DIES WITH THIS PROCESS, and the agent restarts when the host link drops (the
+// unit's Restart=always, one host connection per run). So a container starting in the seconds
+// around a host reconnect finds nothing listening, gets a refused connection, and starts without
+// a member -- the `|| true` case. That is the cost of moving the listener here, it is bounded and
+// benign, and it is worth stating rather than discovering.
+func ListenInbound(ctx context.Context, x Executor) error {
+	if err := os.MkdirAll(services.InboundDir(), 0o755); err != nil {
+		return fmt.Errorf("inbound: %w", err)
 	}
-	if n := os.Getenv("LISTEN_FDS"); n != "1" {
-		return nil, fmt.Errorf("inbound: want exactly one activation fd, got LISTEN_FDS=%q", n)
+	// A socket left by a previous run is not a listener -- bind would fail with EADDRINUSE on a
+	// path nothing is serving. Removing it is safe precisely because /run is tmpfs and this
+	// process is the only thing that ever binds here.
+	if err := os.Remove(services.InboundSocket()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inbound: clear stale socket: %w", err)
 	}
-	f := os.NewFile(3, "briard-inbound")
-	defer f.Close()
-	ln, err := net.FileListener(f)
+	ln, err := net.Listen("unix", services.InboundSocket())
 	if err != nil {
-		return nil, fmt.Errorf("inbound: adopt the activation fd: %w", err)
+		return fmt.Errorf("inbound: listen: %w", err)
 	}
-	return ln, nil
-}
-
-// ServeInboundSocket serves `service`'s inbound socket until ctx ends or it has been idle for
-// inboundIdle, then returns.
-//
-// SEQUENTIAL, ONE CONNECTION AT A TIME, and deliberately so. The work is a btrfs snapshot of one
-// service's subvolume; two at once would race the same ring and the collision refusal would turn
-// one of them into an error for no reason. The load is a service start, so a queue of one is
-// not a bottleneck -- and a caller that opens a connection and says nothing is bounded by the
-// read deadline rather than by holding the channel for everyone.
-//
-// A FAILED REQUEST IS NOT A FAILED SERVER. The caller has been answered either way; the error is
-// logged and the next connection is served. Only the listener breaking ends this.
-func ServeInboundSocket(ctx context.Context, x Executor, service string, ln net.Listener) error {
+	// 0660 AND THE MOUNT, not one or the other. The bind mount is what puts this in front of a
+	// container at all; the mode is what keeps every other reader on the node off it. Neither is
+	// the authentication -- that is the token -- but a channel that acts on a household's data
+	// should not be reachable by anything that merely knows the path.
+	if err := os.Chmod(services.InboundSocket(), 0o660); err != nil {
+		return fmt.Errorf("inbound: %w", err)
+	}
 	go func() { <-ctx.Done(); ln.Close() }()
 	for {
-		if err := ln.(*net.UnixListener).SetDeadline(time.Now().Add(inboundIdle)); err != nil {
-			return err
-		}
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil // asked to stop
-			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				return nil // idle: let systemd start the next one on demand
+				return nil
 			}
 			return err
 		}
+		// ONE AT A TIME, deliberately. The work is a btrfs snapshot of one service's subvolume;
+		// two at once would race the same ring and turn one of them into a collision refusal for
+		// no reason. The load is a service start.
+		//
 		// The caller is untrusted, so it does not get to hold this open: a container that
-		// connects and never writes must not park the channel for the service's next real start.
+		// connects and says nothing is bounded by the deadline rather than by parking the
+		// channel for every other service's next start.
 		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-		if err := ServeInbound(ctx, x, service, conn, conn); err != nil {
-			log.Printf("inbound %s: %v", service, err)
+		if err := ServeInbound(ctx, x, conn, conn); err != nil {
+			log.Printf("inbound: %v", err)
 		}
 		conn.Close()
 	}
+}
+
+// resolveCaller maps a request's token to the service that was given it.
+//
+// THE FILENAME IS THE MAPPING. Each service's token sits at InboundTokenPath(name), written by
+// converge and bind-mounted read-only into that service's container -- so resolving a caller is
+// reading a directory, and the agent needs no table, no cache and no notification when a service
+// arrives on a node that was never told about it. That last property is what the per-service
+// socket design could not have at any price.
+//
+// CONSTANT TIME, and not as a ritual: the caller can retry as fast as it likes against a secret
+// this process holds, which is the shape a comparison timing leak is actually exploitable in.
+//
+// An empty or absent token resolves to nothing. There is no anonymous caller.
+func resolveCaller(ctx context.Context, x Executor, token string) (string, bool) {
+	// A short token is refused before anything is read. It cannot be one of ours -- they are 32
+	// random bytes, hex -- and this keeps an empty or missing token from ever walking the
+	// directory, which is the shape a caller would probe with.
+	if len(token) < 32 {
+		return "", false
+	}
+	out, err := x.Run(ctx, "ls", "-1", services.InboundDir())
+	if err != nil {
+		return "", false
+	}
+	for _, n := range strings.Fields(string(out)) {
+		name := strings.TrimSuffix(n, ".token")
+		if name == n { // not a token file
+			continue
+		}
+		want, err := x.ReadFile(services.InboundTokenPath(name))
+		if err != nil {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(string(want))), []byte(token)) == 1 {
+			return name, true
+		}
+	}
+	return "", false
 }

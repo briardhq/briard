@@ -9,22 +9,30 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
+
 	"strings"
 	"testing"
 	"time"
 
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 )
 
 // ringExec is a guest with a .snapshots directory: `ls` answers with `members`, `btrfs subvolume
 // show` fails for anything absent (nothing is at a fresh member's path), and everything else
 // succeeds. It is the minimum a ring's rate limit and its take both read.
+const haToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func ringExec(members ...string) *fakeExec {
 	f := &fakeExec{files: map[string]string{
-		manifestPath("home-assistant"): `{"name":"home-assistant","version":"2026.7.1"}`,
+		manifestPath("home-assistant"):              `{"name":"home-assistant","version":"2026.7.1"}`,
+		services.InboundTokenPath("home-assistant"): haToken,
+		services.InboundTokenPath("mosquitto"):      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 	}}
 	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "ls" && len(args) > 1 && args[1] == services.InboundDir() {
+			return []byte("home-assistant.token\nmosquitto.token\nagent.sock"), nil
+		}
 		if name == "ls" {
 			return []byte(strings.Join(members, "\n")), nil
 		}
@@ -36,10 +44,11 @@ func ringExec(members ...string) *fakeExec {
 	return f
 }
 
-func serve(t *testing.T, f *fakeExec, service, body string) inboundResponse {
+// serve sends one request as Home Assistant unless the body already carries its own token.
+func serve(t *testing.T, f *fakeExec, body string) inboundResponse {
 	t.Helper()
 	var out bytes.Buffer
-	_ = ServeInbound(context.Background(), f, service, strings.NewReader(body), &out)
+	_ = ServeInbound(context.Background(), f, strings.NewReader(body), &out)
 	var resp inboundResponse
 	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
 		t.Fatalf("response %q does not parse: %v", out.String(), err)
@@ -52,7 +61,7 @@ func serve(t *testing.T, f *fakeExec, service, body string) inboundResponse {
 // ordering guarantee ([B.143]).
 func TestInboundStartingTakesAMember(t *testing.T) {
 	f := ringExec()
-	resp := serve(t, f, "home-assistant", `{"verb":"service.starting"}`)
+	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	if resp.Error != "" {
 		t.Fatalf("error = %q, want a member taken", resp.Error)
 	}
@@ -92,7 +101,7 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 func TestInboundStartingRateLimitsACrashLoop(t *testing.T) {
 	recent := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second))
 	f := ringExec(strings.TrimPrefix(recent, quadlet.SnapshotsDir))
-	resp := serve(t, f, "home-assistant", `{"verb":"service.starting"}`)
+	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	if resp.Error != "" {
 		t.Fatalf("error = %q, want a quiet skip", resp.Error)
 	}
@@ -111,7 +120,7 @@ func TestInboundStartingRateLimitsACrashLoop(t *testing.T) {
 func TestInboundStartingTakesOneOutsideTheFloor(t *testing.T) {
 	old := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-2*time.Hour))
 	f := ringExec(strings.TrimPrefix(old, quadlet.SnapshotsDir))
-	serve(t, f, "home-assistant", `{"verb":"service.starting"}`)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	var took bool
 	for _, r := range f.runs {
 		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
@@ -129,7 +138,7 @@ func TestInboundStartingTakesOneOutsideTheFloor(t *testing.T) {
 func TestInboundIgnoresAnotherServicesMembers(t *testing.T) {
 	recent := quadlet.SnapshotMember("mosquitto", quadlet.TriggerStart, time.Now().Add(-5*time.Second))
 	f := ringExec(strings.TrimPrefix(recent, quadlet.SnapshotsDir))
-	serve(t, f, "home-assistant", `{"verb":"service.starting"}`)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	var took bool
 	for _, r := range f.runs {
 		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
@@ -146,7 +155,7 @@ func TestInboundIgnoresAnotherServicesMembers(t *testing.T) {
 // able to stop one being taken — a stray directory called `backup` should cost nothing.
 func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 	f := ringExec("a-human-copy", "home-assistant-preupgrade", "notes.txt")
-	serve(t, f, "home-assistant", `{"verb":"service.starting"}`)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	var took bool
 	for _, r := range f.runs {
 		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
@@ -160,16 +169,17 @@ func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 
 // TestInboundRequestCannotNameItsService is the trust boundary, asserted.
 //
-// The socket is bind-mounted into the service's container, so everything running as that service
-// can reach it — for Home Assistant, every custom component the household ever installed. The
-// identity therefore comes from the LISTENER and nothing in the request may change it: a request
-// that could name its own service would let any container act for any other.
+// The socket is shared by every participating container, and everything running as a service can
+// reach it — for Home Assistant, every custom component the household ever installed. So the
+// identity comes from the TOKEN and nothing else in the request may touch it: a caller that could
+// name its own service would act for any other, which with one shared socket is the whole point
+// of failure.
 func TestInboundRequestCannotNameItsService(t *testing.T) {
 	f := ringExec()
-	serve(t, f, "home-assistant", `{"verb":"service.starting","service":"mosquitto","path":"/etc"}`)
+	serve(t, f, `{"verb":"service.starting","service":"mosquitto","path":"/etc","token":"`+haToken+`"}`)
 	for _, r := range f.runs {
 		for _, a := range r {
-			if strings.Contains(a, "mosquitto") || a == "/etc" {
+			if a == "/etc" || strings.Contains(a, "briard/mosquitto") {
 				t.Fatalf("the request body reached a command: %v", f.runs)
 			}
 		}
@@ -181,7 +191,46 @@ func TestInboundRequestCannotNameItsService(t *testing.T) {
 		}
 	}
 	if svc, _ := quadlet.SnapshotMemberService(took); svc != "home-assistant" {
-		t.Errorf("member %q was taken for the service the REQUEST named, not the listener's", took)
+		t.Errorf("member %q was taken for the service the REQUEST named, not the one its token identifies", took)
+	}
+}
+
+// TestInboundRefusesACallerItCannotIdentify: with one shared socket the token IS the boundary, so
+// everything that is not a minted token has to land in the same place — refused, before any verb
+// is reached and before anything is read or written.
+func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
+	for _, tok := range []string{
+		"",    // none offered
+		"xyz", // too short to be one of ours
+		"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", // right shape, never minted
+	} {
+		f := ringExec()
+		resp := serve(t, f, `{"verb":"service.starting","token":"`+tok+`"}`)
+		if resp.Error == "" {
+			t.Errorf("token %q was accepted", tok)
+		}
+		for _, r := range f.runs {
+			if len(r) > 2 && r[2] == "snapshot" {
+				t.Errorf("token %q reached a snapshot: %v", tok, f.runs)
+			}
+		}
+	}
+}
+
+// TestInboundResolvesEachServiceToItsOwnToken: two services share one socket, and the only thing
+// separating them is which secret they hold. A token must act for its own service and no other.
+func TestInboundResolvesEachServiceToItsOwnToken(t *testing.T) {
+	f := ringExec()
+	f.files[manifestPath("mosquitto")] = `{"name":"mosquitto","version":"2.1.2"}`
+	serve(t, f, `{"verb":"service.starting","token":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}`)
+	var took string
+	for _, r := range f.runs {
+		if len(r) > 5 && r[2] == "snapshot" {
+			took = r[5]
+		}
+	}
+	if svc, _ := quadlet.SnapshotMemberService(took); svc != "mosquitto" {
+		t.Errorf("member %q, want the broker's — its token is the only thing that says so", took)
 	}
 }
 
@@ -189,15 +238,19 @@ func TestInboundRequestCannotNameItsService(t *testing.T) {
 // realistic cause is a wrapper newer than the agent beneath it.
 func TestInboundRefusesAnUnknownVerb(t *testing.T) {
 	f := ringExec()
-	resp := serve(t, f, "home-assistant", `{"verb":"data.restore"}`)
+	resp := serve(t, f, `{"verb":"data.restore","token":"`+haToken+`"}`)
 	if resp.Error == "" {
 		t.Fatal("an unknown verb was accepted")
 	}
 	if !strings.Contains(resp.Error, "data.restore") {
 		t.Errorf("error = %q, want the rejected verb named", resp.Error)
 	}
-	if len(f.runs) != 0 {
-		t.Errorf("an unknown verb still ran something: %v", f.runs)
+	// Resolving the caller necessarily reads the token directory, so "ran nothing" is the wrong
+	// bar. What must not happen is any of the WORK: an unrecognised verb touches no subvolume.
+	for _, r := range f.runs {
+		if r[0] == "btrfs" {
+			t.Errorf("an unknown verb reached the volume: %v", f.runs)
+		}
 	}
 }
 
@@ -206,13 +259,14 @@ func TestInboundRefusesAnUnknownVerb(t *testing.T) {
 // household's Home Assistant on its own start.
 func TestInboundAlwaysAnswers(t *testing.T) {
 	for _, body := range []string{
-		`{"verb":"service.starting"}`,
+		`{"verb":"service.starting","token":"` + haToken + `"}`,
+		`{"verb":"service.starting","token":"nope"}`,
 		`{"verb":"nonsense"}`,
 		`not json at all`,
 		``,
 	} {
 		var out bytes.Buffer
-		_ = ServeInbound(context.Background(), ringExec(), "home-assistant", strings.NewReader(body), &out)
+		_ = ServeInbound(context.Background(), ringExec(), strings.NewReader(body), &out)
 		if out.Len() == 0 {
 			t.Errorf("request %q got no response; the caller would wait forever", body)
 			continue
@@ -223,43 +277,62 @@ func TestInboundAlwaysAnswers(t *testing.T) {
 	}
 }
 
-// TestInboundRejectsAServiceNameThatIsAPath: the service name becomes a path element, and the
-// flag that carries it is ours — but a rendering bug that let `../` through would point every
-// derived path somewhere else entirely.
+// TestInboundRejectsAServiceNameThatIsAPath: the service name is read out of a token FILENAME in
+// a directory on /run, and it then becomes a path element in every path the verb derives. Writing
+// there takes root, so this is defence in depth rather than a live hole -- but the cost of being
+// wrong is a verb pointed at an arbitrary subvolume, and the check is one line.
 func TestInboundRejectsAServiceNameThatIsAPath(t *testing.T) {
+	const evil = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	f := ringExec()
-	resp := serve(t, f, "../../etc", `{"verb":"service.starting"}`)
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "ls" && len(args) > 1 && args[1] == services.InboundDir() {
+			return []byte("../../etc.token"), nil
+		}
+		return nil, errors.New("ERROR: not a subvolume")
+	}
+	f.files[services.InboundTokenPath("../../etc")] = evil
+	resp := serve(t, f, `{"verb":"service.starting","token":"`+evil+`"}`)
 	if resp.Error == "" {
 		t.Fatal("a traversing service name was accepted")
 	}
-	if len(f.runs) != 0 {
-		t.Errorf("a traversing service name still ran something: %v", f.runs)
+	for _, r := range f.runs {
+		if r[0] == "btrfs" {
+			t.Errorf("a traversing service name reached the volume: %v", f.runs)
+		}
 	}
 }
 
 // TestServeInboundSocketOverARealSocket drives the whole transport the way a container does:
 // connect to a unix socket, write one line, read one line. The per-connection handler is covered
 // above; this is the loop around it, and the thing it proves is that a second caller is served
-// after the first rather than finding the channel gone.
-func TestServeInboundSocketOverARealSocket(t *testing.T) {
+// TestListenInboundOverARealSocket drives the whole transport the way a container does: connect
+// to the socket, write one line, read one line. The per-request handler is covered above; this is
+// the listener around it, and what it proves is that a second caller is served after the first
+// rather than finding the channel gone.
+func TestListenInboundOverARealSocket(t *testing.T) {
 	dir := t.TempDir()
-	sock := filepath.Join(dir, "ha.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("BRIARD_INBOUND_DIR", dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- ServeInboundSocket(ctx, ringExec(), "home-assistant", ln) }()
+	f := ringExec()
+	go func() { done <- ListenInbound(ctx, f) }()
 
+	sock := filepath.Join(dir, "agent.sock")
 	ask := func() string {
-		c, err := net.Dial("unix", sock)
+		var c net.Conn
+		var err error
+		for i := 0; i < 100; i++ { // the listener binds in another goroutine
+			if c, err = net.Dial("unix", sock); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if err != nil {
 			t.Fatalf("dial: %v", err)
 		}
 		defer c.Close()
-		if _, err := c.Write([]byte(`{"verb":"service.starting"}` + "\n")); err != nil {
+		if _, err := c.Write([]byte(`{"verb":"service.starting","token":"` + haToken + `"}` + "\n")); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 		line, err := bufio.NewReader(c).ReadString('\n')
@@ -268,34 +341,68 @@ func TestServeInboundSocketOverARealSocket(t *testing.T) {
 		}
 		return line
 	}
-	first := ask()
-	if strings.Contains(first, `"error"`) {
+	if first := ask(); strings.Contains(first, `"error"`) {
 		t.Fatalf("first request errored: %s", first)
 	}
-	// THE SECOND CALLER IS THE POINT. A handler that served one connection and exited would
-	// leave the next service start with nothing listening until systemd noticed.
+	// THE SECOND CALLER IS THE POINT. A listener that served one connection and stopped would
+	// leave the next service start with nothing to talk to, silently.
 	if second := ask(); second == "" {
 		t.Fatal("a second caller got nothing")
 	}
 	cancel()
 	if err := <-done; err != nil {
-		t.Errorf("serve returned %v, want a clean stop on cancellation", err)
+		t.Errorf("listen returned %v, want a clean stop on cancellation", err)
 	}
 }
 
-// TestInboundListenerRefusesWhatSystemdDidNotHandUs: the activation contract is systemd's, and
-// an fd that arrived some other way is not one. Getting this wrong would mean adopting whatever
-// happens to be on fd 3 -- inherited from a parent, or the process's own stdin -- and serving a
-// privileged channel on it.
-func TestInboundListenerRefusesWhatSystemdDidNotHandUs(t *testing.T) {
-	t.Setenv("LISTEN_PID", "1")
-	t.Setenv("LISTEN_FDS", "1")
-	if _, err := InboundListener(); err == nil {
-		t.Error("adopted an fd meant for another process")
+// TestListenInboundClearsAStaleSocket: /run is tmpfs and this process is the only thing that ever
+// binds here, so a socket file left by a previous agent is a dead path rather than a listener --
+// and bind would fail EADDRINUSE against it, leaving the channel down for the whole life of the
+// agent with nothing but one log line to say so.
+func TestListenInboundClearsAStaleSocket(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BRIARD_INBOUND_DIR", dir)
+	sock := filepath.Join(dir, "agent.sock")
+	stale, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
-	t.Setenv("LISTEN_FDS", "3")
-	if _, err := InboundListener(); err == nil {
-		t.Error("adopted a handover this code does not implement (three fds)")
+	stale.Close() // leaves the file behind, as a killed agent would
+	if _, err := os.Stat(sock); err != nil {
+		t.Skip("this platform removes the socket file on close; nothing to clear")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ListenInbound(ctx, ringExec()) }()
+	var c net.Conn
+	for i := 0; i < 100; i++ {
+		if c, err = net.Dial("unix", sock); err == nil {
+			c.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("the stale socket was not cleared: %v", err)
+	}
+	cancel()
+	<-done
+}
+
+// TestInboundRefusesAShortTokenWithoutReadingAnything: a token too short to be one of ours is
+// refused before the token directory is even listed. That keeps the cheap refusal cheap under
+// exactly the conditions that produce it -- a caller probing the channel -- so a prober cannot
+// make the agent walk a directory per request.
+func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
+	for _, tok := range []string{"", "xyz"} {
+		f := ringExec()
+		resp := serve(t, f, `{"verb":"service.starting","token":"`+tok+`"}`)
+		if resp.Error == "" {
+			t.Errorf("token %q was accepted", tok)
+		}
+		if len(f.runs) != 0 {
+			t.Errorf("token %q made the agent read something: %v", tok, f.runs)
+		}
 	}
 }
