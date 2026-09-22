@@ -3,14 +3,21 @@
 #
 # s6 re-executes `run` at EVERY service start — container start, every exit-100
 # restart (`homeassistant.restart`), and the boot after a config restore — and each of
-# those is a window with Home Assistant stopped. That is the whole reason briard's two
+# those is a window with Home Assistant stopped. That is the whole reason briard's
 # stopped-window steps hang here: they heal at every boundary, with no extra restart
 # and no race.
 #
-# Neither step can ever fail the service. A household losing Home Assistant because
+# NO STEP HERE HOLDS STATE OR DECIDES ANYTHING, and that is a rule rather than an
+# accident ([B.143]). Everything a step needs to know, the guest agent can derive on its
+# own side — from the ring on disk, from the manifest on the volume, from the container
+# unit's own start time — and the agent is where it is testable and where a container
+# cannot tamper with it. So this file stays three calls and an exec.
+#
+# No step can ever fail the service. A household losing Home Assistant because
 # briard could not write a token would be a far worse trade than a health gate that
 # degrades to liveness-only, which is exactly what an absent token leaves behind — and
-# the same trade, one notch smaller, for an integration that is not planted.
+# the same trade, one notch smaller, for an integration that is not planted or a
+# snapshot that was not taken.
 #
 # The last line hands over to the image's OWN run script, extracted byte-for-byte from
 # the pinned image at converge. We relay Home Assistant's bootstrap, never author it:
@@ -20,6 +27,13 @@
 # ⚠️ THE SHEBANG IS LOAD-BEARING AND ITS ABSENCE IS NOT SUBTLE: s6-supervise reports
 # `unable to spawn ./run (waiting 60 seconds): Exec format error` and retries forever,
 # so Home Assistant simply never starts. Measured, by losing it to a careless edit.
+# FIRST, AND IT BLOCKS ([B.143]). The guest agent is told this service is starting and gets
+# to act before Home Assistant opens a single file — which is what makes a member taken there
+# application-consistent by construction rather than crash-consistent by luck. Ahead of the
+# two steps below deliberately: they write into /config, and a rollback point is worth more
+# taken before our own writes than after them.
+python3 /briard/notify.py || true
+
 python3 /briard/ensure-token.py /config /briard/token || true
 
 # briard's own integration ([B.124]): the stub package into /config/custom_components,

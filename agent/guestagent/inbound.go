@@ -3,10 +3,15 @@ package guestagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
+	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,10 +49,17 @@ import (
 //     hostile or looping caller from filling the replicated volume, which is [B.155]'s failure
 //     arriving by a new road.
 //
-// ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session, no state carried between
-// calls, nothing to resynchronise. That is what lets the transport be socket activation: systemd
-// owns the bind and hands each connection to a fresh short-lived process, so two of them cannot
-// contend for the socket and a wedged handler cannot take the channel down with it.
+// ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session and no state carried
+// between calls: every answer is derived from the ring on disk and the manifest on the volume,
+// so a handler that has never run before reaches the same answer as one that has.
+//
+// SYSTEMD OWNS THE BIND (socket activation, briard-inbound@.socket), and that is not packaging
+// detail. Converge runs in TWO different processes — the host's verb inside the long-running
+// agent, and drbd-reactor's one-shot `--converge` on the promotion path — so a listener owned by
+// the agent would never learn about a service the other one promoted, and two listeners would
+// contend for one path. A socket unit is learned once and serves both. The handler inherits the
+// listening fd, serves connections one at a time, and exits when it has been idle a while;
+// systemd brings it back on the next connection.
 
 // InboundVerb is a request this channel accepts. The set is closed and deliberately tiny; read
 // the trust rules above before adding to it.
@@ -249,4 +261,70 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 		return time.Time{}, false, nil
 	}
 	return at, true, nil
+}
+
+// inboundIdle is how long a handler waits for another connection before exiting. Short, because
+// the socket unit survives the handler and systemd starts a new one on the next connection: an
+// idle household carries one socket file and no process.
+const inboundIdle = 2 * time.Minute
+
+// InboundListener is the listening socket systemd passed us, at the well-known activation fd.
+//
+// THE CONTRACT IS SYSTEMD'S ($LISTEN_FDS / $LISTEN_PID, sd_listen_fds): fds are handed over
+// starting at 3, and LISTEN_PID names the process they were meant for so an fd inherited by some
+// grandchild is not mistaken for an activation. We want exactly one, and more than one means the
+// unit was edited into something this code does not implement -- worth refusing rather than
+// guessing which.
+func InboundListener() (net.Listener, error) {
+	if pid := os.Getenv("LISTEN_PID"); pid != strconv.Itoa(os.Getpid()) {
+		return nil, fmt.Errorf("inbound: not socket-activated (LISTEN_PID=%q, pid=%d)", pid, os.Getpid())
+	}
+	if n := os.Getenv("LISTEN_FDS"); n != "1" {
+		return nil, fmt.Errorf("inbound: want exactly one activation fd, got LISTEN_FDS=%q", n)
+	}
+	f := os.NewFile(3, "briard-inbound")
+	defer f.Close()
+	ln, err := net.FileListener(f)
+	if err != nil {
+		return nil, fmt.Errorf("inbound: adopt the activation fd: %w", err)
+	}
+	return ln, nil
+}
+
+// ServeInboundSocket serves `service`'s inbound socket until ctx ends or it has been idle for
+// inboundIdle, then returns.
+//
+// SEQUENTIAL, ONE CONNECTION AT A TIME, and deliberately so. The work is a btrfs snapshot of one
+// service's subvolume; two at once would race the same ring and the collision refusal would turn
+// one of them into an error for no reason. The load is a service start, so a queue of one is
+// not a bottleneck -- and a caller that opens a connection and says nothing is bounded by the
+// read deadline rather than by holding the channel for everyone.
+//
+// A FAILED REQUEST IS NOT A FAILED SERVER. The caller has been answered either way; the error is
+// logged and the next connection is served. Only the listener breaking ends this.
+func ServeInboundSocket(ctx context.Context, x Executor, service string, ln net.Listener) error {
+	go func() { <-ctx.Done(); ln.Close() }()
+	for {
+		if err := ln.(*net.UnixListener).SetDeadline(time.Now().Add(inboundIdle)); err != nil {
+			return err
+		}
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil // asked to stop
+			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				return nil // idle: let systemd start the next one on demand
+			}
+			return err
+		}
+		// The caller is untrusted, so it does not get to hold this open: a container that
+		// connects and never writes must not park the channel for the service's next real start.
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+		if err := ServeInbound(ctx, x, service, conn, conn); err != nil {
+			log.Printf("inbound %s: %v", service, err)
+		}
+		conn.Close()
+	}
 }

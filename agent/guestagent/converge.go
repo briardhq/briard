@@ -164,6 +164,26 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 			skipped = append(skipped, svcs[i].name)
 		}
 	}
+	// THE INBOUND SOCKETS, before the containers that reach them ([B.143]). The bind source has
+	// to exist first for the same reason services.Prepare runs before the start: podman CREATES
+	// a missing bind source as a root-owned directory, and a directory where a socket belongs
+	// poisons the path for every later attempt.
+	//
+	// A FAILURE HERE NEVER SKIPS THE SERVICE, which is the opposite of Prepare's rule above, and
+	// the difference is what each one costs. Prepare writes the bind sources a container cannot
+	// start without; this one adds a channel the service uses to keep its own history. A
+	// household that loses Home Assistant because a snapshot socket would not bind has been
+	// failed much worse than one whose ring is missing a few members, so this logs and carries
+	// on -- the same trade the wrapper itself makes with `|| true`.
+	for _, s := range svcs {
+		if s.skip || !services.WantsInboundAny(s.m) {
+			continue
+		}
+		if out, err := x.Run(ctx, "systemctl", "start", InboundSocketUnit(s.name)); err != nil {
+			log.Printf("converge: %s has no inbound channel (%v: %s); its own restarts will not be snapshotted",
+				s.name, err, strings.TrimSpace(string(out)))
+		}
+	}
 	// Record BEFORE starting: a start that fails part-way still leaves units running, and a stop
 	// that does not know about them would leave containers on an unmounted volume.
 	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {

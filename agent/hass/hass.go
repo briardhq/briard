@@ -102,6 +102,11 @@ const wrapperPath = Dir + "/run"
 // scriptPath is the mint, run one-shot on the image's own python.
 const scriptPath = Dir + "/ensure-token.py"
 
+// notifierPath is the inbound-channel client ([B.143]): it tells the guest agent this service is
+// starting and waits for the reply, which is what makes the stopped window an ordering guarantee
+// rather than a race. It decides nothing -- see notify.py.
+const notifierPath = Dir + "/notify.py"
+
 // planterPath is the /config-side planting, run one-shot in the same stopped window as the mint.
 const planterPath = Dir + "/plant.py"
 
@@ -139,6 +144,9 @@ var wrapperSource string
 
 //go:embed ensure-token.py
 var scriptSource string
+
+//go:embed notify.py
+var notifierSource string
 
 //go:embed plant.py
 var planterSource string
@@ -231,6 +239,9 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int)
 		return err
 	}
 	if err := write(ctx, x, scriptPath, scriptSource, "0644"); err != nil {
+		return err
+	}
+	if err := write(ctx, x, notifierPath, notifierSource, "0644"); err != nil {
 		return err
 	}
 	if err := write(ctx, x, planterPath, planterSource, "0644"); err != nil {

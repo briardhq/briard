@@ -1,10 +1,15 @@
 package guestagent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -229,5 +234,68 @@ func TestInboundRejectsAServiceNameThatIsAPath(t *testing.T) {
 	}
 	if len(f.runs) != 0 {
 		t.Errorf("a traversing service name still ran something: %v", f.runs)
+	}
+}
+
+// TestServeInboundSocketOverARealSocket drives the whole transport the way a container does:
+// connect to a unix socket, write one line, read one line. The per-connection handler is covered
+// above; this is the loop around it, and the thing it proves is that a second caller is served
+// after the first rather than finding the channel gone.
+func TestServeInboundSocketOverARealSocket(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "ha.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ServeInboundSocket(ctx, ringExec(), "home-assistant", ln) }()
+
+	ask := func() string {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer c.Close()
+		if _, err := c.Write([]byte(`{"verb":"service.starting"}` + "\n")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		line, err := bufio.NewReader(c).ReadString('\n')
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return line
+	}
+	first := ask()
+	if strings.Contains(first, `"error"`) {
+		t.Fatalf("first request errored: %s", first)
+	}
+	// THE SECOND CALLER IS THE POINT. A handler that served one connection and exited would
+	// leave the next service start with nothing listening until systemd noticed.
+	if second := ask(); second == "" {
+		t.Fatal("a second caller got nothing")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("serve returned %v, want a clean stop on cancellation", err)
+	}
+}
+
+// TestInboundListenerRefusesWhatSystemdDidNotHandUs: the activation contract is systemd's, and
+// an fd that arrived some other way is not one. Getting this wrong would mean adopting whatever
+// happens to be on fd 3 -- inherited from a parent, or the process's own stdin -- and serving a
+// privileged channel on it.
+func TestInboundListenerRefusesWhatSystemdDidNotHandUs(t *testing.T) {
+	t.Setenv("LISTEN_PID", "1")
+	t.Setenv("LISTEN_FDS", "1")
+	if _, err := InboundListener(); err == nil {
+		t.Error("adopted an fd meant for another process")
+	}
+	t.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid()))
+	t.Setenv("LISTEN_FDS", "3")
+	if _, err := InboundListener(); err == nil {
+		t.Error("adopted a handover this code does not implement (three fds)")
 	}
 }

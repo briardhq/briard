@@ -166,3 +166,58 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 		t.Errorf("a node with no published name announced %+v", a)
 	}
 }
+
+// TestInboundBindIsReadWriteAndOnlyForHomeAssistant: connect(2) on a unix socket needs write
+// permission on the socket file, so a read-only bind would make the channel unreachable from
+// inside the container rather than merely read-only -- a failure that looks like "the agent is
+// not listening" and is not ([B.143]).
+//
+// And it is OPT-IN: every container that gets this socket widens what a compromised service can
+// reach, so a service with no in-container restart boundary gets nothing.
+func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
+	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{
+		{Name: "app", Primary: true}, {Name: "sidecar"},
+	}}
+	var primary, secondary []string
+	for _, c := range ha.Containers {
+		if c.Primary {
+			primary = Volumes(ha, c)
+		} else {
+			secondary = Volumes(ha, c)
+		}
+	}
+	var bind string
+	for _, v := range primary {
+		if strings.Contains(v, InboundMount) {
+			bind = v
+		}
+	}
+	if bind == "" {
+		t.Fatalf("Home Assistant's primary container has no inbound socket: %v", primary)
+	}
+	if !strings.HasSuffix(bind, ":rw") {
+		t.Errorf("bind = %q, want :rw -- connect(2) needs write permission on the socket", bind)
+	}
+	if !strings.HasPrefix(bind, InboundSocketPath("home-assistant")+":") {
+		t.Errorf("bind = %q, want the socket named for THIS service", bind)
+	}
+	for _, v := range secondary {
+		if strings.Contains(v, InboundMount) {
+			t.Errorf("a non-primary container got the inbound socket: %q", v)
+		}
+	}
+	// The broker has no in-container restart boundary, so it gets no channel. This is the
+	// registry's default-is-nothing rule applied to the sharpest thing it hands out.
+	mq := manifest.Manifest{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true}}}
+	for _, v := range Volumes(mq, mq.Containers[0]) {
+		if strings.Contains(v, InboundMount) {
+			t.Errorf("mosquitto was given an inbound socket: %q", v)
+		}
+	}
+	if WantsInboundAny(mq) {
+		t.Error("WantsInboundAny says mosquitto wants one")
+	}
+	if !WantsInboundAny(ha) {
+		t.Error("WantsInboundAny says Home Assistant does not want one")
+	}
+}

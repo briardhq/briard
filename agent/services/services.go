@@ -36,19 +36,56 @@ type Executor interface {
 	ReadFile(path string) ([]byte, error)
 }
 
+// InboundDir holds the per-service inbound sockets ([B.143]). ONE SOCKET PER SERVICE, mounted
+// into that service's container and no other: a caller's identity is then a property of the
+// transport rather than a claim in its request, which is what makes the channel safe to expose to
+// a workload at all (agent/guestagent/inbound.go's trust rules).
+//
+// It lives HERE rather than in agent/hass because it is not one service's knowledge: any service
+// whose entrypoint can be wrapped gets the same channel on the same terms. It cannot live in
+// agent/guestagent either -- that package imports this one, and the renderer needs the path.
+const InboundDir = "/run/briard/inbound"
+
+// InboundSocketPath is one service's socket on the node.
+func InboundSocketPath(service string) string { return InboundDir + "/" + service + ".sock" }
+
+// InboundMount is where that socket appears inside the container. A fixed name, so a client in
+// the container needs to know nothing about which service it is speaking for -- which is the same
+// property the trust rules depend on, seen from the other side.
+const InboundMount = "/briard/inbound.sock"
+
+// WantsInbound reports whether a service's container gets the inbound channel.
+//
+// OPT-IN, PER SERVICE, and narrow on purpose: the socket is a channel from a workload to the
+// agent, so every container that gets one widens what a compromised service can reach. Home
+// Assistant has it because it restarts itself far more often than its container does and nothing
+// outside can see those restarts. A service with no such boundary needs none, and the generic
+// container-start hook already covers it.
+func WantsInbound(m manifest.Manifest, c manifest.Container) bool {
+	return m.Name == hass.Name && c.Primary
+}
+
 // Volumes returns the host binds one container of one service needs beyond its own data.
 //
 // Called by the RENDERER (agent/quadlet), which stays a pure function of the manifest: the same
 // manifest renders the same units on every node, and these binds are a property of the service's
 // name rather than of anything a publisher wrote.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
+	var out []string
 	switch m.Name {
 	case hass.Name:
-		return hass.Volumes(m, c)
+		out = hass.Volumes(m, c)
 	case mosquitto.Name:
-		return mosquitto.Volumes(m, c)
+		out = mosquitto.Volumes(m, c)
 	}
-	return nil
+	// ⚠️ READ-WRITE, and it has to be: connect(2) on a unix socket needs write permission on the
+	// socket file, so a read-only bind makes the channel unreachable from inside the container
+	// rather than merely read-only. It is also why this cannot be a file inside the service's
+	// existing `:ro` directory bind and needs a mount of its own.
+	if WantsInbound(m, c) {
+		out = append(out, InboundSocketPath(m.Name)+":"+InboundMount+":rw")
+	}
+	return out
 }
 
 // Prepare materialises whatever Volumes promised, on THIS node, before the container starts.
@@ -197,4 +234,15 @@ func Announce(m manifest.Manifest, flock string) []routes.Announcement {
 		return []routes.Announcement{{Name: name, Type: mosquitto.ServiceType, Port: mosquitto.MQTTPort}}
 	}
 	return nil
+}
+
+// WantsInboundAny reports whether any container of a service wants the inbound channel -- what
+// converge asks before starting the socket unit, which is per SERVICE rather than per container.
+func WantsInboundAny(m manifest.Manifest) bool {
+	for _, c := range m.Containers {
+		if WantsInbound(m, c) {
+			return true
+		}
+	}
+	return false
 }

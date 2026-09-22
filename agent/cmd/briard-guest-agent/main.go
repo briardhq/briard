@@ -154,22 +154,20 @@ func runInternal(args []string) {
 	}
 
 	if *inbound != "" {
-		// SOCKET ACTIVATION HANDS US THE CONNECTION AS STDIN/STDOUT (Accept=yes), which is the
-		// whole reason the handler is a function over an io.Reader and an io.Writer: one
-		// short-lived process per connection, no listener of our own to own or to leak, and two
-		// callers cannot contend for the socket because systemd owns the bind.
+		// SOCKET ACTIVATION: systemd holds the bind and hands us the listening fd, so this
+		// process owns no path and leaks no socket file when it goes. It serves until idle and
+		// exits 0; the next connection starts a fresh one.
 		//
-		// ⚠️ THE SERVICE IS NAMED BY THE FLAG, never by the caller. The unit that carries this
-		// flag is rendered per service and its socket is mounted into that service's container
-		// alone, so the identity is fixed by the thing that created the listener. A request
-		// cannot say who it is; see the trust rules in agent/guestagent/inbound.go.
-		//
-		// A NON-ZERO EXIT IS FOR THE JOURNAL, not for the caller: the caller has already been
-		// answered on the connection (ServeInbound writes the response either way) and is not
-		// allowed to fail its service over this. The exit code is what makes the failure visible
-		// to a human reading `systemctl status` afterwards.
-		if err := guestagent.ServeInbound(ctx, guestfirmware.NewOSExecutor(), *inbound, os.Stdin, os.Stdout); err != nil {
+		// ⚠️ THE SERVICE IS NAMED BY THE FLAG, never by the caller. The socket unit is
+		// instantiated per service (briard-inbound@<service>.socket) and its socket is mounted
+		// into that service's container alone, so the identity is a property of the transport.
+		// A request cannot say who it is; see the trust rules in agent/guestagent/inbound.go.
+		ln, err := guestagent.InboundListener()
+		if err != nil {
 			log.Fatalf("inbound: %v", err)
+		}
+		if err := guestagent.ServeInboundSocket(ctx, guestfirmware.NewOSExecutor(), *inbound, ln); err != nil {
+			log.Fatalf("inbound %s: %v", *inbound, err)
 		}
 		return
 	}

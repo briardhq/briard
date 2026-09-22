@@ -104,7 +104,7 @@ func TestPrepareMaterialisesTheChannel(t *testing.T) {
 	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	for _, p := range []string{TokenPath, scriptPath, planterPath, wrapperPath, implPath} {
+	for _, p := range []string{TokenPath, scriptPath, planterPath, notifierPath, wrapperPath, implPath} {
 		if _, ok := f.files[p]; !ok {
 			t.Fatalf("%s was not written (files: %v)", p, f.files)
 		}
@@ -452,5 +452,25 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	// inside Home Assistant runs at all.
 	if !strings.Contains(wrapperSource, mountPoint+"/plant.py") {
 		t.Error("the wrapper does not run the planter")
+	}
+	// THE NOTIFIER IS FIRST, and the ORDER is the property ([B.143]): the two steps after it
+	// write into /config, so a rollback point taken after them already contains briard's own
+	// edits. Asserted by position rather than by presence.
+	ni := strings.Index(wrapperSource, mountPoint+"/notify.py")
+	if ni < 0 {
+		t.Fatal("the wrapper does not tell the agent the service is starting")
+	}
+	for _, later := range []string{mountPoint + "/ensure-token.py", mountPoint + "/plant.py"} {
+		if i := strings.Index(wrapperSource, later); i < ni {
+			t.Errorf("%s runs before the notifier; the member would contain our own writes", later)
+		}
+	}
+	// EVERY STEP IS UNFAILABLE. The wrapper may never cost a household its Home Assistant, which
+	// is what `|| true` on each buys -- and the notifier is the likeliest to fail of the three,
+	// since it alone depends on something outside the container answering.
+	for _, line := range strings.Split(wrapperSource, "\n") {
+		if strings.HasPrefix(line, "python3 ") && !strings.HasSuffix(strings.TrimSpace(line), "|| true") {
+			t.Errorf("a wrapper step can fail the service: %q", line)
+		}
 	}
 }
