@@ -107,6 +107,7 @@ func runInternal(args []string) {
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
+	inbound := fs.String("inbound", "", "serve ONE inbound request for this service on stdin/stdout -- the socket-activated handler a service container's own calls reach ([B.143])")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -148,6 +149,27 @@ func runInternal(args []string) {
 		}
 		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("%s: %v", what, err)
+		}
+		return
+	}
+
+	if *inbound != "" {
+		// SOCKET ACTIVATION HANDS US THE CONNECTION AS STDIN/STDOUT (Accept=yes), which is the
+		// whole reason the handler is a function over an io.Reader and an io.Writer: one
+		// short-lived process per connection, no listener of our own to own or to leak, and two
+		// callers cannot contend for the socket because systemd owns the bind.
+		//
+		// ⚠️ THE SERVICE IS NAMED BY THE FLAG, never by the caller. The unit that carries this
+		// flag is rendered per service and its socket is mounted into that service's container
+		// alone, so the identity is fixed by the thing that created the listener. A request
+		// cannot say who it is; see the trust rules in agent/guestagent/inbound.go.
+		//
+		// A NON-ZERO EXIT IS FOR THE JOURNAL, not for the caller: the caller has already been
+		// answered on the connection (ServeInbound writes the response either way) and is not
+		// allowed to fail its service over this. The exit code is what makes the failure visible
+		// to a human reading `systemctl status` afterwards.
+		if err := guestagent.ServeInbound(ctx, guestfirmware.NewOSExecutor(), *inbound, os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("inbound: %v", err)
 		}
 		return
 	}

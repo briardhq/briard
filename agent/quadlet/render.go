@@ -367,10 +367,14 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 // DataRoot is the service's single btrfs subvolume on the replicated volume.
 func DataRoot(service string) string { return "/var/lib/briard/" + service }
 
-// snapshotsDir is where every member of a service's ring lives: read-only siblings of the data
+// SnapshotsDir is where every member of a service's ring lives: read-only siblings of the data
 // subvolume under the btrfs root's .snapshots dir (created by briard-primary-storage at mount), so
 // they replicate with the volume.
-const snapshotsDir = "/var/lib/briard/.snapshots/"
+const SnapshotsDir = "/var/lib/briard/.snapshots/"
+
+// snapshotStamp is the member name's time format: fixed width, UTC, and chosen so that lexical
+// order over names IS chronological order. Every reader of the ring leans on that.
+const snapshotStamp = "20060102T150405Z"
 
 // A Trigger says what caused a member to be taken, and is the half of its name a human scans.
 // The set is closed: the picker and the retention rule both switch on it, and a trigger nobody
@@ -383,7 +387,48 @@ const (
 	// evict it within days of Home Assistant's ordinary restart cadence, and "go back to the
 	// version before the update that broke my house" is what the ring exists for.
 	TriggerUpgrade Trigger = "upgrade"
+	// TriggerStart is an ordinary service start — the container's, or for a service that can tell
+	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
+	// the ring's keep-last-N count prunes, and the only one the rate limit may skip.
+	TriggerStart Trigger = "start"
 )
+
+// SnapshotMemberService reads the service out of a member's name, and reports whether the name is
+// one of ours at all. The sweep over `.snapshots` has to tell our members from anything else a
+// human or a future feature left there, and the name is the only thing it can ask.
+func SnapshotMemberService(name string) (string, bool) {
+	svc, _, _, ok := parseMember(name)
+	return svc, ok
+}
+
+// SnapshotMemberTime reads the moment a member was taken out of its name. It is what the ring's
+// rate limit and its pruning order read, and it is why the stamp is in the name rather than only
+// in the sidecar: answering "how old is the newest member" must not cost a file read per member.
+func SnapshotMemberTime(name string) (time.Time, bool) {
+	_, _, at, ok := parseMember(name)
+	return at, ok
+}
+
+// parseMember splits `<service>-<trigger>-<stamp>`. The service may itself contain dashes
+// ("home-assistant"), so it is parsed from the RIGHT: the stamp is fixed width and the trigger
+// comes from a closed set, which leaves whatever precedes them as the name.
+func parseMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
+	name = strings.TrimPrefix(name, SnapshotsDir)
+	for _, t := range []Trigger{TriggerUpgrade, TriggerStart} {
+		suffix := "-" + string(t) + "-"
+		i := strings.LastIndex(name, suffix)
+		if i <= 0 {
+			continue
+		}
+		stamp := name[i+len(suffix):]
+		parsed, err := time.Parse(snapshotStamp, stamp)
+		if err != nil {
+			continue
+		}
+		return name[:i], t, parsed.UTC(), true
+	}
+	return "", "", time.Time{}, false
+}
 
 // SnapshotMember is one member's subvolume path: service, trigger and the moment it was taken.
 //
@@ -396,7 +441,7 @@ const (
 //
 // Second precision, UTC, sortable lexically — the picker orders by name and a human reads it.
 func SnapshotMember(service string, trigger Trigger, at time.Time) string {
-	return snapshotsDir + service + "-" + string(trigger) + "-" + at.UTC().Format("20060102T150405Z")
+	return SnapshotsDir + service + "-" + string(trigger) + "-" + at.UTC().Format(snapshotStamp)
 }
 
 // SnapshotSidecar is where a member's metadata sits: beside the subvolume, never inside it.

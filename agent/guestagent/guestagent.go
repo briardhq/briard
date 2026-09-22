@@ -973,44 +973,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err != nil {
 				return nil, err
 			}
-			// REFUSE A COLLISION; do not resolve it. This verb used to DELETE an existing
-			// destination first, and that was right for exactly as long as the name was fixed:
-			// one `<service>-preupgrade` per service meant the second upgrade found the first
-			// one's snapshot sitting there, and `btrfs subvolume snapshot` given an existing
-			// directory creates the new snapshot INSIDE it -- which on a read-only snapshot
-			// fails with "Read-only file system". Measured on a soak run 2026-08-28: every
-			// upgrade after the first failed, the fleet stopped converging, and the error named
-			// the filesystem rather than the collision it actually was.
-			//
-			// ⚠️ THAT DELETE IS FATAL TO A RING ([B.143]). Members are a series now, named
-			// `<service>-<trigger>-<timestamp>` (quadlet.SnapshotMember), so they are distinct by
-			// construction and nothing legitimately supersedes anything. A delete-before-take
-			// kept here would silently destroy a member whenever two landed in the same second --
-			// losing history to a name clash, in a verb whose whole job is keeping it. Refusing
-			// makes that case loud and leaves the earlier member intact, which is the safe
-			// direction for both.
-			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err == nil {
-				return nil, fmt.Errorf("snapshot %s already exists -- refusing to replace a ring member", req.Path)
-			}
-			if err := run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path); err != nil {
-				return nil, err
-			}
-			// THE SIDECAR, AND WHY THE MEMBER GOES IF IT CANNOT BE WRITTEN. It cannot live inside
-			// the member (read-only from the instant it exists) and so cannot be atomic with it.
-			// The picker and the restore path both need a member's title and the manifest it was
-			// taken under, and an unlabelled subvolume is worse than no member at all: it is
-			// something a human must identify by hand before trusting it with their data. So the
-			// invariant is "every member has a sidecar", bought by undoing the half-made one.
-			// The host renders these bytes; the guest writes them (dumb hands).
-			if req.Sidecar != "" {
-				if err := x.WriteFile(sidecarPath(req.Path), []byte(req.Sidecar)); err != nil {
-					if derr := run("btrfs", "subvolume", "delete", req.Path); derr != nil {
-						return nil, fmt.Errorf("write snapshot sidecar: %w; AND the unlabelled member could not be removed: %v", err, derr)
-					}
-					return nil, fmt.Errorf("write snapshot sidecar (the member was removed): %w", err)
-				}
-			}
-			return nil, nil
+			// ONE IMPLEMENTATION, TWO CALLERS. The host drives this verb for the members only it
+			// can title (the upgrade point, where only the host knows a switch happened); the
+			// INBOUND channel calls the same function for the ones only the guest can see
+			// (inbound.go). A second copy of "take a member" would be a second place for the
+			// collision rule and the sidecar invariant to drift.
+			return nil, takeSnapshot(ctx, x, run, req.DataDir, req.Path, req.Sidecar)
 		case verbDataRestore:
 			req, err := snapshotReq(payload)
 			if err != nil {
