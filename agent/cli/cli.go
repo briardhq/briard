@@ -617,21 +617,17 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
-// consistencyNote is how the picker keeps the two kinds of point apart ([B.143]). A point taken
-// while the app was running is one the app has to recover from, which is a thing the household is
-// entitled to know BEFORE choosing it -- and the quiet case stays quiet, because most points are
-// clean and a note on every line is a note nobody reads.
+// consistencyNote is how the listing keeps the two kinds of point apart ([B.143]). A point taken
+// while the app was running is one the app has to recover from on the way back up, which is a
+// thing the household is entitled to know BEFORE choosing it.
 //
-// No jargon: "quiesced" and "crash-consistent" are our words, not a household's ([V3c.10]).
+// The WORDS are quadlet.Consistency.Note's, shared with the dashboard's picker so a household
+// hears one description of the fact rather than two. This adds only the shape of a terminal line.
 func consistencyNote(c quadlet.Consistency) string {
-	switch c {
-	case quadlet.Quiesced:
-		return ""
-	case quadlet.Crash:
-		return "  (taken while the app was running)"
-	default:
-		return "  (taken by an older briard; unverified)"
+	if note := c.Note(); note != "" {
+		return "  (" + note + ")"
 	}
+	return ""
 }
 
 func runAppRevert(ctx context.Context, sock, member string, stdout, stderr io.Writer) int {

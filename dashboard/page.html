@@ -86,6 +86,7 @@
     {{end}}
   </div>
   {{end}}
+  {{if .HA}}<p class="muted"><a href="/history/home-assistant">Points you can put Home Assistant back to</a> — one before every update, one either side of a restore, and one a night.</p>{{end}}
   {{if .Services}}<p class="muted">Apps on this machine: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
   <div class="card">
     <h2>Trusted devices</h2>
@@ -102,5 +103,56 @@
       <button type="submit">Approve</button>
     </form>
     {{if .HA}}<p class="muted">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.HA.URL}}profile/security" target="_blank" rel="noopener">your Home Assistant profile</a>.</p>{{end}}
+  </div>
+</main></body></html>{{end}}
+
+{{define "history"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{template "style"}}</head>
+<body><main>
+  <h1>Points</h1>
+  <div class="card">
+    <h2>{{.Service}}</h2>
+    {{if .Op}}
+      {{if .Op.Running}}<p>Putting {{.Op.Title}} back… the app stops for it and starts again afterwards. This page refreshes itself.</p>
+      <p class="muted">Started at {{.Op.Since}}.</p>
+      {{else if .Op.Failed}}<p>Could not put that point back: {{.Op.Detail}}</p>{{end}}
+    {{end}}
+    {{if .Error}}<p>Could not read this app's points: {{.Error}}</p>
+      <p class="muted">Or, on the machine that runs Briard: <code>sudo briard app history {{.Service}}</code></p>
+    {{else if not .Points}}<p class="muted">No points yet — the first arrives when the app next starts.</p>
+    {{else}}
+    <p class="muted">Newest first. Putting one back discards everything since it; a point is taken first, so that is undoable too.</p>
+    <ul class="devices">
+      {{range .Points}}<li>
+        <span>{{.Title}}</span>
+        <span class="muted">— {{.When}}{{if .Version}} · {{.Version}}{{end}}{{if .MovesCode}} · also changes the version{{end}}{{if .Note}} · {{.Note}}{{end}}</span>
+        <form method="post" action="/revert">
+          <input type="hidden" name="member" value="{{.Member}}">
+          <input type="hidden" name="title" value="{{.Title}}">
+          <button type="submit" class="quiet">Put back</button>
+        </form>
+      </li>{{end}}
+    </ul>
+    {{end}}
+    <p class="muted"><a href="/">Back</a></p>
+  </div>
+</main></body></html>{{end}}
+
+{{define "confirm"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{template "style"}}</head>
+<body><main>
+  <h1>Put this point back?</h1>
+  <div class="card">
+    <h2>{{.Title}}</h2>
+    <p class="muted">Taken {{.When}}.{{if .Note}} This one was {{.Note}} — {{.Service}} recovers it on the way back up.{{end}}</p>
+    <p>Everything {{.Service}} has recorded since then is discarded.{{if .MovesCode}} This also moves the app from {{.From}} back to {{.To}}.{{end}}</p>
+    <p class="muted">The app stops for it and starts again afterwards. A point is taken first, so this is itself undoable.</p>
+    <form method="post" action="/revert">
+      <input type="hidden" name="member" value="{{.Member}}">
+      <input type="hidden" name="title" value="{{.Title}}">
+      <input type="hidden" name="confirm" value="yes">
+      <button type="submit">Put it back</button>
+    </form>
+    <p class="muted"><a href="/history/{{.Service}}">Cancel</a></p>
   </div>
 </main></body></html>{{end}}

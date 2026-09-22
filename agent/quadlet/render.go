@@ -648,6 +648,27 @@ const (
 	Crash Consistency = "crash"
 )
 
+// Note is what a household is told about a point's consistency, in one phrase, or "" when there
+// is nothing to say ([B.143]).
+//
+// ONE SENTENCE, ONE PLACE. Both front ends render it — `briard app history` and the dashboard's
+// picker — and a household that heard two different descriptions of the same fact would have to
+// work out whether they meant the same thing. It stays out of our vocabulary too: "quiesced" and
+// "crash-consistent" are words for this file, not for somebody's kitchen ([V3c.10]).
+//
+// The QUIET case is quiet on purpose: most points are clean, and a note on every line is a note
+// nobody reads.
+func (c Consistency) Note() string {
+	switch c {
+	case Quiesced:
+		return ""
+	case Crash:
+		return "taken while the app was running"
+	default:
+		return "taken by an older briard; unverified"
+	}
+}
+
 // SnapshotMeta is a member's sidecar — what the picker shows and what a restore needs.
 //
 // MANIFEST, NOT A DIGEST. The restore path re-provisions from the manifest text and re-renders

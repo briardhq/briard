@@ -114,6 +114,9 @@ type app struct {
 	// service, from the click until the routes table lists the service.
 	port     adminPort
 	installs map[string]*install
+	// restores is the picker's half ([B.143], history.go): one restore in flight per app, from
+	// the confirmation until the host answers. In memory for the same reason installs is.
+	restores map[string]*restoreOp
 	// pulls is where a pull's progress is read from ([V3b.31j]): podman's layer store and the
 	// pull units' private tmp.
 	pulls pullPaths
@@ -121,7 +124,8 @@ type app struct {
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
-		pending: map[string]*pending{}, installs: map[string]*install{}, port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths}
+		pending: map[string]*pending{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
+		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths}
 }
 
 const (
@@ -168,6 +172,23 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"))
+	case strings.HasPrefix(r.URL.Path, "/history/") && r.Method == http.MethodGet:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		name := historyService(r.URL.Path)
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		a.showHistory(w, r, name)
+	case r.URL.Path == "/revert" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.requestRevert(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodPost:
 		a.ask(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodGet:
