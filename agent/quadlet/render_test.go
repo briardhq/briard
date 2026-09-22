@@ -427,3 +427,48 @@ func TestImagesNeedsNoAddress(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotMemberNamesTheSeries is the one place a member's path is asserted as a LITERAL,
+// and it has to be: everywhere else derives the name from this function, so only here can the
+// FORMAT itself be wrong without something else covering for it.
+//
+// Three properties, each load-bearing ([B.143]). The trigger is in the name, so a human scanning
+// `.snapshots` can tell an upgrade point from a daily one without opening a sidecar. The
+// timestamp is UTC and fixed-width, so lexical order is chronological order and the picker needs
+// no parsing to sort. And the whole thing is one path element — a member is a btrfs subvolume,
+// and a `/` would put it somewhere else entirely.
+func TestSnapshotMemberNamesTheSeries(t *testing.T) {
+	at := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
+	got := SnapshotMember("home-assistant", TriggerUpgrade, at)
+	want := "/var/lib/briard/.snapshots/home-assistant-upgrade-20260922T103005Z"
+	if got != want {
+		t.Errorf("SnapshotMember = %q, want %q", got, want)
+	}
+	if s := SnapshotSidecar(got); s != want+".json" {
+		t.Errorf("SnapshotSidecar = %q, want it beside the member", s)
+	}
+	// A non-UTC clock must not move the name: two nodes in different zones taking a member at the
+	// same instant have to agree on what it is called, or the ring forks per node.
+	east := time.FixedZone("UTC+9", 9*3600)
+	if other := SnapshotMember("home-assistant", TriggerUpgrade, at.In(east)); other != want {
+		t.Errorf("a non-UTC clock renamed the member: %q, want %q", other, want)
+	}
+	if strings.Count(strings.TrimPrefix(got, "/var/lib/briard/.snapshots/"), "/") != 0 {
+		t.Errorf("a member must be one path element: %q", got)
+	}
+}
+
+// TestSnapshotMembersSortChronologically: the picker orders by name, so the format has to make
+// that the same as ordering by time. It is the reason for the fixed-width UTC stamp.
+func TestSnapshotMembersSortChronologically(t *testing.T) {
+	base := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
+	earlier := SnapshotMember("ha", TriggerUpgrade, base)
+	later := SnapshotMember("ha", TriggerUpgrade, base.Add(time.Second))
+	if !(earlier < later) {
+		t.Errorf("lexical order is not chronological: %q then %q", earlier, later)
+	}
+	yearOver := SnapshotMember("ha", TriggerUpgrade, time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !(later < yearOver) {
+		t.Errorf("lexical order breaks across a year: %q then %q", later, yearOver)
+	}
+}

@@ -415,6 +415,11 @@ type serviceRequest struct {
 type snapshotRequest struct {
 	DataDir string `json:"data_dir"`
 	Path    string `json:"path"`
+	// Sidecar is the member's metadata, rendered by the HOST (quadlet.SnapshotMeta) and written
+	// here verbatim beside the subvolume. Empty on data.restore, which addresses a member rather
+	// than making one. A guest that ignored this field would leave unlabelled members behind,
+	// which is why adding it bumped the protocol rather than riding along optionally.
+	Sidecar string `json:"sidecar,omitempty"`
 }
 
 // serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
@@ -451,6 +456,12 @@ type serviceInstalledRequest struct {
 // elements — and the dispatch re-checks it with safeUnitName before it gets here, because the
 // guest must not depend on the host having validated its input.
 func manifestPath(name string) string { return manifestDir + "/" + name + ".json" }
+
+// sidecarPath mirrors quadlet.SnapshotSidecar. Restated here rather than imported because the
+// guest is dumb hands for this verb -- it is handed a member path and some bytes, and deriving
+// the companion name is the only thing it does with either. The two must agree, and
+// TestSidecarPathMatchesTheRenderer is what keeps them in step.
+func sidecarPath(member string) string { return member + ".json" }
 
 // serviceWarmRequest names one image to ensure is present (service.warm), and the .image unit
 // that would obtain it. Both halves are needed because the CHECK is on the ref and the ACTION is
@@ -962,24 +973,44 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err != nil {
 				return nil, err
 			}
-			// REPLACE an existing rollback point rather than snapshotting into it. The path is
-			// fixed per service (quadlet.SnapshotPath), so the second upgrade of a service finds
-			// the first one's snapshot already sitting there -- and `btrfs subvolume snapshot`
-			// given an existing directory creates the new snapshot INSIDE it, which on a
-			// read-only snapshot fails with "Read-only file system". Measured on a soak run
-			// 2026-08-28: every upgrade after the first failed, the fleet stopped converging, and
-			// the error named the filesystem rather than the collision it actually was.
+			// REFUSE A COLLISION; do not resolve it. This verb used to DELETE an existing
+			// destination first, and that was right for exactly as long as the name was fixed:
+			// one `<service>-preupgrade` per service meant the second upgrade found the first
+			// one's snapshot sitting there, and `btrfs subvolume snapshot` given an existing
+			// directory creates the new snapshot INSIDE it -- which on a read-only snapshot
+			// fails with "Read-only file system". Measured on a soak run 2026-08-28: every
+			// upgrade after the first failed, the fleet stopped converging, and the error named
+			// the filesystem rather than the collision it actually was.
 			//
-			// A rollback point is one replaceable fact, not a series: the host asks for "the
-			// pre-upgrade state of this service", and the previous upgrade's copy is exactly what
-			// that supersedes. Deleting it here is what makes this verb idempotent, which is what
-			// its caller assumes.
+			// ⚠️ THAT DELETE IS FATAL TO A RING ([B.143]). Members are a series now, named
+			// `<service>-<trigger>-<timestamp>` (quadlet.SnapshotMember), so they are distinct by
+			// construction and nothing legitimately supersedes anything. A delete-before-take
+			// kept here would silently destroy a member whenever two landed in the same second --
+			// losing history to a name clash, in a verb whose whole job is keeping it. Refusing
+			// makes that case loud and leaves the earlier member intact, which is the safe
+			// direction for both.
 			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err == nil {
-				if err := run("btrfs", "subvolume", "delete", req.Path); err != nil {
-					return nil, err
+				return nil, fmt.Errorf("snapshot %s already exists -- refusing to replace a ring member", req.Path)
+			}
+			if err := run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path); err != nil {
+				return nil, err
+			}
+			// THE SIDECAR, AND WHY THE MEMBER GOES IF IT CANNOT BE WRITTEN. It cannot live inside
+			// the member (read-only from the instant it exists) and so cannot be atomic with it.
+			// The picker and the restore path both need a member's title and the manifest it was
+			// taken under, and an unlabelled subvolume is worse than no member at all: it is
+			// something a human must identify by hand before trusting it with their data. So the
+			// invariant is "every member has a sidecar", bought by undoing the half-made one.
+			// The host renders these bytes; the guest writes them (dumb hands).
+			if req.Sidecar != "" {
+				if err := x.WriteFile(sidecarPath(req.Path), []byte(req.Sidecar)); err != nil {
+					if derr := run("btrfs", "subvolume", "delete", req.Path); derr != nil {
+						return nil, fmt.Errorf("write snapshot sidecar: %w; AND the unlabelled member could not be removed: %v", err, derr)
+					}
+					return nil, fmt.Errorf("write snapshot sidecar (the member was removed): %w", err)
 				}
 			}
-			return nil, run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path)
+			return nil, nil
 		case verbDataRestore:
 			req, err := snapshotReq(payload)
 			if err != nil {
@@ -2652,9 +2683,13 @@ func (g *Client) ServiceActiveSince(ctx context.Context, unit string) (uint64, e
 }
 
 // Snapshot takes a read-only btrfs snapshot of dataDir at dest (a subvolume on the
-// same DRBD volume, so it replicates with it).
-func (g *Client) Snapshot(ctx context.Context, dataDir, dest string) error {
-	return g.c.Call(ctx, verbDataSnapshot, snapshotRequest{DataDir: dataDir, Path: dest}, nil)
+// same DRBD volume, so it replicates with it) and writes sidecar beside it.
+//
+// The guest refuses a dest that already exists rather than replacing it, and removes the member
+// if the sidecar cannot be written -- so a member either exists with its metadata or does not
+// exist ([B.143]).
+func (g *Client) Snapshot(ctx context.Context, dataDir, dest, sidecar string) error {
+	return g.c.Call(ctx, verbDataSnapshot, snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar}, nil)
 }
 
 // Restore replaces the live dataDir subvolume with a fresh rw snapshot of src. The

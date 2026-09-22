@@ -410,6 +410,11 @@ type Config struct {
 	// gated install to observe a verdict the fake already knows. 0 = the shipped window.
 	readinessSettle time.Duration
 
+	// clock names the moment a snapshot ring member is taken ([B.143]). Machinery, not a knob:
+	// the member's NAME carries that timestamp, so a test that cannot pin it cannot assert the
+	// name it expects. nil = time.Now.
+	clock func() time.Time
+
 	// WedgeFIFO is a TEST FIXTURE, not a product knob: a path the observe loop opens each cycle
 	// so agent-watchdog.nix can wedge that goroutine on purpose. Empty everywhere but that test.
 	// See wedgeForTest for why this is explicit rather than borrowed from a defect.

@@ -61,7 +61,8 @@ type fakeInstaller struct {
 	forgetEr      error
 	warmEr        error
 	restoreEr     error
-	snapEr        error // the rollback-point snapshot failing: [B.143] stops the service before taking it, so the undo must restart it
+	sidecars      []string // the member metadata handed to Snapshot, in order
+	snapEr        error    // the rollback-point snapshot failing: [B.143] stops the service before taking it, so the undo must restart it
 	// readiness is the S1 differential sample, queued: the first call answers with the first
 	// element, the next with the second. Two calls per gated install (baseline, then settled),
 	// so a two-element queue is one whole verdict.
@@ -145,8 +146,9 @@ func (f *fakeInstaller) ServiceStop(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "stop:"+unit)
 	return nil
 }
-func (f *fakeInstaller) Snapshot(_ context.Context, _, dest string) error {
+func (f *fakeInstaller) Snapshot(_ context.Context, _, dest, sidecar string) error {
 	f.steps = append(f.steps, "snapshot:"+dest)
+	f.sidecars = append(f.sidecars, sidecar) // what the picker reads back ([B.143])
 	return f.snapEr
 }
 func (f *fakeInstaller) Restore(_ context.Context, _, src string) error {
@@ -231,7 +233,21 @@ func catalogFor(t *testing.T, m manifest.Manifest) Config {
 		Promoter:      promoterUnits(),
 		HealthURL:     "http://192.168.1.100/healthz",
 		ServiceCache:  "", // off: these tests assert orchestration, not persistence
+		clock:         func() time.Time { return fixedNow },
 	}
+}
+
+// fixedNow pins the moment a ring member is named for. A member's NAME carries its timestamp
+// ([B.143]), so without a pinned clock a test can only assert the shape of the name it was
+// handed — which is not an assertion about the name the product chose.
+var fixedNow = time.Date(2026, 9, 22, 10, 30, 0, 0, time.UTC)
+
+// wantMember is the member the product must name, DERIVED the way the product derives it.
+// Restating the path as a literal is what the two rollback assertions used to do, and it is
+// exactly what a rename makes vacuous: a literal asserts that somebody typed the same string
+// twice, never that the caller and the renderer agree.
+func wantMember(service string, tr quadlet.Trigger) string {
+	return quadlet.SnapshotMember(service, tr, fixedNow)
 }
 
 // pemKey encodes a public key the way the release keyring expects it (PKIX "PUBLIC KEY").
@@ -453,14 +469,14 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
 	joined := strings.Join(f.steps, ",")
-	snap := "snapshot:" + "/var/lib/briard/.snapshots/home-assistant-preupgrade"
+	snap := "snapshot:" + wantMember("home-assistant", quadlet.TriggerUpgrade)
 	// The rollback point is taken BEFORE the volume is mutated (provision) and before the switch.
 	si, pi := strings.Index(joined, snap), strings.Index(joined, "provision")
 	if si < 0 || pi < 0 || si > pi {
 		t.Fatalf("snapshot must precede provision: %v", f.steps)
 	}
 	// The data is rolled back from that exact snapshot.
-	if !strings.Contains(joined, "restore:/var/lib/briard/.snapshots/home-assistant-preupgrade") {
+	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerUpgrade)) {
 		t.Fatalf("a failed upgrade did not restore the data subvolume: %v", f.steps)
 	}
 	// The volume ends up holding the PRIOR manifest again — the identity is reverted, not just the
@@ -1113,7 +1129,7 @@ func TestPriorServiceReadsOnlyItsOwnService(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, prior: other}
 	// Install a DIFFERENT service; the volume holds only home-assistant's manifest.
-	prior, subdirs, raw := cfg.priorService(context.Background(), f, "mosquitto", []byte(`{}`), func(string, ...any) {})
+	prior, subdirs, raw, _ := cfg.priorService(context.Background(), f, "mosquitto", []byte(`{}`), func(string, ...any) {})
 	if prior != nil || subdirs != nil || raw != "" {
 		t.Fatalf("prior = %v/%v/%q for mosquitto, want none -- another service's manifest answered for it", prior, subdirs, raw)
 	}
@@ -1274,7 +1290,7 @@ func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 	}
 	joined := strings.Join(f.steps, ",")
 	// The SAME {code + data} revert a failed floor drives — the verdict changes, the undo does not.
-	if !strings.Contains(joined, "restore:/var/lib/briard/.snapshots/home-assistant-preupgrade") {
+	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerUpgrade)) {
 		t.Fatalf("a tripped readiness gate did not restore the data subvolume: %v", f.steps)
 	}
 	if n := strings.Count(joined, "converge"); n != 2 {

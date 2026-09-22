@@ -367,13 +367,59 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 // DataRoot is the service's single btrfs subvolume on the replicated volume.
 func DataRoot(service string) string { return "/var/lib/briard/" + service }
 
-// SnapshotPath is the pre-upgrade rollback point for a service — a read-only sibling of its data
-// subvolume under the btrfs root's .snapshots dir (created by briard-primary-storage at mount), so it
-// replicates with the volume. One in-flight upgrade per service, so a fixed name — and a leftover
-// from a crashed upgrade needs no sweeper, because `data.snapshot` deletes an existing rollback
-// point before taking the new one. A rollback point is one replaceable fact, not a series.
-func SnapshotPath(service string) string {
-	return "/var/lib/briard/.snapshots/" + service + "-preupgrade"
+// snapshotsDir is where every member of a service's ring lives: read-only siblings of the data
+// subvolume under the btrfs root's .snapshots dir (created by briard-primary-storage at mount), so
+// they replicate with the volume.
+const snapshotsDir = "/var/lib/briard/.snapshots/"
+
+// A Trigger says what caused a member to be taken, and is the half of its name a human scans.
+// The set is closed: the picker and the retention rule both switch on it, and a trigger nobody
+// enumerated is a member nobody prunes.
+type Trigger string
+
+const (
+	// TriggerUpgrade is the pre-upgrade rollback point — the member [B.121] rules must be taken
+	// on a STOPPED container. It is never pruned by the ring's count: a flat keep-last-N would
+	// evict it within days of Home Assistant's ordinary restart cadence, and "go back to the
+	// version before the update that broke my house" is what the ring exists for.
+	TriggerUpgrade Trigger = "upgrade"
+)
+
+// SnapshotMember is one member's subvolume path: service, trigger and the moment it was taken.
+//
+// A SERIES, WHICH IS THE WHOLE OF [B.143]. This replaced a single fixed `<service>-preupgrade`
+// name whose doc read "a rollback point is one replaceable fact, not a series" — true while the
+// only member was the one an in-flight upgrade needed, and the reason `data.snapshot` used to
+// DELETE an existing point before taking the new one. Both are retired together: members are
+// distinct by construction now, so nothing is replaced and the verb refuses a collision instead
+// of resolving it.
+//
+// Second precision, UTC, sortable lexically — the picker orders by name and a human reads it.
+func SnapshotMember(service string, trigger Trigger, at time.Time) string {
+	return snapshotsDir + service + "-" + string(trigger) + "-" + at.UTC().Format("20060102T150405Z")
+}
+
+// SnapshotSidecar is where a member's metadata sits: beside the subvolume, never inside it.
+// Inside is impossible — the member is read-only from the instant it exists — and that is also
+// why the sidecar cannot be atomic with it. The guest writes it immediately after the snapshot
+// and removes the member if it cannot, so "every member has a sidecar" is an invariant the
+// picker may rely on rather than a hope.
+func SnapshotSidecar(member string) string { return member + ".json" }
+
+// SnapshotMeta is a member's sidecar — what the picker shows and what a restore needs.
+//
+// MANIFEST, NOT A DIGEST. The restore path re-provisions from the manifest text and re-renders
+// units from it, a service with several containers has several digests, and env, mounts, ports
+// and subdirs are identity too; the digests are inside it. It cannot be read off the member
+// either: the volume keeps manifests in `.services/<name>.json`, a SIBLING of the data subvolume,
+// so a btrfs snapshot of the data does not capture the code identity that wrote it. Carrying it
+// here is what makes a member self-contained.
+type SnapshotMeta struct {
+	Service  string    `json:"service"`
+	Trigger  Trigger   `json:"trigger"`
+	Title    string    `json:"title"` // what the picker shows, e.g. "2026.7.1, before upgrading to 2026.8.0"
+	TakenAt  time.Time `json:"taken_at"`
+	Manifest string    `json:"manifest"` // the manifest running when it was taken, verbatim
 }
 
 // DataPath is one container's plain subdirectory inside that subvolume.

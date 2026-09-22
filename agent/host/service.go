@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,7 +99,7 @@ type serviceInstaller interface {
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
-	Snapshot(ctx context.Context, dataDir, dest string) error
+	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
 	Restore(ctx context.Context, dataDir, src string) error
 }
 
@@ -280,7 +281,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-service node) or an idempotent re-install of the same manifest. Read BEFORE
 	// ServiceProvision overwrites the volume's manifest, so a failed upgrade can put the prior back.
-	prior, priorSubdirs, priorRaw := cfg.priorService(ctx, g, m.Name, raw, logf)
+	prior, priorSubdirs, priorRaw, priorVersion := cfg.priorService(ctx, g, m.Name, raw, logf)
 
 	// Units are node-local (/run), so this node renders its own. A multi-node home has the
 	// directive delivered to EVERY node, and each renders locally — that is what lets a survivor
@@ -396,8 +397,29 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 			}
 			return failed(detail + " (the service was restarted)")
 		}
-		snap = quadlet.SnapshotPath(m.Name)
-		if err := g.Snapshot(ctx, dataDir, snap); err != nil {
+		// THE MEMBER IS PINNED TO THE VERSION IT IS TAKEN UNDER, which is v1 by construction —
+		// it is taken before the switch, so the manifest recorded here is the one still on the
+		// volume and the one a revert re-provisions. v2's own first member will pin v2, leaving
+		// two members seconds apart with near-identical data and unambiguous meanings: this one
+		// goes back to v1, that one goes to v2 as of then. Both are kept; the duplication is not
+		// fought, and no "who wrote the data" bookkeeping is needed ([B.143]).
+		//
+		// The title is what the picker shows, so it names the two VERSIONS rather than the
+		// trigger the name already carries.
+		at := cfg.takenAt()
+		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgrade, at)
+		meta := quadlet.SnapshotMeta{
+			Service:  m.Name,
+			Trigger:  quadlet.TriggerUpgrade,
+			Title:    fmt.Sprintf("%s, before upgrading to %s", priorVersion, m.Version),
+			TakenAt:  at,
+			Manifest: priorRaw,
+		}
+		sidecar, err := json.Marshal(meta)
+		if err != nil {
+			return stoppedFail(fmt.Sprintf("render the rollback point's sidecar: %v", err))
+		}
+		if err := g.Snapshot(ctx, dataDir, snap, string(sidecar)); err != nil {
 			return stoppedFail(fmt.Sprintf("snapshot rollback point: %v", err))
 		}
 	}
@@ -784,26 +806,37 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 // fresh; the gate still guards the new service, so the worst case is a rollback to empty rather
 // than to the broken new one, never to it). The raw bytes and subdirs come back too, because the
 // rollback re-provisions them as the volume's identity.
-func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string) {
+// It also returns the prior manifest's VERSION, which is not derivable from the rendering: it is
+// what the rollback point's title names ("2026.7.1, before upgrading to 2026.8.0"), and the
+// picker shows titles rather than paths ([B.143]).
+func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string, string) {
 	raw, err := g.ServiceInstalled(ctx, name)
 	if err != nil {
 		logf("service install: could not read the installed manifest (%v); treating as a fresh install", err)
-		return nil, nil, ""
+		return nil, nil, "", ""
 	}
 	if raw == "" || raw == string(incoming) {
-		return nil, nil, ""
+		return nil, nil, "", ""
 	}
 	pm, _, perr := manifest.Parse([]byte(raw))
 	if perr != nil {
 		logf("service install: installed manifest does not parse (%v); no rollback target", perr)
-		return nil, nil, ""
+		return nil, nil, "", ""
 	}
 	pr, rerr := quadlet.Render(pm, "")
 	if rerr != nil {
 		logf("service install: installed manifest does not render (%v); no rollback target", rerr)
-		return nil, nil, ""
+		return nil, nil, "", ""
 	}
-	return &pr, quadlet.Subdirs(pm), raw
+	return &pr, quadlet.Subdirs(pm), raw, pm.Version
+}
+
+// takenAt is the moment a ring member is named for. See Config.clock.
+func (cfg Config) takenAt() time.Time {
+	if cfg.clock != nil {
+		return cfg.clock()
+	}
+	return time.Now()
 }
 
 // filesToRemove lists filenames in `have` that `want` does not also write. Used both ways: forward

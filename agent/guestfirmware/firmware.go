@@ -59,9 +59,17 @@ const (
 // policy ends -- the host agent self-updates independently of the guest OS closure ([V3.4]), so
 // a floor raise makes every host refuse every not-yet-rolled guest fleet-wide and its own health
 // gate then reverts the self-update.
+// VERSION 3 (2026-09-22, [B.143]) gave data.snapshot a `sidecar` field: the member's metadata,
+// rendered by the host and written beside the subvolume. This is the case a capability handshake
+// CANNOT catch, and that is why it took a version rather than riding along optionally -- the verb
+// name is unchanged, so a v2 guest advertises it, accepts the call, ignores the field it does not
+// know, and reports success. The host would then believe every ring member carried its title and
+// the manifest it was taken under, while the volume filled with unlabelled subvolumes nobody can
+// identify or restore from. A field whose absence is SILENT is a floor raise; only a field whose
+// absence is loud could have been optional.
 const (
-	GuestProtocol    = 2 // the current host<->guest wire protocol version
-	MinGuestProtocol = 2 // the oldest guest protocol this host can still drive
+	GuestProtocol    = 3 // the current host<->guest wire protocol version
+	MinGuestProtocol = 3 // the oldest guest protocol this host can still drive
 )
 
 // The two verbs the firmware serves besides the three push ones: the handshake, and the clean

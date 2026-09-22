@@ -19,6 +19,7 @@ import (
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
+	"briard.io/agent/quadlet"
 	"briard.io/internal/testsock"
 	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
@@ -33,6 +34,7 @@ type fakeExec struct {
 	hostname string
 	output   []byte
 	err      error
+	writeErr error // WriteFile fails: a snapshot sidecar that cannot be written ([B.143])
 	runFn    func(name string, args []string) ([]byte, error)
 }
 
@@ -45,6 +47,9 @@ func (f *fakeExec) Run(_ context.Context, name string, args ...string) ([]byte, 
 }
 
 func (f *fakeExec) WriteFile(path string, data []byte) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
 	if f.files == nil {
 		f.files = map[string]string{}
 	}
@@ -788,45 +793,91 @@ func TestServiceActiveReadsState(t *testing.T) {
 	}
 }
 
-func TestDataSnapshotCommand(t *testing.T) {
-	// Nothing at the destination: `show` fails, so there is nothing to replace.
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+// absentDest makes `btrfs subvolume show` fail, which is what "nothing is at the destination"
+// looks like -- the normal case for a ring member, whose name carries a timestamp.
+func absentDest() *fakeExec {
+	return &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if len(args) > 1 && args[1] == "show" {
 			return nil, errors.New("ERROR: not a subvolume")
 		}
 		return nil, nil
 	}}
+}
+
+func TestDataSnapshotCommand(t *testing.T) {
+	f := absentDest()
 	g := dial(t, f)
-	if err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1"); err != nil {
+	if err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-upgrade-1", `{"title":"x"}`); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-1"},
-		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-upgrade-1"},
+		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-upgrade-1"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
 	}
+	if got := f.files["/data/ha/.snapshots/ha-upgrade-1.json"]; got != `{"title":"x"}` {
+		t.Errorf("sidecar = %q, want the host's bytes written beside the member", got)
+	}
 }
 
-// THE SECOND UPGRADE OF A SERVICE, which is where this broke: the rollback point has a fixed
-// path, so the previous upgrade left a READ-ONLY snapshot sitting at it, and `btrfs subvolume
-// snapshot` given an existing directory writes INSIDE it -- failing with "Read-only file system"
-// and taking the whole upgrade with it (measured on a soak run, 2026-08-28). A stale rollback
-// point is superseded, so it is deleted first.
-func TestDataSnapshotReplacesAStaleRollbackPoint(t *testing.T) {
+// TestDataSnapshotRefusesAnExistingMember is the delete-before-take, retired ([B.143]).
+//
+// It was right while the name was FIXED: one `<service>-preupgrade` per service meant the second
+// upgrade found the first one's read-only snapshot sitting there, and `btrfs subvolume snapshot`
+// given an existing directory writes INSIDE it -- failing with "Read-only file system" and taking
+// the whole upgrade with it (measured on a soak run, 2026-08-28). Members are a series now, so
+// nothing legitimately supersedes anything and a collision means two landed in the same second.
+// Deleting there would destroy history inside the verb whose job is keeping it, so it refuses and
+// the earlier member survives.
+func TestDataSnapshotRefusesAnExistingMember(t *testing.T) {
 	f := &fakeExec{} // `show` succeeds => the destination already holds a subvolume
 	g := dial(t, f)
-	if err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-1"); err != nil {
-		t.Fatal(err)
+	err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-upgrade-1", `{"title":"x"}`)
+	if err == nil {
+		t.Fatal("a collision was accepted; the earlier member would have been destroyed")
 	}
-	want := [][]string{
-		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-1"},
-		{"btrfs", "subvolume", "delete", "/data/ha/.snapshots/ha-1"},
-		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-1"},
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error = %v, want it to name the collision", err)
 	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want the stale point deleted before the new one is taken %v", f.runs, want)
+	for _, r := range f.runs {
+		if len(r) > 2 && r[2] == "delete" {
+			t.Fatalf("a ring member was deleted to make room: %v", f.runs)
+		}
+	}
+}
+
+// TestDataSnapshotDropsAMemberItCannotLabel: the sidecar cannot live inside a read-only subvolume,
+// so it cannot be atomic with it. An unlabelled member is worse than no member -- the picker
+// cannot show it and a restore cannot know what code wrote it -- so the half-made one is undone,
+// and "every member has a sidecar" stays an invariant rather than a hope.
+func TestDataSnapshotDropsAMemberItCannotLabel(t *testing.T) {
+	f := absentDest()
+	f.writeErr = errors.New("no space left on device")
+	g := dial(t, f)
+	err := g.Snapshot(context.Background(), "/data/ha", "/data/ha/.snapshots/ha-upgrade-1", `{"title":"x"}`)
+	if err == nil {
+		t.Fatal("an unlabelled member was accepted")
+	}
+	var deleted bool
+	for _, r := range f.runs {
+		if len(r) > 3 && r[2] == "delete" && r[3] == "/data/ha/.snapshots/ha-upgrade-1" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Errorf("the unlabelled member was left behind: %v", f.runs)
+	}
+}
+
+// TestSidecarPathMatchesTheRenderer: the guest derives the sidecar's name from the member's, and
+// so does the host that renders its bytes. Two definitions, one convention -- asserted rather than
+// assumed, because a drift here leaves every member silently unlabelled.
+func TestSidecarPathMatchesTheRenderer(t *testing.T) {
+	member := quadlet.SnapshotMember("ha", quadlet.TriggerUpgrade, time.Unix(0, 0))
+	if got, want := sidecarPath(member), quadlet.SnapshotSidecar(member); got != want {
+		t.Errorf("sidecarPath = %q, quadlet.SnapshotSidecar = %q", got, want)
 	}
 }
 
