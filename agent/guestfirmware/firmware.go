@@ -59,17 +59,30 @@ const (
 // policy ends -- the host agent self-updates independently of the guest OS closure ([V3.4]), so
 // a floor raise makes every host refuse every not-yet-rolled guest fleet-wide and its own health
 // gate then reverts the self-update.
-// VERSION 3 (2026-09-22, [B.143]) gave data.snapshot a `sidecar` field: the member's metadata,
-// rendered by the host and written beside the subvolume. This is the case a capability handshake
-// CANNOT catch, and that is why it took a version rather than riding along optionally -- the verb
-// name is unchanged, so a v2 guest advertises it, accepts the call, ignores the field it does not
-// know, and reports success. The host would then believe every ring member carried its title and
-// the manifest it was taken under, while the volume filled with unlabelled subvolumes nobody can
-// identify or restore from. A field whose absence is SILENT is a floor raise; only a field whose
-// absence is loud could have been optional.
+// ⚠️ [B.143] RAISED THIS FLOOR TO 3 AND GATE 3 PROVED IT WRONG, 2026-09-22. Recorded because the
+// reasoning was half right and the remedy was not, and the same trap is one edit away from anyone
+// adding a field to an existing verb.
+//
+// The change was a `sidecar` field on data.snapshot. A v2 guest advertises that verb, accepts the
+// call, ignores the field it does not know and reports success -- so the host would believe every
+// ring member carried its metadata while the volume filled with unlabelled subvolumes. That much
+// was right: a field whose absence is SILENT cannot be optional.
+//
+// What a floor costs is the part that was wrong, and agent/guestagent already said so in as many
+// words: "raising MinGuestProtocol makes every host refuse every not-yet-rolled guest fleet-wide,
+// and its own health gate then reverts the self-update". Measured exactly that way -- the host
+// self-updated, refused the still-v2 guest at the handshake, and `briard update -vm` answered
+// "agent is shutting down" twice while the node sat on the old image. The deadlock is the shape
+// worth remembering: reaching the new image REQUIRES the guest channel that the floor has just
+// forbidden, so no node can ever cross it and every one of them needs a reinstall.
+//
+// THE INSTRUMENT IS A NEW VERB NAME, not a version. An old guest does not advertise it, so
+// Client.Supports refuses exactly the one path that needs it and every other path keeps working
+// -- the precedent service.warm set ([V3b.3](e1)). data.member is that verb; data.snapshot keeps
+// its old behaviour untouched so an un-rolled HOST against a rolled guest still works too.
 const (
-	GuestProtocol    = 3 // the current host<->guest wire protocol version
-	MinGuestProtocol = 3 // the oldest guest protocol this host can still drive
+	GuestProtocol    = 2 // the current host<->guest wire protocol version
+	MinGuestProtocol = 2 // the oldest guest protocol this host can still drive
 )
 
 // The two verbs the firmware serves besides the three push ones: the handshake, and the clean

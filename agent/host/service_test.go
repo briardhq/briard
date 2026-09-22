@@ -45,6 +45,7 @@ type fakeInstaller struct {
 	// another service's manifest must not satisfy a read for this one ([V3b.3](b)).
 	prior        map[string]string
 	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
+	noMember     bool     // advertises everything BUT data.member: a guest older than the ring ([B.143])
 	free         int64    // what storage.free reports as free (0 = plenty is NOT implied; tests set it)
 	freeErr      error    // storage.free failing: the gate logs and the install proceeds unmeasured
 	staleRemoved []string // unit files a render was told to remove: the collateral surface
@@ -142,6 +143,7 @@ func (f *fakeInstaller) ServiceInstalled(_ context.Context, name string) (string
 	return f.prior[name], nil
 }
 func (f *fakeInstaller) SupportsServiceInstalled() bool { return !f.oldGuest }
+func (f *fakeInstaller) SupportsSnapshotMember() bool   { return !f.oldGuest && !f.noMember }
 func (f *fakeInstaller) ServiceStop(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "stop:"+unit)
 	return nil
@@ -1620,5 +1622,33 @@ func TestInstallBudgetFollowsThePullBound(t *testing.T) {
 	want := quadlet.PullTimeout(big.Size) + healthGate
 	if got := installBudgetFor(big); got != want || got <= installBudget {
 		t.Errorf("a 622 MB entry = %s, want %s (> %s)", got, want, installBudget)
+	}
+}
+
+// TestInstallRefusesAGuestThatCannotTakeAMember: the ring is gated on the CAPABILITY, and the
+// refusal has to be its own -- a guest can be current in every other respect and still predate
+// data.member, because the host agent self-updates independently of the guest OS ([V3.4]).
+//
+// Falling back to data.snapshot would be the tempting workaround and is the one thing that must
+// not happen: it takes an UNLABELLED member, which is precisely what the sidecar exists to
+// prevent, and the picker could then offer a household a rollback point it cannot identify.
+//
+// ⚠️ It is a capability and not a protocol floor deliberately. [B.143] tried the floor and gate 3
+// refused the release: every host refuses every not-yet-rolled guest, the health gate reverts the
+// self-update, and the node cannot reach the image that would have fixed it.
+func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	f := &fakeInstaller{primary: true, active: true, healthy: true, noMember: true}
+	o := installService(cfg, f)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed", o)
+	}
+	if !strings.Contains(o.Detail, "data.member") {
+		t.Errorf("the refusal does not name the missing verb: %q", o.Detail)
+	}
+	for _, s := range f.steps {
+		if strings.HasPrefix(s, "snapshot:") || strings.HasPrefix(s, "provision") {
+			t.Errorf("the install acted before refusing: %v", f.steps)
+		}
 	}
 }

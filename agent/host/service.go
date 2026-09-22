@@ -100,6 +100,10 @@ type serviceInstaller interface {
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
 	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
+	// SupportsSnapshotMember gates the RING ([B.143]): an older guest advertises data.snapshot but
+	// not data.member, and taking the old verb instead would leave an unlabelled member -- the one
+	// thing the sidecar exists to prevent. Refused loudly, never worked around.
+	SupportsSnapshotMember() bool
 	Restore(ctx context.Context, dataDir, src string) error
 }
 
@@ -217,6 +221,14 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// appears.
 	if !g.SupportsServiceConverge() {
 		return failed("this guest is too old to converge itself to the volume (no service.converge); update the guest OS before installing")
+	}
+	// Same instrument again, for the ring ([B.143]). It is the capability rather than a protocol
+	// floor DELIBERATELY: a floor makes every host refuse every not-yet-rolled guest fleet-wide
+	// and its own health gate then reverts the self-update, which gate 3 measured on 2026-09-22 --
+	// the node could not reach the image that would have fixed it, because reaching it needs the
+	// channel the floor had just closed. This refuses exactly the one path that needs the verb.
+	if !g.SupportsSnapshotMember() {
+		return failed("this guest is too old to take a titled rollback point (no data.member); update the guest OS before installing")
 	}
 	parent := ctx
 	ctx, cancel := cfg.beat.budget(parent, installBudget)

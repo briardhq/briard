@@ -143,8 +143,14 @@ const (
 	// perfectly good install.
 	verbServiceHealthOf = "service.healthof"
 	verbDataSnapshot    = "data.snapshot" // btrfs subvolume snapshot -r <DataDir> <dest>
-	verbDataRestore     = "data.restore"  // replace the live subvolume with a snapshot
-	verbOSSystem        = "os.system"     // readlink -f /run/current-system -> closure store path
+	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
+	// the sidecar beside it ([B.143]). A NEW NAME rather than a field on data.snapshot, and that
+	// is the whole lesson of the floor raise gate 3 refused: an old guest does not advertise this,
+	// so Client.Supports refuses exactly the one path that needs it, while a version floor would
+	// have refused every path on every not-yet-rolled guest fleet-wide.
+	verbDataMember  = "data.member"
+	verbDataRestore = "data.restore" // replace the live subvolume with a snapshot
+	verbOSSystem    = "os.system"    // readlink -f /run/current-system -> closure store path
 )
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
@@ -328,7 +334,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataRestore,
+	verbDataSnapshot, verbDataMember, verbDataRestore,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -969,6 +975,24 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			return parseUint(out), nil
 		case verbDataSnapshot:
+			req, err := snapshotReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			// ⚠️ FROZEN AT ITS OLD BEHAVIOUR ([B.143]). The ring's take is data.member below; this
+			// verb keeps replacing a fixed rollback point exactly as it always did, because an
+			// un-rolled HOST may still be driving a rolled guest -- the host agent self-updates
+			// independently of the guest OS ([V3.4]) -- and that host names one fixed
+			// `<service>-preupgrade` path per service. Teaching this verb to refuse a collision
+			// would break its second upgrade, which is the failure the delete was added to fix
+			// (measured on a soak run, 2026-08-28).
+			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err == nil {
+				if err := run("btrfs", "subvolume", "delete", req.Path); err != nil {
+					return nil, err
+				}
+			}
+			return nil, run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path)
+		case verbDataMember:
 			req, err := snapshotReq(payload)
 			if err != nil {
 				return nil, err
@@ -2650,15 +2674,22 @@ func (g *Client) ServiceActiveSince(ctx context.Context, unit string) (uint64, e
 	return usec, err
 }
 
-// Snapshot takes a read-only btrfs snapshot of dataDir at dest (a subvolume on the
-// same DRBD volume, so it replicates with it) and writes sidecar beside it.
+// Snapshot takes one RING member: a read-only btrfs snapshot of dataDir at dest (a subvolume on
+// the same DRBD volume, so it replicates with it) with sidecar written beside it.
 //
-// The guest refuses a dest that already exists rather than replacing it, and removes the member
-// if the sidecar cannot be written -- so a member either exists with its metadata or does not
-// exist ([B.143]).
+// The guest refuses a dest that already exists rather than replacing it, and removes the member if
+// the sidecar cannot be written -- so a member either exists with its metadata or does not exist
+// ([B.143]).
+//
+// ⚠️ GATE IT ON SupportsSnapshotMember. An older guest advertises data.snapshot but not this, and
+// calling the old verb instead would silently take an unlabelled member -- the exact outcome the
+// sidecar exists to prevent.
 func (g *Client) Snapshot(ctx context.Context, dataDir, dest, sidecar string) error {
-	return g.c.Call(ctx, verbDataSnapshot, snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar}, nil)
+	return g.c.Call(ctx, verbDataMember, snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar}, nil)
 }
+
+// SupportsSnapshotMember reports whether this guest can take a titled ring member.
+func (g *Client) SupportsSnapshotMember() bool { return g.Supports(verbDataMember) }
 
 // Restore replaces the live dataDir subvolume with a fresh rw snapshot of src. The
 // caller must have stopped the service first (bind released).

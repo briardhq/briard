@@ -1780,3 +1780,62 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 		}
 	}
 }
+
+// TestDataSnapshotStillReplacesForAnUnrolledHost: data.snapshot is FROZEN at its old behaviour,
+// and the reason is host/guest skew in the other direction ([B.143]).
+//
+// The host agent self-updates independently of the guest OS ([V3.4]), so a rolled guest may be
+// driven by a host that still names one fixed `<service>-preupgrade` path per service. Teaching
+// this verb the ring's refuse-a-collision rule would break that host's SECOND upgrade -- which is
+// the failure the delete was added to fix in the first place (soak run, 2026-08-28). The ring's
+// take is data.member; this one does not change.
+func TestDataSnapshotStillReplacesForAnUnrolledHost(t *testing.T) {
+	f := &fakeExec{} // `show` succeeds => something is already at the destination
+	g := dial(t, f)
+	if err := g.c.Call(context.Background(), verbDataSnapshot,
+		snapshotRequest{DataDir: "/data/ha", Path: "/data/ha/.snapshots/ha-preupgrade"}, nil); err != nil {
+		t.Fatalf("an unrolled host's second upgrade was refused: %v", err)
+	}
+	want := [][]string{
+		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-preupgrade"},
+		{"btrfs", "subvolume", "delete", "/data/ha/.snapshots/ha-preupgrade"},
+		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-preupgrade"},
+	}
+	if !reflect.DeepEqual(f.runs, want) {
+		t.Errorf("runs = %v, want the stale point replaced as it always was: %v", f.runs, want)
+	}
+}
+
+// TestRingTakeIsItsOwnVerb: the ring's take must be reachable ONLY by a name an old guest does not
+// advertise. That is what lets Client.Supports refuse the one path that needs it, instead of a
+// protocol floor refusing every path on every not-yet-rolled guest -- which gate 3 measured as a
+// node that could not reach the image that would have fixed it (2026-09-22).
+func TestRingTakeIsItsOwnVerb(t *testing.T) {
+	var advertised bool
+	for _, c := range guestCapabilities {
+		if c == verbDataMember {
+			advertised = true
+		}
+	}
+	if !advertised {
+		t.Fatal("data.member is not advertised; a capability-checking host would never use it")
+	}
+	if verbDataMember == verbDataSnapshot {
+		t.Fatal("the ring's take shares a name with the old verb; an old guest would accept it silently")
+	}
+}
+
+// TestProtocolFloorStaysAtTwo, and ⚠️ raising it is not a tidy-up.
+//
+// [B.143] raised it to 3 for a field on an existing verb and gate 3 refused the release: the host
+// self-updated, refused the still-v2 guest at the handshake, its health gate reverted the update,
+// and `briard update -vm` answered "agent is shutting down" while the node sat on the old image.
+// The deadlock is the thing to remember -- reaching the new image needs the channel the floor has
+// just closed, so every node needs a reinstall. Raise this only for something a new verb name
+// genuinely cannot carry, and expect gate 3 to go red by declaration when you do.
+func TestProtocolFloorStaysAtTwo(t *testing.T) {
+	if guestfirmware.MinGuestProtocol != 2 {
+		t.Errorf("MinGuestProtocol = %d: raising the floor tells every installed node to reinstall; see this test's comment",
+			guestfirmware.MinGuestProtocol)
+	}
+}
