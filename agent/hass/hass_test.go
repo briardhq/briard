@@ -212,11 +212,18 @@ func TestPrepareFailsLoudly(t *testing.T) {
 // TestVolumesAreTheTwoBinds: one read-only mount for the whole directory, plus the shadow over
 // the image's own run script. Both sources are outside /config, so HA's restore wipe — which
 // clears the config directory wholesale — never sees them.
-func TestVolumesAreTheTwoBinds(t *testing.T) {
+// ⚠️ ONE BIND NOW, not two ([B.143]): the service directory at /briard is the PRODUCT's general
+// shape and agent/services writes it for every service that has one, so what is left here is the
+// half that is Home Assistant knowledge -- the s6 wrapper over a path only this image has.
+func TestVolumesAreTheImageSpecificBind(t *testing.T) {
 	got := Volumes(ha(), ha().Containers[0])
 	want := []string{
-		"/run/briard/hass:/briard:ro",
-		"/run/briard/hass/run:/etc/services.d/home-assistant/run:ro",
+		"/run/briard/home-assistant/run:/etc/services.d/home-assistant/run:ro",
+	}
+	for _, v := range got {
+		if strings.HasSuffix(v, ":"+mountPoint+":ro") {
+			t.Errorf("the service directory mount is still written here: %q -- it belongs to agent/services", v)
+		}
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Volumes = %v, want %v", got, want)

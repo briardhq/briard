@@ -39,62 +39,73 @@ type Executor interface {
 	ReadFile(path string) ([]byte, error)
 }
 
-// The inbound channel's node-side paths ([B.143]): ONE socket for every service, and one token
-// per service that says who is calling.
+// THE NODE-SIDE LAYOUT ([B.143]): one directory per service, one socket for the agent.
 //
-// ⚠️ THIS REPLACED A SOCKET PER SERVICE, and the swap is worth recording because the first
-// version was a reasonable-looking mistake. Per-service sockets made a caller's identity a
-// property of the transport -- structurally unforgeable, which is attractive when the caller is a
-// workload. But it also meant the listener set was a function of the SERVICE LIST, and the only
-// thing that knows that list is converge, which runs in two different processes (the host's verb
-// and drbd-reactor's one-shot). That forced systemd to own the binds, which forced template
-// units, a converge step to start instances, socket activation, fd inheritance and an idle-exit
-// handler -- and left the actual logic in a short-lived process while everything it needs to
-// reason about lives in the long-running agent. A large amount of machinery downstream of one
-// decision.
+// ⚠️ THE INBOUND CHANNEL STARTED AS A SOCKET PER SERVICE, and the swap is worth recording because
+// the first version was a reasonable-looking mistake. Per-service sockets made a caller's identity
+// a property of the transport -- structurally unforgeable, which is attractive when the caller is
+// a workload. But it also made the listener set a function of the SERVICE LIST, and the only thing
+// that knows that list is converge, which runs in two different processes (the host's verb and
+// drbd-reactor's one-shot). That forced systemd to own the binds, which forced template units, a
+// converge step to start instances, socket activation, fd inheritance and an idle-exit handler --
+// and left the logic in a short-lived process while everything it reasons about lives in the
+// long-running agent. A great deal of machinery downstream of one decision.
 //
 // A token buys the same property for a fraction of it: minted per service at converge, written
-// where only that service's container can read it, and resolved by the agent at request time --
-// which also means the agent needs no advance knowledge of the service list at all. The
-// long-running agent binds one socket, unconditionally, and never has to learn anything.
+// where only that service's container can read it, resolved by the agent at request time -- which
+// also means the agent needs no advance knowledge of the service list at all.
 //
 // It lives HERE rather than in agent/hass because it is not one service's knowledge, and not in
 // agent/guestagent because that package imports this one and the renderer needs the paths.
+//
+// ONE DIRECTORY PER SERVICE, NAMED FOR IT, mounted read-only as /briard inside that service's
+// container and holding everything the product hands that service. The token is simply one of
+// the things in it, which is why it costs no mount of its own — the same way Home Assistant's
+// control token, its planted integration and its s6 wrapper already ride that directory.
+//
+// The convention was already half here: agent/mosquitto's dir is /run/briard/mosquitto, and only
+// agent/hass's was named for its Go package rather than its service. Regularising it is what
+// makes "the DIRECTORY name is the mapping" true, which is what lets the agent resolve a caller
+// by reading /run/briard rather than keeping a table.
 const (
-	defaultInboundDir = "/run/briard/inbound"
-	// InboundMount is where the socket appears inside a participating container, and
-	// InboundTokenMount is where its token does. Fixed names: a client needs to know nothing
-	// about which service it is, because its token already says so.
+	defaultRunDir = "/run/briard"
+	// ServiceMount is where a service's own directory appears inside its container.
+	ServiceMount = "/briard"
+	// InboundTokenName is that directory's token, so InboundTokenMount is simply inside it.
+	InboundTokenName  = "inbound.token"
+	InboundTokenMount = ServiceMount + "/" + InboundTokenName
+	// InboundMount is the agent's socket inside the container.
 	//
-	// ⚠️ SIBLINGS OF /briard, NEVER CHILDREN OF IT, and the difference is whether the container
-	// starts at all. Home Assistant already mounts a whole directory at /briard READ-ONLY
-	// (agent/hass), so a bind whose destination sat inside it would have the runtime create that
-	// destination underneath a read-only mount: EROFS, the container refuses to start, and podman
-	// has left a root-owned directory where a socket belongs -- which poisons the path for every
-	// later attempt, the exact failure Prepare's own comment describes. They WERE written as
-	// /briard/inbound.sock and /briard/inbound.token, and TestNoBindNestsInsideAnother is what
+	// ⚠️ A SIBLING OF /briard, NEVER A CHILD OF IT, and the difference is whether the container
+	// starts at all. The socket must be READ-WRITE (connect(2) needs write permission) while
+	// /briard is read-only, and a bind whose destination sits inside another bind's destination
+	// makes the runtime create that destination under an already-mounted parent: EROFS here, the
+	// container never starts, and podman has left a root-owned directory where a socket belongs
+	// — which poisons the path for every later attempt, the exact failure Prepare's own comment
+	// describes. It WAS written as /briard/inbound.sock; TestNoBindNestsInsideAnother is what
 	// keeps the class out rather than this comment.
-	InboundMount      = "/briard-inbound.sock"
-	InboundTokenMount = "/briard-inbound.token"
+	InboundMount = "/briard-agent.sock"
 )
 
-// InboundDir is overridable for tests exactly as agent/guestagent's unitDir is, and for the same
+// RunDir is overridable for tests exactly as agent/guestagent's unitDir is, and for the same
 // reason: every path here is absolute on a real guest, so a test that could not move them could
 // only ever assert a refusal.
-func InboundDir() string {
-	if d := os.Getenv("BRIARD_INBOUND_DIR"); d != "" {
+func RunDir() string {
+	if d := os.Getenv("BRIARD_RUN_DIR"); d != "" {
 		return d
 	}
-	return defaultInboundDir
+	return defaultRunDir
 }
 
-// InboundSocket is the one listener, owned by the long-running guest agent.
-func InboundSocket() string { return InboundDir() + "/agent.sock" }
+// ServiceDir is one service's own directory on the node — what ServiceMount shows it.
+func ServiceDir(service string) string { return RunDir() + "/" + service }
 
-// InboundTokenPath is where one service's token lives on the node. The agent resolves a caller
-// by reading this directory, so the filename IS the mapping -- there is no table to keep in step
-// and nothing to rebuild when a service arrives on a node that was not told about it.
-func InboundTokenPath(service string) string { return InboundDir() + "/" + service + ".token" }
+// InboundSocket is the one listener, owned by the long-running guest agent. Beside the service
+// directories rather than inside any of them: it is the agent's, shared by every caller.
+func InboundSocket() string { return RunDir() + "/agent.sock" }
+
+// InboundTokenPath is where one service's token lives on the node.
+func InboundTokenPath(service string) string { return ServiceDir(service) + "/" + InboundTokenName }
 
 // WantsInbound reports whether a service's container gets the inbound channel.
 //
@@ -120,18 +131,25 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	case mosquitto.Name:
 		out = mosquitto.Volumes(m, c)
 	}
+	// THE SERVICE'S OWN DIRECTORY, read-only, and it is the product's general shape rather than
+	// one service's arrangement -- which is why it lives here and not in agent/hass, where the
+	// same mount used to be spelled out. Everything briard hands a service goes in it: Home
+	// Assistant's control token, its planted integration, its s6 wrapper, and the inbound token
+	// for any service that has one. A service needing none of that gets no directory and no
+	// mount.
+	if NeedsServiceDir(m, c) {
+		out = append(out, ServiceDir(m.Name)+":"+ServiceMount+":ro")
+	}
 	if WantsInbound(m, c) {
 		// ⚠️ THE SOCKET BIND IS READ-WRITE, and it has to be: connect(2) needs write permission
 		// on the socket file, so a read-only bind makes the channel unreachable from inside the
-		// container rather than merely read-only.
+		// container rather than merely read-only. Its token needs no bind at all -- it is inside
+		// the directory above.
 		//
 		// THE FILE, NEVER ITS DIRECTORY. A directory mounted rw would let the container unlink
-		// or replace the socket -- and since this socket is now shared by every participating
-		// service, that would be one workload taking the channel away from the others.
+		// or replace the socket, and this socket is shared by every participating service -- so
+		// that would be one workload taking the channel away from the others.
 		out = append(out, InboundSocket()+":"+InboundMount+":rw")
-		// The token is read-only: the container proves who it is with it and has no business
-		// changing it. Rotating it is converge's, at the same moment it mints it.
-		out = append(out, InboundTokenPath(m.Name)+":"+InboundTokenMount+":ro")
 	}
 	return out
 }
@@ -309,15 +327,15 @@ func WantsInboundAny(m manifest.Manifest) bool {
 	return false
 }
 
-// mintInboundToken writes a fresh secret for one service, 0600, in the directory the agent
-// resolves callers from.
+// mintInboundToken writes a fresh secret into the service own directory, 0600.
 //
 // 32 bytes of crypto/rand: this is a bearer credential for a channel that acts on a household's
 // data, so it is sized like one rather than like an identifier. The directory is created here
-// because Prepare is the earliest thing on every path that needs it, and the socket the agent
-// binds lives in the same place.
+// because Prepare is the earliest thing on every path that needs it -- and because that same
+// directory is what the container sees at ServiceMount, so the token reaches it with no mount of
+// its own.
 func mintInboundToken(ctx context.Context, x Executor, service string) error {
-	if _, err := x.Run(ctx, "mkdir", "-p", InboundDir()); err != nil {
+	if _, err := x.Run(ctx, "mkdir", "-p", ServiceDir(service)); err != nil {
 		return err
 	}
 	buf := make([]byte, 32)
@@ -332,4 +350,11 @@ func mintInboundToken(ctx context.Context, x Executor, service string) error {
 	// node.
 	_, err := x.Run(ctx, "chmod", "0600", InboundTokenPath(service))
 	return err
+}
+
+// NeedsServiceDir reports whether a container gets its service's own directory at ServiceMount.
+// True for anything the product hands something to: Home Assistant's control channel, or the
+// inbound token. A service needing neither gets no directory and no mount.
+func NeedsServiceDir(m manifest.Manifest, c manifest.Container) bool {
+	return (m.Name == hass.Name && c.Primary) || WantsInbound(m, c)
 }

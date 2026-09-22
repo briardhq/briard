@@ -239,8 +239,8 @@ func TestStatelessContainerGetsNoVolume(t *testing.T) {
 // unit WITHOUT them, or "service-specific by design" would be a comment rather than a property.
 func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	binds := []string{
-		"Volume=/run/briard/hass:/briard:ro",
-		"Volume=/run/briard/hass/run:/etc/services.d/home-assistant/run:ro",
+		"Volume=/run/briard/home-assistant:/briard:ro",
+		"Volume=/run/briard/home-assistant/run:/etc/services.d/home-assistant/run:ro",
 	}
 	got := mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
 	for _, b := range binds {
@@ -252,7 +252,7 @@ func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	other := ha()
 	other.Name = "sample-app"
 	got = mustRender(t, other).Files["briard-sample-app-ha.container"]
-	if strings.Contains(got, "/run/briard/hass") {
+	if strings.Contains(got, "/run/briard/home-assistant") {
 		t.Fatalf("a service that is not home-assistant got the control channel:\n%s", got)
 	}
 
@@ -261,7 +261,7 @@ func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	side := ha()
 	side.Containers = append(side.Containers, manifest.Container{Name: "cache", Image: digestB})
 	got = mustRender(t, side).Files["briard-home-assistant-cache.container"]
-	if strings.Contains(got, "/run/briard/hass") {
+	if strings.Contains(got, "/run/briard/home-assistant") {
 		t.Fatalf("a non-primary container got the control channel:\n%s", got)
 	}
 }

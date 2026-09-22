@@ -161,10 +161,10 @@ pkgs.testers.runNixOSTest {
 
     # The value is OURS and is chosen first, on tmpfs, 0600 — so a consumer knows the token
     # from t=0, with no return channel out of the container and no startup race.
-    node1.succeed("test -f /run/briard/hass/token")
-    perms = node1.succeed("stat -c %a /run/briard/hass/token").strip()
+    node1.succeed("test -f /run/briard/home-assistant/token")
+    perms = node1.succeed("stat -c %a /run/briard/home-assistant/token").strip()
     assert perms == "600", f"the token is mode {perms}; it is a credential for the whole HA API"
-    token = node1.succeed("cat /run/briard/hass/token").strip()
+    token = node1.succeed("cat /run/briard/home-assistant/token").strip()
 
     # The mint ran inside the container, in the stopped window s6's `run` provides, and the
     # token HA now holds is the one we chose.
@@ -199,8 +199,8 @@ pkgs.testers.runNixOSTest {
     started_before = node1.succeed(f"podman inspect -f '{{{{.State.StartedAt}}}}' {ctr}").strip()
 
     # Rotate the node's value out from under a live HA: HA's store and tmpfs now disagree.
-    node1.succeed("head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/briard/hass/token")
-    rotated = node1.succeed("cat /run/briard/hass/token").strip()
+    node1.succeed("head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/briard/home-assistant/token")
+    rotated = node1.succeed("cat /run/briard/home-assistant/token").strip()
     assert rotated != token, "the rotation wrote the same value"
     node1.fail(f"curl -fsS -X POST http://127.0.0.1:8123/auth/token -d grant_type=refresh_token -d refresh_token={rotated}")
 
@@ -348,7 +348,7 @@ pkgs.testers.runNixOSTest {
     #
     # A FRESH token: the healing section above rotated the value and pruned every other token on
     # our user, so the `access` from before that boundary is revoked by design.
-    wired = exchange(node1.succeed("cat /run/briard/hass/token").strip())
+    wired = exchange(node1.succeed("cat /run/briard/home-assistant/token").strip())
 
     # The stub, planted into /config by the wrapper in the stopped window s6's `run` provides --
     # a REAL package, not a symlink into the mount: a household restoring its backup outside
@@ -375,7 +375,7 @@ pkgs.testers.runNixOSTest {
     # THE IMPLEMENTATION IS NOT IN /config, which is the whole placement decision: what is not
     # there cannot be wiped by a restore and cannot ride out in a backup.
     node1.fail(f"test -e {dataroot}/app/custom_components/briard/briard_ha.py")
-    node1.succeed("test -f /run/briard/hass/integration/briard_ha.py")
+    node1.succeed("test -f /run/briard/home-assistant/integration/briard_ha.py")
 
     # HOME ASSISTANT LOADED IT. `/api/config` lists the components HA actually set up, so this is
     # HA's own verdict on the whole chain at once -- the stub answered the custom-component scan,
@@ -432,7 +432,7 @@ pkgs.testers.runNixOSTest {
     # A fresh exchange again, and WAITED FOR rather than assumed: the mint at the restart boundary
     # replaces the refresh token object behind our value, so every access token issued before it
     # is revoked -- and /auth/token starts answering only once HA's auth store is back up.
-    token_now = node1.succeed("cat /run/briard/hass/token").strip()
+    token_now = node1.succeed("cat /run/briard/home-assistant/token").strip()
     node1.wait_until_succeeds(
         "curl -fsS -o /dev/null -X POST http://127.0.0.1:8123/auth/token "
         f"-d grant_type=refresh_token -d refresh_token={token_now}",
@@ -558,7 +558,7 @@ pkgs.testers.runNixOSTest {
     mint_body = _sx.quote(_zj.dumps({"client_id": client_id}))
     # A fresh exchange: the restarts above rotated the refresh token, which revoked every access
     # token issued before them ([V3b.29] §6) -- `access` from the first claim is dead by now.
-    system = exchange(node1.succeed("cat /run/briard/hass/token").strip())
+    system = exchange(node1.succeed("cat /run/briard/home-assistant/token").strip())
     refused = node1.succeed(
         f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {host}' -H 'Authorization: Bearer {system}' "
         f"-H 'Content-Type: application/json' -d {mint_body} {mint_url}"

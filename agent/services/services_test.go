@@ -202,16 +202,30 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	if !strings.HasPrefix(bind, InboundSocket()+":") {
 		t.Errorf("bind = %q, want the one shared socket", bind)
 	}
-	// AND THE TOKEN, read-only: it is how the agent knows who called, and the container has no
-	// business changing it.
-	var tok string
+	// THE TOKEN HAS NO BIND OF ITS OWN, and that is the point of the per-service directory: it is
+	// simply one of the things in it, arriving read-only with everything else briard hands this
+	// service. A bind here would be a third mount buying nothing.
 	for _, v := range primary {
-		if strings.Contains(v, InboundTokenMount) {
-			tok = v
+		if strings.HasPrefix(v, InboundTokenPath("home-assistant")+":") {
+			t.Errorf("the token was given its own bind (%q); it should ride the service directory", v)
 		}
 	}
-	if tok != InboundTokenPath("home-assistant")+":"+InboundTokenMount+":ro" {
-		t.Errorf("token bind = %q, want this service own token, read-only", tok)
+	var dir string
+	for _, v := range primary {
+		if strings.HasSuffix(v, ":"+ServiceMount+":ro") {
+			dir = v
+		}
+	}
+	if dir != ServiceDir("home-assistant")+":"+ServiceMount+":ro" {
+		t.Fatalf("service directory bind = %q, want this service's own directory, read-only", dir)
+	}
+	// And the two agree: the token's path on the node is inside the directory that is mounted, so
+	// the container really does see it where InboundTokenMount says.
+	if !strings.HasPrefix(InboundTokenPath("home-assistant"), ServiceDir("home-assistant")+"/") {
+		t.Errorf("the token at %q is not inside the mounted directory %q", InboundTokenPath("home-assistant"), ServiceDir("home-assistant"))
+	}
+	if InboundTokenMount != ServiceMount+"/"+InboundTokenName {
+		t.Errorf("InboundTokenMount = %q, want it inside %q", InboundTokenMount, ServiceMount)
 	}
 	for _, v := range secondary {
 		if strings.Contains(v, InboundMount) {
@@ -341,6 +355,25 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestServiceDirMatchesTheRegistry: agent/hass declares its own directory as a const, because it
+// cannot import this package (this one imports it). So two definitions have to agree, and the
+// agreement is load-bearing in a way that is easy to miss: the agent resolves an inbound caller
+// by reading the run directory and taking a DIRECTORY NAME as a service name. A directory named
+// for the Go package rather than the service would resolve to a service that does not exist, and
+// every call from that container would come back "unknown caller" with nothing pointing at why.
+//
+// It was /run/briard/hass until [B.143]; agent/mosquitto already followed the convention.
+func TestServiceDirMatchesTheRegistry(t *testing.T) {
+	for _, c := range []struct{ name, dir string }{
+		{hass.Name, hass.Dir},
+		{mosquitto.Name, mosquitto.Dir},
+	} {
+		if want := defaultRunDir + "/" + c.name; c.dir != want {
+			t.Errorf("%s's package declares %q, the registry derives %q", c.name, c.dir, want)
 		}
 	}
 }

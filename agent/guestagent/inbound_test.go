@@ -30,8 +30,9 @@ func ringExec(members ...string) *fakeExec {
 		services.InboundTokenPath("mosquitto"):      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 	}}
 	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" && len(args) > 1 && args[1] == services.InboundDir() {
-			return []byte("home-assistant.token\nmosquitto.token\nagent.sock"), nil
+		// The run directory holds the per-service dirs and plenty that is not one.
+		if name == "ls" && len(args) > 1 && args[1] == services.RunDir() {
+			return []byte("home-assistant\nmosquitto\nagent.sock\nnode-storage.json"), nil
 		}
 		if name == "ls" {
 			return []byte(strings.Join(members, "\n")), nil
@@ -285,8 +286,8 @@ func TestInboundRejectsAServiceNameThatIsAPath(t *testing.T) {
 	const evil = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	f := ringExec()
 	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" && len(args) > 1 && args[1] == services.InboundDir() {
-			return []byte("../../etc.token"), nil
+		if name == "ls" && len(args) > 1 && args[1] == services.RunDir() {
+			return []byte("../../etc"), nil
 		}
 		return nil, errors.New("ERROR: not a subvolume")
 	}
@@ -311,7 +312,7 @@ func TestInboundRejectsAServiceNameThatIsAPath(t *testing.T) {
 // rather than finding the channel gone.
 func TestListenInboundOverARealSocket(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("BRIARD_INBOUND_DIR", dir)
+	t.Setenv("BRIARD_RUN_DIR", dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -361,7 +362,7 @@ func TestListenInboundOverARealSocket(t *testing.T) {
 // agent with nothing but one log line to say so.
 func TestListenInboundClearsAStaleSocket(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("BRIARD_INBOUND_DIR", dir)
+	t.Setenv("BRIARD_RUN_DIR", dir)
 	sock := filepath.Join(dir, "agent.sock")
 	stale, err := net.Listen("unix", sock)
 	if err != nil {

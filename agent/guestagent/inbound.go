@@ -296,7 +296,7 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 // a member -- the `|| true` case. That is the cost of moving the listener here, it is bounded and
 // benign, and it is worth stating rather than discovering.
 func ListenInbound(ctx context.Context, x Executor) error {
-	if err := os.MkdirAll(services.InboundDir(), 0o755); err != nil {
+	if err := os.MkdirAll(services.RunDir(), 0o755); err != nil {
 		return fmt.Errorf("inbound: %w", err)
 	}
 	// A socket left by a previous run is not a listener -- bind would fail with EADDRINUSE on a
@@ -342,11 +342,11 @@ func ListenInbound(ctx context.Context, x Executor) error {
 
 // resolveCaller maps a request's token to the service that was given it.
 //
-// THE FILENAME IS THE MAPPING. Each service's token sits at InboundTokenPath(name), written by
-// converge and bind-mounted read-only into that service's container -- so resolving a caller is
-// reading a directory, and the agent needs no table, no cache and no notification when a service
-// arrives on a node that was never told about it. That last property is what the per-service
-// socket design could not have at any price.
+// THE DIRECTORY NAME IS THE MAPPING. Each service has one directory named for it, holding
+// everything briard hands that service -- the token among them -- and mounted read-only into its
+// container. So resolving a caller is reading one directory listing, and the agent needs no
+// table, no cache and no notification when a service arrives on a node that was never told about
+// it. That last property is what the per-service socket design could not have at any price.
 //
 // CONSTANT TIME, and not as a ritual: the caller can retry as fast as it likes against a secret
 // this process holds, which is the shape a comparison timing leak is actually exploitable in.
@@ -359,15 +359,14 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 	if len(token) < 32 {
 		return "", false
 	}
-	out, err := x.Run(ctx, "ls", "-1", services.InboundDir())
+	out, err := x.Run(ctx, "ls", "-1", services.RunDir())
 	if err != nil {
 		return "", false
 	}
-	for _, n := range strings.Fields(string(out)) {
-		name := strings.TrimSuffix(n, ".token")
-		if name == n { // not a token file
-			continue
-		}
+	// The run directory holds plenty that is not a service — sockets, json, the drbd drop-in
+	// dirs. Nothing needs to tell them apart: an entry with no readable token inside it is
+	// simply not a candidate, so the filter is the read itself.
+	for _, name := range strings.Fields(string(out)) {
 		want, err := x.ReadFile(services.InboundTokenPath(name))
 		if err != nil {
 			continue

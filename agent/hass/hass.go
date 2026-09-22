@@ -76,7 +76,12 @@ const Name = "home-assistant"
 // every converge. Nothing here is replicated and nothing survives a guest reboot —
 // deliberately, since the token rotates per boot and the extracted script must match
 // the digest THIS node is running.
-const Dir = "/run/briard/hass"
+// ⚠️ NAMED FOR THE SERVICE, not for this package ([B.143]; it was /run/briard/hass). The agent
+// resolves an inbound caller by reading the run directory and taking a DIRECTORY NAME as the
+// service, so a directory named after the Go package would resolve to a service that does not
+// exist. agent/mosquitto already followed the convention; this was the one exception.
+// TestServiceDirMatchesTheRegistry asserts the two agree.
+const Dir = "/run/briard/home-assistant"
 
 // TokenPath is the refresh token, 0600 on tmpfs. It is the guest-side half of the
 // control channel: whatever needs to talk to HA reads the value here and does the
@@ -179,15 +184,16 @@ type Executor interface {
 // knowledge too. Render stays a pure function of the manifest: the same manifest
 // renders the same units on every node.
 //
-// The whole directory goes in read-only under one mount point, and our wrapper is
-// shadow-mounted over the image's `run`. Both sources live outside /config, so HA's
-// restore wipe never sees them.
+// ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE ([B.143]): one directory per service, read-only at
+// /briard, is the product's general shape rather than this service's arrangement, so
+// agent/services writes it for every service that has one. What stays is the half that IS Home
+// Assistant knowledge — our s6 wrapper shadow-mounted over the image's own `run`, at a path only
+// this image has. Both sources still live outside /config, so HA's restore wipe never sees them.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	if m.Name != Name || !c.Primary {
 		return nil
 	}
 	return []string{
-		Dir + ":" + mountPoint + ":ro",
 		wrapperPath + ":" + s6Run + ":ro",
 	}
 }

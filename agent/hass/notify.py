@@ -28,10 +28,12 @@ import json
 import socket
 import sys
 
-# ⚠️ SIBLINGS OF /briard, not children: /briard is a READ-ONLY bind, and a mount destination
-# inside it cannot be created by the runtime. agent/services carries the full trace.
-SOCKET = "/briard-inbound.sock"
-TOKEN = "/briard-inbound.token"
+# The token rides this service own read-only /briard directory, like every other thing briard
+# hands it. The SOCKET cannot: it must be writable to connect to, and a read-write bind inside a
+# read-only one cannot be created by the runtime at all -- so it is a sibling. agent/services
+# carries the full trace.
+SOCKET = "/briard-agent.sock"
+TOKEN = "/briard/inbound.token"
 
 # Generous but finite. The agent's work is one btrfs snapshot of this service's subvolume, which
 # is milliseconds; anything approaching this means something is wrong on the other side, and
