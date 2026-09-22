@@ -125,6 +125,7 @@ func runInternal(args []string) {
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
+	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre ([B.143])")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -167,6 +168,29 @@ func runInternal(args []string) {
 		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("%s: %v", what, err)
 		}
+		return
+	}
+
+	if *serviceStarting != "" {
+		// THE GENERIC HOOK ([B.143]): every catalogued service gets a member at container start,
+		// which is the only boundary visible from outside the container. Home Assistant adds its
+		// OWN restarts through the inbound channel; everything else has just this.
+		//
+		// IT SETS ITS OWN PATH rather than having the unit carry one. The line that invokes this is
+		// written by the RENDERER, which is a pure function of the manifest -- teaching it about the
+		// image's tool profile would give it a second thing to know, and the profile is the guest's
+		// business anyway.
+		os.Setenv("PATH", guestagent.ToolsBin()+":"+os.Getenv("PATH"))
+		// ⚠️ NEVER FAILS THE START, which is why the rendered line carries systemd's `-` prefix as
+		// well: a household losing its service because a snapshot could not be taken is the wrong
+		// trade, and the belt-and-braces is deliberate because `-` alone hides WHY. The exit code
+		// is 0 either way; the journal carries the reason.
+		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *serviceStarting)
+		if err != nil {
+			log.Printf("service-starting %s: %v (starting anyway)", *serviceStarting, err)
+			return
+		}
+		log.Printf("service-starting %s: %s", *serviceStarting, detail)
 		return
 	}
 

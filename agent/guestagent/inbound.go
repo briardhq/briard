@@ -451,3 +451,19 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 	}
 	return "", false
 }
+
+// ToolsBin is the image's tool profile, for a caller that must put it on PATH itself.
+//
+// The generic pre-start hook is that caller ([B.143]): it is an ExecStartPre on a unit podman's
+// quadlet generator writes, and teaching the RENDERER about the image's profile would give a pure
+// function of the manifest a second thing to know. The entry point sets its own PATH instead, so
+// the rendered line stays one absolute path and a service name.
+func ToolsBin() string { return toolsBin() }
+
+// TakeStartMember takes the ring member for a service that is about to start, for a caller
+// outside this package. The inbound channel reaches the same code through its own verb; this is
+// the entry point the generic pre-start hook uses, on a node where nothing is inside a container
+// yet to ask.
+func TakeStartMember(ctx context.Context, x Executor, service string) (string, error) {
+	return startingMember(ctx, x, service)
+}

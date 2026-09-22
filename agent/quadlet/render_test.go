@@ -492,3 +492,49 @@ func TestSnapshotMemberTimeIsTheOrder(t *testing.T) {
 		t.Error("SnapshotMemberTime does not order what the name misorders")
 	}
 }
+
+// TestDataContainerTakesARingMemberAtStart: the generic hook ([B.143]). Every catalogued service
+// gets a member at container start, which is the only boundary visible from outside the
+// container -- Home Assistant adds its own internal restarts through the inbound channel, and
+// nothing else can.
+func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
+	m := manifest.Manifest{
+		Name: "home-assistant", Version: "1",
+		Containers: []manifest.Container{
+			{Name: "app", Image: digestA, Mount: "/config", Primary: true, Port: 8123, HealthPath: "/x"},
+			{Name: "sidecar", Image: digestA}, // no Mount: shares nothing of its own
+		},
+	}
+	r, err := Render(m, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := r.Files["briard-home-assistant-app.container"]
+	var line string
+	for _, l := range strings.Split(app, "\n") {
+		if strings.HasPrefix(l, "ExecStartPre=") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("the data container takes no member at start:\n%s", app)
+	}
+	// ⚠️ THE LEADING `-`: without it a snapshot that fails takes the household's service down
+	// with it, and a ring missing a member is nothing next to a service that will not start.
+	if !strings.HasPrefix(line, "ExecStartPre=-") {
+		t.Errorf("%q can fail the service; systemd needs the `-` prefix", line)
+	}
+	// systemd requires an absolute path for the first word of an Exec line; a bare command name
+	// makes the unit fail to load rather than fail to run.
+	if !strings.Contains(line, "=-/") {
+		t.Errorf("%q does not name an absolute path", line)
+	}
+	if !strings.HasSuffix(line, "--service-starting=home-assistant") {
+		t.Errorf("%q does not name the service whose member it takes", line)
+	}
+	// A service's other containers share its ONE subvolume, so a hook on each of them would take
+	// a member of the same bytes at every start.
+	if side := r.Files["briard-home-assistant-sidecar.container"]; strings.Contains(side, "ExecStartPre=") {
+		t.Errorf("a container with no data of its own takes a member:\n%s", side)
+	}
+}

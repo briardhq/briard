@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 )
@@ -262,6 +263,22 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// instead of latching to `failed` and giving up on a transient cause. The loop stays
 		// VISIBLE either way: NRestarts climbs, and the resource telemetry reads it per service.
 		lines = append(lines, "", "[Service]", "Restart=always", "RestartSec=5")
+		// THE RING'S GENERIC HOOK ([B.143]): a member of this service's data, taken while the
+		// container is stopped, at the one boundary visible from outside it. Every catalogued
+		// service gets this; Home Assistant adds its own internal restarts through the inbound
+		// channel, which only it can see.
+		//
+		// ⚠️ THE LEADING `-` IS NOT OPTIONAL. Without it a snapshot that fails takes the
+		// household's service down with it, and the trade is the wrong way round: a ring missing
+		// a member is nothing, a service that will not start is an outage. The binary holds
+		// itself to the same bar and exits 0 regardless, so this is belt-and-braces — `-` alone
+		// hides the reason, and the agent's own line in the journal is what says it.
+		//
+		// ONLY the container that holds the data. A service's other containers share its
+		// subvolume and would each take a member of the same bytes at every start.
+		if c.Mount != "" {
+			lines = append(lines, "ExecStartPre=-"+agentBin()+" --service-starting="+m.Name)
+		}
 		out.Files[unit+".container"] = join(lines...)
 		out.Units = append(out.Units, unit+".service")
 		out.ContainerUnits = append(out.ContainerUnits, unit+".service")
@@ -572,3 +589,13 @@ func Images(m manifest.Manifest) (Rendered, error) {
 	}
 	return out, nil
 }
+
+// agentBin is the guest agent's absolute path, which a rendered ExecStartPre must name because
+// systemd requires an absolute path for the first word of an Exec line.
+//
+// It is the ONE node-local fact this renderer reads, and it is read rather than passed because
+// the alternative is worse: threading it through Render would put it in every caller and every
+// test for the sake of a path that is the same on every node. Render stays a pure function of the
+// manifest in the sense that matters -- the same manifest renders the same units on a node --
+// which is the property [V3b.3](f) needs.
+func agentBin() string { return guestfirmware.BinDir() + "/briard-guest-agent" }
