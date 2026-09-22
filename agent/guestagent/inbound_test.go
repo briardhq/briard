@@ -556,3 +556,63 @@ func TestRateLimitReadsTheNewestMemberAcrossTriggers(t *testing.T) {
 		t.Errorf("detail = %q, want the skip to name the recent member", resp.Detail)
 	}
 }
+
+// TestListMembersSkipsWhatItCannotIdentify: the picker offers a household a rollback point, so an
+// entry it cannot describe must not appear at all ([B.143]).
+//
+// The take path REMOVES a member it could not label, so a member with no readable sidecar here
+// means something outside the ring made it -- a human's copy, an interrupted older build. Offering
+// it would mean offering a restore whose code identity nobody knows.
+func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
+	good := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-time.Hour))
+	bare := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-2*time.Hour))
+	garbled := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, time.Now().Add(-3*time.Hour))
+	f := ringExec(
+		strings.TrimPrefix(good, quadlet.SnapshotsDir),
+		strings.TrimPrefix(bare, quadlet.SnapshotsDir),
+		strings.TrimPrefix(garbled, quadlet.SnapshotsDir),
+	)
+	f.files[quadlet.SnapshotSidecar(good)] = `{"service":"home-assistant","trigger":"start","title":"HA starting"}`
+	f.files[quadlet.SnapshotSidecar(garbled)] = `not json`
+	// `bare` gets no sidecar at all.
+
+	got, err := listMembers(context.Background(), f, "home-assistant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("listed %d members, want only the one that can be described: %+v", len(got), got)
+	}
+	if got[0].Member != good {
+		t.Errorf("member = %q, want %q", got[0].Member, good)
+	}
+	if got[0].Meta.Title != "HA starting" {
+		t.Errorf("title = %q, want the sidecar's", got[0].Meta.Title)
+	}
+}
+
+// TestListMembersIsOldestFirstAcrossTriggers: the picker shows a timeline, so the order is the
+// answer -- and it must be by TIME, which member NAMES do not give (the trigger sits between the
+// service and the stamp; see ringMembers).
+func TestListMembersIsOldestFirstAcrossTriggers(t *testing.T) {
+	newStart := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-time.Hour))
+	oldUpgrade := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, time.Now().Add(-48*time.Hour))
+	f := ringExec(
+		strings.TrimPrefix(newStart, quadlet.SnapshotsDir),
+		strings.TrimPrefix(oldUpgrade, quadlet.SnapshotsDir),
+	)
+	f.files[quadlet.SnapshotSidecar(newStart)] = `{"service":"home-assistant","trigger":"start"}`
+	f.files[quadlet.SnapshotSidecar(oldUpgrade)] = `{"service":"home-assistant","trigger":"upgrade"}`
+
+	got, err := listMembers(context.Background(), f, "home-assistant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("listed %d members, want 2: %+v", len(got), got)
+	}
+	// By NAME the upgrade point sorts last; by TIME it is two days older and comes first.
+	if got[0].Member != oldUpgrade {
+		t.Errorf("first = %q, want the 48h-old upgrade point %q", got[0].Member, oldUpgrade)
+	}
+}

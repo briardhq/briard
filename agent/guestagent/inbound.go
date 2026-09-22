@@ -487,3 +487,32 @@ func ensureToolsOnPath() {
 		os.Setenv("PATH", tools+":"+os.Getenv("PATH"))
 	}
 }
+
+// listMembers is one service's ring as a reader sees it: every member, with the sidecar beside
+// it, oldest first.
+//
+// A MEMBER WITH NO READABLE SIDECAR IS SKIPPED, not reported half-formed. The take path removes a
+// member it could not label, so one here means something outside the ring made it -- a human's
+// copy, an interrupted older build -- and the picker must not offer a household a rollback point
+// whose code identity nobody knows.
+func listMembers(ctx context.Context, x Executor, service string) ([]quadlet.SnapshotEntry, error) {
+	if err := safeUnitName(service); err != nil {
+		return nil, err
+	}
+	var out []quadlet.SnapshotEntry
+	for _, n := range ringMembers(ctx, x, service) {
+		member := quadlet.SnapshotsDir + n
+		raw, err := x.ReadFile(quadlet.SnapshotSidecar(member))
+		if err != nil {
+			log.Printf("ring %s: %s has no readable sidecar; not offering it", service, n)
+			continue
+		}
+		var meta quadlet.SnapshotMeta
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			log.Printf("ring %s: %s has an unreadable sidecar (%v); not offering it", service, n, err)
+			continue
+		}
+		out = append(out, quadlet.SnapshotEntry{Member: member, Meta: meta})
+	}
+	return out, nil
+}

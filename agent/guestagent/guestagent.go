@@ -215,6 +215,10 @@ const (
 	// leaves the household exactly as it was. Same operation, opposite blast radius, which is why
 	// it is a separate verb rather than a flag on the other one.
 	verbImageEnsure = "image.ensure"
+	// verbDataMembers lists one service's ring: every member and the sidecar beside it, oldest
+	// first ([B.143]). It is what the picker reads, and it is a verb rather than a directory the
+	// host could stat because only the guest has the volume mounted.
+	verbDataMembers = "data.members"
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start ([V3b.3](f), converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -344,7 +348,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataMember, verbDataRestore, verbImageEnsure,
+	verbDataSnapshot, verbDataMember, verbDataMembers, verbDataRestore, verbImageEnsure,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -1075,6 +1079,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// converging survivor must not disagree about what "the image is already here" means.
 			// The exists-or-pull rule and why it is safe are argued there.
 			return nil, warmImage(ctx, x, req.Unit, req.Ref)
+		case verbDataMembers:
+			var req serviceRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return listMembers(ctx, x, req.Service)
 		case verbImageEnsure:
 			var req serviceWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2959,3 +2969,14 @@ func (g *Client) EnsureImage(ctx context.Context, ref string) error {
 
 // SupportsImageEnsure reports whether this guest can be asked for an image by ref alone.
 func (g *Client) SupportsImageEnsure() bool { return g.Supports(verbImageEnsure) }
+
+// Members lists one service's ring, oldest first: every member with the sidecar beside it. A
+// member whose sidecar cannot be read is omitted rather than offered ([B.143]).
+func (g *Client) Members(ctx context.Context, service string) ([]quadlet.SnapshotEntry, error) {
+	var out []quadlet.SnapshotEntry
+	err := g.c.Call(ctx, verbDataMembers, serviceRequest{Service: service}, &out)
+	return out, err
+}
+
+// SupportsMembers reports whether this guest can list a service's ring.
+func (g *Client) SupportsMembers() bool { return g.Supports(verbDataMembers) }

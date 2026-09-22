@@ -599,3 +599,13 @@ func Images(m manifest.Manifest) (Rendered, error) {
 // manifest in the sense that matters -- the same manifest renders the same units on a node --
 // which is the property [V3b.3](f) needs.
 func agentBin() string { return guestfirmware.BinDir() + "/briard-guest-agent" }
+
+// SnapshotEntry is one ring member as a reader sees it: where it is, and what its sidecar says.
+//
+// The two are kept apart deliberately. The sidecar is what the guest WROTE when the member was
+// taken and must not carry its own path -- a copied or renamed directory would then describe
+// somewhere it is not -- so the path comes from the listing that found it.
+type SnapshotEntry struct {
+	Member string       `json:"member"`
+	Meta   SnapshotMeta `json:"meta"`
+}
