@@ -370,6 +370,7 @@ func pruneRing(ctx context.Context, x Executor, service string) {
 // a member -- the `|| true` case. That is the cost of moving the listener here, it is bounded and
 // benign, and it is worth stating rather than discovering.
 func ListenInbound(ctx context.Context, x Executor) error {
+	ensureToolsOnPath()
 	if err := os.MkdirAll(services.RunDir(), 0o755); err != nil {
 		return fmt.Errorf("inbound: %w", err)
 	}
@@ -465,5 +466,24 @@ func ToolsBin() string { return toolsBin() }
 // the entry point the generic pre-start hook uses, on a node where nothing is inside a container
 // yet to ask.
 func TakeStartMember(ctx context.Context, x Executor, service string) (string, error) {
+	ensureToolsOnPath()
 	return startingMember(ctx, x, service)
+}
+
+// ensureToolsOnPath puts the image's tool profile on this process's PATH.
+//
+// ⚠️ THE RING SHELLS OUT TO btrfs, so every entry point that can take a member needs the profile
+// — and not every one of them is started by a unit that sets it. In the product the listener runs
+// inside `run --guest`, whose unit does; the generic pre-start hook is an ExecStartPre on a unit
+// the RENDERER writes, which deliberately carries no profile (agent/quadlet); and an agent-less
+// rig starts the listener on its own. Measured by the third of those, on L0 2026-09-22:
+// "inbound home-assistant: exec: \"btrfs\": executable file not found in $PATH" — the channel
+// worked end to end, the token resolved, and the take failed on a missing tool.
+//
+// So the code that needs the tools puts them there, rather than every caller remembering to.
+// Prepended, never replacing: a caller that already set a good PATH keeps it.
+func ensureToolsOnPath() {
+	if tools := ToolsBin(); !strings.Contains(os.Getenv("PATH"), tools) {
+		os.Setenv("PATH", tools+":"+os.Getenv("PATH"))
+	}
 }
