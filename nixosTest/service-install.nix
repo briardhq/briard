@@ -388,10 +388,21 @@ pkgs.testers.runNixOSTest {
     assert good_tick > 0, f"no pre-upgrade data to preserve (tick={good_tick}) — rollback proof would be vacuous"
     print(f"pre-upgrade good tick = {good_tick}")
 
-    # --- Snapshot the rollback point (applyServiceInstall's data.snapshot). The .snapshots dir is
-    #     created by briard-primary-storage at mount, and the snapshot replicates with the volume. ---
+    # --- STOP, THEN snapshot the rollback point — applyServiceInstall's quiesce + data.snapshot,
+    #     in that order since [B.143]. A live snapshot is only crash-consistent, and the catalog
+    #     cannot promise every service survives one: services-pair.nix measured mosquitto losing
+    #     exactly the retained message a rollback would be FOR. The container unit, never the pod
+    #     — the pod would take the volume down under every other service.
+    #
+    #     The baseline tick above is read BEFORE this stop, which is the same ordering the product
+    #     keeps for the S1 sample. The recovery assertion below is a RANGE (good <= recovered <
+    #     poisoned) precisely because the point is taken here rather than at the read.
+    #
+    #     The .snapshots dir is created by briard-primary-storage at mount, and the snapshot
+    #     replicates with the volume. No restart: the converge below starts the units again. ---
     snap = "/var/lib/briard/.snapshots/fixture-preupgrade"
     primary.succeed("test -d /var/lib/briard/.snapshots")
+    primary.succeed("systemctl stop briard-fixture-app.service")
     primary.succeed(f"btrfs subvolume snapshot -r {dataroot} {snap}")
 
     # --- The BROKEN manifest: same image digest and same service/container names (so same units,

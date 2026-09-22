@@ -347,10 +347,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// already broken before the upgrade is excluded, and only what this change breaks can trip it.
 	// A sample taken any later is a sample of something already disturbed.
 	//
-	// ⚠️ THIS LINE MUST STAY ABOVE THE SNAPSHOT, and above whatever [B.143] inserts: that item
-	// rules the live snapshot wrong and puts a `stop` before it, and a baseline captured after a
-	// stop is a baseline of a service that is not running. Both items edit this function; either
-	// order is fine as long as this stays first.
+	// ⚠️ THIS LINE MUST STAY ABOVE THE STOP AND THE SNAPSHOT that [B.143] put below it: a baseline
+	// captured after a stop is a baseline of a service that is not running, which reads as every
+	// integration having regressed. TestUpgradeCapturesTheBaselineBeforeTheSnapshot asserts the
+	// order by name.
 	//
 	// ONLY ON AN UPGRADE. A fresh install has nothing to differ against — the service was not
 	// running, so there is no "was loaded" to regress from — and the floor is the honest gate
@@ -362,24 +362,58 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		readiness = gate.Capture(ctx)
 	}
 
-	// Snapshot the rollback point BEFORE the switch, whenever a service is already installed — its
-	// data is what a broken upgrade can poison, and the read-only snapshot on the replicated
-	// volume is what a failed gate restores. The snapshot is taken live, which [B.143] rules
-	// wrong — the service is to be stopped first, so the rollback point is application-consistent
-	// and a revert loses no healthy writes; the data is quiesced on the rollback path, where
-	// `data.restore` needs the subvolume's bind released.
+	// STOP THE SERVICE, THEN SNAPSHOT THE ROLLBACK POINT — [B.143], landing [B.121]'s ruling.
+	// Its data is what a broken upgrade can poison, and the read-only snapshot on the replicated
+	// volume is what a failed gate restores.
+	//
+	// IT USED TO BE TAKEN LIVE, and `services-pair.nix` measured what that costs: mosquitto holds
+	// retained state in memory and writes it on a clean stop, so a snapshot of a running broker
+	// did not contain the message it had already accepted — the upgrade carried that message
+	// across and the rollback then restored a broker with nothing in it ([V3b.4](c), 2026-08-30).
+	// A live snapshot is only crash-consistent, and Home Assistant surviving one (btrfs snapshots
+	// atomically, HA replays its WAL on open) is a measured fact about HA, not a guarantee the
+	// catalog can make. Stopping first makes the point application-consistent by construction,
+	// for every service, and it is the same stop the rollback path needs anyway — `data.restore`
+	// cannot run until the subvolume's bind is released.
+	//
+	// CONTAINER UNITS, never the pod: quiesce's own comment carries the full trace of why. Only
+	// the upgraded service stops, so the node keeps serving every other one.
+	//
+	// THE UNDO IS A RE-CONVERGE, and it needs no new mechanism. Until ServiceProvision below
+	// overwrites the volume's manifest, the volume still names the PRIOR service — so a converge
+	// re-renders from it and starts exactly what the stop above stopped (converge starts every
+	// unit of every service it does not skip, whether or not its bytes changed, so a unit stopped
+	// out from under it comes back). That is why the two steps below undo rather than abandon:
+	// B.121's ruling is that a failed upgrade snapshot INTERRUPTS the service, and an interruption
+	// the household is never brought out of is just an outage with a directive attached.
 	var snap string
+	stoppedFail := failed
 	if prior != nil {
+		cfg.quiesce(ctx, g, prior.ContainerUnits, logf)
+		stoppedFail = func(detail string) api.DirectiveOutcome {
+			if _, err := g.ServiceConverge(ctx); err != nil {
+				return failed(fmt.Sprintf("%s; AND the service could not be restarted: %v", detail, err))
+			}
+			return failed(detail + " (the service was restarted)")
+		}
 		snap = quadlet.SnapshotPath(m.Name)
 		if err := g.Snapshot(ctx, dataDir, snap); err != nil {
-			return failed(fmt.Sprintf("snapshot rollback point: %v", err))
+			return stoppedFail(fmt.Sprintf("snapshot rollback point: %v", err))
 		}
 	}
 
 	// Provision writes the NEW manifest to the volume + ensures the subvolume/subdirs. On an
 	// upgrade this overwrites the prior manifest on the volume; the rollback re-writes the prior.
+	//
+	// A FAILURE HERE ALSO CONVERGES, and which service comes back depends on how far it got: the
+	// manifest is written last (provisionService, agent/guestagent), so a failure before that
+	// leaves the prior one on the volume and converge restores it exactly. A failure after it
+	// brings up the NEW service, ungated — which is why the outcome is still `failed` and says
+	// only that the service was restarted, never that the install stood. Either way the household
+	// ends with a running service, which is the property worth having; before the stop above
+	// existed this path could afford to report and leave everything alone.
 	if err := g.ServiceProvision(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw)); err != nil {
-		return failed(fmt.Sprintf("provision storage: %v", err))
+		return stoppedFail(fmt.Sprintf("provision storage: %v", err))
 	}
 
 	// CONVERGE, in place. Everything past here must return the node to the prior service, hence
@@ -788,7 +822,14 @@ func filesToRemove(have, want map[string]string) []string {
 }
 
 // Quiesce stops the given CONTAINER units, best-effort — a unit that is not running is not a
-// failure worth aborting for. Called with the promoter PAUSED, so the stop is not read as a fault.
+// failure worth aborting for.
+//
+// NO PROMOTER PAUSE. It used to be called inside the maintenance bracket so the stop was not read
+// as a fault; with the service units out of the chain ([V3b.3](f)) the promoter has no opinion
+// about them at all, and `revert` below says the same thing at more length. The stop is also what
+// QUIESCES: it is not a flush or a checkpoint, it is SIGTERM through podman, and a well-behaved
+// service writes what it was holding on the way down — which is exactly what mosquitto's retained
+// message needed and did not get while the rollback point was taken live ([B.143]).
 //
 // It must be handed CONTAINER units, never the pod. The container holds the data Volume bind, so a
 // clean `systemctl stop` of it releases the bind (what data.restore needs) AND leaves the

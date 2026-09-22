@@ -61,6 +61,7 @@ type fakeInstaller struct {
 	forgetEr      error
 	warmEr        error
 	restoreEr     error
+	snapEr        error // the rollback-point snapshot failing: [B.143] stops the service before taking it, so the undo must restart it
 	// readiness is the S1 differential sample, queued: the first call answers with the first
 	// element, the next with the second. Two calls per gated install (baseline, then settled),
 	// so a two-element queue is one whole verdict.
@@ -146,7 +147,7 @@ func (f *fakeInstaller) ServiceStop(_ context.Context, unit string) error {
 }
 func (f *fakeInstaller) Snapshot(_ context.Context, _, dest string) error {
 	f.steps = append(f.steps, "snapshot:"+dest)
-	return nil
+	return f.snapEr
 }
 func (f *fakeInstaller) Restore(_ context.Context, _, src string) error {
 	f.steps = append(f.steps, "restore:"+src)
@@ -1285,9 +1286,9 @@ func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 // must be a sample of the service as it was — before the rollback point is taken and before
 // anything is written to the volume.
 //
-// ⚠️ It must also stay above whatever [B.143] inserts: that item puts a `stop` before the
-// snapshot, and a baseline captured after a stop is a baseline of a service that is not running.
-// This assertion is what will catch that if the two land in the wrong order.
+// ⚠️ It must also stay above the `stop` [B.143] put before the snapshot: a baseline captured
+// after a stop is a baseline of a service that is not running, which reads as every integration
+// having regressed and would revert every upgrade. That is the `ri > qi` assertion below.
 func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
@@ -1295,10 +1296,14 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	}
 	joined := strings.Join(f.steps, ",")
 	ri := strings.Index(joined, "readiness:")
+	qi := strings.Index(joined, "stop:")
 	si := strings.Index(joined, "snapshot:")
 	pi := strings.Index(joined, "provision")
 	if ri < 0 {
 		t.Fatalf("no baseline was captured on an upgrade: %v", f.steps)
+	}
+	if qi < 0 || ri > qi {
+		t.Fatalf("the baseline must precede the stop — a stopped service samples as wholly regressed: %v", f.steps)
 	}
 	if si < 0 || ri > si {
 		t.Fatalf("the baseline must precede the snapshot: %v", f.steps)
@@ -1308,6 +1313,83 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	}
 	if f.readinessHit != 2 {
 		t.Fatalf("sampled %d times, want 2 (baseline, then settled)", f.readinessHit)
+	}
+}
+
+// TestUpgradeStopsTheServiceBeforeSnapshottingIt is [B.143]'s rollback-point rule, and
+// `services-pair.nix` measured why it is one: taken live, the point did not contain the retained
+// message mosquitto had already accepted, so the rollback restored an empty broker ([V3b.4](c)).
+// A live snapshot is crash-consistent at best, and only Home Assistant is measured to survive that.
+//
+// It asserts the CONTAINER unit by name, never the pod: stopping the pod makes podman kill the
+// containers, their units fail, and the target unmounts the shared volume under every other
+// service (quiesce's own comment carries the trace).
+func TestUpgradeStopsTheServiceBeforeSnapshottingIt(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	qi := strings.Index(joined, "stop:briard-home-assistant-ha.service")
+	si := strings.Index(joined, "snapshot:")
+	if qi < 0 {
+		t.Fatalf("the upgrade never stopped the prior container before snapshotting it: %v", f.steps)
+	}
+	if si < 0 || qi > si {
+		t.Fatalf("the rollback point was taken on a RUNNING service: %v", f.steps)
+	}
+	if strings.Contains(joined, "stop:briard-home-assistant.pod") {
+		t.Fatalf("the pod was stopped — that unmounts the shared volume under every other service: %v", f.steps)
+	}
+}
+
+// TestFreshInstallStopsNothing: there is no prior service to stop, and a stop of something that
+// was never installed would be the install path inventing an outage for a node that had none.
+func TestFreshInstallStopsNothing(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	cfg.readinessSettle = time.Millisecond
+	f := &fakeInstaller{primary: true, active: true, healthy: true} // no prior => fresh
+	if o := installService(cfg, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	for _, s := range f.steps {
+		if strings.HasPrefix(s, "stop:") {
+			t.Fatalf("a fresh install stopped %q: %v", s, f.steps)
+		}
+	}
+}
+
+// TestAFailedRollbackPointRestartsTheService: [B.121]'s ruling is that a failed upgrade snapshot
+// INTERRUPTS the service — not that it abandons it. The stop has already happened by then, so the
+// undo is a re-converge against the volume, which still names the PRIOR manifest because provision
+// has not run. Without this the household loses Home Assistant because a btrfs snapshot failed.
+func TestAFailedRollbackPointRestartsTheService(t *testing.T) {
+	f := &fakeInstaller{
+		readiness: [][]hass.Entry{sample("loaded"), sample("loaded")},
+		snapEr:    errors.New("no space left on device"),
+	}
+	o := upgradeWith(t, f)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed", o)
+	}
+	if !strings.Contains(o.Detail, "no space left on device") {
+		t.Fatalf("the outcome does not name what failed: %q", o.Detail)
+	}
+	if !strings.Contains(o.Detail, "restarted") {
+		t.Fatalf("the outcome does not tell the household the service came back: %q", o.Detail)
+	}
+	joined := strings.Join(f.steps, ",")
+	qi := strings.Index(joined, "stop:")
+	si := strings.Index(joined, "snapshot:")
+	ci := strings.Index(joined, "converge")
+	if qi < 0 || si < 0 {
+		t.Fatalf("the test did not reach the stop and the snapshot: %v", f.steps)
+	}
+	if ci < 0 || ci < si {
+		t.Fatalf("the service was left stopped after the snapshot failed: %v", f.steps)
+	}
+	if strings.Contains(joined, "provision") {
+		t.Fatalf("the volume was mutated after the rollback point could not be taken: %v", f.steps)
 	}
 }
 

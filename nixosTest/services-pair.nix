@@ -189,8 +189,9 @@ pkgs.testers.runNixOSTest {
     # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)
-    # THE ROLLBACK POINT, TAKEN QUIESCED -- which is [B.143]'s rule, and this rig measured why it
-    # is one. Taken LIVE (which is what applyServiceInstall does today) the snapshot did not
+    # THE ROLLBACK POINT, TAKEN QUIESCED -- which is [B.143]'s rule, and this rig is what measured
+    # why it is one. Taken LIVE (which is what applyServiceInstall did until B.143 put the stop
+    # in) the snapshot did not
     # contain the message the broker had already accepted: mosquitto holds retained state in memory
     # and writes it on a clean stop or every autosave_interval, so a live snapshot of a service
     # that has just been written to is a rollback point missing exactly the data someone would roll

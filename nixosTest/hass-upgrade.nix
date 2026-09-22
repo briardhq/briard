@@ -124,10 +124,15 @@ pkgs.testers.runNixOSTest {
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
     node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume
     node1.succeed("mkdir -p /var/lib/briard/.snapshots")
-    # -r read-only, the exact form the guest agent's data.snapshot verb runs. Taken
-    # live: btrfs snapshots atomically (crash-consistent; HA recovers its WAL on open), so it
-    # is a valid rollback point without quiescing — an HA-measured fact the revert can lean
-    # on, not the rule: [B.143] has the install path stop the service before snapshotting.
+    # -r read-only, the exact form the guest agent's data.snapshot verb runs.
+    #
+    # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since [B.143] the
+    # install path stops the service first, so this no longer mirrors the product — it is the
+    # EVIDENCE the product's comments cite: btrfs snapshots atomically, HA replays its WAL on
+    # open, so a crash-consistent point is still recoverable FOR HOME ASSISTANT. That is a
+    # measured fact about one service, never a catalog-wide guarantee (services-pair.nix measured
+    # mosquitto failing it), and it is what makes HA's own post-crash members trustworthy. Do not
+    # "fix" this to stop first: doing so deletes the measurement.
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
     # THE UPGRADE: install the `to` manifest under the SAME service name. That is what a version
