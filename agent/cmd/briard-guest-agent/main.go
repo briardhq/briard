@@ -11,6 +11,8 @@
 //
 //	briard-guest-agent run --guest      serve the host (Type=notify; READY once the port is open)
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
+//	briard-guest-agent run --inbound-listen  the inbound channel alone ([B.143]); `run --guest`
+//	                                    does this itself, so only an agent-less rig invokes it
 //	briard-guest-agent --converge       render, warm and start every service the volume names
 //	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
 //	briard-guest-agent --node-storage   build this node's tiers and attach the DRBD resource,
@@ -60,6 +62,7 @@ func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent run", flag.ExitOnError)
 	guest := fs.Bool("guest", false, "serve the host over the virtio-serial control channel")
 	deadman := fs.Bool("deadman", false, "run the host-agent deadman")
+	inboundListen := fs.Bool("inbound-listen", false, "serve the inbound channel alone -- what `run --guest` does inside itself, for a harness with no host ([B.143])")
 	_ = fs.Parse(args)
 
 	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
@@ -85,8 +88,23 @@ func runDaemon(args []string) {
 		if err := runGuest(ctx); err != nil {
 			log.Fatalf("guest agent: %v", err)
 		}
+	case *inboundListen:
+		// FOR A GUEST WITH NO HOST ([B.143]), the same accommodation --write-units makes and for
+		// the same reason. In the product the inbound listener runs INSIDE the long-running agent
+		// (runGuest below), which is the whole point of it -- the logic lives where everything it
+		// reasons about lives, rather than in something short-lived beside it. But the agent-less
+		// rigs run no `run --guest` at all (nixosTest/lib.nix says so in as many words: there is
+		// no host on the other end of a control channel), and they are the ONLY rigs that get
+		// Home Assistant running. Without this the channel is unreachable in every test we have,
+		// and an L0 run would prove nothing about it.
+		//
+		// Nothing in the product invokes this. The harness supplies the trigger the host would
+		// have supplied, and nothing else.
+		if err := guestagent.ListenInbound(ctx, guestfirmware.NewOSExecutor()); err != nil {
+			log.Fatalf("inbound channel: %v", err)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "briard-guest-agent run: say which one: --guest or --deadman")
+		fmt.Fprintln(os.Stderr, "briard-guest-agent run: say which one: --guest, --deadman or --inbound-listen")
 		os.Exit(2)
 	}
 }

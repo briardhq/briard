@@ -428,6 +428,28 @@ let
           ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --write-units";
         };
       };
+      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR THE INBOUND CHANNEL ([B.143]) ─────────────
+      # The same accommodation as the unit render above, for the same reason. In the product the
+      # inbound listener runs INSIDE the long-running agent -- that is the whole point of it,
+      # since the logic belongs where everything it reasons about lives -- and these machines run
+      # no `run --guest`, so nothing would ever bind the socket. A container's notify would meet
+      # ECONNREFUSED, start anyway (`|| true`), and every rig would pass while proving nothing
+      # about the channel.
+      #
+      # It runs the PRODUCT's own listener rather than faking a socket here: a harness that
+      # re-implements the thing under test cannot notice the product changing it.
+      systemd.services.briard-test-inbound = {
+        description = "Harness stand-in for the agent's own inbound listener ([B.143])";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "briard-test-write-units.service" ];
+        serviceConfig = {
+          ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent run --inbound-listen";
+          # The listener owns the socket for the machine's whole life and a restart rebinds it.
+          # Nothing here is a promoter chain member, so a failure costs the channel, never the node.
+          Restart = "always";
+          RestartSec = 1;
+        };
+      };
       virtualisation.emptyDiskImages = mkIf (!diskless) [ 256 ];
       networking.interfaces.eth1.ipv4.addresses = [
         {

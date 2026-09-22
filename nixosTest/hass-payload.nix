@@ -115,6 +115,14 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
 
+    # ⚠️ THE INBOUND SOCKET MUST EXIST BEFORE ANY CONTAINER STARTS ([B.143]). The rendered unit
+    # binds it into the container, and podman CREATES a missing bind source as a root-owned
+    # DIRECTORY -- which then poisons the path for every later attempt, because a socket cannot
+    # go where a directory now sits. In the product the listener is up before anything converges
+    # (it starts with the agent); here the harness unit supplies it, so wait for the same
+    # precondition rather than racing it.
+    node1.wait_until_succeeds("test -S /run/briard/agent.sock", timeout=60)
+
     # THE INSTALL: HA's manifest onto the volume, then the product's own converge renders it,
     # warms it (already resident) and starts it.
     dataroot = install_fixture(node1)
@@ -165,6 +173,50 @@ pkgs.testers.runNixOSTest {
     perms = node1.succeed("stat -c %a /run/briard/home-assistant/token").strip()
     assert perms == "600", f"the token is mode {perms}; it is a credential for the whole HA API"
     token = node1.succeed("cat /run/briard/home-assistant/token").strip()
+
+    # ---- THE INBOUND CHANNEL, and the ring member Home Assistant's own start took ([B.143]) ----
+    # This is the ONLY place the channel is reachable end to end: the rigs that run Home Assistant
+    # are agent-less, so the harness starts the product's listener (nixosTest/lib.nix), and what
+    # runs inside the container is the product's `run` wrapper calling the product's notify.py.
+    #
+    # THE MEMBER IS THE PROOF, not the socket. A socket that exists proves a bind; a member with a
+    # readable sidecar proves the request crossed the container boundary, resolved to a service by
+    # its token, and reached btrfs on the replicated volume.
+    node1.succeed("test -S /run/briard/agent.sock")
+    node1.succeed("test -f /run/briard/home-assistant/inbound.token")
+    tok_perms = node1.succeed("stat -c %a /run/briard/home-assistant/inbound.token").strip()
+    assert tok_perms == "600", f"the inbound token is mode {tok_perms}; it is what identifies a caller"
+
+    members = node1.succeed(
+        "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-start-' || true"
+    ).split()
+    assert members, (
+        "Home Assistant started and no ring member was taken:\n"
+        + node1.succeed("ls -la /var/lib/briard/.snapshots || true")
+        + node1.succeed("systemctl status briard-test-inbound --no-pager -l || true")
+    )
+    member = members[0]
+    # A real read-only subvolume, not a copied directory.
+    node1.succeed(f"btrfs subvolume show /var/lib/briard/.snapshots/{member} >/dev/null")
+    ro = node1.succeed(f"btrfs property get -ts /var/lib/briard/.snapshots/{member} ro").strip()
+    assert ro == "ro=true", f"the member is writable ({ro}); a rollback point must not be"
+
+    # EVERY MEMBER HAS A SIDECAR, and it carries the manifest the service was running -- which is
+    # not recoverable from the member itself, since the volume keeps manifests in .services/, a
+    # sibling of the data subvolume the snapshot copies.
+    import json as _sj
+
+    sidecar = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{member}.json"))
+    assert sidecar["service"] == "home-assistant", sidecar
+    assert sidecar["trigger"] == "start", sidecar
+    # Byte-identical to what the volume names, DERIVED rather than restated: a version literal
+    # here would assert that someone typed the same string twice, not that the member carries the
+    # identity it was taken under.
+    on_volume = node1.succeed("cat /var/lib/briard/.services/home-assistant.json").strip()
+    assert sidecar["manifest"].strip() == on_volume, (
+        f"the sidecar's manifest is not the one on the volume:\n{sidecar['manifest']!r}\n{on_volume!r}"
+    )
+    print(f"the inbound channel took {member}, pinned to the manifest on the volume")
 
     # The mint ran inside the container, in the stopped window s6's `run` provides, and the
     # token HA now holds is the one we chose.
