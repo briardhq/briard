@@ -1839,3 +1839,67 @@ func TestProtocolFloorStaysAtTwo(t *testing.T) {
 			guestfirmware.MinGuestProtocol)
 	}
 }
+
+// TestImageEnsureIsResidentOrPulls, and ⚠️ it must not start a unit.
+//
+// service.warm starts a rendered `.image` unit, which only exists for a manifest the node has
+// already rendered. A RESTORE asks about a member's PINNED identity -- possibly months old, quite
+// possibly never rendered here -- so the question has to be answerable by ref alone ([B.143]).
+func TestImageEnsureIsResidentOrPulls(t *testing.T) {
+	const ref = "ghcr.io/x/ha@sha256:abc"
+
+	// Resident: the check is the whole answer, and nothing is fetched.
+	f := &fakeExec{} // every command succeeds, so `image exists` does
+	if err := dial(t, f).EnsureImage(context.Background(), ref); err != nil {
+		t.Fatalf("a resident image was refused: %v", err)
+	}
+	if !reflect.DeepEqual(f.runs, [][]string{{"podman", "image", "exists", ref}}) {
+		t.Errorf("runs = %v, want the existence check alone", f.runs)
+	}
+
+	// Absent: fetched by REF. Never `systemctl start` -- that is the unit path, and there is no
+	// unit for a manifest this node has not rendered.
+	f = &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if len(args) > 1 && args[1] == "exists" {
+			return nil, errors.New("image not known")
+		}
+		return nil, nil
+	}}
+	if err := dial(t, f).EnsureImage(context.Background(), ref); err != nil {
+		t.Fatalf("an absent image was not fetched: %v", err)
+	}
+	if !f.ranArgv("podman", "pull", ref) {
+		t.Errorf("runs = %v, want a pull by ref", f.runs)
+	}
+	for _, r := range f.runs {
+		if r[0] == "systemctl" {
+			t.Errorf("image.ensure started a unit: %v", f.runs)
+		}
+	}
+}
+
+// TestImageEnsureReportsAPullItCannotDo: the refusal IS the feature. A restore that cannot get
+// the code its member was taken under must cancel before it stops anything, so this failing
+// loudly is what lets the caller leave the household exactly where it was.
+func TestImageEnsureReportsAPullItCannotDo(t *testing.T) {
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		return []byte("manifest unknown"), errors.New("exit status 125")
+	}}
+	err := dial(t, f).EnsureImage(context.Background(), "ghcr.io/x/gone@sha256:abc")
+	if err == nil {
+		t.Fatal("a pull that could not happen was reported as success")
+	}
+	if !strings.Contains(err.Error(), "gone@sha256:abc") {
+		t.Errorf("error = %v, want it to name the ref it could not get", err)
+	}
+}
+
+// ranArgv reports whether the fake was asked to run exactly this argv.
+func (f *fakeExec) ranArgv(argv ...string) bool {
+	for _, r := range f.runs {
+		if reflect.DeepEqual(r, argv) {
+			return true
+		}
+	}
+	return false
+}

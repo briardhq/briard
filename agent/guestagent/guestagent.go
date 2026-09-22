@@ -205,6 +205,16 @@ const (
 	// service.installed already returns; a verb that returned both would duplicate that one.
 	verbServiceList = "service.list" // list the services recorded on the volume
 	verbServiceWarm = "service.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
+	// verbImageEnsure is the same question asked WITHOUT a unit: is this ref resident, and if not,
+	// fetch it ([B.143]). service.warm starts a rendered `.image` unit, which only exists for a
+	// manifest the node has already rendered -- and a RESTORE has to ask about a manifest it has
+	// not rendered and may never render, because the answer decides whether it proceeds at all.
+	//
+	// ⚠️ ITS FAILURE MEANS THE OPPOSITE OF converge's. A pull converge cannot do takes the VIP down
+	// and says so ([V3.17]'s doctrine); a pull the RESTORE cannot do simply cancels the restore and
+	// leaves the household exactly as it was. Same operation, opposite blast radius, which is why
+	// it is a separate verb rather than a flag on the other one.
+	verbImageEnsure = "image.ensure"
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start ([V3b.3](f), converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -334,7 +344,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataMember, verbDataRestore,
+	verbDataSnapshot, verbDataMember, verbDataRestore, verbImageEnsure,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -1065,6 +1075,27 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// converging survivor must not disagree about what "the image is already here" means.
 			// The exists-or-pull rule and why it is safe are argued there.
 			return nil, warmImage(ctx, x, req.Unit, req.Ref)
+		case verbImageEnsure:
+			var req serviceWarmRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Ref == "" {
+				return nil, fmt.Errorf("image.ensure: need an image ref")
+			}
+			// RESIDENT IS THE WHOLE ANSWER when it is true, and it is the cheap half: a manifest's
+			// ref is a DIGEST, so an image that is here IS the image asked for.
+			if _, err := x.Run(ctx, "podman", "image", "exists", req.Ref); err == nil {
+				return nil, nil
+			}
+			// Otherwise fetch it DIRECTLY rather than through a `.image` unit. That unit is a
+			// property of a rendered manifest, and this caller is asking about one the node has
+			// not rendered and may never render -- a ring member's pinned identity, possibly
+			// months old. Pulling by ref needs nothing rendered and is exactly as safe.
+			if out, err := x.Run(ctx, "podman", "pull", req.Ref); err != nil {
+				return nil, fmt.Errorf("image.ensure %s: %w: %s", req.Ref, err, strings.TrimSpace(string(out)))
+			}
+			return nil, nil
 		case verbHassReadiness:
 			var req hassReadinessRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2915,3 +2946,16 @@ func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 	}
 	return g.WaitPrimary(ctx, spec.Storage.Resource.Name, DefaultPollInterval)
 }
+
+// EnsureImage makes one image ref resident, pulling only if it is missing.
+//
+// ⚠️ IT IS NOT ServiceWarm, and the difference is who pays for a failure. A pull converge cannot
+// do takes the VIP down and says so ([V3.17]'s doctrine, upheld by failing); a pull a RESTORE
+// cannot do cancels the restore and leaves the household exactly where it was. This is the verb
+// for the second kind, which is why it asks by REF and needs nothing rendered ([B.143]).
+func (g *Client) EnsureImage(ctx context.Context, ref string) error {
+	return g.c.Call(ctx, verbImageEnsure, serviceWarmRequest{Ref: ref}, nil)
+}
+
+// SupportsImageEnsure reports whether this guest can be asked for an image by ref alone.
+func (g *Client) SupportsImageEnsure() bool { return g.Supports(verbImageEnsure) }
