@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"time"
+
 	"briard.io/agent/install"
+	"briard.io/agent/quadlet"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
 )
@@ -462,5 +465,68 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 		if !strings.Contains(errOut.String(), "unexpected argument") {
 			t.Errorf("`briard update %s` stderr = %q, want it to refuse the positional word", verb, errOut.String())
 		}
+	}
+}
+
+// TestAppRevertNamesThePointExactly: `revert` takes the point as history printed it, never an
+// index into that listing ([B.143]).
+//
+// An index is stale the moment anything takes a member, and members are taken on every service
+// start -- so "revert 3" would act on a different point than the one the operator read. This is
+// the assertion that keeps the safe shape: what the CLI sends is what the operator saw.
+func TestAppRevertNamesThePointExactly(t *testing.T) {
+	const point = "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z"
+	sock, sent := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: `restored "x", data only`})
+	var out, errb bytes.Buffer
+	if code := runService(context.Background(), []string{"revert", "-sock", sock, point}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	ds := sent()
+	if len(ds) != 1 {
+		t.Fatalf("sent %d directives, want 1: %+v", len(ds), ds)
+	}
+	if ds[0].Kind != api.DirectiveServiceRestore {
+		t.Errorf("kind = %q, want %q", ds[0].Kind, api.DirectiveServiceRestore)
+	}
+	if ds[0].Payload != point {
+		t.Errorf("payload = %q, want the point verbatim %q", ds[0].Payload, point)
+	}
+}
+
+// TestAppHistoryRendersTheMachinesAnswer: the listing is the machine's, and the CLI renders it --
+// it does not re-derive titles or times, so there is one place either can be wrong.
+func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
+	entries := []quadlet.SnapshotEntry{{
+		Member: "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z",
+		Meta: quadlet.SnapshotMeta{
+			Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
+			Title: "2026.6.0, before upgrading to 2026.7.1", TakenAt: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC),
+		},
+	}}
+	body, _ := json.Marshal(entries)
+	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
+	var out, errb bytes.Buffer
+	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "2026.6.0, before upgrading to 2026.7.1") {
+		t.Errorf("the title the machine gave is not shown:\n%s", got)
+	}
+	if !strings.Contains(got, entries[0].Member) {
+		t.Errorf("the point is not printed, so it cannot be copied into revert:\n%s", got)
+	}
+}
+
+// TestAppHistoryOnAnAppWithNoPoints: an app installed a minute ago has nothing to go back to, and
+// that is an ANSWER rather than an error -- the difference an operator acts on.
+func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
+	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "[]"})
+	var out, errb bytes.Buffer
+	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 -- no history is not a failure (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "no points to go back to") {
+		t.Errorf("output does not say the app has no history yet:\n%s", out.String())
 	}
 }

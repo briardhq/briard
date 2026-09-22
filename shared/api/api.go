@@ -363,6 +363,16 @@ const (
 	//                        digest already present is a no-op. It never changes what the node serves,
 	//                        which is what lets the cloud fan it out to every anchor before committing
 	//                        anything.
+	DirectiveServiceMembers = "service-members" // Payload = a SERVICE NAME. Outcome.Detail is a
+	//                        JSON array of quadlet.SnapshotEntry: one service's ring, oldest
+	//                        first, as the picker shows it ([B.143]). Read-only — it changes
+	//                        nothing and is safe to re-send.
+	//
+	//                        JSON IN Detail, deliberately, and it is the narrow choice rather than
+	//                        the tidy one. The alternative is a second transport beside the
+	//                        directive channel for one query, and two ways to ask a node something
+	//                        is how they drift. Both readers want structure: the CLI prints a
+	//                        table, the dashboard renders a list.
 	DirectiveServiceRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
 	//                        ([B.143]), exactly as the listing the picker read returned it. The
 	//                        node puts that service back to the member: its data, and — when the

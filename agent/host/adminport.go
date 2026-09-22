@@ -38,7 +38,7 @@ import (
 // behind the same door.
 func guestMayAsk(kind string) bool {
 	return kind == api.DirectiveServiceInstall || kind == api.DirectiveServicePrewarm ||
-		kind == api.DirectiveServiceRestore
+		kind == api.DirectiveServiceRestore || kind == api.DirectiveServiceMembers
 }
 
 // serveAdminPort dials the host end of the guest's admin port and serves it until ctx ends,

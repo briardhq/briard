@@ -34,6 +34,7 @@ import (
 	"os"
 	"strings"
 
+	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
 )
@@ -88,11 +89,17 @@ var commands = []command{
 		run: runLogs, probe: []string{"-h"},
 	},
 	{
-		name: "app", args: "install <name>", group: groupEveryday,
-		synopsis: "install an app from the catalog on this machine",
-		detail: "The name is an entry in the signed catalog. The install downloads the image, puts its\n" +
-			"data on the replicated volume, and starts it behind a health gate that reverts the machine\n" +
-			"if it does not come up. It blocks until the machine reaches a terminal state.",
+		name: "app", args: "install|history|revert", group: groupEveryday,
+		synopsis: "install an app, look at its history, or put it back",
+		detail: "install <name> -- the name is an entry in the signed catalog. It downloads the image,\n" +
+			"puts its data on the replicated volume, and starts it behind a health gate that reverts the\n" +
+			"machine if it does not come up. It blocks until the machine reaches a terminal state.\n\n" +
+			"history <name> -- the points this app can be put back to, oldest first, with the moment\n" +
+			"each was taken and whether going back would move the app's VERSION as well as its data.\n\n" +
+			"revert <point> -- put the app back to one of them, naming it exactly as history printed it.\n" +
+			"The app is stopped for the restore and started again afterwards; a point is taken first, so\n" +
+			"this is itself undoable. If the point needs an image this machine no longer has and cannot\n" +
+			"fetch, nothing is changed and it says so.",
 		run: runService, probe: []string{"install", "-h"},
 	},
 	{
@@ -283,8 +290,11 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // operation on a live promoted resource: returning early would leave an operator guessing whether
 // the thing they just did is still happening.
 func runService(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) >= 1 && (args[0] == "history" || args[0] == "revert") {
+		return runAppHistory(ctx, args, stdout, stderr)
+	}
 	if len(args) < 1 || args[0] != "install" {
-		fmt.Fprint(stderr, "briard app: want `install <name>`\n")
+		fmt.Fprint(stderr, "briard app: want `install <name>`, `history <name>` or `revert <point>`\n")
 		return 2
 	}
 	fs := flag.NewFlagSet("briard app install", flag.ContinueOnError)
@@ -554,4 +564,74 @@ func accountLang() string {
 		return "en"
 	}
 	return strings.ToLower(l)
+}
+
+// runAppHistory is `briard app history <name>` and `briard app revert <point>` ([B.143]).
+//
+// TWO VERBS AND NOT ONE INTERACTIVE PICKER, deliberately. An index into a list ("revert 3") is
+// stale the moment anything takes a member, and members are taken on every service start — so the
+// second command would act on a different point than the one the operator read. Naming the point
+// exactly as history printed it is copy-and-paste, and it cannot drift.
+func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	verb := args[0]
+	fs := flag.NewFlagSet("briard app "+verb, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintf(stderr, "briard app %s: want exactly one %s\n", verb,
+			map[string]string{"history": "app name", "revert": "point"}[verb])
+		return 2
+	}
+	if verb == "revert" {
+		return runAppRevert(ctx, *sock, fs.Arg(0), stdout, stderr)
+	}
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveServiceMembers, Payload: fs.Arg(0)})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "briard app history: %s\n", o.Detail)
+		return 1
+	}
+	var members []quadlet.SnapshotEntry
+	if err := json.Unmarshal([]byte(o.Detail), &members); err != nil {
+		fmt.Fprintf(stderr, "briard app history: the machine's answer did not parse: %v\n", err)
+		return 1
+	}
+	if len(members) == 0 {
+		// An answer, not a failure: an app installed a minute ago has nothing to go back to yet.
+		fmt.Fprintf(stdout, "%s has no points to go back to yet\n", fs.Arg(0))
+		return 0
+	}
+	// NEWEST LAST, which is the order the listing arrives in and the order a terminal reads: the
+	// most recent point ends up next to the prompt, where the operator is looking.
+	for _, m := range members {
+		fmt.Fprintf(stdout, "%s  %s\n", m.Meta.TakenAt.Local().Format("2006-01-02 15:04"), m.Meta.Title)
+		fmt.Fprintf(stdout, "    %s\n", m.Member)
+	}
+	fmt.Fprintf(stdout, "\nput one back with: sudo briard app revert <point>\n")
+	return 0
+}
+
+func runAppRevert(ctx context.Context, sock, member string, stdout, stderr io.Writer) int {
+	fmt.Fprintf(stdout, "putting the app back to %s\n", member)
+	fmt.Fprint(stdout, "  it stops for the restore and starts again afterwards; a point is taken first\n")
+	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveServiceRestore, Payload: member})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		// The machine says whether anything changed; the CLI must not guess, because "nothing was
+		// changed" and "the app is stopped" are the two different things an operator acts on
+		// differently.
+		fmt.Fprintf(stderr, "briard app revert: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s\n", o.Detail)
+	return 0
 }

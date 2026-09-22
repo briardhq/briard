@@ -1450,7 +1450,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		return cfg.applyDebugConsole(ctx, d, logf)
 	}
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
-		d.Kind == api.DirectiveServiceRestore {
+		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers {
 		// A service install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
 		i, ok := r.(serviceInstaller)
 		if !ok {
@@ -1461,6 +1461,8 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			return cfg.applyServicePrewarm(ctx, i, d, logf)
 		case api.DirectiveServiceRestore:
 			return cfg.applyServiceRestore(ctx, i, d, logf)
+		case api.DirectiveServiceMembers:
+			return cfg.applyServiceMembers(ctx, i, d, logf)
 		}
 		return cfg.applyServiceInstall(ctx, i, d, logf)
 	}

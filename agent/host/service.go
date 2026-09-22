@@ -1173,3 +1173,28 @@ func (cfg Config) takeMember(ctx context.Context, g serviceInstaller, service, m
 	}
 	return g.Snapshot(ctx, quadlet.DataRoot(service), member, string(sidecar))
 }
+
+// applyServiceMembers answers one service's ring as JSON ([B.143]). Read-only: it changes
+// nothing, and the caller — the CLI's `app history`, the dashboard's picker — renders it.
+func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	if d.Payload == "" {
+		return failed("no app named")
+	}
+	if !g.SupportsMembers() {
+		return failed("this guest is too old to list an app's history; update the guest OS first")
+	}
+	members, err := g.Members(ctx, d.Payload)
+	if err != nil {
+		return failed(fmt.Sprintf("read %s's history: %v", d.Payload, err))
+	}
+	// EMPTY IS AN ANSWER, not a failure: a service installed a minute ago has no history yet, and
+	// saying so is what lets the picker show "nothing to go back to" instead of an error.
+	body, err := json.Marshal(members)
+	if err != nil {
+		return failed(err.Error())
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(body)}
+}
