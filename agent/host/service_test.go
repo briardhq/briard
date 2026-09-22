@@ -1636,9 +1636,9 @@ func TestInstallBudgetFollowsThePullBound(t *testing.T) {
 // not happen: it takes an UNLABELLED member, which is precisely what the sidecar exists to
 // prevent, and the picker could then offer a household a rollback point it cannot identify.
 //
-// ⚠️ It is a capability and not a protocol floor deliberately. [B.143] tried the floor and gate 3
-// refused the release: every host refuses every not-yet-rolled guest, the health gate reverts the
-// self-update, and the node cannot reach the image that would have fixed it.
+// ⚠️ A per-path capability refusal is the only instrument there is: the channel carries no version
+// number, because one could refuse only the WHOLE channel and the channel is what fixes a node
+// ([B.143], and the note at guestfirmware.VerbHello). This is the path; it refuses alone.
 func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, noMember: true}

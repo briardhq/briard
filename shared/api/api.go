@@ -6,7 +6,7 @@ import (
 	"briard.io/shared/model"
 )
 
-// The host<->guest control protocol -- its version gate and the handshake that carries it --
+// The host<->guest control protocol -- its verb set and the handshake that advertises it --
 // lives in agent/guestfirmware, not here. Two reasons, both standing: the guest IMAGE's inputs
 // hash covers whole directories, so anything in shared/ that the guest links republishes a
 // 400 MB guest chain for every unrelated edit ([B.139]); and nothing on that channel leaves the

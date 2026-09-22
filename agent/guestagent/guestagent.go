@@ -123,13 +123,13 @@ const verbSetHostname = "sys.hostname"
 // deleted ([V3b.3](e2)) and they were left naming a mechanism no node has. They act on whichever
 // unit the host names, which is always a runtime-installed service's.
 //
-// ⚠️ RENAMING THEM WAS A PROTOCOL BREAK, and it is why guestfirmware.MinGuestProtocol is 2. The
-// guest advertises its verb set in the handshake, so a rolled host meeting an un-rolled guest
-// finds none of them; without the bump that is five silent verb failures, with it the handshake
-// refuses up front and the node defers safely. Taken on the owner's call under the alpha
+// ⚠️ RENAMING THEM WAS THE ONE BREAK A VERB SET CANNOT ABSORB: the guest advertises names, so a
+// rolled host meeting an un-rolled guest finds none of these five at once, and Supports can only
+// route around a verb one path at a time. Taken on the owner's call under the alpha
 // reinstall-only policy ([[alpha-reinstall-only-policy]]) — every node re-runs the installer, so
-// there is no fleet to strand and no compat path to build. This is the expensive instrument the
-// service.installed note below describes; it is affordable exactly while that policy holds.
+// there is no fleet to strand and no compat path to build. That policy, not anything on the wire,
+// is what makes a family rename affordable, and it is the reason the channel carries no version
+// number to bump (guestfirmware, VerbHello).
 const (
 	verbServiceStart  = "service.start"  // systemctl start <unit>
 	verbServiceStop   = "service.stop"   // systemctl stop <unit> (quiesce before snapshot)
@@ -180,12 +180,13 @@ const (
 	verbServiceProvision = "service.provision" // create the service subvolume + record the manifest (Primary only)
 	// service.installed READS ONE NAMED SERVICE's manifest off the volume, or "". It REPLACES
 	// the unnamed service.manifest rather than widening it, because a verb whose meaning changes
-	// under an unchanged name is what a protocol bump exists to police -- and a bump is the
-	// expensive instrument here: the host agent self-updates independently of the guest OS closure
-	// ([V3.4]), so raising MinGuestProtocol makes every host refuse every not-yet-rolled guest
-	// fleet-wide, and its own health gate then reverts the self-update. A NEW verb is refused by
-	// exactly the one path that needs it (Supports), which is the instrument service.warm already
-	// set the precedent for ([V3b.3](e1), no api.go change).
+	// under an unchanged name is the one thing nothing on this channel can police: the guest
+	// advertises names, and a name that still resolves reports success from a guest doing the old
+	// thing. So the rule is that meaning moves with the name. A NEW verb is refused by exactly the
+	// one path that needs it (Supports), the instrument service.warm set the precedent for
+	// ([V3b.3](e1), no api.go change) -- and the same rule covers a new FIELD whose absence would
+	// be silent, which is why data.member is its own verb rather than a flag on data.snapshot
+	// ([B.143]).
 	verbServiceInstalled = "service.installed" // read one named service's manifest from the volume, or ""
 	// service.pulling records (or clears) a service install's pull for the dashboard ([V3b.31j]):
 	// the manifest's sizes and the start time, on the dashboard's tmpfs -- written BEFORE the
@@ -2267,22 +2268,21 @@ func snapshotReq(payload json.RawMessage) (snapshotRequest, error) {
 
 // Client is the host end: typed calls to the guest agent over the channel.
 type Client struct {
-	c       *guestfirmware.Conn
-	version int             // negotiated guest protocol version (0 until Handshake)
-	caps    map[string]bool // verbs the guest advertised (nil until Handshake)
-	bootID  string          // which BOOT of the guest answered (empty until Handshake, or from a guest too old to say)
-	bundle  string          // the guest bundle the guest runs ("" = the image's firmware), from the handshake ([B.86j])
+	c      *guestfirmware.Conn
+	caps   map[string]bool // verbs the guest advertised (nil until Handshake)
+	bootID string          // which BOOT of the guest answered (empty until Handshake, or from a guest that does not say)
+	bundle string          // the guest bundle the guest runs ("" = the image's firmware), from the handshake ([B.86j])
 }
 
 // NewClient wraps a connection to the guest (virtio-serial in prod, net.Pipe in tests).
 func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: guestfirmware.NewConn(rw)} }
 
-// Handshake negotiates the host<->guest protocol: it reads the guest's version +
-// capabilities and refuses a guest the host can't drive (version outside
-// [MinGuestProtocol, GuestProtocol]) -- a safe deferral, since bring-up/upgrade then
-// fails rather than the host sending verbs a skewed guest might misinterpret. On success
-// the version + capabilities are recorded (see ProtocolVersion / Supports). The host
-// should call this once, right after connecting (and after any reconnect).
+// Handshake opens the channel: it records the verb set the guest advertises, the boot answering
+// and the bundle it runs. It REFUSES NOTHING -- a guest is driven by what it says it serves, one
+// path at a time (Supports), because the only refusal a handshake could make is of the whole
+// channel, and the channel is what fixes a node (see the note at guestfirmware.VerbHello). The
+// host should call this once, right after connecting, and after any reconnect: dressing restarts
+// the guest agent, so the verb set on the far side changes underneath it.
 func (g *Client) Handshake(ctx context.Context) (guestfirmware.Hello, error) {
 	var h guestfirmware.Hello
 	// Resync=true: on a reconnect, a stale in-flight reply from the dropped session can sit
@@ -2290,11 +2290,6 @@ func (g *Client) Handshake(ctx context.Context) (guestfirmware.Hello, error) {
 	if err := g.c.CallResync(ctx, guestfirmware.VerbHello, nil, &h, true); err != nil {
 		return h, fmt.Errorf("guestagent: handshake: %w", err)
 	}
-	if !compatibleGuest(h.Version) {
-		return h, fmt.Errorf("guestagent: incompatible guest protocol v%d (host drives v%d..v%d)",
-			h.Version, guestfirmware.MinGuestProtocol, guestfirmware.GuestProtocol)
-	}
-	g.version = h.Version
 	g.bootID = h.BootID
 	g.bundle = h.Bundle
 	g.caps = make(map[string]bool, len(h.Capabilities))
@@ -2304,24 +2299,16 @@ func (g *Client) Handshake(ctx context.Context) (guestfirmware.Hello, error) {
 	return h, nil
 }
 
-// compatibleGuest reports whether the host can drive a guest speaking protocol v. Newer
-// than the host knows, or older than it still supports, is refused.
-func compatibleGuest(v int) bool {
-	return v >= guestfirmware.MinGuestProtocol && v <= guestfirmware.GuestProtocol
-}
-
-// Supports reports whether the guest advertised verb in its handshake. Before a handshake
-// (caps nil) it returns true -- optimistic, preserving the older "just try the verb"
-// behaviour for callers that don't negotiate.
+// Supports reports whether the guest advertised verb in its handshake. It is THE negotiation --
+// a caller whose path needs a verb an older guest cannot serve asks here and does that one thing
+// differently, leaving every other path working. Before a handshake (caps nil) it returns true --
+// optimistic, preserving the "just try the verb" behaviour for callers that don't negotiate.
 func (g *Client) Supports(verb string) bool {
 	if g.caps == nil {
 		return true
 	}
 	return g.caps[verb]
 }
-
-// ProtocolVersion is the negotiated guest protocol version (0 before a handshake).
-func (g *Client) ProtocolVersion() int { return g.version }
 
 // BootID identifies the guest BOOT this channel reached, from the handshake. Empty before a
 // handshake, and empty from a guest too old to report one -- so a caller comparing two of them

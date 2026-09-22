@@ -36,61 +36,44 @@ const (
 	ControlPortDev = "/dev/virtio-ports/" + ControlPort
 )
 
-// The host<->guest control protocol's own version, and the handshake that carries it. It lives
-// HERE, not in shared/api, because the firmware is what answers a handshake before anything has
-// been pushed, and hashing the whole of shared/ into the image's inputs would republish a 400 MB
-// guest chain for every unrelated shared/ edit ([B.139]). It is not north-bound telemetry --
-// nothing here leaves the house -- so shared/api's audited allowlist is not the register it
-// belongs in.
+// The handshake the channel opens with. It lives HERE, not in shared/api, because the firmware
+// is what answers one before anything has been pushed, and hashing the whole of shared/ into the
+// image's inputs would republish a 400 MB guest chain for every unrelated shared/ edit ([B.139]).
+// It is not north-bound telemetry -- nothing here leaves the house -- so shared/api's audited
+// allowlist is not the register it belongs in.
 //
-// The host and guest agents version this wire protocol so they can evolve on independent
-// cadences and so the host detects skew during a rolling update/failover -- a survivor's guest
-// may run a newer OS generation (thus a newer guest agent) than the host was built against. The
-// host handshakes on connect and refuses a guest whose protocol it can't speak: a safe deferral
-// (bring-up/upgrade fails -> rollback / no promotion) beats silent misbehaviour.
+// ⚠️ THERE IS NO PROTOCOL VERSION NUMBER, and adding one back is a decision, not a tidy-up
+// ([B.143]). Negotiation is by VERB NAME: the guest advertises the set it serves, and
+// Client.Supports refuses exactly the one path a guest cannot serve while every other path keeps
+// working -- the instrument service.warm set ([V3b.3](e1)) and data.member follows. A number can
+// only ever refuse the WHOLE channel, and the channel is what fixes a node: applying a vm release
+// runs through the guest's os.* verbs (agent/host/guestupdate.go), so a host that refuses the
+// handshake can never reach the image that would satisfy it. That deadlock is reachable from the
+// call graph, not a matter of how the floor is chosen.
 //
-// VERSION 2 (2026-08-29) renamed five verbs from `payload.*` to `service.*` (agent/guestagent,
-// and see the note at that const block). A rename is the one change a capability handshake
-// cannot absorb -- the guest advertises names, so a rolled host meeting a v1 guest finds none of
-// them -- which is precisely what MinGuestProtocol is for: refuse at the handshake rather than
-// fail five verbs in a row. Raising the FLOOR, not just the ceiling, is deliberate and is
-// affordable only under the alpha reinstall-only policy ([[alpha-reinstall-only-policy]]): every
-// node re-runs the installer, so there is no fleet to strand. Note what it costs when that
-// policy ends -- the host agent self-updates independently of the guest OS closure ([V3.4]), so
-// a floor raise makes every host refuse every not-yet-rolled guest fleet-wide and its own health
-// gate then reverts the self-update.
-// ⚠️ [B.143] RAISED THIS FLOOR TO 3 AND GATE 3 PROVED IT WRONG, 2026-09-22. Recorded because the
-// reasoning was half right and the remedy was not, and the same trap is one edit away from anyone
-// adding a field to an existing verb.
+// A number would also have nothing left to measure. The guest agent is PUSHED at every bring-up
+// ([B.86j]) from the host's own tree, so a host that compares versions with a guest it dressed is
+// comparing a constant with itself. The only binary that can differ is this firmware, whose
+// contract is frozen and additive (the bin.* verbs) and whose five names Supports already checks.
+// What the host needs about a guest it did not push it gets from facts richer than an integer:
+// Bundle names the release the guest runs, BootID the boot answering.
 //
-// The change was a `sidecar` field on data.snapshot. A v2 guest advertises that verb, accepts the
-// call, ignores the field it does not know and reports success -- so the host would believe every
-// ring member carried its metadata while the volume filled with unlabelled subvolumes. That much
-// was right: a field whose absence is SILENT cannot be optional.
+// Cross-release floors that DO exist ride the signed manifests instead: Manifest.MinBriard (a vm
+// release naming the oldest briard that may install it) and Manifest.MinUpgradeFrom (a release
+// naming its own upgrade floor). agent/install/fetch.go states which directions a floor may point
+// and why a floor from briard at the VM is not one of them.
 //
-// What a floor costs is the part that was wrong, and agent/guestagent already said so in as many
-// words: "raising MinGuestProtocol makes every host refuse every not-yet-rolled guest fleet-wide,
-// and its own health gate then reverts the self-update". Measured exactly that way -- the host
-// self-updated, refused the still-v2 guest at the handshake, and `briard update -vm` answered
-// "agent is shutting down" twice while the node sat on the old image. The deadlock is the shape
-// worth remembering: reaching the new image REQUIRES the guest channel that the floor has just
-// forbidden, so no node can ever cross it and every one of them needs a reinstall.
-//
-// THE INSTRUMENT IS A NEW VERB NAME, not a version. An old guest does not advertise it, so
-// Client.Supports refuses exactly the one path that needs it and every other path keeps working
-// -- the precedent service.warm set ([V3b.3](e1)). data.member is that verb; data.snapshot keeps
-// its old behaviour untouched so an un-rolled HOST against a rolled guest still works too.
-const (
-	GuestProtocol    = 2 // the current host<->guest wire protocol version
-	MinGuestProtocol = 2 // the oldest guest protocol this host can still drive
-)
+// What a name cannot absorb is a RENAME, which breaks a whole family at once (the `payload.*` ->
+// `service.*` cut, agent/guestagent). That is affordable only under the alpha reinstall-only
+// policy ([[alpha-reinstall-only-policy]]) -- every node re-runs the installer, so there is no
+// fleet to strand -- and it is the policy, not a number on the wire, that makes it safe.
 
 // The two verbs the firmware serves besides the three push ones: the handshake, and the clean
 // shutdown. Poweroff is here because the host may have to stop a guest it has never dressed --
 // an aborted bring-up, a refused bundle -- and the ACPI button is the fallback for a guest with
 // no agent at all, not for one whose agent is answering.
 const (
-	VerbHello      = "hello"       // protocol handshake: version + capabilities
+	VerbHello      = "hello"       // handshake: the verb set, the boot, the bundle
 	VerbOSPowerOff = "os.poweroff" // ask the guest OS to shut itself down cleanly
 )
 
@@ -100,9 +83,9 @@ const (
 // what makes it dress the guest before any real verb (agent/host/dress.go).
 var Capabilities = []string{VerbHello, VerbBinStage, VerbBinTest, VerbBinActivate, VerbOSPowerOff}
 
-// Hello is the guest's handshake reply: its protocol version plus the verbs it
-// supports (fine-grained capability negotiation on top of the coarse version gate), and
-// which BOOT of the guest is answering.
+// Hello is the guest's handshake reply: the verbs it serves -- the whole of the negotiation,
+// there being no version number above it (see the note at VerbHello) -- plus which BOOT of the
+// guest is answering and which bundle it runs.
 //
 // BootID is the guest kernel's boot_id, and it is the host's only way to tell "the in-guest
 // agent bounced" from "the guest rebooted underneath me" -- two events that look identical
@@ -111,7 +94,6 @@ var Capabilities = []string{VerbHello, VerbBinStage, VerbBinTest, VerbBinActivat
 // changes only across an actual boot. Empty from a guest too old to send it, which reads as
 // "no evidence" rather than "a new boot" -- the host must not re-converge on silence.
 type Hello struct {
-	Version      int      `json:"version"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	BootID       string   `json:"boot_id,omitempty"`
 	// Bundle is the guest bundle this agent RUNS ([B.86j]): the host release id whose
@@ -138,7 +120,7 @@ const bootIDPath = "/proc/sys/kernel/random/boot_id"
 // refuses to drive, and no host has ever needed this field to drive one -- so an unreadable
 // boot_id is reported as absent, not as an error.
 func HelloReply(x Executor, caps []string) Hello {
-	h := Hello{Version: GuestProtocol, Capabilities: caps, Bundle: runningBundle()}
+	h := Hello{Capabilities: caps, Bundle: runningBundle()}
 	if b, err := x.ReadFile(bootIDPath); err == nil {
 		h.BootID = strings.TrimSpace(string(b))
 	}

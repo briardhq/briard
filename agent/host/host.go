@@ -1043,15 +1043,14 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 			return nil, nil, fmt.Errorf("%w: %w", errNoChannel, derr)
 		}
 		client = guestagent.NewClient(conn)
-		// Handshake first: learn the guest's protocol version + capabilities and refuse
-		// a guest this host can't drive, before sending any real verb -- a skewed guest (e.g.
-		// a survivor on a newer OS generation after a rolling update) is a safe deferral, not
-		// silent misbehaviour.
+		// Handshake first: learn the verb set this guest serves and the bundle it runs,
+		// before sending any real verb. It refuses nothing -- an undressed guest advertises
+		// the firmware's five names, which is how the dress below knows to happen at all.
 		hello, herr := client.Handshake(bringup)
 		if herr != nil {
 			err = herr
 		} else {
-			logf("guest protocol v%d, %d capabilities", hello.Version, len(hello.Capabilities))
+			logf("guest bundle %q, %d capabilities", hello.Bundle, len(hello.Capabilities))
 		}
 	}
 	// DRESS THE GUEST ([B.86j]) before any real verb, on both paths: a fresh boot starts as

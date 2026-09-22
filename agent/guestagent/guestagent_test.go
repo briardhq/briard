@@ -297,19 +297,16 @@ func TestServiceHealth(t *testing.T) {
 	}
 }
 
-// Handshake negotiates the protocol: version + the advertised capability set, which the
-// host checks with Supports.
+// The handshake records the advertised capability set, which is the whole of the negotiation:
+// what the host checks with Supports, one path at a time.
 func TestHandshake(t *testing.T) {
 	g := dial(t, &fakeExec{})
 	h, err := g.Handshake(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Version != guestfirmware.GuestProtocol {
-		t.Errorf("version = %d, want %d", h.Version, guestfirmware.GuestProtocol)
-	}
-	if g.ProtocolVersion() != guestfirmware.GuestProtocol {
-		t.Errorf("ProtocolVersion = %d, want %d", g.ProtocolVersion(), guestfirmware.GuestProtocol)
+	if len(h.Capabilities) != len(guestCapabilities) {
+		t.Errorf("capabilities = %d, want the guest agent's %d", len(h.Capabilities), len(guestCapabilities))
 	}
 	if !g.Supports(verbOSSystem) {
 		t.Error("guest should advertise os.switch after the handshake")
@@ -333,7 +330,7 @@ func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 			return nil, nil
 		}
 		taken <- struct{}{} // the request is read; its reply is written next
-		return guestfirmware.Hello{Version: guestfirmware.GuestProtocol, Capabilities: []string{guestfirmware.VerbHello, verbReactor}}, nil
+		return guestfirmware.Hello{Capabilities: []string{guestfirmware.VerbHello, verbReactor}}, nil
 	})
 
 	// Session 1 dies with its hello on the wire: the guest answers into a stream nobody
@@ -405,17 +402,25 @@ func TestSupportsBeforeHandshakeIsOptimistic(t *testing.T) {
 	}
 }
 
-// The version gate refuses a guest newer than the host knows or older than it supports --
-// a safe deferral rather than driving a skewed guest.
-func TestCompatibleGuest(t *testing.T) {
-	if !compatibleGuest(guestfirmware.GuestProtocol) {
-		t.Error("the current protocol must be compatible")
+// A HANDSHAKE REFUSES NOTHING ([B.143]). A guest advertising a verb set the host has never heard
+// of -- an older bundle a revert pinned, a firmware from another image -- is still driven, and
+// only the paths that need what it does not serve step aside. The channel is what fixes a node,
+// so closing it is never the safe answer.
+func TestHandshakeAcceptsAnUnrecognisedGuest(t *testing.T) {
+	host, guest := socketPair(t)
+	go guestfirmware.ServeFrames(context.Background(), guest, func(context.Context, string, json.RawMessage) (any, error) {
+		return guestfirmware.Hello{Capabilities: []string{guestfirmware.VerbHello, "verb.from.the.future"}}, nil
+	})
+	g := NewClient(host)
+	t.Cleanup(func() { g.Close() })
+	if _, err := g.Handshake(context.Background()); err != nil {
+		t.Fatalf("a guest serving verbs this host does not know must still be driven: %v", err)
 	}
-	if compatibleGuest(guestfirmware.GuestProtocol + 1) {
-		t.Error("a guest newer than the host must be refused")
+	if !g.Supports("verb.from.the.future") {
+		t.Error("the advertised set must be recorded verbatim")
 	}
-	if compatibleGuest(guestfirmware.MinGuestProtocol - 1) {
-		t.Error("a guest older than the host's minimum must be refused")
+	if g.Supports(verbDataMember) {
+		t.Error("a verb this guest did not advertise must be refused by Supports, one path at a time")
 	}
 }
 
@@ -1449,8 +1454,8 @@ func TestHandshakeWithoutBootIDStillSucceeds(t *testing.T) {
 	if h.BootID != "" || g.BootID() != "" {
 		t.Errorf("boot id = %q/%q, want empty", h.BootID, g.BootID())
 	}
-	if h.Version != guestfirmware.GuestProtocol {
-		t.Errorf("version = %d, want %d", h.Version, guestfirmware.GuestProtocol)
+	if !g.Supports(verbOSSystem) {
+		t.Error("the capability set must still arrive: a missing boot id is a missing diagnostic, not a missing handshake")
 	}
 }
 
@@ -1807,9 +1812,10 @@ func TestDataSnapshotStillReplacesForAnUnrolledHost(t *testing.T) {
 }
 
 // TestRingTakeIsItsOwnVerb: the ring's take must be reachable ONLY by a name an old guest does not
-// advertise. That is what lets Client.Supports refuse the one path that needs it, instead of a
-// protocol floor refusing every path on every not-yet-rolled guest -- which gate 3 measured as a
-// node that could not reach the image that would have fixed it (2026-09-22).
+// advertise, because the field it adds is one whose absence would be SILENT -- an older guest
+// would take the call, ignore the field and report success while the volume filled with
+// unlabelled subvolumes. A NAME is the whole instrument here ([B.143]): Supports then refuses this
+// one path and leaves every other working.
 func TestRingTakeIsItsOwnVerb(t *testing.T) {
 	var advertised bool
 	for _, c := range guestCapabilities {
@@ -1825,18 +1831,29 @@ func TestRingTakeIsItsOwnVerb(t *testing.T) {
 	}
 }
 
-// TestProtocolFloorStaysAtTwo, and ⚠️ raising it is not a tidy-up.
+// TestHandshakeCarriesNoVersionNumber, and ⚠️ adding one back is a decision, not a tidy-up
+// ([B.143]).
 //
-// [B.143] raised it to 3 for a field on an existing verb and gate 3 refused the release: the host
-// self-updated, refused the still-v2 guest at the handshake, its health gate reverted the update,
-// and `briard update -vm` answered "agent is shutting down" while the node sat on the old image.
-// The deadlock is the thing to remember -- reaching the new image needs the channel the floor has
-// just closed, so every node needs a reinstall. Raise this only for something a new verb name
-// genuinely cannot carry, and expect gate 3 to go red by declaration when you do.
-func TestProtocolFloorStaysAtTwo(t *testing.T) {
-	if guestfirmware.MinGuestProtocol != 2 {
-		t.Errorf("MinGuestProtocol = %d: raising the floor tells every installed node to reinstall; see this test's comment",
-			guestfirmware.MinGuestProtocol)
+// A number can only refuse the whole channel, and the channel is what fixes a node: applying a vm
+// release runs through the guest's os.* verbs, so a host that refuses the handshake can never
+// reach the image that would satisfy it. It would also have nothing to measure -- the guest agent
+// is pushed from the host's own tree, so its constants are the host's. This test pins the ABSENCE
+// on the wire, where a re-added field would land.
+func TestHandshakeCarriesNoVersionNumber(t *testing.T) {
+	b, err := json.Marshal(guestfirmware.HelloReply(&fakeExec{}, guestCapabilities))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := wire["version"]; ok {
+		t.Errorf("the handshake carries a version field again (%s); see this test's comment", b)
+	}
+	// The assertion is only worth anything while the reply it inspects is really a handshake.
+	if _, ok := wire["capabilities"]; !ok {
+		t.Errorf("the handshake no longer carries a capability set, so this test proves nothing: %s", b)
 	}
 }
 

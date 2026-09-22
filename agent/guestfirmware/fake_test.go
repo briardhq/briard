@@ -72,9 +72,6 @@ func TestFirmwareRefusesEveryVerbOutsideTheProtocol(t *testing.T) {
 	if err := c.Call(context.Background(), VerbHello, nil, &h); err != nil {
 		t.Fatal(err)
 	}
-	if h.Version != GuestProtocol {
-		t.Errorf("version = %d, want %d", h.Version, GuestProtocol)
-	}
 	if !reflect.DeepEqual(h.Capabilities, Capabilities) {
 		t.Errorf("capabilities = %v, want the firmware's five: %v", h.Capabilities, Capabilities)
 	}

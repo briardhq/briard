@@ -192,7 +192,7 @@ func TestCallResyncsPastStaleFrame(t *testing.T) {
 		}
 		// A leftover reply from the previous session (an unrelated id), THEN the real
 		// handshake reply. The caller must skip the first and match the second.
-		hello, _ := json.Marshal(Hello{Version: GuestProtocol, Capabilities: []string{VerbHello}})
+		hello, _ := json.Marshal(Hello{Capabilities: []string{VerbHello}, BootID: "the-real-reply"})
 		_ = writeFrame(sc, response{ID: req.ID + 42, Payload: json.RawMessage(`"stale reply from a dropped session"`)})
 		_ = writeFrame(sc, response{ID: req.ID, Payload: hello})
 	}()
@@ -200,7 +200,7 @@ func TestCallResyncsPastStaleFrame(t *testing.T) {
 	if err := c.CallResync(context.Background(), VerbHello, nil, &h, true); err != nil {
 		t.Fatalf("a resyncing call must skip a stale frame, got: %v", err)
 	}
-	if h.Version != GuestProtocol {
-		t.Errorf("version = %d, want %d (resynced to the real reply)", h.Version, GuestProtocol)
+	if h.BootID != "the-real-reply" {
+		t.Errorf("boot_id = %q, want the real reply's: the call matched a frame, but not that one", h.BootID)
 	}
 }
