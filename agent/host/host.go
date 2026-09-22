@@ -476,6 +476,9 @@ type guestReader interface {
 	// What the VOLUME says this node runs -- the truth on a node that promoted into somebody
 	// else's install, where the node-local cache is empty by construction (adoptVolumeServices).
 	volumeReader
+	// Tonight's ring member ([B.143], nightly.go): the observe loop is the cadence, so it is also
+	// what carries the one call a night that takes one.
+	memberTaker
 	SystemPath(ctx context.Context) (string, error)
 	Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error)
 }
@@ -1223,6 +1226,11 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// the same reason vr and the recovery counter do: "how long has this been true" is not a
 	// question a single tick can answer.
 	rp := &reparenter{}
+	// Which services already have tonight's ring member ([B.143], nightly.go). Lives for the
+	// observe loop for the same reason rp does, and is checked against the ring itself whenever
+	// this process has no record -- so an agent restart inside the window costs one listing
+	// rather than a second member every cycle for an hour.
+	ng := newNightly()
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1289,6 +1297,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			}
 			wasPrimary = primary
 		}
+		// TONIGHT'S RING MEMBER ([B.143]), once a night per service, on the node that holds the
+		// volume. Cheap on every other cycle: an hour comparison and nothing else.
+		cfg.beat.Beat()
+		cfg.consider(ctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant

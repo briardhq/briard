@@ -586,6 +586,24 @@ func TestRetentionKeepsTheLastUpgradePointForAFortnight(t *testing.T) {
 	}
 }
 
+// TestRetentionTreatsNightliesAsOrdinaryHistory: a member taken by the CLOCK is not something a
+// household did, so it gets the three-day window and not the titled week. That is also what makes
+// the nightly the ladder's floor rather than a second kind of titled member: yesterday's is always
+// there, and last week's never is.
+func TestRetentionTreatsNightliesAsOrdinaryHistory(t *testing.T) {
+	if Titled(TriggerDaily) {
+		t.Fatal("a nightly counts as titled; it would keep the week meant for what a household did")
+	}
+	young, old := aged(TriggerDaily, 2*day), aged(TriggerDaily, 5*day)
+	got := pruned(t, young, old)
+	if got[young] {
+		t.Errorf("last night's member was pruned")
+	}
+	if !got[old] {
+		t.Errorf("a five-day-old nightly survived the three-day window")
+	}
+}
+
 // TestRetentionOrdersByTimeNotName is the trap TestSnapshotMemberTimeIsTheOrder records, asserted
 // where it would do the damage: the trigger sits between the service and the stamp, so a ladder
 // that sorted names would keep "the newest ten" of whatever the alphabet put last.

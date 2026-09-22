@@ -20,6 +20,7 @@ import (
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
+	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
@@ -96,6 +97,30 @@ type fakeStatus struct {
 	volume        map[string]string
 	volumeErr     error
 	noServiceList bool // a guest too old to list: the host must fall back, not fail
+	// The ring ([B.143]): what this service's history already holds, what the loop asked to take,
+	// and the two refusals -- a guest too old for the ring at all, and a take that fails.
+	members    map[string][]quadlet.SnapshotEntry
+	membersErr error
+	took       *[]takenMember
+	snapErr    error
+	noRing     bool
+}
+
+// takenMember is one call to Snapshot: where the member went, and the sidecar that went with it.
+type takenMember struct{ member, sidecar string }
+
+// The ring's slice of the guest ([B.143]). The observe loop carries the nightly member, so the
+// reader it is handed has to be able to take one.
+func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.SnapshotEntry, error) {
+	return f.members[service], f.membersErr
+}
+func (f fakeStatus) SupportsMembers() bool        { return !f.noRing }
+func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
+func (f fakeStatus) Snapshot(_ context.Context, _, dest, sidecar string) error {
+	if f.took != nil {
+		*f.took = append(*f.took, takenMember{dest, sidecar})
+	}
+	return f.snapErr
 }
 
 // The fake answers the whole-cluster read the snapshot makes. Its peer list stays empty: these

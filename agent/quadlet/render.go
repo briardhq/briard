@@ -408,6 +408,14 @@ const (
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
 	// the rate limit may skip, and the only one with no window but the ladder's first.
 	TriggerStart Trigger = "start"
+	// TriggerDaily is the member taken BY THE CLOCK rather than by an event ([B.143]) — the one
+	// the retention ladder leans on for its floor, since a stable service can run for a month
+	// without a restart and would otherwise leave the mistake rung a month-wide hole.
+	//
+	// ⚠️ NOT TITLED, and the ladder's first window is the only one that covers it: it is ordinary
+	// history taken on a schedule, not something a household did. It is also the one member taken
+	// against a RUNNING service, so it is Crash until a per-service quiesce exists.
+	TriggerDaily Trigger = "daily"
 	// The restore PAIR ([B.143]): the undo taken before a restore commits, and the waypoint taken
 	// after it. Both are titled, so both keep the ladder's seven-day window -- the undo is the only
 	// way back from a mis-click, and the waypoint is what stops the timeline appearing to jump
@@ -563,7 +571,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerUpgrade, TriggerStart, TriggerRestoreBefore, TriggerRestoreAfter} {
+	for _, t := range []Trigger{TriggerUpgrade, TriggerStart, TriggerDaily, TriggerRestoreBefore, TriggerRestoreAfter} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {

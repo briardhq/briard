@@ -1184,7 +1184,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 // THE CONSISTENCY IS THE CALLER'S TO STATE, not this function's to guess: it is the call site that
 // knows whether it stopped the service first, and a member taken by the clock against a running
 // one will come through here saying so.
-func (cfg Config) takeMember(ctx context.Context, g serviceInstaller, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, title string, at time.Time, logf func(string, ...any)) error {
+func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, title string, at time.Time, logf func(string, ...any)) error {
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
