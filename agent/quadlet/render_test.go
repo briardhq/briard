@@ -458,17 +458,37 @@ func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 	}
 }
 
-// TestSnapshotMembersSortChronologically: the picker orders by name, so the format has to make
-// that the same as ordering by time. It is the reason for the fixed-width UTC stamp.
-func TestSnapshotMembersSortChronologically(t *testing.T) {
+// TestSnapshotMemberTimeIsTheOrder, and ⚠️ the NAME is not.
+//
+// This test asserted the opposite -- that lexical order over member names is chronological order
+// -- and it passed, because every case it compared shared one trigger. Across triggers the claim
+// is false and the format makes it false: the trigger sits between the service and the stamp, so
+// every `-start-` member sorts before every `-upgrade-` one whatever their times. A reader that
+// took the lexically last member as the newest got an upgrade point's age instead.
+//
+// So what is asserted is what readers may actually rely on: the STAMP orders within a trigger,
+// SnapshotMemberTime orders across them, and the two disagree.
+func TestSnapshotMemberTimeIsTheOrder(t *testing.T) {
 	base := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
 	earlier := SnapshotMember("ha", TriggerUpgrade, base)
 	later := SnapshotMember("ha", TriggerUpgrade, base.Add(time.Second))
 	if !(earlier < later) {
-		t.Errorf("lexical order is not chronological: %q then %q", earlier, later)
+		t.Errorf("within one trigger the stamp must order: %q then %q", earlier, later)
 	}
 	yearOver := SnapshotMember("ha", TriggerUpgrade, time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
 	if !(later < yearOver) {
-		t.Errorf("lexical order breaks across a year: %q then %q", later, yearOver)
+		t.Errorf("the stamp breaks across a year: %q then %q", later, yearOver)
+	}
+	// THE TRAP, asserted so nobody re-derives the false rule: an OLDER upgrade member sorts AFTER
+	// a NEWER start member, purely because of where the trigger sits.
+	oldUpgrade := SnapshotMember("ha", TriggerUpgrade, base.Add(-48*time.Hour))
+	newStart := SnapshotMember("ha", TriggerStart, base)
+	if !(newStart < oldUpgrade) {
+		t.Fatal("the name format changed; re-check every reader that orders members")
+	}
+	to, _ := SnapshotMemberTime(oldUpgrade)
+	tn, _ := SnapshotMemberTime(newStart)
+	if !to.Before(tn) {
+		t.Error("SnapshotMemberTime does not order what the name misorders")
 	}
 }

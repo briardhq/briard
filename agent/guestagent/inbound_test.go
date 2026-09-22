@@ -407,3 +407,152 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 		}
 	}
 }
+
+// ringOf builds `n` plain members for a service, oldest first, one minute apart.
+func ringOf(service string, n int) []string {
+	var out []string
+	base := time.Now().Add(-time.Duration(n+10) * time.Hour)
+	for i := 0; i < n; i++ {
+		m := quadlet.SnapshotMember(service, quadlet.TriggerStart, base.Add(time.Duration(i)*time.Minute))
+		out = append(out, strings.TrimPrefix(m, quadlet.SnapshotsDir))
+	}
+	return out
+}
+
+func deleted(f *fakeExec) []string {
+	var out []string
+	for _, r := range f.runs {
+		if len(r) > 3 && r[0] == "btrfs" && r[2] == "delete" {
+			out = append(out, strings.TrimPrefix(r[3], quadlet.SnapshotsDir))
+		}
+	}
+	return out
+}
+
+// TestRingIsBounded: an unbounded ring grows on every service start, costs its space on every
+// diskful peer, and arrives as [B.155]'s failure by a new road. The bound is what keeps a
+// household's own restarts from filling the volume they are stored on.
+func TestRingIsBounded(t *testing.T) {
+	existing := ringOf("home-assistant", plainMembersKept+3)
+	f := ringExec(existing...)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+
+	gone := deleted(f)
+	// Three over the bound, so three go. (The member the take just added is not in the fake's
+	// listing, which is static -- what is under test is that the ring is brought TO the bound.)
+	if len(gone) != 3 {
+		t.Fatalf("pruned %d members, want 3 over the bound of %d: %v", len(gone), plainMembersKept, gone)
+	}
+	// THE OLDEST GO, and the order is the property: a ring that evicted the newest would keep
+	// history nobody wants and drop the state closest to whatever just went wrong.
+	for i, name := range gone {
+		if name != existing[i] {
+			t.Errorf("pruned[%d] = %q, want %q -- the oldest first", i, name, existing[i])
+		}
+	}
+	// A member and its sidecar go together: the take path refuses to leave a member without one,
+	// so the delete path must not create that state either.
+	for _, name := range gone {
+		if !f.ran("rm", "-f", quadlet.SnapshotsDir+name+".json") {
+			t.Errorf("%s was pruned but its sidecar was left behind", name)
+		}
+	}
+}
+
+// TestRingKeepsTitledMembers is the asymmetry that makes the bound safe ([B.143]).
+//
+// A flat keep-last-N evicts the pre-upgrade member within days of Home Assistant's ordinary
+// restart cadence -- and "go back to the version before the update that broke my house" is the
+// case the whole ring exists for. So the count may evict plain members and nothing else.
+func TestRingKeepsTitledMembers(t *testing.T) {
+	base := time.Now().Add(-90 * time.Hour)
+	upgrade := strings.TrimPrefix(
+		quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, base),
+		quadlet.SnapshotsDir,
+	)
+	// The upgrade point is the OLDEST thing in the ring, so a count that ignored triggers would
+	// take it first.
+	f := ringExec(append([]string{upgrade}, ringOf("home-assistant", plainMembersKept+3)...)...)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	for _, name := range deleted(f) {
+		if name == upgrade {
+			t.Fatalf("the pre-upgrade member was evicted by the count: %v", deleted(f))
+		}
+	}
+	if len(deleted(f)) == 0 {
+		t.Error("nothing was pruned at all; the test proves nothing about the exemption")
+	}
+}
+
+// TestRingLeavesAnotherServiceAlone: the bound is per service. One busy service must not evict
+// another's history -- they share a directory and nothing but the name separates them.
+func TestRingLeavesAnotherServiceAlone(t *testing.T) {
+	mine := ringOf("home-assistant", plainMembersKept+3)
+	theirs := ringOf("mosquitto", 5)
+	f := ringExec(append(mine, theirs...)...)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	for _, name := range deleted(f) {
+		if svc, _ := quadlet.SnapshotMemberService(name); svc != "home-assistant" {
+			t.Errorf("pruning %s's ring deleted %s's member %q", "home-assistant", svc, name)
+		}
+	}
+}
+
+// TestRingUnderTheBoundPrunesNothing: the cheap case has to stay cheap, and a bound that deleted
+// something on an ordinary start would be a bound nobody could reason about.
+func TestRingUnderTheBoundPrunesNothing(t *testing.T) {
+	f := ringExec(ringOf("home-assistant", 3)...)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if g := deleted(f); len(g) != 0 {
+		t.Errorf("a ring of 3 under a bound of %d pruned %v", plainMembersKept, g)
+	}
+}
+
+// ran reports whether the fake was asked to run exactly this argv.
+func (f *fakeExec) ran(argv ...string) bool {
+	for _, r := range f.runs {
+		if len(r) != len(argv) {
+			continue
+		}
+		same := true
+		for i := range r {
+			if r[i] != argv[i] {
+				same = false
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRateLimitReadsTheNewestMemberAcrossTriggers is the regression guard for a bug the injection
+// round found, and the shape is worth keeping in mind.
+//
+// Members are `<service>-<trigger>-<stamp>`, so the TRIGGER sits between the service and the
+// stamp and dominates any string comparison: every `-start-` member sorts before every
+// `-upgrade-` one whatever their times. The ring read the lexically last member as the newest, so
+// on any service that had ever been upgraded the rate limit compared against the UPGRADE point's
+// age -- an old one here, which means it would have taken a member it should have skipped.
+//
+// Every earlier rate-limit test used one trigger, so all of them were blind to it.
+func TestRateLimitReadsTheNewestMemberAcrossTriggers(t *testing.T) {
+	// An upgrade point from long ago, and a start member from seconds ago. Ordered by NAME the
+	// upgrade point is last; ordered by TIME the start member is.
+	oldUpgrade := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, time.Now().Add(-72*time.Hour))
+	recentStart := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second))
+	f := ringExec(
+		strings.TrimPrefix(oldUpgrade, quadlet.SnapshotsDir),
+		strings.TrimPrefix(recentStart, quadlet.SnapshotsDir),
+	)
+	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	for _, r := range f.runs {
+		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
+			t.Fatalf("a member was taken inside the floor; the newest was read as the 72h-old upgrade point: %v", f.runs)
+		}
+	}
+	if !strings.Contains(resp.Detail, "still current") {
+		t.Errorf("detail = %q, want the skip to name the recent member", resp.Detail)
+	}
+}

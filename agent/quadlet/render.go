@@ -393,11 +393,24 @@ const (
 	TriggerStart Trigger = "start"
 )
 
+// PrunedByCount reports whether the ring's keep-last-N may evict a member with this trigger.
+//
+// ⚠️ TITLED MEMBERS ARE EXEMT FROM THE COUNT, and that asymmetry is the whole reason this is a
+// function rather than a flat rule. A keep-last-N over EVERYTHING evicts the pre-upgrade member
+// within days of Home Assistant's ordinary restart cadence — and "go back to the version before
+// the update that broke my house" is the case the ring exists for. Upgrade and restore members
+// are rare by nature, so they need no bound of their own yet; if they ever do, that is a second
+// cap rather than a change to this one.
+//
+// The default answer for an unknown trigger is FALSE — a member nobody enumerated is a member
+// nobody deletes, which is the safe direction for something holding a household's data.
+func PrunedByCount(t Trigger) bool { return t == TriggerStart }
+
 // SnapshotMemberService reads the service out of a member's name, and reports whether the name is
 // one of ours at all. The sweep over `.snapshots` has to tell our members from anything else a
 // human or a future feature left there, and the name is the only thing it can ask.
 func SnapshotMemberService(name string) (string, bool) {
-	svc, _, _, ok := parseMember(name)
+	svc, _, _, ok := ParseSnapshotMember(name)
 	return svc, ok
 }
 
@@ -405,14 +418,14 @@ func SnapshotMemberService(name string) (string, bool) {
 // rate limit and its pruning order read, and it is why the stamp is in the name rather than only
 // in the sidecar: answering "how old is the newest member" must not cost a file read per member.
 func SnapshotMemberTime(name string) (time.Time, bool) {
-	_, _, at, ok := parseMember(name)
+	_, _, at, ok := ParseSnapshotMember(name)
 	return at, ok
 }
 
-// parseMember splits `<service>-<trigger>-<stamp>`. The service may itself contain dashes
+// ParseSnapshotMember splits `<service>-<trigger>-<stamp>`. The service may itself contain dashes
 // ("home-assistant"), so it is parsed from the RIGHT: the stamp is fixed width and the trigger
 // comes from a closed set, which leaves whatever precedes them as the name.
-func parseMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
+func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
 	for _, t := range []Trigger{TriggerUpgrade, TriggerStart} {
 		suffix := "-" + string(t) + "-"
@@ -439,7 +452,14 @@ func parseMember(name string) (service string, trigger Trigger, at time.Time, ok
 // distinct by construction now, so nothing is replaced and the verb refuses a collision instead
 // of resolving it.
 //
-// Second precision, UTC, sortable lexically — the picker orders by name and a human reads it.
+// Second precision and UTC, so two members' TIMES compare correctly once parsed, and so two nodes
+// in different zones taking a member at the same instant agree on what it is called.
+//
+// ⚠️ THE NAME IS NOT A CHRONOLOGICAL SORT KEY, and reading it as one is a real bug this format
+// invites: the TRIGGER sits between the service and the stamp, so every `-start-` member sorts
+// before every `-upgrade-` one whatever their times. Readers order by SnapshotMemberTime.
+// (Trigger-before-stamp is kept because it is what makes the directory readable to a human
+// scanning it, which is the other job the name has.)
 func SnapshotMember(service string, trigger Trigger, at time.Time) string {
 	return SnapshotsDir + service + "-" + string(trigger) + "-" + at.UTC().Format(snapshotStamp)
 }

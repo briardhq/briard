@@ -193,6 +193,10 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 	if err := takeSnapshot(ctx, x, run, quadlet.DataRoot(service), member, string(sidecar)); err != nil {
 		return "", err
 	}
+	// AFTER the take, never before: pruning first would mean a failed take leaves the ring
+	// shorter for nothing, and a ring at its bound is the state each take should restore rather
+	// than the state each take should find.
+	pruneRing(ctx, x, service)
 	return "took " + path.Base(member), nil
 }
 
@@ -237,36 +241,55 @@ func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) e
 	return nil
 }
 
-// newestMember is the most recent member of a service's ring, by the timestamp in its NAME.
+// ringMembers lists one service's members, oldest first.
 //
-// The name is the index, which is the whole reason quadlet.SnapshotMember puts a fixed-width UTC
-// stamp in it: this needs no sidecar read, no parsing of btrfs output and no directory walk in
-// timestamp order. A ring of a thousand members costs one listing.
-func newestMember(ctx context.Context, x Executor, service string) (time.Time, bool, error) {
+// The NAME IS THE INDEX, which is the whole reason quadlet.SnapshotMember puts a fixed-width UTC
+// stamp in it: this needs no sidecar read, no parsing of btrfs output and no walk in timestamp
+// order. A ring of a thousand members costs one listing and a sort.
+func ringMembers(ctx context.Context, x Executor, service string) []string {
 	out, err := x.Run(ctx, "ls", "-1", quadlet.SnapshotsDir)
 	if err != nil {
-		// An absent .snapshots dir is a node whose volume was just made, not a failure: there is
-		// no newest member because there are no members.
-		return time.Time{}, false, nil
+		// An absent .snapshots dir is a node whose volume was just made, not a failure: there
+		// are no members because there is nothing to hold them.
+		return nil
 	}
 	var names []string
 	for _, n := range strings.Fields(string(out)) {
 		// The sidecars are named after their members, so they parse as members too. Skipping
-		// them by suffix keeps the newest-member answer about SUBVOLUMES, which is what the
-		// rate limit is really asking about.
+		// them by suffix keeps this about SUBVOLUMES, which is what both callers mean.
 		if strings.HasSuffix(n, ".json") {
 			continue
 		}
 		// Anything whose name we cannot read is somebody else's: a human's copy, a future
-		// feature's, a leftover. The ring only counts what it named.
+		// feature's, a leftover. The ring counts — and deletes — only what it named.
 		if svc, ok := quadlet.SnapshotMemberService(n); ok && svc == service {
 			names = append(names, n)
 		}
 	}
+	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<service>-<trigger>-<stamp>`, so the
+	// TRIGGER sits between the service and the stamp and dominates any string comparison: every
+	// `-start-` member sorts before every `-upgrade-` one whatever their times, and once a
+	// `-daily-` trigger exists it sorts before both. Sorting names put the newest member wherever
+	// the alphabet happened to put its trigger -- which made newestMember answer with an upgrade
+	// point's age, so the rate limit compared against the wrong member on any service that had
+	// ever been upgraded.
+	//
+	// The stamp is fixed-width UTC so that TIMES compare correctly once parsed; that was always
+	// the property, and "lexical order is chronological" was only ever true within one trigger.
+	sort.Slice(names, func(i, j int) bool {
+		ti, _ := quadlet.SnapshotMemberTime(names[i])
+		tj, _ := quadlet.SnapshotMemberTime(names[j])
+		return ti.Before(tj)
+	})
+	return names
+}
+
+// newestMember is the most recent member of a service's ring, by the timestamp in its NAME.
+func newestMember(ctx context.Context, x Executor, service string) (time.Time, bool, error) {
+	names := ringMembers(ctx, x, service)
 	if len(names) == 0 {
 		return time.Time{}, false, nil
 	}
-	sort.Strings(names) // lexical order is chronological order, by construction
 	at, ok := quadlet.SnapshotMemberTime(names[len(names)-1])
 	if !ok {
 		// A member whose name we cannot read is not a reason to refuse to take another: the ring
@@ -274,6 +297,57 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 		return time.Time{}, false, nil
 	}
 	return at, true, nil
+}
+
+// plainMembersKept bounds the ring's prunable members per service.
+//
+// ⚠️ PROVISIONAL. [B.143] leaves N to the owner, and the retention ladder it describes (desired
+// vs floor, DESIGN §5.1) is v5+ machinery that does not exist. What this constant is for is the
+// property that cannot wait: an unbounded ring on the replicated volume grows on every service
+// start, costs its space on every diskful peer, and arrives as [B.155]'s failure by a new road.
+// A bound that is merely defensible beats none at all.
+//
+// 20 is a judgement. Home Assistant restarts a handful of times on a busy day, so this is days of
+// history rather than hours, and the members cost nothing in themselves — btrfs is copy-on-write,
+// so two members either side of a quiet hour share every block. What they DO hold down is
+// anything deleted since: HA keeps its backups inside the snapshotted subvolume, so a member pins
+// whatever tars existed when it was taken (see the item's note). That is the argument for a
+// smaller N, and the argument for revisiting this once [B.140] moves those backups to the user
+// tier.
+const plainMembersKept = 20
+
+// pruneRing deletes a service's oldest PRUNABLE members until at most plainMembersKept remain.
+//
+// ⚠️ NEVER TITLED MEMBERS. quadlet.PrunedByCount says which triggers the count may evict, and it
+// is upgrade and restore points that it may not: a flat keep-last-N would evict the pre-upgrade
+// member within days of an ordinary restart cadence, which is the one case the ring exists for.
+//
+// BEST-EFFORT, ALWAYS. The caller is holding a household's service stopped waiting for an answer,
+// so a member that will not delete is logged and stepped over — a ring one member too long is
+// nothing; a service that would not start because a delete failed is an outage.
+//
+// The sidecar goes with its member, and in that order: a member with no sidecar is the state the
+// take path refuses to leave behind, so the delete must not create one either.
+func pruneRing(ctx context.Context, x Executor, service string) {
+	var prunable []string
+	for _, n := range ringMembers(ctx, x, service) {
+		if _, tr, _, ok := quadlet.ParseSnapshotMember(n); ok && quadlet.PrunedByCount(tr) {
+			prunable = append(prunable, n)
+		}
+	}
+	if len(prunable) <= plainMembersKept {
+		return
+	}
+	for _, n := range prunable[:len(prunable)-plainMembersKept] {
+		member := quadlet.SnapshotsDir + n
+		if _, err := x.Run(ctx, "btrfs", "subvolume", "delete", member); err != nil {
+			log.Printf("ring %s: could not prune %s: %v", service, n, err)
+			continue
+		}
+		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(member)); err != nil {
+			log.Printf("ring %s: pruned %s but left its sidecar: %v", service, n, err)
+		}
+	}
 }
 
 // ListenInbound binds the one inbound socket and serves it until ctx ends.
