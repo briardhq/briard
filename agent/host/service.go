@@ -104,6 +104,13 @@ type serviceInstaller interface {
 	// not data.member, and taking the old verb instead would leave an unlabelled member -- the one
 	// thing the sidecar exists to prevent. Refused loudly, never worked around.
 	SupportsSnapshotMember() bool
+	// The RESTORE's three ([B.143]): list a service's ring, make one member's images resident
+	// before anything is stopped, and put the data back. All capability-gated, because a guest
+	// older than the ring can do none of them and a fallback would be worse than a refusal.
+	Members(ctx context.Context, service string) ([]quadlet.SnapshotEntry, error)
+	SupportsMembers() bool
+	EnsureImage(ctx context.Context, ref string) error
+	SupportsImageEnsure() bool
 	Restore(ctx context.Context, dataDir, src string) error
 }
 
@@ -1030,4 +1037,139 @@ func installBudgetFor(m manifest.Manifest) time.Duration {
 		return b
 	}
 	return installBudget
+}
+
+// applyServiceRestore puts one service back to a ring member: its data, and its CODE with it when
+// the member's pinned manifest differs from what is running ([B.143]).
+//
+// ⚠️ THE ORDER INVERTS revert's, AND THAT IS THE WHOLE DESIGN. A revert runs from a BROKEN state
+// and is allowed to commit: the household already lost the thing it is undoing. A restore runs
+// from a HEALTHY one, chosen by somebody looking at a list, so every step that could fail is
+// placed BEFORE the first step that costs anything:
+//
+//	ensure the images -> take the undo member -> stop -> restore data -> record the manifest
+//	 -> take the "after" member -> converge
+//
+// The images come first because they are the one thing that can be simply GONE: a member from
+// three months ago pins a digest the registry may no longer serve, and a household whose rollback
+// target cannot be fetched must be told while its service is still running. Everything before the
+// stop leaves the node exactly as it was.
+func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	if d.Payload == "" {
+		return failed("no member named")
+	}
+	if !g.SupportsMembers() || !g.SupportsImageEnsure() || !g.SupportsSnapshotMember() {
+		return failed("this guest is too old to restore a ring member; update the guest OS first")
+	}
+	service, _, _, ok := quadlet.ParseSnapshotMember(d.Payload)
+	if !ok {
+		return failed(fmt.Sprintf("%q is not a ring member's name", d.Payload))
+	}
+	ctx, cancel := cfg.beat.budget(ctx, installBudget)
+	defer cancel()
+
+	// THE MEMBER IS READ BACK FROM THE RING, never trusted from the payload. The caller names a
+	// path; what that path IS -- its title, and the manifest it was taken under -- is the guest's
+	// answer, so a stale picker cannot describe a member into something it is not.
+	members, err := g.Members(ctx, service)
+	if err != nil {
+		return failed(fmt.Sprintf("read %s's ring: %v", service, err))
+	}
+	var target quadlet.SnapshotEntry
+	for _, m := range members {
+		if m.Member == d.Payload {
+			target = m
+		}
+	}
+	if target.Member == "" {
+		return failed(fmt.Sprintf("%s has no member %q (it may have been pruned)", service, d.Payload))
+	}
+	pm, _, err := manifest.Parse([]byte(target.Meta.Manifest))
+	if err != nil {
+		return failed(fmt.Sprintf("the member's pinned manifest does not parse: %v", err))
+	}
+	rendered, err := quadlet.Render(pm, "")
+	if err != nil {
+		return failed(fmt.Sprintf("the member's pinned manifest does not render: %v", err))
+	}
+
+	// (1) THE IMAGES, BEFORE ANYTHING IS TOUCHED. Not through converge's warm, whose failure is
+	// required to take the VIP down ([V3.17]) -- here a failure must cost nothing at all.
+	for _, ref := range rendered.ImageRefs {
+		if err := g.EnsureImage(ctx, ref); err != nil {
+			return failed(fmt.Sprintf("%s is not available on this node and could not be fetched (%v); nothing was changed", ref, err))
+		}
+	}
+
+	dataDir := quadlet.DataRoot(service)
+	running, _, _, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
+
+	// (2) THE UNDO, and it is the only undo a mis-click has. Taken before the stop so it is a
+	// point the household can get back to whatever happens next.
+	at := cfg.takenAt()
+	undo := quadlet.SnapshotMember(service, quadlet.TriggerRestoreBefore, at)
+	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerRestoreBefore,
+		fmt.Sprintf("before restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
+		at, logf); err != nil {
+		return failed(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
+	}
+
+	// (3) THE STOP. Container units only -- the pod would unmount the shared volume under every
+	// other service (quiesce's own comment carries the trace).
+	if running != nil {
+		cfg.quiesce(ctx, g, running.ContainerUnits, logf)
+	}
+	// (4) THE DATA, keeping [B.126]'s verify -> materialise -> destroy order.
+	if err := g.Restore(ctx, dataDir, target.Member); err != nil {
+		// Do NOT converge: that would start the service on data that is neither what it was nor
+		// what was asked for. A stopped service is recoverable; silent corruption is not.
+		return failed(fmt.Sprintf("restore the data (the service is left stopped): %v", err))
+	}
+	// (5) THE CODE, when the member was taken under a different one. Same rule the failed-upgrade
+	// revert uses: {manifest + data} move together or the node is describing something it is not.
+	if err := g.ServiceProvision(ctx, service, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
+		return failed(fmt.Sprintf("record the member's manifest (the service is left stopped): %v", err))
+	}
+	// (6) THE WAYPOINT. Taken here rather than at the service's next start: nothing is running, so
+	// it is quiesced by construction, correctly titled and pinned with no state carried across the
+	// converge below. It duplicates the member's bytes and costs nothing for it -- copy-on-write,
+	// nothing has diverged -- and what it buys is a timeline that describes itself, since the
+	// member it came from may sit months back in the list.
+	after := cfg.takenAt()
+	if err := cfg.takeMember(ctx, g, service, quadlet.SnapshotMember(service, quadlet.TriggerRestoreAfter, after),
+		quadlet.TriggerRestoreAfter,
+		fmt.Sprintf("after restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
+		after, logf); err != nil {
+		logf("service restore %s: could not take the waypoint (%v); continuing", service, err)
+	}
+	// (7) CONVERGE, which re-renders from the volume and starts what it now names.
+	if _, err := g.ServiceConverge(ctx); err != nil {
+		return failed(fmt.Sprintf("converge onto the restored member (the service is left stopped): %v", err))
+	}
+	moved := "data only"
+	if runningVersion != "" && runningVersion != pm.Version {
+		moved = fmt.Sprintf("code too (%s -> %s)", runningVersion, pm.Version)
+	}
+	logf("service restore %s: back to %q, %s", service, target.Meta.Title, moved)
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone,
+		Detail: fmt.Sprintf("restored %q, %s", target.Meta.Title, moved)}
+}
+
+// takeMember renders a member's sidecar and asks the guest for it. The host titles the members
+// only it can title; the guest's own (agent/guestagent/inbound.go) never come through here.
+func (cfg Config) takeMember(ctx context.Context, g serviceInstaller, service, member string, tr quadlet.Trigger, title string, at time.Time, logf func(string, ...any)) error {
+	raw, err := g.ServiceInstalled(ctx, service)
+	if err != nil {
+		return fmt.Errorf("read the running manifest: %w", err)
+	}
+	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
+		Service: service, Trigger: tr, Title: title, TakenAt: at, Manifest: raw,
+	})
+	if err != nil {
+		return err
+	}
+	return g.Snapshot(ctx, quadlet.DataRoot(service), member, string(sidecar))
 }

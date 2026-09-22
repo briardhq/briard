@@ -363,6 +363,23 @@ const (
 	//                        digest already present is a no-op. It never changes what the node serves,
 	//                        which is what lets the cloud fan it out to every anchor before committing
 	//                        anything.
+	DirectiveServiceRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
+	//                        ([B.143]), exactly as the listing the picker read returned it. The
+	//                        node puts that service back to the member: its data, and — when the
+	//                        member's pinned manifest differs from the running one — its CODE with
+	//                        it, which is the DESIGN §8 {code identity + data} rollback reached
+	//                        deliberately rather than through a failed upgrade.
+	//
+	//                        A PATH AND NOT A TITLE, deliberately, and it is service-install's
+	//                        reasoning from the other end: a title is for people, and is neither
+	//                        unique nor stable. The directive names the thing, never a description
+	//                        of it.
+	//
+	//                        ⚠️ IT REFUSES BEFORE IT STOPS ANYTHING. The member's images are
+	//                        pre-flighted first, so a household whose rollback target can no longer
+	//                        be fetched is told while its service is still running. An INSTALL is
+	//                        allowed to stop things, because the household asked for a change; a
+	//                        restore that cannot finish must cost nothing.
 	DirectiveRescue = "rescue" // Payload = "" — rebuild this node's guest from the verified image
 	//                        under its OS-disk overlay: stop the VM, discard the overlay, lay down
 	//                        a fresh one on the same backing file, bring it up. The REPLICATED DATA

@@ -32,8 +32,13 @@ import (
 )
 
 // guestMayAsk is the allowlist: the directives whose effect stays inside the guest.
+//
+// service-restore joins them ([B.143]): its effect is one service's data and code on this node,
+// the same blast radius an install already has, and the picker that asks for it is the dashboard
+// behind the same door.
 func guestMayAsk(kind string) bool {
-	return kind == api.DirectiveServiceInstall || kind == api.DirectiveServicePrewarm
+	return kind == api.DirectiveServiceInstall || kind == api.DirectiveServicePrewarm ||
+		kind == api.DirectiveServiceRestore
 }
 
 // serveAdminPort dials the host end of the guest's admin port and serves it until ctx ends,

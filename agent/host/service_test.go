@@ -62,6 +62,9 @@ type fakeInstaller struct {
 	forgetEr      error
 	warmEr        error
 	restoreEr     error
+	members       []quadlet.SnapshotEntry // the ring data.members answers with
+	membersEr     error
+	ensureEr      error    // an image that cannot be fetched: the restore must refuse before stopping
 	sidecars      []string // the member metadata handed to Snapshot, in order
 	snapEr        error    // the rollback-point snapshot failing: [B.143] stops the service before taking it, so the undo must restart it
 	// readiness is the S1 differential sample, queued: the first call answers with the first
@@ -1650,5 +1653,127 @@ func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 		if strings.HasPrefix(s, "snapshot:") || strings.HasPrefix(s, "provision") {
 			t.Errorf("the install acted before refusing: %v", f.steps)
 		}
+	}
+}
+
+// The restore's three ([B.143]). members is the ring the fake offers; ensureErr is an image that
+// cannot be fetched, which is the case the restore must refuse BEFORE it stops anything.
+func (f *fakeInstaller) Members(_ context.Context, service string) ([]quadlet.SnapshotEntry, error) {
+	f.steps = append(f.steps, "members:"+service)
+	return f.members, f.membersEr
+}
+func (f *fakeInstaller) SupportsMembers() bool { return !f.oldGuest }
+func (f *fakeInstaller) EnsureImage(_ context.Context, ref string) error {
+	f.steps = append(f.steps, "ensure:"+ref)
+	return f.ensureEr
+}
+func (f *fakeInstaller) SupportsImageEnsure() bool { return !f.oldGuest }
+
+// ringWith is a node running testManifest() whose ring holds one member pinned to `pinned`.
+func ringWith(t *testing.T, pinned manifest.Manifest, ensureEr error) (Config, *fakeInstaller, string) {
+	t.Helper()
+	raw, err := json.Marshal(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, fixedNow.Add(-48*time.Hour))
+	cfg := catalogFor(t, testManifest())
+	cfg.readinessSettle = time.Millisecond
+	f := &fakeInstaller{
+		primary: true, active: true, healthy: true,
+		prior:    mustPrior(t),
+		ensureEr: ensureEr,
+		members: []quadlet.SnapshotEntry{{Member: member, Meta: quadlet.SnapshotMeta{
+			Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
+			Title: "2026.6.0, before upgrading to 2026.7.1", Manifest: string(raw),
+		}}},
+	}
+	return cfg, f, member
+}
+
+func restore(cfg Config, f *fakeInstaller, member string) api.DirectiveOutcome {
+	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceRestore, Payload: member}
+	return cfg.applyServiceRestore(context.Background(), f, d, func(string, ...any) {})
+}
+
+// TestRestoreRefusesBeforeItStopsAnything is the property the whole order exists for ([B.143]).
+//
+// A revert runs from a BROKEN state and may commit -- the household already lost the thing it is
+// undoing. A restore runs from a HEALTHY one, chosen by somebody looking at a list, so a member
+// whose images can no longer be fetched (a digest three months old that the registry has dropped)
+// must leave the service running and say so.
+func TestRestoreRefusesBeforeItStopsAnything(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), errors.New("manifest unknown"))
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed", o)
+	}
+	if !strings.Contains(o.Detail, "nothing was changed") {
+		t.Errorf("the refusal does not say the node is untouched: %q", o.Detail)
+	}
+	joined := strings.Join(f.steps, ",")
+	for _, forbidden := range []string{"stop:", "restore:", "provision", "snapshot:"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("a restore that could not get its images did %q: %v", forbidden, f.steps)
+		}
+	}
+}
+
+// TestRestoreTakesTheUndoBeforeTheStop: the undo is the only way back from a mis-click, so it has
+// to exist before anything is torn down -- not after, where a failure in between would leave the
+// household with neither the old state nor the new one.
+func TestRestoreTakesTheUndoBeforeTheStop(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	ei := strings.Index(joined, "ensure:")
+	ui := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, fixedNow))
+	si := strings.Index(joined, "stop:")
+	ri := strings.Index(joined, "restore:")
+	if ei < 0 || ui < 0 || si < 0 || ri < 0 {
+		t.Fatalf("the restore did not run its whole sequence: %v", f.steps)
+	}
+	if !(ei < ui && ui < si && si < ri) {
+		t.Errorf("order was %v, want ensure -> undo -> stop -> restore", f.steps)
+	}
+	// And the waypoint, which is what keeps the timeline from appearing to jump backwards.
+	if !strings.Contains(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreAfter, fixedNow)) {
+		t.Errorf("no waypoint was taken after the restore: %v", f.steps)
+	}
+}
+
+// TestRestorePutsBackTheMembersOwnManifest: {manifest + data} move together, which is what makes
+// this the DESIGN §8 rollback reached deliberately rather than through a failed upgrade.
+func TestRestorePutsBackTheMembersOwnManifest(t *testing.T) {
+	// The node runs 2026.6.0 (priorManifest's); the member is pinned OLDER, so the two differ and
+	// the restore has to move the code as well as the data.
+	old := testManifest()
+	old.Version = "2026.5.0"
+	cfg, f, member := ringWith(t, old, nil)
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if n := len(f.manifests); n == 0 || !strings.Contains(f.manifests[n-1], "2026.5.0") {
+		t.Fatalf("the volume does not end up holding the member's manifest: %v", f.manifests)
+	}
+	if !strings.Contains(o.Detail, "code too") {
+		t.Errorf("detail = %q, want it to say the code moved with the data", o.Detail)
+	}
+}
+
+// TestRestoreRefusesAMemberTheRingNoLongerHas: the picker's list can be stale -- pruning runs on
+// every take -- so the member is read back from the RING rather than trusted from the payload.
+func TestRestoreRefusesAMemberTheRingNoLongerHas(t *testing.T) {
+	cfg, f, _ := ringWith(t, testManifest(), nil)
+	gone := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, fixedNow.Add(-99*time.Hour))
+	o := restore(cfg, f, gone)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed", o)
+	}
+	if !strings.Contains(o.Detail, "pruned") {
+		t.Errorf("detail = %q, want it to say the member is gone", o.Detail)
 	}
 }

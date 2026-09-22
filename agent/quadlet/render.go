@@ -408,11 +408,17 @@ const (
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
 	// the ring's keep-last-N count prunes, and the only one the rate limit may skip.
 	TriggerStart Trigger = "start"
+	// The restore PAIR ([B.143]): the undo taken before a restore commits, and the waypoint taken
+	// after it. Both are titled, so neither is pruned by count -- the undo is the only way back
+	// from a mis-click, and the waypoint is what stops the timeline appearing to jump backwards
+	// with nothing saying why.
+	TriggerRestoreBefore Trigger = "restore-before"
+	TriggerRestoreAfter  Trigger = "restore-after"
 )
 
 // PrunedByCount reports whether the ring's keep-last-N may evict a member with this trigger.
 //
-// ⚠️ TITLED MEMBERS ARE EXEMT FROM THE COUNT, and that asymmetry is the whole reason this is a
+// ⚠️ TITLED MEMBERS ARE EXEMPT FROM THE COUNT, and that asymmetry is the whole reason this is a
 // function rather than a flat rule. A keep-last-N over EVERYTHING evicts the pre-upgrade member
 // within days of Home Assistant's ordinary restart cadence — and "go back to the version before
 // the update that broke my house" is the case the ring exists for. Upgrade and restore members
@@ -444,7 +450,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerUpgrade, TriggerStart} {
+	for _, t := range []Trigger{TriggerUpgrade, TriggerStart, TriggerRestoreBefore, TriggerRestoreAfter} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {
