@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,24 +11,23 @@ import (
 	"briard.io/shared/model"
 )
 
-// GuestManager is the host↔guest boundary and the upgrade/rollback mechanism.
-// The guest is the VM that carries the services; this seam starts/stops/
-// health-checks it, snapshots/restores its data, and switches its code (the NixOS
-// system closure) — the {code+data} rollback unit. ("unit" here is
-// the systemd/rollback sense, not the guest.)
+// GuestManager is the host↔guest boundary. The guest is the VM that carries the services; this
+// seam starts/stops/health-checks a service and reads the guest's code identity (the NixOS system
+// closure).
 //
-// Scope is asymmetric on purpose: service lifecycle, health and data
-// snapshot/restore are per-service (contain the data blast radius); the code half
-// (SystemPath/Switch) is whole-VM. So Snapshot/Restore move only data, and it is the
-// SERVICE-install sequence (agent/host/service.go) that moves manifest and data back
-// together on a failed health-gate. The OS upgrade moves neither: it is a
-// property of the node, and it leaves the workload alone.
+// Scope is asymmetric on purpose: service lifecycle and health are per-service (contain the data
+// blast radius); the code half (SystemPath/Switch) is whole-VM. The OS upgrade moves neither
+// service nor data: it is a property of the node, and it leaves the workload alone.
+//
+// NO SNAPSHOT/RESTORE HERE ANY MORE ([B.143], 2026-09-22). They were the {data} half of an OS
+// upgrade that no longer touches services, and the service-install sequence
+// (agent/host/service.go) has owned moving manifest and data back together since [V3b.3](e1) —
+// driving the guest agent's data.snapshot/data.restore verbs directly, pinned to the manifest
+// rather than to a system closure.
 type GuestManager interface {
 	Start(ctx context.Context, spec model.ServiceSpec) error
 	Stop(ctx context.Context, spec model.ServiceSpec) error
 	Health(ctx context.Context, spec model.ServiceSpec) (Health, error)
-	Snapshot(ctx context.Context, spec model.ServiceSpec) (SnapshotRef, error)
-	Restore(ctx context.Context, ref SnapshotRef) error
 	SystemPath(ctx context.Context) (string, error) // current code identity (closure store path)
 }
 
@@ -76,18 +73,6 @@ const (
 	VerdictRollback Verdict = "rollback"
 )
 
-// SnapshotRef identifies a pre-upgrade {data} snapshot, self-contained so the
-// upgrade sequence can restore it without re-deriving. Per-service (one subvolume,
-// never the whole volume —) and pinned to the system closure it was taken
-// under. System is the closure store path (node-independent), never a generation
-// number (a per-node counter, meaningless on a peer — identity).
-type SnapshotRef struct {
-	Service   string // ServiceSpec.Name
-	DataDir   string // the live subvolume this snapshot restores over
-	Subvolume string // the RO snapshot subvolume path in the guest
-	System    string // system closure store path at snapshot time (the code↔data pin)
-}
-
 // control is the guest-side surface Manager drives — satisfied by *guestagent.Client
 // (asserted below), faked in tests.
 type control interface {
@@ -96,8 +81,6 @@ type control interface {
 	ServiceActive(ctx context.Context, unit string) (bool, error)
 	ServiceHealth(ctx context.Context, url string) (bool, error)
 	VIP(ctx context.Context, dev string) (string, error)
-	Snapshot(ctx context.Context, dataDir, dest string) error
-	Restore(ctx context.Context, dataDir, src string) error
 	SystemPath(ctx context.Context) (string, error)
 	WriteCert(ctx context.Context, cert, key string) error
 	ReactorPause(ctx context.Context, snippet string) error
@@ -154,8 +137,6 @@ type Config struct {
 	ReadinessAssessor ReadinessAssessor
 	// Logf, if set, receives one line per upgrade step (progress/observability).
 	Logf func(format string, args ...any)
-	// IdFn generates the per-snapshot id; nil defaults to a timestamp.
-	idFn func() string
 }
 
 // Manager is the real GuestManager: it maps the seam onto guest control-channel
@@ -178,9 +159,6 @@ func NewManager(ctl control, cfg Config) *Manager {
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
-	}
-	if cfg.idFn == nil {
-		cfg.idFn = func() string { return strconv.FormatInt(time.Now().UnixNano(), 10) }
 	}
 	return &Manager{ctl: ctl, cfg: cfg}
 }
@@ -330,32 +308,17 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func (m *Manager) Snapshot(ctx context.Context, spec model.ServiceSpec) (SnapshotRef, error) {
-	system, err := m.ctl.SystemPath(ctx)
-	if err != nil {
-		return SnapshotRef{}, err
-	}
-	// With no service there is no data to snapshot, and the rollback point is the code
-	// identity alone -- which is the whole of an OS upgrade on a zero-service node.
-	// Returning it rather than erroring is what makes ref.System a usable rollback target.
-	if !hasService(spec) {
-		return SnapshotRef{System: system}, nil
-	}
-	// Snapshots are siblings of the data subvolume under the btrfs root (path.Dir),
-	// never inside it — DataDir is itself the subvolume that restore deletes.
-	dest := path.Join(path.Dir(spec.DataDir), ".snapshots", spec.Name+"-"+m.cfg.idFn())
-	if err := m.ctl.Snapshot(ctx, spec.DataDir, dest); err != nil {
-		return SnapshotRef{}, err
-	}
-	return SnapshotRef{Service: spec.Name, DataDir: spec.DataDir, Subvolume: dest, System: system}, nil
-}
-
-func (m *Manager) Restore(ctx context.Context, ref SnapshotRef) error {
-	if ref.Subvolume == "" {
-		return nil // a code-only rollback point (no service): nothing to put back
-	}
-	return m.ctl.Restore(ctx, ref.DataDir, ref.Subvolume)
-}
+// THE SERVICE SNAPSHOT USED TO LIVE HERE, and it had been dead since the day the OS upgrade left
+// ([B.143], removed 2026-09-22). Manager.Snapshot/Restore and their SnapshotRef named
+// `<service>-<id>` members under .snapshots — a SERIES, which is exactly what B.143 is building —
+// each pinned to the OS closure, because what they served was the whole-VM {code+data} rollback.
+// That sequence moved to the host (it owns the OS disk) and stopped touching services at all; the
+// service half moved to agent/host/service.go and pins the MANIFEST. Nothing called these
+// afterwards but their own tests.
+//
+// Deleted rather than reused, deliberately: the ring's identity is the manifest and its primitive
+// is the guest agent's data.snapshot verb, so keeping a second naming scheme alive here would have
+// left B.143 picking between two and the next reader inventing a third.
 
 // THE OS UPGRADE USED TO LIVE HERE, and where it went is worth a sentence.
 //
@@ -626,10 +589,6 @@ func (Stub) Stop(context.Context, model.ServiceSpec) error  { return nil }
 func (Stub) Health(context.Context, model.ServiceSpec) (Health, error) {
 	return Health{Running: true, Ready: true}, nil
 }
-func (Stub) Snapshot(_ context.Context, spec model.ServiceSpec) (SnapshotRef, error) {
-	return SnapshotRef{Service: spec.Name, DataDir: spec.DataDir, Subvolume: "stub", System: "stub"}, nil
-}
-func (Stub) Restore(context.Context, SnapshotRef) error { return nil }
 func (Stub) SystemPath(context.Context) (string, error) { return "stub", nil }
 func (Stub) Switch(context.Context, string) error       { return nil }
 

@@ -13,33 +13,29 @@ import (
 
 // fakeControl records the guest-channel calls Manager makes and returns canned data.
 type fakeControl struct {
-	started, stopped        []string
-	active                  bool
-	activeErr               error
-	system                  string   // current system path (SystemPath)
-	switches                []string // closures passed to Switch, in order
-	stagedBoot              []string // closures passed to StageBoot, in order
-	stageBootErr            error
-	snapDataDir, snapTo     string
-	snapErr                 error
-	restoreFrom, restoreDir string
-	restored                bool
-	startErr                error    // ServiceStart returns this (to trigger a rollback)
-	componentsFor           []string // closures Components was asked about, in order
-	componentsErr           error
-	collected               int // CollectGarbage calls
-	collectErr              error
-	certs                   []string // cert|key pairs passed to WriteCert, in order
-	ops                     []string // ordered log of maintenance/lifecycle ops (for sequencing)
-	paused, resumed         int
-	cluster                 model.Cluster // what OSReady reads about this node
-	clusterErr              error
-	activeHook              func(ctx context.Context) // inspect the ctx ServiceActive receives
-	health                  bool                      // ServiceHealth in-guest result (used when healthVerb is set)
-	healthVerb              bool                      // when false, ServiceHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
-	vip                     string                    // net.vip: the address the named device actually holds (CIDR); "" = it holds none
-	vipErr                  error
-	probed                  []string // URLs ServiceHealth was asked to probe, in order
+	started, stopped []string
+	active           bool
+	activeErr        error
+	system           string   // current system path (SystemPath)
+	switches         []string // closures passed to Switch, in order
+	stagedBoot       []string // closures passed to StageBoot, in order
+	stageBootErr     error
+	startErr         error    // ServiceStart returns this (to trigger a rollback)
+	componentsFor    []string // closures Components was asked about, in order
+	componentsErr    error
+	collected        int // CollectGarbage calls
+	collectErr       error
+	certs            []string // cert|key pairs passed to WriteCert, in order
+	ops              []string // ordered log of maintenance/lifecycle ops (for sequencing)
+	paused, resumed  int
+	cluster          model.Cluster // what OSReady reads about this node
+	clusterErr       error
+	activeHook       func(ctx context.Context) // inspect the ctx ServiceActive receives
+	health           bool                      // ServiceHealth in-guest result (used when healthVerb is set)
+	healthVerb       bool                      // when false, ServiceHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
+	vip              string                    // net.vip: the address the named device actually holds (CIDR); "" = it holds none
+	vipErr           error
+	probed           []string // URLs ServiceHealth was asked to probe, in order
 }
 
 func (f *fakeControl) ServiceStart(_ context.Context, unit string) error {
@@ -72,16 +68,6 @@ func (f *fakeControl) WriteCert(_ context.Context, cert, key string) error {
 	f.ops = append(f.ops, "cert")
 	return nil
 }
-func (f *fakeControl) Snapshot(_ context.Context, dataDir, dest string) error {
-	f.snapDataDir, f.snapTo = dataDir, dest
-	f.ops = append(f.ops, "snapshot")
-	return f.snapErr
-}
-func (f *fakeControl) Restore(_ context.Context, dataDir, src string) error {
-	f.restoreDir, f.restoreFrom, f.restored = dataDir, src, true
-	f.ops = append(f.ops, "restore")
-	return nil
-}
 func (f *fakeControl) ReactorPause(context.Context, string) error {
 	f.paused++
 	f.ops = append(f.ops, "pause")
@@ -111,7 +97,6 @@ func newManager(ctl control, healthURL string) *Manager {
 	return NewManager(ctl, Config{
 		HealthURL:    healthURL,
 		gateInterval: time.Millisecond, // poll fast in tests; total wait bounded by ctx
-		idFn:         func() string { return "ID" },
 	})
 }
 
@@ -130,7 +115,6 @@ func newPromoterManager(ctl control, healthURL string) *Manager {
 		HealthURL:      healthURL,
 		gateInterval:   time.Millisecond,
 		ReactorSnippet: "briard",
-		idFn:           func() string { return "ID" },
 	})
 }
 
@@ -247,49 +231,6 @@ func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 	}
 }
 
-// Snapshot cuts at the service's DataDir, names a per-service subvolume, and pins the
-// current generation into a self-contained ref.
-func TestSnapshotProducesPinnedRef(t *testing.T) {
-	f := &fakeControl{system: "/nix/store/old-nixos-system"}
-	m := newManager(f, "")
-	ref, err := m.Snapshot(context.Background(), haSpec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := SnapshotRef{
-		Service:   "home-assistant",
-		DataDir:   "/data/ha",
-		Subvolume: "/data/.snapshots/home-assistant-ID",
-		System:    "/nix/store/old-nixos-system",
-	}
-	if ref != want {
-		t.Errorf("ref = %+v, want %+v", ref, want)
-	}
-	if f.snapDataDir != "/data/ha" || f.snapTo != want.Subvolume {
-		t.Errorf("snapshot(%q, %q), want (/data/ha, %q)", f.snapDataDir, f.snapTo, want.Subvolume)
-	}
-}
-
-func TestSnapshotFailsBeforeReturningRef(t *testing.T) {
-	m := newManager(&fakeControl{snapErr: errors.New("btrfs boom")}, "")
-	if _, err := m.Snapshot(context.Background(), haSpec); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// Restore is driven entirely by the self-contained ref (DataDir + Subvolume).
-func TestRestoreUsesRefFields(t *testing.T) {
-	f := &fakeControl{}
-	m := newManager(f, "")
-	ref := SnapshotRef{DataDir: "/data/ha", Subvolume: "/data/ha/.snapshots/home-assistant-ID"}
-	if err := m.Restore(context.Background(), ref); err != nil {
-		t.Fatal(err)
-	}
-	if f.restoreDir != ref.DataDir || f.restoreFrom != ref.Subvolume {
-		t.Errorf("restore(%q, %q), want (%q, %q)", f.restoreDir, f.restoreFrom, ref.DataDir, ref.Subvolume)
-	}
-}
-
 // THE OS-UPGRADE SEQUENCE TESTS MOVED OUT, with the sequence itself: it is
 // agent/host's now, because an OS upgrade rolls back to a snapshot of the OS disk and only the
 // host can take or restore one. Their replacements are TestSwitchUpgrade* in
@@ -329,7 +270,6 @@ func managerWithAssessor(ctl control, healthURL string, a ReadinessAssessor) *Ma
 		HealthURL:         healthURL,
 		gateInterval:      time.Millisecond,
 		ReadinessAssessor: a,
-		idFn:              func() string { return "ID" },
 	})
 }
 
