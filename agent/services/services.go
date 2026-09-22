@@ -65,8 +65,17 @@ const (
 	// InboundMount is where the socket appears inside a participating container, and
 	// InboundTokenMount is where its token does. Fixed names: a client needs to know nothing
 	// about which service it is, because its token already says so.
-	InboundMount      = "/briard/inbound.sock"
-	InboundTokenMount = "/briard/inbound.token"
+	//
+	// ⚠️ SIBLINGS OF /briard, NEVER CHILDREN OF IT, and the difference is whether the container
+	// starts at all. Home Assistant already mounts a whole directory at /briard READ-ONLY
+	// (agent/hass), so a bind whose destination sat inside it would have the runtime create that
+	// destination underneath a read-only mount: EROFS, the container refuses to start, and podman
+	// has left a root-owned directory where a socket belongs -- which poisons the path for every
+	// later attempt, the exact failure Prepare's own comment describes. They WERE written as
+	// /briard/inbound.sock and /briard/inbound.token, and TestNoBindNestsInsideAnother is what
+	// keeps the class out rather than this comment.
+	InboundMount      = "/briard-inbound.sock"
+	InboundTokenMount = "/briard-inbound.token"
 )
 
 // InboundDir is overridable for tests exactly as agent/guestagent's unitDir is, and for the same

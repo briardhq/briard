@@ -305,3 +305,42 @@ func (f *tokenExec) ran(want ...string) bool {
 	}
 	return false
 }
+
+// TestNoBindNestsInsideAnother: a bind whose destination sits inside another bind's destination
+// makes the runtime create that destination under an already-mounted parent. When the parent is
+// READ-ONLY -- which /briard is, for Home Assistant -- that is EROFS and the container never
+// starts; and podman having created a root-owned directory where a file belongs poisons the path
+// for every later attempt, which is the failure Prepare's own comment describes.
+//
+// Caught this the hard way: the inbound socket and token were first written as /briard/inbound.*,
+// inside exactly that read-only mount. Asserting the PROPERTY rather than the two paths is what
+// keeps the next mount out of the same hole -- the temptation to group things under /briard is
+// obvious and will recur.
+func TestNoBindNestsInsideAnother(t *testing.T) {
+	for _, m := range []manifest.Manifest{
+		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mount: "/config"}}},
+		{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true, Mount: "/data"}}},
+	} {
+		for _, c := range m.Containers {
+			var dests []string
+			for _, v := range Volumes(m, c) {
+				parts := strings.Split(v, ":")
+				if len(parts) < 2 {
+					t.Fatalf("%s: bind %q has no destination", m.Name, v)
+				}
+				dests = append(dests, parts[1])
+			}
+			// The container's own data bind counts too: it is a destination like any other.
+			if c.Mount != "" {
+				dests = append(dests, c.Mount)
+			}
+			for _, a := range dests {
+				for _, b := range dests {
+					if a != b && strings.HasPrefix(b, strings.TrimSuffix(a, "/")+"/") {
+						t.Errorf("%s/%s: bind %q is nested inside %q; the runtime must create it under an already-mounted parent", m.Name, c.Name, b, a)
+					}
+				}
+			}
+		}
+	}
+}
