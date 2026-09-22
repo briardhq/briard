@@ -1364,6 +1364,26 @@ func TestUpgradeStopsTheServiceBeforeSnapshottingIt(t *testing.T) {
 	}
 }
 
+// TestUpgradeMemberSaysItIsQuiesced: the stop above is worth nothing to a reader who cannot tell
+// it happened, and the sidecar is where they look ([B.143]). This is the assertion that fails if
+// somebody reorders the stop away — the order test catches the mechanism, this one the claim.
+func TestUpgradeMemberSaysItIsQuiesced(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if len(f.sidecars) != 1 {
+		t.Fatalf("the upgrade wrote %d sidecars, want the rollback point's: %v", len(f.sidecars), f.sidecars)
+	}
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal([]byte(f.sidecars[0]), &meta); err != nil {
+		t.Fatalf("sidecar does not parse: %v", err)
+	}
+	if meta.Consistency != quadlet.Quiesced {
+		t.Errorf("the rollback point says %q, want quiesced", meta.Consistency)
+	}
+}
+
 // TestFreshInstallStopsNothing: there is no prior service to stop, and a stop of something that
 // was never installed would be the install path inventing an outage for a node that had none.
 func TestFreshInstallStopsNothing(t *testing.T) {
@@ -1719,28 +1739,75 @@ func TestRestoreRefusesBeforeItStopsAnything(t *testing.T) {
 	}
 }
 
-// TestRestoreTakesTheUndoBeforeTheStop: the undo is the only way back from a mis-click, so it has
-// to exist before anything is torn down -- not after, where a failure in between would leave the
-// household with neither the old state nor the new one.
-func TestRestoreTakesTheUndoBeforeTheStop(t *testing.T) {
+// TestRestoreTakesTheUndoAfterTheStop: the undo is the only way back from a mis-click, so it must
+// be a point the household can actually trust -- which means taken with the service STOPPED
+// (owner, 2026-09-23). The images come first regardless, because that is the step that has to run
+// before anything stops, and the data is not touched until the undo is on disk.
+func TestRestoreTakesTheUndoAfterTheStop(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
 	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	joined := strings.Join(f.steps, ",")
 	ei := strings.Index(joined, "ensure:")
-	ui := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, fixedNow))
 	si := strings.Index(joined, "stop:")
+	ui := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, fixedNow))
 	ri := strings.Index(joined, "restore:")
 	if ei < 0 || ui < 0 || si < 0 || ri < 0 {
 		t.Fatalf("the restore did not run its whole sequence: %v", f.steps)
 	}
-	if !(ei < ui && ui < si && si < ri) {
-		t.Errorf("order was %v, want ensure -> undo -> stop -> restore", f.steps)
+	if !(ei < si && si < ui && ui < ri) {
+		t.Errorf("order was %v, want ensure -> stop -> undo -> restore", f.steps)
 	}
 	// And the waypoint, which is what keeps the timeline from appearing to jump backwards.
 	if !strings.Contains(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreAfter, fixedNow)) {
 		t.Errorf("no waypoint was taken after the restore: %v", f.steps)
+	}
+}
+
+// TestRestorePairIsQuiesced reads the SIDECARS rather than the order, because the order is only
+// the mechanism: what a picker and [B.32] act on is the class the member claims.
+func TestRestorePairIsQuiesced(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if len(f.sidecars) != 2 {
+		t.Fatalf("the restore wrote %d sidecars, want the undo and the waypoint: %v", len(f.sidecars), f.sidecars)
+	}
+	for _, raw := range f.sidecars {
+		var meta quadlet.SnapshotMeta
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			t.Fatalf("sidecar does not parse: %v", err)
+		}
+		if meta.Consistency != quadlet.Quiesced {
+			t.Errorf("%s member says %q, want quiesced -- both halves are taken with the container stopped",
+				meta.Trigger, meta.Consistency)
+		}
+	}
+}
+
+// TestRestoreRestartsTheServiceWhenTheUndoFails: the stop is above the undo now, so the undo's own
+// failure is the one that can leave a household with a stopped service and nothing restored. It
+// must put the service back and say the data was never touched.
+func TestRestoreRestartsTheServiceWhenTheUndoFails(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	f.snapEr = errors.New("no space left on device")
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed", o)
+	}
+	if !strings.Contains(o.Detail, "nothing was changed") || !strings.Contains(o.Detail, "restarted") {
+		t.Errorf("the refusal does not say the data is untouched AND the service is back: %q", o.Detail)
+	}
+	joined := strings.Join(f.steps, ",")
+	if strings.Contains(joined, "restore:") {
+		t.Errorf("the data was touched after the undo failed: %v", f.steps)
+	}
+	si := strings.Index(joined, "stop:")
+	ci := strings.Index(joined, "converge")
+	if si < 0 || ci < si {
+		t.Errorf("the service was not converged back after the stop: %v", f.steps)
 	}
 }
 

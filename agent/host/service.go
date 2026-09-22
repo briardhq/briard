@@ -428,11 +428,14 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		at := cfg.takenAt()
 		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgrade, at)
 		meta := quadlet.SnapshotMeta{
-			Service:  m.Name,
-			Trigger:  quadlet.TriggerUpgrade,
-			Title:    fmt.Sprintf("%s, before upgrading to %s", priorVersion, m.Version),
-			TakenAt:  at,
-			Manifest: priorRaw,
+			Service: m.Name,
+			Trigger: quadlet.TriggerUpgrade,
+			Title:   fmt.Sprintf("%s, before upgrading to %s", priorVersion, m.Version),
+			TakenAt: at,
+			// QUIESCED BY THE STOP ABOVE, which is what [B.121] bought and the reason that
+			// stop is not an optimisation somebody may reorder away.
+			Consistency: quadlet.Quiesced,
+			Manifest:    priorRaw,
 		}
 		sidecar, err := json.Marshal(meta)
 		if err != nil {
@@ -1107,20 +1110,37 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	dataDir := quadlet.DataRoot(service)
 	running, _, _, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
 
-	// (2) THE UNDO, and it is the only undo a mis-click has. Taken before the stop so it is a
-	// point the household can get back to whatever happens next.
-	at := cfg.takenAt()
-	undo := quadlet.SnapshotMember(service, quadlet.TriggerRestoreBefore, at)
-	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerRestoreBefore,
-		fmt.Sprintf("before restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
-		at, logf); err != nil {
-		return failed(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
-	}
-
-	// (3) THE STOP. Container units only -- the pod would unmount the shared volume under every
+	// (2) THE STOP. Container units only -- the pod would unmount the shared volume under every
 	// other service (quiesce's own comment carries the trace).
+	//
+	// ABOVE THE UNDO, so the undo is QUIESCED like every other member this product takes
+	// deliberately ([B.143], owner 2026-09-23). Taking it first was the earlier shape and it made
+	// the one member a mis-click depends on the one member whose bytes are crash-consistent — a
+	// bet mosquitto is measured to lose. Nothing is risked by the swap: the images are already
+	// local (step 1, which is the step that must run before anything stops), and a failure below
+	// puts the service back with a converge and says the data was never touched.
+	stopped := failed
 	if running != nil {
 		cfg.quiesce(ctx, g, running.ContainerUnits, logf)
+		stopped = func(detail string) api.DirectiveOutcome {
+			// The volume still names the running service -- ServiceProvision below has not run --
+			// so a converge re-renders from it and starts exactly what the stop above stopped.
+			// The same undo applyServiceInstall uses; no new mechanism.
+			if _, err := g.ServiceConverge(ctx); err != nil {
+				return failed(fmt.Sprintf("%s; AND the service could not be restarted: %v", detail, err))
+			}
+			return failed(detail + " (the service was restarted)")
+		}
+	}
+
+	// (3) THE UNDO, and it is the only undo a mis-click has. It exists before anything is torn
+	// down: the data below is untouched until it is on disk.
+	at := cfg.takenAt()
+	undo := quadlet.SnapshotMember(service, quadlet.TriggerRestoreBefore, at)
+	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerRestoreBefore, quadlet.Quiesced,
+		fmt.Sprintf("before restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
+		at, logf); err != nil {
+		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
 	}
 	// (4) THE DATA, keeping [B.126]'s verify -> materialise -> destroy order.
 	if err := g.Restore(ctx, dataDir, target.Member); err != nil {
@@ -1140,7 +1160,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// member it came from may sit months back in the list.
 	after := cfg.takenAt()
 	if err := cfg.takeMember(ctx, g, service, quadlet.SnapshotMember(service, quadlet.TriggerRestoreAfter, after),
-		quadlet.TriggerRestoreAfter,
+		quadlet.TriggerRestoreAfter, quadlet.Quiesced,
 		fmt.Sprintf("after restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
 		after, logf); err != nil {
 		logf("service restore %s: could not take the waypoint (%v); continuing", service, err)
@@ -1160,13 +1180,17 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 
 // takeMember renders a member's sidecar and asks the guest for it. The host titles the members
 // only it can title; the guest's own (agent/guestagent/inbound.go) never come through here.
-func (cfg Config) takeMember(ctx context.Context, g serviceInstaller, service, member string, tr quadlet.Trigger, title string, at time.Time, logf func(string, ...any)) error {
+//
+// THE CONSISTENCY IS THE CALLER'S TO STATE, not this function's to guess: it is the call site that
+// knows whether it stopped the service first, and a member taken by the clock against a running
+// one will come through here saying so.
+func (cfg Config) takeMember(ctx context.Context, g serviceInstaller, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, title string, at time.Time, logf func(string, ...any)) error {
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: tr, Title: title, TakenAt: at, Manifest: raw,
+		Service: service, Trigger: tr, Title: title, TakenAt: at, Consistency: cons, Manifest: raw,
 	})
 	if err != nil {
 		return err

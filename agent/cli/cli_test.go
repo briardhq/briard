@@ -518,6 +518,38 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 	}
 }
 
+// TestAppHistoryTellsTheTwoKindsOfPointApart ([B.143]): a point taken while the app was running is
+// one the app has to recover from on the way back up, and the household chooses BEFORE that
+// happens. A clean point says nothing extra — a note on every line is a note nobody reads.
+func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
+	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
+	entries := []quadlet.SnapshotEntry{
+		{Member: "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z",
+			Meta: quadlet.SnapshotMeta{Title: "clean point", TakenAt: at, Consistency: quadlet.Quiesced}},
+		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260921T101500Z",
+			Meta: quadlet.SnapshotMeta{Title: "nightly point", TakenAt: at, Consistency: quadlet.Crash}},
+		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260922T101500Z",
+			Meta: quadlet.SnapshotMeta{Title: "older briard's point", TakenAt: at}},
+	}
+	body, _ := json.Marshal(entries)
+	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
+	var out, errb bytes.Buffer
+	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		marked := strings.Contains(line, "(taken") || strings.Contains(line, "unverified")
+		switch {
+		case strings.Contains(line, "clean point") && marked:
+			t.Errorf("a quiesced point carries a note it does not need:\n%s", line)
+		case strings.Contains(line, "nightly point") && !strings.Contains(line, "while the app was running"):
+			t.Errorf("a crash-consistent point reads like a clean one:\n%s", line)
+		case strings.Contains(line, "older briard's point") && !strings.Contains(line, "unverified"):
+			t.Errorf("a point with no recorded class reads like a clean one:\n%s", line)
+		}
+	}
+}
+
 // TestAppHistoryOnAnAppWithNoPoints: an app installed a minute ago has nothing to go back to, and
 // that is an ANSWER rather than an error -- the difference an operator acts on.
 func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {

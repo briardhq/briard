@@ -91,6 +91,13 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	if !strings.Contains(meta.Manifest, "2026.7.1") {
 		t.Errorf("sidecar manifest = %q, want the version on the volume", meta.Manifest)
 	}
+	// QUIESCED, and STATED rather than left to be inferred: this runs in the unit's pre-start, so
+	// the container is not up and the previous one was stopped before the restart. A member that
+	// does not say what its bytes are is one [B.32] may not use and the picker cannot rank, which
+	// is the whole reason the field exists.
+	if meta.Consistency != quadlet.Quiesced {
+		t.Errorf("consistency = %q, want quiesced", meta.Consistency)
+	}
 }
 
 // TestInboundStartingRateLimitsACrashLoop: a crash loop restarts every few seconds and would fill

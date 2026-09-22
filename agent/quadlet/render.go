@@ -494,6 +494,39 @@ func SnapshotMember(service string, trigger Trigger, at time.Time) string {
 // picker may rely on rather than a hope.
 func SnapshotSidecar(member string) string { return member + ".json" }
 
+// A Consistency says what a member's bytes ARE, which is not the question its trigger answers
+// ([B.143]).
+//
+// QUIESCED means the data was flushed by a clean stop, or held still across the take: restoring it
+// gives the service exactly what it had. CRASH means it was not — the bytes are whatever a power
+// cut would have left, and restoring one is a bet on the service's own recovery path. That bet is
+// measured-good for Home Assistant (WAL replay, nixosTest/hass-upgrade.nix) and measured-BAD for
+// mosquitto, which lost exactly the retained message somebody would roll back FOR
+// (nixosTest/services-pair.nix). Per-service, in other words — which is why a member carries the
+// answer rather than leaving every reader to infer one.
+//
+// IT IS THE TAKER'S OWN KNOWLEDGE and needs no crash detection: whoever takes a member knows
+// whether it created the stopped window. But ⚠️ A STOPPED CONTAINER IS NOT THE SAME FACT AS
+// FLUSHED DATA, which is why this is not derived from the Trigger. The member after a promotion
+// has nothing running either, yet the old primary never shut the service down, so its bytes are
+// crash-consistent under an ordinary `start` trigger. That case is also the one thing this field
+// can still get wrong: the failover trigger it would need does not exist yet, so a promotion start
+// is labelled like any other start.
+//
+// The empty value means UNRECORDED — a member taken before this field existed. A reader must treat
+// it as unknown and never as quiesced: [B.32]'s integrity check may trust only what says so.
+type Consistency string
+
+const (
+	// Quiesced: every member taken with the container stopped — the pre-start hook, the
+	// pre-upgrade point, and both halves of the restore pair.
+	Quiesced Consistency = "quiesced"
+	// Crash: taken against a running service. The nightly is the one member that is meant to be
+	// this, and only until its quiesce (a truncating WAL checkpoint plus a held transaction)
+	// promotes it.
+	Crash Consistency = "crash"
+)
+
 // SnapshotMeta is a member's sidecar — what the picker shows and what a restore needs.
 //
 // MANIFEST, NOT A DIGEST. The restore path re-provisions from the manifest text and re-renders
@@ -503,11 +536,12 @@ func SnapshotSidecar(member string) string { return member + ".json" }
 // so a btrfs snapshot of the data does not capture the code identity that wrote it. Carrying it
 // here is what makes a member self-contained.
 type SnapshotMeta struct {
-	Service  string    `json:"service"`
-	Trigger  Trigger   `json:"trigger"`
-	Title    string    `json:"title"` // what the picker shows, e.g. "2026.7.1, before upgrading to 2026.8.0"
-	TakenAt  time.Time `json:"taken_at"`
-	Manifest string    `json:"manifest"` // the manifest running when it was taken, verbatim
+	Service     string      `json:"service"`
+	Trigger     Trigger     `json:"trigger"`
+	Title       string      `json:"title"` // what the picker shows, e.g. "2026.7.1, before upgrading to 2026.8.0"
+	TakenAt     time.Time   `json:"taken_at"`
+	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded
+	Manifest    string      `json:"manifest"`    // the manifest running when it was taken, verbatim
 }
 
 // DataPath is one container's plain subdirectory inside that subvolume.

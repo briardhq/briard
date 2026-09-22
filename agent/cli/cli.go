@@ -610,11 +610,28 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// NEWEST LAST, which is the order the listing arrives in and the order a terminal reads: the
 	// most recent point ends up next to the prompt, where the operator is looking.
 	for _, m := range members {
-		fmt.Fprintf(stdout, "%s  %s\n", m.Meta.TakenAt.Local().Format("2006-01-02 15:04"), m.Meta.Title)
+		fmt.Fprintf(stdout, "%s  %s%s\n", m.Meta.TakenAt.Local().Format("2006-01-02 15:04"), m.Meta.Title, consistencyNote(m.Meta.Consistency))
 		fmt.Fprintf(stdout, "    %s\n", m.Member)
 	}
 	fmt.Fprintf(stdout, "\nput one back with: sudo briard app revert <point>\n")
 	return 0
+}
+
+// consistencyNote is how the picker keeps the two kinds of point apart ([B.143]). A point taken
+// while the app was running is one the app has to recover from, which is a thing the household is
+// entitled to know BEFORE choosing it -- and the quiet case stays quiet, because most points are
+// clean and a note on every line is a note nobody reads.
+//
+// No jargon: "quiesced" and "crash-consistent" are our words, not a household's ([V3c.10]).
+func consistencyNote(c quadlet.Consistency) string {
+	switch c {
+	case quadlet.Quiesced:
+		return ""
+	case quadlet.Crash:
+		return "  (taken while the app was running)"
+	default:
+		return "  (taken by an older briard; unverified)"
+	}
 }
 
 func runAppRevert(ctx context.Context, sock, member string, stdout, stderr io.Writer) int {

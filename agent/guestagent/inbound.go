@@ -178,11 +178,18 @@ func startingMember(ctx context.Context, x Executor, service string) (string, er
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
 	meta := quadlet.SnapshotMeta{
-		Service:  service,
-		Trigger:  quadlet.TriggerStart,
-		Title:    service + " starting",
-		TakenAt:  at,
-		Manifest: string(raw),
+		Service: service,
+		Trigger: quadlet.TriggerStart,
+		Title:   service + " starting",
+		TakenAt: at,
+		// QUIESCED, because this runs in the unit's pre-start: the container is not up yet, and
+		// the previous instance of it was stopped by systemd before the unit was restarted.
+		// ⚠️ The exception this cannot see is the first start after the OLD PRIMARY died holding
+		// the service — nothing stopped it there, so those bytes are crash-consistent under this
+		// same trigger. Labelling that honestly needs the failover trigger, which is not built;
+		// see quadlet.Consistency.
+		Consistency: quadlet.Quiesced,
+		Manifest:    string(raw),
 	}
 	sidecar, err := json.Marshal(meta)
 	if err != nil {
