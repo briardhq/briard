@@ -462,8 +462,7 @@ func Titled(t Trigger) bool {
 //
 // THE LADDER NEEDS NO FLOOR, and that is a property of the nightly rather than of this code: it is
 // taken by the clock rather than by an event, so a service nobody touches still has last night's
-// member and the mistake rung is never empty (DESIGN §5). ⚠️ The nightly is not built yet, so
-// until it is, a service left alone for three days has an empty ring.
+// member and the mistake rung is never empty (DESIGN §5). The nightly is agent/host's nightly.go.
 //
 // The numbers are the host's to own (DESIGN §9.8) and the guest's to enforce, because the host is
 // not in the start path. They are consts here until something configures them.

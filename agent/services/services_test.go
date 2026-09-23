@@ -392,7 +392,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 // for the Go package rather than the service would resolve to a service that does not exist, and
 // every call from that container would come back "unknown caller" with nothing pointing at why.
 //
-// It was /run/briard/hass until [B.143]; agent/mosquitto already followed the convention.
+// The directory is named for the service, as agent/mosquitto's is ([B.143]).
 func TestServiceDirMatchesTheRegistry(t *testing.T) {
 	for _, c := range []struct{ name, dir string }{
 		{hass.Name, hass.Dir},
