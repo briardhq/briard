@@ -218,6 +218,27 @@ pkgs.testers.runNixOSTest {
     )
     print(f"the inbound channel took {member}, pinned to the manifest on the volume")
 
+    # The mint ran inside the container, in the stopped window s6's `run` provides, and the
+    # token HA now holds is the one we chose.
+    access = exchange(token)
+    assert access.startswith("ey"), f"the token did not exchange for an access token: {access}"
+
+    # The signal the S1 readiness gate reads, through the token: HA's per-config-entry
+    # setup states. WAITED FOR, not sampled — /manifest.json goes 200 while HA is still
+    # setting up default_config, so the list is legitimately EMPTY for a few seconds after
+    # the door opens (measured: the first run of this assertion failed on `[]`). Waiting is
+    # also the stronger claim: the entries appear and stay readable.
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {access}' "
+        "http://127.0.0.1:8123/api/config/config_entries/entry | grep -q entry_id",
+        timeout=300,
+    )
+    entries = node1.succeed(
+        f"curl -fsS -H 'Authorization: Bearer {access}' "
+        "http://127.0.0.1:8123/api/config/config_entries/entry"
+    )
+    assert '"state"' in entries, f"config entries carry no state: {entries[:200]}"
+
     # ---- THE NIGHTLY, HELD STILL BY HOME ASSISTANT ITSELF ([B.143]) ----
     # THIS IS THE ONE ASSERTION GUARDING AN INTERNAL API. The nightly member is taken while Home
     # Assistant RUNS, and what makes it application-consistent rather than something HA has to
@@ -227,11 +248,22 @@ pkgs.testers.runNixOSTest {
     # pins. A rename upstream lands HERE as a red rig instead of as a silent downgrade to
     # crash-consistent members that nobody notices for a release.
     #
-    # The trigger is the harness's (`--nightly`, which supplies what the host would); everything
-    # below it is the product's own path.
+    # ⚠️ AFTER THE WAIT ABOVE, and this is the trap the entries assertion already records: a
+    # briard view exists only once the integration's async_setup has run, which is LATER than
+    # /manifest.json answering. Measured (L0 run 35833646953): the take landed a second after
+    # "We found a custom integration briard" and got a 404, which is the product's fallback
+    # working correctly and the rig asking too early.
+    #
+    # The view's own readiness is waited for on top, because a config entry is not the same
+    # event as our setup — and the wait is bounded, so a view that never appears still fails.
     node1.wait_until_succeeds(
-        "curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300
+        f"curl -fsS -o /dev/null -X POST -H 'Authorization: Bearer {access}' "
+        "-H 'Content-Type: application/json' -d '{\"hold\":false}' "
+        "http://127.0.0.1:8123/api/briard/quiesce",
+        timeout=120,
     )
+    # The trigger is the harness's (`--nightly`, which supplies what the host would); everything
+    # under it is the product's own path.
     node1.succeed("briard-guest-agent --nightly=home-assistant")
     nightlies = node1.succeed(
         "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-daily-' || true"
@@ -253,27 +285,6 @@ pkgs.testers.runNixOSTest {
         + node1.succeed("podman logs briard-home-assistant-app 2>&1 | tail -40 || true")
     )
     print(f"the nightly {nightly} was taken with Home Assistant's recorder locked")
-
-    # The mint ran inside the container, in the stopped window s6's `run` provides, and the
-    # token HA now holds is the one we chose.
-    access = exchange(token)
-    assert access.startswith("ey"), f"the token did not exchange for an access token: {access}"
-
-    # The signal the S1 readiness gate reads, through the token: HA's per-config-entry
-    # setup states. WAITED FOR, not sampled — /manifest.json goes 200 while HA is still
-    # setting up default_config, so the list is legitimately EMPTY for a few seconds after
-    # the door opens (measured: the first run of this assertion failed on `[]`). Waiting is
-    # also the stronger claim: the entries appear and stay readable.
-    node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {access}' "
-        "http://127.0.0.1:8123/api/config/config_entries/entry | grep -q entry_id",
-        timeout=300,
-    )
-    entries = node1.succeed(
-        f"curl -fsS -H 'Authorization: Bearer {access}' "
-        "http://127.0.0.1:8123/api/config/config_entries/entry"
-    )
-    assert '"state"' in entries, f"config entries carry no state: {entries[:200]}"
 
     # ── HEALING, AT A BOUNDARY THAT DOES NOT RESTART THE CONTAINER ───────────────────
     #
