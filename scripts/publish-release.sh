@@ -172,6 +172,13 @@ release_version() {
 		v3.dirty|*dirty*) die "refusing a DIRTY tree (version=$v) — commit first; a build nobody can reproduce must not be published" ;;
 		"") die "empty version" ;;
 	esac
+	# THE PUSHED-MAIN GATE. Every tier that tests this code -- CI, the nightly's VM and fleet
+	# tiers, the single-test workflow -- tests pushed `main`, so a release cut from an unpushed
+	# commit or another branch ships code none of them has seen. An ancestor of `origin/main` is
+	# fine: it was on main, and the floor below bounds how old it may be.
+	git fetch --quiet origin main || die "cannot fetch origin/main to check that HEAD is on it"
+	git merge-base --is-ancestor HEAD origin/main ||
+		die "refusing HEAD $(git rev-parse --short HEAD) (version=$v): it is not on origin/main — push it to main first; the suites test pushed main, so anything else would ship untested code"
 	# THE STALE-COMMIT FLOOR, and it is what keeps ids unique now that `gc` DELETES. An id is
 	# `v3.<commit-date>.<shortrev>`, so the only way to mint one twice is to publish the same
 	# commit twice — and `publish` catches that by asking the bucket, which is exactly the
