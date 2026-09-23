@@ -126,6 +126,7 @@ func runInternal(args []string) {
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
 	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre ([B.143])")
+	nightly := fs.String("nightly", "", "take this service's quiesced nightly member -- an internal flag a harness invokes; the product drives this verb from the host ([B.143])")
 	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost ([B.143])")
 	_ = fs.Parse(args)
 
@@ -192,6 +193,18 @@ func runInternal(args []string) {
 			return
 		}
 		log.Printf("service-starting %s: %s", *serviceStarting, detail)
+		return
+	}
+
+	if *nightly != "" {
+		// FOR A GUEST WITH NO HOST ([B.143]), like --inbound-listen beside it: the rigs that get
+		// Home Assistant running are agent-less, and this is the only way an L0 run can exercise
+		// the recorder lock against a REAL Home Assistant. Nothing in the product invokes it.
+		detail, err := guestagent.TakeNightlyMember(ctx, guestfirmware.NewOSExecutor(), *nightly, time.Now())
+		if err != nil {
+			log.Fatalf("nightly %s: %v", *nightly, err)
+		}
+		log.Printf("nightly %s: %s", *nightly, detail)
 		return
 	}
 

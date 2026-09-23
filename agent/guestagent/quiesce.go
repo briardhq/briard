@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path"
+	"time"
 
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
@@ -92,6 +94,41 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 		return quiescedResult{Why: why}, fmt.Errorf("write the member's sidecar (the member was removed): %w", err)
 	}
 	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why}, nil
+}
+
+// TakeNightlyMember is the quiesced take FOR A GUEST WITH NO HOST ([B.143]) — the same
+// accommodation `--inbound-listen` and `--write-units` make, and for the same reason.
+//
+// In the product this verb arrives from the host, which owns the cadence and renders the sidecar
+// (agent/host/nightly.go). The rigs that get Home Assistant running are agent-less, so without
+// this the one thing that can silently drift under us — Home Assistant's own recorder lock, an
+// internal API — would have no coverage on a real HA at all, and an L0 run would prove nothing
+// about it.
+//
+// It builds exactly what the host would send, including the `crash` the guest then upgrades, so
+// the harness supplies the trigger and nothing else. Nothing in the product invokes it.
+func TakeNightlyMember(ctx context.Context, x Executor, service string, at time.Time) (string, error) {
+	ensureToolsOnPath()
+	raw, err := x.ReadFile(manifestPath(service))
+	if err != nil {
+		return "", fmt.Errorf("read the running manifest: %w", err)
+	}
+	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
+		Service: service, Trigger: quadlet.TriggerDaily, Title: service + " nightly", TakenAt: at,
+		Consistency: quadlet.Crash, Manifest: string(raw),
+	})
+	if err != nil {
+		return "", err
+	}
+	member := quadlet.SnapshotMember(service, quadlet.TriggerDaily, at)
+	run := func(name string, args ...string) error { _, err := x.Run(ctx, name, args...); return err }
+	res, err := quiescedMember(ctx, x, run, snapshotRequest{
+		Service: service, DataDir: quadlet.DataRoot(service), Path: member, Sidecar: string(sidecar),
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("took %s (held=%t %s)", path.Base(member), res.Held, res.Why), nil
 }
 
 // quiesceService asks the registry for this service's way of holding still, reading the manifest
