@@ -47,6 +47,9 @@ type fakeInstaller struct {
 	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
 	noMember     bool     // advertises everything BUT data.member: a guest older than the ring ([B.143])
 	noSweep      bool     // advertises data.restore but not data.replace: cannot sweep a member ([B.143])
+	noQuiesce    bool     // advertises the ring but not the quiesced take: the nightly falls back ([B.143])
+	held         bool     // the service held still across a quiesced take
+	quiesceEr    error    // the quiesced take failed outright
 	swept        []string // the relative paths each Restore was asked to remove from the member
 	free         int64    // what storage.free reports as free (0 = plenty is NOT implied; tests set it)
 	freeErr      error    // storage.free failing: the gate logs and the install proceeds unmeasured
@@ -172,6 +175,30 @@ func (f *fakeInstaller) RestoreWithoutSweep(_ context.Context, _, src string) er
 	return f.restoreEr
 }
 func (f *fakeInstaller) SupportsRestoreSweep() bool { return !f.oldGuest && !f.noSweep }
+
+// The QUIESCED take ([B.143]). `held` is what the fake service reports, and the sidecar is
+// recorded with the class the GUEST would have written — upgraded only when it held, which is the
+// property the host's side of this must not be able to fake.
+func (f *fakeInstaller) QuiescedSnapshot(_ context.Context, service, _, dest, sidecar string) (bool, string, error) {
+	f.steps = append(f.steps, "quiesced-snapshot:"+dest)
+	if f.quiesceEr != nil {
+		return false, "", f.quiesceEr
+	}
+	if f.held {
+		var meta quadlet.SnapshotMeta
+		if err := json.Unmarshal([]byte(sidecar), &meta); err == nil {
+			meta.Consistency = quadlet.Quiesced
+			up, _ := json.Marshal(meta)
+			sidecar = string(up)
+		}
+	}
+	f.sidecars = append(f.sidecars, sidecar)
+	if f.held {
+		return true, "", nil
+	}
+	return false, service + " did not hold still", nil
+}
+func (f *fakeInstaller) SupportsQuiescedSnapshot() bool { return !f.oldGuest && !f.noQuiesce }
 func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
 	f.steps = append(f.steps, "active?")
 	return f.active, nil

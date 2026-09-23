@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,24 +51,86 @@ func TestNightlyTakesOneMemberANight(t *testing.T) {
 	}
 }
 
-// TestNightlyIsMarkedCrashConsistent: it is the ONE member taken against a running service, and
-// the picker and [B.32] are entitled to know that before trusting it. The quiesce that would
-// promote it is not built, and shipping it silently was what [B.143] refused.
-func TestNightlyIsMarkedCrashConsistent(t *testing.T) {
+func metaOf(t *testing.T, raw string) quadlet.SnapshotMeta {
+	t.Helper()
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("sidecar does not parse: %v", err)
+	}
+	return meta
+}
+
+// TestNightlyIsCrashConsistentWhenTheServiceCannotHoldStill: it is the ONE member taken against a
+// running service, and the picker and [B.32] are entitled to know that before trusting it. A Home
+// Assistant that is down, too old for the view, or whose lock broke all land here.
+func TestNightlyIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T) {
 	cfg, f, took, n := nightlyFixture(t)
+	f.held = false
+	var logged []string
+	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(s string, a ...any) {
+		logged = append(logged, fmt.Sprintf(s, a...))
+	})
+	if len(*took) != 1 {
+		t.Fatalf("took %d members, want one: %v", len(*took), *took)
+	}
+	meta := metaOf(t, (*took)[0].sidecar)
+	if meta.Consistency != quadlet.Crash {
+		t.Errorf("consistency = %q, want crash -- the service went on writing", meta.Consistency)
+	}
+	if meta.Trigger != quadlet.TriggerDaily || meta.Title == "" {
+		t.Errorf("meta = %+v, want a titled daily member", meta)
+	}
+	// AND IT SAYS SO. "The nightly is crash-consistent again tonight" is how a household would
+	// find out that Home Assistant stopped answering, or that an upgrade moved the API this
+	// leans on -- silence would make that invisible until somebody read a sidecar.
+	if !strings.Contains(strings.Join(logged, "\n"), "without holding the service still") {
+		t.Errorf("nothing said the service did not hold still: %v", logged)
+	}
+}
+
+// TestNightlyIsQuiescedWhenTheServiceHeldStill ([B.143]): the whole point of asking. Home
+// Assistant offers the mechanism its own backups use, and a member taken across it is
+// application-consistent rather than something HA has to recover from.
+func TestNightlyIsQuiescedWhenTheServiceHeldStill(t *testing.T) {
+	cfg, f, took, n := nightlyFixture(t)
+	f.held = true
 	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Fatalf("took %d members, want one: %v", len(*took), *took)
 	}
-	var meta quadlet.SnapshotMeta
-	if err := json.Unmarshal([]byte((*took)[0].sidecar), &meta); err != nil {
-		t.Fatalf("sidecar does not parse: %v", err)
+	if got := metaOf(t, (*took)[0].sidecar).Consistency; got != quadlet.Quiesced {
+		t.Errorf("consistency = %q, want quiesced", got)
 	}
-	if meta.Consistency != quadlet.Crash {
-		t.Errorf("consistency = %q, want crash -- the service was running", meta.Consistency)
+}
+
+// TestTheHostNeverClaimsTheServiceHeldStill is the rule that keeps the class honest across the
+// channel ([B.143]): the host renders `crash` and the GUEST upgrades it, because only the guest
+// watched the service hold. A host that rendered `quiesced` hopefully would make every failure
+// between here and the snapshot into a member that lies.
+func TestTheHostNeverClaimsTheServiceHeldStill(t *testing.T) {
+	cfg, f, took, n := nightlyFixture(t)
+	f.held = true // the guest upgrades it; what the HOST asked for is what this is about
+	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	if len(*took) != 1 {
+		t.Fatalf("took %d members, want one: %v", len(*took), *took)
 	}
-	if meta.Trigger != quadlet.TriggerDaily || meta.Title == "" {
-		t.Errorf("meta = %+v, want a titled daily member", meta)
+	if got := metaOf(t, (*took)[0].asked).Consistency; got != quadlet.Crash {
+		t.Errorf("the host asked for %q; it may only ever ask for crash", got)
+	}
+}
+
+// TestNightlyFallsBackOnAGuestThatCannotAsk: an older guest has no quiesced take, and the answer
+// is the plain one — a member that says crash-consistent, which is what it is. Refusing to take a
+// nightly at all would leave the ring a hole for the sake of a label.
+func TestNightlyFallsBackOnAGuestThatCannotAsk(t *testing.T) {
+	cfg, f, took, n := nightlyFixture(t)
+	f.noQuiesce = true
+	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	if len(*took) != 1 {
+		t.Fatalf("took %d members, want one: %v", len(*took), *took)
+	}
+	if got := metaOf(t, (*took)[0].sidecar).Consistency; got != quadlet.Crash {
+		t.Errorf("consistency = %q, want crash", got)
 	}
 }
 

@@ -154,6 +154,32 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	return out
 }
 
+// Quiesce asks a service to hold still so a member taken while it RUNS is application-consistent,
+// and returns the release that ends the window ([B.143]).
+//
+// THE DEFAULT IS NOTHING, as everywhere here: a service with no way to hold still returns a nil
+// release and an error saying so, the caller takes its member anyway, and the member says
+// crash-consistent. That is the honest answer for mosquitto, whose own durability is an autosave
+// interval — there is nothing to ask it for.
+//
+// ⚠️ THE RELEASE REPORTS WHETHER THE LOCK HELD FOR THE WHOLE WINDOW, which is the caller's input
+// for the member's class rather than a courtesy. Home Assistant breaks its own lock if its
+// buffered backlog grows while held; a release that answers false means the service resumed
+// writing under the snapshot.
+//
+// It takes the port because that is how a service is reached on the guest's loopback, and only the
+// manifest knows it.
+func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int) (release func(context.Context) (bool, error), err error) {
+	switch m.Name {
+	case hass.Name:
+		if err := hass.Hold(ctx, x, port); err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context) (bool, error) { return hass.Release(ctx, x, port) }, nil
+	}
+	return nil, fmt.Errorf("services: %s has no way to hold still", m.Name)
+}
+
 // RestoreMarkers names the files a service writes inside its own data to say "a restore of MY
 // backups is in flight" — paths relative to that service's data root, one per container that
 // keeps state ([B.143]). The default, as always here, is nothing.

@@ -104,6 +104,11 @@ type serviceInstaller interface {
 	// not data.member, and taking the old verb instead would leave an unlabelled member -- the one
 	// thing the sidecar exists to prevent. Refused loudly, never worked around.
 	SupportsSnapshotMember() bool
+	// The QUIESCED take, for the one member taken while the service still RUNS ([B.143]): the
+	// guest asks the service to hold still, snapshots, releases, and answers whether it held --
+	// which is what the class is written from, by the guest, since the host cannot see it.
+	QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error)
+	SupportsQuiescedSnapshot() bool
 	// The RESTORE's three ([B.143]): list a service's ring, make one member's images resident
 	// before anything is stopped, and put the data back. All capability-gated, because a guest
 	// older than the ring can do none of them and a fallback would be worse than a refusal.

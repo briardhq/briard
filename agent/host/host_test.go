@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -104,10 +105,15 @@ type fakeStatus struct {
 	took       *[]takenMember
 	snapErr    error
 	noRing     bool
+	noQuiesce  bool  // advertises the ring but not the quiesced take ([B.143])
+	held       bool  // the service held still across a quiesced take
+	quiesceErr error // the quiesced take failed outright
 }
 
 // takenMember is one call to Snapshot: where the member went, and the sidecar that went with it.
-type takenMember struct{ member, sidecar string }
+// `asked` is the sidecar the HOST rendered, before the guest had its say: the two differ only on
+// a quiesced take, which is the whole point ([B.143]).
+type takenMember struct{ member, sidecar, asked string }
 
 // The ring's slice of the guest ([B.143]). The observe loop carries the nightly member, so the
 // reader it is handed has to be able to take one.
@@ -116,9 +122,35 @@ func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.Snapsh
 }
 func (f fakeStatus) SupportsMembers() bool        { return !f.noRing }
 func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
+
+// The QUIESCED take ([B.143]): `held` is what the fake service reports, and the recorded sidecar
+// carries the class the GUEST would have written — upgraded only when it held, which is the thing
+// the host's side must not be able to claim on its own.
+func (f fakeStatus) QuiescedSnapshot(_ context.Context, service, _, dest, sidecar string) (bool, string, error) {
+	asked := sidecar
+	if f.quiesceErr != nil {
+		return false, "", f.quiesceErr
+	}
+	if f.held {
+		var meta quadlet.SnapshotMeta
+		if err := json.Unmarshal([]byte(sidecar), &meta); err == nil {
+			meta.Consistency = quadlet.Quiesced
+			up, _ := json.Marshal(meta)
+			sidecar = string(up)
+		}
+	}
+	if f.took != nil {
+		*f.took = append(*f.took, takenMember{dest, sidecar, asked})
+	}
+	if f.held {
+		return true, "", nil
+	}
+	return false, service + " did not hold still", nil
+}
+func (f fakeStatus) SupportsQuiescedSnapshot() bool { return !f.noRing && !f.noQuiesce }
 func (f fakeStatus) Snapshot(_ context.Context, _, dest, sidecar string) error {
 	if f.took != nil {
-		*f.took = append(*f.took, takenMember{dest, sidecar})
+		*f.took = append(*f.took, takenMember{dest, sidecar, sidecar})
 	}
 	return f.snapErr
 }

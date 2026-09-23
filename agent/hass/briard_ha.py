@@ -79,6 +79,78 @@ class LoginView(HomeAssistantView):
             return self.json_message("the owner has no credential to log in with", HTTPStatus.CONFLICT, "no_credential")
         return self.json({"auth_code": create_auth_code(hass, client_id, credential)})
 
+class QuiesceView(HomeAssistantView):
+    """POST /api/briard/quiesce — hold the recorder still while the node takes a ring member.
+
+    WHY THIS IS HOME ASSISTANT'S JOB ([B.143]). The node snapshots /config's subvolume while Home
+    Assistant is RUNNING for its nightly point, and the recorder's SQLite database is the one part
+    of it a snapshot can catch mid-write. Home Assistant already has the mechanism its own backups
+    use — a truncating WAL checkpoint and a held `BEGIN IMMEDIATE` — and it runs on the recorder's
+    OWN task queue, so the recorder stops writing and buffers rather than colliding with an outside
+    connection holding the same lock.
+
+    `{"hold": true}` locks; `{"hold": false}` unlocks and answers `{"held": …}`, which is Home
+    Assistant's own verdict on whether the lock survived the window. It breaks its own lock if the
+    buffered backlog grows too far while locked (logging that the backup cannot be trusted), so a
+    false `held` is the node's signal to label that member crash-consistent after all.
+
+    ⚠️ `lock_database` IS AN INTERNAL API, and accepting that is deliberate: it is what Home
+    Assistant's own backup depends on, so it cannot quietly stop existing, and every failure here
+    is an error status the node answers by taking the member unquiesced and SAYING so. It never
+    fails the snapshot, and it can never fail Home Assistant.
+
+    Behind HA's own auth and gated on admin, exactly like LoginView above: the caller is the node's
+    control channel, whose system user is admin.
+    """
+
+    url = "/api/briard/quiesce"
+    name = "api:briard:quiesce"
+    requires_auth = True
+
+    async def post(self, request):
+        """Lock or unlock the recorder database."""
+        if not request[KEY_HASS_USER].is_admin:
+            return self.json_message("admin only", HTTPStatus.FORBIDDEN)
+        try:
+            body = await request.json()
+        except ValueError:
+            return self.json_message("invalid JSON", HTTPStatus.BAD_REQUEST)
+        if not isinstance(body, dict) or not isinstance(body.get("hold"), bool):
+            return self.json_message("hold must be a boolean", HTTPStatus.BAD_REQUEST)
+        hass = request.app[KEY_HASS]
+        # IMPORTED HERE, NOT AT MODULE SCOPE: a Home Assistant with the recorder disabled has no
+        # such module, and this integration must still load for everything else it does.
+        try:
+            from homeassistant.components.recorder import get_instance
+        except ImportError:
+            return self.json_message("this Home Assistant has no recorder", HTTPStatus.NOT_IMPLEMENTED)
+        try:
+            recorder = get_instance(hass)
+        except (KeyError, RuntimeError) as err:  # the recorder is not set up on this instance
+            return self.json_message(f"no recorder: {err}", HTTPStatus.NOT_IMPLEMENTED)
+        if body["hold"]:
+            # Raises TimeoutError after its own 30s if the lock cannot be taken, and returns False
+            # if one is already held -- which for us means an earlier window was never released, so
+            # say so rather than snapshot behind somebody else's lock.
+            try:
+                locked = await recorder.lock_database()
+            except (TimeoutError, AttributeError) as err:
+                # AttributeError is the rename this file is braced for. Both end the same way, and
+                # the node's fallback is a member labelled crash-consistent.
+                _LOGGER.warning("briard: could not lock the recorder database: %s", err)
+                return self.json_message(f"could not lock: {err}", HTTPStatus.SERVICE_UNAVAILABLE)
+            if not locked:
+                return self.json_message("the recorder database is already locked", HTTPStatus.CONFLICT)
+            return self.json({"held": True})
+        try:
+            held = recorder.unlock_database()
+        except AttributeError as err:
+            _LOGGER.warning("briard: could not unlock the recorder database: %s", err)
+            return self.json_message(f"could not unlock: {err}", HTTPStatus.SERVICE_UNAVAILABLE)
+        # False here is not an error: Home Assistant resumed writing because the window ran long,
+        # and the member is simply crash-consistent. The node decides what that means.
+        return self.json({"held": bool(held)})
+
 # The event the node fires on Home Assistant's own bus when something OUTSIDE Home Assistant
 # changed that this integration may want to act on — today, a broker that was installed next to an
 # HA already running ([B.131]). The other half of the contract is agent/hass/nudge.go's, and it is
@@ -124,6 +196,10 @@ async def async_setup(hass, config):
 
     # The login minter, from the moment HA serves: it needs nothing loaded but the auth manager.
     hass.http.register_view(LoginView())
+    # And the recorder hold ([B.143]). Registered here for the same reason: it resolves the
+    # recorder per request, so it is correct from the moment HA serves and stays correct if the
+    # recorder is reloaded under it.
+    hass.http.register_view(QuiesceView())
 
     # Started, not set-up: config entries are loaded by then, so "does an mqtt entry exist" has a
     # truthful answer, and starting a flow is not competing with the rest of the boot.

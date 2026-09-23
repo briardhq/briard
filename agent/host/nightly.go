@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"briard.io/agent/quadlet"
@@ -21,16 +23,21 @@ import (
 // own, because that loop already runs on a cadence, already knows whether this node is serving,
 // and already holds the channel — a second scheduler would need all three again.
 //
-// ⚠️ IT IS THE ONE MEMBER TAKEN AGAINST A RUNNING SERVICE, so it is quadlet.Crash: the bytes are
-// whatever a power cut would have left. The per-service quiesce that would promote it (for Home
-// Assistant, a truncating WAL checkpoint plus a transaction held across the take) is not built.
-// The class is what lets this ship honestly in the meantime — shipping a member whose
-// trustworthiness nobody can tell is the thing [B.143] refuses.
+// ⚠️ IT IS THE ONE MEMBER TAKEN AGAINST A RUNNING SERVICE, so it is the one that has to ASK the
+// service to hold still — and the one whose class is decided by whether it did. Home Assistant
+// offers exactly the mechanism its own backups use (a truncating WAL checkpoint plus a held
+// transaction, agent/hass/quiesce.go); a service that offers nothing gets a member that says
+// crash-consistent, which is what it is. Shipping a member whose trustworthiness nobody can tell
+// is the thing [B.143] refuses, and the class is how that stays true when the asking fails.
 const nightlyHour = 3 // local time; the quiet end of a household's night
 
 // memberTaker is the slice of the guest a member costs: read the manifest it is pinned to, ask for
 // the member, and — only when this process has forgotten — read back what the ring already holds.
 type memberTaker interface {
+	// QuiescedSnapshot takes a member of a RUNNING service, asking it to hold still across the
+	// snapshot, and answers whether it did ([B.143]). The guest writes that sidecar itself.
+	QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error)
+	SupportsQuiescedSnapshot() bool
 	ServiceInstalled(ctx context.Context, name string) (string, error)
 	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
 	SupportsSnapshotMember() bool
@@ -71,8 +78,7 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 		}
 		at := cfg.takenAt()
 		member := quadlet.SnapshotMember(s.Name, quadlet.TriggerDaily, at)
-		if err := cfg.takeMember(ctx, g, s.Name, member, quadlet.TriggerDaily, quadlet.Crash,
-			s.Name+" nightly", at, logf); err != nil {
+		if err := cfg.takeNightly(ctx, g, s.Name, member, at, logf); err != nil {
 			// Never fatal, and never retried inside the window: a household's night is not the
 			// place to hammer a volume that is having trouble, and tomorrow's member costs the
 			// same as today's. The ring is a convenience; the service is the product.
@@ -83,6 +89,46 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 		n.taken[s.Name] = today
 		logf("nightly %s: took %s", s.Name, member)
 	}
+}
+
+// takeNightly takes tonight's member, asking the service to hold still if the guest can ask
+// ([B.143]).
+//
+// ⚠️ THE SIDECAR IS RENDERED SAYING `crash` EITHER WAY, and the guest upgrades it when the service
+// actually held. The host cannot see whether a lock survived — Home Assistant reports that to
+// whoever released it — so the claim is made by the only party that watched it, and every failure
+// in between leaves the member saying the weaker, true thing.
+//
+// A guest too old to ask gets the plain take, which is what this did before the quiesce existed:
+// a member that says crash-consistent, which is exactly what it is.
+func (cfg Config) takeNightly(ctx context.Context, g memberTaker, service, member string, at time.Time, logf func(string, ...any)) error {
+	title := service + " nightly"
+	if !g.SupportsQuiescedSnapshot() {
+		return cfg.takeMember(ctx, g, service, member, quadlet.TriggerDaily, quadlet.Crash, title, at, logf)
+	}
+	raw, err := g.ServiceInstalled(ctx, service)
+	if err != nil {
+		return fmt.Errorf("read the running manifest: %w", err)
+	}
+	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
+		Service: service, Trigger: quadlet.TriggerDaily, Title: title, TakenAt: at,
+		Consistency: quadlet.Crash, Manifest: raw,
+	})
+	if err != nil {
+		return err
+	}
+	held, why, err := g.QuiescedSnapshot(ctx, service, quadlet.DataRoot(service), member, string(sidecar))
+	if err != nil {
+		return err
+	}
+	if !held {
+		// NOT A FAILURE, and the log line says so: the member exists and is as good as any live
+		// snapshot, which is what its class now says. The reason is worth a line because "the
+		// nightly is crash-consistent again tonight" is how a household would find out that Home
+		// Assistant stopped answering, or that an upgrade moved the API this leans on.
+		logf("nightly %s: taken without holding the service still (%s)", service, why)
+	}
+	return nil
 }
 
 // hasNightly reports whether the ring already holds a daily member from this date — the check

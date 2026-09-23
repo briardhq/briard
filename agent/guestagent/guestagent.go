@@ -149,8 +149,21 @@ const (
 	// is the whole lesson of the floor raise gate 3 refused: an old guest does not advertise this,
 	// so Client.Supports refuses exactly the one path that needs it, while a version floor would
 	// have refused every path on every not-yet-rolled guest fleet-wide.
-	verbDataMember  = "data.member"
-	verbDataRestore = "data.restore" // replace the live subvolume with a snapshot
+	verbDataMember = "data.member"
+	// verbDataMemberQuiesced takes a member of a service that is RUNNING, asking it to hold still
+	// across the snapshot ([B.143]) — the nightly, and nothing else so far. It reports back what
+	// it achieved, because "held still" is not something the host can observe from where it sits.
+	//
+	// A NAME OF ITS OWN rather than a flag on data.member, by the rule the refused floor raise
+	// taught: a guest that ignored the flag would take a live snapshot and report the success of
+	// a quiesced one, which is the class lying about the one member it exists for.
+	//
+	// ⚠️ THE WHOLE SEQUENCE RUNS IN THE GUEST — hold, snapshot, release — and that is deliberate.
+	// Driving the three steps from the host would put a released-lock guarantee on the far side of
+	// a channel that can drop mid-transaction; here the release is a deferred call in the same
+	// process as the request that took it.
+	verbDataMemberQuiesced = "data.member.quiesced"
+	verbDataRestore        = "data.restore" // replace the live subvolume with a snapshot
 	// verbDataReplace is that same swap with the SWEEP ([B.143]): the paths the host names are
 	// removed from the staged copy before it goes live, which is what stops a member taken around
 	// a household's own backup restore from replaying it. A name of its own rather than a field
@@ -356,7 +369,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataMember, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
+	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -454,6 +467,9 @@ type snapshotRequest struct {
 	// guest taking this as an optional extra on data.restore would put the data back and keep the
 	// marker, reporting success while replaying the household's own restore.
 	Sweep []string `json:"sweep,omitempty"`
+	// Service is the catalog name, for the one verb that must reach INTO the service before it
+	// snapshots (data.member.quiesced): the manifest on the volume is what says how ([B.143]).
+	Service string `json:"service,omitempty"`
 }
 
 // serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
@@ -1031,6 +1047,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// (inbound.go). A second copy of "take a member" would be a second place for the
 			// collision rule and the sidecar invariant to drift.
 			return nil, takeSnapshot(ctx, x, run, req.DataDir, req.Path, req.Sidecar)
+		case verbDataMemberQuiesced:
+			req, err := snapshotReq(payload)
+			if err != nil {
+				return nil, err
+			}
+			return quiescedMember(ctx, x, run, req)
 		case verbDataRestore, verbDataReplace:
 			req, err := snapshotReq(payload)
 			if err != nil {
@@ -2766,6 +2788,26 @@ func (g *Client) Snapshot(ctx context.Context, dataDir, dest, sidecar string) er
 
 // SupportsSnapshotMember reports whether this guest can take a titled ring member.
 func (g *Client) SupportsSnapshotMember() bool { return g.Supports(verbDataMember) }
+
+// QuiescedSnapshot takes a member of a service that is RUNNING, asking the service to hold still
+// across it ([B.143]). It answers whether the service actually did — which is what the member's
+// class is written from, by the GUEST, because the host cannot see that answer from where it sits.
+//
+// ⚠️ The sidecar the host renders must say `crash`. The guest upgrades it when the service held
+// and never the other way round, so everything that can go wrong in between leaves the member
+// telling the weaker truth.
+func (g *Client) QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error) {
+	var out struct {
+		Held bool   `json:"held"`
+		Why  string `json:"why"`
+	}
+	err := g.c.Call(ctx, verbDataMemberQuiesced,
+		snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar, Service: service}, &out)
+	return out.Held, out.Why, err
+}
+
+// SupportsQuiescedSnapshot reports whether this guest can ask a service to hold still.
+func (g *Client) SupportsQuiescedSnapshot() bool { return g.Supports(verbDataMemberQuiesced) }
 
 // Restore replaces the live dataDir subvolume with a fresh rw snapshot of src, minus the relative
 // paths in sweep. The caller must have stopped the service first (bind released).
