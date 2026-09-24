@@ -93,6 +93,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 		}
 		return quiescedResult{Why: why}, fmt.Errorf("write the member's sidecar (the member was removed): %w", err)
 	}
+	recordMember(ctx, x, req.Path, meta)
 	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why}, nil
 }
 

@@ -45,8 +45,9 @@ import (
 //   - NO VERB NAMES A PATH. Every path is derived from the resolved service (quadlet.DataRoot,
 //     quadlet.SnapshotMember). A verb taking a path is a verb that reads or writes anywhere the
 //     agent can.
-//   - NO VERB DESTROYS ANYTHING. Pruning, restoring and deleting stay on the host's side of the
-//     channel, where the caller is the product rather than the workload.
+//   - NO VERB CHOOSES WHAT IS DESTROYED OR REWRITTEN. The ring prunes itself and records events
+//     after every take, but both are derived from the ring on disk ([B.167]); restoring and
+//     deleting on request stay on the host's side, where the caller is the product.
 //   - EVERY VERB IS BOUNDED. The rate limit below is not only picker hygiene: it is what stops a
 //     hostile or looping caller from filling the replicated volume, which is [B.155]'s failure
 //     arriving by a new road.
@@ -241,11 +242,131 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	if err := takeSnapshot(ctx, x, run, quadlet.DataRoot(service), member, string(sidecar)); err != nil {
 		return "", err
 	}
-	// AFTER the take, never before: pruning first would mean a failed take leaves the ring
-	// shorter for nothing, and a ring at its bound is the state each take should restore rather
-	// than the state each take should find.
-	pruneRing(ctx, x, service, at)
+	recordMember(ctx, x, member, meta)
 	return "took " + path.Base(member), nil
+}
+
+// recordMember is what every take does once its member exists ([B.167]): compare it with the
+// member before it, put any event that finds on THAT member — the restore point of whatever
+// happened between the two — and prune. One function for the three ways a member is taken (a
+// start, the host's data.member, the quiesced nightly), so the history cannot depend on which door
+// a sample came through.
+//
+// AFTER the take, never before: pruning first would mean a failed take leaves the ring shorter for
+// nothing, and a member is only replaceable once its successor exists.
+//
+// BEST-EFFORT, like the prune: the caller may be holding a household's service stopped, and a row
+// missing from its history is a smaller loss than a service that would not start.
+func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
+	if members, err := listMembers(ctx, x, meta.Service); err != nil {
+		log.Printf("ring %s: could not read the ring to record %s: %v", meta.Service, path.Base(member), err)
+	} else if prev, ok := previousMember(members, member); ok {
+		if ev := eventBetween(ctx, x, members, prev, member, meta); ev != nil {
+			writeEvent(ctx, x, prev, ev)
+		}
+	}
+	pruneRing(ctx, x, meta.Service, meta.TakenAt)
+}
+
+// previousMember is the newest member taken before this one.
+func previousMember(members []quadlet.SnapshotEntry, member string) (quadlet.SnapshotEntry, bool) {
+	at, ok := quadlet.SnapshotMemberTime(member)
+	if !ok {
+		return quadlet.SnapshotEntry{}, false
+	}
+	var prev quadlet.SnapshotEntry
+	var prevAt time.Time
+	for _, m := range members {
+		t, ok := quadlet.SnapshotMemberTime(m.Member)
+		if ok && m.Member != member && t.Before(at) && t.After(prevAt) {
+			prev, prevAt = m, t
+		}
+	}
+	return prev, prev.Member != ""
+}
+
+// eventBetween is the event a new member finds since the one before it, or nil.
+//
+// NOTHING IS COMPARED ACROSS A PERFORMED ACT. A baseline (quadlet.Baseline) is taken right after
+// one, and a member that already carries an event is the point of one: what changed next to it is
+// the act's own doing — an update's migration, a restore's rewind — and folds into that row rather
+// than appearing above it as something detected.
+//
+// A detected change wins over the day; the day is what a sample finds when nothing else happened
+// since the last event, at the first sample of a new day.
+func eventBetween(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, prev quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta) *quadlet.Event {
+	if quadlet.Baseline(meta.Trigger) || prev.Meta.Event != nil {
+		return nil
+	}
+	if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
+		// The clock's sample is the one taken while the service RUNS.
+		what, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerDaily)
+		if err != nil {
+			log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
+		}
+		if what != "" {
+			return &quadlet.Event{Kind: quadlet.EventChange, At: meta.TakenAt, What: what}
+		}
+	}
+	if meta.Event != nil || !newDay(members, member, meta.TakenAt) {
+		return nil // a performed act is this sample's event already
+	}
+	return &quadlet.Event{Kind: quadlet.EventDay, At: meta.TakenAt, What: "Ran normally"}
+}
+
+// newDay reports whether `at` falls on a later day than the ring's last event — or, in a ring with
+// none yet, than its first member, so the day a service is installed is not itself a quiet day.
+// Days are the guest's local ones.
+func newDay(members []quadlet.SnapshotEntry, member string, at time.Time) bool {
+	var last time.Time
+	for _, m := range members {
+		if m.Member == member {
+			continue
+		}
+		if m.Meta.Event != nil && m.Meta.Event.At.After(last) {
+			last = m.Meta.Event.At
+		}
+	}
+	if last.IsZero() {
+		for _, m := range members {
+			if t, ok := quadlet.SnapshotMemberTime(m.Member); ok && (last.IsZero() || t.Before(last)) {
+				last = t
+			}
+		}
+	}
+	day := func(t time.Time) time.Time {
+		y, m, d := t.Local().Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.Local)
+	}
+	return !last.IsZero() && day(at).After(day(last))
+}
+
+// writeEvent puts an event on an existing member by replacing its sidecar.
+//
+// ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
+// can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
+// because the next node to read this may be the one that promotes after this one dies.
+func writeEvent(ctx context.Context, x Executor, prev quadlet.SnapshotEntry, ev *quadlet.Event) {
+	meta := prev.Meta
+	meta.Event = ev
+	b, err := json.Marshal(meta)
+	if err != nil {
+		log.Printf("ring %s: could not render %s's event: %v", meta.Service, path.Base(prev.Member), err)
+		return
+	}
+	sidecar := quadlet.SnapshotSidecar(prev.Member)
+	tmp := sidecar + ".tmp"
+	if err := x.WriteFile(tmp, b); err != nil {
+		log.Printf("ring %s: could not record %q on %s: %v", meta.Service, ev.What, path.Base(prev.Member), err)
+		return
+	}
+	if _, err := x.Run(ctx, "mv", "-f", tmp, sidecar); err != nil {
+		log.Printf("ring %s: could not record %q on %s: %v", meta.Service, ev.What, path.Base(prev.Member), err)
+		return
+	}
+	if _, err := x.Run(ctx, "sync", "-f", sidecar); err != nil {
+		log.Printf("ring %s: recorded %q on %s but could not flush it: %v", meta.Service, ev.What, path.Base(prev.Member), err)
+	}
 }
 
 // THE CLEAN-STOP MARKER ([B.143]): the one fact that says whether a service's data was FLUSHED,

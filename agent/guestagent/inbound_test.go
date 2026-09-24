@@ -53,6 +53,12 @@ func ringExec(members ...string) *fakeExec {
 		if len(args) > 1 && args[1] == "show" {
 			return nil, errors.New("ERROR: not a subvolume")
 		}
+		if name == "mv" && len(args) > 1 { // a sidecar replaced by rename, as writeEvent does
+			src, dst := args[len(args)-2], args[len(args)-1]
+			f.files[dst] = f.files[src]
+			delete(f.files, src)
+			return nil, nil
+		}
 		if name == "btrfs" && len(args) > 3 && args[1] == "snapshot" {
 			members = append(members, strings.TrimPrefix(args[len(args)-1], quadlet.SnapshotsDir))
 		}
@@ -847,5 +853,170 @@ func TestListMembersIsOldestFirstAcrossTriggers(t *testing.T) {
 	// By NAME the upgrade point sorts last; by TIME it is two days older and comes first.
 	if got[0].Member != oldUpgrade {
 		t.Errorf("first = %q, want the 48h-old upgrade point %q", got[0].Member, oldUpgrade)
+	}
+}
+
+// A home-assistant ring for recordMember: the manifest names the container whose directory the
+// detector reads, and each member gets a sidecar pinned to it.
+const haManifest = `{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
+	`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
+	`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
+
+func haMember(f *fakeExec, trigger quadlet.Trigger, at time.Time, automations string) (string, quadlet.SnapshotMeta) {
+	member := quadlet.SnapshotMember("home-assistant", trigger, at)
+	meta := quadlet.SnapshotMeta{Service: "home-assistant", Trigger: trigger, TakenAt: at, Manifest: haManifest}
+	b, _ := json.Marshal(meta)
+	f.files[quadlet.SnapshotSidecar(member)] = string(b)
+	f.files[member+"/app/automations.yaml"] = automations
+	return member, meta
+}
+
+func eventOn(t *testing.T, f *fakeExec, member string) *quadlet.Event {
+	t.Helper()
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(member)]), &meta); err != nil {
+		t.Fatalf("%s has no readable sidecar: %v", member, err)
+	}
+	return meta.Event
+}
+
+// recordRing is a ring holding the named members, with nothing else in it.
+func recordRing(members ...string) *fakeExec {
+	var names []string
+	for _, m := range members {
+		names = append(names, strings.TrimPrefix(m, quadlet.SnapshotsDir))
+	}
+	f := ringExec(names...)
+	for k := range f.files { // ringExec's plain sidecars; haMember writes the real ones
+		if strings.HasPrefix(k, quadlet.SnapshotsDir) {
+			delete(f.files, k)
+		}
+	}
+	return f
+}
+
+// TestADetectedChangeLandsOnThePointBeforeIt is the model ([B.167]): the change happened between
+// two samples, so undoing it puts back the EARLIER one -- which is where its event is written.
+// Written by replacement, so a power cut cannot leave a half-written sidecar.
+func TestADetectedChangeLandsOnThePointBeforeIt(t *testing.T) {
+	now := time.Now()
+	prevAt, nextAt := now.Add(-time.Hour), now
+	prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, prevAt)
+	next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, nextAt)
+	f := recordRing(prev, next)
+	haMember(f, quadlet.TriggerStart, prevAt, "- id: 1\n")
+	_, meta := haMember(f, quadlet.TriggerStart, nextAt, "- id: 1\n- id: 2\n")
+
+	recordMember(context.Background(), f, next, meta)
+	ev := eventOn(t, f, prev)
+	if ev == nil || ev.Kind != quadlet.EventChange || ev.What != "Changed automations" {
+		t.Fatalf("the earlier member carries %+v, want the detected change", ev)
+	}
+	if !ev.At.Equal(nextAt) {
+		t.Errorf("the event is at %s, want the sample that found it (%s)", ev.At, nextAt)
+	}
+	if eventOn(t, f, next) != nil {
+		t.Error("the new member carries an event; it is the point of whatever happens NEXT")
+	}
+	if !f.ran("mv", "-f", quadlet.SnapshotSidecar(prev)+".tmp", quadlet.SnapshotSidecar(prev)) ||
+		!f.ran("sync", "-f", quadlet.SnapshotSidecar(prev)) {
+		t.Errorf("the sidecar was not replaced by a flushed rename: %v", f.runs)
+	}
+	if slices.Contains(deleted(f), strings.TrimPrefix(prev, quadlet.SnapshotsDir)) {
+		t.Error("the point of the change was pruned")
+	}
+}
+
+// TestNothingIsComparedAcrossAPerformedAct: an update migrates Home Assistant's files and an undo
+// rewinds them, by design. Comparing across either would put a phantom "Changed ..." directly above
+// the act -- so a baseline compares with nothing, and a point that already carries an act keeps it.
+func TestNothingIsComparedAcrossAPerformedAct(t *testing.T) {
+	now := time.Now()
+	t.Run("baseline", func(t *testing.T) {
+		prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now.Add(-time.Hour))
+		next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreAfter, now)
+		f := recordRing(prev, next)
+		haMember(f, quadlet.TriggerStart, now.Add(-time.Hour), "a")
+		_, meta := haMember(f, quadlet.TriggerRestoreAfter, now, "b")
+		recordMember(context.Background(), f, next, meta)
+		if ev := eventOn(t, f, prev); ev != nil {
+			t.Errorf("a baseline wrote %+v on the member before it", ev)
+		}
+	})
+	t.Run("act", func(t *testing.T) {
+		prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, now.Add(-time.Hour))
+		next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now)
+		f := recordRing(prev, next)
+		haMember(f, quadlet.TriggerUpgrade, now.Add(-time.Hour), "a")
+		withEvent(f, strings.TrimPrefix(prev, quadlet.SnapshotsDir), quadlet.EventUpdate, time.Hour)
+		_, meta := haMember(f, quadlet.TriggerStart, now, "b")
+		recordMember(context.Background(), f, next, meta)
+		if ev := eventOn(t, f, prev); ev == nil || ev.Kind != quadlet.EventUpdate {
+			t.Errorf("the update's point now carries %+v; its event was overwritten", ev)
+		}
+	})
+}
+
+// TestTheFirstQuietSampleOfADayIsTheDayEvent: the safety net for everything the detectors miss --
+// one restore point a day, and only when nothing else has happened since the last event.
+func TestTheFirstQuietSampleOfADayIsTheDayEvent(t *testing.T) {
+	now := time.Now()
+	yesterday := now.Add(-30 * time.Hour) // a calendar day back in any zone
+	prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerDaily, yesterday)
+	next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerDaily, now)
+	f := recordRing(prev, next)
+	haMember(f, quadlet.TriggerDaily, yesterday, "same")
+	_, meta := haMember(f, quadlet.TriggerDaily, now, "same")
+	recordMember(context.Background(), f, next, meta)
+	if ev := eventOn(t, f, prev); ev == nil || ev.Kind != quadlet.EventDay {
+		t.Fatalf("a quiet day left %+v, want the day event", ev)
+	}
+
+	// THE SAME DAY IS NOT A NEW ONE: a second quiet sample today finds today's event and adds none,
+	// and the sample it replaces is pruned.
+	later := now.Add(time.Second)
+	third := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, later)
+	f.runFn(`btrfs`, []string{"subvolume", "snapshot", "-r", "x", third}) // into the fake's listing
+	_, meta3 := haMember(f, quadlet.TriggerStart, later, "same")
+	recordMember(context.Background(), f, third, meta3)
+	if ev := eventOn(t, f, next); ev != nil {
+		t.Errorf("a second quiet sample today wrote %+v", ev)
+	}
+	if !slices.Contains(deleted(f), strings.TrimPrefix(next, quadlet.SnapshotsDir)) {
+		t.Errorf("the replaced sample was kept: %v", deleted(f))
+	}
+}
+
+// TestTheInstallDayIsNotAQuietDay: a ring with no event yet measures from its first member, so the
+// day a service is installed does not end in "Ran normally" an hour later.
+func TestTheInstallDayIsNotAQuietDay(t *testing.T) {
+	now := time.Now()
+	prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now.Add(-time.Second))
+	next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now)
+	f := recordRing(prev, next)
+	haMember(f, quadlet.TriggerStart, now.Add(-time.Second), "same")
+	_, meta := haMember(f, quadlet.TriggerStart, now, "same")
+	recordMember(context.Background(), f, next, meta)
+	if ev := eventOn(t, f, prev); ev != nil {
+		t.Errorf("the install day produced %+v", ev)
+	}
+}
+
+// TestTheHostsTakesAreRecordedToo: the upgrade point and the restore pair come in over data.member,
+// not through the start path, and the history must not depend on which door a sample came through
+// ([B.167]). Here the host's take replaces the plain sample before it.
+func TestTheHostsTakesAreRecordedToo(t *testing.T) {
+	old := ringOf("home-assistant", 1)
+	f := ringExec(old...)
+	g := dial(t, f)
+	at := time.Now()
+	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, at)
+	sidecar, _ := json.Marshal(quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerUpgrade, TakenAt: at,
+		Event: &quadlet.Event{Kind: quadlet.EventUpdate, At: at, What: "Updated to 2026.9.0"}})
+	if err := g.Snapshot(context.Background(), quadlet.DataRoot("home-assistant"), member, string(sidecar)); err != nil {
+		t.Fatal(err)
+	}
+	if got := deleted(f); len(got) != 1 || got[0] != old[0] {
+		t.Errorf("deleted %v, want the plain sample the host's take replaced", got)
 	}
 }

@@ -207,6 +207,36 @@ func RestoreMarkers(m manifest.Manifest) []string {
 	return out
 }
 
+// Detect says what a household changed in a service between two ring members, as the one line its
+// history shows ([B.167]), or "". prev and next are member paths, which hold the data subvolume's
+// layout: one directory per container that keeps state. running says next was taken while the
+// service ran.
+//
+// OPTIONAL PER SERVICE, and the default is nothing, as everywhere here: a service with no detector
+// still has the day event, which is what catches what no detector sees. Only Home Assistant has
+// one.
+func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (string, error) {
+	if m.Name != hass.Name {
+		return "", nil
+	}
+	var out []string
+	for _, c := range m.Containers {
+		if c.Mount == "" {
+			continue // shares the subvolume and writes nothing of its own
+		}
+		before, err := hass.Signals(ctx, x, prev+"/"+c.Name)
+		if err != nil {
+			return "", err
+		}
+		after, err := hass.Signals(ctx, x, next+"/"+c.Name)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, hass.Detect(before, after, running)...)
+	}
+	return hass.Sentence(out), nil
+}
+
 // Prepare materialises whatever Volumes promised, on THIS node, before the container starts.
 //
 // Called by converge, which contains a failure here to the one service: the rendered unit names

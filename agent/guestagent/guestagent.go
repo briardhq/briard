@@ -1046,7 +1046,14 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// INBOUND channel calls the same function for the ones only the guest can see
 			// (inbound.go). A second copy of "take a member" would be a second place for the
 			// collision rule and the sidecar invariant to drift.
-			return nil, takeSnapshot(ctx, x, run, req.DataDir, req.Path, req.Sidecar)
+			if err := takeSnapshot(ctx, x, run, req.DataDir, req.Path, req.Sidecar); err != nil {
+				return nil, err
+			}
+			var meta quadlet.SnapshotMeta
+			if req.Sidecar != "" && json.Unmarshal([]byte(req.Sidecar), &meta) == nil {
+				recordMember(ctx, x, req.Path, meta)
+			}
+			return nil, nil
 		case verbDataMemberQuiesced:
 			req, err := snapshotReq(payload)
 			if err != nil {
