@@ -27,9 +27,10 @@ let
   driver = ./quiesce-cost.py;
 
   # The probe: a state change on sensor.probe increments counter.probe, and the driver times the
-  # gap. Appended to the configuration the image wrote, so everything else stays Home Assistant's
-  # own default.
-  probeConfig = pkgs.writeText "probe.yaml" ''
+  # gap. Written BEFORE the first boot, so no restart is needed to load it: plant.py writes Home
+  # Assistant's default only when there is no configuration yet, and appends `briard:` either way.
+  probeConfig = pkgs.writeText "configuration.yaml" ''
+    default_config:
 
     counter:
       probe:
@@ -78,6 +79,9 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     node1.wait_until_succeeds("test -S /run/briard/agent.sock", timeout=60)
 
+    # The probe's configuration goes in before Home Assistant first reads /config.
+    root = node1.succeed("cat /run/briard/fixture/dataroot").strip()
+    node1.succeed(f"btrfs subvolume create {root} && mkdir -p {root}/app && cp ${probeConfig} {root}/app/configuration.yaml")
     dataroot = install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
 
@@ -96,22 +100,11 @@ pkgs.testers.runNixOSTest {
         f"-d grant_type=refresh_token -d refresh_token={token} | grep -q access_token",
         timeout=300,
     )
+    # The probe automation loaded with everything else: its counter exists.
 
-    # THE PROBE AUTOMATION, loaded by HOME ASSISTANT'S OWN restart -- the in-process one (exit 100,
-    # s6 re-runs it), never `systemctl restart` of the quadlet container, which races its own pod
-    # down (hass-upgrade-rollback records the trap). Waiting on counter.probe EXISTING is the proof
-    # the new configuration loaded; /manifest.json answers from the old process for a moment.
-    node1.succeed(f"cat ${probeConfig} >> {dataroot}/app/configuration.yaml")
-    node1.succeed(
-        f"curl -fsS -X POST -H 'Authorization: Bearer {access()}' "
-        "http://127.0.0.1:8123/api/services/homeassistant/restart"
-    )
     node1.wait_until_succeeds(
-        "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
-        f"-d grant_type=refresh_token -d refresh_token={token} "
-        "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/' "
-        "| xargs -I{} curl -fsS -H 'Authorization: Bearer {}' http://127.0.0.1:8123/api/states/counter.probe",
-        timeout=300,
+        f"curl -fsS -H 'Authorization: Bearer {access()}' http://127.0.0.1:8123/api/states/counter.probe",
+        timeout=120,
     )
 
     # The briard integration's quiesce view exists only once its setup has run, which is later
