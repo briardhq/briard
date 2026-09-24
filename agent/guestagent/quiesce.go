@@ -19,6 +19,11 @@ import (
 type quiescedResult struct {
 	Held bool   `json:"held"`
 	Why  string `json:"why,omitempty"`
+	// How long getting the lock and holding it took ([B.167]): what an hourly sample costs Home
+	// Assistant, and the first thing to look at if its quiesce starts degrading after an update.
+	// Zero when there was no lock to take.
+	Acquire time.Duration `json:"acquire,omitempty"`
+	Hold    time.Duration `json:"hold,omitempty"`
 }
 
 // quiescedMember takes one member of a RUNNING service, asking it to hold still across the
@@ -50,7 +55,13 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	// still is made only by the code that watched it happen.
 	meta.Consistency = quadlet.Crash
 
+	start := time.Now()
 	release, why := quiesceService(ctx, x, req.Service)
+	var acquire, hold time.Duration
+	if release != nil {
+		acquire = time.Since(start)
+	}
+	locked := time.Now()
 	if release != nil {
 		// DEFERRED AS WELL AS CALLED BELOW, because a snapshot that fails must still let the
 		// household's recorder write again: Home Assistant would take about ten seconds to notice
@@ -69,6 +80,8 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	if release != nil {
 		held, err := release(ctx)
 		release = nil // released here; the defer above has nothing left to do
+		hold = time.Since(locked)
+		log.Printf("ring %s: the quiesce took %s to acquire and held %s (held=%t)", req.Service, acquire, hold, held && err == nil)
 		switch {
 		case err != nil:
 			why = "the service could not be released cleanly: " + err.Error()
@@ -94,7 +107,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 		return quiescedResult{Why: why}, fmt.Errorf("write the member's sidecar (the member was removed): %w", err)
 	}
 	recordMember(ctx, x, req.Path, meta)
-	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why}, nil
+	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why, Acquire: acquire, Hold: hold}, nil
 }
 
 // TakeNightlyMember is the quiesced take FOR A GUEST WITH NO HOST ([B.143]) — the same
@@ -129,7 +142,8 @@ func TakeNightlyMember(ctx context.Context, x Executor, service string, at time.
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("took %s (held=%t %s)", path.Base(member), res.Held, res.Why), nil
+	return fmt.Sprintf("took %s (held=%t acquire_ms=%d hold_ms=%d %s)", path.Base(member), res.Held,
+		res.Acquire.Milliseconds(), res.Hold.Milliseconds(), res.Why), nil
 }
 
 // quiesceService asks the registry for this service's way of holding still, reading the manifest

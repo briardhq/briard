@@ -469,6 +469,11 @@ in
       # resync while Established. The alert half of (a) is NOT here and cannot be: the redundancy
       # alerter is host-agent code and a hermetic node has no host.
       media-error-flock = import ./media-error-flock.nix { inherit pkgs guestModule; };
+      # — **A STOPWATCH WITH A VERDICT** ([B.167a]). What an hourly history sample costs a Home
+      # Assistant with synthetic history under write load: the recorder lock's acquire and hold,
+      # whether it holds, whether an automation notices, and the space a member pins. L0 is nested
+      # and contended, so its numbers are an upper bound and move with the box -- not a nightly shape.
+      hass-quiesce-cost = import ./hass-quiesce-cost.nix { inherit pkgs guestModule; fixture = hassFixture; };
       # — **A STOPWATCH, NOT AN ASSERTION** ([B.56]). Measures how long a COLD converge holds the
       # promotion when its pull is throttled to a crawl: [V3b.3](f) put a fetch on the promotion
       # path and every chain rule we have was measured with an INSTANT failure. It runs its full

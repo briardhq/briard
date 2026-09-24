@@ -113,6 +113,11 @@ func TestQuiescedMemberUpgradesTheClassWhenTheServiceHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quiescedMember: %v", err)
 	}
+	// WHAT IT COST, reported rather than inferred ([B.167]): the hourly sample's price to Home
+	// Assistant is exactly these two numbers.
+	if res.Acquire <= 0 || res.Hold <= 0 {
+		t.Errorf("result = %+v, want the acquire and hold durations", res)
+	}
 	if !res.Held {
 		t.Errorf("result = %+v, want held", res)
 	}
@@ -183,6 +188,9 @@ func TestQuiescedMemberTakesOneEvenWhenNothingCanHoldStill(t *testing.T) {
 		}
 		if got := sidecarOf(t, f).Consistency; got != quadlet.Crash {
 			t.Errorf("%s: consistency = %q, want crash", name, got)
+		}
+		if res.Acquire != 0 || res.Hold != 0 {
+			t.Errorf("%s: reported a lock cost (%+v) with no lock taken", name, res)
 		}
 		if res.Why == "" {
 			t.Errorf("%s: nothing said why", name)
