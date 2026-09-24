@@ -27,7 +27,7 @@ type quiescedResult struct {
 }
 
 // quiescedMember takes one member of a RUNNING service, asking it to hold still across the
-// snapshot ([B.143]). It is the nightly's verb and so far nothing else's.
+// snapshot ([B.143]). It is the clock sample's verb, and the update's baseline's.
 //
 // THE ORDER IS HOLD, SNAPSHOT, RELEASE, LABEL — and the label is last because only the release
 // knows what to write. Home Assistant reports whether its lock survived the window (it breaks its
@@ -37,7 +37,7 @@ type quiescedResult struct {
 // ⚠️ IT NEVER REFUSES TO TAKE A MEMBER. Every way this can fail — a service with no way to hold
 // still, a Home Assistant that is down or too old to have the view, a lock that timed out, a
 // release that says the lock broke — ends with the member taken and the class saying
-// crash-consistent. A nightly that did not happen is a hole in the ring; a nightly that happened
+// crash-consistent. A sample that did not happen is a hole in the ring; a sample that happened
 // and said what it is worth is the product working.
 //
 // The SERVICE is named rather than the port, because the manifest on the volume is the one place
@@ -110,31 +110,31 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why, Acquire: acquire, Hold: hold}, nil
 }
 
-// TakeNightlyMember is the quiesced take FOR A GUEST WITH NO HOST ([B.143]) — the same
+// TakeClockMember is the quiesced take FOR A GUEST WITH NO HOST ([B.143]) — the same
 // accommodation `--inbound-listen` and `--write-units` make, and for the same reason.
 //
 // In the product this verb arrives from the host, which owns the cadence and renders the sidecar
-// (agent/host/nightly.go). The rigs that get Home Assistant running are agent-less, so without
+// (agent/host/clocksample.go). The rigs that get Home Assistant running are agent-less, so without
 // this the one thing that can silently drift under us — Home Assistant's own recorder lock, an
 // internal API — would have no coverage on a real HA at all, and an L0 run would prove nothing
 // about it.
 //
 // It builds exactly what the host would send, including the `crash` the guest then upgrades, so
 // the harness supplies the trigger and nothing else. Nothing in the product invokes it.
-func TakeNightlyMember(ctx context.Context, x Executor, service string, at time.Time) (string, error) {
+func TakeClockMember(ctx context.Context, x Executor, service string, at time.Time) (string, error) {
 	ensureToolsOnPath()
 	raw, err := x.ReadFile(manifestPath(service))
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerDaily, TakenAt: at,
+		Service: service, Trigger: quadlet.TriggerClock, TakenAt: at,
 		Consistency: quadlet.Crash, Manifest: string(raw),
 	})
 	if err != nil {
 		return "", err
 	}
-	member := quadlet.SnapshotMember(service, quadlet.TriggerDaily, at)
+	member := quadlet.SnapshotMember(service, quadlet.TriggerClock, at)
 	run := func(name string, args ...string) error { _, err := x.Run(ctx, name, args...); return err }
 	res, err := quiescedMember(ctx, x, run, snapshotRequest{
 		Service: service, DataDir: quadlet.DataRoot(service), Path: member, Sidecar: string(sidecar),

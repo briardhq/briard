@@ -239,8 +239,8 @@ pkgs.testers.runNixOSTest {
     )
     assert '"state"' in entries, f"config entries carry no state: {entries[:200]}"
 
-    # ---- THE NIGHTLY, HELD STILL BY HOME ASSISTANT ITSELF ([B.143]) ----
-    # THIS IS THE ONE ASSERTION GUARDING AN INTERNAL API. The nightly member is taken while Home
+    # ---- THE CLOCK SAMPLE, HELD STILL BY HOME ASSISTANT ITSELF ([B.143]) ----
+    # THIS IS THE ONE ASSERTION GUARDING AN INTERNAL API. The clock sample is taken while Home
     # Assistant RUNS, and what makes it application-consistent rather than something HA has to
     # recover from is HA's own `recorder.lock_database()` -- not a documented integration surface.
     # Everything else about the quiesce is unit-tested against a stub; only this says the method
@@ -262,29 +262,29 @@ pkgs.testers.runNixOSTest {
         "http://127.0.0.1:8123/api/briard/quiesce",
         timeout=120,
     )
-    # The trigger is the harness's (`--nightly`, which supplies what the host would); everything
+    # The trigger is the harness's (`--clock`, which supplies what the host would); everything
     # under it is the product's own path.
-    node1.succeed("briard-guest-agent --nightly=home-assistant")
+    node1.succeed("briard-guest-agent --clock=home-assistant")
     nightlies = node1.succeed(
-        "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-daily-' || true"
+        "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-clock-' || true"
     ).split()
     assert nightlies, (
-        "the nightly took no member:\n"
+        "the clock sample took no member:\n"
         + node1.succeed("journalctl -t briard-guest-agent --no-pager -l | tail -40 || true")
     )
     nightly = nightlies[0]
     nightly_meta = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{nightly}.json"))
-    assert nightly_meta["trigger"] == "daily", nightly_meta
+    assert nightly_meta["trigger"] == "clock", nightly_meta
     # THE CLAIM, and it is the guest's to make: the host renders `crash`, and only the code that
     # watched Home Assistant hold still upgrades it. `quiesced` here means the view answered, the
     # recorder took the lock, and it was still held when the snapshot finished.
     assert nightly_meta["consistency"] == "quiesced", (
-        f"the nightly is {nightly_meta['consistency']!r}, so Home Assistant did not hold still. "
+        f"the clock sample is {nightly_meta['consistency']!r}, so Home Assistant did not hold still. "
         "If this began failing after a Home Assistant bump, check that "
         "recorder.lock_database/unlock_database still exist:\n"
         + node1.succeed("podman logs briard-home-assistant-app 2>&1 | tail -40 || true")
     )
-    print(f"the nightly {nightly} was taken with Home Assistant's recorder locked")
+    print(f"the clock sample {nightly} was taken with Home Assistant's recorder locked")
 
     # ── HEALING, AT A BOUNDARY THAT DOES NOT RESTART THE CONTAINER ───────────────────
     #

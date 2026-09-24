@@ -1,7 +1,7 @@
 """What an hourly clock sample costs Home Assistant ([B.167a]).
 
 Seeds the recorder with synthetic history, keeps writing at each rate given, takes samples through
-the product's own path (`briard-guest-agent --nightly`), and meanwhile times a probe automation.
+the product's own path (`briard-guest-agent --clock`), and meanwhile times a probe automation.
 Prints one JSON verdict on stdout; everything else goes to stderr.
 
 The pause a household would notice is the recorder lock: getting it (a truncating WAL checkpoint
@@ -140,7 +140,7 @@ def exclusive_bytes(member):
 
 def sample():
     t0 = time.time()
-    out = subprocess.run(["briard-guest-agent", "--nightly=home-assistant"],
+    out = subprocess.run(["briard-guest-agent", "--clock=home-assistant"],
                          capture_output=True, text=True, check=True)
     t1 = time.time()
     m = re.search(r"took (\S+) \(held=(\w+) acquire_ms=(\d+) hold_ms=(\d+)", out.stdout + out.stderr)

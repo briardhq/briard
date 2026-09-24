@@ -26,8 +26,8 @@ func ring() string {
 	update := older.Add(24 * time.Hour)
 	entries := []quadlet.SnapshotEntry{
 		{
-			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerDaily, older),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerDaily,
+			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, older),
+			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerClock,
 				TakenAt: older, Consistency: quadlet.Crash, Manifest: manifestOf("2026.6.0"),
 				Event: &quadlet.Event{Kind: quadlet.EventDay, At: older.Add(20 * time.Hour), What: "Ran normally"}},
 		},

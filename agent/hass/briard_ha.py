@@ -83,7 +83,7 @@ class QuiesceView(HomeAssistantView):
     """POST /api/briard/quiesce — hold the recorder still while the node takes a ring member.
 
     WHY THIS IS HOME ASSISTANT'S JOB ([B.143]). The node snapshots /config's subvolume while Home
-    Assistant is RUNNING for its nightly point, and the recorder's SQLite database is the one part
+    Assistant is RUNNING for its clock sample, and the recorder's SQLite database is the one part
     of it a snapshot can catch mid-write. Home Assistant already has the mechanism its own backups
     use — a truncating WAL checkpoint and a held `BEGIN IMMEDIATE` — and it runs on the recorder's
     OWN task queue, so the recorder stops writing and buffers rather than colliding with an outside

@@ -68,9 +68,9 @@ func quiesceRig(t *testing.T, service string, port int) *fakeExec {
 	return f
 }
 
-func nightlySidecar(service string) string {
+func clockSidecar(service string) string {
 	raw, _ := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerDaily,
+		Service: service, Trigger: quadlet.TriggerClock,
 		TakenAt: time.Now(), Consistency: quadlet.Crash, Manifest: `{"name":"` + service + `"}`,
 	})
 	return string(raw)
@@ -82,9 +82,9 @@ func take(t *testing.T, f *fakeExec, service string) (quiescedResult, error) {
 		_, err := f.Run(context.Background(), name, args...)
 		return err
 	}
-	member := quadlet.SnapshotMember(service, quadlet.TriggerDaily, time.Now())
+	member := quadlet.SnapshotMember(service, quadlet.TriggerClock, time.Now())
 	return quiescedMember(context.Background(), f, run, snapshotRequest{
-		Service: service, DataDir: quadlet.DataRoot(service), Path: member, Sidecar: nightlySidecar(service),
+		Service: service, DataDir: quadlet.DataRoot(service), Path: member, Sidecar: clockSidecar(service),
 	})
 }
 
@@ -104,7 +104,7 @@ func sidecarOf(t *testing.T, f *fakeExec) quadlet.SnapshotMeta {
 	return quadlet.SnapshotMeta{}
 }
 
-// THE NIGHTLY, QUIESCED ([B.143]): hold, snapshot, release — and the class is written from what
+// THE CLOCK SAMPLE, QUIESCED ([B.143]): hold, snapshot, release — and the class is written from what
 // the RELEASE said, because Home Assistant is the only party that knows whether its lock survived.
 func TestQuiescedMemberUpgradesTheClassWhenTheServiceHeld(t *testing.T) {
 	h := &haStub{held: true}
@@ -166,7 +166,7 @@ func TestQuiescedMemberKeepsCrashWhenTheLockDidNotHold(t *testing.T) {
 }
 
 // A SERVICE THAT CANNOT BE ASKED STILL GETS ITS MEMBER. A Home Assistant that is down, an older
-// integration with no such view, a service with no way to hold still at all — the nightly happens
+// integration with no such view, a service with no way to hold still at all — the sample happens
 // and the member says crash-consistent. A hole in the ring would be the worse answer.
 func TestQuiescedMemberTakesOneEvenWhenNothingCanHoldStill(t *testing.T) {
 	for name, f := range map[string]*fakeExec{

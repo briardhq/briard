@@ -953,11 +953,11 @@ func TestNothingIsComparedAcrossAPerformedAct(t *testing.T) {
 func TestTheFirstQuietSampleOfADayIsTheDayEvent(t *testing.T) {
 	now := time.Now()
 	yesterday := now.Add(-30 * time.Hour) // a calendar day back in any zone
-	prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerDaily, yesterday)
-	next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerDaily, now)
+	prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, yesterday)
+	next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, now)
 	f := recordRing(prev, next)
-	haMember(f, quadlet.TriggerDaily, yesterday, "same")
-	_, meta := haMember(f, quadlet.TriggerDaily, now, "same")
+	haMember(f, quadlet.TriggerClock, yesterday, "same")
+	_, meta := haMember(f, quadlet.TriggerClock, now, "same")
 	recordMember(context.Background(), f, next, meta)
 	if ev := eventOn(t, f, prev); ev == nil || ev.Kind != quadlet.EventDay {
 		t.Fatalf("a quiet day left %+v, want the day event", ev)

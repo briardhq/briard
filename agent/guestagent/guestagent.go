@@ -151,7 +151,7 @@ const (
 	// have refused every path on every not-yet-rolled guest fleet-wide.
 	verbDataMember = "data.member"
 	// verbDataMemberQuiesced takes a member of a service that is RUNNING, asking it to hold still
-	// across the snapshot ([B.143]) — the nightly, and nothing else so far. It reports back what
+	// across the snapshot ([B.143]) — the clock sample and the update's baseline. It reports back what
 	// it achieved, because "held still" is not something the host can observe from where it sits.
 	//
 	// A NAME OF ITS OWN rather than a flag on data.member, by the rule the refused floor raise
@@ -1109,7 +1109,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// live data is never touched: the rename below is what makes any of this visible, so
 			// a crash leaves either the old subvolume or a swept one, never a half-swept live
 			// one. Unconditional, because a member that happens to carry a marker nobody
-			// anticipated (a nightly landing in the seconds between HA writing one and consuming
+			// anticipated (a clock sample landing in the seconds between HA writing one and consuming
 			// it) needs the same treatment and cannot be recognised as special.
 			//
 			// RELATIVE PATHS ONLY, resolved against the staged root here. An absolute path from

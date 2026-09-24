@@ -1230,7 +1230,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// observe loop for the same reason rp does, and is checked against the ring itself whenever
 	// this process has no record -- so an agent restart inside the window costs one listing
 	// rather than a second member every cycle for an hour.
-	ng := newNightly()
+	ng := newClockSampler()
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1297,8 +1297,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			}
 			wasPrimary = primary
 		}
-		// TONIGHT'S RING MEMBER ([B.143]), once a night per service, on the node that holds the
-		// volume. Cheap on every other cycle: an hour comparison and nothing else.
+		// THE CLOCK SAMPLE ([B.143], [B.167]), once an interval per service, on the node that holds the
+		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
 		cfg.consider(ctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
 		cfg.beat.Beat()

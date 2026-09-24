@@ -244,7 +244,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 // recordMember is what every take does once its member exists ([B.167]): compare it with the
 // member before it, put any event that finds on THAT member — the restore point of whatever
 // happened between the two — and prune. One function for the three ways a member is taken (a
-// start, the host's data.member, the quiesced nightly), so the history cannot depend on which door
+// start, the host's data.member, the quiesced clock sample), so the history cannot depend on which door
 // a sample came through.
 //
 // AFTER the take, never before: pruning first would mean a failed take leaves the ring shorter for
@@ -295,7 +295,7 @@ func eventBetween(ctx context.Context, x Executor, members []quadlet.SnapshotEnt
 	}
 	if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
 		// The clock's sample is the one taken while the service RUNS.
-		what, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerDaily)
+		what, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
 		if err != nil {
 			log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
 		}
@@ -593,8 +593,8 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 	}
 	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<service>-<trigger>-<stamp>`, so the
 	// TRIGGER sits between the service and the stamp and dominates any string comparison: every
-	// `-start-` member sorts before every `-upgrade-` one whatever their times, and once a
-	// `-daily-` trigger exists it sorts before both. Sorting names put the newest member wherever
+	// `-start-` member sorts before every `-upgrade-` one whatever their times, and a
+	// `-clock-` member sorts before both. Sorting names put the newest member wherever
 	// the alphabet happened to put its trigger -- which made newestMember answer with an upgrade
 	// point's age, so the rate limit compared against the wrong member on any service that had
 	// ever been upgraded.

@@ -417,12 +417,12 @@ const (
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
 	// the rate limit may skip.
 	TriggerStart Trigger = "start"
-	// TriggerDaily is the member taken BY THE CLOCK rather than by an event ([B.143]): a stable
+	// TriggerClock is the member taken BY THE CLOCK rather than by an event ([B.143]): a stable
 	// service can run for a month without a restart, and the clock is what still samples it.
 	//
 	// It is the one member taken against a RUNNING service, so it is Crash unless the service held
 	// still for it.
-	TriggerDaily Trigger = "daily"
+	TriggerClock Trigger = "clock"
 	// The restore PAIR ([B.143]): the undo taken before a restore commits, and the waypoint taken
 	// after it. The first anchors the restore's event; the second is a baseline (Baseline).
 	TriggerRestoreBefore Trigger = "restore-before"
@@ -454,7 +454,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerUpgrade, TriggerUpgradeAfter, TriggerStart, TriggerDaily, TriggerRestoreBefore, TriggerRestoreAfter} {
+	for _, t := range []Trigger{TriggerUpgrade, TriggerUpgradeAfter, TriggerStart, TriggerClock, TriggerRestoreBefore, TriggerRestoreAfter} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {
@@ -525,9 +525,9 @@ const (
 	// Quiesced: every member taken with the container stopped — the pre-start hook, the
 	// pre-upgrade point, and both halves of the restore pair.
 	Quiesced Consistency = "quiesced"
-	// Crash: taken against a running service. The nightly is the one member that is meant to be
-	// this, and only until its quiesce (a truncating WAL checkpoint plus a held transaction)
-	// promotes it.
+	// Crash: taken against a running service. Clock samples and the update's baseline are the
+	// members meant to be this, and only until their quiesce (a truncating WAL checkpoint plus a
+	// held transaction) promotes them.
 	Crash Consistency = "crash"
 )
 

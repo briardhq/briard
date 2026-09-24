@@ -54,7 +54,7 @@ func TestRetentionReplacesASampleThatAnchorsNothing(t *testing.T) {
 // TestRetentionKeepsTheNewestEvenWhenOld: a service nobody touches for a week still has a
 // baseline. Age never removes the newest member.
 func TestRetentionKeepsTheNewestEvenWhenOld(t *testing.T) {
-	only := sample(TriggerDaily, 30*day)
+	only := sample(TriggerClock, 30*day)
 	if pruned(t, only)[only.Member] {
 		t.Error("the only member was pruned for its age")
 	}
@@ -169,11 +169,11 @@ func TestHistoryIsOrderedByRestorePoint(t *testing.T) {
 // -- so its point is the OLDEST day's. A day run is broken by any other event.
 func TestHistoryMergesQuietDays(t *testing.T) {
 	// retentionNow is Wednesday 23 Sep; these are Sat, Sun, Mon (events at the next sample).
-	sat := anchor(TriggerDaily, 4*day+time.Hour, EventDay, time.Hour, "Ran normally")
-	sun := anchor(TriggerDaily, 3*day+time.Hour, EventDay, time.Hour, "Ran normally")
-	mon := anchor(TriggerDaily, 2*day+time.Hour, EventDay, time.Hour, "Ran normally")
+	sat := anchor(TriggerClock, 4*day+time.Hour, EventDay, time.Hour, "Ran normally")
+	sun := anchor(TriggerClock, 3*day+time.Hour, EventDay, time.Hour, "Ran normally")
+	mon := anchor(TriggerClock, 2*day+time.Hour, EventDay, time.Hour, "Ran normally")
 	edit := anchor(TriggerStart, day+time.Hour, EventChange, time.Hour, "Changed automations")
-	tue := anchor(TriggerDaily, time.Hour, EventDay, 30*time.Minute, "Ran normally")
+	tue := anchor(TriggerClock, time.Hour, EventDay, 30*time.Minute, "Ran normally")
 	rows := History([]SnapshotEntry{sat, sun, mon, edit, tue}, time.UTC)
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want Tue, the edit, and Sat–Mon merged: %+v", len(rows), rows)

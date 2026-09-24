@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// QUIESCING HOME ASSISTANT FOR A RING MEMBER ([B.143]) — the pair of calls that make the nightly
-// member application-consistent instead of crash-consistent.
+// QUIESCING HOME ASSISTANT FOR A RING MEMBER ([B.143]) — the pair of calls that make a clock sample
+// application-consistent instead of crash-consistent.
 //
 // WHY HOME ASSISTANT DOES THE LOCKING AND NOT US. The recorder's SQLite database is the one part
 // of /config that a snapshot of a RUNNING service can catch mid-write, and Home Assistant already
@@ -31,7 +31,7 @@ import (
 // a documented integration surface, so a future Home Assistant may rename it — but it is what
 // Home Assistant's OWN backup depends on, so it cannot quietly stop existing, and the fallback
 // when it does is a member tagged `crash` rather than a member that lies. The nixosTest asserts
-// the nightly comes out `quiesced` against the pinned image, so a rename lands as a red rig.
+// the clock sample comes out `quiesced` against the pinned image, so a rename lands as a red rig.
 //
 // TWO CALLS, NOT A CALLBACK. Home Assistant holds the lock across an operation that happens
 // outside it — exactly as it does for its own backups, which lock, copy the file and unlock. The
