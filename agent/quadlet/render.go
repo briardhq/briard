@@ -427,6 +427,10 @@ const (
 	// after it. The first anchors the restore's event; the second is a baseline (Baseline).
 	TriggerRestoreBefore Trigger = "restore-before"
 	TriggerRestoreAfter  Trigger = "restore-after"
+	// TriggerUpgradeAfter is the sample taken once an update has passed its gates ([B.167]): a
+	// baseline (Baseline), so the update's own first-boot rewrites are not read as a change a
+	// household made. Taken while the service runs, so its class is the quiesce's answer.
+	TriggerUpgradeAfter Trigger = "upgrade-after"
 )
 
 // SnapshotMemberService reads the service out of a member's name, and reports whether the name is
@@ -450,7 +454,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerUpgrade, TriggerStart, TriggerDaily, TriggerRestoreBefore, TriggerRestoreAfter} {
+	for _, t := range []Trigger{TriggerUpgrade, TriggerUpgradeAfter, TriggerStart, TriggerDaily, TriggerRestoreBefore, TriggerRestoreAfter} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {

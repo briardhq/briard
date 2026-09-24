@@ -527,6 +527,18 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		logf("service install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
+	// THE UPDATE'S BASELINE ([B.167]), once the gates have passed and not at container start: an
+	// update rewrites the app's own files on its first boot (Home Assistant migrates `.storage`),
+	// and a baseline taken before that would read the migration as a change the household made,
+	// directly above "Updated to". Best-effort -- without it the next sample folds those rewrites
+	// into the update's own row, which is less exact and never wrong.
+	if snap != "" {
+		at := cfg.takenAt()
+		if err := cfg.takeRunning(ctx, g, m.Name, quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgradeAfter, at),
+			quadlet.TriggerUpgradeAfter, m.Name+" after updating to "+m.Version, at, logf); err != nil {
+			logf("service install %s: could not take the update's baseline (%v); continuing", m.Name, err)
+		}
+	}
 	// Record the manifest NODE-LOCALLY as well as on the volume. Both copies are needed and they
 	// do different jobs: the volume's is the replicated identity (what the service IS), while
 	// this one is what lets the agent rebuild the promoter chain at BRING-UP — before promotion,

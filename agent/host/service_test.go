@@ -1411,8 +1411,8 @@ func TestUpgradeMemberSaysItIsQuiesced(t *testing.T) {
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	if len(f.sidecars) != 1 {
-		t.Fatalf("the upgrade wrote %d sidecars, want the rollback point's: %v", len(f.sidecars), f.sidecars)
+	if len(f.sidecars) != 2 {
+		t.Fatalf("the upgrade wrote %d sidecars, want the rollback point's and the baseline after it: %v", len(f.sidecars), f.sidecars)
 	}
 	var meta quadlet.SnapshotMeta
 	if err := json.Unmarshal([]byte(f.sidecars[0]), &meta); err != nil {
@@ -1945,7 +1945,7 @@ func TestUpgradeMemberCarriesTheUpdateEvent(t *testing.T) {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	evs := sidecarEvents(t, f)
-	if len(evs) != 1 || evs[0] == nil {
+	if len(evs) != 2 || evs[0] == nil {
 		t.Fatalf("the rollback point carries no event: %v", f.sidecars)
 	}
 	if evs[0].Kind != quadlet.EventUpdate || evs[0].What != "Updated to "+testManifest().Version {
@@ -2001,5 +2001,32 @@ func TestRestoreRecordsTheUndoAsAnEvent(t *testing.T) {
 	}
 	if evs[1] != nil {
 		t.Errorf("the waypoint carries %+v; a baseline has no event", evs[1])
+	}
+}
+
+// TestTheUpdatesBaselineComesAfterTheGates: Home Assistant migrates its own files on the first
+// boot of a new version, so a baseline taken at container start would read that migration as a
+// change the household made, directly above "Updated to". It is taken once the gates have passed,
+// and it carries no event of its own ([B.167]).
+func TestTheUpdatesBaselineComesAfterTheGates(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	after := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgradeAfter, fixedNow)
+	bi, gi := -1, -1
+	for i, s := range f.steps {
+		if strings.HasSuffix(s, after) {
+			bi = i
+		}
+		if strings.HasPrefix(s, "readiness:") {
+			gi = i
+		}
+	}
+	if bi < 0 || gi < 0 || bi < gi {
+		t.Fatalf("baseline at step %d, last gate at %d, want the baseline after the gates: %v", bi, gi, f.steps)
+	}
+	if evs := sidecarEvents(t, f); evs[len(evs)-1] != nil {
+		t.Errorf("the baseline carries %+v; it has no event of its own", evs[len(evs)-1])
 	}
 }

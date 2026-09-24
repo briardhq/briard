@@ -13,10 +13,10 @@ import (
 // The NIGHTLY MEMBER ([B.143]): one ring member per service per night, taken by the CLOCK rather
 // than by an event.
 //
-// WHY THE RING NEEDS ONE AT ALL. Every other member is taken at a service start, and a stable Home
-// Assistant can run for a month without restarting — which would leave DESIGN §5's mistake rung a
-// month-wide hole and the retention ladder nothing to thin. It is also what makes the ladder need
-// no floor: a service nobody touches still has last night's member, so its ring is never empty.
+// WHY THE RING NEEDS ONE AT ALL. Every other member is taken at a service start or an act, and a
+// stable Home Assistant can run for a month without restarting. The clock's sample is what still
+// compares it with yesterday -- a detected change, or the day event that marks a quiet day
+// ([B.167]) -- so the history has a restore point a day even when nothing restarts.
 //
 // SCHEDULED BY THE HOST, TAKEN BY THE GUEST (DESIGN §9.8). The host owns cadence and policy; the
 // guest owns the volume and does the work. It rides the observe loop rather than a timer of its
@@ -78,7 +78,7 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 		}
 		at := cfg.takenAt()
 		member := quadlet.SnapshotMember(s.Name, quadlet.TriggerDaily, at)
-		if err := cfg.takeNightly(ctx, g, s.Name, member, at, logf); err != nil {
+		if err := cfg.takeRunning(ctx, g, s.Name, member, quadlet.TriggerDaily, s.Name+" nightly", at, logf); err != nil {
 			// Never fatal, and never retried inside the window: a household's night is not the
 			// place to hammer a volume that is having trouble, and tomorrow's member costs the
 			// same as today's. The ring is a convenience; the service is the product.
@@ -91,8 +91,8 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 	}
 }
 
-// takeNightly takes tonight's member, asking the service to hold still if the guest can ask
-// ([B.143]).
+// takeRunning takes a member of a RUNNING service -- tonight's, or the sample after an update
+// ([B.143]) -- asking the service to hold still if the guest can ask.
 //
 // ⚠️ THE SIDECAR IS RENDERED SAYING `crash` EITHER WAY, and the guest upgrades it when the service
 // actually held. The host cannot see whether a lock survived — Home Assistant reports that to
@@ -101,17 +101,16 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 //
 // A guest too old to ask gets the plain take, which is what this did before the quiesce existed:
 // a member that says crash-consistent, which is exactly what it is.
-func (cfg Config) takeNightly(ctx context.Context, g memberTaker, service, member string, at time.Time, logf func(string, ...any)) error {
-	title := service + " nightly"
+func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, title string, at time.Time, logf func(string, ...any)) error {
 	if !g.SupportsQuiescedSnapshot() {
-		return cfg.takeMember(ctx, g, service, member, quadlet.TriggerDaily, quadlet.Crash, title, nil, at, logf)
+		return cfg.takeMember(ctx, g, service, member, tr, quadlet.Crash, title, nil, at, logf)
 	}
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerDaily, Title: title, TakenAt: at,
+		Service: service, Trigger: tr, Title: title, TakenAt: at,
 		Consistency: quadlet.Crash, Manifest: raw,
 	})
 	if err != nil {
@@ -126,7 +125,7 @@ func (cfg Config) takeNightly(ctx context.Context, g memberTaker, service, membe
 		// snapshot, which is what its class now says. The reason is worth a line because "the
 		// nightly is crash-consistent again tonight" is how a household would find out that Home
 		// Assistant stopped answering, or that an upgrade moved the API this leans on.
-		logf("nightly %s: taken without holding the service still (%s)", service, why)
+		logf("%s: taken without holding the service still (%s)", title, why)
 	}
 	return nil
 }
@@ -136,7 +135,7 @@ func (cfg Config) takeNightly(ctx context.Context, g memberTaker, service, membe
 //
 // A guest that cannot list says NO, and the take that follows is refused by its own capability
 // gate if it cannot happen either. Both directions are safe: the worst case is a second member of
-// bytes that have not changed, which copy-on-write makes nearly free and the ladder prunes.
+// bytes that have not changed, which copy-on-write makes nearly free and the next take replaces.
 func (cfg Config) hasNightly(ctx context.Context, g memberTaker, service, date string) bool {
 	if !g.SupportsMembers() {
 		return false

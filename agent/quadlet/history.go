@@ -57,7 +57,7 @@ type Event struct {
 //
 // The act changed the data by design — an undo rewound it — and its own event already says so;
 // comparing across it would report the act a second time as a detected change directly above it.
-func Baseline(t Trigger) bool { return t == TriggerRestoreAfter }
+func Baseline(t Trigger) bool { return t == TriggerRestoreAfter || t == TriggerUpgradeAfter }
 
 // How long the history keeps what (owner, [B.167]).
 const (
