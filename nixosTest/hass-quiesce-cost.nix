@@ -81,31 +81,46 @@ pkgs.testers.runNixOSTest {
     dataroot = install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
 
-    # THE PROBE AUTOMATION, then a restart so Home Assistant loads it. The restart is the
-    # container's, through its rendered unit -- which is also a start sample, as in the product.
-    node1.succeed(f"cat ${probeConfig} >> {dataroot}/app/configuration.yaml")
-    app = [u for u in fixture_units(node1) if u.endswith("-app.service")]
-    assert len(app) == 1, f"no single app container among {fixture_units(node1)}"
-    node1.succeed(f"systemctl restart {app[0]}")
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
-
-    # The briard integration's quiesce view exists only once its setup has run, which is later
-    # than /manifest.json answering (hass-payload records the same trap).
+    # A token that works, which also waits out Home Assistant's own first-boot setup.
     token = node1.succeed("cat /run/briard/home-assistant/token").strip()
-    access = node1.succeed(
+
+    def access():
+        return node1.succeed(
+            "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
+            f"-d grant_type=refresh_token -d refresh_token={token} "
+            "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/'"
+        ).strip()
+
+    node1.wait_until_succeeds(
+        "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
+        f"-d grant_type=refresh_token -d refresh_token={token} | grep -q access_token",
+        timeout=300,
+    )
+
+    # THE PROBE AUTOMATION, loaded by HOME ASSISTANT'S OWN restart -- the in-process one (exit 100,
+    # s6 re-runs it), never `systemctl restart` of the quadlet container, which races its own pod
+    # down (hass-upgrade-rollback records the trap). Waiting on counter.probe EXISTING is the proof
+    # the new configuration loaded; /manifest.json answers from the old process for a moment.
+    node1.succeed(f"cat ${probeConfig} >> {dataroot}/app/configuration.yaml")
+    node1.succeed(
+        f"curl -fsS -X POST -H 'Authorization: Bearer {access()}' "
+        "http://127.0.0.1:8123/api/services/homeassistant/restart"
+    )
+    node1.wait_until_succeeds(
         "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
         f"-d grant_type=refresh_token -d refresh_token={token} "
-        "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/'"
-    ).strip()
+        "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/' "
+        "| xargs -I{} curl -fsS -H 'Authorization: Bearer {}' http://127.0.0.1:8123/api/states/counter.probe",
+        timeout=300,
+    )
+
+    # The briard integration's quiesce view exists only once its setup has run, which is later
+    # than the API answering (hass-payload records the same trap).
     node1.wait_until_succeeds(
-        f"curl -fsS -o /dev/null -X POST -H 'Authorization: Bearer {access}' "
+        f"curl -fsS -o /dev/null -X POST -H 'Authorization: Bearer {access()}' "
         "-H 'Content-Type: application/json' -d '{\"hold\":false}' "
         "http://127.0.0.1:8123/api/briard/quiesce",
         timeout=120,
-    )
-    node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {access}' http://127.0.0.1:8123/api/states/counter.probe",
-        timeout=60,
     )
 
     # THE MEASUREMENT. Generous: seeding 100k states through REST is minutes on its own.
