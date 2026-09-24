@@ -10,7 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +31,17 @@ func ringExec(members ...string) *fakeExec {
 		services.InboundTokenPath("home-assistant"): haToken,
 		services.InboundTokenPath("mosquitto"):      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 	}}
+	// Every member we can name has a plain sidecar, as the take path guarantees; a test that wants
+	// an event on one, or none at all, edits f.files afterwards.
+	for _, n := range members {
+		if svc, tr, at, ok := quadlet.ParseSnapshotMember(n); ok {
+			b, _ := json.Marshal(quadlet.SnapshotMeta{Service: svc, Trigger: tr, TakenAt: at})
+			f.files[quadlet.SnapshotSidecar(quadlet.SnapshotsDir+n)] = string(b)
+		}
+	}
+	members = slices.Clone(members) // the caller's slice is theirs; the listing below edits this one
+	// THE LISTING FOLLOWS THE TAKES AND DELETES, so a prune after a take sees the member it just
+	// took -- which is what makes every earlier plain sample replaceable.
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		// The run directory holds the per-service dirs and plenty that is not one.
 		if name == "ls" && len(args) > 1 && args[1] == services.RunDir() {
@@ -41,6 +52,13 @@ func ringExec(members ...string) *fakeExec {
 		}
 		if len(args) > 1 && args[1] == "show" {
 			return nil, errors.New("ERROR: not a subvolume")
+		}
+		if name == "btrfs" && len(args) > 3 && args[1] == "snapshot" {
+			members = append(members, strings.TrimPrefix(args[len(args)-1], quadlet.SnapshotsDir))
+		}
+		if name == "btrfs" && len(args) > 2 && args[1] == "delete" {
+			gone := strings.TrimPrefix(args[2], quadlet.SnapshotsDir)
+			members = slices.DeleteFunc(members, func(n string) bool { return n == gone })
 		}
 		return nil, nil
 	}
@@ -106,7 +124,7 @@ func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
 		t.Errorf("title = %q, want it to say the service was not shut down", meta.Title)
 	}
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerStart {
-		t.Errorf("trigger = %q -- an unclean start is still an ordinary start to the ladder", tr)
+		t.Errorf("trigger = %q -- an unclean start is still an ordinary start", tr)
 	}
 }
 
@@ -167,6 +185,10 @@ func TestInboundTitlesTheBackupRestorePair(t *testing.T) {
 	if !strings.Contains(meta.Title, "before restoring") || !strings.Contains(meta.Title, "e1a2b3c4.tar") {
 		t.Errorf("title = %q, want it to name the backup being restored", meta.Title)
 	}
+	// The restore is a row in the history, on the point that undoes it ([B.167]).
+	if meta.Event == nil || meta.Event.Kind != quadlet.EventBackupRestore || !strings.Contains(meta.Event.What, "e1a2b3c4.tar") {
+		t.Errorf("event = %+v, want the backup restore naming the backup", meta.Event)
+	}
 
 	// THE SECOND HALF, after HA has consumed its own marker: nothing on the volume says a restore
 	// just happened, so this is the node-local fact doing the one job it exists for.
@@ -176,6 +198,9 @@ func TestInboundTitlesTheBackupRestorePair(t *testing.T) {
 	member2, meta2 := tookMember(t, f2)
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member2); tr != quadlet.TriggerRestoreAfter {
 		t.Errorf("trigger = %q, want the after half of the pair", tr)
+	}
+	if meta2.Event != nil {
+		t.Errorf("the after half carries %+v; it is a baseline and has no event", meta2.Event)
 	}
 	if !strings.Contains(meta2.Title, "after restoring") || !strings.Contains(meta2.Title, "e1a2b3c4.tar") {
 		t.Errorf("title = %q, want it to name the backup that was restored", meta2.Title)
@@ -611,7 +636,8 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 	}
 }
 
-// ringOf builds `n` plain members for a service, oldest first, one minute apart.
+// ringOf builds `n` plain members for a service, oldest first, one minute apart, starting well
+// clear of the rate limit.
 func ringOf(service string, n int) []string {
 	var out []string
 	base := time.Now().Add(-time.Duration(n+10) * time.Hour)
@@ -620,6 +646,16 @@ func ringOf(service string, n int) []string {
 		out = append(out, strings.TrimPrefix(m, quadlet.SnapshotsDir))
 	}
 	return out
+}
+
+// withEvent puts an event on a member the fake already holds, as the take that found it would.
+func withEvent(f *fakeExec, name string, kind quadlet.EventKind, ago time.Duration) {
+	member := quadlet.SnapshotsDir + name
+	var meta quadlet.SnapshotMeta
+	_ = json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(member)]), &meta)
+	meta.Event = &quadlet.Event{Kind: kind, At: time.Now().Add(-ago), What: "something"}
+	b, _ := json.Marshal(meta)
+	f.files[quadlet.SnapshotSidecar(member)] = string(b)
 }
 
 func deleted(f *fakeExec) []string {
@@ -632,22 +668,19 @@ func deleted(f *fakeExec) []string {
 	return out
 }
 
-// TestRingIsBounded: an unbounded ring grows on every service start, costs its space on every
-// diskful peer, and arrives as [B.155]'s failure by a new road. The bound is what keeps a
-// household's own restarts from filling the volume they are stored on.
-func TestRingIsBounded(t *testing.T) {
-	existing := ringOf("home-assistant", quadlet.RetainPerWindow+3)
+// TestRingReplacesSamplesThatAnchorNothing: an unbounded ring grows on every service start,
+// costs its space on every diskful peer, and arrives as [B.155]'s failure by a new road. What
+// bounds it is that a sample anchoring no event is replaced by the next one ([B.167]).
+func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
+	existing := ringOf("home-assistant", 5)
 	f := ringExec(existing...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 
 	gone := deleted(f)
-	// Three over the bound, so three go. (The member the take just added is not in the fake's
-	// listing, which is static -- what is under test is that the ring is brought TO the bound.)
-	if len(gone) != 3 {
-		t.Fatalf("pruned %d members, want 3 over the count of %d: %v", len(gone), quadlet.RetainPerWindow, gone)
+	if len(gone) != len(existing) {
+		t.Fatalf("pruned %v, want every earlier sample -- the new member replaces them all", gone)
 	}
-	// THE OLDEST GO, and the order is the property: a ring that evicted the newest would keep
-	// history nobody wants and drop the state closest to whatever just went wrong.
+	// THE OLDEST GO FIRST, so an interrupted prune has dropped the least useful ones.
 	for i, name := range gone {
 		if name != existing[i] {
 			t.Errorf("pruned[%d] = %q, want %q -- the oldest first", i, name, existing[i])
@@ -662,46 +695,28 @@ func TestRingIsBounded(t *testing.T) {
 	}
 }
 
-// TestRingKeepsTitledMembers is the asymmetry that makes the bound safe ([B.143]).
-//
-// One number over everything evicts the pre-upgrade member within days of Home Assistant's
-// ordinary restart cadence -- and "go back to the version before the update that broke my house"
-// is the case the whole ring exists for. So the windows are per set: a day's restarts cannot reach
-// a member the household's own action produced. Here the upgrade point is 90 hours old, PAST the
-// three-day window every member shares and inside the titled week that only it has.
-func TestRingKeepsTitledMembers(t *testing.T) {
-	base := time.Now().Add(-90 * time.Hour)
-	upgrade := strings.TrimPrefix(
-		quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, base),
-		quadlet.SnapshotsDir,
-	)
-	// The restore point rides along because it is the one titled member with NO window of its own
-	// beyond the titled week -- so it is what fails if that week stops covering titled members,
-	// while the upgrade point would survive on its fortnight alone and prove nothing.
-	undo := strings.TrimPrefix(
-		quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, base),
-		quadlet.SnapshotsDir,
-	)
-	// Both are the OLDEST things in the ring, so a count that ignored triggers would take them first.
-	f := ringExec(append([]string{upgrade, undo}, ringOf("home-assistant", quadlet.RetainPerWindow+3)...)...)
+// TestRingKeepsWhatAnchorsAnEvent: the member an event restores to is what the history exists
+// for, however many starts come after it.
+func TestRingKeepsWhatAnchorsAnEvent(t *testing.T) {
+	ring := ringOf("home-assistant", 6)
+	f := ringExec(ring...)
+	withEvent(f, ring[0], quadlet.EventUpdate, 90*time.Hour)
+	withEvent(f, ring[2], quadlet.EventChange, 2*time.Hour)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	for _, name := range deleted(f) {
-		if name == upgrade {
-			t.Fatalf("the pre-upgrade member was evicted by the count: %v", deleted(f))
-		}
-		if name == undo {
-			t.Fatalf("the restore point was evicted by the count: %v", deleted(f))
+		if name == ring[0] || name == ring[2] {
+			t.Fatalf("a restore point was pruned: %v", deleted(f))
 		}
 	}
-	if len(deleted(f)) == 0 {
-		t.Error("nothing was pruned at all; the test proves nothing about the exemption")
+	if len(deleted(f)) != 4 {
+		t.Errorf("pruned %v, want the four plain samples", deleted(f))
 	}
 }
 
-// TestRingLeavesAnotherServiceAlone: the bound is per service. One busy service must not evict
+// TestRingLeavesAnotherServiceAlone: the prune is per service. One busy service must not evict
 // another's history -- they share a directory and nothing but the name separates them.
 func TestRingLeavesAnotherServiceAlone(t *testing.T) {
-	mine := ringOf("home-assistant", quadlet.RetainPerWindow+3)
+	mine := ringOf("home-assistant", 5)
 	theirs := ringOf("mosquitto", 5)
 	f := ringExec(append(mine, theirs...)...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
@@ -712,31 +727,17 @@ func TestRingLeavesAnotherServiceAlone(t *testing.T) {
 	}
 }
 
-// TestRingPrunesByAgeAndNotOnlyByCount: the ladder's ages have to reach the disk, which means the
-// prune has to be asked about a CLOCK. A ring far under every count still loses what has aged out,
-// and a ring that only ever counted would keep this member for months.
-func TestRingPrunesByAgeAndNotOnlyByCount(t *testing.T) {
-	member := func(ago time.Duration) string {
-		return strings.TrimPrefix(
-			quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-ago)),
-			quadlet.SnapshotsDir)
-	}
-	old, recent := member(9*24*time.Hour), member(6*time.Hour)
-	f := ringExec(old, recent)
+// TestRingPrunesAnEventThatHasAgedOut: the history's ages have to reach the disk, which means the
+// prune has to be asked about a CLOCK.
+func TestRingPrunesAnEventThatHasAgedOut(t *testing.T) {
+	ring := ringOf("home-assistant", 2)
+	f := ringExec(ring...)
+	withEvent(f, ring[0], quadlet.EventChange, 9*24*time.Hour)
+	withEvent(f, ring[1], quadlet.EventChange, 6*time.Hour)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	got := deleted(f)
-	if len(got) != 1 || got[0] != old {
-		t.Fatalf("deleted %v, want just the nine-day-old member %q", got, old)
-	}
-}
-
-// TestRingUnderTheBoundPrunesNothing: the cheap case has to stay cheap, and a bound that deleted
-// something on an ordinary start would be a bound nobody could reason about.
-func TestRingUnderTheBoundPrunesNothing(t *testing.T) {
-	f := ringExec(ringOf("home-assistant", 3)...)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
-	if g := deleted(f); len(g) != 0 {
-		t.Errorf("a ring of 3 inside every window pruned %v", g)
+	if len(got) != 1 || got[0] != ring[0] {
+		t.Fatalf("deleted %v, want just the nine-day-old event's point %q", got, ring[0])
 	}
 }
 
@@ -806,7 +807,7 @@ func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 	)
 	f.files[quadlet.SnapshotSidecar(good)] = `{"service":"home-assistant","trigger":"start","title":"HA starting"}`
 	f.files[quadlet.SnapshotSidecar(garbled)] = `not json`
-	// `bare` gets no sidecar at all.
+	delete(f.files, quadlet.SnapshotSidecar(bare)) // `bare` gets no sidecar at all.
 
 	got, err := listMembers(context.Background(), f, "home-assistant")
 	if err != nil {

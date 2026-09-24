@@ -1922,3 +1922,84 @@ func TestRestoreRefusesAMemberTheRingNoLongerHas(t *testing.T) {
 		t.Errorf("detail = %q, want it to say the member is gone", o.Detail)
 	}
 }
+
+// sidecarEvents reads the event each sidecar the fake was handed carries, in the order taken.
+func sidecarEvents(t *testing.T, f *fakeInstaller) []*quadlet.Event {
+	t.Helper()
+	var out []*quadlet.Event
+	for _, raw := range f.sidecars {
+		var meta quadlet.SnapshotMeta
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			t.Fatalf("sidecar does not parse: %v", err)
+		}
+		out = append(out, meta.Event)
+	}
+	return out
+}
+
+// TestUpgradeMemberCarriesTheUpdateEvent: the update is a row in the app's history, and it sits on
+// the point that undoes it ([B.167]) -- the member taken before the act.
+func TestUpgradeMemberCarriesTheUpdateEvent(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	evs := sidecarEvents(t, f)
+	if len(evs) != 1 || evs[0] == nil {
+		t.Fatalf("the rollback point carries no event: %v", f.sidecars)
+	}
+	if evs[0].Kind != quadlet.EventUpdate || evs[0].What != "Updated to "+testManifest().Version {
+		t.Errorf("event = %+v, want the update to %s", evs[0], testManifest().Version)
+	}
+}
+
+// TestARevertRecordsItselfAsAnUndo: an update that is reverted must not leave "Updated to" as the
+// last word. The revert is an undo, so it records one -- on a point of the failed version's data,
+// taken before the rollback -- and then a waypoint that is the next comparison's baseline, pinned
+// AFTER the prior manifest is back so it names what now runs ([B.167]).
+func TestARevertRecordsItselfAsAnUndo(t *testing.T) {
+	f := &fakeInstaller{readiness: [][]hass.Entry{
+		sample("loaded", "loaded"),
+		sample("setup_error", "setup_error"),
+	}}
+	if o := upgradeWith(t, f); o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back", o)
+	}
+	evs := sidecarEvents(t, f)
+	if len(evs) != 3 {
+		t.Fatalf("wrote %d sidecars, want the update, its undo and the waypoint: %v", len(evs), f.sidecars)
+	}
+	if evs[1] == nil || evs[1].Kind != quadlet.EventUndo {
+		t.Errorf("the revert's point carries %+v, want an undo event", evs[1])
+	}
+	if evs[2] != nil {
+		t.Errorf("the waypoint carries %+v; a baseline has no event", evs[2])
+	}
+	joined := strings.Join(f.steps, ",")
+	undo := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, fixedNow))
+	rest := strings.Index(joined, "restore:")
+	prov := strings.LastIndex(joined, "provision:")
+	way := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreAfter, fixedNow))
+	if !(undo >= 0 && undo < rest && rest < prov && prov < way) {
+		t.Errorf("order was %v, want undo point -> restore -> provision -> waypoint", f.steps)
+	}
+}
+
+// TestRestoreRecordsTheUndoAsAnEvent: putting a point back is itself an event, so it can be undone
+// in turn -- the redo. The waypoint is a baseline and says nothing ([B.167]).
+func TestRestoreRecordsTheUndoAsAnEvent(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	evs := sidecarEvents(t, f)
+	if len(evs) != 2 || evs[0] == nil || evs[0].Kind != quadlet.EventUndo {
+		t.Fatalf("events = %v, want an undo on the first member", evs)
+	}
+	if !strings.HasPrefix(evs[0].What, "Undid changes back to ") {
+		t.Errorf("the undo reads %q", evs[0].What)
+	}
+	if evs[1] != nil {
+		t.Errorf("the waypoint carries %+v; a baseline has no event", evs[1])
+	}
+}

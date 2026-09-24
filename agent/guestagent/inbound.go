@@ -196,9 +196,13 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 		}
 	}
 	trigger := quadlet.TriggerStart
+	var ev *quadlet.Event
 	switch backup, phase := restorePhase(ctx, x, service, raw, at); phase {
 	case restoreBefore:
 		trigger, title = quadlet.TriggerRestoreBefore, "before restoring "+backup
+		// The household's own restore is an event, on the point that undoes it ([B.167]). The
+		// *after* half is a baseline (quadlet.Baseline) and carries none.
+		ev = &quadlet.Event{Kind: quadlet.EventBackupRestore, At: at, What: "Restored " + backup}
 	case restoreAfter:
 		trigger, title = quadlet.TriggerRestoreAfter, "after restoring "+backup
 	default:
@@ -226,6 +230,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 		// running container has no such question to ask.
 		Consistency: cons,
 		Manifest:    string(raw),
+		Event:       ev,
 	}
 	sidecar, err := json.Marshal(meta)
 	if err != nil {
@@ -503,9 +508,13 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 	return at, true, nil
 }
 
-// pruneRing brings a service's ring back to what quadlet's retention ladder keeps — the three
-// windows, which is where the policy and its reasoning live. This is the enforcement, and it is
-// the GUEST's because the host is not in the start path on a promotion or a crash restart.
+// pruneRing brings a service's ring back to what the history keeps (quadlet.RetentionPrune, where
+// the policy and its reasoning live). This is the enforcement, and it is the GUEST's because the
+// host is not in the start path on a promotion or a crash restart.
+//
+// IT READS THE SIDECARS, because what a member is kept for is the event it anchors. A member whose
+// sidecar cannot be read is not listed, so it is never pruned: the ring deletes only what it can
+// describe.
 //
 // THE CLOCK COMES FROM THE CALLER, the same instant the take used. A prune that asked the clock
 // again would be answering a question one call later than the one it was asked.
@@ -517,8 +526,13 @@ func newestMember(ctx context.Context, x Executor, service string) (time.Time, b
 // The sidecar goes with its member, and in that order: a member with no sidecar is the state the
 // take path refuses to leave behind, so the delete must not create one either.
 func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
-	for _, n := range quadlet.RetentionPrune(ringMembers(ctx, x, service), now) {
-		member := quadlet.SnapshotsDir + n
+	members, err := listMembers(ctx, x, service)
+	if err != nil {
+		log.Printf("ring %s: could not read the ring to prune it: %v", service, err)
+		return
+	}
+	for _, member := range quadlet.RetentionPrune(members, now) {
+		n := path.Base(member)
 		if _, err := x.Run(ctx, "btrfs", "subvolume", "delete", member); err != nil {
 			log.Printf("ring %s: could not prune %s: %v", service, n, err)
 			continue

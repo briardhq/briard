@@ -447,6 +447,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 			// stop is not an optimisation somebody may reorder away.
 			Consistency: quadlet.Quiesced,
 			Manifest:    priorRaw,
+			// THE UPDATE'S EVENT, on the point that undoes it ([B.167]). Written before the act
+			// because the point is; a revert below records its own undo rather than rewriting this.
+			Event: &quadlet.Event{Kind: quadlet.EventUpdate, At: at, What: "Updated to " + m.Version},
 		}
 		sidecar, err := json.Marshal(meta)
 		if err != nil {
@@ -956,6 +959,17 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		if pm, _, err := manifest.Parse([]byte(priorRaw)); err == nil {
 			sweep = services.RestoreMarkers(pm)
 		}
+		// THE REVERT IS AN UNDO ([B.167]) and records itself as one: an event on a point of the
+		// failed version's data, quiesced by the stop above, so the history shows the update and
+		// then its undoing -- and the update can still be redone. Best-effort: the rollback matters
+		// more than its entry.
+		at := cfg.takenAt()
+		if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerRestoreBefore, at),
+			quadlet.TriggerRestoreBefore, quadlet.Quiesced, "before reverting a failed update",
+			&quadlet.Event{Kind: quadlet.EventUndo, At: at, What: "The update did not work and was undone"},
+			at, logf); err != nil {
+			logf("revert %s: could not record the undo point (%v); reverting anyway", name, err)
+		}
 		restore := g.Restore
 		if len(sweep) > 0 && !g.SupportsRestoreSweep() {
 			logf("revert %s: this guest cannot sweep a restored member; rolling the data back anyway", name)
@@ -973,6 +987,16 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 	if prior != nil {
 		if err := g.ServiceProvision(rctx, name, dataDir, priorSubdirs, priorRaw); err != nil {
 			return bothFailed("re-record the prior manifest", err)
+		}
+		// THE WAYPOINT, the baseline the next sample is compared with (quadlet.Baseline) --
+		// otherwise the rollback itself would read as a detected change. After the provision, so
+		// it is pinned to the manifest it now runs.
+		if snap != "" {
+			after := cfg.takenAt()
+			if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerRestoreAfter, after),
+				quadlet.TriggerRestoreAfter, quadlet.Quiesced, "after reverting a failed update", nil, after, logf); err != nil {
+				logf("revert %s: could not take the waypoint (%v); continuing", name, err)
+			}
 		}
 	} else if err := g.ServiceForget(rctx, name); err != nil {
 		// A FRESH install that failed: the volume must not keep naming a service this node could
@@ -1170,6 +1194,8 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	undo := quadlet.SnapshotMember(service, quadlet.TriggerRestoreBefore, at)
 	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerRestoreBefore, quadlet.Quiesced,
 		fmt.Sprintf("before restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
+		// THE UNDO IS ITSELF AN EVENT ([B.167]), on the point that undoes it -- which is the redo.
+		&quadlet.Event{Kind: quadlet.EventUndo, At: at, What: "Undid changes back to " + target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")},
 		at, logf); err != nil {
 		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
 	}
@@ -1201,6 +1227,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if err := cfg.takeMember(ctx, g, service, quadlet.SnapshotMember(service, quadlet.TriggerRestoreAfter, after),
 		quadlet.TriggerRestoreAfter, quadlet.Quiesced,
 		fmt.Sprintf("after restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
+		nil, // a baseline (quadlet.Baseline): the undo's own event already says what changed
 		after, logf); err != nil {
 		logf("service restore %s: could not take the waypoint (%v); continuing", service, err)
 	}
@@ -1223,13 +1250,13 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 // THE CONSISTENCY IS THE CALLER'S TO STATE, not this function's to guess: it is the call site that
 // knows whether it stopped the service first, and a member taken by the clock against a running
 // one will come through here saying so.
-func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, title string, at time.Time, logf func(string, ...any)) error {
+func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, title string, ev *quadlet.Event, at time.Time, logf func(string, ...any)) error {
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: tr, Title: title, TakenAt: at, Consistency: cons, Manifest: raw,
+		Service: service, Trigger: tr, Title: title, TakenAt: at, Consistency: cons, Manifest: raw, Event: ev,
 	})
 	if err != nil {
 		return err

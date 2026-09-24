@@ -404,160 +404,30 @@ const SnapshotsDir = "/var/lib/briard/.snapshots/"
 const snapshotStamp = "20060102T150405Z"
 
 // A Trigger says what caused a member to be taken, and is the half of its name a human scans.
-// The set is closed: the picker and the retention rule both switch on it, and a trigger nobody
-// enumerated is a member nobody prunes.
+// The set is closed because the name parser enumerates it: a trigger nobody listed is a member
+// nobody can read back. What a member is KEPT for is not its trigger but the event it anchors
+// (history.go, [B.167]).
 type Trigger string
 
 const (
 	// TriggerUpgrade is the pre-upgrade rollback point — the member [B.121] rules must be taken
-	// on a STOPPED container. The retention ladder gives the most recent one a window of its own,
-	// two weeks long: "go back to the version before the update that broke my house" is what the
-	// ring exists for, and a household discovers that days later rather than minutes.
+	// on a STOPPED container. It anchors the update's event.
 	TriggerUpgrade Trigger = "upgrade"
 	// TriggerStart is an ordinary service start — the container's, or for a service that can tell
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
-	// the rate limit may skip, and the only one with no window but the ladder's first.
+	// the rate limit may skip.
 	TriggerStart Trigger = "start"
-	// TriggerDaily is the member taken BY THE CLOCK rather than by an event ([B.143]) — the one
-	// the retention ladder leans on for its floor, since a stable service can run for a month
-	// without a restart and would otherwise leave the mistake rung a month-wide hole.
+	// TriggerDaily is the member taken BY THE CLOCK rather than by an event ([B.143]): a stable
+	// service can run for a month without a restart, and the clock is what still samples it.
 	//
-	// ⚠️ NOT TITLED, and the ladder's first window is the only one that covers it: it is ordinary
-	// history taken on a schedule, not something a household did. It is also the one member taken
-	// against a RUNNING service, so it is Crash until a per-service quiesce exists.
+	// It is the one member taken against a RUNNING service, so it is Crash unless the service held
+	// still for it.
 	TriggerDaily Trigger = "daily"
 	// The restore PAIR ([B.143]): the undo taken before a restore commits, and the waypoint taken
-	// after it. Both are titled, so both keep the ladder's seven-day window -- the undo is the only
-	// way back from a mis-click, and the waypoint is what stops the timeline appearing to jump
-	// backwards with nothing saying why.
+	// after it. The first anchors the restore's event; the second is a baseline (Baseline).
 	TriggerRestoreBefore Trigger = "restore-before"
 	TriggerRestoreAfter  Trigger = "restore-after"
 )
-
-// Titled reports whether a trigger names a member somebody DID something to produce — an upgrade
-// or a restore — as opposed to one the machine took on its own at a start or by the clock.
-//
-// ⚠️ ENUMERATED, not "anything but a start". A nightly member is not titled, and writing this as
-// a negation would silently promote it the day that trigger is added — giving members taken by
-// the clock the seven-day window meant for the ones a household can name.
-func Titled(t Trigger) bool {
-	switch t {
-	case TriggerUpgrade, TriggerRestoreBefore, TriggerRestoreAfter:
-		return true
-	}
-	return false
-}
-
-// THE RETENTION LADDER ([B.143], owner 2026-09-23). Three windows, union semantics: a member is
-// kept if any window keeps it, and each window keeps the N newest of its set that are young
-// enough.
-//
-// WHY BOTH AN AGE AND A COUNT. Time is what a household reasons in ("it worked on Sunday"), and an
-// age alone is what the ring can afford: the rate limit admits a plain member every minute or two,
-// so a crash-looping service takes on the order of a thousand a day and a three-day window would
-// keep every one of them — on every diskful peer, since members are subvolumes on the replicated
-// volume. The count is the space bound the age is not. It is per window rather than flat, because
-// one number over everything is what evicts the pre-upgrade member within days of Home Assistant's
-// ordinary restart cadence.
-//
-// THE LADDER NEEDS NO FLOOR, and that is a property of the nightly rather than of this code: it is
-// taken by the clock rather than by an event, so a service nobody touches still has last night's
-// member and the mistake rung is never empty (DESIGN §5). The nightly is agent/host's nightly.go.
-//
-// The numbers are the host's to own (DESIGN §9.8) and the guest's to enforce, because the host is
-// not in the start path. They are consts here until something configures them.
-const (
-	// RetainPerWindow is how many members a window may keep, newest first.
-	RetainPerWindow = 10
-	// RetainAll covers every member, whatever its trigger: the ordinary history.
-	RetainAll = 3 * 24 * time.Hour
-	// RetainTitled covers the members somebody's action produced (see Titled).
-	RetainTitled = 7 * 24 * time.Hour
-	// RetainLastUpgrade covers the most recent pre-upgrade point ALONE, so a downgrade stays
-	// available for a fortnight after an update — long enough to find out the hard way.
-	RetainLastUpgrade = 14 * 24 * time.Hour
-)
-
-// A retentionWindow keeps the maxCount newest members of its set that are younger than maxAge.
-type retentionWindow struct {
-	what     string // for the log line that says why something went
-	covers   func(Trigger) bool
-	maxAge   time.Duration
-	maxCount int
-}
-
-var retentionLadder = []retentionWindow{
-	{"the last three days", func(Trigger) bool { return true }, RetainAll, RetainPerWindow},
-	{"the titled week", Titled, RetainTitled, RetainPerWindow},
-	// One by construction: the window is for the MOST RECENT upgrade point, and an older one
-	// falls back to the windows above like anything else.
-	{"the fortnight's downgrade", func(t Trigger) bool { return t == TriggerUpgrade }, RetainLastUpgrade, 1},
-}
-
-// RetentionPrune reports which of one service's members the ladder no longer keeps, OLDEST FIRST
-// — the order they should be deleted in, so an interrupted prune has still dropped the least
-// useful ones.
-//
-// ⚠️ IT ORDERS BY THE PARSED TIME, never by the name. A member is `<service>-<trigger>-<stamp>`,
-// so the trigger sits between the two and dominates any string comparison: every `-start-` sorts
-// before every `-upgrade-` whatever their times. Sorting names here would make the ladder keep
-// "the newest ten" of whatever the alphabet put last.
-//
-// A name it cannot parse is somebody else's — a human's copy, a future feature's — and is never
-// returned. The ring deletes only what it named.
-func RetentionPrune(members []string, now time.Time) []string {
-	type member struct {
-		name    string
-		trigger Trigger
-		at      time.Time
-	}
-	var all []member
-	for _, n := range members {
-		_, tr, at, ok := ParseSnapshotMember(n)
-		if !ok {
-			continue
-		}
-		all = append(all, member{n, tr, at})
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].at.After(all[j].at) }) // newest first
-
-	keep := make(map[string]bool, len(all))
-	for _, w := range retentionLadder {
-		kept := 0
-		for _, m := range all {
-			if !w.covers(m.trigger) {
-				continue
-			}
-			// Sorted newest first, so the first member that is too old or one too many ends this
-			// window: everything after it is older still.
-			if kept >= w.maxCount || now.Sub(m.at) > w.maxAge {
-				break
-			}
-			keep[m.name] = true
-			kept++
-		}
-	}
-	var prune []string
-	for i := len(all) - 1; i >= 0; i-- {
-		if !keep[all[i].name] {
-			prune = append(prune, all[i].name)
-		}
-	}
-	return prune
-}
-
-// PrunedByCount reports whether the ring's keep-last-N may evict a member with this trigger.
-//
-// ⚠️ TITLED MEMBERS ARE EXEMPT FROM THE COUNT, and that asymmetry is the whole reason this is a
-// function rather than a flat rule. A keep-last-N over EVERYTHING evicts the pre-upgrade member
-// within days of Home Assistant's ordinary restart cadence — and "go back to the version before
-// the update that broke my house" is the case the ring exists for. Upgrade and restore members
-// are rare by nature, so they need no bound of their own yet; if they ever do, that is a second
-// cap rather than a change to this one.
-//
-// The default answer for an unknown trigger is FALSE — a member nobody enumerated is a member
-// nobody deletes, which is the safe direction for something holding a household's data.
-func PrunedByCount(t Trigger) bool { return t == TriggerStart }
 
 // SnapshotMemberService reads the service out of a member's name, and reports whether the name is
 // one of ours at all. The sweep over `.snapshots` has to tell our members from anything else a
@@ -693,6 +563,10 @@ type SnapshotMeta struct {
 	TakenAt     time.Time   `json:"taken_at"`
 	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded
 	Manifest    string      `json:"manifest"`    // the manifest running when it was taken, verbatim
+	// Event is the event this member is the RESTORE POINT of, or nil for a plain sample
+	// (history.go). A performed act writes it with the member; a detected change or a day
+	// boundary writes it into the previous member's sidecar when the next sample finds it.
+	Event *Event `json:"event,omitempty"`
 }
 
 // DataPath is one container's plain subdirectory inside that subvolume.

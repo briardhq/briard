@@ -104,7 +104,7 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 func (cfg Config) takeNightly(ctx context.Context, g memberTaker, service, member string, at time.Time, logf func(string, ...any)) error {
 	title := service + " nightly"
 	if !g.SupportsQuiescedSnapshot() {
-		return cfg.takeMember(ctx, g, service, member, quadlet.TriggerDaily, quadlet.Crash, title, at, logf)
+		return cfg.takeMember(ctx, g, service, member, quadlet.TriggerDaily, quadlet.Crash, title, nil, at, logf)
 	}
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
