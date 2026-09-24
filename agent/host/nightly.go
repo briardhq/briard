@@ -78,7 +78,7 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 		}
 		at := cfg.takenAt()
 		member := quadlet.SnapshotMember(s.Name, quadlet.TriggerDaily, at)
-		if err := cfg.takeRunning(ctx, g, s.Name, member, quadlet.TriggerDaily, s.Name+" nightly", at, logf); err != nil {
+		if err := cfg.takeRunning(ctx, g, s.Name, member, quadlet.TriggerDaily, at, logf); err != nil {
 			// Never fatal, and never retried inside the window: a household's night is not the
 			// place to hammer a volume that is having trouble, and tomorrow's member costs the
 			// same as today's. The ring is a convenience; the service is the product.
@@ -101,16 +101,16 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, n *nightly, servi
 //
 // A guest too old to ask gets the plain take, which is what this did before the quiesce existed:
 // a member that says crash-consistent, which is exactly what it is.
-func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, title string, at time.Time, logf func(string, ...any)) error {
+func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, at time.Time, logf func(string, ...any)) error {
 	if !g.SupportsQuiescedSnapshot() {
-		return cfg.takeMember(ctx, g, service, member, tr, quadlet.Crash, title, nil, at, logf)
+		return cfg.takeMember(ctx, g, service, member, tr, quadlet.Crash, nil, at, logf)
 	}
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: tr, Title: title, TakenAt: at,
+		Service: service, Trigger: tr, TakenAt: at,
 		Consistency: quadlet.Crash, Manifest: raw,
 	})
 	if err != nil {
@@ -125,7 +125,7 @@ func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, membe
 		// snapshot, which is what its class now says. The reason is worth a line because "the
 		// nightly is crash-consistent again tonight" is how a household would find out that Home
 		// Assistant stopped answering, or that an upgrade moved the API this leans on.
-		logf("%s: taken without holding the service still (%s)", title, why)
+		logf("%s %s: taken without holding the service still (%s)", service, tr, why)
 	}
 	return nil
 }

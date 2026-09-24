@@ -311,7 +311,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-service node) or an idempotent re-install of the same manifest. Read BEFORE
 	// ServiceProvision overwrites the volume's manifest, so a failed upgrade can put the prior back.
-	prior, priorSubdirs, priorRaw, priorVersion := cfg.priorService(ctx, g, m.Name, raw, logf)
+	prior, priorSubdirs, priorRaw, _ := cfg.priorService(ctx, g, m.Name, raw, logf)
 
 	// Units are node-local (/run), so this node renders its own. A multi-node home has the
 	// directive delivered to EVERY node, and each renders locally — that is what lets a survivor
@@ -434,14 +434,11 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// goes back to v1, that one goes to v2 as of then. Both are kept; the duplication is not
 		// fought, and no "who wrote the data" bookkeeping is needed ([B.143]).
 		//
-		// The title is what the picker shows, so it names the two VERSIONS rather than the
-		// trigger the name already carries.
 		at := cfg.takenAt()
 		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgrade, at)
 		meta := quadlet.SnapshotMeta{
 			Service: m.Name,
 			Trigger: quadlet.TriggerUpgrade,
-			Title:   fmt.Sprintf("%s, before upgrading to %s", priorVersion, m.Version),
 			TakenAt: at,
 			// QUIESCED BY THE STOP ABOVE, which is what [B.121] bought and the reason that
 			// stop is not an optimisation somebody may reorder away.
@@ -535,7 +532,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if snap != "" {
 		at := cfg.takenAt()
 		if err := cfg.takeRunning(ctx, g, m.Name, quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgradeAfter, at),
-			quadlet.TriggerUpgradeAfter, m.Name+" after updating to "+m.Version, at, logf); err != nil {
+			quadlet.TriggerUpgradeAfter, at, logf); err != nil {
 			logf("service install %s: could not take the update's baseline (%v); continuing", m.Name, err)
 		}
 	}
@@ -855,8 +852,7 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 // than to the broken new one, never to it). The raw bytes and subdirs come back too, because the
 // rollback re-provisions them as the volume's identity.
 // It also returns the prior manifest's VERSION, which is not derivable from the rendering: it is
-// what the rollback point's title names ("2026.7.1, before upgrading to 2026.8.0"), and the
-// picker shows titles rather than paths ([B.143]).
+// what a restore reports it moved the app between ("code too (2026.8.0 -> 2026.7.1)").
 func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string, string) {
 	raw, err := g.ServiceInstalled(ctx, name)
 	if err != nil {
@@ -977,7 +973,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		// more than its entry.
 		at := cfg.takenAt()
 		if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerRestoreBefore, at),
-			quadlet.TriggerRestoreBefore, quadlet.Quiesced, "before reverting a failed update",
+			quadlet.TriggerRestoreBefore, quadlet.Quiesced,
 			&quadlet.Event{Kind: quadlet.EventUndo, At: at, What: "The update did not work and was undone"},
 			at, logf); err != nil {
 			logf("revert %s: could not record the undo point (%v); reverting anyway", name, err)
@@ -1006,7 +1002,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		if snap != "" {
 			after := cfg.takenAt()
 			if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerRestoreAfter, after),
-				quadlet.TriggerRestoreAfter, quadlet.Quiesced, "after reverting a failed update", nil, after, logf); err != nil {
+				quadlet.TriggerRestoreAfter, quadlet.Quiesced, nil, after, logf); err != nil {
 				logf("revert %s: could not take the waypoint (%v); continuing", name, err)
 			}
 		}
@@ -1142,8 +1138,8 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	defer cancel()
 
 	// THE MEMBER IS READ BACK FROM THE RING, never trusted from the payload. The caller names a
-	// path; what that path IS -- its title, and the manifest it was taken under -- is the guest's
-	// answer, so a stale picker cannot describe a member into something it is not.
+	// path; what that path IS -- its event, and the manifest it was taken under -- is the guest's
+	// answer, so a stale history page cannot describe a member into something it is not.
 	members, err := g.Members(ctx, service)
 	if err != nil {
 		return failed(fmt.Sprintf("read %s's ring: %v", service, err))
@@ -1205,7 +1201,6 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	at := cfg.takenAt()
 	undo := quadlet.SnapshotMember(service, quadlet.TriggerRestoreBefore, at)
 	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerRestoreBefore, quadlet.Quiesced,
-		fmt.Sprintf("before restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
 		// THE UNDO IS ITSELF AN EVENT ([B.167]), on the point that undoes it -- which is the redo.
 		&quadlet.Event{Kind: quadlet.EventUndo, At: at, What: "Undid changes back to " + target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")},
 		at, logf); err != nil {
@@ -1231,14 +1226,13 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("record the member's manifest (the service is left stopped): %v", err))
 	}
 	// (6) THE WAYPOINT. Taken here rather than at the service's next start: nothing is running, so
-	// it is quiesced by construction, correctly titled and pinned with no state carried across the
+	// it is quiesced by construction and pinned with no state carried across the
 	// converge below. It duplicates the member's bytes and costs nothing for it -- copy-on-write,
 	// nothing has diverged -- and what it buys is a timeline that describes itself, since the
 	// member it came from may sit months back in the list.
 	after := cfg.takenAt()
 	if err := cfg.takeMember(ctx, g, service, quadlet.SnapshotMember(service, quadlet.TriggerRestoreAfter, after),
 		quadlet.TriggerRestoreAfter, quadlet.Quiesced,
-		fmt.Sprintf("after restoring %q (%s)", target.Meta.Title, target.Meta.TakenAt.UTC().Format("2006-01-02 15:04")),
 		nil, // a baseline (quadlet.Baseline): the undo's own event already says what changed
 		after, logf); err != nil {
 		logf("service restore %s: could not take the waypoint (%v); continuing", service, err)
@@ -1251,24 +1245,25 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if runningVersion != "" && runningVersion != pm.Version {
 		moved = fmt.Sprintf("code too (%s -> %s)", runningVersion, pm.Version)
 	}
-	logf("service restore %s: back to %q, %s", service, target.Meta.Title, moved)
+	back := target.Meta.TakenAt.Local().Format("Mon 2 Jan 2006, 15:04:05")
+	logf("service restore %s: back to %s, %s", service, back, moved)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone,
-		Detail: fmt.Sprintf("restored %q, %s", target.Meta.Title, moved)}
+		Detail: fmt.Sprintf("undone back to %s, %s", back, moved)}
 }
 
-// takeMember renders a member's sidecar and asks the guest for it. The host titles the members
-// only it can title; the guest's own (agent/guestagent/inbound.go) never come through here.
+// takeMember renders a member's sidecar and asks the guest for it. The host records the events
+// only it performs; the guest's own (agent/guestagent/inbound.go) never come through here.
 //
 // THE CONSISTENCY IS THE CALLER'S TO STATE, not this function's to guess: it is the call site that
 // knows whether it stopped the service first, and a member taken by the clock against a running
 // one will come through here saying so.
-func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, title string, ev *quadlet.Event, at time.Time, logf func(string, ...any)) error {
+func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time, logf func(string, ...any)) error {
 	raw, err := g.ServiceInstalled(ctx, service)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: tr, Title: title, TakenAt: at, Consistency: cons, Manifest: raw, Event: ev,
+		Service: service, Trigger: tr, TakenAt: at, Consistency: cons, Manifest: raw, Event: ev,
 	})
 	if err != nil {
 		return err
@@ -1277,7 +1272,7 @@ func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member
 }
 
 // applyServiceMembers answers one service's ring as JSON ([B.143]). Read-only: it changes
-// nothing, and the caller — the CLI's `app history`, the dashboard's picker — renders it.
+// nothing, and the caller — the CLI's `app history`, the dashboard's history page — renders it.
 func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -1293,7 +1288,7 @@ func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("read %s's history: %v", d.Payload, err))
 	}
 	// EMPTY IS AN ANSWER, not a failure: a service installed a minute ago has no history yet, and
-	// saying so is what lets the picker show "nothing to go back to" instead of an error.
+	// saying so is what lets the history say "nothing yet" instead of an error.
 	body, err := json.Marshal(members)
 	if err != nil {
 		return failed(err.Error())

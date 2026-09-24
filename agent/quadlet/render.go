@@ -495,7 +495,7 @@ func SnapshotMember(service string, trigger Trigger, at time.Time) string {
 // Inside is impossible — the member is read-only from the instant it exists — and that is also
 // why the sidecar cannot be atomic with it. The guest writes it immediately after the snapshot
 // and removes the member if it cannot, so "every member has a sidecar" is an invariant the
-// picker may rely on rather than a hope.
+// history may rely on rather than a hope.
 func SnapshotSidecar(member string) string { return member + ".json" }
 
 // A Consistency says what a member's bytes ARE, which is not the question its trigger answers
@@ -535,7 +535,7 @@ const (
 // is nothing to say ([B.143]).
 //
 // ONE SENTENCE, ONE PLACE. Both front ends render it — `briard app history` and the dashboard's
-// picker — and a household that heard two different descriptions of the same fact would have to
+// history page — and a household that heard two different descriptions of the same fact would have to
 // work out whether they meant the same thing. It stays out of our vocabulary too: "quiesced" and
 // "crash-consistent" are words for this file, not for somebody's kitchen ([V3c.10]).
 //
@@ -552,7 +552,7 @@ func (c Consistency) Note() string {
 	}
 }
 
-// SnapshotMeta is a member's sidecar — what the picker shows and what a restore needs.
+// SnapshotMeta is a member's sidecar — the event it is the point of, and what a restore needs.
 //
 // MANIFEST, NOT A DIGEST. The restore path re-provisions from the manifest text and re-renders
 // units from it, a service with several containers has several digests, and env, mounts, ports
@@ -563,7 +563,6 @@ func (c Consistency) Note() string {
 type SnapshotMeta struct {
 	Service     string      `json:"service"`
 	Trigger     Trigger     `json:"trigger"`
-	Title       string      `json:"title"` // what the picker shows, e.g. "2026.7.1, before upgrading to 2026.8.0"
 	TakenAt     time.Time   `json:"taken_at"`
 	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded
 	Manifest    string      `json:"manifest"`    // the manifest running when it was taken, verbatim

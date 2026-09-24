@@ -77,8 +77,8 @@ func TestNightlyIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T) {
 	if meta.Consistency != quadlet.Crash {
 		t.Errorf("consistency = %q, want crash -- the service went on writing", meta.Consistency)
 	}
-	if meta.Trigger != quadlet.TriggerDaily || meta.Title == "" {
-		t.Errorf("meta = %+v, want a titled daily member", meta)
+	if meta.Trigger != quadlet.TriggerDaily {
+		t.Errorf("meta = %+v, want a daily member", meta)
 	}
 	// AND IT SAYS SO. "The nightly is crash-consistent again tonight" is how a household would
 	// find out that Home Assistant stopped answering, or that an upgrade moved the API this

@@ -468,17 +468,17 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 	}
 }
 
-// TestAppRevertNamesThePointExactly: `revert` takes the point as history printed it, never an
+// TestAppUndoNamesThePointExactly: `undo` takes the point as history printed it, never an
 // index into that listing ([B.143]).
 //
 // An index is stale the moment anything takes a member, and members are taken on every service
-// start -- so "revert 3" would act on a different point than the one the operator read. This is
+// start -- so "undo 3" would act on a different point than the one the operator read. This is
 // the assertion that keeps the safe shape: what the CLI sends is what the operator saw.
-func TestAppRevertNamesThePointExactly(t *testing.T) {
+func TestAppUndoNamesThePointExactly(t *testing.T) {
 	const point = "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z"
 	sock, sent := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: `restored "x", data only`})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"revert", "-sock", sock, point}, &out, &errb); code != 0 {
+	if code := runService(context.Background(), []string{"undo", "-sock", sock, point}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	ds := sent()
@@ -500,7 +500,8 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 		Member: "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z",
 		Meta: quadlet.SnapshotMeta{
 			Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
-			Title: "2026.6.0, before upgrading to 2026.7.1", TakenAt: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC),
+			TakenAt: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC),
+			Event:   &quadlet.Event{Kind: quadlet.EventUpdate, At: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC), What: "Updated to 2026.7.1"},
 		},
 	}}
 	body, _ := json.Marshal(entries)
@@ -510,11 +511,11 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	got := out.String()
-	if !strings.Contains(got, "2026.6.0, before upgrading to 2026.7.1") {
-		t.Errorf("the title the machine gave is not shown:\n%s", got)
+	if !strings.Contains(got, "Updated to 2026.7.1") {
+		t.Errorf("the event the machine recorded is not shown:\n%s", got)
 	}
 	if !strings.Contains(got, entries[0].Member) {
-		t.Errorf("the point is not printed, so it cannot be copied into revert:\n%s", got)
+		t.Errorf("the point is not printed, so it cannot be copied into undo:\n%s", got)
 	}
 }
 
@@ -525,11 +526,11 @@ func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
 	entries := []quadlet.SnapshotEntry{
 		{Member: "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z",
-			Meta: quadlet.SnapshotMeta{Title: "clean point", TakenAt: at, Consistency: quadlet.Quiesced}},
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced, Event: &quadlet.Event{At: at, What: "clean point"}}},
 		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260921T101500Z",
-			Meta: quadlet.SnapshotMeta{Title: "nightly point", TakenAt: at, Consistency: quadlet.Crash}},
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Crash, Event: &quadlet.Event{At: at, What: "nightly point"}}},
 		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260922T101500Z",
-			Meta: quadlet.SnapshotMeta{Title: "older briard's point", TakenAt: at}},
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Event: &quadlet.Event{At: at, What: "older briard's point"}}},
 	}
 	body, _ := json.Marshal(entries)
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
@@ -550,7 +551,7 @@ func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 	}
 }
 
-// TestAppHistoryOnAnAppWithNoPoints: an app installed a minute ago has nothing to go back to, and
+// TestAppHistoryOnAnAppWithNoPoints: an app installed a minute ago has no history yet, and
 // that is an ANSWER rather than an error -- the difference an operator acts on.
 func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "[]"})
@@ -558,7 +559,33 @@ func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
 	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 -- no history is not a failure (stderr: %s)", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "no points to go back to") {
+	if !strings.Contains(out.String(), "no history yet") {
 		t.Errorf("output does not say the app has no history yet:\n%s", out.String())
+	}
+}
+
+// TestAppHistoryShowsEventsNotSamples ([B.167]): a sample that anchors nothing is not a row. The
+// history is what happened, and the ring's plain samples are how it is kept, not what it says.
+func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
+	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
+	entries := []quadlet.SnapshotEntry{
+		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T101500Z",
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced,
+				Event: &quadlet.Event{Kind: quadlet.EventChange, At: at.Add(time.Hour), What: "Changed automations"}}},
+		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T111500Z",
+			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Hour), Consistency: quadlet.Quiesced}},
+	}
+	body, _ := json.Marshal(entries)
+	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
+	var out, errb bytes.Buffer
+	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, errb.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "Changed automations") {
+		t.Errorf("the event is missing:\n%s", got)
+	}
+	if strings.Contains(got, entries[1].Member) {
+		t.Errorf("the baseline sample is listed as a row:\n%s", got)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
@@ -89,17 +90,17 @@ var commands = []command{
 		run: runLogs, probe: []string{"-h"},
 	},
 	{
-		name: "app", args: "install|history|revert", group: groupEveryday,
-		synopsis: "install an app, look at its history, or put it back",
+		name: "app", args: "install|history|undo", group: groupEveryday,
+		synopsis: "install an app, look at its history, or undo changes",
 		detail: "install <name> -- the name is an entry in the signed catalog. It downloads the image,\n" +
 			"puts its data on the replicated volume, and starts it behind a health gate that reverts the\n" +
 			"machine if it does not come up. It blocks until the machine reaches a terminal state.\n\n" +
-			"history <name> -- the points this app can be put back to, oldest first, with the moment\n" +
-			"each was taken and whether going back would move the app's VERSION as well as its data.\n\n" +
-			"revert <point> -- put the app back to one of them, naming it exactly as history printed it.\n" +
-			"The app is stopped for the restore and started again afterwards; a point is taken first, so\n" +
-			"this is itself undoable. If the point needs an image this machine no longer has and cannot\n" +
-			"fetch, nothing is changed and it says so.",
+			"history <name> -- what happened to this app, oldest first: updates, undos, the changes\n" +
+			"Briard noticed, and quiet days. Under each row is the point that undoes it.\n\n" +
+			"undo <point> -- undo that row and everything after it, naming the point exactly as history\n" +
+			"printed it. The app is stopped for it and started again afterwards. The undo is itself a row\n" +
+			"in the history, so it can be undone too. If the point needs an image this machine no longer\n" +
+			"has and cannot fetch, nothing is changed and it says so.",
 		run: runService, probe: []string{"install", "-h"},
 	},
 	{
@@ -290,11 +291,11 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // operation on a live promoted resource: returning early would leave an operator guessing whether
 // the thing they just did is still happening.
 func runService(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) >= 1 && (args[0] == "history" || args[0] == "revert") {
+	if len(args) >= 1 && (args[0] == "history" || args[0] == "undo") {
 		return runAppHistory(ctx, args, stdout, stderr)
 	}
 	if len(args) < 1 || args[0] != "install" {
-		fmt.Fprint(stderr, "briard app: want `install <name>`, `history <name>` or `revert <point>`\n")
+		fmt.Fprint(stderr, "briard app: want `install <name>`, `history <name>` or `undo <point>`\n")
 		return 2
 	}
 	fs := flag.NewFlagSet("briard app install", flag.ContinueOnError)
@@ -566,12 +567,12 @@ func accountLang() string {
 	return strings.ToLower(l)
 }
 
-// runAppHistory is `briard app history <name>` and `briard app revert <point>` ([B.143]).
+// runAppHistory is `briard app history <name>` and `briard app undo <point>` ([B.143], [B.167]).
 //
-// TWO VERBS AND NOT ONE INTERACTIVE PICKER, deliberately. An index into a list ("revert 3") is
-// stale the moment anything takes a member, and members are taken on every service start — so the
-// second command would act on a different point than the one the operator read. Naming the point
-// exactly as history printed it is copy-and-paste, and it cannot drift.
+// TWO VERBS AND NOT ONE INTERACTIVE PICKER, deliberately. An index into a list ("undo 3") is stale
+// the moment anything takes a member, and members are taken on every service start — so the second
+// command would act on a different point than the one the operator read. Naming the point exactly
+// as history printed it is copy-and-paste, and it cannot drift.
 func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	verb := args[0]
 	fs := flag.NewFlagSet("briard app "+verb, flag.ContinueOnError)
@@ -582,11 +583,11 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(stderr, "briard app %s: want exactly one %s\n", verb,
-			map[string]string{"history": "app name", "revert": "point"}[verb])
+			map[string]string{"history": "app name", "undo": "point"}[verb])
 		return 2
 	}
-	if verb == "revert" {
-		return runAppRevert(ctx, *sock, fs.Arg(0), stdout, stderr)
+	if verb == "undo" {
+		return runAppUndo(ctx, *sock, fs.Arg(0), stdout, stderr)
 	}
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveServiceMembers, Payload: fs.Arg(0)})
 	if err != nil {
@@ -602,18 +603,21 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "briard app history: the machine's answer did not parse: %v\n", err)
 		return 1
 	}
-	if len(members) == 0 {
-		// An answer, not a failure: an app installed a minute ago has nothing to go back to yet.
-		fmt.Fprintf(stdout, "%s has no points to go back to yet\n", fs.Arg(0))
+	rows := quadlet.History(members, time.Local)
+	if len(rows) == 0 {
+		// An answer, not a failure: an app installed a minute ago has no history yet.
+		fmt.Fprintf(stdout, "%s has no history yet\n", fs.Arg(0))
 		return 0
 	}
-	// NEWEST LAST, which is the order the listing arrives in and the order a terminal reads: the
-	// most recent point ends up next to the prompt, where the operator is looking.
-	for _, m := range members {
-		fmt.Fprintf(stdout, "%s  %s%s\n", m.Meta.TakenAt.Local().Format("2006-01-02 15:04"), m.Meta.Title, consistencyNote(m.Meta.Consistency))
-		fmt.Fprintf(stdout, "    %s\n", m.Member)
+	// NEWEST LAST, the order a terminal reads: the most recent row ends up next to the prompt,
+	// where the operator is looking. The row shows the EVENT's time; the point under it is what
+	// undoing it puts back.
+	for i := len(rows) - 1; i >= 0; i-- {
+		r := rows[i]
+		fmt.Fprintf(stdout, "%s  %s%s\n", r.At.Local().Format("2006-01-02 15:04"), r.What, consistencyNote(r.Point.Meta.Consistency))
+		fmt.Fprintf(stdout, "    %s\n", r.Point.Member)
 	}
-	fmt.Fprintf(stdout, "\nput one back with: sudo briard app revert <point>\n")
+	fmt.Fprintf(stdout, "\nundo a row, and everything after it, with: sudo briard app undo <point>\n")
 	return 0
 }
 
@@ -621,7 +625,7 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 // while the app was running is one the app has to recover from on the way back up, which is a
 // thing the household is entitled to know BEFORE choosing it.
 //
-// The WORDS are quadlet.Consistency.Note's, shared with the dashboard's picker so a household
+// The WORDS are quadlet.Consistency.Note's, shared with the dashboard's history page so a household
 // hears one description of the fact rather than two. This adds only the shape of a terminal line.
 func consistencyNote(c quadlet.Consistency) string {
 	if note := c.Note(); note != "" {
@@ -630,9 +634,14 @@ func consistencyNote(c quadlet.Consistency) string {
 	return ""
 }
 
-func runAppRevert(ctx context.Context, sock, member string, stdout, stderr io.Writer) int {
-	fmt.Fprintf(stdout, "putting the app back to %s\n", member)
-	fmt.Fprint(stdout, "  it stops for the restore and starts again afterwards; a point is taken first\n")
+// runAppUndo puts one point back. It says the EXACT moment it goes back to, which differs from the
+// row's own time for a detected change, and what that costs.
+func runAppUndo(ctx context.Context, sock, member string, stdout, stderr io.Writer) int {
+	if at, ok := quadlet.SnapshotMemberTime(member); ok {
+		fmt.Fprintf(stdout, "undoing back to %s\n", at.Local().Format("2006-01-02 15:04:05"))
+	}
+	fmt.Fprint(stdout, "  everything the app recorded since then is lost; the undo is itself in the history, so it can be undone too\n")
+	fmt.Fprint(stdout, "  the app stops for it and starts again afterwards\n")
 	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveServiceRestore, Payload: member})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
@@ -642,7 +651,7 @@ func runAppRevert(ctx context.Context, sock, member string, stdout, stderr io.Wr
 		// The machine says whether anything changed; the CLI must not guess, because "nothing was
 		// changed" and "the app is stopped" are the two different things an operator acts on
 		// differently.
-		fmt.Fprintf(stderr, "briard app revert: %s\n", o.Detail)
+		fmt.Fprintf(stderr, "briard app undo: %s\n", o.Detail)
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s\n", o.Detail)

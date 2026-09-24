@@ -48,7 +48,7 @@ import (
 //   - NO VERB CHOOSES WHAT IS DESTROYED OR REWRITTEN. The ring prunes itself and records events
 //     after every take, but both are derived from the ring on disk ([B.167]); restoring and
 //     deleting on request stay on the host's side, where the caller is the product.
-//   - EVERY VERB IS BOUNDED. The rate limit below is not only picker hygiene: it is what stops a
+//   - EVERY VERB IS BOUNDED. The rate limit below is not only ring hygiene: it is what stops a
 //     hostile or looping caller from filling the replicated volume, which is [B.155]'s failure
 //     arriving by a new road.
 //
@@ -96,10 +96,9 @@ type inboundResponse struct {
 
 // plainStartFloor is how young the newest member may be before another plain start is skipped.
 //
-// A crash loop restarts every few seconds and would otherwise fill the picker with hundreds of
-// identical entries. Space is not the issue — nothing changed between them — the SELECTOR is, and
-// the member that matters in a crash loop is the FIRST one, taken before the bad change. Skipping
-// the rest keeps exactly that one.
+// A crash loop restarts every few seconds, and each take is a snapshot, a comparison and a prune
+// for a member the next one replaces: nothing changed between them. Skipping the ones inside the
+// floor costs no history -- the next sample outside it compares against the same point.
 //
 // It is also the abuse bound. See the trust rules above.
 const plainStartFloor = 90 * time.Second
@@ -174,7 +173,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	// crash restart, which is most of what this channel exists to catch.
 	//
 	// IT IS READ BEFORE THE RATE LIMIT because the rate limit does not apply to every member: a
-	// titled one is never skipped, and which this is can only be known from the manifest (the
+	// restore's pair is never skipped, and which this is can only be known from the manifest (the
 	// registry's marker paths are per service and per container). The cheap refusal therefore
 	// costs one directory listing and one small read, and still writes nothing at all — the
 	// property that matters when the caller is a crash loop or something hammering the socket.
@@ -187,29 +186,26 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	// started again — not to Home Assistant restarting itself inside a container that never went
 	// down, where the previous instance ended the way HA's own restart ends and the marker has
 	// nothing to say about it.
-	cons, title := quadlet.Quiesced, service+" starting"
+	cons := quadlet.Quiesced
 	if containerStart {
-		if cons = consumeCleanStop(ctx, x, service); cons == quadlet.Crash {
-			// A promotion after the other node died, or this node's own power cut. Named for what
-			// is known — that nothing shut the service down — rather than for a cause this cannot
-			// tell apart.
-			title = service + " starting after an unclean stop"
-		}
+		// A promotion after the other node died, or this node's own power cut: nothing shut the
+		// service down, and the member says so.
+		cons = consumeCleanStop(ctx, x, service)
 	}
 	trigger := quadlet.TriggerStart
 	var ev *quadlet.Event
 	switch backup, phase := restorePhase(ctx, x, service, raw, at); phase {
 	case restoreBefore:
-		trigger, title = quadlet.TriggerRestoreBefore, "before restoring "+backup
+		trigger = quadlet.TriggerRestoreBefore
 		// The household's own restore is an event, on the point that undoes it ([B.167]). The
 		// *after* half is a baseline (quadlet.Baseline) and carries none.
 		ev = &quadlet.Event{Kind: quadlet.EventBackupRestore, At: at, What: "Restored " + backup}
 	case restoreAfter:
-		trigger, title = quadlet.TriggerRestoreAfter, "after restoring "+backup
+		trigger = quadlet.TriggerRestoreAfter
 	default:
 		// THE RATE LIMIT, and only here. A crash loop restarts every few seconds and would fill
-		// the picker with hundreds of identical plain members; the one that matters is the first,
-		// taken before whatever went wrong ever ran. A titled member is the opposite case — there
+		// the ring with hundreds of identical plain members; the one that matters is the first,
+		// taken before whatever went wrong ever ran. A restore's pair is the opposite case — there
 		// are two of them at most, minutes apart by construction, and skipping one would leave a
 		// household's own restore with no way back.
 		newest, found, err := newestMember(ctx, x, service)
@@ -223,7 +219,6 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	meta := quadlet.SnapshotMeta{
 		Service: service,
 		Trigger: trigger,
-		Title:   title,
 		TakenAt: at,
 		// WHAT THE BYTES ARE, derived above rather than assumed here. A container start reads the
 		// clean-stop marker, because "nothing is running" and "the data was flushed" are different
@@ -453,7 +448,7 @@ const (
 
 // restorePendingTTL bounds how long the node-local fact may sit unclaimed. A restore that is going
 // to happen takes the time of one HA restart plus a tar extraction; a fact older than this belongs
-// to one that never completed, and using it would title an ordinary start hours later as the
+// to one that never completed, and using it would record an ordinary start hours later as the
 // second half of a restore that never happened.
 const restorePendingTTL = 6 * time.Hour
 
@@ -473,8 +468,8 @@ func restorePhase(ctx context.Context, x Executor, service string, rawManifest [
 		}
 		name := backupName(body)
 		// The fact the second notification will need, since by then the marker is gone. Written
-		// best-effort: a member titled as the first half of a pair is right whether or not the
-		// second half can be titled at all.
+		// best-effort: the first half of a pair is right whether or not the
+		// second half can be recognised at all.
 		if err := x.WriteFile(restorePendingPath(service), []byte(fmt.Sprintf("%d\t%s", at.Unix(), name))); err != nil {
 			log.Printf("ring %s: could not record the restore in flight (%v); its second point will read as a plain start", service, err)
 		}
@@ -484,7 +479,7 @@ func restorePhase(ctx context.Context, x Executor, service string, rawManifest [
 	if err != nil {
 		return "", restoreNone
 	}
-	// Consumed on the way in, whatever it says: a fact left behind would title the NEXT start as
+	// Consumed on the way in, whatever it says: a fact left behind would read the NEXT start as
 	// the second half of a restore too.
 	if _, err := x.Run(ctx, "rm", "-f", restorePendingPath(service)); err != nil {
 		log.Printf("ring %s: could not clear the restore fact (%v)", service, err)
@@ -500,13 +495,13 @@ func restorePhase(ctx context.Context, x Executor, service string, rawManifest [
 	return name, restoreAfter
 }
 
-// backupName is what the picker calls the backup, read out of HA's marker.
+// backupName is what the history calls the backup, read out of HA's marker.
 //
 // BEST-EFFORT AND SANITISED, because the content is written by the service rather than by us: the
 // format has changed upstream before (a bare path, then JSON carrying one), and it lands in a line
 // an operator reads. So: the path under a "path" key if it parses as JSON, else the whole body if
 // it looks like one, reduced to its base name, stripped of anything unprintable and capped. A
-// marker we cannot read at all still titles the pair — "a backup" is the honest answer, and the
+// marker we cannot read at all still names the restore — "a backup" is the honest answer, and the
 // timestamps either side say which one it was.
 func backupName(body []byte) string {
 	raw := strings.TrimSpace(string(body))
@@ -547,8 +542,8 @@ func backupName(body []byte) string {
 // Refusing makes that case loud and leaves the earlier member intact.
 //
 // THE SIDECAR, AND WHY THE MEMBER GOES IF IT CANNOT BE WRITTEN. It cannot live inside the member
-// (read-only from the instant it exists) and so cannot be atomic with it. The picker and the
-// restore path both need a member's title and the manifest it was taken under, and an unlabelled
+// (read-only from the instant it exists) and so cannot be atomic with it. The history and the
+// restore path both need a member's event and the manifest it was taken under, and an unlabelled
 // subvolume is worse than no member at all: it is something a human must identify by hand before
 // trusting it with their data. So the invariant is "every member has a sidecar", bought by undoing
 // the half-made one.
@@ -807,7 +802,7 @@ func ensureToolsOnPath() {
 //
 // A MEMBER WITH NO READABLE SIDECAR IS SKIPPED, not reported half-formed. The take path removes a
 // member it could not label, so one here means something outside the ring made it -- a human's
-// copy, an interrupted older build -- and the picker must not offer a household a rollback point
+// copy, an interrupted older build -- and the history must not offer a household a rollback point
 // whose code identity nobody knows.
 func listMembers(ctx context.Context, x Executor, service string) ([]quadlet.SnapshotEntry, error) {
 	if err := safeUnitName(service); err != nil {

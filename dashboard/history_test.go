@@ -13,8 +13,9 @@ import (
 	"briard.io/shared/api"
 )
 
-// ring is what the host answers `service-members` with: two points, an older one pinned to an
-// older version of the app and taken while it was running, and a clean newer one.
+// ring is what the host answers `service-members` with ([B.167]): a quiet day on an older version
+// whose point was taken while the app ran, the update to 2026.8.0 on the point before it, and the
+// update's baseline -- a sample, which anchors nothing and is not a row.
 func ring() string {
 	manifestOf := func(v string) string {
 		return `{"name":"home-assistant","version":"` + v + `","containers":[{"name":"app",` +
@@ -22,25 +23,31 @@ func ring() string {
 			`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
 	}
 	older := time.Date(2026, 9, 20, 3, 0, 0, 0, time.Local)
+	update := older.Add(24 * time.Hour)
 	entries := []quadlet.SnapshotEntry{
 		{
 			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerDaily, older),
 			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerDaily,
-				Title: "home-assistant nightly", TakenAt: older, Consistency: quadlet.Crash,
-				Manifest: manifestOf("2026.6.0")},
+				TakenAt: older, Consistency: quadlet.Crash, Manifest: manifestOf("2026.6.0"),
+				Event: &quadlet.Event{Kind: quadlet.EventDay, At: older.Add(20 * time.Hour), What: "Ran normally"}},
 		},
 		{
-			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, older.Add(24*time.Hour)),
+			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, update),
 			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
-				Title: "2026.7.1, before upgrading to 2026.8.0", TakenAt: older.Add(24 * time.Hour),
-				Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.7.1")},
+				TakenAt: update, Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.7.1"),
+				Event: &quadlet.Event{Kind: quadlet.EventUpdate, At: update, What: "Updated to 2026.8.0"}},
+		},
+		{
+			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgradeAfter, update.Add(5*time.Minute)),
+			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerUpgradeAfter,
+				TakenAt: update.Add(5 * time.Minute), Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.8.0")},
 		},
 	}
 	raw, _ := json.Marshal(entries)
 	return string(raw)
 }
 
-// postForm submits one of the picker's forms.
+// postForm submits one of the history page's forms.
 func postForm(t *testing.T, r *rig, path string, c *http.Cookie, form url.Values) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest("POST", r.srv.URL+path, strings.NewReader(form.Encode()))
@@ -69,10 +76,10 @@ func answerMembers(port *fakePort) {
 	}()
 }
 
-// THE PICKER ([B.143]): the page lists what the HOST says the ring holds, and says the two things
-// a list of times cannot -- which points the app has to recover from, and which ones move its
-// version as well as its data.
-func TestPickerListsWhatTheHostReports(t *testing.T) {
+// THE HISTORY ([B.143], [B.167]): the page lists the EVENTS the host's ring holds, and says the two
+// things a list of times cannot -- which points the app has to recover from, and which ones move
+// its version as well as its data. A sample that anchors nothing is not a row.
+func TestHistoryListsWhatTheHostReports(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
 	port := newFakePort()
@@ -90,37 +97,41 @@ func TestPickerListsWhatTheHostReports(t *testing.T) {
 	body := bodyOf(t, got)
 
 	for _, want := range []string{
-		"2026.7.1, before upgrading to 2026.8.0", // the titles the host gave, not re-derived here
-		"home-assistant nightly",
-		"taken while the app was running", // the nightly's class, in the CLI's words
-		"also changes the version",        // the older point runs an older app
+		"Updated to 2026.8.0", // the events the host recorded, not re-derived here
+		"Ran normally",
+		"taken while the app was running", // the day's point's class, in the CLI's words
+		"also goes back to 2026.7.1",      // undoing the update moves the version too
+		"Undo these changes",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page does not say %q:\n%s", want, body)
 		}
 	}
 	// NEWEST FIRST on a page, which is the one place this differs from the CLI's listing.
-	if strings.Index(body, "before upgrading") > strings.Index(body, "nightly") {
-		t.Errorf("the points are oldest-first on a page that is read from the top:\n%s", body)
+	if strings.Index(body, "Updated to") > strings.Index(body, "Ran normally") {
+		t.Errorf("the rows are oldest-first on a page that is read from the top:\n%s", body)
 	}
 	// The clean point carries no note at all: a note on every line is a note nobody reads.
 	if strings.Count(body, "taken while the app was running") != 1 {
 		t.Errorf("the clean point was annotated too:\n%s", body)
+	}
+	if strings.Contains(body, string(quadlet.TriggerUpgradeAfter)) {
+		t.Errorf("the update's baseline is listed as a row:\n%s", body)
 	}
 	port.mu.Lock()
 	asked := append([]api.Directive(nil), port.asked...)
 	port.mu.Unlock()
 	for _, d := range asked {
 		if d.Kind != api.DirectiveServiceMembers {
-			t.Errorf("listing the points asked the host for %q", d.Kind)
+			t.Errorf("listing the history asked the host for %q", d.Kind)
 		}
 	}
 }
 
-// TestPickerConfirmsBeforePuttingAPointBack: a restore discards everything since the point,
+// TestHistoryConfirmsBeforeUndoing: a restore discards everything since the point,
 // including -- on a mis-click -- the afternoon the household actually wanted. The first press
 // must ask nothing of the host.
-func TestPickerConfirmsBeforePuttingAPointBack(t *testing.T) {
+func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
 	port := newFakePort()
@@ -129,13 +140,14 @@ func TestPickerConfirmsBeforePuttingAPointBack(t *testing.T) {
 	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade,
 		time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local))
 
-	resp := postForm(t, r, "/revert", c, url.Values{"member": {member}})
+	resp := postForm(t, r, "/undo", c, url.Values{"point": {member}})
 	body := bodyOf(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("first press = %d, want the confirmation page", resp.StatusCode)
 	}
-	if !strings.Contains(body, "before upgrading") || !strings.Contains(body, "discarded") {
-		t.Errorf("the confirmation does not name the point and what it costs:\n%s", body)
+	if !strings.Contains(body, "Updated to 2026.8.0") || !strings.Contains(body, "is lost") ||
+		!strings.Contains(body, time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local).Format("Mon 2 Jan 2006, 15:04:05")) {
+		t.Errorf("the confirmation does not name the change, the exact moment it goes back to, and what it costs:\n%s", body)
 	}
 	if !strings.Contains(body, `name="confirm" value="yes"`) {
 		t.Errorf("the confirmation has no way to go through with it:\n%s", body)
@@ -150,7 +162,7 @@ func TestPickerConfirmsBeforePuttingAPointBack(t *testing.T) {
 
 	// CONFIRMED: exactly one service-restore, naming the point VERBATIM -- never an index into a
 	// listing that anything taking a member makes stale.
-	resp = postForm(t, r, "/revert", c, url.Values{"member": {member}, "confirm": {"yes"}, "title": {"x"}})
+	resp = postForm(t, r, "/undo", c, url.Values{"point": {member}, "confirm": {"yes"}, "what": {"x"}})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("confirmed press = %d, want 303", resp.StatusCode)
@@ -173,17 +185,17 @@ func TestPickerConfirmsBeforePuttingAPointBack(t *testing.T) {
 	t.Fatal("the confirmed press never reached the host")
 }
 
-// TestPickerRefusesAPointThatIsGone: pruning runs on every take, so a listing a browser has been
+// TestHistoryRefusesAPointThatIsGone: pruning runs on every take, so a listing a browser has been
 // looking at for a while can name a point that no longer exists. The confirmation re-reads the
 // ring rather than trusting the form.
-func TestPickerRefusesAPointThatIsGone(t *testing.T) {
+func TestHistoryRefusesAPointThatIsGone(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
 	port := newFakePort()
 	r.app.port = port
 	answerMembers(port)
 	gone := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Date(2020, 1, 1, 0, 0, 0, 0, time.Local))
-	resp := postForm(t, r, "/revert", c, url.Values{"member": {gone}})
+	resp := postForm(t, r, "/undo", c, url.Values{"point": {gone}})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("a pruned point = %d, want 404", resp.StatusCode)
@@ -197,16 +209,16 @@ func TestPickerRefusesAPointThatIsGone(t *testing.T) {
 	}
 }
 
-// TestPickerNeedsATrustedBrowser: reaching this port is not authentication ([V3b.31a](a)), and
+// TestHistoryNeedsATrustedBrowser: reaching this port is not authentication ([V3b.31a](a)), and
 // these two routes read a household's history and can discard part of it.
-func TestPickerNeedsATrustedBrowser(t *testing.T) {
+func TestHistoryNeedsATrustedBrowser(t *testing.T) {
 	r := newRig(t)
 	port := newFakePort()
 	r.app.port = port
 	if resp := r.do("GET", "/history/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("history with no session = %d, want 401", resp.StatusCode)
 	}
-	resp := postForm(t, r, "/revert", nil, url.Values{"member": {"x"}})
+	resp := postForm(t, r, "/undo", nil, url.Values{"point": {"x"}})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("revert with no session = %d, want 401", resp.StatusCode)
@@ -218,15 +230,15 @@ func TestPickerNeedsATrustedBrowser(t *testing.T) {
 	}
 }
 
-// TestPickerRefusesSomethingThatIsNotAPoint: the member arrives in a form field, and it becomes a
+// TestHistoryRefusesSomethingThatIsNotAPoint: the member arrives in a form field, and it becomes a
 // path the host acts on. A name this machine did not take is refused before anything is relayed.
-func TestPickerRefusesSomethingThatIsNotAPoint(t *testing.T) {
+func TestHistoryRefusesSomethingThatIsNotAPoint(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
 	port := newFakePort()
 	r.app.port = port
 	for _, bad := range []string{"", "/etc/passwd", "../../x", "home-assistant"} {
-		resp := postForm(t, r, "/revert", c, url.Values{"member": {bad}})
+		resp := postForm(t, r, "/undo", c, url.Values{"point": {bad}})
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("member %q = %d, want 400", bad, resp.StatusCode)

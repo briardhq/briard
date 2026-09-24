@@ -1,7 +1,7 @@
 {{define "style"}}<style>
-  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; }
+  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; --grey: #e6e6e2; }
   @media (prefers-color-scheme: dark) {
-    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; }
+    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; --grey: #2c2c2c; }
   }
   body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1.25rem; }
   main { max-width: 42rem; margin: 1.5rem auto 2rem; }
@@ -21,6 +21,15 @@
   form.approve { margin-top: .8rem; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
   form.approve label { flex-basis: 100%; }
   form.approve input { font: inherit; padding: .45rem .6rem; border: 1px solid var(--muted); border-radius: 8px; background: var(--bg); color: var(--fg); width: 8rem; }
+  /* THE HISTORY ([B.167]): pointing at a row -- hover, or a tap that focuses it -- greys it and every
+     row above it, which is exactly what its undo takes away, and shows that row's one button. */
+  ol.history { list-style: none; padding: 0; margin: 0; }
+  ol.history li { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .6rem; padding: .45rem .5rem; border-radius: 8px; outline: none; }
+  ol.history .when { color: var(--muted); min-width: 9rem; }
+  ol.history form.undo { margin-left: auto; visibility: hidden; }
+  ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) { background: var(--grey); }
+  ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) .what { color: var(--muted); }
+  ol.history li:is(:hover, :focus-within) form.undo { visibility: visible; }
 </style>{{end}}
 
 {{define "refused"}}<!doctype html>
@@ -86,7 +95,7 @@
     {{end}}
   </div>
   {{end}}
-  {{if .HA}}<p class="muted"><a href="/history/home-assistant">Points you can put Home Assistant back to</a> — one before every update, one either side of a restore, and one a night.</p>{{end}}
+  {{if .HA}}<p class="muted"><a href="/history/home-assistant">Home Assistant's history</a> — every update, the changes Briard notices and each quiet day, any of which you can undo.</p>{{end}}
   {{if .Services}}<p class="muted">Apps on this machine: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
   <div class="card">
     <h2>Trusted devices</h2>
@@ -109,30 +118,31 @@
 {{define "history"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{template "style"}}</head>
 <body><main>
-  <h1>Points</h1>
+  <h1>History</h1>
   <div class="card">
     <h2>{{.Service}}</h2>
     {{if .Op}}
-      {{if .Op.Running}}<p>Putting {{.Op.Title}} back… the app stops for it and starts again afterwards. This page refreshes itself.</p>
+      {{if .Op.Running}}<p>Undoing {{.Op.What}}… the app stops for it and starts again afterwards. This page refreshes itself.</p>
       <p class="muted">Started at {{.Op.Since}}.</p>
-      {{else if .Op.Failed}}<p>Could not put that point back: {{.Op.Detail}}</p>{{end}}
+      {{else if .Op.Failed}}<p>Could not undo that: {{.Op.Detail}}</p>{{end}}
     {{end}}
-    {{if .Error}}<p>Could not read this app's points: {{.Error}}</p>
+    {{if .Error}}<p>Could not read this app's history: {{.Error}}</p>
       <p class="muted">Or, on the machine that runs Briard: <code>sudo briard app history {{.Service}}</code></p>
-    {{else if not .Points}}<p class="muted">No points yet — the first arrives when the app next starts.</p>
+    {{else if not .Rows}}<p class="muted">Nothing yet. Updates, the changes Briard notices, and each quiet day appear here.</p>
     {{else}}
-    <p class="muted">Newest first. Putting one back discards everything since it; a point is taken first, so that is undoable too.</p>
-    <ul class="devices">
-      {{range .Points}}<li>
-        <span>{{.Title}}</span>
-        <span class="muted">— {{.When}}{{if .Version}} · {{.Version}}{{end}}{{if .MovesCode}} · also changes the version{{end}}{{if .Note}} · {{.Note}}{{end}}</span>
-        <form method="post" action="/revert">
-          <input type="hidden" name="member" value="{{.Member}}">
-          <input type="hidden" name="title" value="{{.Title}}">
-          <button type="submit" class="quiet">Put back</button>
+    <p class="muted">Newest first. Point at a change to see what undoing it takes away: that change and everything above it.</p>
+    <ol class="history">
+      {{range .Rows}}<li tabindex="0">
+        <span class="when">{{.When}}</span>
+        <span class="what">{{.What}}</span>
+        {{if or .MovesCode .Note}}<span class="muted">{{if .MovesCode}}also goes back to {{.Version}}{{end}}{{if and .MovesCode .Note}} · {{end}}{{.Note}}</span>{{end}}
+        <form method="post" action="/undo" class="undo">
+          <input type="hidden" name="point" value="{{.Point}}">
+          <input type="hidden" name="what" value="{{.What}}">
+          <button type="submit">Undo these changes</button>
         </form>
       </li>{{end}}
-    </ul>
+    </ol>
     {{end}}
     <p class="muted"><a href="/">Back</a></p>
   </div>
@@ -141,17 +151,17 @@
 {{define "confirm"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{template "style"}}</head>
 <body><main>
-  <h1>Put this point back?</h1>
+  <h1>Undo these changes?</h1>
   <div class="card">
-    <h2>{{.Title}}</h2>
-    <p class="muted">Taken {{.When}}.{{if .Note}} This one was {{.Note}} — {{.Service}} recovers it on the way back up.{{end}}</p>
-    <p>Everything {{.Service}} has recorded since then is discarded.{{if .MovesCode}} This also moves the app from {{.From}} back to {{.To}}.{{end}}</p>
-    <p class="muted">The app stops for it and starts again afterwards. A point is taken first, so this is itself undoable.</p>
-    <form method="post" action="/revert">
-      <input type="hidden" name="member" value="{{.Member}}">
-      <input type="hidden" name="title" value="{{.Title}}">
+    <h2>{{.What}}, and everything after it</h2>
+    <p>{{.Service}} goes back to how it was at {{.Back}}. Everything it has recorded since then is lost.{{if .MovesCode}} This also moves the app {{if .From}}from {{.From}} {{end}}back to {{.To}}.{{end}}</p>
+    {{if .Note}}<p class="muted">That moment was {{.Note}} — {{.Service}} recovers it on the way back up.</p>{{end}}
+    <p class="muted">The app stops for it and starts again afterwards. The undo is itself in the history, so it can be undone too.</p>
+    <form method="post" action="/undo">
+      <input type="hidden" name="point" value="{{.Point}}">
+      <input type="hidden" name="what" value="{{.What}}">
       <input type="hidden" name="confirm" value="yes">
-      <button type="submit">Put it back</button>
+      <button type="submit">Undo these changes</button>
     </form>
     <p class="muted"><a href="/history/{{.Service}}">Cancel</a></p>
   </div>

@@ -115,7 +115,7 @@ func TakeNightlyMember(ctx context.Context, x Executor, service string, at time.
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerDaily, Title: service + " nightly", TakenAt: at,
+		Service: service, Trigger: quadlet.TriggerDaily, TakenAt: at,
 		Consistency: quadlet.Crash, Manifest: string(raw),
 	})
 	if err != nil {

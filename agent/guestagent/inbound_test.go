@@ -74,7 +74,7 @@ func ringExec(members ...string) *fakeExec {
 // restoreRig is a ring whose Home Assistant manifest names the container that holds the data, so
 // the registry can say where the restore marker would be ([B.143]). `marker` is that file's
 // content, or "" for a service with no restore in flight. Its `rm` really removes, because the
-// pending fact is consumed by one and a fake that kept it would hide a second titling.
+// pending fact is consumed by one and a fake that kept it would hide a second restore half.
 func restoreRig(marker string, members ...string) *fakeExec {
 	f := ringExec(members...)
 	f.files[manifestPath("home-assistant")] =
@@ -95,7 +95,7 @@ func restoreRig(marker string, members ...string) *fakeExec {
 	return f
 }
 
-// tookMember is the member the ring just wrote, with the sidecar the picker will read.
+// tookMember is the member the ring just wrote, with the sidecar the history will read.
 func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
 	t.Helper()
 	var took string
@@ -125,9 +125,6 @@ func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
 	member, meta := tookMember(t, f)
 	if meta.Consistency != quadlet.Crash {
 		t.Errorf("consistency = %q, want crash -- nothing flushed this data", meta.Consistency)
-	}
-	if !strings.Contains(meta.Title, "unclean") {
-		t.Errorf("title = %q, want it to say the service was not shut down", meta.Title)
 	}
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerStart {
 		t.Errorf("trigger = %q -- an unclean start is still an ordinary start", tr)
@@ -177,19 +174,16 @@ func TestAnInnerRestartDoesNotReadTheMarker(t *testing.T) {
 	}
 }
 
-// TestInboundTitlesTheBackupRestorePair ([B.143]) is the one operation only this channel can see.
+// TestInboundRecordsTheBackupRestorePair ([B.143]) is the one operation only this channel can see.
 // Home Assistant's own restore unlinks its marker before the wipe, so nothing that polls from
-// outside can ever catch one in flight -- and the household ends up with two points whose titles
-// say what happened rather than two more "starting".
-func TestInboundTitlesTheBackupRestorePair(t *testing.T) {
+// outside can ever catch one in flight -- and the household's history gets a row that says what
+// happened, on the point that undoes it.
+func TestInboundRecordsTheBackupRestorePair(t *testing.T) {
 	f := restoreRig(`{"path": "/config/backups/e1a2b3c4.tar"}`)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	member, meta := tookMember(t, f)
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerRestoreBefore {
 		t.Errorf("trigger = %q, want the before half of the pair", tr)
-	}
-	if !strings.Contains(meta.Title, "before restoring") || !strings.Contains(meta.Title, "e1a2b3c4.tar") {
-		t.Errorf("title = %q, want it to name the backup being restored", meta.Title)
 	}
 	// The restore is a row in the history, on the point that undoes it ([B.167]).
 	if meta.Event == nil || meta.Event.Kind != quadlet.EventBackupRestore || !strings.Contains(meta.Event.What, "e1a2b3c4.tar") {
@@ -208,13 +202,10 @@ func TestInboundTitlesTheBackupRestorePair(t *testing.T) {
 	if meta2.Event != nil {
 		t.Errorf("the after half carries %+v; it is a baseline and has no event", meta2.Event)
 	}
-	if !strings.Contains(meta2.Title, "after restoring") || !strings.Contains(meta2.Title, "e1a2b3c4.tar") {
-		t.Errorf("title = %q, want it to name the backup that was restored", meta2.Title)
-	}
-	// AND THE FACT IS SPENT. Left behind, it would title the next ordinary start as the second
+	// AND THE FACT IS SPENT. Left behind, it would read the next ordinary start as the second
 	// half of a restore that finished hours ago.
 	if _, ok := f2.files[restorePendingPath("home-assistant")]; ok {
-		t.Error("the restore fact survived the member it titled")
+		t.Error("the restore fact survived the member it described")
 	}
 }
 
@@ -230,13 +221,13 @@ func TestInboundTakesThePairInsideTheRateLimit(t *testing.T) {
 	if strings.Contains(resp.Detail, "still current") {
 		t.Fatalf("the rate limit skipped half a restore pair: %q", resp.Detail)
 	}
-	if _, meta := tookMember(t, f); !strings.Contains(meta.Title, "before restoring") {
-		t.Errorf("title = %q, want the pair's first half", meta.Title)
+	if _, meta := tookMember(t, f); meta.Event == nil || meta.Event.Kind != quadlet.EventBackupRestore {
+		t.Errorf("event = %+v, want the pair's first half", meta.Event)
 	}
 }
 
 // TestInboundIgnoresAStaleRestoreFact: a restore that never completed leaves the fact behind, and
-// it lives in tmpfs so nothing else will clear it. Using it hours later would title an ordinary
+// it lives in tmpfs so nothing else will clear it. Using it hours later would read an ordinary
 // start as the second half of something that never happened.
 func TestInboundIgnoresAStaleRestoreFact(t *testing.T) {
 	f := restoreRig("")
@@ -247,8 +238,8 @@ func TestInboundIgnoresAStaleRestoreFact(t *testing.T) {
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerStart {
 		t.Errorf("trigger = %q, want an ordinary start", tr)
 	}
-	if strings.Contains(meta.Title, "restoring") {
-		t.Errorf("title = %q, want an ordinary start's", meta.Title)
+	if meta.Event != nil {
+		t.Errorf("event = %+v, want an ordinary start with none", meta.Event)
 	}
 }
 
@@ -811,7 +802,7 @@ func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 		strings.TrimPrefix(bare, quadlet.SnapshotsDir),
 		strings.TrimPrefix(garbled, quadlet.SnapshotsDir),
 	)
-	f.files[quadlet.SnapshotSidecar(good)] = `{"service":"home-assistant","trigger":"start","title":"HA starting"}`
+	f.files[quadlet.SnapshotSidecar(good)] = `{"service":"home-assistant","trigger":"start","event":{"kind":"day","what":"Ran normally"}}`
 	f.files[quadlet.SnapshotSidecar(garbled)] = `not json`
 	delete(f.files, quadlet.SnapshotSidecar(bare)) // `bare` gets no sidecar at all.
 
@@ -825,8 +816,8 @@ func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 	if got[0].Member != good {
 		t.Errorf("member = %q, want %q", got[0].Member, good)
 	}
-	if got[0].Meta.Title != "HA starting" {
-		t.Errorf("title = %q, want the sidecar's", got[0].Meta.Title)
+	if got[0].Meta.Event == nil || got[0].Meta.Event.What != "Ran normally" {
+		t.Errorf("event = %+v, want the sidecar's", got[0].Meta.Event)
 	}
 }
 

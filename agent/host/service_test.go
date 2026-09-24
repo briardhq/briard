@@ -1744,7 +1744,7 @@ func ringWith(t *testing.T, pinned manifest.Manifest, ensureEr error) (Config, *
 		ensureEr: ensureEr,
 		members: []quadlet.SnapshotEntry{{Member: member, Meta: quadlet.SnapshotMeta{
 			Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
-			Title: "2026.6.0, before upgrading to 2026.7.1", Manifest: string(raw),
+			Manifest: string(raw),
 		}}},
 	}
 	return cfg, f, member

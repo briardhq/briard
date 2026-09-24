@@ -183,12 +183,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.showHistory(w, r, name)
-	case r.URL.Path == "/revert" && r.Method == http.MethodPost:
+	case r.URL.Path == "/undo" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w)
 			return
 		}
-		a.requestRevert(w, r)
+		a.requestUndo(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodPost:
 		a.ask(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodGet:

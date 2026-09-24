@@ -70,7 +70,7 @@ func quiesceRig(t *testing.T, service string, port int) *fakeExec {
 
 func nightlySidecar(service string) string {
 	raw, _ := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerDaily, Title: service + " nightly",
+		Service: service, Trigger: quadlet.TriggerDaily,
 		TakenAt: time.Now(), Consistency: quadlet.Crash, Manifest: `{"name":"` + service + `"}`,
 	})
 	return string(raw)
