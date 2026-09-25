@@ -11,11 +11,15 @@
 #   - ERROR lines in `/api/error_log`;
 #   - the container unit: active state and restart count.
 #
+# The second pass adds a config-entry integration that fails or is not ready, and a real event-loop
+# spin during setup and after the start; every sample also records `/api/config`'s status code and
+# the live `.corrupt.` files.
+#
 # Each fault starts from the same known-good copy of the data (a btrfs snapshot taken once Home
 # Assistant is up), is injected, and is followed by a converge-shaped restart and a 3-minute
 # window. The work is health-probe.py; this file stands Home Assistant up, takes the copy, and
-# prints the matrix. It asserts only that the baseline is healthy on every signal -- a probe whose
-# control is broken measures nothing.
+# prints the matrix. It asserts that the baseline is healthy on every signal -- a probe whose
+# control is broken measures nothing -- and that a crash is restarted ([B.168]).
 { pkgs, guestModule, fixture }:
 
 let
@@ -81,13 +85,13 @@ pkgs.testers.runNixOSTest {
     print(node1.succeed("cat /tmp/health-probe.log"))
     matrix = json.loads(out.strip().splitlines()[-1])
 
-    print("fault                      door 1st200  door%60s  restarts  unit        auth  state     recovery safe  errors  entries")
+    print("fault                      door 1st200  door%60s  restarts  unit        auth  api  state     recovery safe  errors  corrupt  entries")
     for fault, r in matrix.items():
         last = r["last"]
         print(
             f"{fault:<26} {str(r['door_first_200_s']):>9}  {r['door_200_share_last_60s']:>8}  {r['restarts']:>8}  "
-            f"{last.get('unit', '?'):<10}  {str(last.get('auth')):<5} {str(last.get('state')):<9} "
-            f"{str(last.get('recovery')):<8} {str(last.get('safe')):<5} {str(last.get('errors')):>6}  "
+            f"{last.get('unit', '?'):<10}  {str(last.get('auth')):<5} {str(last.get('api_status')):<4} {str(last.get('state')):<9} "
+            f"{str(last.get('recovery')):<8} {str(last.get('safe')):<5} {str(last.get('errors')):>6}  {len(last.get('corrupt') or []):>7}  "
             f"{last.get('entries')}"
         )
 

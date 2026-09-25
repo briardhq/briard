@@ -7,6 +7,7 @@ window. Prints one JSON document on stdout (the matrix); progress goes to stderr
 
 import http.client
 import json
+import os
 import subprocess
 import sys
 import time
@@ -54,6 +55,35 @@ def garble(rel):
     write(rel, '{"version": 1, "data": {"entries": [')
 
 
+def config_entry(domain, init):
+    """A custom integration that is a CONFIG ENTRY, as a HACS integration is -- its failure shows
+    in the entry's state rather than only in the log. The entry is a copy of one Home Assistant
+    wrote itself, renamed, so the fields match whatever this image expects."""
+    manifest = {"domain": domain, "name": domain, "version": "1.0.0", "documentation": "",
+                "requirements": [], "codeowners": [], "iot_class": "local_polling",
+                "config_flow": True}
+    write(f"custom_components/{domain}/manifest.json", json.dumps(manifest))
+    write(f"custom_components/{domain}/__init__.py", init)
+    write(f"custom_components/{domain}/config_flow.py",
+          "from homeassistant import config_entries\n\n\n"
+          f"class Flow(config_entries.ConfigFlow, domain={domain!r}):\n    VERSION = 1\n")
+    path = f"{CONFIG}/.storage/core.config_entries"
+    store = json.load(open(path))
+    entry = dict(store["data"]["entries"][0])
+    entry.update({"entry_id": f"probe{domain}", "domain": domain, "title": domain,
+                  "unique_id": domain, "data": {}, "options": {}, "source": "user"})
+    store["data"]["entries"].append(entry)
+    write(".storage/core.config_entries", json.dumps(store))
+
+
+def spin_later(domain, seconds):
+    """Blocks the event loop with a busy loop -- not a call Home Assistant can detect -- `seconds`
+    after setup, so the freeze lands on a Home Assistant that has finished starting."""
+    return custom(domain, "async def async_setup(hass, config):\n"
+                          f"    hass.loop.call_later({seconds}, _spin)\n    return True\n\n\n"
+                          "def _spin():\n    while True:\n        pass\n")
+
+
 FAULTS = {
     "baseline": lambda: None,
     "yaml-syntax": lambda: append("configuration.yaml", "\nbroken: [unclosed\n"),
@@ -70,6 +100,18 @@ FAULTS = {
                                   "    time.sleep(3600)\n    return True\n"),
     "recorder-db": lambda: sh("dd", "if=/dev/urandom", f"of={CONFIG}/home-assistant_v2.db",
                               "bs=4096", "count=4", "conv=notrunc"),
+    # The second pass ([B.167b]): a config-entry integration that fails or is not ready, and a
+    # real event-loop spin during setup and after the start.
+    "entry-setup-error": lambda: config_entry("probe_entry_error",
+                                              "async def async_setup_entry(hass, entry):\n"
+                                              "    raise RuntimeError('probe: broken on purpose')\n"),
+    "entry-not-ready": lambda: config_entry("probe_entry_retry",
+                                            "from homeassistant.exceptions import ConfigEntryNotReady\n\n\n"
+                                            "async def async_setup_entry(hass, entry):\n"
+                                            "    raise ConfigEntryNotReady('probe: not yet')\n"),
+    "custom-spin-setup": lambda: custom("probe_spin", "async def async_setup(hass, config):\n"
+                                                      "    while True:\n        pass\n"),
+    "custom-spin-later": lambda: spin_later("probe_spin_later", 20),
 }
 
 
@@ -113,6 +155,7 @@ def observe():
     s["auth"] = tok is not None
     if tok:
         st, body, _ = get("/api/config", tok)
+        s["api_status"] = st
         if st == 200:
             cfg = json.loads(body)
             s["state"], s["recovery"], s["safe"] = cfg.get("state"), cfg.get("recovery_mode"), cfg.get("safe_mode")
@@ -125,6 +168,9 @@ def observe():
         st, body, _ = get("/api/error_log", tok)
         if st == 200:
             s["errors"] = sum(1 for line in body.decode(errors="replace").splitlines() if " ERROR " in line)
+    # The corrupt renames Home Assistant makes at boot, in /config and .storage ([B.167b]).
+    s["corrupt"] = sorted(n for d in (CONFIG, CONFIG + "/.storage") if os.path.isdir(d)
+                          for n in os.listdir(d) if ".corrupt." in n)
     s["unit"] = unit("ActiveState")
     s["restarts"] = int(unit("NRestarts") or 0)
     return s
