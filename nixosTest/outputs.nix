@@ -474,6 +474,10 @@ in
       # whether it holds, whether an automation notices, and the space a member pins. L0 is nested
       # and contended, so its numbers are an upper bound and move with the box -- not a nightly shape.
       hass-quiesce-cost = import ./hass-quiesce-cost.nix { inherit pkgs guestModule; fixture = hassFixture; };
+      # — **A DISCOVERY PROBE** ([B.167b]). Breaks Home Assistant one way at a time (bad YAML,
+      # corrupt .storage, broken custom integrations, a corrupt recorder) and records what each
+      # candidate health signal says, so the history's health signal is chosen from evidence.
+      hass-health-probe = import ./hass-health-probe.nix { inherit pkgs guestModule; fixture = hassFixture; };
       # — **A STOPWATCH, NOT AN ASSERTION** ([B.56]). Measures how long a COLD converge holds the
       # promotion when its pull is throttled to a crawl: [V3b.3](f) put a fetch on the promotion
       # path and every chain rule we have was measured with an INSTANT failure. It runs its full
