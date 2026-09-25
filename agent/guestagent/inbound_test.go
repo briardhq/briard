@@ -633,13 +633,17 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 	}
 }
 
-// ringOf builds `n` plain members for a service, oldest first, one minute apart, starting well
-// clear of the rate limit.
+// ringOf builds `n` plain members for a service, oldest first, one second apart and just clear of
+// the rate limit.
+//
+// ⚠️ MINUTES AGO, NEVER HOURS: a take records a day event when the ring's first member is from an
+// earlier local day, so a fixture hours in the past makes the prune tests depend on the time of day
+// they run. Only the first two minutes after midnight remain.
 func ringOf(service string, n int) []string {
 	var out []string
-	base := time.Now().Add(-time.Duration(n+10) * time.Hour)
+	base := time.Now().Add(-2*time.Minute - time.Duration(n)*time.Second)
 	for i := 0; i < n; i++ {
-		m := quadlet.SnapshotMember(service, quadlet.TriggerStart, base.Add(time.Duration(i)*time.Minute))
+		m := quadlet.SnapshotMember(service, quadlet.TriggerStart, base.Add(time.Duration(i)*time.Second))
 		out = append(out, strings.TrimPrefix(m, quadlet.SnapshotsDir))
 	}
 	return out
