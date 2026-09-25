@@ -418,6 +418,11 @@ func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
 	if !strings.Contains(stubSource, "return await impl.async_setup(hass, config)") {
 		t.Error("the stub does not delegate async_setup")
 	}
+	// OFF THE LOOP ([B.169]): Home Assistant flags an import made on its event loop at every start,
+	// and refuses some blocking calls from custom integrations outright.
+	if strings.Contains(stubSource, "impl = importlib.import_module(") || !strings.Contains(stubSource, "async_add_import_executor_job") {
+		t.Error("the stub imports the implementation on the event loop")
+	}
 	// One job only. Anything else here is a second thing an old stub could get wrong.
 	if strings.Count(stubSource, "async def ") != 1 {
 		t.Errorf("the stub defines more than async_setup:\n%s", stubSource)

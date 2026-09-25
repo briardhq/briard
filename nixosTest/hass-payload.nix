@@ -286,6 +286,22 @@ pkgs.testers.runNixOSTest {
     )
     print(f"the clock sample {nightly} was taken with Home Assistant's recorder locked")
 
+    # OUR INTEGRATION IMPORTS OFF THE EVENT LOOP ([B.169]). Home Assistant flags a blocking import
+    # made on the loop at every start, and refuses some blocking calls from custom integrations
+    # outright -- so a stub that imported on the loop is one Home Assistant release from not
+    # loading at all. The integration is set up by now (the quiesce above went through it).
+    blocking = node1.succeed(
+        "journalctl --no-pager -u briard-home-assistant-app.service "
+        "| grep -c 'Detected blocking call to import_module with args (.briard_ha.,)' || true"
+    ).strip()
+    # THE CONTROL: the same query must see our integration being loaded, or a journal that holds none
+    # of Home Assistant's output would pass the assertion below by finding nothing at all.
+    loaded = node1.succeed(
+        "journalctl --no-pager -u briard-home-assistant-app.service | grep -c 'custom integration briard' || true"
+    ).strip()
+    assert loaded != "0", "the journal query sees none of Home Assistant's lines; the check below would be vacuous"
+    assert blocking == "0", f"our integration imported on the event loop {blocking} time(s)"
+
     # ── HEALING, AT A BOUNDARY THAT DOES NOT RESTART THE CONTAINER ───────────────────
     #
     # s6 re-executes `run` at every SERVICE start, and `homeassistant.restart` is one

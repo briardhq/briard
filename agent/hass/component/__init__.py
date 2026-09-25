@@ -41,8 +41,13 @@ async def async_setup(hass, config):
     # directory holds one distinctively-named module, which is what keeps this bounded.
     if IMPL_PATH not in sys.path:
         sys.path.append(IMPL_PATH)
+    # OFF THE EVENT LOOP ([B.169]): an import is file I/O, and Home Assistant flags one made on the
+    # loop at every start, and refuses some blocking calls from custom integrations outright. Its
+    # import executor where it has one; the plain executor on a Home Assistant too old for that,
+    # because this file may be restored onto one (the ABI above).
+    run = getattr(hass, "async_add_import_executor_job", None) or hass.async_add_executor_job
     try:
-        impl = importlib.import_module(IMPL_MODULE)
+        impl = await run(importlib.import_module, IMPL_MODULE)
     except ImportError:
         _LOGGER.warning(
             "briard is not installed on this Home Assistant, so the `%s:` line in "
