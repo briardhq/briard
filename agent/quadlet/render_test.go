@@ -560,3 +560,21 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 		t.Errorf("a container with no data of its own claims its stop flushed something:\n%s", side)
 	}
 }
+
+// TestThePodOutlivesItsContainers ([B.168]): with quadlet's default exit policy a crashed container
+// takes its pod down, systemd stops the container unit as the pod's dependent, and that stop
+// suppresses Restart=always -- a crashed Home Assistant stayed down. Every network shape gets it.
+func TestThePodOutlivesItsContainers(t *testing.T) {
+	for _, network := range []string{manifest.NetworkHost, ""} {
+		m := manifest.Manifest{Name: "svc", Version: "1", Network: network, Containers: []manifest.Container{{
+			Name: "app", Image: digestA, Primary: true, Port: 8080, HealthPath: "/healthz",
+		}}}
+		r, err := Render(m, "10.12.7.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(r.Files["briard-svc.pod"], "\nExitPolicy=continue\n") {
+			t.Errorf("network %q: the pod stops with its last container: %q", network, r.Files["briard-svc.pod"])
+		}
+	}
+}

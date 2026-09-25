@@ -104,12 +104,10 @@ pkgs.testers.runNixOSTest {
     node1.succeed("chmod -R u+w ${haDir}/custom_components/briard_canary")
     node1.succeed("grep -q '^briard_canary:' ${cfg} || echo 'briard_canary:' >> ${cfg}")
     node1.succeed("sync")
-    # Bounce HA onto the new config the way CONVERGE does, and not with `systemctl restart`:
-    # a quadlet container is BoundTo its pod, and stopping the last member makes podman stop the
-    # pod -- so a single restart job races its own dependency down and the start half dies with
-    # "Bound to unit …-pod.service, but unit isn't active" (measured). Stop the container, then
-    # start the units in the renderer's order (pod first), each its own transaction. That IS
-    # agent/guestagent/converge.go's stopService + start loop, by hand.
+    # Bounce HA onto the new config the way CONVERGE does: stop the container, then start the units
+    # in the renderer's order (pod first), each its own transaction. That IS
+    # agent/guestagent/converge.go's stopService + start loop, by hand -- the rig drives the path
+    # the product takes rather than a `systemctl restart` it never issues.
     units = fixture_units(node1)
     node1.succeed(f"systemctl stop {units[-1]}")
     for u in units:

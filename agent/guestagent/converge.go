@@ -118,6 +118,7 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 		}
 	}
 	all := merged(svcs)
+	stopUnrendered(ctx, x, all)
 	changed, err := writeUnits(ctx, x, all)
 	if err != nil {
 		return nil, err
@@ -254,6 +255,36 @@ func stopService(ctx context.Context, x Executor, r quadlet.Rendered) {
 			if _, err := x.Run(ctx, "systemctl", "stop", r.Units[i]); err != nil {
 				log.Printf("converge: stop %s: %v (continuing)", r.Units[i], err)
 			}
+		}
+	}
+}
+
+// stopUnrendered stops what the previous converge started and this one no longer renders — a
+// service forgotten after its first install failed, or uninstalled — containers before their pod,
+// as ConvergeStop does. Before the unit sources go, while systemd still has them.
+//
+// ⚠️ THE POD DOES NOT STOP ITSELF, which is why this exists ([B.168]). Pods are rendered with
+// ExitPolicy=continue so a crashed container is restarted, and the price is that stopping the last
+// container no longer takes the pod down with it. A pod left behind holds its address and its
+// published ports, and a reinstall of the same service would join the stale pod.
+//
+// Best-effort, like every stop here: a unit already gone is the state this wants.
+func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
+	raw, err := x.ReadFile(unitsFile)
+	if err != nil {
+		return // nothing started since the guest booted, so nothing to stop
+	}
+	keep := map[string]bool{}
+	for _, u := range all.Units {
+		keep[u] = true
+	}
+	prev := nonEmptyLines(raw)
+	for i := len(prev) - 1; i >= 0; i-- {
+		if keep[prev[i]] {
+			continue
+		}
+		if _, err := x.Run(ctx, "systemctl", "stop", prev[i]); err != nil {
+			log.Printf("converge: stop %s, which is no longer rendered: %v (continuing)", prev[i], err)
 		}
 	}
 }

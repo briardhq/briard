@@ -923,3 +923,28 @@ func TestAPodNetworkOnTheWrongSubnetIsRefused(t *testing.T) {
 		t.Errorf("the error does not name both ranges: %v", err)
 	}
 }
+
+// TestConvergeStopsWhatItNoLongerRenders ([B.168]): pods outlive their containers now, so that a
+// crashed container is restarted -- which means a service that is forgotten (a first install that
+// failed) or uninstalled leaves its pod running unless converge stops it. A stale pod holds its
+// address and ports, and a reinstall would join it. Containers before their pod; what is still
+// rendered is left alone.
+func TestConvergeStopsWhatItNoLongerRenders(t *testing.T) {
+	x := dummyNode(t)
+	x.fakeExec.files[unitsFile] = "briard-gone-pod.service\nbriard-gone-app.service\nbriard-dummy-pod.service\nbriard-dummy-app.service\n"
+	if _, err := Converge(context.Background(), x); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	var stopped []string
+	for _, r := range x.fakeExec.runs {
+		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" {
+			stopped = append(stopped, r[2])
+		}
+	}
+	want := []string{"briard-gone-app.service", "briard-gone-pod.service"}
+	// The dummy may be bounced after, as a changed service always is; what is under test is that
+	// the unrendered service goes, first, containers before its pod.
+	if len(stopped) < 2 || fmt.Sprint(stopped[:2]) != fmt.Sprint(want) {
+		t.Fatalf("stopped %v, want %v -- the forgotten service's container, then its pod, before anything else", stopped, want)
+	}
+}

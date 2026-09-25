@@ -186,7 +186,14 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	// nothing is written into the pod; under a private network it is this pod's address on the
 	// node's pod pool, and both podman and the front door are told the same value from here — the
 	// property that keeps "where it answers" a single fact rather than an agreement.
-	pod := []string{"[Pod]", "PodName=" + base}
+	// ⚠️ ExitPolicy=continue IS WHAT MAKES A CRASHED CONTAINER COME BACK ([B.168]). Quadlet's
+	// default is `stop`: when the pod's last container exits, podman stops the pod, systemd stops
+	// the container unit as the pod's dependent, and a dependency stop suppresses the container's
+	// Restart=always -- so a crashed Home Assistant stayed down until something else started it
+	// (measured by hass-health-probe's custom-crash case). With `continue` the pod outlives its
+	// containers, the exit is an ordinary failure, and Restart= does its job. Stopping a pod on
+	// purpose is converge's (stopService, and the stop of what it no longer renders).
+	pod := []string{"[Pod]", "PodName=" + base, "ExitPolicy=continue"}
 	switch {
 	case m.HostNetwork():
 		pod = append(pod, "Network=host")
