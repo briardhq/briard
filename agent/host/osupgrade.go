@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"briard.io/agent/guestagent"
 	"briard.io/agent/install"
 	"briard.io/agent/platform"
+	"briard.io/shared/atomicfile"
 	"briard.io/shared/model"
 )
 
@@ -310,6 +312,11 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	if e := os.Rename(nextImage(backing), backing); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("place the new image: %w", e))
 	}
+	// The swap is flushed before an overlay is built on it ([B.79]): otherwise a power cut can
+	// bring back the old names under an overlay made for the new image.
+	if e := atomicfile.SyncDir(filepath.Dir(backing)); e != nil {
+		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("flush the image swap: %w", e))
+	}
 	if _, e := qspec.RebuildOverlay(ctx); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("fresh overlay on %s: %w", rel.Version, e))
 	}
@@ -383,6 +390,9 @@ func (u *osUpgrade) restoreImage(ctx context.Context, qspec platform.QEMUSpec, b
 		}
 	}
 	_ = os.Remove(nextImage(backing))
+	if e := atomicfile.SyncDir(filepath.Dir(backing)); e != nil { // same reason as the forward swap
+		return false, fmt.Errorf("rollback FAILED to flush the image swap, guest left stopped: %w", errors.Join(append(errs, e)...))
+	}
 	if _, e := qspec.RebuildOverlay(rb); e != nil {
 		return false, fmt.Errorf("rollback FAILED to rebuild the overlay on %s: %w", backing, errors.Join(append(errs, e)...))
 	}
