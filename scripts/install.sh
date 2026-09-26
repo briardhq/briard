@@ -414,6 +414,15 @@ if [ -n "$STAGING_OURS" ]; then
 	rm -rf "$STAGING_OURS" 2>/dev/null || true
 fi
 
+# ---- everything above reaches the disk before anything runs it ([B.79]) ----------------
+# cp, tar and install return with the bytes in the page cache, and a rename or a new file's name
+# can reach the disk before its contents do. A power cut in the next few seconds would leave a
+# truncated qemu or image under a verified name, and it would surface at the next BOOT, where
+# nobody would connect it to the install. One sync, here, covers every file this script laid down;
+# it costs seconds, once.
+say "flushing the installed files to disk"
+sync
+
 if command -v systemctl >/dev/null 2>&1; then
 	say "registering briard with systemd"
 	# The clock mark the closing wait reads the journal from: a reinstall's journal still holds

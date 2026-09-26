@@ -176,8 +176,16 @@ func (cfg Config) stageGuestImage(ctx context.Context, f *install.Fetcher, rel i
 		return err
 	}
 	expanded := filepath.Join(tmp, strings.TrimSuffix(guestImageArtifact, ".zst"))
+	// Flushed before the rename, and the rename flushed after ([B.79]): an unflushed image under
+	// the .next name is a truncated OS that ImageUpgrade would install as verified.
+	if err := atomicfile.SyncTree(expanded); err != nil {
+		return fmt.Errorf("flush the staged image: %w", err)
+	}
 	if err := os.Rename(expanded, nextImage(cfg.GuestImage)); err != nil {
 		return fmt.Errorf("place the staged image: %w", err)
+	}
+	if err := atomicfile.SyncDir(dir); err != nil {
+		return fmt.Errorf("flush the image directory: %w", err)
 	}
 	logf("guest update: %s's image staged at %s", rel.Version, nextImage(cfg.GuestImage))
 	return nil

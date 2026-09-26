@@ -15,11 +15,12 @@
 // the file is NEW, so the rename that publishes it lives only in the parent's dirent until the
 // parent is flushed.
 //
-// It is deliberately three small functions and no type: callers own their paths, their permissions
+// It is deliberately a few small functions and no type: callers own their paths, their permissions
 // and their encoding. AGENTS §5's durable-write convention is what this implements, not a new one.
 package atomicfile
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -72,4 +73,31 @@ func SyncDir(dir string) error {
 		return err
 	}
 	return d.Close()
+}
+
+// SyncTree flushes root and, when it is a directory, every regular file and directory under it,
+// so a tree that is about to be renamed into place is on disk before the rename can be. root may
+// be a single file. Symlinks are not followed: a link's own entry is flushed with its directory.
+//
+// This is for bytes that arrive by bulk (an unpacked tarball, a decompressed image) rather than
+// through Write, and it has the same reason to exist: a rename that publishes an unflushed file
+// can reach the disk before the file does, so a power cut leaves a verified name over lost bytes.
+func SyncTree(root string) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && !d.Type().IsRegular() {
+			return nil
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
+	})
 }

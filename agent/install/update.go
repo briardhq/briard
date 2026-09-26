@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"briard.io/agent/selfupdate"
+	"briard.io/shared/atomicfile"
 )
 
 // THE UPDATE VERB ([B.86a]). `briard-agent --fetch-update <target>` is the narrowed fetch the
@@ -429,11 +430,18 @@ func extractTree(ctx context.Context, tarball, dest string) error {
 		os.RemoveAll(tmp)
 		return err
 	}
+	// Flushed before the rename, and the rename flushed after ([B.79]): otherwise the name can
+	// reach the disk before the bytes, and a power cut leaves a whole-looking tree of lost files
+	// that the next commit makes current.
+	if err := atomicfile.SyncTree(tmp); err != nil {
+		os.RemoveAll(tmp)
+		return fmt.Errorf("install: flush qemu tree: %w", err)
+	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.RemoveAll(tmp)
 		return fmt.Errorf("install: place qemu tree: %w", err)
 	}
-	return nil
+	return atomicfile.SyncDir(filepath.Dir(dest))
 }
 
 // installed reads the committed release's manifest; nil (and a log line) when absent or

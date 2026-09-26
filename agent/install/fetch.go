@@ -253,6 +253,11 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 	}
 
 	// 3. All artifacts verified against the signed manifest — publish atomically.
+	//
+	// ATOMIC, NOT DURABLE, deliberately ([B.79]). This set is a staging dir: install.sh copies
+	// it into /opt/briard, deletes it, and flushes what it laid down. Flushing here as well would
+	// write the largest thing we ship to disk twice for a copy nobody keeps. A caller that keeps
+	// what this places must flush it itself (atomicfile.SyncTree).
 	if err := os.Rename(tmp, dest); err != nil {
 		return fmt.Errorf("install: place staging dir: %w", err)
 	}
