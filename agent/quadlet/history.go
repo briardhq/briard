@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"briard.io/agent/services"
 )
 
 // THE HISTORY ([B.167]): what a household sees of the ring. Members are SAMPLES, taken at every
@@ -28,7 +30,7 @@ import (
 // costs nothing a household can see.
 
 // A ReasonKind says why an event exists. The set is closed: an operation, a detected change, a
-// reset the app made on its own, or quiet time.
+// reset the app made on its own, a start that ended unhealthy, or quiet time.
 type ReasonKind string
 
 const (
@@ -45,6 +47,10 @@ const (
 	// an undecodable store or database to `*.corrupt.*` ([B.167d]). Silent data loss that no health
 	// signal sees, and undo is its remedy.
 	ReasonReset ReasonKind = "reset"
+	// ReasonUnhealthy is a start whose boot ended unhealthy after a healthy one, on the sample
+	// before that start. Only the healthy → unhealthy transition registers: the recovery is an
+	// app-undo or the household's own fix, which are rows of their own.
+	ReasonUnhealthy ReasonKind = "unhealthy"
 	// ReasonQuiet is a restore point where nothing was found: the backstop for every change the
 	// detectors do not see (QuietPoint). It never shares its record.
 	ReasonQuiet ReasonKind = "quiet"
@@ -196,8 +202,9 @@ func QuietPoint(members []SnapshotEntry, member string) (SnapshotEntry, bool) {
 // useful ones.
 //
 // A member is kept if it is the restore point of an event under RetainEvents old, of the latest
-// app-update for RetainLastUpdate, the NEWEST member (the next comparison's other half), or S₀, the
-// start of a quiet stretch that has no quiet point yet (QuietPoint needs it). Everything else is a
+// app-update for RetainLastUpdate, the NEWEST member, a start still PENDING evaluation, the newest
+// EVALUATED member (what that evaluation compares with, so pruning waits for it), or S₀, the start
+// of a quiet stretch that has no quiet point yet (QuietPoint needs it). Everything else is a
 // sample that anchors nothing, and the next one has replaced it.
 //
 // NO COUNT LIMIT, because the event rate is bounded by the sampling rate: at most one finding per
@@ -215,11 +222,17 @@ func RetentionPrune(members []SnapshotEntry, now time.Time) []string {
 		}
 	}
 	s0 := quietStart(all)
+	evaluated := -1
+	for i, m := range all {
+		if !m.Meta.Pending {
+			evaluated = i
+		}
+	}
 	var prune []string
 	for i, m := range all {
 		ev := m.Meta.Event
 		switch {
-		case i == len(all)-1, i == s0:
+		case i == len(all)-1, i == s0, i == evaluated, m.Meta.Pending:
 		case ev != nil && now.Sub(ev.At) <= RetainEvents:
 		case i == lastUpdate && now.Sub(ev.At) <= RetainLastUpdate:
 		default:
@@ -262,11 +275,16 @@ func History(members []SnapshotEntry, loc *time.Location) []HistoryRow {
 }
 
 // title is a row's words, from its reasons in the order they arrived. A quiet row's span is the
-// time until the next event, so it is rendered here rather than stored.
+// time until the next event, so it is rendered here rather than stored. Unhealthy reads as its
+// own phrase alone ("home-assistant could not start") and as a suffix beside others ("Updated to
+// 2026.9, did not start").
 func title(r HistoryRow, next *HistoryRow, loc *time.Location) string {
 	var parts []string
+	var unhealthy string
 	for _, reason := range r.Reasons {
 		switch {
+		case reason.Kind == ReasonUnhealthy:
+			unhealthy = reason.What
 		case reason.Kind != ReasonQuiet:
 			parts = append(parts, reason.What)
 		case next == nil:
@@ -275,5 +293,34 @@ func title(r HistoryRow, next *HistoryRow, loc *time.Location) string {
 			parts = append(parts, "Ran normally until "+next.At.In(loc).Format("Mon 15:04"))
 		}
 	}
+	switch {
+	case unhealthy == "":
+	case len(parts) == 0:
+		return unhealthy
+	default:
+		return strings.Join(parts, "; ") + ", did not start"
+	}
 	return strings.Join(parts, "; ")
+}
+
+// Unhealthy says whether the app is unhealthy as of its newest evaluated sample, and if so the
+// restore point that undoes it: the newest row with an `unhealthy` reason, the last healthy state.
+// It is what the history's banner offers ([B.167]).
+func Unhealthy(members []SnapshotEntry) (SnapshotEntry, bool) {
+	all := sortedMembers(members)
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Meta.Pending {
+			continue
+		}
+		if all[i].Meta.Health != services.Unhealthy {
+			return SnapshotEntry{}, false
+		}
+		break
+	}
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Meta.Event.Has(ReasonUnhealthy) {
+			return all[i], true
+		}
+	}
+	return SnapshotEntry{}, false
 }

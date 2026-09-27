@@ -14,11 +14,13 @@ import (
 // is what Readiness talks to, so the test exercises the real URLs, the real form encoding and the
 // real Bearer header rather than a mock of them.
 type haStub struct {
-	token     string // the refresh token it will accept
-	entries   string // the body /api/config/config_entries/entry returns
-	tokenCode int    // non-200 to refuse the exchange
-	entryCode int    // non-200 to refuse the listing
-	sawBearer string
+	token      string // the refresh token it will accept
+	entries    string // the body /api/config/config_entries/entry returns
+	tokenCode  int    // non-200 to refuse the exchange
+	entryCode  int    // non-200 to refuse the listing
+	config     string // the body /api/config returns
+	configCode int    // non-200 to refuse /api/config
+	sawBearer  string
 }
 
 func (h *haStub) start(t *testing.T) int {
@@ -52,6 +54,13 @@ func (h *haStub) start(t *testing.T) int {
 			return
 		}
 		w.Write([]byte(h.entries))
+	})
+	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		if h.configCode != 0 {
+			w.WriteHeader(h.configCode)
+			return
+		}
+		w.Write([]byte(h.config))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

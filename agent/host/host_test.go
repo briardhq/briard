@@ -22,6 +22,7 @@ import (
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
@@ -75,9 +76,9 @@ type fakeStatus struct {
 	sysErr    error
 	res       telemetry.NodeResources // Resources return (appliance telemetry)
 	resErr    error
-	health    bool            // ServiceHealth return (the in-guest probe result)
-	hlthErr   error           // when set, ServiceHealth errors -> snapshot falls back to the host-side probe
-	svcHealth map[string]bool // ServiceHealthOf: service name -> answers; absent = unresolvable
+	health    bool                       // ServiceHealth return (the in-guest probe result)
+	hlthErr   error                      // when set, ServiceHealth errors -> snapshot falls back to the host-side probe
+	svcHealth map[string]services.Health // ServiceHealthOf: service name -> answers; absent = unresolvable
 	// vip is what net.vip answers: the address the service NIC ACTUALLY holds, in CIDR form,
 	// "" for a device that holds none. probed records the URL snapshot resolved from it, so a
 	// test can assert WHAT was probed and not merely that something was.
@@ -179,12 +180,12 @@ func (f fakeStatus) ServiceHealth(_ context.Context, url string) (bool, error) {
 // ServiceHealthOf is the PER-SERVICE probe ([B.48]), keyed on the service name rather than on a
 // URL: `svcHealth` maps a name to what the guest would answer, and an absent entry stands for the
 // service the guest cannot resolve -- which must leave the field empty, not report it unhealthy.
-func (f fakeStatus) ServiceHealthOf(_ context.Context, service string) (bool, error) {
-	ok, known := f.svcHealth[service]
+func (f fakeStatus) ServiceHealthOf(_ context.Context, service string) (services.Health, error) {
+	h, known := f.svcHealth[service]
 	if !known {
-		return false, errors.New("not in the routing table")
+		return services.HealthUnknown, errors.New("not in the routing table")
 	}
-	return ok, nil
+	return h, nil
 }
 
 func (f fakeStatus) VIP(context.Context, string) (string, error) { return f.vip, f.vipErr }

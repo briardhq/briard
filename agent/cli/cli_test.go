@@ -13,6 +13,7 @@ import (
 
 	"briard.io/agent/install"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
 )
@@ -587,5 +588,27 @@ func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 	}
 	if strings.Contains(got, entries[1].Member) {
 		t.Errorf("the baseline sample is listed as a row:\n%s", got)
+	}
+}
+
+// TestAppHistoryMarksAnAppThatDidNotStart ([B.167]): the page's red mark is a `!` here, and its
+// banner a line naming the last healthy state, while the app is unhealthy.
+func TestAppHistoryMarksAnAppThatDidNotStart(t *testing.T) {
+	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
+	point := "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260920T101500Z"
+	entries := []quadlet.SnapshotEntry{
+		{Member: point, Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced,
+			Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonUnhealthy, What: "home-assistant could not start"}}}}},
+		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T101600Z",
+			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Minute), Health: services.Unhealthy}},
+	}
+	body, _ := json.Marshal(entries)
+	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
+	var out, errb bytes.Buffer
+	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "! 2026-09-20") || !strings.Contains(out.String(), "is not working; its last healthy state is "+point) {
+		t.Errorf("the listing does not mark the app that did not start:\n%s", out.String())
 	}
 }

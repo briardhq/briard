@@ -3,6 +3,8 @@ package quadlet
 import (
 	"testing"
 	"time"
+
+	"briard.io/agent/services"
 )
 
 // The history's fixtures ([B.167]). `now` is the moment the prune is asked about, and every
@@ -282,5 +284,50 @@ func TestSnapshotMemberParsesEveryTrigger(t *testing.T) {
 		if tr.Before() != (tr != TriggerStart && tr != TriggerClock) {
 			t.Errorf("%s.Before() = %t", tr, tr.Before())
 		}
+	}
+}
+
+// TestRetentionWaitsForEvaluation: a pending start is kept, and so is the newest evaluated sample
+// its evaluation will compare with ([B.167]: pruning waits for evaluation).
+func TestRetentionWaitsForEvaluation(t *testing.T) {
+	ev := anchor(TriggerStart, 3*time.Hour, ReasonChanged, time.Hour, "Changed automations")
+	s0 := sample(TriggerClock, 150*time.Minute)
+	older, baseline := sample(TriggerClock, 2*time.Hour), sample(TriggerClock, time.Hour)
+	p1, p2 := sample(TriggerStart, 10*time.Minute), sample(TriggerStart, time.Minute)
+	p1.Meta.Pending, p2.Meta.Pending = true, true
+	got := pruned(t, ev, s0, older, baseline, p1, p2)
+	if got[baseline.Member] || got[p1.Member] || got[p2.Member] {
+		t.Errorf("pruned %v; a pending start or its baseline went before the evaluation", got)
+	}
+	if !got[older.Member] {
+		t.Error("an evaluated sample that is nobody's baseline survived")
+	}
+}
+
+// TestHistoryTitlesUnhealthy: alone it names the app; beside an operation it is a suffix.
+func TestHistoryTitlesUnhealthy(t *testing.T) {
+	alone := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "home-assistant could not start")
+	update := anchor(TriggerAppUpdateBefore, 2*time.Hour, ReasonAppUpdate, 0, "Updated to 2026.9.0")
+	update.Meta.Event = update.Meta.Event.With(Reason{Kind: ReasonUnhealthy, What: "home-assistant could not start"}, retentionNow)
+	rows := History([]SnapshotEntry{alone, update}, time.UTC)
+	if rows[0].What != "Updated to 2026.9.0, did not start" || rows[1].What != "home-assistant could not start" {
+		t.Errorf("titles = %q, %q", rows[0].What, rows[1].What)
+	}
+}
+
+// TestUnhealthyOffersTheLastHealthyState: while the newest evaluated sample says unhealthy, the
+// banner's undo is the newest unhealthy row's point; once healthy again, no banner.
+func TestUnhealthyOffersTheLastHealthyState(t *testing.T) {
+	point := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "home-assistant could not start")
+	start := sample(TriggerStart, 2*time.Hour)
+	start.Meta.Health = services.Unhealthy
+	pending := sample(TriggerStart, time.Minute)
+	pending.Meta.Pending = true
+	if got, ok := Unhealthy([]SnapshotEntry{point, start, pending}); !ok || got.Member != point.Member {
+		t.Errorf("Unhealthy = (%s, %t), want the unhealthy row's point", got.Member, ok)
+	}
+	start.Meta.Health = services.Healthy
+	if _, ok := Unhealthy([]SnapshotEntry{point, start}); ok {
+		t.Error("a healthy app still offers the banner")
 	}
 }

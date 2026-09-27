@@ -25,9 +25,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
+	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
@@ -189,6 +191,44 @@ func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, con
 		return nil, fmt.Errorf("services: %s flushed its persistence database; it has no way to hold still", m.Name)
 	}
 	return nil, fmt.Errorf("services: %s has no way to hold still", m.Name)
+}
+
+// Health is SERVICE HEALTH ([B.167]): whether the app works. It is one notion, asked by the status
+// report, the app-update gate and the history alike. Node health (api.NodeStatus.Healthy) and the
+// S1 readiness gate are different questions with their own names.
+//
+// The values are the status report's own spellings (api.StateHealthy, api.StateUnhealthy), so the
+// report carries one without translating it; unknown is the empty string, which the report
+// already reads as "not asked or could not tell".
+type Health string
+
+const (
+	Healthy       Health = api.StateHealthy
+	Unhealthy     Health = api.StateUnhealthy
+	HealthUnknown Health = ""
+)
+
+// HealthGate bounds how long an app gets to become healthy after a start: the app-update gate's
+// deadline, and how long a start sample's evaluation waits for the boot's verdict ([B.167]).
+const HealthGate = 5 * time.Minute
+
+// HealthOverride is a curated app's own health check, or ok=false for an app that has none, whose
+// health is then its manifest's healthPath answering 200 ([B.167]).
+//
+// Home Assistant's reads /api/config with our token, because recovery mode keeps its healthPath
+// answering while the app is down ([B.167b]'s probes; agent/hass/health.go says what each answer
+// means).
+func HealthOverride(ctx context.Context, x Executor, m manifest.Manifest, port int) (h Health, ok bool) {
+	if m.Name != hass.Name {
+		return HealthUnknown, false
+	}
+	switch healthy, known := hass.Health(ctx, x, port); {
+	case !known:
+		return HealthUnknown, true
+	case healthy:
+		return Healthy, true
+	}
+	return Unhealthy, true
 }
 
 // RestoreMarkers names the files a service writes inside its own data to say "a restore of MY

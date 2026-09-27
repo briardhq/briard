@@ -85,7 +85,7 @@ type serviceInstaller interface {
 	ServiceHealth(ctx context.Context, url string) (bool, error)
 	// ServiceHealthOf is the same floor asked BY NAME, so the guest resolves the address from the
 	// routing table it converged rather than from a URL the host assembled ([B.48]).
-	ServiceHealthOf(ctx context.Context, service string) (bool, error)
+	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
 	// The S1 gate.s input, one layer above the liveness floor ServiceHealth answers -- one method
 	// per service that has a signal, named for it (see readinessProbe, which is the same set).
 	// Not on `upgrader`, deliberately: an OS upgrade must not be able to name a service, and its
@@ -130,9 +130,9 @@ type serviceInstaller interface {
 // the service half-installed.
 const installBudget = 15 * time.Minute
 
-// healthGate is how long the service gets to come up before the install is judged failed and the
-// chain reverted. A container start plus an application's own boot; HA takes tens of seconds.
-const healthGate = 5 * time.Minute
+// healthGate is how long the service gets to become HEALTHY ([B.167]: services.Health, the one
+// answer) before the install is judged failed and the chain reverted. HA takes tens of seconds.
+const healthGate = services.HealthGate
 
 // revertBudget bounds the rollback, on its own DETACHED deadline. The health gate's most likely
 // failure is the install budget expiring, and a revert inheriting that dead context could neither
@@ -506,7 +506,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// Gate on the SERVICE's own endpoint (in-guest), not the front door — see awaitHealthy. BY
 	// NAME: the converge above wrote the routing table, so the guest already knows where this
 	// service listens, and the host no longer assembles an address it can only guess stays true.
-	if err := cfg.awaitHealthy(ctx, g, m.Name); err != nil {
+	if err := cfg.awaitHealthy(ctx, g, m.Name, logf); err != nil {
 		logf("service install %s failed its health gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
@@ -1017,17 +1017,27 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 // An ERROR IS NOT AN UNHEALTHY VERDICT here: a service the guest cannot resolve yet is retried
 // until the deadline, exactly like one that is not answering yet, because the two are
 // indistinguishable from outside and only one of them is worth reverting an install over.
-func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, service string) error {
+//
+// NOR IS UNKNOWN ([B.167]). Service health is one three-valued answer, and unknown means the app
+// has told us nothing: still starting, or our login to it failing, which is not the app. Healthy
+// passes at once; at the deadline, an unknown last answer keeps the install and says so, and only
+// an unhealthy one or an error reverts it. Reverting a working app over our own login would be
+// the gate doing the damage it exists to prevent.
+func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, service string, logf func(string, ...any)) error {
 	if service == "" {
 		return nil // nothing to probe (a witness never installs)
 	}
 	deadline := time.Now().Add(healthGate)
 	for {
-		ok, err := g.ServiceHealthOf(ctx, service)
-		if err == nil && ok {
+		h, err := g.ServiceHealthOf(ctx, service)
+		if err == nil && h == services.Healthy {
 			return nil
 		}
 		if time.Now().After(deadline) {
+			if err == nil && h == services.HealthUnknown {
+				logf("service install %s: its health was still unknown after %s; keeping it", service, healthGate)
+				return nil
+			}
 			if err != nil {
 				return fmt.Errorf("service did not become healthy within %s (%w)", healthGate, err)
 			}

@@ -612,10 +612,20 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// NEWEST LAST, the order a terminal reads: the most recent row ends up next to the prompt,
 	// where the operator is looking. The row shows the EVENT's time; the point under it is what
 	// undoing it puts back.
+	//
+	// A row whose app did not start carries the page's red mark as a `!` ([B.167]).
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
-		fmt.Fprintf(stdout, "%s  %s%s\n", r.At.Local().Format("2006-01-02 15:04"), r.What, consistencyNote(r.Point.Meta.Consistency))
-		fmt.Fprintf(stdout, "    %s\n", r.Point.Member)
+		mark := " "
+		if r.Point.Meta.Event.Has(quadlet.ReasonUnhealthy) {
+			mark = "!"
+		}
+		fmt.Fprintf(stdout, "%s %s  %s%s\n", mark, r.At.Local().Format("2006-01-02 15:04"), r.What, consistencyNote(r.Point.Meta.Consistency))
+		fmt.Fprintf(stdout, "      %s\n", r.Point.Member)
+	}
+	if p, ok := quadlet.Unhealthy(members); ok {
+		// The page's banner, as a line next to the prompt.
+		fmt.Fprintf(stdout, "\n%s is not working; its last healthy state is %s\n", fs.Arg(0), p.Member)
 	}
 	fmt.Fprintf(stdout, "\nundo a row, and everything after it, with: sudo briard app undo <point>\n")
 	return 0

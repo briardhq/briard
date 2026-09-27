@@ -34,6 +34,7 @@ import (
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/selfupdate"
+	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/nodestorage"
@@ -450,7 +451,7 @@ type statusReader interface {
 	// table it converged ([B.48]). It answers a different question from ServiceHealth above: that
 	// one is the NODE's front door, this one is a service's own endpoint, and the observe loop
 	// needs both because a node can be up while a service on it is not.
-	ServiceHealthOf(ctx context.Context, service string) (bool, error)
+	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
 	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
@@ -1915,13 +1916,14 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 			// An ERROR LEAVES IT EMPTY rather than unhealthy. The guest cannot resolve a service
 			// it has no route for, and a node mid-converge is briefly in exactly that state; a
 			// report of "unhealthy" there would be a false alarm about a healthy household, on a
-			// field whose whole value is that someone acts on it.
+			// field whose whole value is that someone acts on it. So does UNKNOWN ([B.167]): an app
+			// that is starting, or one our login to it failed for, has told us nothing.
+			//
+			// SERVICE HEALTH is the guest's one answer (services.Health), spelled with this
+			// field's own values, so it is carried rather than translated.
 			if st.State == api.StateRunning {
-				if ok, err := r.ServiceHealthOf(ctx, s.Name); err == nil {
-					st.Health = api.StateUnhealthy
-					if ok {
-						st.Health = api.StateHealthy
-					}
+				if h, err := r.ServiceHealthOf(ctx, s.Name); err == nil {
+					st.Health = string(h)
 				}
 			}
 		}
@@ -1937,7 +1939,7 @@ type serviceStateReader interface {
 	// ServiceHealthOf probes ONE service by name, the guest resolving its address from the
 	// routing table ([B.48]) — the steady-state twin of the install gate, and the only reason
 	// the two can be trusted to be asking about the same address.
-	ServiceHealthOf(ctx context.Context, service string) (bool, error)
+	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
 }
 
 // serviceLog renders the reported services for the status line -- "name@identity" per service,

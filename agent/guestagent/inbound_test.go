@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +20,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
+	"briard.io/shared/routes"
 )
 
 // ringExec is a guest with a .snapshots directory: `ls` answers with `members`, `btrfs subvolume
@@ -649,7 +653,9 @@ func deleted(f *fakeExec) []string {
 
 // TestRingReplacesSamplesThatAnchorNothing: an unbounded ring grows on every service start,
 // costs its space on every diskful peer, and arrives as [B.155]'s failure by a new road. What
-// bounds it is that a sample anchoring no event is replaced by the next one ([B.167]).
+// bounds it is that a sample anchoring no event is replaced by the next one ([B.167]) -- once the
+// next one is evaluated. A start is pending until its boot has a verdict, so the newest evaluated
+// sample, which that evaluation compares with, stays until then.
 func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
 	existing := ringOf("home-assistant", 6)
 	f := ringExec(existing...)
@@ -657,8 +663,8 @@ func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 
 	gone := deleted(f)
-	if len(gone) != len(existing)-1 {
-		t.Fatalf("pruned %v, want every earlier sample but the quiet point -- the new member replaces them", gone)
+	if len(gone) != len(existing)-2 {
+		t.Fatalf("pruned %v, want every earlier sample but the quiet point and the pending start's baseline", gone)
 	}
 	// THE OLDEST GO FIRST, so an interrupted prune has dropped the least useful ones.
 	for i, name := range gone {
@@ -685,12 +691,12 @@ func TestRingKeepsWhatAnchorsAnEvent(t *testing.T) {
 	withEvent(f, ring[2], quadlet.ReasonChanged, 2*time.Hour)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	for _, name := range deleted(f) {
-		if name == ring[0] || name == ring[2] || name == ring[3] {
+		if name == ring[0] || name == ring[2] || name == ring[3] || name == ring[5] {
 			t.Fatalf("a restore point or the quiet stretch's start was pruned: %v", deleted(f))
 		}
 	}
-	if len(deleted(f)) != 3 {
-		t.Errorf("pruned %v, want the three other plain samples", deleted(f))
+	if len(deleted(f)) != 2 {
+		t.Errorf("pruned %v, want the two other plain samples", deleted(f))
 	}
 }
 
@@ -1041,5 +1047,129 @@ func TestAResetAndAChangeShareTheirPoint(t *testing.T) {
 	}
 	if !strings.Contains(ev.Reasons[1].What, "entities") {
 		t.Errorf("the reset reads %q, want it to name the entities", ev.Reasons[1].What)
+	}
+}
+
+// healthRig serves home-assistant's health endpoint on loopback and routes it, so serviceHealth
+// runs its real probe. The ring's manifest does not parse, which leaves the default probe: the
+// registry's override is agent/hass's to test. Set *code to what the app answers.
+func healthRig(t *testing.T, f *fakeExec) *int {
+	t.Helper()
+	code := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+	t.Cleanup(srv.Close)
+	u, _ := url.Parse(srv.URL)
+	tbl, _ := routes.Table{Services: []routes.Service{{Name: "home-assistant", Address: u.Hostname(),
+		Health: "http://:" + u.Port() + "/health"}}}.Marshal()
+	f.files[routes.Path] = string(tbl)
+	return &code
+}
+
+// pendingStart is a start sample as the pre-start hook leaves it: pending, not evaluated.
+func pendingStart(f *fakeExec, at time.Time, automations string) string {
+	member, meta := haMember(f, quadlet.TriggerStart, at, automations)
+	meta.Pending = true
+	b, _ := json.Marshal(meta)
+	f.files[quadlet.SnapshotSidecar(member)] = string(b)
+	return member
+}
+
+func metaOf(t *testing.T, f *fakeExec, member string) quadlet.SnapshotMeta {
+	t.Helper()
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(member)]), &meta); err != nil {
+		t.Fatalf("%s has no readable sidecar: %v", member, err)
+	}
+	return meta
+}
+
+// TestTheStartHookLeavesItsSamplePending: the pre-start hook cannot wait for the boot it precedes,
+// so it does not evaluate: nothing lands on the point before, and the sample says it is pending.
+func TestTheStartHookLeavesItsSamplePending(t *testing.T) {
+	f := ringExec(ringOf("home-assistant", 1)...)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if _, meta := tookMember(t, f); !meta.Pending {
+		t.Errorf("the start sample is not pending: %+v", meta)
+	}
+}
+
+// TestAStartWaitsForItsBootsVerdict ([B.167]): healthy is conclusive at once; anything else only
+// once HealthGate has passed, since a booting app refuses and answers 5xx. An unhealthy verdict
+// after a healthy one lands on the sample before the start; a second in a row registers nothing.
+func TestAStartWaitsForItsBootsVerdict(t *testing.T) {
+	now := time.Now()
+	baseAt := now.Add(-time.Hour)
+	base := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, baseAt)
+	start := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now)
+	f := recordRing(base, start)
+	haMember(f, quadlet.TriggerClock, baseAt, "same")
+	pendingStart(f, now, "same")
+	code := healthRig(t, f)
+	*code = http.StatusServiceUnavailable
+
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Minute))
+	if !metaOf(t, f, start).Pending {
+		t.Fatal("a start was evaluated a minute into its boot on an unhealthy answer")
+	}
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(services.HealthGate))
+	got := metaOf(t, f, start)
+	if got.Pending || got.Health != services.Unhealthy {
+		t.Fatalf("after the gate the start reads %+v, want evaluated unhealthy", got)
+	}
+	if ev := eventOn(t, f, base); !ev.Has(quadlet.ReasonUnhealthy) || ev.Reasons[0].What != "home-assistant could not start" {
+		t.Errorf("the point before the start carries %+v, want unhealthy", ev)
+	}
+
+	// THE SECOND UNHEALTHY START IS NOT A TRANSITION.
+	again := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now.Add(10*time.Minute))
+	f.runFn(`btrfs`, []string{"subvolume", "snapshot", "-r", "x", again})
+	pendingStart(f, now.Add(10*time.Minute), "same")
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(20*time.Minute))
+	if ev := eventOn(t, f, start); ev != nil {
+		t.Errorf("a second unhealthy start registered %+v", ev)
+	}
+}
+
+// TestAHealthyStartIsEvaluatedAtOnce: nothing to wait for, and nothing to register.
+func TestAHealthyStartIsEvaluatedAtOnce(t *testing.T) {
+	now := time.Now()
+	base := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, now.Add(-time.Hour))
+	start := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now)
+	f := recordRing(base, start)
+	haMember(f, quadlet.TriggerClock, now.Add(-time.Hour), "same")
+	pendingStart(f, now, "same")
+	healthRig(t, f)
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Second))
+	if got := metaOf(t, f, start); got.Pending || got.Health != services.Healthy {
+		t.Errorf("a healthy start reads %+v", got)
+	}
+	if ev := eventOn(t, f, base); ev != nil {
+		t.Errorf("a healthy start registered %+v", ev)
+	}
+}
+
+// TestACrashLoopIsOneEvaluation: the loop's starts are closed as replaced, and the newest is
+// compared with the last EVALUATED sample -- so what the loop's first start brought in is found,
+// and lands on the point before all of it.
+func TestACrashLoopIsOneEvaluation(t *testing.T) {
+	now := time.Now()
+	baseAt, s1At, s2At := now.Add(-time.Hour), now.Add(-3*time.Minute), now
+	base := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, baseAt)
+	s1 := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, s1At)
+	s2 := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, s2At)
+	f := recordRing(base, s1, s2)
+	haMember(f, quadlet.TriggerClock, baseAt, "- id: 1\n")
+	pendingStart(f, s1At, "- id: 1\n- id: 2\n")
+	pendingStart(f, s2At, "- id: 1\n- id: 2\n")
+	healthRig(t, f)
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Second))
+	if ev := eventOn(t, f, base); !ev.Has(quadlet.ReasonChanged) {
+		t.Errorf("the change the loop's first start brought in left %+v on the last good point", ev)
+	}
+	if metaOf(t, f, s1).Pending || metaOf(t, f, s2).Pending {
+		t.Error("a start of the loop is still pending")
+	}
+	if eventOn(t, f, s1) != nil {
+		t.Error("the loop's first start was compared with its own successor")
 	}
 }

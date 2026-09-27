@@ -1,7 +1,7 @@
 {{define "style"}}<style>
-  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; --grey: #e6e6e2; }
+  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; --grey: #e6e6e2; --bad: #b3261e; }
   @media (prefers-color-scheme: dark) {
-    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; --grey: #2c2c2c; }
+    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; --grey: #2c2c2c; --bad: #f2b8b5; }
   }
   body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1.25rem; }
   main { max-width: 42rem; margin: 1.5rem auto 2rem; }
@@ -30,6 +30,8 @@
   ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) { background: var(--grey); }
   ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) .what { color: var(--muted); }
   ol.history li:is(:hover, :focus-within) form.undo { visibility: visible; }
+  ol.history .bad::before { content: "● "; color: var(--bad); }
+  .banner { border-left: 4px solid var(--bad); padding: .2rem .8rem; margin: .5rem 0 1rem; }
 </style>{{end}}
 
 {{define "refused"}}<!doctype html>
@@ -128,13 +130,21 @@
     {{end}}
     {{if .Error}}<p>Could not read this app's history: {{.Error}}</p>
       <p class="muted">Or, on the machine that runs Briard: <code>sudo briard app history {{.Service}}</code></p>
-    {{else if not .Rows}}<p class="muted">Nothing yet. Updates, the changes Briard notices, and each quiet day appear here.</p>
+    {{else if not .Rows}}<p class="muted">Nothing yet. Updates, the changes Briard notices, and quiet stretches appear here.</p>
     {{else}}
+    {{with .Banner}}<div class="banner">
+      <p>{{$.Service}} is not working. Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
+      <form method="post" action="/undo">
+        <input type="hidden" name="point" value="{{.Point}}">
+        <input type="hidden" name="what" value="{{.What}}">
+        <button type="submit">Undo these changes</button>
+      </form>
+    </div>{{end}}
     <p class="muted">Newest first. Point at a change to see what undoing it takes away: that change and everything above it.</p>
     <ol class="history">
       {{range .Rows}}<li tabindex="0">
         <span class="when">{{.When}}</span>
-        <span class="what">{{.What}}</span>
+        <span class="what{{if .Unhealthy}} bad{{end}}">{{.What}}</span>
         {{if or .MovesCode .Note}}<span class="muted">{{if .MovesCode}}also goes back to {{.Version}}{{end}}{{if and .MovesCode .Note}} · {{end}}{{.Note}}</span>{{end}}
         <form method="post" action="/undo" class="undo">
           <input type="hidden" name="point" value="{{.Point}}">

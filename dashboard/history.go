@@ -46,6 +46,9 @@ type restoreOp struct {
 type historyView struct {
 	Service string
 	Rows    []rowView // newest FIRST here, unlike the CLI: a page is read from the top
+	// Banner is the row whose undo returns an UNHEALTHY app to its last healthy state, or nil while
+	// the app is healthy ([B.167]).
+	Banner  *rowView
 	Op      *restoreOpView
 	Refresh bool
 	Error   string
@@ -64,6 +67,10 @@ type rowView struct {
 	// MovesCode says the point runs a different version of the app than the one running now,
 	// which is the difference between undoing an edit and the DESIGN §8 rollback.
 	MovesCode bool
+	// Unhealthy says the row carries an `unhealthy` reason: the red mark ([B.167]).
+	Unhealthy bool
+	// Offer says this row is the banner's undo (quadlet.Unhealthy).
+	Offer bool
 }
 
 type restoreOpView struct {
@@ -93,6 +100,11 @@ func (a *app) showHistory(w http.ResponseWriter, r *http.Request, service string
 		v.Error = err.Error()
 	} else {
 		v.Rows = rows
+		for i := range rows {
+			if rows[i].Offer {
+				v.Banner = &rows[i]
+			}
+		}
 	}
 	a.mu.Lock()
 	if op, ok := a.restores[service]; ok {
@@ -125,6 +137,7 @@ func (a *app) rows(ctx context.Context, service string) ([]rowView, string, erro
 		return nil, "", fmt.Errorf("the machine's answer did not parse: %w", err)
 	}
 	running := runningVersion(members)
+	offer, unhealthy := quadlet.Unhealthy(members)
 	var out []rowView
 	for _, h := range quadlet.History(members, time.Local) {
 		v := versionOf(h.Point.Meta.Manifest)
@@ -137,6 +150,8 @@ func (a *app) rows(ctx context.Context, service string) ([]rowView, string, erro
 			Back:      back.Local().Format("Mon 2 Jan 2006, 15:04:05"),
 			Version:   v,
 			MovesCode: v != "" && running != "" && v != running,
+			Unhealthy: h.Point.Meta.Event.Has(quadlet.ReasonUnhealthy),
+			Offer:     unhealthy && h.Point.Member == offer.Member,
 		})
 	}
 	return out, running, nil

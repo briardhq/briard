@@ -26,6 +26,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -240,13 +241,13 @@ func (f *fakeInstaller) ServiceHealth(_ context.Context, url string) (bool, erro
 // ServiceHealthOf is the by-name probe the install gate uses ([B.48]): the guest resolves the
 // address from its routing table, so what the host is asserted to have asked for is a SERVICE,
 // never a URL it assembled.
-func (f *fakeInstaller) ServiceHealthOf(_ context.Context, service string) (bool, error) {
+func (f *fakeInstaller) ServiceHealthOf(_ context.Context, service string) (services.Health, error) {
 	f.steps = append(f.steps, "health")
 	f.healthOf = service
 	if !f.healthy {
-		return false, errors.New("not ready")
+		return services.HealthUnknown, errors.New("not ready")
 	}
-	return true, nil
+	return services.Healthy, nil
 }
 
 // The service-install path has no opinion about names. "" -- this node publishes none -- is the
@@ -1581,15 +1582,17 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 		{Name: "wedged", Manifest: "sha256:bb", Unit: "briard-wedged-app.service"},
 		{Name: "unrouted", Manifest: "sha256:cc", Unit: "briard-unrouted-app.service"},
 		{Name: "stopped", Manifest: "sha256:dd", Unit: "briard-stopped-app.service"},
+		{Name: "starting", Manifest: "sha256:ee", Unit: "briard-starting-app.service"},
 	}}
 	r := fakeStatus{
 		active: map[string]bool{
 			"briard-serving-app.service":  true,
 			"briard-wedged-app.service":   true,
 			"briard-unrouted-app.service": true,
+			"briard-starting-app.service": true,
 		},
 		// "unrouted" is deliberately absent: the guest cannot resolve it.
-		svcHealth: map[string]bool{"serving": true, "wedged": false, "stopped": true},
+		svcHealth: map[string]services.Health{"serving": services.Healthy, "wedged": services.Unhealthy, "starting": services.HealthUnknown, "stopped": services.Healthy},
 	}
 	got := cfg.serviceStatuses(context.Background(), r, true)
 	want := []api.ServiceStatus{
@@ -1599,6 +1602,8 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 		{Name: "unrouted", Manifest: "sha256:cc", State: api.StateRunning},
 		// Not probed at all: State already says stopped, and "unhealthy" would say it twice.
 		{Name: "stopped", Manifest: "sha256:dd", State: api.StateStopped},
+		// Unknown ([B.167]): starting, or our login failed. Says nothing, like unrouted.
+		{Name: "starting", Manifest: "sha256:ee", State: api.StateRunning},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)

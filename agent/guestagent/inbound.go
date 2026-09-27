@@ -225,6 +225,8 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 		Consistency: cons,
 		Manifest:    string(raw),
 		Event:       ev,
+		// A START WAITS FOR ITS BOOT's verdict before it is evaluated (recordMember).
+		Pending: trigger == quadlet.TriggerStart,
 	}
 	sidecar, err := json.Marshal(meta)
 	if err != nil {
@@ -240,9 +242,13 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 }
 
 // recordMember is what every take does once its member exists ([B.167]): evaluate it, add any
-// reason that finds to the member it lands on, and prune. One function for the three ways a member
-// is taken (a start, the host's data.member, the quiesced clock sample), so the history cannot
-// depend on which door a sample came through.
+// reasons that finds to the member they land on, and prune. One function for the three ways a
+// member is taken (a start, the host's data.member, the quiesced clock sample), so the history
+// cannot depend on which door a sample came through.
+//
+// A START IS NOT EVALUATED HERE: what its boot reveals is part of its evaluation, and the pre-start
+// hook cannot wait for a boot. It is written pending, and EvaluateStarts evaluates it once the boot
+// has a verdict. Every other sample is evaluated now.
 //
 // AFTER the take, never before: pruning first would mean a failed take leaves the ring shorter for
 // nothing, and a member is only replaceable once its successor exists.
@@ -250,16 +256,55 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 // BEST-EFFORT, like the prune: the caller may be holding a household's service stopped, and a row
 // missing from its history is a smaller loss than a service that would not start.
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
+	if meta.Pending {
+		pruneRing(ctx, x, meta.Service, meta.TakenAt)
+		return
+	}
 	if members, err := listMembers(ctx, x, meta.Service); err != nil {
 		log.Printf("ring %s: could not read the ring to record %s: %v", meta.Service, path.Base(member), err)
-	} else if point, reasons := evaluate(ctx, x, members, member, meta); len(reasons) > 0 {
-		addReasons(ctx, x, point, reasons, meta.TakenAt)
+	} else {
+		settle(ctx, x, members, quadlet.SnapshotEntry{Member: member, Meta: meta}, nil, meta.TakenAt)
 	}
 	pruneRing(ctx, x, meta.Service, meta.TakenAt)
 }
 
-// previousMember is the newest member taken before this one.
-func previousMember(members []quadlet.SnapshotEntry, member string) (quadlet.SnapshotEntry, bool) {
+// settle is one sample's evaluation, whoever calls it: it closes the older samples still pending
+// as replaced, registers what the evaluation finds (plus `extra`, a start's health reason), and
+// records the sample as evaluated with the health it carries forward.
+//
+// A CRASH LOOP IS ONE EVALUATION. The pending starts before this sample are closed without being
+// evaluated, and this one is compared with the newest EVALUATED sample, so what the loop's first
+// start brought in is still found, and its reasons land on the last point before all of it.
+func settle(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, e quadlet.SnapshotEntry, extra []quadlet.Reason, at time.Time) {
+	// THE BASELINE FIRST, while the loop's starts still read as pending: closed, they would look
+	// evaluated, and the newest of them would be what this sample is compared with.
+	prev, hasPrev := previousEvaluated(members, e.Member)
+	eAt, _ := quadlet.SnapshotMemberTime(e.Member)
+	for i, m := range members {
+		if t, ok := quadlet.SnapshotMemberTime(m.Member); ok && m.Meta.Pending && t.Before(eAt) {
+			m.Meta.Pending = false
+			writeMeta(ctx, x, m.Member, m.Meta, "closed as replaced")
+			members[i] = m
+		}
+	}
+	was := e.Meta
+	if e.Meta.Health == services.HealthUnknown && hasPrev {
+		e.Meta.Health = prev.Meta.Health // carried forward (SnapshotMeta.Health)
+	}
+	e.Meta.Pending = false
+	if e.Meta.Pending != was.Pending || e.Meta.Health != was.Health {
+		writeMeta(ctx, x, e.Member, e.Meta, "evaluated")
+	}
+	if !hasPrev {
+		return
+	}
+	if point, reasons := evaluate(ctx, x, members, prev, e.Member, e.Meta, extra); len(reasons) > 0 {
+		addReasons(ctx, x, point, reasons, at)
+	}
+}
+
+// previousEvaluated is the newest member taken before this one that is not still pending.
+func previousEvaluated(members []quadlet.SnapshotEntry, member string) (quadlet.SnapshotEntry, bool) {
 	at, ok := quadlet.SnapshotMemberTime(member)
 	if !ok {
 		return quadlet.SnapshotEntry{}, false
@@ -268,7 +313,7 @@ func previousMember(members []quadlet.SnapshotEntry, member string) (quadlet.Sna
 	var prevAt time.Time
 	for _, m := range members {
 		t, ok := quadlet.SnapshotMemberTime(m.Member)
-		if ok && m.Member != member && t.Before(at) && t.After(prevAt) {
+		if ok && !m.Meta.Pending && m.Member != member && t.Before(at) && t.After(prevAt) {
 			prev, prevAt = m, t
 		}
 	}
@@ -283,28 +328,29 @@ func previousMember(members []quadlet.SnapshotEntry, member string) (quadlet.Sna
 // *-before member itself IS compared with the one before it, so edits made just before an update
 // are caught, and its finding lands on that earlier member rather than on the operation's own.
 //
-// A comparison can find two things at once, a change and a reset ([B.167d]), and both happened in
-// the same interval, so both are reasons on the same point. Nothing found, at a member that is not
-// an operation's own point, is quiet time (quadlet.QuietPoint).
-func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta) (quadlet.SnapshotEntry, []quadlet.Reason) {
-	if prev, ok := previousMember(members, member); ok && !prev.Meta.Trigger.Before() {
+// A comparison can find two things at once, a change and a reset ([B.167d]), and a start's
+// evaluation may add its health (`extra`); all happened in the same interval, so all are reasons on
+// the same point. Nothing found, at a member that is not an operation's own point, is quiet time
+// (quadlet.QuietPoint).
+func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, prev quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta, extra []quadlet.Reason) (quadlet.SnapshotEntry, []quadlet.Reason) {
+	var found []quadlet.Reason
+	if !prev.Meta.Trigger.Before() {
 		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
 			// The clock's sample is the one taken while the service RUNS.
 			changed, reset, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
 			if err != nil {
 				log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
 			}
-			var found []quadlet.Reason
 			if changed != "" {
 				found = append(found, quadlet.Reason{Kind: quadlet.ReasonChanged, What: changed})
 			}
 			if reset != "" {
 				found = append(found, quadlet.Reason{Kind: quadlet.ReasonReset, What: reset})
 			}
-			if len(found) > 0 {
-				return prev, found
-			}
 		}
+	}
+	if found = append(found, extra...); len(found) > 0 {
+		return prev, found
 	}
 	if meta.Event != nil {
 		return quadlet.SnapshotEntry{}, nil
@@ -315,15 +361,10 @@ func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, 
 	return quadlet.SnapshotEntry{}, nil
 }
 
-// addReasons adds reasons to an existing member's event, or gives it one, by replacing its
-// sidecar once. `at` is the evaluation's time, which becomes the event's creation time if it is
-// new.
+// addReasons adds reasons to an existing member's event, or gives it one. `at` is the
+// evaluation's time, which becomes the event's creation time if it is new.
 //
 // A QUIET EVENT NEVER SHARES ITS RECORD, so quiet is only ever added to a member with no event.
-//
-// ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
-// can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
-// because the next node to read this may be the one that promotes after this one dies.
 func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs []quadlet.Reason, at time.Time) {
 	meta := point.Meta
 	var kinds []string
@@ -334,28 +375,101 @@ func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs
 		meta.Event = meta.Event.With(r, at)
 		kinds = append(kinds, string(r.Kind))
 	}
-	if len(kinds) == 0 {
-		return
+	if len(kinds) > 0 {
+		writeMeta(ctx, x, point.Member, meta, "recorded "+strings.Join(kinds, "+"))
 	}
-	what := strings.Join(kinds, "+")
+}
+
+// writeMeta replaces an existing member's sidecar; `what` names the change for the log.
+//
+// ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
+// can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
+// because the next node to read this may be the one that promotes after this one dies.
+func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta, what string) {
 	b, err := json.Marshal(meta)
 	if err != nil {
-		log.Printf("ring %s: could not render %s's event: %v", meta.Service, path.Base(point.Member), err)
+		log.Printf("ring %s: could not render %s's sidecar: %v", meta.Service, path.Base(member), err)
 		return
 	}
-	sidecar := quadlet.SnapshotSidecar(point.Member)
+	sidecar := quadlet.SnapshotSidecar(member)
 	tmp := sidecar + ".tmp"
 	if err := x.WriteFile(tmp, b); err != nil {
-		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, what, path.Base(point.Member), err)
+		log.Printf("ring %s: %s on %s failed: %v", meta.Service, what, path.Base(member), err)
 		return
 	}
 	if _, err := x.Run(ctx, "mv", "-f", tmp, sidecar); err != nil {
-		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, what, path.Base(point.Member), err)
+		log.Printf("ring %s: %s on %s failed: %v", meta.Service, what, path.Base(member), err)
 		return
 	}
 	if _, err := x.Run(ctx, "sync", "-f", sidecar); err != nil {
-		log.Printf("ring %s: recorded %s on %s but could not flush it: %v", meta.Service, what, path.Base(point.Member), err)
+		log.Printf("ring %s: %s on %s but could not flush it: %v", meta.Service, what, path.Base(member), err)
 	}
+}
+
+// startEvalTick is how often the long-running agent looks for a start whose boot has a verdict.
+const startEvalTick = 10 * time.Second
+
+// EvaluateStarts evaluates each pending start sample once its boot has a verdict ([B.167]), until
+// ctx ends. It runs in the LONG-RUNNING agent, beside the inbound listener, because the pre-start
+// hook that takes a start sample cannot wait for the boot it precedes. Everything it decides is
+// read from the ring and the volume, so a restart of this process loses nothing: a pending sample
+// is still pending on disk.
+func EvaluateStarts(ctx context.Context, x Executor) {
+	ensureToolsOnPath()
+	t := time.NewTicker(startEvalTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		out, err := x.Run(ctx, "ls", "-1", manifestDir)
+		if err != nil {
+			continue // no volume mounted here: this node serves nothing
+		}
+		for _, n := range strings.Fields(string(out)) {
+			if service, ok := strings.CutSuffix(n, ".json"); ok && safeUnitName(service) == nil {
+				evaluatePending(ctx, x, service, time.Now())
+			}
+		}
+	}
+}
+
+// evaluatePending evaluates a service's newest pending start if its boot has a verdict: HEALTHY
+// as soon as it is, anything else once services.HealthGate has passed since the start. A booting
+// app refuses connections and answers 5xx, so nothing but healthy is conclusive early.
+//
+// UNHEALTHY REGISTERS ONLY ON A TRANSITION: the newest evaluated sample carried healthy (or no
+// verdict yet). The reason lands on the sample before the start, which is what undoing it restores.
+func evaluatePending(ctx context.Context, x Executor, service string, now time.Time) {
+	members, err := listMembers(ctx, x, service)
+	if err != nil {
+		return
+	}
+	var pending quadlet.SnapshotEntry
+	for _, m := range members { // oldest first
+		if m.Meta.Pending {
+			pending = m
+		}
+	}
+	if pending.Member == "" {
+		return
+	}
+	h, err := serviceHealth(ctx, x, service)
+	if err != nil {
+		h = services.HealthUnknown
+	}
+	if h != services.Healthy && now.Sub(pending.Meta.TakenAt) < services.HealthGate {
+		return
+	}
+	var extra []quadlet.Reason
+	if prev, ok := previousEvaluated(members, pending.Member); ok && h == services.Unhealthy && prev.Meta.Health != services.Unhealthy {
+		extra = append(extra, quadlet.Reason{Kind: quadlet.ReasonUnhealthy, What: service + " could not start"})
+	}
+	pending.Meta.Health = h
+	settle(ctx, x, members, pending, extra, now)
+	pruneRing(ctx, x, service, now)
 }
 
 // THE CLEAN-STOP MARKER ([B.143]): the one fact that says whether a service's data was FLUSHED,

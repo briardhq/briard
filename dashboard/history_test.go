@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 	"briard.io/shared/api"
 )
 
@@ -248,5 +249,48 @@ func TestHistoryRefusesSomethingThatIsNotAPoint(t *testing.T) {
 	defer port.mu.Unlock()
 	if len(port.asked) != 0 {
 		t.Errorf("a name that is not a point reached the host: %+v", port.asked)
+	}
+}
+
+// TestHistoryMarksAnAppThatDidNotStart ([B.167]): a row with an `unhealthy` reason carries the red
+// mark, and while the app is unhealthy a banner offers the undo back to its last healthy state --
+// and says nothing once it is healthy again.
+func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
+	at := time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local)
+	point := quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, at)
+	start := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, at.Add(time.Minute))
+	members := func(h services.Health) string {
+		raw, _ := json.Marshal([]quadlet.SnapshotEntry{
+			{Member: point, Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: at,
+				Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.9.0"},
+					{Kind: quadlet.ReasonUnhealthy, What: "home-assistant could not start"}}}}},
+			{Member: start, Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: at.Add(time.Minute), Health: h}},
+		})
+		return string(raw)
+	}
+	for _, c := range []struct {
+		health services.Health
+		banner bool
+	}{{services.Unhealthy, true}, {services.Healthy, false}} {
+		r := newRig(t)
+		cookie := r.trust()
+		port := newFakePort()
+		r.app.port = port
+		go func() {
+			for range port.waiting {
+				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: members(c.health)}
+			}
+		}()
+		req, _ := http.NewRequest("GET", r.srv.URL+"/history/home-assistant", nil)
+		req.AddCookie(cookie)
+		got, err := http.DefaultClient.Do(req)
+		must(t, err)
+		body := bodyOf(t, got)
+		if !strings.Contains(body, `class="what bad">Updated to 2026.9.0, did not start`) {
+			t.Errorf("%s: the row that did not start carries no mark:\n%s", c.health, body)
+		}
+		if got := strings.Contains(body, "is not working"); got != c.banner {
+			t.Errorf("%s: banner shown = %t, want %t:\n%s", c.health, got, c.banner, body)
+		}
 	}
 }

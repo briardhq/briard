@@ -66,18 +66,18 @@ func Readiness(ctx context.Context, x Executor, port int) ([]Entry, error) {
 // Assistant documents.
 func connect(ctx context.Context, x Executor, port int) (string, string, error) {
 	if port < 1 || port > 65535 {
-		return "", "", fmt.Errorf("hass: port %d out of range", port)
+		return "", "", fmt.Errorf("hass: port %d out of range: %w", port, errNoChannel)
 	}
 	raw, err := x.ReadFile(TokenPath)
 	if err != nil {
 		// No token means the control channel was never materialised on this node — Prepare did
 		// not run, or /run was cleared under a running guest. Say which, because the caller's
 		// only alternative reading is "Home Assistant is broken", and it is not.
-		return "", "", fmt.Errorf("hass: no control token at %s: %w", TokenPath, err)
+		return "", "", fmt.Errorf("hass: no control token at %s: %w (%w)", TokenPath, err, errNoChannel)
 	}
 	token := strings.TrimSpace(string(raw))
 	if token == "" {
-		return "", "", fmt.Errorf("hass: the control token at %s is empty", TokenPath)
+		return "", "", fmt.Errorf("hass: the control token at %s is empty: %w", TokenPath, errNoChannel)
 	}
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
 	access, err := exchange(ctx, base, token)
@@ -109,7 +109,7 @@ func exchange(ctx context.Context, base, token string) (string, error) {
 		// A 400 here is the interesting one: it means HA does not know our token, i.e. the mint
 		// did not stick. Worth naming, because the caller degrades to floor-only either way and
 		// the log line is the only place the difference is visible.
-		return "", fmt.Errorf("hass: exchange token: HTTP %d", resp.StatusCode)
+		return "", httpStatus{"hass: exchange token", resp.StatusCode}
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`

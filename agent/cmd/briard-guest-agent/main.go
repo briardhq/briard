@@ -100,6 +100,9 @@ func runDaemon(args []string) {
 		//
 		// Nothing in the product invokes this. The harness supplies the trigger the host would
 		// have supplied, and nothing else.
+		// The start evaluator rides along for the same reason: it is the other half of the ring
+		// that lives in the long-running agent ([B.167]).
+		go guestagent.EvaluateStarts(ctx, guestfirmware.NewOSExecutor())
 		if err := guestagent.ListenInbound(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("inbound channel: %v", err)
 		}
@@ -287,6 +290,10 @@ func runGuest(ctx context.Context) error {
 			log.Printf("inbound channel: %v; services' own restarts will not be snapshotted", err)
 		}
 	}()
+	// THE START EVALUATOR ([B.167]): a start sample is evaluated once its boot has a verdict,
+	// which only a process that outlives the pre-start hook can wait for. Its own goroutine, for
+	// the reason above.
+	go guestagent.EvaluateStarts(ctx, x)
 	// THE PUSH PROTOCOL'S START-TIME DUTY ([B.138]), before the port: a trial start is the
 	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
 	// verdict exits here, port never opened, so the host's reconnect meets the committed agent

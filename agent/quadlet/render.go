@@ -584,6 +584,14 @@ type SnapshotMeta struct {
 	// (history.go). An operation writes it with its *-before member; what an evaluation finds is
 	// added to the previous member's sidecar as a reason.
 	Event *Event `json:"event,omitempty"`
+	// Pending marks a start sample waiting for its boot's verdict before it is evaluated
+	// ([B.167]). The long-running guest agent clears it; the ring keeps a pending sample.
+	Pending bool `json:"pending,omitempty"`
+	// Health is the app's service health as of this sample, once it is evaluated: a start's is
+	// its boot's verdict, and every other sample carries its predecessor's forward, so the
+	// healthy → unhealthy transition survives the pruning of the start that measured it. Empty
+	// means unknown.
+	Health services.Health `json:"health,omitempty"`
 }
 
 // DataPath is one container's plain subdirectory inside that subvolume.

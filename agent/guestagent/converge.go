@@ -842,6 +842,30 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 	return u.String(), nil
 }
 
+// serviceHealth is SERVICE HEALTH, the one answer to "does this app work" ([B.167]): the registry's
+// override for a curated app that has one (services.HealthOverride), otherwise the manifest's
+// healthPath answering 200. The status report, the app-update gate and the history all ask here.
+//
+// An unresolvable service is an ERROR, never a verdict (serviceHealthURL says why). A manifest
+// that cannot be read on the volume leaves the default probe, which needs none.
+func serviceHealth(ctx context.Context, x Executor, service string) (services.Health, error) {
+	url, err := serviceHealthURL(x, service)
+	if err != nil {
+		return services.HealthUnknown, err
+	}
+	if raw, err := x.ReadFile(manifestPath(service)); err == nil {
+		if m, _, err := manifest.Parse(raw); err == nil {
+			if h, ok := services.HealthOverride(ctx, x, m, m.Primary().Port); ok {
+				return h, nil
+			}
+		}
+	}
+	if probeHTTPOK(ctx, url) {
+		return services.Healthy, nil
+	}
+	return services.Unhealthy, nil
+}
+
 // ensurePodNetwork creates the podman network private pods join, if it is not already there.
 //
 // IT IS THE NODE'S JOB, NEVER QUADLET'S. A `.network` unit would make network creation a

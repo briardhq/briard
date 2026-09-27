@@ -23,6 +23,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/services"
 	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
@@ -137,12 +138,13 @@ const (
 	verbServiceActive = "service.active" // systemctl is-active <unit> -> bool
 	verbServiceHealth = "service.health" // in-guest GET of the service's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
 	verbServiceSince  = "service.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
-	// verbServiceHealthOf is the same probe asked BY SERVICE NAME ([B.48]): the guest resolves the
-	// address from its own routing table instead of being handed one. A separate verb rather than
-	// a field on service.health, so an older guest refuses it loudly instead of silently probing
-	// an empty URL and reporting the service unhealthy -- which on the install gate would revert a
-	// perfectly good install.
-	verbServiceHealthOf = "service.healthof"
+	// verbServiceHealthOf is SERVICE HEALTH asked BY SERVICE NAME ([B.48], [B.167]): the guest
+	// resolves the address from its own routing table and answers healthy, unhealthy or unknown
+	// (serviceHealth). A separate verb rather than a field on service.health, so an older guest
+	// refuses it loudly instead of silently probing an empty URL and reporting the service
+	// unhealthy -- which on the install gate would revert a perfectly good install. Named for
+	// its three-valued answer: the two-valued `service.healthof` it replaced is gone.
+	verbServiceHealthOf = "service.health.state"
 	verbDataSnapshot    = "data.snapshot" // btrfs subvolume snapshot -r <DataDir> <dest>
 	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
 	// the sidecar beside it ([B.143]). A NEW NAME rather than a field on data.snapshot, and that
@@ -997,11 +999,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// the install gate -- the first is worth retrying until the deadline, the second is
 			// the thing being measured -- and collapsing them would revert an install because a
 			// table was written a moment late.
-			url, err := serviceHealthURL(x, req.Service)
-			if err != nil {
-				return nil, err
-			}
-			return probeHTTPOK(ctx, url), nil
+			return serviceHealth(ctx, x, req.Service)
 		case verbServiceSince:
 			req, err := unitReq(payload)
 			if err != nil {
@@ -2753,7 +2751,7 @@ func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 	return ok, err
 }
 
-// ServiceHealthOf asks the guest whether ONE NAMED SERVICE is serving, letting the guest resolve
+// ServiceHealthOf asks the guest for ONE NAMED SERVICE's health ([B.167]), letting the guest resolve
 // the address from its own routing table ([B.48]).
 //
 // It replaces callers that built `http://127.0.0.1:<port>` from the manifest. That URL is correct
@@ -2761,12 +2759,12 @@ func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 // host answers on it is decided by the renderer. Asking by name is what keeps the install gate and
 // the steady-state probe pointed wherever the front door is pointed.
 //
-// An unresolvable service returns an ERROR, never a false: "I cannot find it" must not be read as
+// An unresolvable service returns an ERROR, never a verdict: "I cannot find it" must not be read as
 // "it is broken" by a gate that reverts installs.
-func (g *Client) ServiceHealthOf(ctx context.Context, service string) (bool, error) {
-	var ok bool
-	err := g.c.Call(ctx, verbServiceHealthOf, serviceRequest{Service: service}, &ok)
-	return ok, err
+func (g *Client) ServiceHealthOf(ctx context.Context, service string) (services.Health, error) {
+	var h services.Health
+	err := g.c.Call(ctx, verbServiceHealthOf, serviceRequest{Service: service}, &h)
+	return h, err
 }
 
 // ServiceActiveSince reports the unit's ActiveEnterTimestampMonotonic (usec since boot),
