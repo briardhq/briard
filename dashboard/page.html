@@ -136,7 +136,7 @@
       <p>{{$.Service}} is not working. Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
       <form method="post" action="/undo">
         <input type="hidden" name="point" value="{{.Point}}">
-        <input type="hidden" name="what" value="{{.What}}">
+        <input type="hidden" name="what" value="{{or .What .Caption}}">
         <button type="submit">Undo these changes</button>
       </form>
     </div>{{end}}
@@ -144,11 +144,12 @@
     <ol class="history">
       {{range .Rows}}<li tabindex="0">
         <span class="when">{{.When}}</span>
-        <span class="what{{if .Unhealthy}} bad{{end}}">{{.What}}</span>
+        <span class="what">{{.What}}</span>
+        {{if .Caption}}<span class="bad">{{.Caption}}</span>{{end}}
         {{if or .MovesCode .Note}}<span class="muted">{{if .MovesCode}}also goes back to {{.Version}}{{end}}{{if and .MovesCode .Note}} · {{end}}{{.Note}}</span>{{end}}
         <form method="post" action="/undo" class="undo">
           <input type="hidden" name="point" value="{{.Point}}">
-          <input type="hidden" name="what" value="{{.What}}">
+          <input type="hidden" name="what" value="{{or .What .Caption}}">
           <button type="submit">Undo these changes</button>
         </form>
       </li>{{end}}

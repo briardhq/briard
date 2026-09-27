@@ -60,7 +60,8 @@ const (
 type Reason struct {
 	Kind ReasonKind `json:"kind"`
 	// What is the phrase a household reads, e.g. "Updated to 2026.9.1" or "Added Frigate, changed
-	// automations". Empty for quiet, whose words depend on the rows around it (History).
+	// automations". Empty for quiet, whose words depend on the rows around it, and for unhealthy,
+	// which is a row's caption rather than words of its own (History).
 	What string `json:"what,omitempty"`
 }
 
@@ -245,8 +246,12 @@ func RetentionPrune(members []SnapshotEntry, now time.Time) []string {
 // A HistoryRow is one line of an app's history as a household reads it.
 type HistoryRow struct {
 	Reasons []Reason
-	// What is the row's title, built from its reasons.
+	// What is the row's title, built from its reasons. An `unhealthy` reason is not in it; it is
+	// the row's Caption.
 	What string
+	// Caption is the red-marked line under a row whose app did not come up healthy after it
+	// ([B.167], owner 2026-09-27), or "" for every other row.
+	Caption string
 	// At is the event's creation time, which is what the row shows.
 	At time.Time
 	// Point is the restore point: undoing this row, and so every row above it, puts it back.
@@ -270,21 +275,20 @@ func History(members []SnapshotEntry, loc *time.Location) []HistoryRow {
 			next = &rows[i-1]
 		}
 		rows[i].What = title(rows[i], next, loc)
+		if rows[i].Point.Meta.Event.Has(ReasonUnhealthy) {
+			rows[i].Caption = rows[i].Point.Meta.Service + " failed to start cleanly after this change."
+		}
 	}
 	return rows
 }
 
 // title is a row's words, from its reasons in the order they arrived. A quiet row's span is the
-// time until the next event, so it is rendered here rather than stored. Unhealthy reads as its
-// own phrase alone ("home-assistant could not start") and as a suffix beside others ("Updated to
-// 2026.9, did not start").
+// time until the next event, so it is rendered here rather than stored.
 func title(r HistoryRow, next *HistoryRow, loc *time.Location) string {
 	var parts []string
-	var unhealthy string
 	for _, reason := range r.Reasons {
 		switch {
 		case reason.Kind == ReasonUnhealthy:
-			unhealthy = reason.What
 		case reason.Kind != ReasonQuiet:
 			parts = append(parts, reason.What)
 		case next == nil:
@@ -292,13 +296,6 @@ func title(r HistoryRow, next *HistoryRow, loc *time.Location) string {
 		default:
 			parts = append(parts, "Ran normally until "+next.At.In(loc).Format("Mon 15:04"))
 		}
-	}
-	switch {
-	case unhealthy == "":
-	case len(parts) == 0:
-		return unhealthy
-	default:
-		return strings.Join(parts, "; ") + ", did not start"
 	}
 	return strings.Join(parts, "; ")
 }

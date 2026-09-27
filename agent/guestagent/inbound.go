@@ -466,7 +466,7 @@ func evaluatePending(ctx context.Context, x Executor, service string, now time.T
 	h = h.Settled() // HealthGate has passed: still starting is not working
 	var extra []quadlet.Reason
 	if prev, ok := previousEvaluated(members, pending.Member); ok && h == services.Unhealthy && prev.Meta.Health != services.Unhealthy {
-		extra = append(extra, quadlet.Reason{Kind: quadlet.ReasonUnhealthy, What: service + " could not start"})
+		extra = append(extra, quadlet.Reason{Kind: quadlet.ReasonUnhealthy})
 	}
 	pending.Meta.Health = h
 	settle(ctx, x, members, pending, extra, now)

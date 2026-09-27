@@ -613,15 +613,14 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// where the operator is looking. The row shows the EVENT's time; the point under it is what
 	// undoing it puts back.
 	//
-	// A row whose app did not start carries the page's red mark as a `!` ([B.167]).
+	// A row whose app did not start cleanly carries the page's red caption as a `!` line ([B.167]).
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
-		mark := " "
-		if r.Point.Meta.Event.Has(quadlet.ReasonUnhealthy) {
-			mark = "!"
+		fmt.Fprintf(stdout, "%s  %s%s\n", r.At.Local().Format("2006-01-02 15:04"), r.What, consistencyNote(r.Point.Meta.Consistency))
+		if r.Caption != "" {
+			fmt.Fprintf(stdout, "  ! %s\n", r.Caption)
 		}
-		fmt.Fprintf(stdout, "%s %s  %s%s\n", mark, r.At.Local().Format("2006-01-02 15:04"), r.What, consistencyNote(r.Point.Meta.Consistency))
-		fmt.Fprintf(stdout, "      %s\n", r.Point.Member)
+		fmt.Fprintf(stdout, "    %s\n", r.Point.Member)
 	}
 	if p, ok := quadlet.Unhealthy(members); ok {
 		// The page's banner, as a line next to the prompt.

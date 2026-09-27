@@ -304,21 +304,27 @@ func TestRetentionWaitsForEvaluation(t *testing.T) {
 	}
 }
 
-// TestHistoryTitlesUnhealthy: alone it names the app; beside an operation it is a suffix.
-func TestHistoryTitlesUnhealthy(t *testing.T) {
-	alone := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "home-assistant could not start")
+// TestHistoryCaptionsUnhealthy (owner, 2026-09-27): `unhealthy` is never in a title. A row that
+// carries it gets the red caption, alone or beside other reasons, and no other row does.
+func TestHistoryCaptionsUnhealthy(t *testing.T) {
+	alone := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "")
 	update := anchor(TriggerAppUpdateBefore, 2*time.Hour, ReasonAppUpdate, 0, "Updated to 2026.9.0")
-	update.Meta.Event = update.Meta.Event.With(Reason{Kind: ReasonUnhealthy, What: "home-assistant could not start"}, retentionNow)
-	rows := History([]SnapshotEntry{alone, update}, time.UTC)
-	if rows[0].What != "Updated to 2026.9.0, did not start" || rows[1].What != "home-assistant could not start" {
-		t.Errorf("titles = %q, %q", rows[0].What, rows[1].What)
+	update.Meta.Event = update.Meta.Event.With(Reason{Kind: ReasonUnhealthy}, retentionNow)
+	change := anchor(TriggerStart, time.Hour, ReasonChanged, 0, "Changed automations")
+	rows := History([]SnapshotEntry{alone, update, change}, time.UTC)
+	const caption = "home-assistant failed to start cleanly after this change."
+	if rows[1].What != "Updated to 2026.9.0" || rows[2].What != "" {
+		t.Errorf("titles = %q, %q; unhealthy must not be in a title", rows[1].What, rows[2].What)
+	}
+	if rows[1].Caption != caption || rows[2].Caption != caption || rows[0].Caption != "" {
+		t.Errorf("captions = %q, %q, %q", rows[0].Caption, rows[1].Caption, rows[2].Caption)
 	}
 }
 
 // TestUnhealthyOffersTheLastHealthyState: while the newest evaluated sample says unhealthy, the
 // banner's undo is the newest unhealthy row's point; once healthy again, no banner.
 func TestUnhealthyOffersTheLastHealthyState(t *testing.T) {
-	point := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "home-assistant could not start")
+	point := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "")
 	start := sample(TriggerStart, 2*time.Hour)
 	start.Meta.Health = services.Unhealthy
 	pending := sample(TriggerStart, time.Minute)

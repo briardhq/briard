@@ -263,7 +263,7 @@ func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 		raw, _ := json.Marshal([]quadlet.SnapshotEntry{
 			{Member: point, Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: at,
 				Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.9.0"},
-					{Kind: quadlet.ReasonUnhealthy, What: "home-assistant could not start"}}}}},
+					{Kind: quadlet.ReasonUnhealthy}}}}},
 			{Member: start, Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: at.Add(time.Minute), Health: h}},
 		})
 		return string(raw)
@@ -286,7 +286,7 @@ func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 		got, err := http.DefaultClient.Do(req)
 		must(t, err)
 		body := bodyOf(t, got)
-		if !strings.Contains(body, `class="what bad">Updated to 2026.9.0, did not start`) {
+		if !strings.Contains(body, `class="what">Updated to 2026.9.0</span>`) || !strings.Contains(body, `class="bad">home-assistant failed to start cleanly after this change.</span>`) {
 			t.Errorf("%s: the row that did not start carries no mark:\n%s", c.health, body)
 		}
 		if got := strings.Contains(body, "is not working"); got != c.banner {

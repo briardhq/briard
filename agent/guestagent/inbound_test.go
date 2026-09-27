@@ -1116,7 +1116,7 @@ func TestAStartWaitsForItsBootsVerdict(t *testing.T) {
 	if got.Pending || got.Health != services.Unhealthy {
 		t.Fatalf("after the gate the start reads %+v, want evaluated unhealthy", got)
 	}
-	if ev := eventOn(t, f, base); !ev.Has(quadlet.ReasonUnhealthy) || ev.Reasons[0].What != "home-assistant could not start" {
+	if ev := eventOn(t, f, base); !ev.Has(quadlet.ReasonUnhealthy) {
 		t.Errorf("the point before the start carries %+v, want unhealthy", ev)
 	}
 

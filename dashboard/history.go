@@ -16,6 +16,7 @@ package main
 // the change.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,8 +68,8 @@ type rowView struct {
 	// MovesCode says the point runs a different version of the app than the one running now,
 	// which is the difference between undoing an edit and the DESIGN §8 rollback.
 	MovesCode bool
-	// Unhealthy says the row carries an `unhealthy` reason: the red mark ([B.167]).
-	Unhealthy bool
+	// Caption is the red-marked line under a row whose app did not start cleanly after it ([B.167]).
+	Caption string
 	// Offer says this row is the banner's undo (quadlet.Unhealthy).
 	Offer bool
 }
@@ -150,7 +151,7 @@ func (a *app) rows(ctx context.Context, service string) ([]rowView, string, erro
 			Back:      back.Local().Format("Mon 2 Jan 2006, 15:04:05"),
 			Version:   v,
 			MovesCode: v != "" && running != "" && v != running,
-			Unhealthy: h.Point.Meta.Event.Has(quadlet.ReasonUnhealthy),
+			Caption:   h.Caption,
 			Offer:     unhealthy && h.Point.Member == offer.Member,
 		})
 	}
@@ -253,7 +254,7 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 		http.Error(w, "that point is no longer on this machine\n", http.StatusNotFound)
 		return
 	}
-	v := confirmView{Service: service, Point: point, What: chosen.What, Back: chosen.Back,
+	v := confirmView{Service: service, Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
 		Note: chosen.Note, MovesCode: chosen.MovesCode, To: chosen.Version}
 	if chosen.MovesCode {
 		v.From = running
