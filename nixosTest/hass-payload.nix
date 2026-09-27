@@ -209,6 +209,27 @@ pkgs.testers.runNixOSTest {
     sidecar = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{member}.json"))
     assert sidecar["service"] == "home-assistant", sidecar
     assert sidecar["trigger"] == "start", sidecar
+
+    # THE START IS EVALUATED AFTER ITS BOOT ([B.167c]). The pre-start hook writes the sample
+    # pending; only the long-running agent's evaluator (here the harness's --inbound-listen) clears
+    # it, and it does so with the boot's service health, which for Home Assistant is /api/config
+    # through our token. A pending sample left behind, or one without that verdict, means the
+    # evaluator never ran or never reached the app.
+    def _start_evaluated(_last):
+        names = [
+            n
+            for n in node1.succeed(
+                "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-start-' || true"
+            ).split()
+            if not n.endswith(".json")
+        ]
+        if not names:
+            return False
+        sc = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{names[-1]}.json"))
+        return not sc.get("pending") and sc.get("health") == "healthy"
+
+    retry(_start_evaluated, timeout=420)
+
     # Byte-identical to what the volume names, DERIVED rather than restated: a version literal
     # here would assert that someone typed the same string twice, not that the member carries the
     # identity it was taken under.
