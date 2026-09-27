@@ -132,8 +132,8 @@ func Select(override string) Selection {
 // devices its config names, before it asks anything about a parent.
 func Up(dev string) bool { return exists("/sys/class/net/"+dev) && up(dev) }
 
-// Usable reports whether the install may proceed on this selection. Wireless is not a fault here:
-// its severity is the report card's call, not the selector's.
+// Usable reports whether the agent may build on this selection. Wireless is not a fault here: its
+// severity is the report card's call, not the selector's.
 func (s Selection) Usable() bool { return s.Dev != "" && s.Err == nil }
 
 // Fix is the remedy line, and it is the whole safety margin: what was picked, why, what failed,
@@ -154,7 +154,7 @@ func (s Selection) Fix() string {
 	case s.Err != nil:
 		fmt.Fprintf(&b, "%s was chosen because it holds this machine's default route, but it cannot carry the guest's network: %v", s.Dev, s.Err)
 	case s.Wireless:
-		fmt.Fprintf(&b, "%s is wireless: the guest gets its own MAC on your network, and no household access point carries a second MAC behind one wireless station", s.Dev)
+		fmt.Fprintf(&b, "%s is wireless, and Wi-Fi support is coming soon: until then briard needs a wired connection, because the guest gets its own MAC on your network and no household access point carries a second MAC behind one wireless station", s.Dev)
 	default:
 		return ""
 	}

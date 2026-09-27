@@ -43,10 +43,10 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 		},
 		{
 			// The probe passes on a wireless station and the frames die at the access point, so
-			// this message is the only warning there is.
+			// this message is the only explanation there is.
 			"wireless",
 			Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}},
-			[]string{"wlan0 is wireless", "no household access point", "BRIARD_NIC=wlan0"},
+			[]string{"wlan0 is wireless", "coming soon", "no household access point", "BRIARD_NIC=wlan0"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,9 +72,8 @@ func TestFixOnABareMachineDoesNotOfferTheOverride(t *testing.T) {
 	}
 }
 
-// A usable selection has nothing to say. (Usable is what the install branches on, so a wireless
-// device -- warned about, admitted -- must still read as usable here: its severity is the report
-// card's call, not the selector's.)
+// A usable selection has nothing to say. (A wireless device must still read as usable here: the
+// report card refuses it, and that severity is the card's call, not the selector's.)
 func TestUsableAndTheSilentFix(t *testing.T) {
 	ok := Selection{Dev: "eth0", Probed: true}
 	if !ok.Usable() || ok.Fix() != "" {
@@ -82,7 +81,7 @@ func TestUsableAndTheSilentFix(t *testing.T) {
 	}
 	wifi := Selection{Dev: "wlan0", Wireless: true, Probed: true}
 	if !wifi.Usable() {
-		t.Error("wireless is a warning, not an unusable selection")
+		t.Error("wireless is the report card's refusal, not an unusable selection")
 	}
 	bad := Selection{Err: ErrNoDefaultRoute}
 	if bad.Usable() {

@@ -241,15 +241,15 @@ func Assess(f HostFacts) Report {
 	// unusable cases refuse BEFORE anything is written, carrying nic.Selection.Fix -- what was
 	// picked, why, what failed, the override, and the devices to choose from.
 	//
-	// Wireless stays a WARN, and stays separate from the probe: the kernel creates a macvtap on a
+	// Wireless REFUSES, and is judged separately from the probe: the kernel creates a macvtap on a
 	// wireless station without complaint and the frames die at the access point, so the probe
-	// cannot see it. (Whether it should be a refusal is [B.150]'s open question (i) -- it wants a
-	// measurement, not a guess, and until then the honest answer is the yellow try-me tier.)
+	// cannot see it ([V3c.3]). Wi-Fi comes back as a yellow tier meaning "everything but failover",
+	// which needs ipvtap; until then the honest answer is "coming soon", not a node nobody reaches.
 	switch {
 	case f.NIC.Err != nil:
 		cs = append(cs, Check{"network", Refuse, nicDetail(f.NIC), f.NIC.Fix()})
 	case f.NIC.Wireless:
-		cs = append(cs, Check{"network", Warn, fmt.Sprintf("%s is wireless (it holds this machine's default route)", f.NIC.Dev), f.NIC.Fix()})
+		cs = append(cs, Check{"network", Refuse, fmt.Sprintf("%s is wireless (it holds this machine's default route)", f.NIC.Dev), f.NIC.Fix()})
 	default:
 		cs = append(cs, Check{"network", Pass, nicDetail(f.NIC), ""})
 	}

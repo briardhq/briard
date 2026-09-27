@@ -85,6 +85,13 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 			f.NIC = nic.Selection{Dev: "tun0", Probed: true, Candidates: []string{"eth0", "tun0"},
 				Err: errors.New("a macvtap could not be created on it (argument \"tun0\" is wrong: Device does not support macvlan)")}
 		}, "network", "BRIARD_NIC=eth0"},
+		// The selected NIC is a wireless station. The probe PASSES there -- the kernel makes the
+		// macvtap without complaint and the frames die at the access point -- so this refuses
+		// separately from it, saying Wi-Fi is coming rather than leaving the household a node
+		// nobody can reach ([V3c.3]).
+		{"wifi only", func(f *HostFacts) {
+			f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
+		}, "network", "coming soon"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
 	}
 	for _, tc := range cases {
@@ -106,26 +113,8 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 	}
 }
 
-// Warns steer honestly but still admit: WiFi-only (green wants wired) and below-recommended RAM.
+// Warns steer honestly but still admit: below-recommended RAM, no local mDNS resolver.
 func TestAssessWarnsStillAdmit(t *testing.T) {
-	// The selected NIC is a wireless station. The probe PASSES there -- the kernel makes the
-	// macvtap without complaint and the frames die at the access point -- so this is warned about
-	// separately from it, and remains a warn until [B.150]'s open question (i) is measured.
-	t.Run("wifi only", func(t *testing.T) {
-		f := capable()
-		f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
-		r := Assess(f)
-		c := find(t, r, "network")
-		if c.Status != Warn || c.Fix == "" {
-			t.Fatalf("wifi-only network = %+v, want warn+fix", c)
-		}
-		if !strings.Contains(c.Detail, "wlan0") {
-			t.Errorf("detail = %q, want it to name the device it judged", c.Detail)
-		}
-		if !r.Admit() {
-			t.Error("a wifi-only host warns but is still admitted (yellow tier)")
-		}
-	})
 	// [V3b.19] A host with no mDNS resolver is told BEFORE the install that the name it is about
 	// to be handed will not resolve on this box, and is admitted anyway: the address always works,
 	// the rest of the LAN resolves the name fine, and this is a fact about the household's own
