@@ -197,20 +197,36 @@ func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, con
 // report, the app-update gate and the history alike. Node health (api.NodeStatus.Healthy) and the
 // S1 readiness gate are different questions with their own names.
 //
-// The values are the status report's own spellings (api.StateHealthy, api.StateUnhealthy), so the
-// report carries one without translating it; unknown is the empty string, which the report
-// already reads as "not asked or could not tell".
+// FOUR VALUES, each one plain fact (owner, 2026-09-27): healthy; unhealthy; STARTING, which means
+// still booting and nothing else; and unknown, which means the app has told us nothing — our
+// login to it failing, or it stopping. Starting is not a kind of unknown: an app still starting
+// once HealthGate has passed is not working (Settled).
+//
+// Healthy, unhealthy and starting are the status report's own spellings (api.StateHealthy,
+// api.StateUnhealthy, api.StateStarting), so the report carries them without translating; unknown
+// is the empty string, which the report already reads as "not asked or could not tell".
 type Health string
 
 const (
 	Healthy       Health = api.StateHealthy
 	Unhealthy     Health = api.StateUnhealthy
+	Starting      Health = api.StateStarting
 	HealthUnknown Health = ""
 )
 
 // HealthGate bounds how long an app gets to become healthy after a start: the app-update gate's
 // deadline, and how long a start sample's evaluation waits for the boot's verdict ([B.167]).
 const HealthGate = 5 * time.Minute
+
+// Settled is the verdict once HealthGate has passed since the start: an app still starting is
+// unhealthy, and every other answer stands. The gate reverts on unhealthy and never on unknown
+// (owner, 2026-09-27), and the history records the same verdict the gate acts on.
+func (h Health) Settled() Health {
+	if h == Starting {
+		return Unhealthy
+	}
+	return h
+}
 
 // HealthOverride is a curated app's own health check, or ok=false for an app that has none, whose
 // health is then its manifest's healthPath answering 200 ([B.167]).
@@ -222,13 +238,15 @@ func HealthOverride(ctx context.Context, x Executor, m manifest.Manifest, port i
 	if m.Name != hass.Name {
 		return HealthUnknown, false
 	}
-	switch healthy, known := hass.Health(ctx, x, port); {
-	case !known:
-		return HealthUnknown, true
-	case healthy:
+	switch hass.Health(ctx, x, port) {
+	case hass.VerdictHealthy:
 		return Healthy, true
+	case hass.VerdictStarting:
+		return Starting, true
+	case hass.VerdictUnhealthy:
+		return Unhealthy, true
 	}
-	return Unhealthy, true
+	return HealthUnknown, true
 }
 
 // RestoreMarkers names the files a service writes inside its own data to say "a restore of MY

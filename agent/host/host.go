@@ -1917,7 +1917,7 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 			// it has no route for, and a node mid-converge is briefly in exactly that state; a
 			// report of "unhealthy" there would be a false alarm about a healthy household, on a
 			// field whose whole value is that someone acts on it. So does UNKNOWN ([B.167]): an app
-			// that is starting, or one our login to it failed for, has told us nothing.
+			// our login to it failed for has told us nothing.
 			//
 			// SERVICE HEALTH is the guest's one answer (services.Health), spelled with this
 			// field's own values, so it is carried rather than translated.

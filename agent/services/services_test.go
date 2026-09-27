@@ -403,3 +403,16 @@ func TestServiceDirMatchesTheRegistry(t *testing.T) {
 		}
 	}
 }
+
+// TestStartingIsSettledAsUnhealthy (owner, 2026-09-27): once HealthGate has passed, an app still
+// starting is not working -- the gate reverts it and the history records it so -- while unknown
+// stays unknown, and never reverts.
+func TestStartingIsSettledAsUnhealthy(t *testing.T) {
+	for h, want := range map[Health]Health{
+		Starting: Unhealthy, Unhealthy: Unhealthy, Healthy: Healthy, HealthUnknown: HealthUnknown,
+	} {
+		if got := h.Settled(); got != want {
+			t.Errorf("%q.Settled() = %q, want %q", h, got, want)
+		}
+	}
+}

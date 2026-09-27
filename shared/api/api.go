@@ -174,11 +174,17 @@ type ServiceStatus struct {
 	// channel hiccuped this cycle knows nothing. Reporting either as stopped would make an
 	// ordinary standby indistinguishable from a broken primary.
 	State string `json:"state,omitempty"`
-	// Health is whether the service itself ANSWERS: the guest GETs the service's own health
-	// endpoint, resolved through the node's routing table, and reports StateHealthy or
-	// StateUnhealthy. Empty means the question does not apply or could not be asked — a Secondary
-	// (which runs nothing), a service that is not running (State already says so), a service with
-	// no HTTP endpoint, or a cycle whose control channel hiccuped.
+	// Health is the service's SERVICE HEALTH ([B.167]): whether the app works, as the guest answers
+	// it — the service's own health endpoint, resolved through the node's routing table, or a
+	// curated app's own check — reported as StateHealthy, StateUnhealthy or StateStarting. Empty
+	// means the question does not apply or could not be asked — a Secondary (which runs nothing),
+	// a service that is not running (State already says so), a cycle whose control channel
+	// hiccuped, or an app that told us nothing (our login to it failing).
+	//
+	// STARTING was added with [B.167c] (owner, 2026-09-27): it means still booting and nothing
+	// else, and without it a restarting service reads as unhealthy for the minute it takes — a
+	// false alarm on a field whose value is that someone acts on it. It carries nothing about the
+	// household beyond what healthy/unhealthy already did.
 	//
 	// Widening the closed allowlist is a deliberate act, so here is the argument, and it is the
 	// second half of the one State makes. State closed the hole where a promoted node ran NOTHING
@@ -211,6 +217,7 @@ const (
 const (
 	StateHealthy   = "healthy"
 	StateUnhealthy = "unhealthy"
+	StateStarting  = "starting"
 )
 
 // MetricAggregate is one field's hourly rollup a node uploads: min/max/avg over the

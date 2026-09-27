@@ -1583,6 +1583,7 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 		{Name: "unrouted", Manifest: "sha256:cc", Unit: "briard-unrouted-app.service"},
 		{Name: "stopped", Manifest: "sha256:dd", Unit: "briard-stopped-app.service"},
 		{Name: "starting", Manifest: "sha256:ee", Unit: "briard-starting-app.service"},
+		{Name: "unknown", Manifest: "sha256:ff", Unit: "briard-unknown-app.service"},
 	}}
 	r := fakeStatus{
 		active: map[string]bool{
@@ -1590,9 +1591,10 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 			"briard-wedged-app.service":   true,
 			"briard-unrouted-app.service": true,
 			"briard-starting-app.service": true,
+			"briard-unknown-app.service":  true,
 		},
 		// "unrouted" is deliberately absent: the guest cannot resolve it.
-		svcHealth: map[string]services.Health{"serving": services.Healthy, "wedged": services.Unhealthy, "starting": services.HealthUnknown, "stopped": services.Healthy},
+		svcHealth: map[string]services.Health{"serving": services.Healthy, "wedged": services.Unhealthy, "starting": services.Starting, "unknown": services.HealthUnknown, "stopped": services.Healthy},
 	}
 	got := cfg.serviceStatuses(context.Background(), r, true)
 	want := []api.ServiceStatus{
@@ -1602,8 +1604,9 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 		{Name: "unrouted", Manifest: "sha256:cc", State: api.StateRunning},
 		// Not probed at all: State already says stopped, and "unhealthy" would say it twice.
 		{Name: "stopped", Manifest: "sha256:dd", State: api.StateStopped},
-		// Unknown ([B.167]): starting, or our login failed. Says nothing, like unrouted.
-		{Name: "starting", Manifest: "sha256:ee", State: api.StateRunning},
+		// Starting is reported as such ([B.167c]); unknown (our login failed) says nothing, like unrouted.
+		{Name: "starting", Manifest: "sha256:ee", State: api.StateRunning, Health: api.StateStarting},
+		{Name: "unknown", Manifest: "sha256:ff", State: api.StateRunning},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)

@@ -1018,11 +1018,11 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 // until the deadline, exactly like one that is not answering yet, because the two are
 // indistinguishable from outside and only one of them is worth reverting an install over.
 //
-// NOR IS UNKNOWN ([B.167]). Service health is one three-valued answer, and unknown means the app
-// has told us nothing: still starting, or our login to it failing, which is not the app. Healthy
-// passes at once; at the deadline, an unknown last answer keeps the install and says so, and only
-// an unhealthy one or an error reverts it. Reverting a working app over our own login would be
-// the gate doing the damage it exists to prevent.
+// NOR IS UNKNOWN ([B.167], owner 2026-09-27). Healthy passes at once. At the deadline the last
+// answer is Settled: unhealthy, or still starting, reverts, as does an error; unknown keeps the
+// install and says so. Unknown means the app has told us nothing — our login to it failing, which
+// is not the app — and reverting a working app over our own login would be the gate doing the
+// damage it exists to prevent.
 func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, service string, logf func(string, ...any)) error {
 	if service == "" {
 		return nil // nothing to probe (a witness never installs)
@@ -1041,7 +1041,7 @@ func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, service 
 			if err != nil {
 				return fmt.Errorf("service did not become healthy within %s (%w)", healthGate, err)
 			}
-			return fmt.Errorf("service did not become healthy within %s", healthGate)
+			return fmt.Errorf("service did not become healthy within %s (it was %s)", healthGate, h)
 		}
 		select {
 		case <-ctx.Done():
