@@ -1444,6 +1444,7 @@ func (o origin) String() string {
 var localOnlyKinds = map[string]bool{
 	api.DirectiveDebugArm:    true,
 	api.DirectiveDebugDisarm: true,
+	api.DirectiveDoctor:      true,
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1460,6 +1461,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveDebugArm || d.Kind == api.DirectiveDebugDisarm {
 		return cfg.applyDebugConsole(ctx, d, logf)
+	}
+	if d.Kind == api.DirectiveDoctor {
+		return cfg.applyDoctor(ctx, d, r)
 	}
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
 		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers {

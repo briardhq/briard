@@ -465,10 +465,17 @@ const (
 	//                        nothing mounted (a Secondary, a witness) reports done("skipped"),
 	//                        which is an answer, not a failure.
 
-	// LOCAL-ONLY KINDS ([B.142a]). These two are refused when they arrive on the cloud's
+	// LOCAL-ONLY KINDS ([B.142a]). These are refused when they arrive on the cloud's
 	// down-channel; the allowlist that does it is localOnlyKinds in agent/host. They sit in this
 	// same block because the taxonomy is one taxonomy -- what differs is which door may carry
 	// them, and that is a property of the call site, never of anything on the Directive struct.
+	DirectiveDoctor = "doctor" // Payload empty. The agent's half of `briard doctor` ([V3c.3]):
+	//                        the node judged live from the agent's own view -- the network it
+	//                        built, the guest channel, role vs DRBD, the address vs the role, the
+	//                        data disk, the volume's space and the cert. Outcome Detail = a JSON
+	//                        list of agent/reportcard.Check. Local-only because the answer is for
+	//                        the person at the machine; what the cloud may learn about a node is
+	//                        NodeStatus, and this must never become a second, wider path upward.
 	DirectiveDebugArm = "debug-arm" // Payload empty. Swap the guest's second serial port from its
 	//                        null backend to a unix socket, so the getty that has been sitting on
 	//                        that port since boot becomes reachable. Outcome Detail = the socket's

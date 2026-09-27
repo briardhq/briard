@@ -1971,3 +1971,18 @@ func (f *fakeExec) ranArgv(argv ...string) bool {
 	}
 	return false
 }
+
+// cert.read hands back the cert as it sits on the volume, and a volume holding none answers ""
+// -- a node with no Briard account is never issued one, and doctor must read that as "none",
+// which it can only do if absence is not an error.
+func TestReadCert(t *testing.T) {
+	g := dial(t, &fakeExec{files: map[string]string{tlsCertPath: "cert-pem-bytes"}})
+	got, err := g.ReadCert(context.Background())
+	if err != nil || got != "cert-pem-bytes" {
+		t.Errorf("ReadCert = %q, %v; want the file's contents", got, err)
+	}
+	got, err = dial(t, &fakeExec{}).ReadCert(context.Background())
+	if err != nil || got != "" {
+		t.Errorf("ReadCert with no cert = %q, %v; want \"\" and no error", got, err)
+	}
+}

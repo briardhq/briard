@@ -290,6 +290,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 	want := map[string]string{
 		"alerts":    groupEveryday,
 		"logs":      groupEveryday,
+		"doctor":    groupEveryday,
 		"app":       groupEveryday,
 		"handover":  groupEveryday,
 		"open":      groupEveryday,

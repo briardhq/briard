@@ -90,6 +90,16 @@ var commands = []command{
 		run: runLogs, probe: []string{"-h"},
 	},
 	{
+		name: "doctor", group: groupEveryday,
+		synopsis: "check this machine now, and say what is wrong",
+		detail: "Where `alerts` and `logs` say what happened, this says what IS: the network, the data\n" +
+			"disk, the system your apps run in, whether this machine serves your home, its address,\n" +
+			"name, space, certificate and clock. Paste its output into an email when asking for help.\n" +
+			"It exits 1 when something failed. The machine's own checks work with the agent down;\n" +
+			"the agent's are waited on for 30 seconds.",
+		run: runDoctor, probe: []string{"-h"},
+	},
+	{
 		name: "app", args: "install|history|undo", group: groupEveryday,
 		synopsis: "install an app, look at its history, or undo changes",
 		detail: "install <name> -- the name is an entry in the signed catalog. It downloads the image,\n" +
@@ -238,7 +248,7 @@ func usage(w io.Writer) {
   help [command]               this message, or one command's options
 
 `+"`alerts`"+` and `+"`logs`"+` read this machine's logs, and `+"`update`"+` starts a systemd unit; all
-three work even when the agent is down. The rest talk to the running briard-agent over its admin
+three work even when the agent is down, and so does the machine's own half of `+"`doctor`"+`. The rest talk to the running briard-agent over its admin
 socket (`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
 
 This machine does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`
@@ -471,7 +481,8 @@ func sockDefault() string {
 // There is no client-side deadline by design: a payload or OS upgrade legitimately runs for
 // minutes (the agent bounds it at 10 and 15 respectively), and a CLI that timed out first would
 // report failure for an op still in flight — then invite the operator to "retry" a node that is
-// mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape.
+// mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape. A caller
+// whose verb changes nothing (doctor) puts a deadline on ctx, and that is honoured.
 func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOutcome, error) {
 	var zero api.DirectiveOutcome
 	var dialer net.Dialer
@@ -482,6 +493,9 @@ func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 		return zero, fmt.Errorf("cannot reach the agent at %s (is briard-agent running, and are you root?): %w", sock, err)
 	}
 	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
 	if err := json.NewEncoder(conn).Encode(d); err != nil {
 		return zero, fmt.Errorf("submitting the directive: %w", err)
 	}

@@ -350,6 +350,7 @@ const (
 	verbReactorActive = "reactor.active" // systemctl is-active drbd-reactor.service -> bool (interim guard)
 	verbReactorEvict  = "reactor.evict"  // drbd-reactorctl evict: hand the work to a peer
 	verbCertWrite     = "cert.write"     // write a renewed cert/key to the DRBD volume
+	verbCertRead      = "cert.read"      // read the cert (never the key) back: `briard doctor`'s expiry check
 	verbResources     = "sys.resources"  // read appliance resource telemetry
 	verbBackupSave    = "backup.save"    // tar+age-encrypt .storage/config to an off-site path
 	verbBackupRestore = "backup.restore" // age-decrypt+extract a backup into the data dir
@@ -376,7 +377,7 @@ var guestCapabilities = []string{
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
-	verbCertWrite,
+	verbCertWrite, verbCertRead,
 	verbDashboardHandoff,
 	verbResources,
 	verbBackupSave, verbBackupRestore,
@@ -904,6 +905,18 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// Flush so the cert replicates before a failover relies on it, the way service.provision does.
 			_, err := x.Run(ctx, "sync", "-f", tlsCertPath)
 			return nil, err
+		case verbCertRead:
+			// The PEM as it sits on the volume; the host parses it, so the guest links no x509.
+			// Absent is "" -- a node with no Briard account is never issued one -- and any other
+			// read failure is an error, so "could not read" never reads as "has none".
+			out, err := x.ReadFile(tlsCertPath)
+			if os.IsNotExist(err) {
+				return "", nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			return string(out), nil
 		case verbBackupSave:
 			var req backupSaveRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2712,6 +2725,14 @@ func (g *Client) Resources(ctx context.Context, services map[string]string, data
 // synced, so a failover serves the same cert.
 func (g *Client) WriteCert(ctx context.Context, cert, key string) error {
 	return g.c.Call(ctx, verbCertWrite, certWriteRequest{Cert: cert, Key: key}, nil)
+}
+
+// ReadCert returns the serving cert chain as PEM, or "" when the volume holds none. Only the
+// node that mounts the volume can answer; the key never crosses the channel.
+func (g *Client) ReadCert(ctx context.Context) (string, error) {
+	var pem string
+	err := g.c.Call(ctx, verbCertRead, struct{}{}, &pem)
+	return pem, err
 }
 
 // BackupSave has the guest seal the home's sacred config (base/includes) to an

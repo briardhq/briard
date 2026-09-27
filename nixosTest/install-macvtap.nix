@@ -521,6 +521,18 @@ pkgs.testers.runNixOSTest {
     )
     print("`briard logs` resolves the console through config.env on a real install")
 
+    # `briard doctor` ([V3c.3]) end to end: the local-only directive through the real socket, the
+    # agent's own snapshot, the guest's answer. Asserted per LINE, on a lone node that serves --
+    # not on the exit status, which the rig's clock (no time server here) and disk may move. The
+    # checks named are the agent's half, which a broken socket, dispatch or guest would lose.
+    doctor = host.execute("/opt/briard/agent/briard-agent doctor")[1]
+    print(doctor)
+    for check in ("agent", "network", "guest", "role", "address"):
+        assert re.search(rf"^\[OK  \] {check} ", doctor, re.M), (
+            f"`briard doctor` does not pass {check} on a healthy lone node:\n{doctor}"
+        )
+    print("`briard doctor` judges a real serving node through the agent")
+
     # What a stranger actually gets. The bare address is a name the front door does not route,
     # so it forwards to the household dashboard ([V3b.31b]) -- which REFUSES a browser with no
     # session and names nothing: 401, one instruction, no inventory. Reaching the VIP is not
