@@ -17,8 +17,8 @@ import (
 // A CLOSED LIST OF SIGNALS, never "the bytes differ". Home Assistant writes its history and entity
 // state continuously, so every two samples differ; a detector that said so would put a row on
 // every sample. These three are the ones a household changes on purpose, and the list stays
-// three: the day event is the safety net for everything else, and an addition needs an argument
-// of its own.
+// three: quiet time is the safety net for everything else, and an addition needs an argument of
+// its own.
 //
 //   - custom_components/*/manifest.json — a custom integration installed, removed or updated,
 //     which covers HACS and manual drops without knowing about HACS.

@@ -880,7 +880,7 @@ func TestDataSnapshotDropsAMemberItCannotLabel(t *testing.T) {
 // so does the host that renders its bytes. Two definitions, one convention -- asserted rather than
 // assumed, because a drift here leaves every member silently unlabelled.
 func TestSidecarPathMatchesTheRenderer(t *testing.T) {
-	member := quadlet.SnapshotMember("ha", quadlet.TriggerUpgrade, time.Unix(0, 0))
+	member := quadlet.SnapshotMember("ha", quadlet.TriggerAppUpdateBefore, time.Unix(0, 0))
 	if got, want := sidecarPath(member), quadlet.SnapshotSidecar(member); got != want {
 		t.Errorf("sidecarPath = %q, quadlet.SnapshotSidecar = %q", got, want)
 	}

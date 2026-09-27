@@ -497,11 +497,11 @@ func TestAppUndoNamesThePointExactly(t *testing.T) {
 // it does not re-derive titles or times, so there is one place either can be wrong.
 func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 	entries := []quadlet.SnapshotEntry{{
-		Member: "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z",
+		Member: "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260920T101500Z",
 		Meta: quadlet.SnapshotMeta{
-			Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
+			Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC),
-			Event:   &quadlet.Event{Kind: quadlet.EventUpdate, At: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC), What: "Updated to 2026.7.1"},
+			Event:   &quadlet.Event{At: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.7.1"}}},
 		},
 	}}
 	body, _ := json.Marshal(entries)
@@ -525,12 +525,12 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
 	entries := []quadlet.SnapshotEntry{
-		{Member: "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z",
-			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced, Event: &quadlet.Event{At: at, What: "clean point"}}},
+		{Member: "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260920T101500Z",
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced, Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "clean point"}}}}},
 		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260921T101500Z",
-			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Crash, Event: &quadlet.Event{At: at, What: "nightly point"}}},
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Crash, Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "nightly point"}}}}},
 		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260922T101500Z",
-			Meta: quadlet.SnapshotMeta{TakenAt: at, Event: &quadlet.Event{At: at, What: "older briard's point"}}},
+			Meta: quadlet.SnapshotMeta{TakenAt: at, Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "older briard's point"}}}}},
 	}
 	body, _ := json.Marshal(entries)
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
@@ -571,7 +571,7 @@ func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 	entries := []quadlet.SnapshotEntry{
 		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T101500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced,
-				Event: &quadlet.Event{Kind: quadlet.EventChange, At: at.Add(time.Hour), What: "Changed automations"}}},
+				Event: &quadlet.Event{At: at.Add(time.Hour), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "Changed automations"}}}}},
 		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T111500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Hour), Consistency: quadlet.Quiesced}},
 	}

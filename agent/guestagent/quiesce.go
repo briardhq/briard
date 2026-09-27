@@ -27,7 +27,7 @@ type quiescedResult struct {
 }
 
 // quiescedMember takes one member of a RUNNING service, asking it to hold still across the
-// snapshot ([B.143]). It is the clock sample's verb, and the update's baseline's.
+// snapshot ([B.143]). It is the clock sample's verb.
 //
 // THE ORDER IS HOLD, SNAPSHOT, RELEASE, LABEL — and the label is last because only the release
 // knows what to write. Home Assistant reports whether its lock survived the window (it breaks its

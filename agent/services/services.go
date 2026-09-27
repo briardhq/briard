@@ -185,8 +185,8 @@ func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int) (re
 // keeps state ([B.143]). The default, as always here, is nothing.
 //
 // TWO CALLERS, ONE FACT, which is why it is one function. The guest's inbound take reads them to
-// TITLE the pair a household's own restore produces (*before* and *after* restoring a backup),
-// and the restore path SWEEPS them out of a member as it is materialised — so that putting such a
+// recognise a household's own restore (its hass-restore-before sample, [B.167]), and the restore
+// path SWEEPS them out of a member as it is materialised — so that putting such a
 // member back does not replay the restore it was taken around.
 //
 // RELATIVE, NEVER ABSOLUTE: the caller owns the root. The guest resolves them against the live
@@ -213,8 +213,7 @@ func RestoreMarkers(m manifest.Manifest) []string {
 // service ran.
 //
 // OPTIONAL PER SERVICE, and the default is nothing, as everywhere here: a service with no detector
-// still has the day event, which is what catches what no detector sees. Only Home Assistant has
-// one.
+// still has quiet time, which is what catches what no detector sees. Only Home Assistant has one.
 func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (string, error) {
 	if m.Name != hass.Name {
 		return "", nil

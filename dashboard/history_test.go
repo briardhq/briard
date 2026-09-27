@@ -13,9 +13,9 @@ import (
 	"briard.io/shared/api"
 )
 
-// ring is what the host answers `service-members` with ([B.167]): a quiet day on an older version
+// ring is what the host answers `service-members` with ([B.167]): quiet time on an older version
 // whose point was taken while the app ran, the update to 2026.8.0 on the point before it, and the
-// update's baseline -- a sample, which anchors nothing and is not a row.
+// start after it -- a sample, which anchors nothing and is not a row.
 func ring() string {
 	manifestOf := func(v string) string {
 		return `{"name":"home-assistant","version":"` + v + `","containers":[{"name":"app",` +
@@ -29,17 +29,17 @@ func ring() string {
 			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, older),
 			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerClock,
 				TakenAt: older, Consistency: quadlet.Crash, Manifest: manifestOf("2026.6.0"),
-				Event: &quadlet.Event{Kind: quadlet.EventDay, At: older.Add(20 * time.Hour), What: "Ran normally"}},
+				Event: &quadlet.Event{At: older.Add(20 * time.Hour), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonQuiet}}}},
 		},
 		{
-			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, update),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
+			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, update),
+			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 				TakenAt: update, Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.7.1"),
-				Event: &quadlet.Event{Kind: quadlet.EventUpdate, At: update, What: "Updated to 2026.8.0"}},
+				Event: &quadlet.Event{At: update, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.8.0"}}}},
 		},
 		{
-			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgradeAfter, update.Add(5*time.Minute)),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerUpgradeAfter,
+			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, update.Add(5*time.Minute)),
+			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart,
 				TakenAt: update.Add(5 * time.Minute), Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.8.0")},
 		},
 	}
@@ -115,8 +115,8 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 	if strings.Count(body, "taken while the app was running") != 1 {
 		t.Errorf("the clean point was annotated too:\n%s", body)
 	}
-	if strings.Contains(body, string(quadlet.TriggerUpgradeAfter)) {
-		t.Errorf("the update's baseline is listed as a row:\n%s", body)
+	if strings.Contains(body, quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Date(2026, 9, 21, 3, 5, 0, 0, time.Local))) {
+		t.Errorf("the start after the update is listed as a row:\n%s", body)
 	}
 	port.mu.Lock()
 	asked := append([]api.Directive(nil), port.asked...)
@@ -137,7 +137,7 @@ func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 	port := newFakePort()
 	r.app.port = port
 	answerMembers(port)
-	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade,
+	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore,
 		time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local))
 
 	resp := postForm(t, r, "/undo", c, url.Values{"point": {member}})

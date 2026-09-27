@@ -11,7 +11,6 @@ import (
 	"os"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -194,25 +193,24 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	}
 	trigger := quadlet.TriggerStart
 	var ev *quadlet.Event
-	switch backup, phase := restorePhase(ctx, x, service, raw, at); phase {
-	case restoreBefore:
-		trigger = quadlet.TriggerRestoreBefore
-		// The household's own restore is an event, on the point that undoes it ([B.167]). The
-		// *after* half is a baseline (quadlet.Baseline) and carries none.
-		ev = &quadlet.Event{Kind: quadlet.EventBackupRestore, At: at, What: "Restored " + backup}
-	case restoreAfter:
-		trigger = quadlet.TriggerRestoreAfter
-	default:
+	if backup, ok := hassRestore(x, service, raw); ok {
+		trigger = quadlet.TriggerHassRestoreBefore
+		// The household's own restore is an event, on the point that undoes it ([B.167]).
+		ev = &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonHassRestore, What: "Restored " + backup}}}
+	} else {
 		// THE RATE LIMIT, and only here. A crash loop restarts every few seconds and would fill
 		// the ring with hundreds of identical plain members; the one that matters is the first,
-		// taken before whatever went wrong ever ran. A restore's pair is the opposite case — there
-		// are two of them at most, minutes apart by construction, and skipping one would leave a
-		// household's own restore with no way back.
-		newest, found, err := newestMember(ctx, x, service)
+		// taken before whatever went wrong ever ran. A backup restore is the opposite case, and
+		// skipping its point would leave a household's own restore with no way back.
+		//
+		// ⚠️ NEVER AFTER A *-before SAMPLE: nothing is compared against one, so the start that
+		// follows an operation is what the next sample is compared with. Skipping it would compare
+		// that sample with nothing, and the household's first edits after an update would go unseen.
+		newestTrigger, newest, found, err := newestMember(ctx, x, service)
 		if err != nil {
 			return "", err
 		}
-		if found && at.Sub(newest) < plainStartFloor {
+		if found && !newestTrigger.Before() && at.Sub(newest) < plainStartFloor {
 			return fmt.Sprintf("a member from %s ago is still current; not taking another", at.Sub(newest).Truncate(time.Second)), nil
 		}
 	}
@@ -241,11 +239,10 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	return "took " + path.Base(member), nil
 }
 
-// recordMember is what every take does once its member exists ([B.167]): compare it with the
-// member before it, put any event that finds on THAT member — the restore point of whatever
-// happened between the two — and prune. One function for the three ways a member is taken (a
-// start, the host's data.member, the quiesced clock sample), so the history cannot depend on which door
-// a sample came through.
+// recordMember is what every take does once its member exists ([B.167]): evaluate it, add any
+// reason that finds to the member it lands on, and prune. One function for the three ways a member
+// is taken (a start, the host's data.member, the quiesced clock sample), so the history cannot
+// depend on which door a sample came through.
 //
 // AFTER the take, never before: pruning first would mean a failed take leaves the ring shorter for
 // nothing, and a member is only replaceable once its successor exists.
@@ -255,10 +252,8 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
 	if members, err := listMembers(ctx, x, meta.Service); err != nil {
 		log.Printf("ring %s: could not read the ring to record %s: %v", meta.Service, path.Base(member), err)
-	} else if prev, ok := previousMember(members, member); ok {
-		if ev := eventBetween(ctx, x, members, prev, member, meta); ev != nil {
-			writeEvent(ctx, x, prev, ev)
-		}
+	} else if point, reason, ok := evaluate(ctx, x, members, member, meta); ok {
+		addReason(ctx, x, point, reason, meta.TakenAt)
 	}
 	pruneRing(ctx, x, meta.Service, meta.TakenAt)
 }
@@ -280,87 +275,69 @@ func previousMember(members []quadlet.SnapshotEntry, member string) (quadlet.Sna
 	return prev, prev.Member != ""
 }
 
-// eventBetween is the event a new member finds since the one before it, or nil.
+// evaluate is a new member's one evaluation ([B.167]): the member a reason lands on, and the
+// reason, or false when nothing is registered.
 //
-// NOTHING IS COMPARED ACROSS A PERFORMED ACT. A baseline (quadlet.Baseline) is taken right after
-// one, and a member that already carries an event is the point of one: what changed next to it is
-// the act's own doing — an update's migration, a restore's rewind — and folds into that row rather
-// than appearing above it as something detected.
+// COMPARE ONLY IF THE APP RAN BETWEEN THE TWO. The previous member is never a *-before sample when
+// they are compared: the app was stopped for it and did not run again until the next start. A
+// *-before member itself IS compared with the one before it, so edits made just before an update
+// are caught, and its finding lands on that earlier member rather than on the operation's own.
 //
-// A detected change wins over the day; the day is what a sample finds when nothing else happened
-// since the last event, at the first sample of a new day.
-func eventBetween(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, prev quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta) *quadlet.Event {
-	if quadlet.Baseline(meta.Trigger) || prev.Meta.Event != nil {
-		return nil
-	}
-	if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
-		// The clock's sample is the one taken while the service RUNS.
-		what, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
-		if err != nil {
-			log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
-		}
-		if what != "" {
-			return &quadlet.Event{Kind: quadlet.EventChange, At: meta.TakenAt, What: what}
-		}
-	}
-	if meta.Event != nil || !newDay(members, member, meta.TakenAt) {
-		return nil // a performed act is this sample's event already
-	}
-	return &quadlet.Event{Kind: quadlet.EventDay, At: meta.TakenAt, What: "Ran normally"}
-}
-
-// newDay reports whether `at` falls on a later day than the ring's last event — or, in a ring with
-// none yet, than its first member, so the day a service is installed is not itself a quiet day.
-// Days are the guest's local ones.
-func newDay(members []quadlet.SnapshotEntry, member string, at time.Time) bool {
-	var last time.Time
-	for _, m := range members {
-		if m.Member == member {
-			continue
-		}
-		if m.Meta.Event != nil && m.Meta.Event.At.After(last) {
-			last = m.Meta.Event.At
-		}
-	}
-	if last.IsZero() {
-		for _, m := range members {
-			if t, ok := quadlet.SnapshotMemberTime(m.Member); ok && (last.IsZero() || t.Before(last)) {
-				last = t
+// Nothing found, at a member that is not an operation's own point, is quiet time
+// (quadlet.QuietPoint).
+func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta) (quadlet.SnapshotEntry, quadlet.Reason, bool) {
+	if prev, ok := previousMember(members, member); ok && !prev.Meta.Trigger.Before() {
+		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
+			// The clock's sample is the one taken while the service RUNS.
+			what, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
+			if err != nil {
+				log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
+			}
+			if what != "" {
+				return prev, quadlet.Reason{Kind: quadlet.ReasonChanged, What: what}, true
 			}
 		}
 	}
-	day := func(t time.Time) time.Time {
-		y, m, d := t.Local().Date()
-		return time.Date(y, m, d, 0, 0, 0, 0, time.Local)
+	if meta.Event != nil {
+		return quadlet.SnapshotEntry{}, quadlet.Reason{}, false
 	}
-	return !last.IsZero() && day(at).After(day(last))
+	if point, ok := quadlet.QuietPoint(members, member); ok {
+		return point, quadlet.Reason{Kind: quadlet.ReasonQuiet}, true
+	}
+	return quadlet.SnapshotEntry{}, quadlet.Reason{}, false
 }
 
-// writeEvent puts an event on an existing member by replacing its sidecar.
+// addReason adds a reason to an existing member's event, or gives it one, by replacing its
+// sidecar. `at` is the evaluation's time, which becomes the event's creation time if it is new.
+//
+// A QUIET EVENT NEVER SHARES ITS RECORD, so quiet is only ever added to a member with no event.
 //
 // ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
 // can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
 // because the next node to read this may be the one that promotes after this one dies.
-func writeEvent(ctx context.Context, x Executor, prev quadlet.SnapshotEntry, ev *quadlet.Event) {
-	meta := prev.Meta
-	meta.Event = ev
-	b, err := json.Marshal(meta)
-	if err != nil {
-		log.Printf("ring %s: could not render %s's event: %v", meta.Service, path.Base(prev.Member), err)
+func addReason(ctx context.Context, x Executor, point quadlet.SnapshotEntry, r quadlet.Reason, at time.Time) {
+	meta := point.Meta
+	if r.Kind == quadlet.ReasonQuiet && meta.Event != nil {
 		return
 	}
-	sidecar := quadlet.SnapshotSidecar(prev.Member)
+	meta.Event = meta.Event.With(r, at)
+	b, err := json.Marshal(meta)
+	if err != nil {
+		log.Printf("ring %s: could not render %s's event: %v", meta.Service, path.Base(point.Member), err)
+		return
+	}
+	sidecar := quadlet.SnapshotSidecar(point.Member)
 	tmp := sidecar + ".tmp"
 	if err := x.WriteFile(tmp, b); err != nil {
-		log.Printf("ring %s: could not record %q on %s: %v", meta.Service, ev.What, path.Base(prev.Member), err)
+		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, r.Kind, path.Base(point.Member), err)
 		return
 	}
 	if _, err := x.Run(ctx, "mv", "-f", tmp, sidecar); err != nil {
-		log.Printf("ring %s: could not record %q on %s: %v", meta.Service, ev.What, path.Base(prev.Member), err)
+		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, r.Kind, path.Base(point.Member), err)
 		return
 	}
 	if _, err := x.Run(ctx, "sync", "-f", sidecar); err != nil {
-		log.Printf("ring %s: recorded %q on %s but could not flush it: %v", meta.Service, ev.What, path.Base(prev.Member), err)
+		log.Printf("ring %s: recorded %s on %s but could not flush it: %v", meta.Service, r.Kind, path.Base(point.Member), err)
 	}
 }
 
@@ -422,77 +399,31 @@ func consumeCleanStop(ctx context.Context, x Executor, service string) quadlet.C
 	return quadlet.Quiesced
 }
 
-// THE BACKUP-RESTORE PAIR ([B.143]): the two members either side of a household restoring one of
-// Home Assistant's OWN backups, which is a different operation from restoring one of our members
-// and needs its own pair of points.
+// THE BACKUP RESTORE ([B.143], [B.167]): a household restoring one of Home Assistant's OWN
+// backups, which is a different operation from undoing to one of our members and has its own
+// *-before sample.
 //
-// THE SEQUENCE IT READS, and why nothing else in the system can read it. The household asks a live
-// HA for the restore; HA writes its marker inside /config and exits 100. The wrapper's
-// notification lands in the restart that follows and sees the marker — that is the *before* point,
-// taken on data HA has not touched yet. HA's restore process then unlinks the marker in a `finally`
-// right after parsing and BEFORE the wipe (V3b §6.2, "prevent a boot loop"), wipes /config, extracts
-// the tar, and exits 100 again. The second notification sees no marker at all, which is why the
-// *after* point cannot be recognised from the volume and needs the node-local fact below.
+// THE SEQUENCE IT READS. The household asks a live HA for the restore; HA writes its marker inside
+// /config and exits 100. The wrapper's notification lands in the restart that follows and sees the
+// marker: that is the hass-restore-before sample, taken on data HA has not touched yet. HA's
+// restore process then unlinks the marker right after parsing and BEFORE the wipe (V3b §6.2,
+// "prevent a boot loop"), wipes /config, extracts the tar, and exits 100 again. The second
+// notification sees no marker and is an ordinary start, which is not compared with the *-before
+// sample: the app did not run between them, the restore did.
 //
-// IT DEGRADES TO A PLAIN START, always. A failover between the two notifications loses the fact
-// (it lives in tmpfs), an unfinished restore leaves one that expires, and either way the member is
-// an ordinary start member — a pair with one half missing is a smaller loss than a mislabelled
-// point, and every other path here keeps that same direction.
-type restoreStage int
-
-const (
-	restoreNone restoreStage = iota
-	restoreBefore
-	restoreAfter
-)
-
-// restorePendingTTL bounds how long the node-local fact may sit unclaimed. A restore that is going
-// to happen takes the time of one HA restart plus a tar extraction; a fact older than this belongs
-// to one that never completed, and using it would record an ordinary start hours later as the
-// second half of a restore that never happened.
-const restorePendingTTL = 6 * time.Hour
-
-func restorePendingPath(service string) string { return "/run/briard/restore-pending." + service }
-
-// restorePhase says which half of a backup restore this start is, if either, and what to call the
-// backup. The service name has already been checked as a path element by the caller.
-func restorePhase(ctx context.Context, x Executor, service string, rawManifest []byte, at time.Time) (string, restoreStage) {
+// hassRestore says whether this start is that first restart, and what to call the backup. The
+// service name has already been checked as a path element by the caller.
+func hassRestore(x Executor, service string, rawManifest []byte) (string, bool) {
 	m, _, err := manifest.Parse(rawManifest)
 	if err != nil {
-		return "", restoreNone // a manifest we cannot read tells us nothing about markers
+		return "", false // a manifest we cannot read tells us nothing about markers
 	}
 	for _, rel := range services.RestoreMarkers(m) {
-		body, err := x.ReadFile(quadlet.DataRoot(service) + "/" + rel)
-		if err != nil {
-			continue
+		if body, err := x.ReadFile(quadlet.DataRoot(service) + "/" + rel); err == nil {
+			return backupName(body), true
 		}
-		name := backupName(body)
-		// The fact the second notification will need, since by then the marker is gone. Written
-		// best-effort: the first half of a pair is right whether or not the
-		// second half can be recognised at all.
-		if err := x.WriteFile(restorePendingPath(service), []byte(fmt.Sprintf("%d\t%s", at.Unix(), name))); err != nil {
-			log.Printf("ring %s: could not record the restore in flight (%v); its second point will read as a plain start", service, err)
-		}
-		return name, restoreBefore
 	}
-	body, err := x.ReadFile(restorePendingPath(service))
-	if err != nil {
-		return "", restoreNone
-	}
-	// Consumed on the way in, whatever it says: a fact left behind would read the NEXT start as
-	// the second half of a restore too.
-	if _, err := x.Run(ctx, "rm", "-f", restorePendingPath(service)); err != nil {
-		log.Printf("ring %s: could not clear the restore fact (%v)", service, err)
-	}
-	stamp, name, ok := strings.Cut(strings.TrimSpace(string(body)), "\t")
-	if !ok {
-		return "", restoreNone
-	}
-	secs, err := strconv.ParseInt(stamp, 10, 64)
-	if err != nil || at.Sub(time.Unix(secs, 0)) > restorePendingTTL {
-		return "", restoreNone
-	}
-	return name, restoreAfter
+	return "", false
 }
 
 // backupName is what the history calls the backup, read out of HA's marker.
@@ -593,11 +524,9 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 	}
 	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<service>-<trigger>-<stamp>`, so the
 	// TRIGGER sits between the service and the stamp and dominates any string comparison: every
-	// `-start-` member sorts before every `-upgrade-` one whatever their times, and a
-	// `-clock-` member sorts before both. Sorting names put the newest member wherever
-	// the alphabet happened to put its trigger -- which made newestMember answer with an upgrade
-	// point's age, so the rate limit compared against the wrong member on any service that had
-	// ever been upgraded.
+	// `-clock-` member sorts before every `-start-` one whatever their times. Sorting names put the
+	// newest member wherever the alphabet happened to put its trigger -- which made newestMember
+	// answer with the wrong member's age, so the rate limit compared against the wrong member.
 	//
 	// The stamp is fixed-width UTC so that TIMES compare correctly once parsed; that was always
 	// the property, and "lexical order is chronological" was only ever true within one trigger.
@@ -609,19 +538,19 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 	return names
 }
 
-// newestMember is the most recent member of a service's ring, by the timestamp in its NAME.
-func newestMember(ctx context.Context, x Executor, service string) (time.Time, bool, error) {
+// newestMember is the trigger and time of a service's most recent member, from its NAME.
+func newestMember(ctx context.Context, x Executor, service string) (quadlet.Trigger, time.Time, bool, error) {
 	names := ringMembers(ctx, x, service)
 	if len(names) == 0 {
-		return time.Time{}, false, nil
+		return "", time.Time{}, false, nil
 	}
-	at, ok := quadlet.SnapshotMemberTime(names[len(names)-1])
+	_, tr, at, ok := quadlet.ParseSnapshotMember(names[len(names)-1])
 	if !ok {
 		// A member whose name we cannot read is not a reason to refuse to take another: the ring
 		// is a convenience, and a stranger's directory entry must not be able to stop it.
-		return time.Time{}, false, nil
+		return "", time.Time{}, false, nil
 	}
-	return at, true, nil
+	return tr, at, true, nil
 }
 
 // pruneRing brings a service's ring back to what the history keeps (quadlet.RetentionPrune, where

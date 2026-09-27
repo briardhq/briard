@@ -435,10 +435,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// fought, and no "who wrote the data" bookkeeping is needed ([B.143]).
 		//
 		at := cfg.takenAt()
-		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgrade, at)
+		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerAppUpdateBefore, at)
 		meta := quadlet.SnapshotMeta{
 			Service: m.Name,
-			Trigger: quadlet.TriggerUpgrade,
+			Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: at,
 			// QUIESCED BY THE STOP ABOVE, which is what [B.121] bought and the reason that
 			// stop is not an optimisation somebody may reorder away.
@@ -446,7 +446,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 			Manifest:    priorRaw,
 			// THE UPDATE'S EVENT, on the point that undoes it ([B.167]). Written before the act
 			// because the point is; a revert below records its own undo rather than rewriting this.
-			Event: &quadlet.Event{Kind: quadlet.EventUpdate, At: at, What: "Updated to " + m.Version},
+			Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to " + m.Version}}},
 		}
 		sidecar, err := json.Marshal(meta)
 		if err != nil {
@@ -523,18 +523,6 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if err := gate.Judge(ctx, readiness); err != nil {
 		logf("service install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
-	}
-	// THE UPDATE'S BASELINE ([B.167]), once the gates have passed and not at container start: an
-	// update rewrites the app's own files on its first boot (Home Assistant migrates `.storage`),
-	// and a baseline taken before that would read the migration as a change the household made,
-	// directly above "Updated to". Best-effort -- without it the next sample folds those rewrites
-	// into the update's own row, which is less exact and never wrong.
-	if snap != "" {
-		at := cfg.takenAt()
-		if err := cfg.takeRunning(ctx, g, m.Name, quadlet.SnapshotMember(m.Name, quadlet.TriggerUpgradeAfter, at),
-			quadlet.TriggerUpgradeAfter, at, logf); err != nil {
-			logf("service install %s: could not take the update's baseline (%v); continuing", m.Name, err)
-		}
 	}
 	// Record the manifest NODE-LOCALLY as well as on the volume. Both copies are needed and they
 	// do different jobs: the volume's is the replicated identity (what the service IS), while
@@ -972,9 +960,9 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		// then its undoing -- and the update can still be redone. Best-effort: the rollback matters
 		// more than its entry.
 		at := cfg.takenAt()
-		if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerRestoreBefore, at),
-			quadlet.TriggerRestoreBefore, quadlet.Quiesced,
-			&quadlet.Event{Kind: quadlet.EventUndo, At: at, What: "The update did not work and was undone"},
+		if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerAppUndoBefore, at),
+			quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
+			&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: "The update did not work and was undone"}}},
 			at, logf); err != nil {
 			logf("revert %s: could not record the undo point (%v); reverting anyway", name, err)
 		}
@@ -995,16 +983,6 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 	if prior != nil {
 		if err := g.ServiceProvision(rctx, name, dataDir, priorSubdirs, priorRaw); err != nil {
 			return bothFailed("re-record the prior manifest", err)
-		}
-		// THE WAYPOINT, the baseline the next sample is compared with (quadlet.Baseline) --
-		// otherwise the rollback itself would read as a detected change. After the provision, so
-		// it is pinned to the manifest it now runs.
-		if snap != "" {
-			after := cfg.takenAt()
-			if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerRestoreAfter, after),
-				quadlet.TriggerRestoreAfter, quadlet.Quiesced, nil, after, logf); err != nil {
-				logf("revert %s: could not take the waypoint (%v); continuing", name, err)
-			}
 		}
 	} else if err := g.ServiceForget(rctx, name); err != nil {
 		// A FRESH install that failed: the volume must not keep naming a service this node could
@@ -1199,10 +1177,11 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// (3) THE UNDO, and it is the only undo a mis-click has. It exists before anything is torn
 	// down: the data below is untouched until it is on disk.
 	at := cfg.takenAt()
-	undo := quadlet.SnapshotMember(service, quadlet.TriggerRestoreBefore, at)
-	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerRestoreBefore, quadlet.Quiesced,
+	undo := quadlet.SnapshotMember(service, quadlet.TriggerAppUndoBefore, at)
+	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
 		// THE UNDO IS ITSELF AN EVENT ([B.167]), on the point that undoes it -- which is the redo.
-		&quadlet.Event{Kind: quadlet.EventUndo, At: at, What: "Undid changes back to " + target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")},
+		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo,
+			What: "Undid changes back to " + target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")}}},
 		at, logf); err != nil {
 		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
 	}
@@ -1225,19 +1204,8 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if err := g.ServiceProvision(ctx, service, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
 		return failed(fmt.Sprintf("record the member's manifest (the service is left stopped): %v", err))
 	}
-	// (6) THE WAYPOINT. Taken here rather than at the service's next start: nothing is running, so
-	// it is quiesced by construction and pinned with no state carried across the
-	// converge below. It duplicates the member's bytes and costs nothing for it -- copy-on-write,
-	// nothing has diverged -- and what it buys is a timeline that describes itself, since the
-	// member it came from may sit months back in the list.
-	after := cfg.takenAt()
-	if err := cfg.takeMember(ctx, g, service, quadlet.SnapshotMember(service, quadlet.TriggerRestoreAfter, after),
-		quadlet.TriggerRestoreAfter, quadlet.Quiesced,
-		nil, // a baseline (quadlet.Baseline): the undo's own event already says what changed
-		after, logf); err != nil {
-		logf("service restore %s: could not take the waypoint (%v); continuing", service, err)
-	}
-	// (7) CONVERGE, which re-renders from the volume and starts what it now names.
+	// (6) CONVERGE, which re-renders from the volume and starts what it now names. Its start sample
+	// is not compared with the undo's point ([B.167]): the app did not run between them.
 	if _, err := g.ServiceConverge(ctx); err != nil {
 		return failed(fmt.Sprintf("converge onto the restored member (the service is left stopped): %v", err))
 	}

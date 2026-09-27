@@ -433,14 +433,14 @@ func TestImagesNeedsNoAddress(t *testing.T) {
 // FORMAT itself be wrong without something else covering for it.
 //
 // Three properties, each load-bearing ([B.143]). The trigger is in the name, so a human scanning
-// `.snapshots` can tell an upgrade point from a daily one without opening a sidecar. The
+// `.snapshots` can tell an update point from a clock one without opening a sidecar. The
 // timestamp is UTC and fixed-width, so lexical order is chronological order and the picker needs
 // no parsing to sort. And the whole thing is one path element — a member is a btrfs subvolume,
 // and a `/` would put it somewhere else entirely.
 func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 	at := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
-	got := SnapshotMember("home-assistant", TriggerUpgrade, at)
-	want := "/var/lib/briard/.snapshots/home-assistant-upgrade-20260922T103005Z"
+	got := SnapshotMember("home-assistant", TriggerAppUpdateBefore, at)
+	want := "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260922T103005Z"
 	if got != want {
 		t.Errorf("SnapshotMember = %q, want %q", got, want)
 	}
@@ -450,7 +450,7 @@ func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 	// A non-UTC clock must not move the name: two nodes in different zones taking a member at the
 	// same instant have to agree on what it is called, or the ring forks per node.
 	east := time.FixedZone("UTC+9", 9*3600)
-	if other := SnapshotMember("home-assistant", TriggerUpgrade, at.In(east)); other != want {
+	if other := SnapshotMember("home-assistant", TriggerAppUpdateBefore, at.In(east)); other != want {
 		t.Errorf("a non-UTC clock renamed the member: %q, want %q", other, want)
 	}
 	if strings.Count(strings.TrimPrefix(got, "/var/lib/briard/.snapshots/"), "/") != 0 {
@@ -463,31 +463,31 @@ func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 // This test asserted the opposite -- that lexical order over member names is chronological order
 // -- and it passed, because every case it compared shared one trigger. Across triggers the claim
 // is false and the format makes it false: the trigger sits between the service and the stamp, so
-// every `-start-` member sorts before every `-upgrade-` one whatever their times. A reader that
-// took the lexically last member as the newest got an upgrade point's age instead.
+// every `-clock-` member sorts before every `-start-` one whatever their times. A reader that
+// took the lexically last member as the newest got an old start's age instead.
 //
 // So what is asserted is what readers may actually rely on: the STAMP orders within a trigger,
 // SnapshotMemberTime orders across them, and the two disagree.
 func TestSnapshotMemberTimeIsTheOrder(t *testing.T) {
 	base := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
-	earlier := SnapshotMember("ha", TriggerUpgrade, base)
-	later := SnapshotMember("ha", TriggerUpgrade, base.Add(time.Second))
+	earlier := SnapshotMember("ha", TriggerClock, base)
+	later := SnapshotMember("ha", TriggerClock, base.Add(time.Second))
 	if !(earlier < later) {
 		t.Errorf("within one trigger the stamp must order: %q then %q", earlier, later)
 	}
-	yearOver := SnapshotMember("ha", TriggerUpgrade, time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+	yearOver := SnapshotMember("ha", TriggerClock, time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
 	if !(later < yearOver) {
 		t.Errorf("the stamp breaks across a year: %q then %q", later, yearOver)
 	}
-	// THE TRAP, asserted so nobody re-derives the false rule: an OLDER upgrade member sorts AFTER
-	// a NEWER start member, purely because of where the trigger sits.
-	oldUpgrade := SnapshotMember("ha", TriggerUpgrade, base.Add(-48*time.Hour))
-	newStart := SnapshotMember("ha", TriggerStart, base)
-	if !(newStart < oldUpgrade) {
+	// THE TRAP, asserted so nobody re-derives the false rule: an OLDER start member sorts AFTER
+	// a NEWER clock member, purely because of where the trigger sits.
+	oldStart := SnapshotMember("ha", TriggerStart, base.Add(-48*time.Hour))
+	newClock := SnapshotMember("ha", TriggerClock, base)
+	if !(newClock < oldStart) {
 		t.Fatal("the name format changed; re-check every reader that orders members")
 	}
-	to, _ := SnapshotMemberTime(oldUpgrade)
-	tn, _ := SnapshotMemberTime(newStart)
+	to, _ := SnapshotMemberTime(oldStart)
+	tn, _ := SnapshotMemberTime(newClock)
 	if !to.Before(tn) {
 		t.Error("SnapshotMemberTime does not order what the name misorders")
 	}

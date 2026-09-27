@@ -417,28 +417,35 @@ const snapshotStamp = "20060102T150405Z"
 type Trigger string
 
 const (
-	// TriggerUpgrade is the pre-upgrade rollback point — the member [B.121] rules must be taken
-	// on a STOPPED container. It anchors the update's event.
-	TriggerUpgrade Trigger = "upgrade"
-	// TriggerStart is an ordinary service start — the container's, or for a service that can tell
+	// TriggerStart is an ordinary start of the app: its container's, or for an app that can tell
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
 	// the rate limit may skip.
 	TriggerStart Trigger = "start"
-	// TriggerClock is the member taken BY THE CLOCK rather than by an event ([B.143]): a stable
+	// TriggerClock is the member taken BY THE CLOCK rather than by a start ([B.143]): a stable
 	// service can run for a month without a restart, and the clock is what still samples it.
 	//
 	// It is the one member taken against a RUNNING service, so it is Crash unless the service held
 	// still for it.
 	TriggerClock Trigger = "clock"
-	// The restore PAIR ([B.143]): the undo taken before a restore commits, and the waypoint taken
-	// after it. The first anchors the restore's event; the second is a baseline (Baseline).
-	TriggerRestoreBefore Trigger = "restore-before"
-	TriggerRestoreAfter  Trigger = "restore-after"
-	// TriggerUpgradeAfter is the sample taken once an update has passed its gates ([B.167]): a
-	// baseline (Baseline), so the update's own first-boot rewrites are not read as a change a
-	// household made. Taken while the service runs, so its class is the quiesce's answer.
-	TriggerUpgradeAfter Trigger = "upgrade-after"
+	// The *-before samples ([B.167]): each is taken with the app stopped, just before an
+	// operation, and is the restore point of that operation's event. The app does not run again
+	// until the next start, so nothing is ever compared against one (Trigger.Before).
+	//
+	// TriggerAppUpdateBefore precedes briard moving the app to another version. It is the member
+	// [B.121] rules must be taken on a STOPPED container.
+	TriggerAppUpdateBefore Trigger = "app-update-before"
+	// TriggerAppUndoBefore precedes briard putting an earlier member back, for any reason,
+	// including the automatic revert of a failed update. Undoing it is the redo.
+	TriggerAppUndoBefore Trigger = "app-undo-before"
+	// TriggerHassRestoreBefore is taken at Home Assistant's first restart of one of its OWN backup
+	// restores, while its marker is present. It is not a start.
+	TriggerHassRestoreBefore Trigger = "hass-restore-before"
 )
+
+// Before reports whether a member was taken just before an operation, with the app stopped.
+func (t Trigger) Before() bool {
+	return t == TriggerAppUpdateBefore || t == TriggerAppUndoBefore || t == TriggerHassRestoreBefore
+}
 
 // SnapshotMemberService reads the service out of a member's name, and reports whether the name is
 // one of ours at all. The sweep over `.snapshots` has to tell our members from anything else a
@@ -461,7 +468,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerUpgrade, TriggerUpgradeAfter, TriggerStart, TriggerClock, TriggerRestoreBefore, TriggerRestoreAfter} {
+	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {
@@ -491,7 +498,7 @@ func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.
 //
 // ⚠️ THE NAME IS NOT A CHRONOLOGICAL SORT KEY, and reading it as one is a real bug this format
 // invites: the TRIGGER sits between the service and the stamp, so every `-start-` member sorts
-// before every `-upgrade-` one whatever their times. Readers order by SnapshotMemberTime.
+// before every `-clock-` one whatever their times. Readers order by SnapshotMemberTime.
 // (Trigger-before-stamp is kept because it is what makes the directory readable to a human
 // scanning it, which is the other job the name has.)
 func SnapshotMember(service string, trigger Trigger, at time.Time) string {
@@ -529,12 +536,12 @@ func SnapshotSidecar(member string) string { return member + ".json" }
 type Consistency string
 
 const (
-	// Quiesced: every member taken with the container stopped — the pre-start hook, the
-	// pre-upgrade point, and both halves of the restore pair.
+	// Quiesced: every member taken with the container stopped — the pre-start hook and the
+	// *-before samples.
 	Quiesced Consistency = "quiesced"
-	// Crash: taken against a running service. Clock samples and the update's baseline are the
-	// members meant to be this, and only until their quiesce (a truncating WAL checkpoint plus a
-	// held transaction) promotes them.
+	// Crash: taken against a running service. Clock samples are the members meant to be this,
+	// and only until their quiesce (a truncating WAL checkpoint plus a held transaction) promotes
+	// them.
 	Crash Consistency = "crash"
 )
 
@@ -574,8 +581,8 @@ type SnapshotMeta struct {
 	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded
 	Manifest    string      `json:"manifest"`    // the manifest running when it was taken, verbatim
 	// Event is the event this member is the RESTORE POINT of, or nil for a plain sample
-	// (history.go). A performed act writes it with the member; a detected change or a day
-	// boundary writes it into the previous member's sidecar when the next sample finds it.
+	// (history.go). An operation writes it with its *-before member; what an evaluation finds is
+	// added to the previous member's sidecar as a reason.
 	Event *Event `json:"event,omitempty"`
 }
 

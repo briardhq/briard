@@ -513,14 +513,14 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
 	joined := strings.Join(f.steps, ",")
-	snap := "snapshot:" + wantMember("home-assistant", quadlet.TriggerUpgrade)
+	snap := "snapshot:" + wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)
 	// The rollback point is taken BEFORE the volume is mutated (provision) and before the switch.
 	si, pi := strings.Index(joined, snap), strings.Index(joined, "provision")
 	if si < 0 || pi < 0 || si > pi {
 		t.Fatalf("snapshot must precede provision: %v", f.steps)
 	}
 	// The data is rolled back from that exact snapshot.
-	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerUpgrade)) {
+	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)) {
 		t.Fatalf("a failed upgrade did not restore the data subvolume: %v", f.steps)
 	}
 	// The volume ends up holding the PRIOR manifest again — the identity is reverted, not just the
@@ -1334,7 +1334,7 @@ func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 	}
 	joined := strings.Join(f.steps, ",")
 	// The SAME {code + data} revert a failed floor drives — the verdict changes, the undo does not.
-	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerUpgrade)) {
+	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)) {
 		t.Fatalf("a tripped readiness gate did not restore the data subvolume: %v", f.steps)
 	}
 	if n := strings.Count(joined, "converge"); n != 2 {
@@ -1411,8 +1411,8 @@ func TestUpgradeMemberSaysItIsQuiesced(t *testing.T) {
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	if len(f.sidecars) != 2 {
-		t.Fatalf("the upgrade wrote %d sidecars, want the rollback point's and the baseline after it: %v", len(f.sidecars), f.sidecars)
+	if len(f.sidecars) != 1 {
+		t.Fatalf("the upgrade wrote %d sidecars, want the rollback point's alone: %v", len(f.sidecars), f.sidecars)
 	}
 	var meta quadlet.SnapshotMeta
 	if err := json.Unmarshal([]byte(f.sidecars[0]), &meta); err != nil {
@@ -1735,7 +1735,7 @@ func ringWith(t *testing.T, pinned manifest.Manifest, ensureEr error) (Config, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgrade, fixedNow.Add(-48*time.Hour))
+	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, fixedNow.Add(-48*time.Hour))
 	cfg := catalogFor(t, testManifest())
 	cfg.readinessSettle = time.Millisecond
 	f := &fakeInstaller{
@@ -1743,7 +1743,7 @@ func ringWith(t *testing.T, pinned manifest.Manifest, ensureEr error) (Config, *
 		prior:    mustPrior(t),
 		ensureEr: ensureEr,
 		members: []quadlet.SnapshotEntry{{Member: member, Meta: quadlet.SnapshotMeta{
-			Service: "home-assistant", Trigger: quadlet.TriggerUpgrade,
+			Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 			Manifest: string(raw),
 		}}},
 	}
@@ -1790,7 +1790,7 @@ func TestRestoreTakesTheUndoAfterTheStop(t *testing.T) {
 	joined := strings.Join(f.steps, ",")
 	ei := strings.Index(joined, "ensure:")
 	si := strings.Index(joined, "stop:")
-	ui := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, fixedNow))
+	ui := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUndoBefore, fixedNow))
 	ri := strings.Index(joined, "restore:")
 	if ei < 0 || ui < 0 || si < 0 || ri < 0 {
 		t.Fatalf("the restore did not run its whole sequence: %v", f.steps)
@@ -1798,21 +1798,18 @@ func TestRestoreTakesTheUndoAfterTheStop(t *testing.T) {
 	if !(ei < si && si < ui && ui < ri) {
 		t.Errorf("order was %v, want ensure -> stop -> undo -> restore", f.steps)
 	}
-	// And the waypoint, which is what keeps the timeline from appearing to jump backwards.
-	if !strings.Contains(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreAfter, fixedNow)) {
-		t.Errorf("no waypoint was taken after the restore: %v", f.steps)
-	}
 }
 
-// TestRestorePairIsQuiesced reads the SIDECARS rather than the order, because the order is only
-// the mechanism: what a picker and [B.32] act on is the class the member claims.
-func TestRestorePairIsQuiesced(t *testing.T) {
+// TestRestoreUndoIsQuiesced reads the SIDECAR rather than the order, because the order is only
+// the mechanism: what a picker and [B.32] act on is the class the member claims. It is the ONLY
+// member the undo takes: the start after it is the guest's ([B.167]).
+func TestRestoreUndoIsQuiesced(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
 	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	if len(f.sidecars) != 2 {
-		t.Fatalf("the restore wrote %d sidecars, want the undo and the waypoint: %v", len(f.sidecars), f.sidecars)
+	if len(f.sidecars) != 1 {
+		t.Fatalf("the restore wrote %d sidecars, want the undo's alone: %v", len(f.sidecars), f.sidecars)
 	}
 	for _, raw := range f.sidecars {
 		var meta quadlet.SnapshotMeta
@@ -1820,7 +1817,7 @@ func TestRestorePairIsQuiesced(t *testing.T) {
 			t.Fatalf("sidecar does not parse: %v", err)
 		}
 		if meta.Consistency != quadlet.Quiesced {
-			t.Errorf("%s member says %q, want quiesced -- both halves are taken with the container stopped",
+			t.Errorf("%s member says %q, want quiesced -- it is taken with the container stopped",
 				meta.Trigger, meta.Consistency)
 		}
 	}
@@ -1938,25 +1935,28 @@ func sidecarEvents(t *testing.T, f *fakeInstaller) []*quadlet.Event {
 }
 
 // TestUpgradeMemberCarriesTheUpdateEvent: the update is a row in the app's history, and it sits on
-// the point that undoes it ([B.167]) -- the member taken before the act.
+// the point that undoes it ([B.167]) -- the app-update-before sample, the only member the host
+// takes for an update. The start after it is the guest's, and nothing compares the two.
 func TestUpgradeMemberCarriesTheUpdateEvent(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	evs := sidecarEvents(t, f)
-	if len(evs) != 2 || evs[0] == nil {
-		t.Fatalf("the rollback point carries no event: %v", f.sidecars)
+	if len(evs) != 1 || evs[0] == nil {
+		t.Fatalf("want one member carrying the update: %v", f.sidecars)
 	}
-	if evs[0].Kind != quadlet.EventUpdate || evs[0].What != "Updated to "+testManifest().Version {
+	if !evs[0].Has(quadlet.ReasonAppUpdate) || evs[0].Reasons[0].What != "Updated to "+testManifest().Version {
 		t.Errorf("event = %+v, want the update to %s", evs[0], testManifest().Version)
+	}
+	if !strings.Contains(strings.Join(f.steps, ","), "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, fixedNow)) {
+		t.Errorf("no app-update-before sample was taken: %v", f.steps)
 	}
 }
 
 // TestARevertRecordsItselfAsAnUndo: an update that is reverted must not leave "Updated to" as the
-// last word. The revert is an undo, so it records one -- on a point of the failed version's data,
-// taken before the rollback -- and then a waypoint that is the next comparison's baseline, pinned
-// AFTER the prior manifest is back so it names what now runs ([B.167]).
+// last word. The revert is an undo, so it records one, on a point of the failed version's data
+// taken before the rollback ([B.167]).
 func TestARevertRecordsItselfAsAnUndo(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{
 		sample("loaded", "loaded"),
@@ -1966,67 +1966,32 @@ func TestARevertRecordsItselfAsAnUndo(t *testing.T) {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
 	evs := sidecarEvents(t, f)
-	if len(evs) != 3 {
-		t.Fatalf("wrote %d sidecars, want the update, its undo and the waypoint: %v", len(evs), f.sidecars)
+	if len(evs) != 2 {
+		t.Fatalf("wrote %d sidecars, want the update and its undo: %v", len(evs), f.sidecars)
 	}
-	if evs[1] == nil || evs[1].Kind != quadlet.EventUndo {
-		t.Errorf("the revert's point carries %+v, want an undo event", evs[1])
-	}
-	if evs[2] != nil {
-		t.Errorf("the waypoint carries %+v; a baseline has no event", evs[2])
+	if !evs[1].Has(quadlet.ReasonAppUndo) {
+		t.Errorf("the revert's point carries %+v, want an undo", evs[1])
 	}
 	joined := strings.Join(f.steps, ",")
-	undo := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreBefore, fixedNow))
+	undo := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUndoBefore, fixedNow))
 	rest := strings.Index(joined, "restore:")
-	prov := strings.LastIndex(joined, "provision:")
-	way := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerRestoreAfter, fixedNow))
-	if !(undo >= 0 && undo < rest && rest < prov && prov < way) {
-		t.Errorf("order was %v, want undo point -> restore -> provision -> waypoint", f.steps)
+	if !(undo >= 0 && undo < rest) {
+		t.Errorf("order was %v, want the undo point before the restore", f.steps)
 	}
 }
 
 // TestRestoreRecordsTheUndoAsAnEvent: putting a point back is itself an event, so it can be undone
-// in turn -- the redo. The waypoint is a baseline and says nothing ([B.167]).
+// in turn -- the redo ([B.167]).
 func TestRestoreRecordsTheUndoAsAnEvent(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
 	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	evs := sidecarEvents(t, f)
-	if len(evs) != 2 || evs[0] == nil || evs[0].Kind != quadlet.EventUndo {
-		t.Fatalf("events = %v, want an undo on the first member", evs)
+	if len(evs) != 1 || !evs[0].Has(quadlet.ReasonAppUndo) {
+		t.Fatalf("events = %v, want an undo on the one member", evs)
 	}
-	if !strings.HasPrefix(evs[0].What, "Undid changes back to ") {
-		t.Errorf("the undo reads %q", evs[0].What)
-	}
-	if evs[1] != nil {
-		t.Errorf("the waypoint carries %+v; a baseline has no event", evs[1])
-	}
-}
-
-// TestTheUpdatesBaselineComesAfterTheGates: Home Assistant migrates its own files on the first
-// boot of a new version, so a baseline taken at container start would read that migration as a
-// change the household made, directly above "Updated to". It is taken once the gates have passed,
-// and it carries no event of its own ([B.167]).
-func TestTheUpdatesBaselineComesAfterTheGates(t *testing.T) {
-	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
-	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
-		t.Fatalf("outcome = %+v, want done", o)
-	}
-	after := quadlet.SnapshotMember("home-assistant", quadlet.TriggerUpgradeAfter, fixedNow)
-	bi, gi := -1, -1
-	for i, s := range f.steps {
-		if strings.HasSuffix(s, after) {
-			bi = i
-		}
-		if strings.HasPrefix(s, "readiness:") {
-			gi = i
-		}
-	}
-	if bi < 0 || gi < 0 || bi < gi {
-		t.Fatalf("baseline at step %d, last gate at %d, want the baseline after the gates: %v", bi, gi, f.steps)
-	}
-	if evs := sidecarEvents(t, f); evs[len(evs)-1] != nil {
-		t.Errorf("the baseline carries %+v; it has no event of its own", evs[len(evs)-1])
+	if !strings.HasPrefix(evs[0].Reasons[0].What, "Undid changes back to ") {
+		t.Errorf("the undo reads %q", evs[0].Reasons[0].What)
 	}
 }

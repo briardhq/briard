@@ -13,10 +13,10 @@ import (
 // THE CLOCK SAMPLE ([B.143], [B.167]): a ring member taken by the CLOCK rather than by an event,
 // whenever a service's newest member is an hour old.
 //
-// WHY THE RING NEEDS ONE AT ALL. Every other member is taken at a service start or an act, and a
-// stable Home Assistant can run for a month without restarting. The clock's sample is what still
-// compares it with an hour ago -- a detected change lands within the hour it happened, and a quiet
-// day still gets its day event -- so undo's granularity is the interval, not the uptime.
+// WHY THE RING NEEDS ONE AT ALL. Every other member is taken at a service start or an operation,
+// and a stable Home Assistant can run for a month without restarting. The clock's sample is what
+// still compares it with an hour ago -- a detected change lands within the hour it happened, and
+// quiet time still gets its restore points -- so undo's granularity is the interval, not the uptime.
 //
 // HOURLY, AND MEASURED CHEAP: the recorder lock costs 76 ms p95 at 100 writes/s and never broke
 // (hass-quiesce-cost, B.167a in V3c.md), and Home Assistant runs its automations with the recorder
@@ -95,8 +95,8 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, 
 	}
 }
 
-// takeRunning takes a member of a RUNNING service -- tonight's, or the sample after an update
-// ([B.143]) -- asking the service to hold still if the guest can ask.
+// takeRunning takes the clock's member of a RUNNING service ([B.143]), asking the service to hold
+// still if the guest can ask.
 //
 // ⚠️ THE SIDECAR IS RENDERED SAYING `crash` EITHER WAY, and the guest upgrades it when the service
 // actually held. The host cannot see whether a lock survived — Home Assistant reports that to

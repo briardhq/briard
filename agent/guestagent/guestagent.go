@@ -151,7 +151,7 @@ const (
 	// have refused every path on every not-yet-rolled guest fleet-wide.
 	verbDataMember = "data.member"
 	// verbDataMemberQuiesced takes a member of a service that is RUNNING, asking it to hold still
-	// across the snapshot ([B.143]) — the clock sample and the update's baseline. It reports back what
+	// across the snapshot ([B.143]) — the clock sample. It reports back what
 	// it achieved, because "held still" is not something the host can observe from where it sits.
 	//
 	// A NAME OF ITS OWN rather than a flag on data.member, by the rule the refused floor raise
