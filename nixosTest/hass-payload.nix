@@ -215,20 +215,15 @@ pkgs.testers.runNixOSTest {
     # it, and it does so with the boot's service health, which for Home Assistant is /api/config
     # through our token. A pending sample left behind, or one without that verdict, means the
     # evaluator never ran or never reached the app.
-    def _start_evaluated(_last):
-        names = [
-            n
-            for n in node1.succeed(
-                "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-start-' || true"
-            ).split()
-            if not n.endswith(".json")
-        ]
-        if not names:
-            return False
-        sc = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{names[-1]}.json"))
-        return not sc.get("pending") and sc.get("health") == "healthy"
-
-    retry(_start_evaluated, timeout=420)
+    # The HEALTH match is what makes this fail when the evaluator does not run: only it writes one,
+    # and a missing sidecar fails the first grep rather than passing the negated second.
+    node1.wait_until_succeeds(
+        "f=$(ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-start-' | grep -v '[.]json$' | tail -n1)"
+        " && test -n \"$f\""
+        " && grep -q '\"health\":\"healthy\"' \"/var/lib/briard/.snapshots/$f.json\""
+        " && ! grep -q '\"pending\":true' \"/var/lib/briard/.snapshots/$f.json\"",
+        timeout=420,
+    )
 
     # Byte-identical to what the volume names, DERIVED rather than restated: a version literal
     # here would assert that someone typed the same string twice, not that the member carries the
