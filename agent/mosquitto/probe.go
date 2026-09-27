@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The S1 readiness signal for a broker, and why it is a WRITE where Home Assistant's is a read.
@@ -110,10 +111,37 @@ func publish(ctx context.Context, x Executor, container, token string) error {
 		"-t", ProbeTopic, "-m", token, "-r", "-q", "1"); err != nil {
 		return fmt.Errorf("mosquitto probe: publish: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	return persist(ctx, x, container)
+}
+
+// persist sends the broker SIGUSR1: write the persistence database now.
+func persist(ctx context.Context, x Executor, container string) error {
 	if out, err := x.Run(ctx, "podman", "kill", "--signal", "SIGUSR1", container); err != nil {
-		return fmt.Errorf("mosquitto probe: ask the broker to persist: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("mosquitto: ask the broker to persist: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// flushSettle is how long Flush gives the broker to finish writing after the signal. The write is
+// milliseconds on a store this size; the margin is for a loaded node.
+const flushSettle = 3 * time.Second
+
+// Flush makes the broker write its persistence database and waits for it, so a clock sample taken
+// next holds what the broker had rather than its last autosave ([B.167d]). The signal is
+// asynchronous, which is why the wait is part of it.
+func Flush(ctx context.Context, x Executor, container string) error {
+	if err := safeName(container); err != nil {
+		return err
+	}
+	if err := persist(ctx, x, container); err != nil {
+		return err
+	}
+	select {
+	case <-time.After(flushSettle):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // subscribe reads one retained message. A topic with nothing retained makes mosquitto_sub time out

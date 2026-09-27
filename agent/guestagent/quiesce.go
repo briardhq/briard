@@ -159,12 +159,13 @@ func quiesceService(ctx context.Context, x Executor, service string) (func(conte
 		return nil, fmt.Sprintf("the running manifest does not parse: %v", err)
 	}
 	var port int
+	var container string
 	for _, c := range m.Containers {
 		if c.Primary {
-			port = c.Port
+			port, container = c.Port, quadlet.ContainerName(m.Name, c.Name)
 		}
 	}
-	release, err := services.Quiesce(ctx, x, m, port)
+	release, err := services.Quiesce(ctx, x, m, port, container)
 	if err != nil {
 		return nil, err.Error()
 	}

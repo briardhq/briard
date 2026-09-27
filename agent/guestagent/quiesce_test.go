@@ -172,11 +172,11 @@ func TestQuiescedMemberTakesOneEvenWhenNothingCanHoldStill(t *testing.T) {
 	for name, f := range map[string]*fakeExec{
 		"home assistant refuses": quiesceRig(t, hass.Name, (&haStub{code: http.StatusNotFound}).start(t)),
 		"home assistant is down": quiesceRig(t, hass.Name, 1),
-		"a service with no way":  quiesceRig(t, "mosquitto", (&haStub{held: true}).start(t)),
+		"a service with no way":  quiesceRig(t, "fixture", (&haStub{held: true}).start(t)),
 	} {
 		service := hass.Name
 		if strings.Contains(name, "no way") {
-			service = "mosquitto"
+			service = "fixture"
 		}
 		res, err := take(t, f, service)
 		if err != nil {
@@ -216,5 +216,34 @@ func TestQuiescedMemberReleasesEvenWhenTheSnapshotFails(t *testing.T) {
 	}
 	if len(h.holds) != 2 || !h.holds[0] || h.holds[1] {
 		t.Errorf("calls were %v, want the hold released after the failure", h.holds)
+	}
+}
+
+// TestMosquittosClockSampleFlushesFirst ([B.167d], owner 2026-09-27): mosquitto cannot hold still,
+// but it can write its persistence database on SIGUSR1, and that happens BEFORE the snapshot. The
+// member still says crash-consistent, which it is.
+func TestMosquittosClockSampleFlushesFirst(t *testing.T) {
+	f := quiesceRig(t, "mosquitto", 1)
+	res, err := take(t, f, "mosquitto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flush, snap := -1, -1
+	for i, r := range f.runs {
+		if strings.Join(r, " ") == "podman kill --signal SIGUSR1 "+quadlet.ContainerName("mosquitto", "app") {
+			flush = i
+		}
+		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
+			snap = i
+		}
+	}
+	if flush < 0 || snap < 0 || flush > snap {
+		t.Fatalf("flush at %d, snapshot at %d, want the flush first: %v", flush, snap, f.runs)
+	}
+	if res.Held || sidecarOf(t, f).Consistency != quadlet.Crash {
+		t.Errorf("a flushed broker was labelled held still (%+v)", res)
+	}
+	if !strings.Contains(res.Why, "flushed") {
+		t.Errorf("why = %q, want it to say the broker was flushed", res.Why)
 	}
 }

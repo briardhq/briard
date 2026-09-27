@@ -27,8 +27,8 @@ import (
 // A sample that anchors no event is REPLACED by the next one (RetentionPrune), so sampling often
 // costs nothing a household can see.
 
-// A ReasonKind says why an event exists. The set is closed: an operation, a detected change, or
-// quiet time.
+// A ReasonKind says why an event exists. The set is closed: an operation, a detected change, a
+// reset the app made on its own, or quiet time.
 type ReasonKind string
 
 const (
@@ -41,6 +41,10 @@ const (
 	ReasonHassRestore ReasonKind = "hass-restore"
 	// ReasonChanged is what an app's detector found (services.Detect).
 	ReasonChanged ReasonKind = "changed"
+	// ReasonReset is the app setting its own data aside and starting empty: Home Assistant renaming
+	// an undecodable store or database to `*.corrupt.*` ([B.167d]). Silent data loss that no health
+	// signal sees, and undo is its remedy.
+	ReasonReset ReasonKind = "reset"
 	// ReasonQuiet is a restore point where nothing was found: the backstop for every change the
 	// detectors do not see (QuietPoint). It never shares its record.
 	ReasonQuiet ReasonKind = "quiet"

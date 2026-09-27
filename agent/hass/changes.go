@@ -25,6 +25,12 @@ import (
 //   - the YAML a household edits: configuration.yaml, automations.yaml, scripts.yaml, scenes.yaml
 //     and packages/.
 //   - the domains in .storage/core.config_entries — an integration added or removed in the UI.
+//
+// And one the household does NOT do, which is why it is a reset and not a change (Resets):
+//
+//   - a `*.corrupt.*` file new since the previous sample. Home Assistant found a store or its
+//     database undecodable, renamed it aside and started empty — silent data loss that no health
+//     signal sees, and undo is its remedy ([B.167d]; measured by hass-health-probe, B.167b).
 
 // signalYAML maps each top-level YAML signal to the phrase a change to it reads as.
 var signalYAML = map[string]string{
@@ -68,7 +74,66 @@ func Signals(ctx context.Context, x Executor, dir string) (map[string][]byte, er
 			}
 		}
 	}
+	// THE CORRUPT RENAMES, by NAME only: the file set aside may be the recorder database, and
+	// reading it would cost a copy of the household's history for a fact the listing already has.
+	// Home Assistant puts them in two places — the stores in .storage/, the database beside it.
+	for _, sub := range []string{"", storageDir} {
+		where, prefix := dir, ""
+		if sub != "" {
+			where, prefix = dir+"/"+sub, sub+"/"
+		}
+		if ls, err := x.Run(ctx, "ls", "-1", where); err == nil {
+			for _, n := range strings.Fields(string(ls)) {
+				if strings.Contains(n, corruptMark) {
+					out[prefix+n] = nil
+				}
+			}
+		}
+	}
 	return out, nil
+}
+
+const (
+	storageDir  = ".storage"
+	corruptMark = ".corrupt."
+)
+
+// resetWhat is what a household lost when Home Assistant set a file aside, in its words.
+var resetWhat = map[string]string{
+	"core.config_entries":  "integrations",
+	"core.entity_registry": "entities",
+	"auth":                 "users and logins",
+	"home-assistant_v2.db": "history",
+}
+
+// Resets names what Home Assistant reset between two samples' signals — a store or its database it
+// found undecodable and started empty — as one phrase, or "". Pure, like Detect.
+//
+// NEW SINCE THE PREVIOUS SAMPLE, by the full name: the rename carries a time, so an old one that
+// is still lying around is not found again, and a second reset of the same store is.
+func Resets(prev, next map[string][]byte) string {
+	var lost []string
+	for _, rel := range sortedKeys(next) {
+		name, _, ok := strings.Cut(strings.TrimPrefix(rel, storageDir+"/"), corruptMark)
+		if _, seen := prev[rel]; !ok || seen || strings.Contains(name, "/") {
+			continue
+		}
+		what := resetWhat[name]
+		if what == "" {
+			what = clean(name)
+		}
+		if !slices.Contains(lost, what) {
+			lost = append(lost, what)
+		}
+	}
+	switch len(lost) {
+	case 0:
+		return ""
+	case 1:
+		return "Home Assistant could not read its " + lost[0] + " and started without them"
+	}
+	return "Home Assistant could not read its " + strings.Join(lost[:len(lost)-1], ", ") + " and " +
+		lost[len(lost)-1] + " and started without them"
 }
 
 // Detect names what changed between two samples' signals, as phrases a household reads ("Added

@@ -252,8 +252,8 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
 	if members, err := listMembers(ctx, x, meta.Service); err != nil {
 		log.Printf("ring %s: could not read the ring to record %s: %v", meta.Service, path.Base(member), err)
-	} else if point, reason, ok := evaluate(ctx, x, members, member, meta); ok {
-		addReason(ctx, x, point, reason, meta.TakenAt)
+	} else if point, reasons := evaluate(ctx, x, members, member, meta); len(reasons) > 0 {
+		addReasons(ctx, x, point, reasons, meta.TakenAt)
 	}
 	pruneRing(ctx, x, meta.Service, meta.TakenAt)
 }
@@ -275,52 +275,69 @@ func previousMember(members []quadlet.SnapshotEntry, member string) (quadlet.Sna
 	return prev, prev.Member != ""
 }
 
-// evaluate is a new member's one evaluation ([B.167]): the member a reason lands on, and the
-// reason, or false when nothing is registered.
+// evaluate is a new member's one evaluation ([B.167]): the member its reasons land on, and the
+// reasons, or none when nothing is registered.
 //
 // COMPARE ONLY IF THE APP RAN BETWEEN THE TWO. The previous member is never a *-before sample when
 // they are compared: the app was stopped for it and did not run again until the next start. A
 // *-before member itself IS compared with the one before it, so edits made just before an update
 // are caught, and its finding lands on that earlier member rather than on the operation's own.
 //
-// Nothing found, at a member that is not an operation's own point, is quiet time
-// (quadlet.QuietPoint).
-func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta) (quadlet.SnapshotEntry, quadlet.Reason, bool) {
+// A comparison can find two things at once, a change and a reset ([B.167d]), and both happened in
+// the same interval, so both are reasons on the same point. Nothing found, at a member that is not
+// an operation's own point, is quiet time (quadlet.QuietPoint).
+func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta) (quadlet.SnapshotEntry, []quadlet.Reason) {
 	if prev, ok := previousMember(members, member); ok && !prev.Meta.Trigger.Before() {
 		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
 			// The clock's sample is the one taken while the service RUNS.
-			what, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
+			changed, reset, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
 			if err != nil {
 				log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
 			}
-			if what != "" {
-				return prev, quadlet.Reason{Kind: quadlet.ReasonChanged, What: what}, true
+			var found []quadlet.Reason
+			if changed != "" {
+				found = append(found, quadlet.Reason{Kind: quadlet.ReasonChanged, What: changed})
+			}
+			if reset != "" {
+				found = append(found, quadlet.Reason{Kind: quadlet.ReasonReset, What: reset})
+			}
+			if len(found) > 0 {
+				return prev, found
 			}
 		}
 	}
 	if meta.Event != nil {
-		return quadlet.SnapshotEntry{}, quadlet.Reason{}, false
+		return quadlet.SnapshotEntry{}, nil
 	}
 	if point, ok := quadlet.QuietPoint(members, member); ok {
-		return point, quadlet.Reason{Kind: quadlet.ReasonQuiet}, true
+		return point, []quadlet.Reason{{Kind: quadlet.ReasonQuiet}}
 	}
-	return quadlet.SnapshotEntry{}, quadlet.Reason{}, false
+	return quadlet.SnapshotEntry{}, nil
 }
 
-// addReason adds a reason to an existing member's event, or gives it one, by replacing its
-// sidecar. `at` is the evaluation's time, which becomes the event's creation time if it is new.
+// addReasons adds reasons to an existing member's event, or gives it one, by replacing its
+// sidecar once. `at` is the evaluation's time, which becomes the event's creation time if it is
+// new.
 //
 // A QUIET EVENT NEVER SHARES ITS RECORD, so quiet is only ever added to a member with no event.
 //
 // ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
 // can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
 // because the next node to read this may be the one that promotes after this one dies.
-func addReason(ctx context.Context, x Executor, point quadlet.SnapshotEntry, r quadlet.Reason, at time.Time) {
+func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs []quadlet.Reason, at time.Time) {
 	meta := point.Meta
-	if r.Kind == quadlet.ReasonQuiet && meta.Event != nil {
+	var kinds []string
+	for _, r := range rs {
+		if r.Kind == quadlet.ReasonQuiet && meta.Event != nil {
+			continue
+		}
+		meta.Event = meta.Event.With(r, at)
+		kinds = append(kinds, string(r.Kind))
+	}
+	if len(kinds) == 0 {
 		return
 	}
-	meta.Event = meta.Event.With(r, at)
+	what := strings.Join(kinds, "+")
 	b, err := json.Marshal(meta)
 	if err != nil {
 		log.Printf("ring %s: could not render %s's event: %v", meta.Service, path.Base(point.Member), err)
@@ -329,15 +346,15 @@ func addReason(ctx context.Context, x Executor, point quadlet.SnapshotEntry, r q
 	sidecar := quadlet.SnapshotSidecar(point.Member)
 	tmp := sidecar + ".tmp"
 	if err := x.WriteFile(tmp, b); err != nil {
-		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, r.Kind, path.Base(point.Member), err)
+		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, what, path.Base(point.Member), err)
 		return
 	}
 	if _, err := x.Run(ctx, "mv", "-f", tmp, sidecar); err != nil {
-		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, r.Kind, path.Base(point.Member), err)
+		log.Printf("ring %s: could not record %s on %s: %v", meta.Service, what, path.Base(point.Member), err)
 		return
 	}
 	if _, err := x.Run(ctx, "sync", "-f", sidecar); err != nil {
-		log.Printf("ring %s: recorded %s on %s but could not flush it: %v", meta.Service, r.Kind, path.Base(point.Member), err)
+		log.Printf("ring %s: recorded %s on %s but could not flush it: %v", meta.Service, what, path.Base(point.Member), err)
 	}
 }
 

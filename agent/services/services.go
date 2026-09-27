@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
@@ -159,23 +160,33 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 //
 // THE DEFAULT IS NOTHING, as everywhere here: a service with no way to hold still returns a nil
 // release and an error saying so, the caller takes its member anyway, and the member says
-// crash-consistent. That is the honest answer for mosquitto, whose own durability is an autosave
-// interval — there is nothing to ask it for.
+// crash-consistent.
+//
+// MOSQUITTO CANNOT HOLD STILL BUT CAN FLUSH ([B.167d], owner 2026-09-27): its durability is an
+// autosave interval, and SIGUSR1 writes the persistence database now. So its member is still
+// labelled crash-consistent, which it is, and misses at most what arrived in the few seconds after
+// the flush rather than up to an autosave interval of it. Low risk, so nothing more: mosquitto has
+// barely any state, and a lost message is tolerated.
 //
 // ⚠️ THE RELEASE REPORTS WHETHER THE LOCK HELD FOR THE WHOLE WINDOW, which is the caller's input
 // for the member's class rather than a courtesy. Home Assistant breaks its own lock if its
 // buffered backlog grows while held; a release that answers false means the service resumed
 // writing under the snapshot.
 //
-// It takes the port because that is how a service is reached on the guest's loopback, and only the
-// manifest knows it.
-func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int) (release func(context.Context) (bool, error), err error) {
+// It takes the port because that is how a service is reached on the guest's loopback, and the
+// primary container because that is what a signal is sent to; only the manifest knows either.
+func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, container string) (release func(context.Context) (bool, error), err error) {
 	switch m.Name {
 	case hass.Name:
 		if err := hass.Hold(ctx, x, port); err != nil {
 			return nil, err
 		}
 		return func(ctx context.Context) (bool, error) { return hass.Release(ctx, x, port) }, nil
+	case mosquitto.Name:
+		if err := mosquitto.Flush(ctx, x, container); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("services: %s flushed its persistence database; it has no way to hold still", m.Name)
 	}
 	return nil, fmt.Errorf("services: %s has no way to hold still", m.Name)
 }
@@ -214,26 +225,32 @@ func RestoreMarkers(m manifest.Manifest) []string {
 //
 // OPTIONAL PER SERVICE, and the default is nothing, as everywhere here: a service with no detector
 // still has quiet time, which is what catches what no detector sees. Only Home Assistant has one.
-func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (string, error) {
+//
+// TWO ANSWERS, because the history tells them apart: what the household CHANGED, and what the app
+// RESET on its own (Home Assistant setting an undecodable store aside, [B.167d]). Either may be "".
+func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed, reset string, err error) {
 	if m.Name != hass.Name {
-		return "", nil
+		return "", "", nil
 	}
-	var out []string
+	var out, resets []string
 	for _, c := range m.Containers {
 		if c.Mount == "" {
 			continue // shares the subvolume and writes nothing of its own
 		}
 		before, err := hass.Signals(ctx, x, prev+"/"+c.Name)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		after, err := hass.Signals(ctx, x, next+"/"+c.Name)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		out = append(out, hass.Detect(before, after, running)...)
+		if r := hass.Resets(before, after); r != "" {
+			resets = append(resets, r)
+		}
 	}
-	return hass.Sentence(out), nil
+	return hass.Sentence(out), strings.Join(resets, "; "), nil
 }
 
 // Prepare materialises whatever Volumes promised, on THIS node, before the container starts.

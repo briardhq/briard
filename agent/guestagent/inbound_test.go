@@ -1015,3 +1015,31 @@ func TestTheHostsTakesAreRecordedToo(t *testing.T) {
 		t.Errorf("deleted %v, want the plain sample the host's take replaced", got)
 	}
 }
+
+// TestAResetAndAChangeShareTheirPoint: one comparison can find both, and both happened in the same
+// interval, so they are two reasons on ONE record -- the point before the sample that found them
+// ([B.167d]).
+func TestAResetAndAChangeShareTheirPoint(t *testing.T) {
+	now := time.Now()
+	prevAt := now.Add(-time.Hour)
+	prev := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, prevAt)
+	next := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, now)
+	f := recordRing(prev, next)
+	haMember(f, quadlet.TriggerStart, prevAt, "- id: 1\n")
+	_, meta := haMember(f, quadlet.TriggerClock, now, "- id: 1\n- id: 2\n")
+	inner := f.runFn
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "ls" && len(args) > 1 && args[1] == next+"/app/.storage" {
+			return []byte("core.entity_registry.corrupt.2026-09-27T10:00:00\ncore.restore_state"), nil
+		}
+		return inner(name, args)
+	}
+	recordMember(context.Background(), f, next, meta)
+	ev := eventOn(t, f, prev)
+	if !ev.Has(quadlet.ReasonChanged) || !ev.Has(quadlet.ReasonReset) || len(ev.Reasons) != 2 {
+		t.Fatalf("the point carries %+v, want the change and the reset together", ev)
+	}
+	if !strings.Contains(ev.Reasons[1].What, "entities") {
+		t.Errorf("the reset reads %q, want it to name the entities", ev.Reasons[1].What)
+	}
+}
