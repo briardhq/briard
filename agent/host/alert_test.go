@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
@@ -213,5 +214,64 @@ func TestRedundancyAlerterResyncingPeerIsNotACopy(t *testing.T) {
 	a.observe(ctx, seen(true, 1, resyncing, witnessGone))
 	if len(fn.alerts) != 1 || fn.alerts[0].Title != "Briard: no second copy" {
 		t.Errorf("a resyncing peer is not a usable copy, got %+v", fn.alerts)
+	}
+}
+
+// The clock alert fires only after an hour of continuous "no", once, and clears on "yes"; an
+// unknown neither starts nor clears the hour, and reads are paced ([V3c.9]).
+func TestClockAlerter(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	answer, reads := "", 0
+	fn := &fakeNotifier{}
+	c := &clockAlerter{read: func(context.Context) string { reads++; return answer }}
+	at := func(d time.Duration, a string) {
+		answer = a
+		c.observe(ctx, fn, "n1", t0.Add(d), func(string, ...any) {})
+	}
+
+	at(0, "no") // just booted: the hour starts
+	at(time.Minute, "no")
+	if reads != 1 {
+		t.Fatalf("read %d times inside one clockReadEvery, want 1", reads)
+	}
+	at(30*time.Minute, "") // unknown: the hour keeps running, nothing fires
+	at(55*time.Minute, "no")
+	if len(fn.alerts) != 0 {
+		t.Fatalf("fired before an hour of \"no\": %+v", fn.alerts)
+	}
+	at(time.Hour, "no")
+	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning || !strings.Contains(fn.alerts[0].Body, "n1") {
+		t.Fatalf("want one warning naming the node, got %+v", fn.alerts)
+	}
+	at(2*time.Hour, "no") // steady: no fatigue
+	at(3*time.Hour, "")   // unknown does not clear
+	if len(fn.alerts) != 1 {
+		t.Fatalf("re-fired or cleared on a steady/unknown reading: %+v", fn.alerts)
+	}
+	at(4*time.Hour, "yes")
+	if len(fn.alerts) != 2 || fn.alerts[1].Level != notify.Recovered {
+		t.Fatalf("want a recovered alert, got %+v", fn.alerts)
+	}
+	// A short unsync after the recovery starts a fresh hour rather than inheriting the old one.
+	at(5*time.Hour, "no")
+	at(5*time.Hour+30*time.Minute, "yes")
+	at(6*time.Hour, "no")
+	at(6*time.Hour+50*time.Minute, "no")
+	if len(fn.alerts) != 2 {
+		t.Fatalf("a run of \"no\" under an hour fired: %+v", fn.alerts)
+	}
+}
+
+// A host that never answers (Windows, no timedatectl) never alerts.
+func TestClockAlerterUnknownNeverFires(t *testing.T) {
+	fn := &fakeNotifier{}
+	c := &clockAlerter{read: func(context.Context) string { return "" }}
+	t0 := time.Now()
+	for d := time.Duration(0); d < 5*time.Hour; d += clockReadEvery {
+		c.observe(context.Background(), fn, "n1", t0.Add(d), func(string, ...any) {})
+	}
+	if len(fn.alerts) != 0 {
+		t.Fatalf("an unknown clock alerted: %+v", fn.alerts)
 	}
 }

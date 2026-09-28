@@ -33,6 +33,7 @@ import (
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/reportcard"
 	"briard.io/agent/selfupdate"
 	"briard.io/agent/services"
 	"briard.io/shared/api"
@@ -1232,6 +1233,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// this process has no record -- so an agent restart inside the window costs one listing
 	// rather than a second member every cycle for an hour.
 	ng := newClockSampler()
+	// How long the host's clock has gone unsynchronised ([V3c.9]); lives here for the same reason.
+	ca := &clockAlerter{read: reportcard.NTPSynced}
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1334,6 +1337,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
 			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res))
 		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
+		cfg.beat.Beat()
+		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
 		if rep != nil {
 			cfg.beat.Beat()
 			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)

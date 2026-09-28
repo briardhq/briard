@@ -134,6 +134,63 @@ func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
 	fireAlert(ctx, a.n, a.logf, al)
 }
 
+// clockAlerter warns when the host's clock has not been synchronised with a time server for
+// clockUnsyncedFor, and says so again when it is ([V3c.9]). A wrong clock turns a valid cert into
+// a refusal and misdates every alert and backup; an RTC-less board boots with whatever time it
+// last saved. We only report: keeping time is the OS's job, and a host whose NTP is on keeps it.
+//
+// THE HOST'S CLOCK, NOT THE GUEST'S. The guest takes the host's time at every boot and then keeps
+// its own with its own timesyncd over the same network, so a network that starves one starves
+// both, and the host is the one we can read without a verb.
+//
+// THE GRACE IS THE PRIMING. A host that just booted reads "no" until its first sync, so only an
+// hour of continuous "no" fires. AN UNKNOWN IS NOT AN ALARM: a host with no timedatectl (Windows)
+// or one that did not answer neither starts nor clears the hour.
+type clockAlerter struct {
+	read     func(context.Context) string // reportcard.NTPSynced in production
+	unsynced time.Time                    // start of the current run of "no"; zero otherwise
+	next     time.Time                    // when to read again: timedatectl wakes timedated over D-Bus
+	warned   bool
+}
+
+const (
+	clockUnsyncedFor = time.Hour
+	clockReadEvery   = 5 * time.Minute
+)
+
+func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node string, now time.Time, logf func(string, ...any)) {
+	if now.Before(c.next) {
+		return
+	}
+	c.next = now.Add(clockReadEvery)
+	switch c.read(ctx) {
+	case "no":
+		if c.unsynced.IsZero() {
+			c.unsynced = now
+		}
+		if !c.warned && now.Sub(c.unsynced) >= clockUnsyncedFor {
+			c.warned = true
+			fireAlert(ctx, n, logf, notify.Alert{
+				Level: notify.Warning,
+				Title: "Briard: clock not synchronised",
+				Body: fmt.Sprintf("node %s has not synchronised its clock with a time server for over an hour. "+
+					"Certificates, alerts and backups are dated by this clock; check that the machine can "+
+					"reach the internet and that `timedatectl set-ntp true` is on.", node),
+			})
+		}
+	case "yes":
+		c.unsynced = time.Time{}
+		if c.warned {
+			c.warned = false
+			fireAlert(ctx, n, logf, notify.Alert{
+				Level: notify.Recovered,
+				Title: "Briard: clock synchronised",
+				Body:  fmt.Sprintf("node %s is synchronised with a time server again.", node),
+			})
+		}
+	}
+}
+
 // FireAlert is how every alert on the host side leaves: the local trail FIRST, then delivery.
 // The order is the point. Delivery is the half that can be absent (the free tier configures no
 // notifier at all) or can simply fail, so writing the trail after it would make the RECORD of

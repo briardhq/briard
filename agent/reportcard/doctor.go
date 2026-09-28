@@ -55,11 +55,18 @@ func AssessLive(f LiveFacts) []Check {
 // GatherLive reads LiveFacts. Best-effort: an unreadable fact reads as "could not tell", which
 // AssessLive says out loud rather than passing.
 func GatherLive(ctx context.Context) LiveFacts {
-	f := LiveFacts{DiskFreeMB: diskFreeMB(installRoot())}
+	return LiveFacts{DiskFreeMB: diskFreeMB(installRoot()), NTPSynced: NTPSynced(ctx)}
+}
+
+// NTPSynced is timedatectl's NTPSynchronized: "yes", "no", or "" when it could not be read (no
+// timedatectl, as on Windows, or no answer in 5 s). The doctor and the agent's clock alert
+// ([V3c.9]) both read it here.
+func NTPSynced(ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "timedatectl", "show", "-p", "NTPSynchronized", "--value").Output(); err == nil {
-		f.NTPSynced = strings.TrimSpace(string(out))
+	out, err := exec.CommandContext(ctx, "timedatectl", "show", "-p", "NTPSynchronized", "--value").Output()
+	if err != nil {
+		return ""
 	}
-	return f
+	return strings.TrimSpace(string(out))
 }
