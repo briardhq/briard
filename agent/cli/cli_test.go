@@ -296,6 +296,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"open":      groupEveryday,
 		"rescue":    groupRepair,
 		"update":    groupRepair,
+		"uninstall": groupRepair,
 		"directive": groupRepair,
 		"run":       groupRepair,
 	}
@@ -327,9 +328,9 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		if !strings.Contains(listing.String(), c.name) {
 			t.Errorf("command %q dispatches but the help never names it", c.name)
 		}
-		// `run` is the one row main() intercepts before the CLI is reached; everything else must
-		// be reachable from Main, or the help is describing a word that does nothing.
-		if c.run == nil && c.name != "run" {
+		// `run` and `uninstall` are the rows main() intercepts before the CLI is reached; everything
+		// else must be reachable from Main, or the help is describing a word that does nothing.
+		if c.run == nil && c.name != "run" && c.name != "uninstall" {
 			t.Errorf("command %q is documented but dispatches nowhere", c.name)
 		}
 		if c.run == nil {

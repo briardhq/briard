@@ -698,6 +698,57 @@ func stopUnit(unit string) error {
 	return nil
 }
 
+// RemoveUnit takes one of briard's units off this machine ([V3c.2], `briard uninstall`): stopped,
+// disabled, and its unit file deleted. A unit the manager has never heard of is already removed.
+//
+// A PLAIN STOP, never forceStopUnit. On the guest unit that runs its ExecStop -- the clean
+// powerdown -- and uninstall is the one caller that both can wait for it and must: the data
+// volume it leaves behind is only worth keeping if the guest was not power-cut off it.
+//
+// THE FILE IS ASKED OF THE MANAGER, not assumed. install.sh writes the units wherever it was told
+// (a hermetic install puts them in /run), and nothing records where; the manager knows. A
+// transient unit has no file of ours -- systemd-run's is the manager's own, deleted when it
+// collects the unit -- so that one is only stopped. The caller reloads once, after the last.
+func RemoveUnit(unit string) error {
+	load, err := unitShow(unit, "LoadState")
+	if err != nil {
+		return fmt.Errorf("platform: asking about %s: %w", unit, err)
+	}
+	if load == "not-found" {
+		return nil
+	}
+	fragment, err := unitShow(unit, "FragmentPath")
+	if err != nil {
+		return fmt.Errorf("platform: asking where %s lives: %w", unit, err)
+	}
+	transient := unitTransient(fragment)
+	if !transient {
+		if out, err := unitDisable(unit); err != nil {
+			return fmt.Errorf("platform: disable %s: %w: %s", unit, err, out)
+		}
+	}
+	if err := stopUnit(unit); err != nil {
+		return err
+	}
+	if transient || fragment == "" {
+		return nil
+	}
+	for _, p := range []string{fragment, unitStamp(unit)} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("platform: removing %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// ReloadUnits makes the manager forget the unit files RemoveUnit deleted.
+func ReloadUnits() error {
+	if out, err := unitsReload(); err != nil {
+		return fmt.Errorf("platform: daemon-reload: %w: %s", err, out)
+	}
+	return nil
+}
+
 func waitForSocket(ctx context.Context, path string) error {
 	for {
 		if _, err := os.Stat(path); err == nil {

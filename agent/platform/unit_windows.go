@@ -23,3 +23,11 @@ func unitResetFailed(string) {}
 func unitKill(string) {}
 
 func unitStop(string) ([]byte, error) { return nil, errors.ErrUnsupported }
+
+func unitDisable(string) ([]byte, error) { return nil, errors.ErrUnsupported }
+
+func unitsReload() ([]byte, error) { return nil, errors.ErrUnsupported }
+
+func unitTransient(string) bool { return false }
+
+func unitStamp(string) string { return "" }

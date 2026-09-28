@@ -31,6 +31,11 @@ func main() {
 		runDaemon(args[1:])
 		return
 	}
+	// `uninstall` likewise ([V3c.2]): it undoes what the host agent built, read from the host
+	// agent's own config, so it lives beside the daemon rather than in agent/cli.
+	if len(args) > 0 && args[0] == "uninstall" {
+		os.Exit(runUninstall(args[1:]))
+	}
 
 	// Internal plumbing, still flags on purpose: a pipeline or a unit file invokes each of these,
 	// nobody types them, and promoting them to verbs would put them in a help written for a

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -137,4 +138,42 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 // trim excludes.
 func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
 	return install.WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs)
+}
+
+// runUninstall is `briard uninstall` ([V3c.2]). The flags are parsed here and the work is the host
+// agent's (host.Uninstall); agent/cli carries the verb's help. Without -yes it only says what would
+// go and what would stay, the way `briard rescue` does: there is no undo for either half.
+func runUninstall(args []string) int {
+	fs := flag.NewFlagSet("briard uninstall", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "confirm: remove briard from this machine")
+	deleteData := fs.Bool("delete-data", false, "also delete this machine's data volume and identity (/var/lib/briard)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprint(os.Stderr, "briard uninstall: takes no arguments\n")
+		return 2
+	}
+	if !*yes {
+		keep := "Your DATA IS KEPT: /var/lib/briard stays, holding the data volume and this\n" +
+			"machine's identity, and installing again picks up where it left off.\n" +
+			"Add -delete-data to delete it as well; that cannot be undone.\n"
+		if *deleteData {
+			keep = "-delete-data DELETES /var/lib/briard as well: the data volume, every app's data\n" +
+				"on it, and this machine's identity. That cannot be undone.\n"
+		}
+		fmt.Fprint(os.Stderr, "briard uninstall: this stops briard and its VM (cleanly), and removes its services,\n"+
+			"network devices, /opt/briard and the `briard` command.\n\n"+keep+"\nRe-run with -yes to go ahead.\n")
+		return 2
+	}
+	if os.Geteuid() != 0 {
+		fmt.Fprint(os.Stderr, "briard uninstall: run it as root (sudo briard uninstall ...)\n")
+		return 1
+	}
+	say := func(format string, a ...any) { fmt.Printf("briard: "+format+"\n", a...) }
+	if err := host.ConfigFromEnv().Uninstall(context.Background(), *deleteData, say); err != nil {
+		fmt.Fprintf(os.Stderr, "briard uninstall: %v\n", err)
+		return 1
+	}
+	return 0
 }

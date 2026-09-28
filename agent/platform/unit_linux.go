@@ -46,3 +46,24 @@ func unitKill(unit string) { _ = exec.Command("systemctl", "kill", "--signal=SIG
 func unitStop(unit string) ([]byte, error) {
 	return exec.Command("systemctl", "stop", unit).CombinedOutput()
 }
+
+// unitDisable removes the links a unit's [Install] section made (its WantedBy=), leaving the unit
+// itself running and its file where it is.
+func unitDisable(unit string) ([]byte, error) {
+	return exec.Command("systemctl", "disable", unit).CombinedOutput()
+}
+
+// unitsReload makes the manager re-read its unit files, so one that was deleted is forgotten.
+func unitsReload() ([]byte, error) {
+	return exec.Command("systemctl", "daemon-reload").CombinedOutput()
+}
+
+// unitTransient reports whether a unit's FragmentPath is one systemd-run wrote: the manager's own
+// file, which it deletes when it collects the unit, and which no [Install] section ever enabled.
+func unitTransient(fragment string) bool {
+	return strings.HasPrefix(fragment, "/run/systemd/transient/")
+}
+
+// unitStamp is where systemd records when a Persistent= timer last fired -- state it writes on the
+// unit's behalf, which outlives the unit file unless someone removes it.
+func unitStamp(unit string) string { return "/var/lib/systemd/timers/stamp-" + unit }

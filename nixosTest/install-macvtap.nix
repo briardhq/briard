@@ -364,6 +364,24 @@ pkgs.testers.runNixOSTest {
     host.fail(f"curl -sf http://127.0.0.1:8099/vm/{GV}/nixos.qcow2 -o /dev/null")
     host.fail("curl -sf http://127.0.0.1:8099/vm/stable/nixos.qcow2.zst -o /dev/null")
 
+    # THE HOST'S FOOTPRINT, for the uninstall's residue check at the end of this file ([V3c.2]):
+    # every place install.sh or the agent can leave something -- files where they put them, units,
+    # links, addresses, routes -- one entry per line, compared as sets against this baseline.
+    # Taken HERE, before the refused installs below, because a refused install leaves empty dirs.
+    # Routes are reduced to their destination, device and table: expiry and linkdown come and go.
+    def footprint():
+        return set(host.succeed(
+            "for d in /opt /var/lib /var/lib/systemd/timers /var/log /usr/local/bin /run "
+            "/run/systemd/system /run/systemd/transient; do find $d -mindepth 1 -maxdepth 1 2>/dev/null || true; done; "
+            "find /run/systemd/system -mindepth 2 -maxdepth 2 2>/dev/null || true; "
+            "ip -o link show | awk -F': ' '{print \"link \" $2}' | cut -d@ -f1; "
+            "ip -o addr show | awk '{print \"addr \" $2 \" \" $4}'; "
+            "ip route show table all | awk '{r=$1\" \"$2; for (i=2; i<NF; i++) "
+            "if ($i==\"dev\" || $i==\"table\") r=r\" \"$(i+1); print \"route \" r}'; "
+            "systemctl list-units --all --plain --no-legend 'briard*' | awk '{print \"unit \" $1}'"
+        ).splitlines())
+    pristine = footprint()
+
     host.fail(
         "${channelEnv} BRIARD_NIC=nope999 sh ${installScript}"
     )
@@ -414,6 +432,16 @@ pkgs.testers.runNixOSTest {
     assert m, f"the installer printed no one-time link; its closing lines: {install_out.strip().splitlines()[-6:]}"
     install_link_host, install_code = m.group(1), m.group(2)
     assert "sudo briard open" in install_out, "the installer no longer says how to get another link"
+    # The footprint SEES an install ([V3c.2]): one entry of every kind it scans, or the residue
+    # check at the end would be comparing two scans blind to the thing it is about.
+    installed = footprint() - pristine
+    for want in ("/opt/briard", "/var/lib/briard", "/usr/local/bin/briard", "/run/briard",
+                 "/var/log/briard-guest-console.log", "/run/systemd/system/briard-agent.service",
+                 "/run/systemd/transient/briard-guest.service", "link briard0", "link briard-priv0",
+                 "unit briard-guest.service"):
+        assert want in installed, f"the footprint cannot see {want!r}, so it cannot prove it gone: {sorted(installed)}"
+    assert any(e.startswith("addr briard-priv0 ") for e in installed), sorted(installed)
+    assert any(e.startswith("route ") and " briard-priv0" in e for e in installed), sorted(installed)
     # ⚠️ AND THE CLOSING BLOCK IS THE AGENT'S OWN WORDS ([B.157]). install.sh prints what
     # `briard open` said rather than re-rendering the same facts in shell -- which is what lets
     # the "what is on this node" sentence live in versioned Go. The verb's exact phrasing is the
@@ -1832,5 +1860,32 @@ pkgs.testers.runNixOSTest {
     # devices that did not exist when it was last running.
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=600)
     print("the guest's L2 re-parented from eth1 onto eth9 and the VIP answers off-box again")
+
+    # ---- UNINSTALL KEEPS YOUR DATA, AND A REINSTALL RESUMES IT ([V3c.2]) ----------------------
+    # The default uninstall, run LAST because it ends the node -- on a node this file has updated,
+    # restarted and re-parented, which is what a real one looks like by the time it is removed.
+    # Everything install.sh and the agent made must be gone except the pet dir; the eth9 lines
+    # are the re-parent's rename above, the one change here that is the test's rather than ours.
+    uninstalled_at = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
+    host.succeed("/usr/local/bin/briard uninstall -yes")
+    residue = {e for e in footprint() - pristine if e != "/var/lib/briard" and "eth9" not in e}
+    assert not residue, f"uninstall left these behind: {sorted(residue)}"
+    # KEPT, and kept whole: the same volume, and the identity it is keyed to.
+    assert fsid(host) == pre, "the data volume changed across an uninstall that was told to keep it"
+    assert host.succeed("cat /var/lib/briard/flock-name").strip() == flock_name
+    # ...and the guest was POWERED DOWN off it rather than cut: the unit's ExecStop said so. From
+    # the uninstall on only -- the cattle reset above stopped the same unit the same way.
+    host.succeed(f"journalctl -u briard-guest.service --since '{uninstalled_at}' | grep -q 'guest powered off cleanly'")
+    client.wait_until_fails(f"curl -fsS --max-time 3 http://{moved}/healthz", timeout=60)
+
+    # What the kept dir is FOR: the same one command brings the same home back -- its name, its
+    # address (the flock id keys the lease) and its volume -- on a host with nothing else of ours.
+    host.succeed(
+        "${channelEnv} "
+        "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
+    )
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=600)
+    assert fsid(host) == pre, "the reinstall did not reattach the volume the uninstall kept"
+    print("uninstall kept the data; a reinstall resumed the same home at the same address")
   '';
 }

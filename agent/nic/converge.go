@@ -210,6 +210,39 @@ func Rebuild(ctx context.Context, s Spec) error {
 	return Converge(ctx, s)
 }
 
+// Remove undoes Converge ([V3c.2], `briard uninstall`): every device s names is deleted, and every
+// address s puts on a device it did NOT create -- the user's bridge -- is taken back off it.
+//
+// Deleting a device is what removes everything else we hung on it: its addresses, the VIP route
+// and the permanent neighbour entry over the private tap, and [B.106]'s per-device IPv6 knob. The
+// bridge is the one device we touch and must leave standing, so its address is the one thing
+// removed by hand. Absent devices and addresses are already removed; it carries on past a failure
+// and returns the first, so one stuck device does not leave the rest behind.
+func Remove(ctx context.Context, s Spec) error {
+	var first error
+	keep := func(err error) {
+		if first == nil {
+			first = err
+		}
+	}
+	for _, t := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
+		if t != "" && exists("/sys/class/net/"+t) {
+			if out, err := ip(ctx, "link", "del", t); err != nil {
+				keep(fmt.Errorf("nic: removing %s: %s", t, firstLine(out, err)))
+			}
+		}
+	}
+	for _, a := range s.Addrs {
+		if a.CIDR == "" || !hasAddr(a.Dev, a.CIDR) {
+			continue
+		}
+		if out, err := ip(ctx, "addr", "del", a.CIDR, "dev", a.Dev); err != nil {
+			keep(fmt.Errorf("nic: removing %s from %s: %s", a.CIDR, a.Dev, firstLine(out, err)))
+		}
+	}
+	return first
+}
+
 // Converged reports whether Converge would change nothing. It exists so the tick can stay silent
 // on the overwhelmingly common path -- and so the agent can SAY that the network is not what it
 // should be without having tried to fix it yet.

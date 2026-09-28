@@ -147,6 +147,21 @@ pkgs.testers.runNixOSTest {
     host.succeed("bridge link show | grep -q eth1")
     host.succeed("ip -o -4 route show default | grep -qw br0")
 
+    # THE HOST'S FOOTPRINT, for DELTA 6's residue check ([V3c.2]) -- the same scan as
+    # install-macvtap's, taken before the refused install below because that one leaves empty dirs.
+    def footprint():
+        return set(host.succeed(
+            "for d in /opt /var/lib /var/lib/systemd/timers /var/log /usr/local/bin /run "
+            "/run/systemd/system /run/systemd/transient; do find $d -mindepth 1 -maxdepth 1 2>/dev/null || true; done; "
+            "find /run/systemd/system -mindepth 2 -maxdepth 2 2>/dev/null || true; "
+            "ip -o link show | awk -F': ' '{print \"link \" $2}' | cut -d@ -f1; "
+            "ip -o addr show | awk '{print \"addr \" $2 \" \" $4}'; "
+            "ip route show table all | awk '{r=$1\" \"$2; for (i=2; i<NF; i++) "
+            "if ($i==\"dev\" || $i==\"table\") r=r\" \"$(i+1); print \"route \" r}'; "
+            "systemctl list-units --all --plain --no-legend 'briard*' | awk '{print \"unit \" $1}'"
+        ).splitlines())
+    pristine = footprint()
+
     # --- DELTA 2: refuse cleanly, and leave the USER'S bridge alone ---
     # A bogus device must be refused before anything is written. It is the report card that
     # refuses now ([B.150](b)) rather than a NIC check halfway through the networking step, so
@@ -288,5 +303,30 @@ pkgs.testers.runNixOSTest {
         f"identity is supposed to be the one thing a role change leaves unchanged, and in this "
         f"mode it is a device the guest rebuilt"
     )
+
+    # --- DELTA 6: UNINSTALL -delete-data LEAVES THE HOST AS IT FOUND IT ([V3c.2]) ---
+    # The bridge is where uninstall touches something it must leave standing: the agent put its
+    # system-subnet address on the USER's bridge, and that one address has to come off it while
+    # the bridge, its port and the host's own address stay. The macvtap rig proves the default
+    # (keep); this proves the other half, so nothing of ours may survive at all.
+    installed = footprint() - pristine
+    for want in ("/opt/briard", "/var/lib/briard", "/usr/local/bin/briard", "link briard-drbd0",
+                 f"addr br0 {host_ip}/24", "unit briard-guest.service"):
+        assert want in installed, f"the footprint cannot see {want!r}, so it cannot prove it gone: {sorted(installed)}"
+
+    # Without -yes it only says what it would do -- and says the data goes, since it was asked to.
+    code, out = host.execute("/usr/local/bin/briard uninstall -delete-data 2>&1")
+    assert code == 2 and "DELETES /var/lib/briard" in out, f"exit {code}: {out}"
+    host.succeed("systemctl is-active briard-agent.service")
+
+    host.succeed("/usr/local/bin/briard uninstall -yes -delete-data")
+    residue = footprint() - pristine
+    assert not residue, f"uninstall -delete-data left these behind: {sorted(residue)}"
+    # The user's bridge is exactly as the host's own config made it, and still carries the host.
+    host.succeed("ip -o -4 addr show dev br0 | grep -qw 192.168.1.1")
+    host.succeed("bridge link show | grep -q eth1")
+    client.succeed("ping -c1 -W2 192.168.1.1")
+    client.wait_until_fails("curl -fsS --max-time 3 http://192.168.1.100/healthz", timeout=60)
+    print("uninstall -delete-data removed everything of ours and left the user's bridge standing")
   '';
 }
