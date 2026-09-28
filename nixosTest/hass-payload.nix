@@ -329,6 +329,18 @@ pkgs.testers.runNixOSTest {
     ctr = "briard-home-assistant-app"
     started_before = node1.succeed(f"podman inspect -f '{{{{.State.StartedAt}}}}' {ctr}").strip()
 
+    # ONE MEMBER PER BOUNDARY ([B.172]). A container start is the unit pre-start's to take (it
+    # reads the clean-stop marker), so `run` does not notify on the container's first run; it
+    # notifies on every later one. Counted in the unit's journal, where both land: the pre-start
+    # logs `service-starting …: took`, notify.py logs `briard: took`. The pre-start's line is what
+    # makes the zero below mean something -- it proves the query sees this unit's output.
+    unit_log = "journalctl --no-pager -u briard-home-assistant-app.service"
+    pre_took = node1.succeed(f"{unit_log} | grep -c 'service-starting home-assistant: took' || true").strip()
+    assert pre_took != "0", "the unit pre-start took no member; the zero below would be vacuous"
+    run_took = node1.succeed(f"{unit_log} | grep -c 'briard: took' || true").strip()
+    assert run_took == "0", f"`run` notified {run_took} time(s) on the container's first run"
+    node1.succeed(f"podman exec {ctr} test -e /run/briard-started")
+
     # Rotate the node's value out from under a live HA: HA's store and tmpfs now disagree.
     node1.succeed("head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/briard/home-assistant/token")
     rotated = node1.succeed("cat /run/briard/home-assistant/token").strip()
@@ -385,6 +397,8 @@ pkgs.testers.runNixOSTest {
         f"the container restarted ({started_before} -> {started_after}); the mint must ride "
         "the service-start boundary, not a container bounce"
     )
+    # ...and that restart, the container's second run, is the one `run` notifies for ([B.172]).
+    node1.wait_until_succeeds(f"test \"$({unit_log} | grep -c 'briard: took')\" = 1", timeout=60)
 
     # ── THROUGH THE FRONT DOOR ───────────────────────────────────────────────────────
     #

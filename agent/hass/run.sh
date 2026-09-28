@@ -13,6 +13,13 @@
 # unit's own start time — and the agent is where it is testable and where a container
 # cannot tamper with it. So this file stays three calls and an exec.
 #
+# ONE EXCEPTION, and it is a fact about this container rather than a decision: whether
+# `run` has run in it before ([B.172]). The first run follows a container start, which the
+# unit's pre-start has already snapshotted with the clean-stop marker's answer; notifying
+# again would take the same bytes twice. The flag lives in the container's own /run, so it
+# dies with the container and nothing can go stale. Tampering with it gains nothing: a
+# container can already call the socket or not, as it likes.
+#
 # No step can ever fail the service. A household losing Home Assistant because
 # briard could not write a token would be a far worse trade than a health gate that
 # degrades to liveness-only, which is exactly what an absent token leaves behind — and
@@ -32,7 +39,15 @@
 # application-consistent by construction rather than crash-consistent by luck. Ahead of the
 # two steps below deliberately: they write into /config, and a rollback point is worth more
 # taken before our own writes than after them.
-python3 /briard/notify.py || true
+#
+# Not on the container's first run (above). ⚠️ FAIL TOWARDS THE SNAPSHOT: a flag that cannot
+# be written notifies, because the naive `[ -e ] || touch` would skip every run forever and
+# say nothing. An extra member is what the agent already replaces.
+if [ ! -e /run/briard-started ] && touch /run/briard-started 2>/dev/null; then
+    :
+else
+    python3 /briard/notify.py || true
+fi
 
 python3 /briard/ensure-token.py /config /briard/token || true
 
