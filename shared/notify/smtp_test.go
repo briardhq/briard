@@ -117,8 +117,7 @@ func TestSMTPOffWhenUnconfigured(t *testing.T) {
 
 // The rendered message is a well-formed RFC 5322 mail: From/To/Subject headers, blank line, body.
 func TestSMTPMessageFormat(t *testing.T) {
-	s := smtpNotifier{cfg: SMTPConfig{From: "a@b"}, to: "c@d"}
-	msg := string(s.message(Alert{Title: "T", Body: "B"}, time.Unix(0, 0).UTC()))
+	msg := string(message(SMTPConfig{From: "a@b"}, "c@d", "T", "B", time.Unix(0, 0).UTC()))
 	for _, want := range []string{"From: a@b\r\n", "To: c@d\r\n", "Subject: T\r\n", "\r\nB\r\n"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q; got:\n%s", want, msg)
