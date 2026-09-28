@@ -62,6 +62,39 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{template "style"}}</head>
 <body><main>
   <h1>Briard</h1>
+  {{with .Casa}}
+  {{if eq .State "registered"}}
+  <div class="card">
+    <h2>Your address</h2>
+    <p>This home is <a href="https://{{.Name}}/">{{.Name}}</a>{{if .CertUntil}}, with a certificate valid until {{.CertUntil}} — renewed on its own.{{else}} — its certificate is on its way, which takes a minute or two.{{end}}</p>
+    <p class="muted">Every app gets a name under it, like <code>home-assistant.{{.Name}}</code>. The names work from inside your home; nothing is opened to the internet.</p>
+  </div>
+  {{else if eq .State "pending"}}
+  <div class="card">
+    <h2>Check your email</h2>
+    <p>A confirmation link is on its way to <strong>{{.Email}}</strong>. Open it within 20 minutes and this page will finish setting up <code>{{.Name}}</code> on its own.</p>
+    <details><summary class="muted">Wrong address, or no email?</summary>
+      <form method="post" action="/casa/claim" class="approve"><label for="casa-email">Send the link again, to:</label><input id="casa-email" name="email" type="email" required placeholder="you@example.org"><button type="submit">Send</button></form>
+    </details>
+  </div>
+  {{else if .Skipped}}
+  <p class="muted">Want <code>{{.Name}}</code> and a real certificate for this home? <form method="post" action="/casa/skip" style="display:inline"><input type="hidden" name="undo" value="1"><button type="submit" class="quiet">Register a name</button></form></p>
+  {{else}}
+  <div class="card">
+    <h2>Give this home an address</h2>
+    <p>Register <code>{{.Name}}</code> and get a real certificate, so your apps open without browser warnings. All we need is an email to send the confirmation link to — it is also how you get the name back if this machine is ever replaced.</p>
+    {{if eq .State "refused"}}<p class="banner">{{.Reason}}</p>{{else if eq .State "expired"}}<p class="banner">The last link expired before it was opened. Try again.</p>{{end}}
+    {{with .Asked}}{{if .Failed}}<p class="banner">{{.Detail}}</p>{{else}}<p>Sending the link to {{.Email}}…</p>{{end}}{{end}}
+    <form method="post" action="/casa/claim" class="approve">
+      <label for="casa-email">Email</label>
+      <input id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}}>
+      <button type="submit">Register</button>
+      <button type="submit" class="quiet" formaction="/casa/skip">Skip</button>
+    </form>
+    <p class="muted">Nothing is registered without the link. The name only ever points inside your home — it is not reachable from the internet.</p>
+  </div>
+  {{end}}
+  {{end}}
   {{if .HA}}
   <div class="card">
     <h2>Home Assistant</h2>

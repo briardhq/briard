@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"briard.io/shared/routes"
@@ -250,4 +251,26 @@ func read(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// The table also carries each service's casa name ([V3c.4]), which public DNS answers for: the
+// publisher must not claim it on the LAN, and must not lose the `.local` name beside it.
+func TestTheCasaNamesAreNotPublishedOnTheLAN(t *testing.T) {
+	tbl := table("brave-elf")
+	for i := range tbl.Services {
+		tbl.Services[i].Hosts = append(tbl.Services[i].Hosts, routes.CasaHostName("brave-elf", tbl.Services[i].Name))
+	}
+	w := mdnsWorldFor("192.168.1.100", "brave-elf", tbl)
+	for _, n := range w.names {
+		if !strings.HasSuffix(n, ".local") {
+			t.Errorf("published %q: only .local names are the LAN's", n)
+		}
+	}
+	want := map[string]bool{"briard-brave-elf-home-assistant.local": true, "briard-brave-elf-mosquitto.local": true, "briard-brave-elf.local": true}
+	for _, n := range w.names {
+		delete(want, n)
+	}
+	if len(want) != 0 {
+		t.Errorf("the .local names beside the casa ones were dropped: %v missing from %v", want, w.names)
+	}
 }

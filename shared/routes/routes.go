@@ -30,6 +30,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"briard.io/shared/casa"
 )
 
 // Path is where converge writes the table, the proxy reads it, and the mDNS publisher reads it.
@@ -48,8 +50,10 @@ type Table struct {
 type Service struct {
 	// Name is the catalog slug, the same one the manifest and the units carry.
 	Name string `json:"name"`
-	// Hosts are the names this service answers to — today the single mDNS label HostName
-	// composes, later the per-home `*.casa` name too ([V3b.14]).
+	// Hosts are the names this service answers to: the mDNS label HostName composes, first —
+	// it is the SRV target announcements point at — and the per-home `<service>.<flock>.briard.casa`
+	// name CasaHostName composes ([V3c.4]), which resolves only once the household has claimed
+	// its name and is harmless in the table until then.
 	//
 	// MATERIALISED RATHER THAN DERIVED, though both forms are computable from (flock, slug). The
 	// reason is the mDNS publisher: it is a shell script, and if it composed names itself the
@@ -170,6 +174,18 @@ func HostName(flock, service string) string {
 		return ""
 	}
 	return "briard-" + flock + "-" + service + ".local"
+}
+
+// CasaHostName is the service's name under the household's casa domain ([V3c.4]):
+// `<service>.<flock>.briard.casa`, covered by the flock's wildcard certificate and answered by
+// the same door that answers the `.local` name. Composed for every named flock, claimed or not:
+// a name that does not resolve routes nothing, and the alternative -- the table knowing whether
+// the household has an account -- would put a cloud fact where only local facts live.
+func CasaHostName(flock, service string) string {
+	if flock == "" || service == "" {
+		return ""
+	}
+	return service + "." + flock + "." + casa.Zone
 }
 
 // InstanceName is the mDNS SERVICE-INSTANCE label an announcement carries: the same

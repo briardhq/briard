@@ -74,7 +74,10 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	}
 	seen := map[string]bool{}
 	add := func(n string) {
-		if n == "" || seen[n] {
+		// Only `.local` is ours to claim on the LAN: the table also carries each service's
+		// `<service>.<flock>.briard.casa` name ([V3c.4]), which public DNS answers for and
+		// mDNS must not -- a multicast responder for a unicast name is a name that lies.
+		if n == "" || seen[n] || !strings.HasSuffix(n, ".local") {
 			return
 		}
 		seen[n] = true

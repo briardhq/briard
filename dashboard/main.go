@@ -120,12 +120,16 @@ type app struct {
 	// pulls is where a pull's progress is read from ([V3b.31j]): podman's layer store and the
 	// pull units' private tmp.
 	pulls pullPaths
+	// casaPath is the host's view of the household's name ([V3c.4], casa.go); casaAsked the
+	// last claim asked from this page, until the host's view moves past it.
+	casaPath  string
+	casaAsked *casaAsk
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
 		pending: map[string]*pending{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
-		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths}
+		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath}
 }
 
 const (
@@ -199,6 +203,18 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.approve(w, r)
+	case r.URL.Path == "/casa/claim" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.requestCasa(w, r)
+	case r.URL.Path == "/casa/skip" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.skipCasa(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -627,6 +643,8 @@ type view struct {
 	// Install is a Home Assistant install the household asked for from this page, while it
 	// runs or after it failed; Refresh makes the page poll itself while something is moving.
 	Install *installView
+	// Casa is the household's name ([V3c.4], casa.go): the first card, until skipped or done.
+	Casa    *casaView
 	Refresh bool
 }
 
@@ -704,9 +722,10 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 		v.HA = hv
 	}
 	v.Install = a.installState(hass.Name, v.HA != nil)
-	// Poll while something is on its way: an install in flight, or a Home Assistant that is
-	// routed but not yet RUNNING.
-	v.Refresh = (v.Install != nil && v.Install.Running) || (v.HA != nil && !v.HA.Running)
+	v.Casa = a.casaState()
+	// Poll while something is on its way: an install in flight, a Home Assistant that is
+	// routed but not yet RUNNING, or a name claim waiting on its link.
+	v.Refresh = (v.Install != nil && v.Install.Running) || (v.HA != nil && !v.HA.Running) || v.Casa.Refresh()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, "page", v); err != nil {
 		log.Printf("dashboard: render: %v", err)

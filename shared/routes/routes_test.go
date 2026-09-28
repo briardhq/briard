@@ -256,3 +256,17 @@ func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
 		t.Errorf("the announcement did not survive the round trip: %+v", mq.Announce)
 	}
 }
+
+// The casa name ([V3c.4]) is the service under the flock under the zone, and nothing for a flock
+// with no name -- the same rule HostName follows, so a nameless node routes nothing in either form.
+func TestCasaHostNameIsTheServiceUnderTheFlock(t *testing.T) {
+	if got := CasaHostName("brave-elf", "home-assistant"); got != "home-assistant.brave-elf.briard.casa" {
+		t.Fatalf("CasaHostName = %q", got)
+	}
+	if got := CasaHostName("", "home-assistant"); got != "" {
+		t.Fatalf("a nameless flock has a casa name: %q", got)
+	}
+	if got := CasaHostName("brave-elf", ""); got != "" {
+		t.Fatalf("a nameless service has a casa name: %q", got)
+	}
+}
