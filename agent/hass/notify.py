@@ -7,10 +7,10 @@ agent needs that window to take an application-consistent snapshot. Blocking her
 wrapper `exec`s the real entrypoint is what makes the window real rather than a race.
 
 IT DECIDES NOTHING, which is the design: whether to take a member at all, what to call it,
-whether the last one was recent enough to skip -- all of that is the agent's, derived from the
+whether it replaces one still waiting for its boot -- all of that is the agent's, derived from the
 ring on disk. This sends a verb and prints what came back. Everything that used to be proposed
 for this side (remember whether we have run before in this container, read the restore marker,
-carry a rate limit) lives there instead, where it is testable and where a container cannot
+carry a crash-loop bound) lives there instead, where it is testable and where a container cannot
 tamper with it.
 
 IT NEVER FAILS THE SERVICE. Every path here exits 0, and the wrapper calls it with `|| true`

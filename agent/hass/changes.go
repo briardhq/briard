@@ -74,9 +74,20 @@ func Signals(ctx context.Context, x Executor, dir string) (map[string][]byte, er
 			}
 		}
 	}
-	// THE CORRUPT RENAMES, by NAME only: the file set aside may be the recorder database, and
-	// reading it would cost a copy of the household's history for a fact the listing already has.
-	// Home Assistant puts them in two places — the stores in .storage/, the database beside it.
+	for _, rel := range Corrupt(ctx, x, dir) {
+		out[rel] = nil
+	}
+	return out, nil
+}
+
+// Corrupt names the stores and databases Home Assistant has set aside in dir, relative to it.
+//
+// BY NAME ONLY: the file set aside may be the recorder database, and reading it would cost a copy
+// of the household's history for a fact the listing already has. Home Assistant puts them in two
+// places — the stores in .storage/, the database beside it. dir may be the LIVE config directory:
+// a boot's renames are read after that boot, before any sample holds them ([B.172]).
+func Corrupt(ctx context.Context, x Executor, dir string) []string {
+	var out []string
 	for _, sub := range []string{"", storageDir} {
 		where, prefix := dir, ""
 		if sub != "" {
@@ -85,12 +96,12 @@ func Signals(ctx context.Context, x Executor, dir string) (map[string][]byte, er
 		if ls, err := x.Run(ctx, "ls", "-1", where); err == nil {
 			for _, n := range strings.Fields(string(ls)) {
 				if strings.Contains(n, corruptMark) {
-					out[prefix+n] = nil
+					out = append(out, prefix+n)
 				}
 			}
 		}
 	}
-	return out, nil
+	return out
 }
 
 const (
@@ -107,15 +118,27 @@ var resetWhat = map[string]string{
 }
 
 // Resets names what Home Assistant reset between two samples' signals — a store or its database it
-// found undecodable and started empty — as one phrase, or "". Pure, like Detect.
+// found undecodable and started empty — as the renames' paths, sorted. Pure, like Detect.
 //
 // NEW SINCE THE PREVIOUS SAMPLE, by the full name: the rename carries a time, so an old one that
 // is still lying around is not found again, and a second reset of the same store is.
-func Resets(prev, next map[string][]byte) string {
-	var lost []string
+func Resets(prev, next map[string][]byte) []string {
+	var out []string
 	for _, rel := range sortedKeys(next) {
+		if _, seen := prev[rel]; !seen && strings.Contains(rel, corruptMark) {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// ResetPhrase is the one phrase a history row shows for a set of renames (Corrupt's or Resets'
+// paths), named for what the household lost, or "".
+func ResetPhrase(rels []string) string {
+	var lost []string
+	for _, rel := range slices.Sorted(slices.Values(rels)) {
 		name, _, ok := strings.Cut(strings.TrimPrefix(rel, storageDir+"/"), corruptMark)
-		if _, seen := prev[rel]; !ok || seen || strings.Contains(name, "/") {
+		if !ok || strings.Contains(name, "/") {
 			continue
 		}
 		what := resetWhat[name]

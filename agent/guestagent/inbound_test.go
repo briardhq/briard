@@ -25,7 +25,7 @@ import (
 
 // ringExec is a guest with a .snapshots directory: `ls` answers with `members`, `btrfs subvolume
 // show` fails for anything absent (nothing is at a fresh member's path), and everything else
-// succeeds. It is the minimum a ring's rate limit and its take both read.
+// succeeds. It is the minimum a ring's take and its replacement both read.
 const haToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func ringExec(members ...string) *fakeExec {
@@ -192,13 +192,13 @@ func TestInboundRecordsTheBackupRestore(t *testing.T) {
 		t.Errorf("event = %+v, want the backup restore naming the backup", meta.Event)
 	}
 
-	// THE SECOND RESTART, after HA has consumed its own marker, seconds later: an ordinary start,
-	// taken inside the rate limit because nothing is compared against a *-before sample.
+	// THE SECOND RESTART, after HA has consumed its own marker, seconds later: an ordinary start.
+	// The restore's point is not a pending start, so the start does not replace it.
 	delete(f.files, quadlet.DataRoot("home-assistant")+"/app/"+hass.RestoreMarker)
 	f.runs = nil
-	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
-	if strings.Contains(resp.Detail, "still current") {
-		t.Fatalf("the start after the restore's point was skipped: %q", resp.Detail)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if slices.Contains(deleted(f), strings.TrimPrefix(member, quadlet.SnapshotsDir)) {
+		t.Fatalf("the start after the restore deleted the restore's point: %v", f.runs)
 	}
 	member2, meta2 := tookMember(t, f)
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member2); tr != quadlet.TriggerStart {
@@ -206,23 +206,6 @@ func TestInboundRecordsTheBackupRestore(t *testing.T) {
 	}
 	if meta2.Event != nil {
 		t.Errorf("the start after the restore carries %+v; it has no event of its own", meta2.Event)
-	}
-}
-
-// TestInboundTakesTheRestoreInsideTheRateLimit: the rate limit exists for a crash loop's hundreds
-// of identical members. Skipping a restore's point would leave a household's own restore with no
-// way back.
-func TestInboundTakesTheRestoreInsideTheRateLimit(t *testing.T) {
-	recent := strings.TrimPrefix(
-		quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)),
-		quadlet.SnapshotsDir)
-	f := restoreRig(`{"path": "/config/backups/x.tar"}`, recent)
-	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
-	if strings.Contains(resp.Detail, "still current") {
-		t.Fatalf("the rate limit skipped a restore's point: %q", resp.Detail)
-	}
-	if _, meta := tookMember(t, f); !meta.Event.Has(quadlet.ReasonHassRestore) {
-		t.Errorf("event = %+v, want the restore", meta.Event)
 	}
 }
 
@@ -301,61 +284,78 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	}
 }
 
-// TestInboundStartingRateLimitsACrashLoop: a crash loop restarts every few seconds and would fill
-// the picker with hundreds of identical entries. The member that matters is the FIRST — taken
-// before the bad change — so the rest are skipped and that one survives.
+// markPending turns one of ringExec's plain sidecars into a start still waiting for its boot.
+func markPending(f *fakeExec, name string) {
+	member := quadlet.SnapshotsDir + name
+	var meta quadlet.SnapshotMeta
+	_ = json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(member)]), &meta)
+	meta.Pending = true
+	b, _ := json.Marshal(meta)
+	f.files[quadlet.SnapshotSidecar(member)] = string(b)
+}
+
+// TestAStartReplacesTheStartStillPending ([B.172]): a crash loop restarts every few seconds, and
+// a start whose boot has no verdict yet stands for a boot that never finished. The new start is
+// taken, and the pending one goes, sidecar and all, so a loop holds ONE pending member.
 //
 // It is also the abuse bound. The caller is a container, so this is what stops anything running
 // as the service from filling the replicated volume on purpose ([B.155] by a new road).
-func TestInboundStartingRateLimitsACrashLoop(t *testing.T) {
-	recent := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second))
-	f := ringExec(strings.TrimPrefix(recent, quadlet.SnapshotsDir))
+func TestAStartReplacesTheStartStillPending(t *testing.T) {
+	base := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-time.Hour)), quadlet.SnapshotsDir)
+	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
+	f := ringExec(base, pending)
+	markPending(f, pending)
 	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	if resp.Error != "" {
-		t.Fatalf("error = %q, want a quiet skip", resp.Error)
+		t.Fatalf("error = %q, want a member taken", resp.Error)
 	}
-	for _, r := range f.runs {
-		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
-			t.Fatalf("a second member was taken inside the floor: %v", f.runs)
-		}
+	if took, _ := tookMember(t, f); took == quadlet.SnapshotsDir+pending {
+		t.Fatal("the new start was not taken")
 	}
-	if !strings.Contains(resp.Detail, "still current") {
-		t.Errorf("detail = %q, want it to say why nothing was taken", resp.Detail)
+	if got := deleted(f); !slices.Equal(got, []string{pending}) {
+		t.Errorf("deleted %v, want exactly the pending start", got)
 	}
-}
-
-// TestInboundStartingTakesOneOutsideTheFloor is the other half: the rate limit must not be a mute
-// button. A member older than the floor does not suppress the next one.
-func TestInboundStartingTakesOneOutsideTheFloor(t *testing.T) {
-	old := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-2*time.Hour))
-	f := ringExec(strings.TrimPrefix(old, quadlet.SnapshotsDir))
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
-	var took bool
-	for _, r := range f.runs {
-		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
-			took = true
-		}
-	}
-	if !took {
-		t.Fatalf("an hours-old ring suppressed a new member: %v", f.runs)
+	if !f.ran("rm", "-f", quadlet.SnapshotSidecar(quadlet.SnapshotsDir+pending)) {
+		t.Error("the replaced start's sidecar was left behind")
 	}
 }
 
-// TestInboundIgnoresAnotherServicesMembers: the rate limit is per service. A busy Home Assistant
-// must not be able to suppress the broker's members, or one service's crash loop silently costs
-// every other service its history.
-func TestInboundIgnoresAnotherServicesMembers(t *testing.T) {
-	recent := quadlet.SnapshotMember("mosquitto", quadlet.TriggerStart, time.Now().Add(-5*time.Second))
-	f := ringExec(strings.TrimPrefix(recent, quadlet.SnapshotsDir))
+// TestAnEvaluatedStartIsNeverReplaced: "change something, restart" is how a household tests undo.
+// The first start's boot has a verdict, so it is a sample the history compares with, and the next
+// start must not take it away -- whatever the interval.
+func TestAnEvaluatedStartIsNeverReplaced(t *testing.T) {
+	recent := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
+	f := ringExec(recent)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
-	var took bool
-	for _, r := range f.runs {
-		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
-			took = true
-		}
+	tookMember(t, f)
+	if got := deleted(f); len(got) != 0 {
+		t.Errorf("deleted %v; an evaluated start is kept", got)
 	}
-	if !took {
-		t.Fatalf("another service's member suppressed this one: %v", f.runs)
+}
+
+// TestAStartDoesNotTouchAnotherServicesPendingStart: the ring is per service. A busy Home
+// Assistant must not be able to delete the broker's members, or one service's crash loop silently
+// costs every other service its history.
+func TestAStartDoesNotTouchAnotherServicesPendingStart(t *testing.T) {
+	other := strings.TrimPrefix(quadlet.SnapshotMember("mosquitto", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
+	f := ringExec(other)
+	markPending(f, other)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	tookMember(t, f)
+	if got := deleted(f); len(got) != 0 {
+		t.Errorf("deleted %v; another service's pending start is not ours to replace", got)
+	}
+}
+
+// TestAnUnreadablePendingStartIsKept (AGENTS §4.9): the delete is gated on the sidecar SAYING
+// pending. One that cannot be read says nothing, and the answer to "I could not tell" is keep.
+func TestAnUnreadablePendingStartIsKept(t *testing.T) {
+	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
+	f := ringExec(pending)
+	f.files[quadlet.SnapshotSidecar(quadlet.SnapshotsDir+pending)] = `{"pending": tru`
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if got := deleted(f); len(got) != 0 {
+		t.Errorf("deleted %v on an unreadable sidecar", got)
 	}
 }
 
@@ -616,8 +616,7 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 	}
 }
 
-// ringOf builds `n` plain members for a service, oldest first, one second apart and just clear of
-// the rate limit.
+// ringOf builds `n` plain, evaluated members for a service, oldest first, one second apart.
 //
 // ⚠️ MINUTES AGO, NEVER HOURS: quiet time registers once a stretch is quadlet.QuietAfter old, so a
 // fixture hours in the past would put a quiet event into every prune test.
@@ -745,48 +744,6 @@ func (f *fakeExec) ran(argv ...string) bool {
 		}
 	}
 	return false
-}
-
-// TestRateLimitReadsTheNewestMemberAcrossTriggers is the regression guard for a bug the injection
-// round found, and the shape is worth keeping in mind.
-//
-// Members are `<service>-<trigger>-<stamp>`, so the TRIGGER sits between the service and the
-// stamp and dominates any string comparison: every `-clock-` member sorts before every `-start-`
-// one whatever their times. A ring that read the lexically last member as the newest compared the
-// rate limit against an OLD start -- which means it would take a member it should have skipped.
-//
-// Every earlier rate-limit test used one trigger, so all of them were blind to it.
-func TestRateLimitReadsTheNewestMemberAcrossTriggers(t *testing.T) {
-	// A start from long ago, and a clock member from seconds ago. Ordered by NAME the old start is
-	// last; ordered by TIME the clock member is.
-	oldStart := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-72*time.Hour))
-	recentClock := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-5*time.Second))
-	f := ringExec(
-		strings.TrimPrefix(oldStart, quadlet.SnapshotsDir),
-		strings.TrimPrefix(recentClock, quadlet.SnapshotsDir),
-	)
-	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
-	for _, r := range f.runs {
-		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
-			t.Fatalf("a member was taken inside the floor; the newest was read as the 72h-old start: %v", f.runs)
-		}
-	}
-	if !strings.Contains(resp.Detail, "still current") {
-		t.Errorf("detail = %q, want the skip to name the recent member", resp.Detail)
-	}
-}
-
-// TestRateLimitNeverSkipsTheStartAfterAnOperation: nothing is compared against a *-before sample,
-// so the start after an operation is what the next sample is compared with ([B.167]). Skipping it
-// would compare the household's first hour after an update with nothing.
-func TestRateLimitNeverSkipsTheStartAfterAnOperation(t *testing.T) {
-	for _, tr := range []quadlet.Trigger{quadlet.TriggerAppUpdateBefore, quadlet.TriggerAppUndoBefore, quadlet.TriggerHassRestoreBefore} {
-		before := quadlet.SnapshotMember("home-assistant", tr, time.Now().Add(-5*time.Second))
-		f := ringExec(strings.TrimPrefix(before, quadlet.SnapshotsDir))
-		if resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`); strings.Contains(resp.Detail, "still current") {
-			t.Errorf("the start %s after a %s sample was skipped: %q", "seconds", tr, resp.Detail)
-		}
-	}
 }
 
 // TestListMembersSkipsWhatItCannotIdentify: the picker offers a household a rollback point, so an
@@ -1171,5 +1128,119 @@ func TestACrashLoopIsOneEvaluation(t *testing.T) {
 	}
 	if eventOn(t, f, s1) != nil {
 		t.Error("the loop's first start was compared with its own successor")
+	}
+}
+
+// setAside makes `dir`'s .storage list what Home Assistant set aside there; dir is a member's
+// container directory or the live one.
+func setAside(f *fakeExec, dir string, names ...string) {
+	inner := f.runFn
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "ls" && len(args) > 1 && args[1] == dir+"/.storage" {
+			return []byte(strings.Join(names, "\n")), nil
+		}
+		return inner(name, args)
+	}
+}
+
+const brokenEntries = "core.config_entries.corrupt.2026-09-28T10:00:00"
+
+// TestABootsResetLandsOnThePointBeforeTheStart ([B.172]): the start's member was taken before the
+// boot, so it holds the undecodable store; undoing to it would bring the reset straight back. What
+// the boot set aside is read from the LIVE data at the verdict and lands on the sample before.
+func TestABootsResetLandsOnThePointBeforeTheStart(t *testing.T) {
+	now := time.Now()
+	baseAt := now.Add(-time.Hour)
+	base := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, baseAt)
+	start := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now)
+	f := recordRing(base, start)
+	haMember(f, quadlet.TriggerClock, baseAt, "same")
+	pendingStart(f, now, "same")
+	setAside(f, quadlet.DataPath("home-assistant", "app"), brokenEntries)
+	healthRig(t, f)
+
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Second))
+	ev := eventOn(t, f, base)
+	if !ev.Has(quadlet.ReasonReset) || !strings.Contains(ev.Reasons[0].What, "integrations") {
+		t.Fatalf("the point before the start carries %+v, want the boot's reset", ev)
+	}
+	if eventOn(t, f, start) != nil {
+		t.Error("the start carries an event; undoing to it would restore the undecodable store")
+	}
+	if got := metaOf(t, f, start).Resets; !slices.Equal(got, []string{"app/.storage/" + brokenEntries}) {
+		t.Errorf("the start records %q as its boot's resets", got)
+	}
+
+	// THE NEXT SAMPLE HOLDS THE RENAME, and must not find it again: it was this boot's, and has
+	// landed. Without the start's record the clock would put a second reset on the start itself.
+	clockAt := now.Add(time.Hour)
+	clock := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, clockAt)
+	f.runFn(`btrfs`, []string{"subvolume", "snapshot", "-r", "x", clock})
+	_, meta := haMember(f, quadlet.TriggerClock, clockAt, "same")
+	setAside(f, clock+"/app", brokenEntries)
+	recordMember(context.Background(), f, clock, meta)
+	if ev := eventOn(t, f, start); ev.Has(quadlet.ReasonReset) {
+		t.Errorf("the next sample found the boot's reset again: %+v", ev)
+	}
+}
+
+// TestAReplacedBootsResetIsCarried ([B.172]): a start replaced before its verdict takes its boot's
+// renames with it into the member that replaced it, and the new boot has nothing left to rename.
+// After an update nothing compares the members either (the update's point is a *-before sample),
+// so the carried record is the only way the reset reaches the update's point -- which is the
+// point that undoes it.
+func TestAReplacedBootsResetIsCarried(t *testing.T) {
+	now := time.Now()
+	updAt, s1At := now.Add(-10*time.Minute), now.Add(-time.Minute)
+	upd := quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, updAt)
+	s1 := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, s1At)
+	s2 := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now)
+	f := recordRing(upd, s1, s2)
+	haMember(f, quadlet.TriggerAppUpdateBefore, updAt, "same")
+	withEvent(f, strings.TrimPrefix(upd, quadlet.SnapshotsDir), quadlet.ReasonAppUpdate, 10*time.Minute)
+	pendingStart(f, s1At, "same")
+	pendingStart(f, now, "same")
+	setAside(f, s2+"/app", brokenEntries) // s1's boot did it; s2 was taken after
+	setAside(f, quadlet.DataPath("home-assistant", "app"), brokenEntries)
+
+	recordMember(context.Background(), f, s2, metaOf(t, f, s2))
+	if got := deleted(f); !slices.Equal(got, []string{strings.TrimPrefix(s1, quadlet.SnapshotsDir)}) {
+		t.Fatalf("deleted %v, want the replaced start", got)
+	}
+	if got := metaOf(t, f, s2).Resets; !slices.Equal(got, []string{"app/.storage/" + brokenEntries}) {
+		t.Fatalf("the replacing start carries %q, want the replaced boot's rename", got)
+	}
+
+	healthRig(t, f)
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Second))
+	ev := eventOn(t, f, upd)
+	var resets int
+	for _, r := range ev.Reasons {
+		if r.Kind == quadlet.ReasonReset {
+			resets++
+		}
+	}
+	if !ev.Has(quadlet.ReasonAppUpdate) || resets != 1 {
+		t.Errorf("the update's point carries %+v, want the update and one reset", ev)
+	}
+}
+
+// TestReplacingKeepsTheWeakerConsistency: a Home Assistant container start takes two members
+// seconds apart -- the unit's pre-start, which read the clean-stop marker, and the `run`
+// wrapper's, which cannot and says quiesced. After a promotion the first says crash, and the kept
+// member holds the same bytes, so it must say crash too ([B.172]).
+func TestReplacingKeepsTheWeakerConsistency(t *testing.T) {
+	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-3*time.Second)), quadlet.SnapshotsDir)
+	f := ringExec(pending)
+	markPending(f, pending)
+	sidecar := quadlet.SnapshotSidecar(quadlet.SnapshotsDir + pending)
+	f.files[sidecar] = strings.Replace(f.files[sidecar], `"consistency":""`, `"consistency":"crash"`, 1)
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	took, _ := tookMember(t, f)
+	if got := metaOf(t, f, took).Consistency; got != quadlet.Crash {
+		t.Errorf("the member that replaced a crash-consistent start says %q", got)
+	}
+	if got := deleted(f); !slices.Equal(got, []string{pending}) {
+		t.Errorf("deleted %v, want the replaced start", got)
 	}
 }

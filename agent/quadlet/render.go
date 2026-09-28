@@ -419,7 +419,7 @@ type Trigger string
 const (
 	// TriggerStart is an ordinary start of the app: its container's, or for an app that can tell
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
-	// the rate limit may skip.
+	// a later start may replace, while it is still pending ([B.172]).
 	TriggerStart Trigger = "start"
 	// TriggerClock is the member taken BY THE CLOCK rather than by a start ([B.143]): a stable
 	// service can run for a month without a restart, and the clock is what still samples it.
@@ -456,7 +456,7 @@ func SnapshotMemberService(name string) (string, bool) {
 }
 
 // SnapshotMemberTime reads the moment a member was taken out of its name. It is what the ring's
-// rate limit and its pruning order read, and it is why the stamp is in the name rather than only
+// ordering and its pruning read, and it is why the stamp is in the name rather than only
 // in the sidecar: answering "how old is the newest member" must not cost a file read per member.
 func SnapshotMemberTime(name string) (time.Time, bool) {
 	_, _, at, ok := ParseSnapshotMember(name)
@@ -592,6 +592,11 @@ type SnapshotMeta struct {
 	// healthy → unhealthy transition survives the pruning of the start that measured it. Empty
 	// means unknown.
 	Health services.Health `json:"health,omitempty"`
+	// Resets are the renames a start's BOOT made (services.Corrupt's form), found at its verdict
+	// and landed on the sample before it -- with those of the pending starts it replaced
+	// ([B.172]). No member holds them before the next sample does, so a comparison with this
+	// member as the earlier side does not find them again.
+	Resets []string `json:"resets,omitempty"`
 }
 
 // DataPath is one container's plain subdirectory inside that subvolume.

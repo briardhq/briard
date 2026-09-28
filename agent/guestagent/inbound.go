@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -47,9 +48,10 @@ import (
 //   - NO VERB CHOOSES WHAT IS DESTROYED OR REWRITTEN. The ring prunes itself and records events
 //     after every take, but both are derived from the ring on disk ([B.167]); restoring and
 //     deleting on request stay on the host's side, where the caller is the product.
-//   - EVERY VERB IS BOUNDED. The rate limit below is not only ring hygiene: it is what stops a
-//     hostile or looping caller from filling the replicated volume, which is [B.155]'s failure
-//     arriving by a new road.
+//   - EVERY VERB IS BOUNDED. A start replaces the start still pending before it (replacePending),
+//     so a hostile or looping caller holds ONE pending member however often it calls, and cannot
+//     fill the replicated volume, which is [B.155]'s failure arriving by a new road. What such a
+//     caller costs is a take and a delete per call, one call at a time (ListenInbound).
 //
 // ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session and no state carried
 // between calls: every answer is derived from the ring on disk and the manifest on the volume.
@@ -92,15 +94,6 @@ type inboundResponse struct {
 	Error  string `json:"error,omitempty"`
 	Detail string `json:"detail,omitempty"`
 }
-
-// plainStartFloor is how young the newest member may be before another plain start is skipped.
-//
-// A crash loop restarts every few seconds, and each take is a snapshot, a comparison and a prune
-// for a member the next one replaces: nothing changed between them. Skipping the ones inside the
-// floor costs no history -- the next sample outside it compares against the same point.
-//
-// It is also the abuse bound. See the trust rules above.
-const plainStartFloor = 90 * time.Second
 
 // ServeInbound reads one request from r, resolves who sent it, serves it, and writes one response
 // to w.
@@ -170,12 +163,6 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	// The manifest is on the volume, node-local to read — which is why this needs no host in the
 	// loop, and why it must not have one: the host is not in the start path on a promotion or a
 	// crash restart, which is most of what this channel exists to catch.
-	//
-	// IT IS READ BEFORE THE RATE LIMIT because the rate limit does not apply to every member: a
-	// restore's pair is never skipped, and which this is can only be known from the manifest (the
-	// registry's marker paths are per service and per container). The cheap refusal therefore
-	// costs one directory listing and one small read, and still writes nothing at all — the
-	// property that matters when the caller is a crash loop or something hammering the socket.
 	raw, err := x.ReadFile(manifestPath(service))
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
@@ -197,22 +184,6 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 		trigger = quadlet.TriggerHassRestoreBefore
 		// The household's own restore is an event, on the point that undoes it ([B.167]).
 		ev = &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonHassRestore, What: "Restored " + backup}}}
-	} else {
-		// THE RATE LIMIT, and only here. A crash loop restarts every few seconds and would fill
-		// the ring with hundreds of identical plain members; the one that matters is the first,
-		// taken before whatever went wrong ever ran. A backup restore is the opposite case, and
-		// skipping its point would leave a household's own restore with no way back.
-		//
-		// ⚠️ NEVER AFTER A *-before SAMPLE: nothing is compared against one, so the start that
-		// follows an operation is what the next sample is compared with. Skipping it would compare
-		// that sample with nothing, and the household's first edits after an update would go unseen.
-		newestTrigger, newest, found, err := newestMember(ctx, x, service)
-		if err != nil {
-			return "", err
-		}
-		if found && !newestTrigger.Before() && at.Sub(newest) < plainStartFloor {
-			return fmt.Sprintf("a member from %s ago is still current; not taking another", at.Sub(newest).Truncate(time.Second)), nil
-		}
 	}
 	meta := quadlet.SnapshotMeta{
 		Service: service,
@@ -247,8 +218,8 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 // cannot depend on which door a sample came through.
 //
 // A START IS NOT EVALUATED HERE: what its boot reveals is part of its evaluation, and the pre-start
-// hook cannot wait for a boot. It is written pending, and EvaluateStarts evaluates it once the boot
-// has a verdict. Every other sample is evaluated now.
+// hook cannot wait for a boot. It is written pending, replaces the start still pending before it,
+// and EvaluateStarts evaluates it once the boot has a verdict. Every other sample is evaluated now.
 //
 // AFTER the take, never before: pruning first would mean a failed take leaves the ring shorter for
 // nothing, and a member is only replaceable once its successor exists.
@@ -257,6 +228,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 // missing from its history is a smaller loss than a service that would not start.
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
 	if meta.Pending {
+		replacePending(ctx, x, member, meta)
 		pruneRing(ctx, x, meta.Service, meta.TakenAt)
 		return
 	}
@@ -266,6 +238,101 @@ func recordMember(ctx context.Context, x Executor, member string, meta quadlet.S
 		settle(ctx, x, members, quadlet.SnapshotEntry{Member: member, Meta: meta}, nil, meta.TakenAt)
 	}
 	pruneRing(ctx, x, meta.Service, meta.TakenAt)
+}
+
+// replacePending deletes the starts still pending before a new one ([B.172]). A start with no
+// verdict yet stands for a boot that never finished, so the new start's boot is the one its
+// verdict is about, and content is compared from the last EVALUATED sample to the new start.
+// An evaluated start is never replaced: "change something, restart" keeps its row.
+//
+// THIS IS WHAT BOUNDS A CRASH LOOP, and a caller hammering the socket: one pending member per
+// service, however often it starts.
+//
+// THE REPLACED BOOTS' RENAMES ARE CARRIED. A rename the replaced boot made is in the new member
+// already, so the new boot has nothing left to rename and its verdict would find nothing. What is
+// new here over the replaced member goes into the new sidecar's Resets, to land with the verdict.
+// So is a crash-consistent label (below).
+//
+// ⚠️ A DELETE, GATED ON A POSITIVE READ (AGENTS §4.9): the sidecar parsed, and it says a pending
+// start with no event. listMembers leaves out what it cannot read, so an unreadable member is
+// kept. The carried renames are written first, and a failed write keeps the old members.
+func replacePending(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
+	members, err := listMembers(ctx, x, meta.Service)
+	if err != nil {
+		log.Printf("ring %s: could not read the ring to replace a pending start: %v", meta.Service, err)
+		return
+	}
+	at, ok := quadlet.SnapshotMemberTime(member)
+	if !ok {
+		return
+	}
+	var old []quadlet.SnapshotEntry
+	for _, m := range members {
+		t, ok := quadlet.SnapshotMemberTime(m.Member)
+		if ok && t.Before(at) && m.Meta.Pending && m.Meta.Trigger == quadlet.TriggerStart && m.Meta.Event == nil {
+			old = append(old, m)
+		}
+	}
+	if len(old) == 0 {
+		return
+	}
+	changed := false
+	if mf, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
+		now := services.Corrupt(ctx, x, mf, member)
+		carried := meta.Resets
+		for _, o := range old {
+			carried = union(carried, o.Meta.Resets, without(now, services.Corrupt(ctx, x, mf, o.Member)))
+		}
+		if len(carried) > len(meta.Resets) {
+			meta.Resets, changed = carried, true
+		}
+	}
+	// THE WEAKER CONSISTENCY IS CARRIED TOO. A Home Assistant container start takes two members
+	// seconds apart: the unit's pre-start, which reads the clean-stop marker, and the `run`
+	// wrapper's, which cannot and says quiesced. After a promotion or a power cut the first says
+	// crash, and the second holds the same bytes, so keeping it must not upgrade the claim.
+	for _, o := range old {
+		if o.Meta.Consistency == quadlet.Crash && meta.Consistency != quadlet.Crash {
+			meta.Consistency, changed = quadlet.Crash, true
+		}
+	}
+	if changed && !writeMeta(ctx, x, member, meta, "carried what the replaced starts knew") {
+		return
+	}
+	for _, o := range old {
+		if _, err := x.Run(ctx, "btrfs", "subvolume", "delete", o.Member); err != nil {
+			log.Printf("ring %s: could not replace the pending %s: %v", meta.Service, path.Base(o.Member), err)
+			continue
+		}
+		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(o.Member)); err != nil {
+			log.Printf("ring %s: replaced %s but left its sidecar: %v", meta.Service, path.Base(o.Member), err)
+		}
+		log.Printf("ring %s: %s replaced the pending %s", meta.Service, path.Base(member), path.Base(o.Member))
+	}
+}
+
+// without is a minus b, in a's order.
+func without(a, b []string) []string {
+	var out []string
+	for _, s := range a {
+		if !slices.Contains(b, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// union is every string in the lists, once, first appearance first.
+func union(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		for _, s := range l {
+			if !slices.Contains(out, s) {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 // settle is one sample's evaluation, whoever calls it: it closes the older samples still pending
@@ -332,22 +399,28 @@ func previousEvaluated(members []quadlet.SnapshotEntry, member string) (quadlet.
 // evaluation may add its health (`extra`); all happened in the same interval, so all are reasons on
 // the same point. Nothing found, at a member that is not an operation's own point, is quiet time
 // (quadlet.QuietPoint).
+//
+// A START'S BOOT RESETS ARE ITS OWN (meta.Resets, [B.172]): read after the boot, so they are not in
+// the member and are counted whatever prev is. The earlier side's are not found again: they were
+// its boot's, already landed.
 func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, prev quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta, extra []quadlet.Reason) (quadlet.SnapshotEntry, []quadlet.Reason) {
 	var found []quadlet.Reason
+	var resets []string
 	if !prev.Meta.Trigger.Before() {
 		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
 			// The clock's sample is the one taken while the service RUNS.
-			changed, reset, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
+			changed, rs, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
 			if err != nil {
 				log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
 			}
 			if changed != "" {
 				found = append(found, quadlet.Reason{Kind: quadlet.ReasonChanged, What: changed})
 			}
-			if reset != "" {
-				found = append(found, quadlet.Reason{Kind: quadlet.ReasonReset, What: reset})
-			}
+			resets = without(rs, prev.Meta.Resets)
 		}
+	}
+	if resets = union(resets, meta.Resets); len(resets) > 0 {
+		found = append(found, quadlet.Reason{Kind: quadlet.ReasonReset, What: services.ResetPhrase(resets)})
 	}
 	if found = append(found, extra...); len(found) > 0 {
 		return prev, found
@@ -385,25 +458,30 @@ func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs
 // ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
 // can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
 // because the next node to read this may be the one that promotes after this one dies.
-func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta, what string) {
+//
+// It says whether the sidecar now holds meta, for the one caller that must not go on otherwise
+// (replacePending).
+func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta, what string) bool {
 	b, err := json.Marshal(meta)
 	if err != nil {
 		log.Printf("ring %s: could not render %s's sidecar: %v", meta.Service, path.Base(member), err)
-		return
+		return false
 	}
 	sidecar := quadlet.SnapshotSidecar(member)
 	tmp := sidecar + ".tmp"
 	if err := x.WriteFile(tmp, b); err != nil {
 		log.Printf("ring %s: %s on %s failed: %v", meta.Service, what, path.Base(member), err)
-		return
+		return false
 	}
 	if _, err := x.Run(ctx, "mv", "-f", tmp, sidecar); err != nil {
 		log.Printf("ring %s: %s on %s failed: %v", meta.Service, what, path.Base(member), err)
-		return
+		return false
 	}
 	if _, err := x.Run(ctx, "sync", "-f", sidecar); err != nil {
 		log.Printf("ring %s: %s on %s but could not flush it: %v", meta.Service, what, path.Base(member), err)
+		return false
 	}
+	return true
 }
 
 // startEvalTick is how often the long-running agent looks for a start whose boot has a verdict.
@@ -442,6 +520,11 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 //
 // UNHEALTHY REGISTERS ONLY ON A TRANSITION: the newest evaluated sample carried healthy (or no
 // verdict yet). The reason lands on the sample before the start, which is what undoing it restores.
+//
+// SO DOES A BOOT'S RESET ([B.172]): what the app set aside as undecodable during this boot is in
+// the LIVE data and not in the start's member, which holds the undecodable original. Undoing to
+// the start would put that file back and the next boot would set it aside again, so the reset is
+// the boot's verdict on the start's data, like health.
 func evaluatePending(ctx context.Context, x Executor, service string, now time.Time) {
 	members, err := listMembers(ctx, x, service)
 	if err != nil {
@@ -469,6 +552,10 @@ func evaluatePending(ctx context.Context, x Executor, service string, now time.T
 		extra = append(extra, quadlet.Reason{Kind: quadlet.ReasonUnhealthy})
 	}
 	pending.Meta.Health = h
+	if m, _, err := manifest.Parse([]byte(pending.Meta.Manifest)); err == nil {
+		live := services.Corrupt(ctx, x, m, quadlet.DataRoot(service))
+		pending.Meta.Resets = union(pending.Meta.Resets, without(live, services.Corrupt(ctx, x, m, pending.Member)))
+	}
 	settle(ctx, x, members, pending, extra, now)
 	pruneRing(ctx, x, service, now)
 }
@@ -656,9 +743,8 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 	}
 	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<service>-<trigger>-<stamp>`, so the
 	// TRIGGER sits between the service and the stamp and dominates any string comparison: every
-	// `-clock-` member sorts before every `-start-` one whatever their times. Sorting names put the
-	// newest member wherever the alphabet happened to put its trigger -- which made newestMember
-	// answer with the wrong member's age, so the rate limit compared against the wrong member.
+	// `-clock-` member sorts before every `-start-` one whatever their times, and every reader that
+	// asks for "the newest" or "the one before" would get the alphabet's answer.
 	//
 	// The stamp is fixed-width UTC so that TIMES compare correctly once parsed; that was always
 	// the property, and "lexical order is chronological" was only ever true within one trigger.
@@ -668,21 +754,6 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 		return ti.Before(tj)
 	})
 	return names
-}
-
-// newestMember is the trigger and time of a service's most recent member, from its NAME.
-func newestMember(ctx context.Context, x Executor, service string) (quadlet.Trigger, time.Time, bool, error) {
-	names := ringMembers(ctx, x, service)
-	if len(names) == 0 {
-		return "", time.Time{}, false, nil
-	}
-	_, tr, at, ok := quadlet.ParseSnapshotMember(names[len(names)-1])
-	if !ok {
-		// A member whose name we cannot read is not a reason to refuse to take another: the ring
-		// is a convenience, and a stranger's directory entry must not be able to stop it.
-		return "", time.Time{}, false, nil
-	}
-	return tr, at, true, nil
 }
 
 // pruneRing brings a service's ring back to what the history keeps (quadlet.RetentionPrune, where

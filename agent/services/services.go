@@ -284,31 +284,61 @@ func RestoreMarkers(m manifest.Manifest) []string {
 // OPTIONAL PER SERVICE, and the default is nothing, as everywhere here: a service with no detector
 // still has quiet time, which is what catches what no detector sees. Only Home Assistant has one.
 //
-// TWO ANSWERS, because the history tells them apart: what the household CHANGED, and what the app
-// RESET on its own (Home Assistant setting an undecodable store aside, [B.167d]). Either may be "".
-func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed, reset string, err error) {
+// TWO ANSWERS, because the history tells them apart: what the household CHANGED, as its line or "",
+// and what the app RESET on its own (Home Assistant setting an undecodable store aside, [B.167d]),
+// as the renames' paths in Corrupt's form. The caller phrases those (ResetPhrase), because a
+// start's boot adds renames of its own that no member holds ([B.172]).
+func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed string, resets []string, err error) {
 	if m.Name != hass.Name {
-		return "", "", nil
+		return "", nil, nil
 	}
-	var out, resets []string
+	var out []string
 	for _, c := range m.Containers {
 		if c.Mount == "" {
 			continue // shares the subvolume and writes nothing of its own
 		}
 		before, err := hass.Signals(ctx, x, prev+"/"+c.Name)
 		if err != nil {
-			return "", "", err
+			return "", nil, err
 		}
 		after, err := hass.Signals(ctx, x, next+"/"+c.Name)
 		if err != nil {
-			return "", "", err
+			return "", nil, err
 		}
 		out = append(out, hass.Detect(before, after, running)...)
-		if r := hass.Resets(before, after); r != "" {
-			resets = append(resets, r)
+		for _, r := range hass.Resets(before, after) {
+			resets = append(resets, c.Name+"/"+r)
 		}
 	}
-	return hass.Sentence(out), strings.Join(resets, "; "), nil
+	return hass.Sentence(out), resets, nil
+}
+
+// Corrupt names what the app has set aside as undecodable under root -- a member, or the live
+// data root -- as paths relative to it, each under its container's directory ([B.172]).
+func Corrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) []string {
+	if m.Name != hass.Name {
+		return nil
+	}
+	var out []string
+	for _, c := range m.Containers {
+		if c.Mount == "" {
+			continue
+		}
+		for _, r := range hass.Corrupt(ctx, x, root+"/"+c.Name) {
+			out = append(out, c.Name+"/"+r)
+		}
+	}
+	return out
+}
+
+// ResetPhrase is the history's one phrase for a set of Corrupt-form renames, or "".
+func ResetPhrase(resets []string) string {
+	var rels []string
+	for _, r := range resets {
+		_, rel, _ := strings.Cut(r, "/") // the container's directory, which a household never sees
+		rels = append(rels, rel)
+	}
+	return hass.ResetPhrase(rels)
 }
 
 // Prepare materialises whatever Volumes promised, on THIS node, before the container starts.

@@ -195,13 +195,13 @@ func TestResetsNamesWhatWasLostOnce(t *testing.T) {
 		".storage/core.config_entries.corrupt.2026-09-25T10:00:00", "",
 		"home-assistant_v2.db.corrupt.2026-09-25T10:00:00", "",
 		".storage/core.restore_state", "noise")
-	if got, want := Resets(prev, next), "Home Assistant could not read its integrations and history and started without them"; got != want {
+	if got, want := ResetPhrase(Resets(prev, next)), "Home Assistant could not read its integrations and history and started without them"; got != want {
 		t.Errorf("Resets = %q\nwant     %q", got, want)
 	}
-	if got := Resets(next, next); got != "" {
+	if got := Resets(next, next); len(got) != 0 {
 		t.Errorf("Resets(same) = %q; an old rename was found again", got)
 	}
-	if got := Resets(sig(), sig(".storage/some_store.corrupt.x", "")); got != "Home Assistant could not read its some_store and started without them" {
+	if got := ResetPhrase(Resets(sig(), sig(".storage/some_store.corrupt.x", ""))); got != "Home Assistant could not read its some_store and started without them" {
 		t.Errorf("an unlisted store reads %q", got)
 	}
 }
