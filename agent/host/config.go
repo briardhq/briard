@@ -29,6 +29,9 @@ func promoterUnits() []string { return chain.Members() }
 // convergence is unobservable (fine: those binaries aren't the ones the cloud rolls out).
 var buildVersion string
 
+// Version is the stamped release id, for the CLI that shares this binary (`briard version`).
+func Version() string { return buildVersion }
+
 // versionBanner is the line the agent logs once at startup so a running install can say
 // which build it is. Until this existed the id was stamped at build time, threaded
 // into NodeStatus, and used by the self-updater -- but never shown to a human, so the first

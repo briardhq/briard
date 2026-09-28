@@ -130,6 +130,13 @@ var commands = []command{
 		run: runDashboard, probe: []string{"-h"},
 	},
 	{
+		name: "version", group: groupRepair,
+		synopsis: "which briard this is, and which VM it runs your apps in",
+		detail: "Works with the agent down. `briard doctor` prints the same two lines at the top of its\n" +
+			"report, so a pasted diagnosis already says which version it is about.",
+		run: runVersion, probe: []string{"-h"},
+	},
+	{
 		name: "rescue", group: groupRepair,
 		synopsis: "rebuild briard on this machine from its image (-yes to confirm)",
 		detail: "Destructive to briard's own system disk, never to the replicated data volume. It asks for\n" +
@@ -258,8 +265,8 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `
   help [command]               this message, or one command's options
 
-`+"`alerts`"+` and `+"`logs`"+` read this machine's logs, and `+"`update`"+` starts a systemd unit; all
-three work even when the agent is down, and so does the machine's own half of `+"`doctor`"+`. The rest talk to the running briard-agent over its admin
+`+"`alerts`"+` and `+"`logs`"+` read this machine's logs, `+"`version`"+` its records, and `+"`update`"+` starts a
+systemd unit; all four work even when the agent is down, and so does the machine's own half of `+"`doctor`"+`. The rest talk to the running briard-agent over its admin
 socket (`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
 
 This machine does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`

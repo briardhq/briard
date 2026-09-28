@@ -297,6 +297,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"rescue":    groupRepair,
 		"update":    groupRepair,
 		"uninstall": groupRepair,
+		"version":   groupRepair,
 		"directive": groupRepair,
 		"run":       groupRepair,
 	}

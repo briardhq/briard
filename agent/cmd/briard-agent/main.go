@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"briard.io/agent/cli"
+	"briard.io/agent/host"
 	"briard.io/agent/reportcard"
 	"briard.io/shared/sdnotify"
 )
@@ -45,7 +46,9 @@ func main() {
 		return
 	}
 
-	// Everything else — including no arguments at all, which prints the help — is the CLI.
+	// Everything else — including no arguments at all, which prints the help — is the CLI. It is
+	// handed the build stamp, which lives in agent/host.
+	cli.Version = host.Version()
 	os.Exit(cli.Main(context.Background(), args, os.Stdout, os.Stderr))
 }
 

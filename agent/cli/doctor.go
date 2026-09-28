@@ -45,7 +45,9 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	checks = append(checks, agentChecks(o, err, agentUnitState(ctx))...)
 
 	host, _ := os.Hostname()
-	fmt.Fprintf(stdout, "briard doctor -- %s -- %s\n\n", host, time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(stdout, "briard doctor -- %s -- %s\n", host, time.Now().UTC().Format(time.RFC3339))
+	// Which briard the report is about, so a pasted diagnosis carries its own version.
+	fmt.Fprintf(stdout, "%s\n", versionLines(guestReleaseRecord))
 	return printDoctor(stdout, checks)
 }
 

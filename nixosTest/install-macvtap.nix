@@ -560,6 +560,11 @@ pkgs.testers.runNixOSTest {
             f"`briard doctor` does not pass {check} on a healthy lone node:\n{doctor}"
         )
     print("`briard doctor` judges a real serving node through the agent")
+    # ...and says which briard it is about, as `briard version` does: the stamp this release was
+    # built with and the VM release the install recorded -- both, or a pasted report is unplaceable.
+    versions = f"briard {V}\nvm     {GV}\n"
+    assert versions in doctor, f"`briard doctor` does not name {versions!r}:\n{doctor}"
+    assert host.succeed("/usr/local/bin/briard version") == versions
 
     # What a stranger actually gets. The bare address is a name the front door does not route,
     # so it forwards to the household dashboard ([V3b.31b]) -- which REFUSES a browser with no
