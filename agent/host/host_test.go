@@ -665,7 +665,7 @@ func TestObserveReturnsOnChannelDown(t *testing.T) {
 	cfg.Resource.Name = "r0"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // safety net
 	defer cancel()
-	err := cfg.observe(ctx, fakeStatus{err: guestfirmware.ErrChannelDown}, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {})
+	err := cfg.observe(ctx, fakeStatus{err: guestfirmware.ErrChannelDown}, nil, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {})
 	if !errors.Is(err, guestfirmware.ErrChannelDown) {
 		t.Errorf("observe = %v, want ErrChannelDown (to trigger reconnect)", err)
 	}
@@ -680,7 +680,7 @@ func TestObserveRidesOutVerbError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	r := fakeStatus{err: errors.New("drbdsetup: no such resource r0")} // verb error, channel fine
-	if err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+	if err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
 		t.Errorf("observe on a verb error = %v, want nil (keep observing until ctx)", err)
 	}
 }
@@ -712,7 +712,7 @@ func TestObserveTagsReportWithTenant(t *testing.T) {
 	defer cancel()
 	cc := &captureClient{cancel: cancel}
 
-	if err := cfg.observe(ctx, fakeStatus{}, nil, nil, nil, cc, nil, "default", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+	if err := cfg.observe(ctx, fakeStatus{}, nil, nil, nil, cc, nil, nil, "default", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
 	if cc.last == nil || cc.last.Tenant != "default" {
@@ -730,7 +730,7 @@ func TestObserveNoCloudNoPlannedOp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
 	defer cancel()
 	// Rep=nil (no cloud): several cycles, then ctx ends.
-	if err := cfg.observe(ctx, fakeStatus{}, up, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+	if err := cfg.observe(ctx, fakeStatus{}, up, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
 	if up.imageTarget.Version != "" || up.rescued {
@@ -776,7 +776,7 @@ func observeLogging(t *testing.T, cfg Config, rep cloud.CloudClient, pending *[]
 			cancel()
 		}
 	}
-	if err := cfg.observe(ctx, fakeStatus{}, nil, nil, nil, rep, nil, "", nil, pending, logf); err != nil {
+	if err := cfg.observe(ctx, fakeStatus{}, nil, nil, nil, rep, nil, nil, "", nil, pending, logf); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
 	return log

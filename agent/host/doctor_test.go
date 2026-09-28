@@ -203,7 +203,7 @@ func TestDoctorThroughDispatch(t *testing.T) {
 		pem:        testCert(t, now.Add(-time.Hour), now.Add(-time.Minute)),
 	}
 	cfg := Config{VIPDev: "eth2"}
-	o := cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: api.DirectiveDoctor}, originLocal, r, nil, nil, nil, nil, func(string, ...any) {})
+	o := cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: api.DirectiveDoctor}, originLocal, r, nil, nil, nil, nil, nil, func(string, ...any) {})
 	if o.State != api.OutcomeDone || o.ID != "d1" {
 		t.Fatalf("outcome = %+v", o)
 	}

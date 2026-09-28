@@ -415,6 +415,12 @@ const (
 	//                                  it to the guest with that account (shared/dashboard), and reports
 	//                                  the URL to open as the outcome Detail ([V3b.31b]). Local-door only
 	//                                  in practice: the code is for the person at the machine.
+	DirectiveCasaClaim = "casa-claim" // Payload = an email address. The node claims `<flock>.briard.casa`
+	//                                   for it ([V3c.4]): mints its casa key if it has none, opens the
+	//                                   claim at the cloud, and from then on polls it, writes its own
+	//                                   address and keeps a certificate renewed. Local-only: the household
+	//                                   asks from its dashboard (the guest admin port) or the CLI; the
+	//                                   cloud has no business claiming a name on a node's behalf.
 
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place

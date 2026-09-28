@@ -89,3 +89,25 @@ type Pull struct {
 	InstalledSize int64     `json:"installedSize"`
 	Started       time.Time `json:"started"`
 }
+
+// CasaPath is where the host keeps the dashboard told about the household's casa name
+// ([V3c.4]): written through `dashboard.casa` whenever the host's view changes and again at
+// every bring-up, because the guest is disposable and this is the host's fact, not the
+// guest's. The dashboard renders it; the claim itself is a directive it asks for through the
+// admin port, and the host decides.
+const CasaPath = Dir + "/casa.json"
+
+// Casa is that file's content: the host's view of the name, for the page.
+type Casa struct {
+	// State is "" (nothing claimed) or one of shared/casa's claim states: pending (link sent,
+	// not clicked), registered (the name is the household's), refused, expired.
+	State string `json:"state"`
+	// Name is `<flock>.briard.casa`; Email is what the claim was made for.
+	Name  string `json:"name"`
+	Email string `json:"email,omitempty"`
+	// Reason says why a claim was refused, in the cloud's words.
+	Reason string `json:"reason,omitempty"`
+	// CertUntil is the current certificate's expiry (zero: none yet), so the page can say
+	// whether the name already serves TLS.
+	CertUntil time.Time `json:"certUntil,omitzero"`
+}

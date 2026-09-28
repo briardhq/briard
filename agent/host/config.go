@@ -259,6 +259,8 @@ func ConfigFromEnv() Config {
 		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),             // the OS-upgrade bound, incl. the degraded wait before a revert
 		ControllerURL:   os.Getenv("CONTROLLER_URL"),                          // "" -> standalone, no north-bound report
 		ControllerToken: os.Getenv("CONTROLLER_TOKEN"),                        // bearer on seam calls; "" -> no auth
+		CasaURL:         env("CASA_URL", "https://api.briard.io"),             // the casa name service ([V3c.4]); the lab overrides
+		CasaWorkerURL:   env("CASA_WORKER_URL", "https://casa.briard.io"),     // the Worker the node writes its own address at
 		AssignmentCache: env("ASSIGNMENT_CACHE", stateDir+"/assignment.json"), // cold-boot cache
 		NotifyURL:       os.Getenv("NOTIFY_URL"),                              // ntfy topic URL for alerts; "" -> log-only
 		TelemetryPath:   os.Getenv("TELEMETRY_PATH"),                          // out-of-band soak collector file; "" -> don't write

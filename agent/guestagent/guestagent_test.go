@@ -1986,3 +1986,28 @@ func TestReadCert(t *testing.T) {
 		t.Errorf("ReadCert with no cert = %q, %v; want \"\" and no error", got, err)
 	}
 }
+
+// dashboard.casa writes the host's view of the household's name for the page ([V3c.4]): beside
+// its final name then moved in, like the handoff, so the page never reads half a state. Not
+// 0600: it holds no secret, only what the page shows.
+func TestDashboardCasaIsWrittenThenMovedIn(t *testing.T) {
+	x := &fakeExec{}
+	raw, _ := json.Marshal(dashboard.Casa{State: "registered", Name: "alert-fox.briard.casa", Email: "a@x.org"})
+	if _, err := dispatch(x)(context.Background(), verbDashboardCasa, raw); err != nil {
+		t.Fatal(err)
+	}
+	tmp := dashboard.CasaPath + ".new"
+	if got := x.files[tmp]; !strings.Contains(got, `"state":"registered"`) || !strings.Contains(got, `"name":"alert-fox.briard.casa"`) {
+		t.Errorf("written %q; want the view", got)
+	}
+	want := [][]string{
+		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
+		{"mv", "-f", tmp, dashboard.CasaPath},
+	}
+	if !reflect.DeepEqual(x.runs, want) {
+		t.Errorf("runs = %v, want %v", x.runs, want)
+	}
+	if _, err := dispatch(x)(context.Background(), verbDashboardCasa, []byte(`not json`)); err == nil {
+		t.Error("a malformed view was accepted")
+	}
+}

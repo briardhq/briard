@@ -304,6 +304,9 @@ const (
 	// dashboard.handoff writes the one-time code + OS account the host minted for the household
 	// dashboard, 0600 on tmpfs (shared/dashboard) -- the whole of its bootstrap auth ([V3b.31b]).
 	verbDashboardHandoff = "dashboard.handoff"
+	// dashboard.casa writes the host's view of the household's casa name for the page to render
+	// ([V3c.4]) -- a fact of the host's, pushed on every change and at bring-up, never decided here.
+	verbDashboardCasa = "dashboard.casa"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -378,7 +381,7 @@ var guestCapabilities = []string{
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
-	verbDashboardHandoff,
+	verbDashboardHandoff, verbDashboardCasa,
 	verbResources,
 	verbBackupSave, verbBackupRestore,
 	verbFsSync,
@@ -1242,6 +1245,27 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			if out, err := x.Run(ctx, "mv", "-f", tmp, dashboard.HandoffPath); err != nil {
 				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
+			}
+			return nil, nil
+		case verbDashboardCasa:
+			var c dashboard.Casa
+			if err := json.Unmarshal(payload, &c); err != nil {
+				return nil, err
+			}
+			if out, err := x.Run(ctx, "mkdir", "-p", "-m", "0700", dashboard.Dir); err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verbDashboardCasa, err, strings.TrimSpace(string(out)))
+			}
+			raw, err := json.Marshal(c)
+			if err != nil {
+				return nil, err
+			}
+			// Beside its final name and moved in, like the handoff: the page never reads half a state.
+			tmp := dashboard.CasaPath + ".new"
+			if err := x.WriteFile(tmp, raw); err != nil {
+				return nil, fmt.Errorf("%s: %w", verbDashboardCasa, err)
+			}
+			if out, err := x.Run(ctx, "mv", "-f", tmp, dashboard.CasaPath); err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verbDashboardCasa, err, strings.TrimSpace(string(out)))
 			}
 			return nil, nil
 		case verbMosquittoProbe:
@@ -2576,6 +2600,16 @@ func (g *Client) HassNudge(ctx context.Context) (bool, error) {
 func (g *Client) DashboardHandoff(ctx context.Context, h dashboard.Handoff) error {
 	return g.c.Call(ctx, verbDashboardHandoff, h, nil)
 }
+
+// DashboardCasa tells the guest what the host knows about the household's casa name, for the
+// dashboard to render ([V3c.4]). Pushed on every change and at bring-up.
+func (g *Client) DashboardCasa(ctx context.Context, c dashboard.Casa) error {
+	return g.c.Call(ctx, verbDashboardCasa, c, nil)
+}
+
+// SupportsDashboardCasa reports whether this guest takes the casa view (an older image does not;
+// the name still works there, the page just cannot show it).
+func (g *Client) SupportsDashboardCasa() bool { return g.Supports(verbDashboardCasa) }
 
 // MosquittoProbe stores `token` in the broker's own retained state (when one is given) and returns
 // what it holds -- the S1 signal for a service whose work is invisible to a sample ([V3b.4]). An

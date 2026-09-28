@@ -31,7 +31,7 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 		var logged strings.Builder
 		logf := func(f string, a ...any) { logged.WriteString(f) }
 
-		o := cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: kind}, originCloud, nil, nil, nil, nil, nil, logf)
+		o := cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: kind}, originCloud, nil, nil, nil, nil, nil, nil, logf)
 		if o.State != api.OutcomeFailed {
 			t.Errorf("kind %q from the cloud = %q, want %q", kind, o.State, api.OutcomeFailed)
 		}
@@ -47,7 +47,7 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 
 		// Same kind, local door: it reaches the handler. It fails here for want of a monitor,
 		// which is the point -- it got PAST the gate to a different failure.
-		o = cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: kind}, originLocal, nil, nil, nil, nil, nil, logf)
+		o = cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: kind}, originLocal, nil, nil, nil, nil, nil, nil, logf)
 		if strings.Contains(o.Detail, "local admin socket") {
 			t.Errorf("kind %q was refused on the LOCAL door too: %q", kind, o.Detail)
 		}

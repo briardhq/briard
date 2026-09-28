@@ -279,6 +279,12 @@ type Config struct {
 	BringUpBudget   time.Duration // bounds the launch -> converge phase
 	ControllerURL   string        // fleet controller base URL; "" -> don't report up (standalone)
 	ControllerToken string        // bearer presented on every seam call; "" -> no auth
+	// The casa name service (shared/casa): the cloud's casa API and the Worker that holds the
+	// zone. Both have baked defaults -- a household never configures them -- and an env override
+	// exists for the lab's rigs alone. A casa node is not a managed one: nothing here needs
+	// ControllerURL, and no bearer token exists on this path.
+	CasaURL       string
+	CasaWorkerURL string
 	// ChannelURL is the signed release channel ROOT (install.sh's $CHANNEL): what the guest chain's
 	// resolver reads guest/<target>/manifest.json from ([B.86d]). The host chain's fetch lives in
 	// the frozen unit below the agent and reads the same root baked into its script.
@@ -596,6 +602,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// It serves a FIRST boot too (owner, 2026-09-16): a node that has never registered reaches
 	// this with nothing cached, and Register being its very first call is exactly right -- a node
 	// that cannot run a guest yet is still a node the fleet should know exists.
+	// [V3c.4]: the casa name service's node half. Built whether or not this node is managed --
+	// a household claims its name from its own page, and the runner's state (a key, a claim)
+	// is pet state loaded here, once, for every channel session the loop below opens.
+	cs := cfg.newCasaRunner(cloud.NewCasa(cfg.CasaURL, cfg.CasaWorkerURL))
 	var rep cloud.CloudClient
 	if cfg.ControllerURL != "" {
 		rep = cloud.NewHTTP(cfg.ControllerURL, cfg.ControllerToken)
@@ -792,7 +802,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	var recovery guestRecovery
 	for {
 		served := time.Now()
-		err := cfg.observe(ctx, client, mgr, alerter, n, rep, agg, assignment.Tenant, local, &pendingOutcomes, logf)
+		err := cfg.observe(ctx, client, mgr, alerter, n, rep, cs, agg, assignment.Tenant, local, &pendingOutcomes, logf)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -1214,7 +1224,7 @@ func connectAndHandshake(ctx context.Context, sock string) (*guestagent.Client, 
 // ErrChannelDown so Run reconnects.
 // pending is OWNED BY Run, not by this call: an outcome collected here must survive the channel
 // re-dial that an OS upgrade always causes, and a local would not.
-func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alerter *redundancyAlerter, n notify.Notifier, rep cloud.CloudClient, agg *metricsAggregator, tenant string, local <-chan localRequest, pending *[]api.DirectiveOutcome, logf func(string, ...any)) error {
+func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alerter *redundancyAlerter, n notify.Notifier, rep cloud.CloudClient, cs *casaRunner, agg *metricsAggregator, tenant string, local <-chan localRequest, pending *[]api.DirectiveOutcome, logf func(string, ...any)) error {
 	t := time.NewTicker(cfg.StatusEvery)
 	defer t.Stop()
 	cr := &certRequester{}     // node-side CSR handshake state, lives for the observe loop
@@ -1284,6 +1294,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// follow ground truth.
 		cfg.beat.Beat()
 		vr.reconcile(ctx, r, logf)
+		cfg.beat.Beat()
+		cs.tick(ctx, r, logf) // [V3c.4]: the household's name -- claim poll, address, certificate, the page's view
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
@@ -1357,7 +1369,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 					// exactly the gap this rule exists to close. The legs that block for minutes
 					// (the upgrade path, the recovery ladder) take their own lease.
 					cfg.beat.Beat()
-					o := cfg.dispatch(ctx, d, originCloud, r, up, n, cr, su, logf)
+					o := cfg.dispatch(ctx, d, originCloud, r, up, n, cr, cs, su, logf)
 					cfg.adoptInstalledServices(d, o, logf)
 					if o.ID != "" {
 						*pending = append(*pending, o)
@@ -1405,7 +1417,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
 			cfg.beat.Beat()
-			o := cfg.dispatch(ctx, rq.d, originLocal, r, up, n, cr, su, logf)
+			o := cfg.dispatch(ctx, rq.d, originLocal, r, up, n, cr, cs, su, logf)
 			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
 			cfg.adoptInstalledServices(rq.d, o, logf)
 		case <-t.C:
@@ -1450,12 +1462,13 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveDebugArm:    true,
 	api.DirectiveDebugDisarm: true,
 	api.DirectiveDoctor:      true,
+	api.DirectiveCasaClaim:   true, // [V3c.4]: the household claims its own name; the cloud never does
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
 // that decision is made — the local door and the cloud's down-channel both come
 // through here, so "what does this node do with a directive" cannot drift between them.
-func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r guestReader, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r guestReader, up upgrader, n notify.Notifier, cr *certRequester, cs *casaRunner, su selfUpdater, logf func(string, ...any)) api.DirectiveOutcome {
 	if o != originLocal && localOnlyKinds[d.Kind] {
 		// Logged, not merely refused: a controller asking for a local-only kind is either a bug
 		// in the cloud or someone standing where the cloud stands, and both are worth a line in
@@ -1469,6 +1482,12 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveDoctor {
 		return cfg.applyDoctor(ctx, d, r)
+	}
+	if d.Kind == api.DirectiveCasaClaim {
+		if cs == nil {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
+		}
+		return cs.claim(ctx, d, logf)
 	}
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
 		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers {
