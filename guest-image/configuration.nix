@@ -933,8 +933,8 @@ in
     # agree, which is this item's own defect at one remove.
     #
     # WHAT STAYS BAKED, and each for its own reason: briard-guest-agent and briard-deadman
-    # (disk-image.nix) supervise the agent's ARRIVAL, so they cannot be written by it -- AGENTS
-    # §5's frozen-by-necessity line, drawn inside the guest; drbd-reactor and upstream's
+    # (disk-image.nix) supervise the agent's ARRIVAL, so they cannot be written by it -- the
+    # frozen-by-necessity line, drawn inside the guest; drbd-reactor and upstream's
     # drbd-* units are not ours; and briard-stage below is a build-time fact about this image
     # (`config.briard.stagedImages`), which no pushed binary knows.
 

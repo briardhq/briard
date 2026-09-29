@@ -203,7 +203,7 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 //
 // The household asks a live HA for the restore; HA writes this and exits 100 to be restarted into
 // it. The restore then unlinks the marker in a `finally` right after parsing and BEFORE the wipe
-// (V3b §6.2, "prevent a boot loop"), so it exists only across the restart in between — which is
+// (its own "prevent a boot loop" step), so it exists only across the restart in between — which is
 // the window the s6 wrapper's notification lands in, and the reason that notification is the only
 // thing in the system that can see one.
 //
@@ -343,7 +343,7 @@ func extractOriginal(ctx context.Context, x Executor, image string) error {
 // They are here to DESCRIBE, never to search. Finding the script elsewhere and adapting to it
 // would defeat the point of relaying it at all: the bind path is fixed when the unit is rendered,
 // before this code can look at anything, and an upstream layout change is meant to fail a blessed
-// image in catalog CI rather than be papered over on a household's node (§6.4). What breadth buys
+// image in catalog CI rather than be papered over on a household's node. What breadth buys
 // is a diagnosis — the failure names the layout the image actually has instead of an errno.
 var serviceRoots = []string{"/etc/services.d", "/etc/s6-overlay/s6-rc.d"}
 

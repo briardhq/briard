@@ -625,8 +625,8 @@ func consumeCleanStop(ctx context.Context, x Executor, service string) quadlet.C
 // THE SEQUENCE IT READS. The household asks a live HA for the restore; HA writes its marker inside
 // /config and exits 100. The wrapper's notification lands in the restart that follows and sees the
 // marker: that is the hass-restore-before sample, taken on data HA has not touched yet. HA's
-// restore process then unlinks the marker right after parsing and BEFORE the wipe (V3b §6.2,
-// "prevent a boot loop"), wipes /config, extracts the tar, and exits 100 again. The second
+// restore process then unlinks the marker right after parsing and BEFORE the wipe (its own
+// "prevent a boot loop" step), wipes /config, extracts the tar, and exits 100 again. The second
 // notification sees no marker and is an ordinary start, which is not compared with the *-before
 // sample: the app did not run between them, the restore did.
 //

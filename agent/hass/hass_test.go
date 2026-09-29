@@ -241,8 +241,8 @@ func TestVolumesAreTheImageSpecificBind(t *testing.T) {
 }
 
 // TestWrapperHandsOverToTheImagesOwnScript: the wrapper must exec the EXTRACTED original, never a
-// copy of Home Assistant's launch line written by us. Authoring one is the failure mode §6.4
-// names — it drifts the day upstream moves the s6 furniture, and it drifts on every node at once.
+// copy of Home Assistant's launch line written by us. Authoring one is the failure mode
+// to avoid — it drifts the day upstream moves the s6 furniture, and it drifts on every node at once.
 func TestWrapperHandsOverToTheImagesOwnScript(t *testing.T) {
 	if !strings.Contains(wrapperSource, "exec "+mountPoint+"/run.original") {
 		t.Fatalf("the wrapper does not hand over to the extracted original:\n%s", wrapperSource)

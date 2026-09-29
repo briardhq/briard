@@ -19,7 +19,8 @@ import (
 // contributor cannot follow.
 //
 // Three shapes are refused. A private document named by name or section
-// (`DESIGN §4`, `AGENTS.md`, `OSS §10.2`, `V3b.md`, `farm docs`), a tracker
+// (`DESIGN §4`, `AGENTS.md`, `OSS §10.2`, `V3b.md`, `farm docs`, or a bare
+// section sign with a number, which only our private docs use), a tracker
 // item id in any form (`[B.126]`, `B.126`, `[V3b.31a](e)`, `V3c.4`, `[DRBD.2]`,
 // `M0.2b`), and a link to a maintainer note (`[[kebab-case-name]]`; a TOML table
 // header such as `[[promoter]]` has no dash and passes). The ordinary English word "design" is not a document; the patterns
@@ -35,7 +36,7 @@ func TestNoPrivateReferences(t *testing.T) {
 			`DESIGN(\.md|'s| §|§| →| Foundations)|(^|[^A-Za-z])DESIGN [0-9§]` +
 				`|(in|per|see|from|to|of) DESIGN\b|DESIGN (says|calls|names|decides|puts|draws|owns)` +
 				`|AGENTS(\.md| §)|(^|[^A-Za-z])OSS(\.md| §)|BUSINESS(\.md| §)` +
-				`|INVARIANTS(\.md| §)|IDEAS\.md|(^|[^A-Za-z])V[0-9][a-z]?\.md\b|farm docs|farm/docs|docs/V[0-9]`),
+				`|(^|[^A-Za-z])§ ?[0-9]|INVARIANTS(\.md| §)|IDEAS\.md|(^|[^A-Za-z])V[0-9][a-z]?\.md\b|farm docs|farm/docs|docs/V[0-9]`),
 		"tracker item id": regexp.MustCompile(
 			`\[(B|M|S|V[0-9][a-z]?|DRBD)\.[0-9]+[a-z]?\]` +
 				`|(^|[^A-Za-z0-9_./-])(B|V3b|V3c|V3|V2|V1|V5|M0|DRBD)\.[0-9]+[a-z]?([^0-9A-Za-z_./-]|$)`),

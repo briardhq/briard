@@ -374,7 +374,7 @@ pkgs.testers.runNixOSTest {
         # THE ONE DRBD KNOB (header): the survivor's keepalive, pinning it in the 30s hold whose
         # expiry coincides with the evictor's twopc abandon. The evictor runs stock.
         node1.succeed("drbdsetup net-options r0 1 --ping-int=120 --ping-timeout=300")  # peer 1 = node2
-        # THE OTHER KNOB (header §3): the evictor's twopc abandons the teardown 5 SECONDS before
+        # THE OTHER KNOB (header, point 3): the evictor's twopc abandons the teardown 5 SECONDS before
         # the survivor's expiry, which is what hands the queued demote its fresh prepare slot
         # while the survivor is still holding. Set on every node so no participant holds a stale
         # prepare longer than the initiator keeps it alive.

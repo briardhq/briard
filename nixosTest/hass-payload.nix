@@ -461,7 +461,7 @@ pkgs.testers.runNixOSTest {
     # types some manifest declares (`async_get_zeroconf`), and `_mqtt._tcp` appears NOWHERE in
     # home-assistant/core. So Home Assistant will not act on this record until (d) teaches mqtt to
     # ask for it. What is proven is the TRANSPORT -- that a record the guest publishes is visible
-    # to HA's stack -- which is the leg §6.5 could not verify.
+    # to HA's stack -- which is the leg an earlier spike could not verify.
     import json as _zj
     host_mq = routed_host(node1, "${mosquitto.name}")
     want = next(
