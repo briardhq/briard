@@ -38,7 +38,10 @@ workload away from the host.
 The guest is **cattle**. It is a build artifact, rebuilt rather than repaired, delivered as a
 whole disk image, and its identity is the store path of its system closure. Everything that
 makes a node *this* node — its name, its addresses, its storage layout, its peers — is held by
-the host and pushed in at every bring-up, never baked into the image.
+the host and pushed in at every bring-up, never baked into the image. A fact shared by the whole
+home lives instead on the replicated volume, written by the primary and read by whichever node
+promotes next. Exactly three qualify: the VIP address, the installed services' manifests, and the
+TLS material. Everything else is re-derived or pushed, so a stale copy has nowhere to live.
 
 **The guest is a citizen of your LAN, not a tenant behind your host.** Its network interfaces
 are children of the host's own NIC (macvtap), so it takes an address from your router like
@@ -47,7 +50,20 @@ any other machine, owns the service address (the **VIP**) natively, and is found
 with no reflector or relay. We never create a bridge, never move the
 host's address, and never run a second DHCP server; if the machine already has a bridge —
 libvirt, Proxmox, Incus — the guest joins it instead. Which shape a node gets is *derived from
-the machine*, never configured.
+the machine*, never configured. If the NIC the guest hangs off disappears, the agent re-parents
+the guest onto the machine's new uplink. A macvtap cannot move, so that costs one guest restart,
+and it is paced so an ordinary blip does not trigger it.
+
+**Every node has a node IP, the one address anything uses to reach it.** DRBD binds there, and
+so does everything a peer or the host dials. It sits on a **system subnet** the first node draws
+for the home from 10/8, never a fixed range, because any fixed range is somebody's real
+household network. The draw skips the ranges convention has already claimed, checks against
+every route the host can see, and probes the LAN for the candidate before using it. It refuses
+with the variable to set rather than guess when the host has 10/8 carved up. A machine that
+joins takes the existing home's subnet. Under macvtap a host cannot reach its own guest across
+the LAN, so each host also gets a **private link** to its guest: a point-to-point tap on a
+subnet drawn the same way, carrying the host's half of recovery and the witness forwarder.
+Addressing is IPv4 only.
 
 **There is no Briard account and no Briard password.** Proof of access to the `briard` CLI on
 the host is the household's credential: it mints a one-time code that becomes a per-device
@@ -72,6 +88,22 @@ stylistic choice: an orchestrator that can also promote is an orchestrator that 
 split brain when it is confused, partitioned, or simply wrong. Removing that power removes
 the failure mode. Two architecture tests hold the line, one at the API surface and one at
 the exec surface.
+
+What promotion starts is the **promoter chain**: five units, in order — the data mount, the
+services, the VIP, the front door and the dashboard. The list is defined once, in
+[`shared/chain`](shared/chain), and read by both the product and the test rigs. On a node with
+peers, drbd-reactor starts the chain on whichever node wins promotion; on a lone node a static
+target starts it. Services are rendered *at promotion* from the manifests on the volume, so a
+node that has just taken over runs exactly what the old primary ran without being told.
+
+**Both sides of the boundary watch each other.** If the guest stops hearing from its host agent
+for about six minutes, the guest's **deadman** reboots it gracefully: the chain tears down in
+order and DRBD demotes cleanly, which is what lets a peer take over at once. If the host finds
+the guest mute, it reconnects first, relaunches a stopped VM at once, and power-cycles a running
+but silent one after ten minutes, then keeps retrying every two hours and never gives up. Both
+reboots pass the same gate: it allows one only on a lone node, on a node that has already lost
+quorum, or when the peers keep quorum without this node. A reboot is never what takes a home
+below quorum.
 
 A two-machine home can use a third **diskless witness** as a tiebreaker — it votes but
 stores nothing, so quorum is real without a third full copy of your data.
@@ -122,13 +154,23 @@ update, and they are deliberately kept apart:
 
 1. **Snapshot** the service's data before anything changes.
 2. **Switch** to the new manifest.
-3. **Gate** on health: the service must actually come back and serve.
+3. **Gate** on health: the service must actually come back and serve. Unhealthy, or still
+   starting when the gate closes, reverts. A health the node *cannot read* keeps the update and
+   says so, because reverting a working service over our own failed probe would be the gate
+   doing the damage it exists to prevent.
 4. **Roll back automatically** if it does not — *code and data together*, to the pair that
    was known good.
 
 Code and data revert as a unit deliberately. Rolling back code while leaving migrated data
 in place is how a "safe" rollback corrupts a home; the snapshot and the manifest are pinned
 to each other so that cannot happen.
+
+The same pairs make a short **history** that `briard app undo` can step back through. Every
+service start and every operation takes a snapshot, and an hourly sample fills the quiet
+stretches. Points stay undoable for five days, and the most recent update's for two weeks,
+since "the update broke my house" is found days later. Home Assistant is **quiesced** for a
+sample: its recorder pauses writes so the database is caught consistent. A sample taken when
+the pause did not hold is recorded as crash-consistent instead.
 
 **An OS update** — a whole new guest image — never touches your services. The new OS boots,
 runs the same containers on the same data, and is gated on their health; if it fails the
@@ -262,6 +304,35 @@ nix build --max-jobs 1 -L $(sed 's|^|.#tests.|' $m/tags/drbd)   # the whole fail
 A test that cannot fail is not evidence, so the suite is written to fail: the rollback
 tests use a deliberately broken upgrade, and the fencing tests assert that a node
 *refuses* to promote.
+
+## Terms
+
+The words the code and its comments use, briefly:
+
+- **Machine / node** — the same thing. The product says *machine* to people; the code says
+  *node*.
+- **App / service** — the same thing. What you install from the catalog is an *app*; in code
+  it is a *service*.
+- **Flock** — the home's nodes under one name. Every install has one, and a **lone node** is a
+  flock of one, running no DRBD.
+- **Anchor** — an always-on node that holds a full copy of the data and can be primary.
+- **Witness** — a diskless DRBD member that votes but stores nothing, run locally or by us.
+- **VIP** — the service address, held by whichever node is primary.
+- **Node IP, system subnet, private link** — a node's own address, the home's range it comes
+  from, and the host-to-guest tap (see [The shape](#the-shape)).
+- **Substrate** — how the guest's NICs attach to your LAN: macvtap by default, or the bridge the
+  machine already has. Derived, never configured.
+- **Bring-up** — the host starting a guest and pushing it everything that makes it this node:
+  binaries, name, addresses, storage spec, peers.
+- **Node-scoped / flock-scoped** — a fact the host holds and pushes, or one that lives on the
+  replicated volume.
+- **Promoter chain** — the five units promotion starts, in order.
+- **Deadman** — the guest's reboot when its host agent has gone silent.
+- **Quiesce** — pausing a service's writes so a snapshot of it is consistent.
+- **Report card** — the verdict on whether a machine can be a node, at install and on demand
+  with `briard doctor`. It refuses with a reason rather than half-installing.
+- **Dashboard / Briard page** — the household page at `briard-<name>.local`. The code calls it
+  the dashboard.
 
 ## Code map
 

@@ -107,7 +107,7 @@ Both read every text file in the tree, not only Go. (The package also keeps two 
 step: the guest image's input hash covers every package its baked binary links, and the test rigs'
 copy of the promoter chain matches the product's.)
 
-Two further rules are not machine-checked but are equally load-bearing:
+These further rules are not machine-checked but are equally load-bearing:
 
 - **The host/workload boundary is real.** The agent runs on the host and is privileged; the workload
   runs inside the guest; they communicate only over the defined channel. Never run workload logic in
@@ -115,6 +115,25 @@ Two further rules are not machine-checked but are equally load-bearing:
 - **What leaves the house is a closed, audited allowlist.** Everything that can ever be sent upward
   is readable in `shared/api`. Widening it is a deliberate, visible change — never a quiet field —
   and nothing about what a node sends is remotely toggleable.
+- **A destructive act needs a positive confirmation.** A probe that gives the same answer for
+  "no" and "I could not tell" never gates a format, a metadata create or a delete. At every
+  destructive call site, ask what its guard returns when the guard itself fails, and where that
+  routes.
+- **A fact whose only copy is a file survives a power cut.** Node-local state is written tmp +
+  fsync + rename (`agent/selfupdate/layout.go` is the shape). On the replicated volume, sync the
+  filesystem after the write (`sync -f`), because stopping the guest is a power cut to it.
+- **Where a fact lives follows its scope.** A node-scoped fact is held durably by the host and
+  pushed to the guest at bring-up; a flock-scoped one lives on the replicated volume. The host
+  cannot push what it does not durably hold.
+- **Convergence restores drift; it never undoes an act.** A loop that puts back something an
+  operator or a test did on purpose fights its own users. And only the three wrapper scripts that
+  supervise the agent's own replacement are frozen by necessity: a fix to anything else baked
+  into an installed script ships in a release and reaches no installed node.
+- **Configuration is deployment wiring.** It is environment variables read once, in
+  `agent/host/config.go`, over `/opt/briard/config.env`, with defaults in code and an empty
+  value meaning off. Behavioural feature flags are not accepted.
+- **The alpha is reinstall-only.** No compatibility path protects an installed node. A change
+  that would need one says so, and the release floor makes older nodes reinstall.
 
 ## What a good change looks like
 
