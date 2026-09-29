@@ -43,26 +43,38 @@ and it needs Nix (as above) and a Linux host with KVM.
 
 ```sh
 # build the artifacts from this checkout
-nix build .#artifacts.agent       -o result-agent
-nix build .#artifacts.net-wrap    -o result-netwrap
-nix build .#artifacts.qemu-bundle -o result-qemu
-nix build .#artifacts.guest-disk  -o result-guest    # ~0.9 GB; the guest VM image
+nix build .#artifacts.agent        -o result-agent
+nix build .#artifacts.net-wrap     -o result-netwrap
+nix build .#artifacts.qemu-bundle  -o result-qemu
+nix build .#artifacts.guest-bundle -o result-gbundle  # the guest's own briard binaries, pushed in at bring-up
+nix build .#artifacts.guest-disk   -o result-guest    # the guest VM image; the large one
 
-# assemble a staging directory the installer reads
+# assemble a flat staging directory the installer reads
 mkdir -p stage
 install -m0755 result-agent/bin/briard-agent      stage/briard-agent
 install -m0755 result-netwrap/bin/briard-net-wrap stage/briard-net-wrap
+install -m0644 scripts/units/*                    stage/
+install -m0755 scripts/agent/*                    stage/
 cp -aL result-qemu stage/qemu && chmod -R u+w stage/qemu
+tar -cf stage/guest-bundle.tar -C result-gbundle .
 cp -L  result-guest/nixos.qcow2 stage/nixos.qcow2
 
 # install from the staging directory
 sudo BRIARD_ARTIFACTS="$PWD/stage" ./scripts/install.sh
 ```
 
+The units and the three scripts under `scripts/agent/` are shipped artifacts, not something the
+installer renders: it refuses a staging directory without them. The guest bundle is what lets the
+guest serve at all — the image bakes no front door, dashboard or guest agent; the host pushes them
+in from that bundle at every bring-up.
+
 The last step runs as root: it sets up the guest's networking and boots the VM, the same thing the
 hosted installer does — so it changes the machine, and it checks the host first and **refuses with
 the reason** if it is unsuitable. The script is the same either way, so
-[read it](scripts/install.sh) before you run it.
+[read it](scripts/install.sh) before you run it. The real install tests
+(`nixosTest/install-macvtap.nix`) go one step further and build a signed, compressed release
+channel the way `scripts/publish-release.sh` does, then install over HTTP from it — that is the
+path a stranger's machine takes, and the one worth reading if you change the installer.
 
 ## The invariants — enforced, not requested
 
@@ -72,10 +84,11 @@ breaking one, it is almost certainly mis-scoped — open an issue and let's talk
 writing the patch.
 
 1. **Host seam discipline.** The orchestration package `agent/host` must not import the concrete
-   providers (`netbird`, `libvirt`). It reaches each one only through its seam
-   interface; the concrete implementations are wired in at `main` and injected. `agent/host` *may*
-   import `agent/drbd`, which is the observe-and-report package guarded by (2). A transitive
-   dependency test enforces this, so an indirect import fails too.
+   providers (the `netbird` overlay; `libvirt`, should a guest backend of that name ever exist). It
+   reaches each one only through its seam interface; the concrete implementations are wired in at
+   `main` and injected. `agent/host` *may* import `agent/drbd`, which is the observe-and-report
+   package guarded by (2). A transitive dependency test enforces this, so an indirect import fails
+   too.
 
 2. **Failover stays out of the agent.** The agent *observes and reports* failover; it never drives
    it. No code path promotes or demotes DRBD, or claims the VIP, directly — `drbd-reactor` owns that
@@ -85,6 +98,14 @@ writing the patch.
 3. **No force-promotion anywhere.** Nothing calls `drbdadm primary --force` or
    `--overwrite-data-of-peer`. DRBD is the sole write-authority, and a split brain resolved by
    forcing one side is data loss with extra steps.
+
+Two more guards run in the same package, about the tree rather than the architecture. Public code
+and docs cite only the public docs (README, ARCHITECTURE, CONTRIBUTING, THIRD-PARTY) and public
+external sources — never our private planning documents, an item id from our tracker, or a link to a maintainer's note —
+so a rationale has to stand on its own words; and no key material or credential may be committed.
+Both read every text file in the tree, not only Go. (The package also keeps two build facts in
+step: the guest image's input hash covers every package its baked binary links, and the test rigs'
+copy of the promoter chain matches the product's.)
 
 Two further rules are not machine-checked but are equally load-bearing:
 
@@ -189,7 +210,8 @@ go test ./internal/arch/
 ```
 
 They reject a force-promotion appearing anywhere in the tree, an orchestrator importing a concrete
-provider instead of its interface, and any direct promote/demote call.
+provider instead of its interface, any direct promote/demote call, a pointer at a document a reader
+of this repository cannot open, and committed secret material.
 
 ## Where the design lives
 

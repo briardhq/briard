@@ -26,13 +26,13 @@ rather than half-installing and leaving you to work out why. Artifacts are signe
 verifies signature, hash, and size before using anything.
 
 What you get is the **machine**: ready, replicating, and able to fail over. It installs **no
-app** — a machine is set up first, and then you choose what runs on it. The closing line tells
-you where the machine answers:
+app** — a machine is set up first, and then you choose what runs on it. The closing lines tell
+you where the machine answers, by name rather than address because the name stays true if the
+address ever moves, and end with a one-time link to its Briard page:
 
-> `http://briard-<name>.local/` (or `http://<address>/`)
+> `http://briard-<name>.local/?code=…`
 
-The name first, because it stays true if the address ever moves; the address as the fallback
-for a client whose mDNS does not resolve (Android is the usual offender).
+The link works once, for ten minutes; `sudo briard open` prints a fresh one any time.
 
 If you would rather read before you run, that URL serves
 [`scripts/install.sh`](scripts/install.sh) from this repo, plus the release public key embedded
@@ -61,9 +61,14 @@ on a machine called `brave-elf`: `http://briard-brave-elf-home-assistant.local/`
 machine routes to it. `briard app install` prints the address when it finishes.
 `http://briard-<name>.local/` stays the machine's own Briard page and lists what it runs.
 
-> **Alpha gap:** those names are `.local` (mDNS) only, so they work on the LAN and nowhere else;
-> a per-home domain with a real certificate is still to come. The catalog is also one entry long
-> today.
+Those names are `.local` (mDNS), so they work on the LAN and nowhere else. The Briard page
+also offers a free name of the form `<name>.briard.casa` with a real certificate — you type an
+email, click the link it receives, and the machine keeps the address and the certificate current
+from then on. It is optional (**Skip** keeps the anonymous install first-class), and it is the one
+time a free install tells a server of ours anything about itself.
+
+> **Alpha gap:** the catalog is two entries long today — Home Assistant and the Mosquitto MQTT
+> broker.
 
 ## Commands
 
@@ -76,7 +81,10 @@ shows one command's options.
 |---|---|
 | `sudo briard alerts` | what this machine has warned about |
 | `sudo briard logs` | what this machine has logged (`-follow` to stream) |
+| `sudo briard doctor` | check this machine now, and say what is wrong |
 | `sudo briard app install <name>` | install an app from the catalog on this machine |
+| `sudo briard app history <name>` | what happened to an app, oldest first, with the point that undoes each row |
+| `sudo briard app undo <point>` | undo that row and everything after it (the undo is itself a row) |
 | `sudo briard handover` | hand this machine's work to the other machine (a planned failover) |
 | `sudo briard open` | print a one-time link that opens this home's Briard page, trusted |
 
@@ -84,14 +92,16 @@ shows one command's options.
 
 | | |
 |---|---|
+| `sudo briard version` | which briard this is, and which VM it runs your apps in |
 | `sudo briard rescue` | rebuild briard on this machine from its image (`-yes` to confirm) |
 | `sudo briard update [-vm]` | update briard's own software, or with `-vm` the VM it runs apps in, from the release channel |
+| `sudo briard uninstall -yes [-delete-data]` | remove briard from this machine; your data is kept unless told otherwise |
 | `sudo briard directive <kind> [payload]` | submit a directive to the local agent |
 | `sudo briard run` | run the agent itself — the installer's units do this for you |
 
 ## When something looks off
 
-**Start with `sudo briard alerts`.** A free install talks to no server of ours, so there is
+**Start with `sudo briard alerts`.** A free install reports to no server of ours, so there is
 nobody to send you mail — the machine records what it notices and waits to be asked. `alerts`
 prints what this machine has warned about (a lost replica, an upgrade that failed and rolled
 back, an app that lost contact with the agent) and **names any surface it could not read**, so
@@ -102,7 +112,8 @@ wrong, or on a timer.
 is the agent's side, and `/var/log/briard-guest-console.log` is the serial console of the system
 your apps run in — the only view into its own boot and kernel.
 
-Both work even when the agent is down.
+Both work even when the agent is down, as do `briard version` and the machine's own half of
+`briard doctor`.
 
 ## More
 

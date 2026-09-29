@@ -43,7 +43,8 @@ the host and pushed in at every bring-up, never baked into the image.
 **The guest is a citizen of your LAN, not a tenant behind your host.** Its network interfaces
 are children of the host's own NIC (macvtap), so it takes an address from your router like
 any other machine, owns the service address (the **VIP**) natively, and is found by name
-(`briard-<name>.local`) with no reflector or relay. We never create a bridge, never move the
+(`briard-<name>.local`, and optionally a claimed `<name>.briard.casa` with a real certificate)
+with no reflector or relay. We never create a bridge, never move the
 host's address, and never run a second DHCP server; if the machine already has a bridge —
 libvirt, Proxmox, Incus — the guest joins it instead. Which shape a node gets is *derived from
 the machine*, never configured.
@@ -52,7 +53,7 @@ the machine*, never configured.
 the host is the household's credential: it mints a one-time code that becomes a per-device
 session, further devices join by a six-digit quick-connect code, and the admin is whoever owns
 the Home Assistant instance. The dashboard is served from the guest at the VIP; the host keeps
-only a loopback console for the jobs a guest cannot do for itself.
+only a local admin socket, driven by the `briard` CLI, for the jobs a guest cannot do for itself.
 
 ## High availability
 
@@ -133,8 +134,9 @@ to each other so that cannot happen.
 runs the same containers on the same data, and is gated on their health; if it fails the
 gate, the OS reverts and the workload has not been stopped, snapshotted, or restored. The
 line is *read versus mutate*: the OS gate may read service health to judge itself; it may
-never rewrite what a service owns. On a two-machine home the standby is updated first and
-must prove itself before the primary follows.
+never rewrite what a service owns. On a two-machine home, a node that is serving refuses to
+reboot for an update while a peer could take over: that reboot *is* a failover, and sequencing
+one is a handover to schedule, not a decision a node makes about itself.
 
 The agent can also update **itself**. Because an agent cannot supervise its own
 replacement, the mechanism is deliberately dumb and agent-independent: a frozen wrapper
@@ -152,8 +154,12 @@ re-adopts the running guest, and your service never notices.
 the floor. Nothing on the critical path to serving your smart home requires reaching us.
 
 What you install here goes further: it **reports nothing, ever**. No account, no telemetry,
-no callback. If you install from source or from a release artifact, nothing contacts a
-service we run. You can verify that claim rather than trust it — the whole agent is here.
+no callback. A free install contacts us in exactly two ways, both of them code you can read in
+this tree: it downloads signed files from the same static channel the installer used — the
+daily update check (`briard-update.timer`), and the catalog entry when you install an app — and
+a household that has chosen a `briard.casa` name sends its claim, the address the name should
+answer at, and its certificate requests. Nothing else leaves. You can verify that claim rather than trust it — the whole agent is
+here.
 
 **What the download channel records**, since it is the one place we see anything at all:
 `get.briard.io` serves signed static files, and its own request logs give a per-day, per-file
@@ -161,7 +167,7 @@ count of successful fetches. Nothing else is kept, and nothing in that log ident
 count is deliberately **not de-duplicated** — telling a returning visitor from a new one would
 mean tracking someone — so it over-counts, and we would rather say that than imply a precision we
 did not earn. Briard itself never reports a download, or anything at all: once installed, it never
-calls home.
+calls home unless you choose a `briard.casa` name.
 
 A managed tier — where we operate the machines and are on the hook for them — is the one
 case where minimal health signals leave the house. What may ever be sent is a **closed
@@ -185,16 +191,25 @@ image, which is why the OS and the services update on independent schedules.
 
 ## The protocols
 
-There are two: **host ↔ guest**, over a control channel, and **agent ↔ cloud**, used only by
-a managed machine. Both are defined in [`shared/api`](shared/api), which is the normative
-definition — one set of types, imported by both sides, so they cannot drift apart.
+There are two: **host ↔ guest**, over a control channel, and **agent ↔ cloud**, used by a
+managed machine — and, on a free install, only for the optional `briard.casa` name (the claim
+and its polls, the certificate signing requests, and the signed writes of the name's address).
+The managed protocol is defined in [`shared/api`](shared/api) and the name service's in
+[`shared/casa`](shared/casa); each is the normative definition — one set of types, imported by
+both sides, so they cannot drift apart. The guest protocol lives
+in [`agent/guestfirmware`](agent/guestfirmware) (the framing, the handshake and the push verbs
+the image bakes) and [`agent/guestagent`](agent/guestagent) (everything the pushed agent
+serves); nothing on that channel leaves the house, so it is kept out of the audited allowlist.
 
 The host↔guest channel is a virtio-serial port, not a network socket: it does not share fate
 with the guest's IP stack, so it survives exactly the events it exists to observe — a VIP
-teardown, a DRBD partition, a self-fence. The protocol is explicitly versioned
-(`GuestProtocol` / `MinGuestProtocol`). The host handshakes on connect and **refuses a guest
-whose protocol it cannot speak** rather than proceeding and failing later. That is what lets
-the host agent and the guest image update on independent schedules.
+teardown, a DRBD partition, a self-fence. There is **no protocol version number**: the guest's
+handshake reply advertises the verbs it serves, and the host refuses exactly the one operation a
+guest cannot serve while every other path keeps working — a number could only refuse the whole
+channel, and the channel is what fixes a node. The guest's own briard binaries are pushed in by
+the host at every bring-up, so the two sides cannot drift apart; the cross-release floors that
+do exist ride the signed release manifests (a guest image names the oldest agent that may install
+it, a release names its own upgrade floor).
 
 A prose specification will follow when there is a cloud tier worth writing one for. Until
 then, pointing you at types that are compiled and tested is more honest than a document
@@ -211,12 +226,12 @@ exact answer:
 
 ```sh
 # what this source tree produces
-nix path-info --derivation .#artifacts.agent
-nix path-info --derivation .#nixosConfigurations.guest.config.system.build.toplevel
+nix eval --raw .#artifacts.guest-disk.system                      # the VM release manifest's "system"
+nix build .#artifacts.agent && sha256sum result/bin/briard-agent  # its "sha256" in the briard release manifest
 ```
 
-Build from a checkout of the tag you installed and compare against the path recorded in the
-release manifest. Matching hashes mean the artifact came from this source and nothing else —
+Build from a checkout of the commit your release names — the last field of its id, which
+`briard version` prints — and compare against the signed release manifests. Matching hashes mean the artifact came from this source and nothing else —
 no trust in our build machine required. Differing hashes mean something is wrong, and that
 is worth telling us about.
 
@@ -253,23 +268,30 @@ tests use a deliberately broken upgrade, and the fencing tests assert that a nod
 ```
 agent/            the host daemon: orchestration, and the provider seams
   agent/host      orchestration — talks to providers only through interfaces
+  agent/cli       `briard`, the operator front: a mode of the same binary
   agent/drbd      reads DRBD status; drives nothing
   agent/guest     the host↔guest boundary and the upgrade/rollback mechanism
+  agent/guestfirmware  the half of the guest protocol the image bakes: framing, handshake, push verbs
   agent/guestagent  the guest side of that boundary: executes and reports, decides nothing
+  agent/platform  launching and stopping the guest: QEMU, its units and routes, per OS behind a build tag
   agent/nic, agent/subnet  the guest's place on your LAN, derived from the host's
+  agent/services, agent/hass, agent/mosquitto  what a catalogued service needs beyond its manifest
+  agent/install, agent/selfupdate  fetching and verifying a release; the agent's own frozen pivot
   agent/reportcard  the install-time verdict on whether this machine can be a node
-shared/           wire types (api), domain types (model), the manifest schema, the notify seam
+shared/           wire types (api), domain types (model), the manifest schema, the casa contract, the notify seam
 catalog/          the signed service manifests, exactly as published
-guest-image/      the NixOS guest: DRBD, drbd-reactor, storage, the front door (ships running nothing)
+guest-image/      the NixOS guest: DRBD, drbd-reactor, storage (ships running nothing)
 reverse-proxy/    the front door: answers the VIP, routes by name, terminates TLS, hot-reloads both
 dashboard/        the household dashboard, served from the guest at the VIP
 internal/arch     the architecture guards, as failing tests
 nixosTest/        real-VM tests of the mechanisms above
-scripts/          the installer
+scripts/          the installer, and the units and frozen scripts it ships
 ```
 
-Provider integrations (overlay, DNS, guest management, cloud) sit behind **interfaces**,
-each with a real implementation and a stub. The orchestrator only ever sees the interface,
+The front door, the dashboard and the guest agent are not baked into the image: the host pushes
+them into the guest at every bring-up, from the release it holds. Provider integrations (the
+overlay, the cloud) sit behind **interfaces**, each with a real implementation and a stub, and
+the per-OS guest backend behind a build-tag seam. The orchestrator only ever sees the interface,
 which is why the whole system is testable without any of them.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the invariants that are enforced rather than
