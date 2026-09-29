@@ -147,9 +147,9 @@ func TestZeroServiceFrontDoor(t *testing.T) {
 	}
 }
 
-// THE ASSERTION hass-payload.nix LOST, at unit scale ([B.48]): a request whose Host names a
-// runtime-installed service reaches that service through the front door. From [V3.15] until
-// [V3b.3](e2) the door had ONE backend baked at guest-build time, so no runtime-installed service
+// THE ASSERTION hass-payload.nix LOST, at unit scale: a request whose Host names a
+// runtime-installed service reaches that service through the front door. Before the
+// routing table the door had ONE backend baked at guest-build time, so no runtime-installed service
 // was ever reachable on :80/:443; this is the property that replaces it, and it is keyed on the
 // name rather than on there being exactly one thing to forward to.
 func TestRoutesByHostToTheNamedService(t *testing.T) {
@@ -194,7 +194,7 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 // /healthz IS THE NODE'S, ALWAYS, and this is the reversal that N services forces. One backend
 // could forward the question to itself; N cannot, and a service that is down must not make the
 // node it runs on read as broken — the OS health gate and the rollback reflex read this, and
-// [V3b.3](f) puts service failures deliberately outside the promoter's reach.
+// converge-at-promotion puts service failures deliberately outside the promoter's reach.
 func TestHealthIsTheNodesOwnAnswerNotAServices(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "wedged", http.StatusServiceUnavailable)

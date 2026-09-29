@@ -1,4 +1,4 @@
-// Command briard-guest-firmware is the ONE briard binary the guest image bakes ([B.139]).
+// Command briard-guest-firmware is the ONE briard binary the guest image bakes.
 //
 // It serves the host over the virtio-serial channel and answers exactly five verbs: the
 // handshake, the three push verbs the host dresses a guest through, and the clean shutdown.
@@ -7,7 +7,7 @@
 // the guest's pivot then runs in this binary's place (guest-image/pivot.nix). The overlay the
 // guest boots on is disposable, so every boot starts here and the host re-dresses it.
 //
-// WHY IT IS ITS OWN MAIN. The guest image's version is a function of its INPUTS ([B.86i]), and
+// WHY IT IS ITS OWN MAIN. The guest image's version is a function of its INPUTS, and
 // the inputs are the Go packages the baked binary links. While the image baked the full agent,
 // every agent edit moved that hash and republished a 400 MB guest chain for a change no image
 // needed. Baking only the push protocol makes the image move when the PROTOCOL moves, which is
@@ -71,9 +71,9 @@ func main() {
 // Cancellation is a deadline, not a hope. A `systemctl stop` lands while Serve is parked in a
 // blocking read of the port, which sees no cancellation; closing the port is what unparks it, and
 // guestStopGrace bounds the case where even that is not enough -- the host's clean-shutdown
-// timing ([B.51], [B.127]) depends on this process actually ending.
+// timing depends on this process actually ending.
 func runGuest(ctx context.Context) error {
-	// THE PUSH PROTOCOL'S START-TIME DUTY ([B.138]), before the port. Reaching this binary at all
+	// THE PUSH PROTOCOL'S START-TIME DUTY, before the port. Reaching this binary at all
 	// means the picker found no pushed agent, so this start is never a trial -- but it IS the
 	// start that follows a first dress whose trial failed, and the aftermath rule is what
 	// discards the staged set and puts the doors back on what they ran before.
@@ -87,7 +87,7 @@ func runGuest(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// The same call the pushed agent makes ([B.148]), and for the flags rather than the commit:
+	// The same call the pushed agent makes, and for the flags rather than the commit:
 	// reaching this binary means the picker found no trial to run, so there is nothing to
 	// commit -- but the markers an earlier start left in the tmpfs must still be cleared here,
 	// or the next trial's verdict would read a door's stale `trial` as its own.
@@ -98,7 +98,7 @@ func runGuest(ctx context.Context) error {
 		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
 	}()
 
-	// READY at listen ([B.86j]): the unit is Type=notify under the guest's pivot. The firmware's
+	// READY at listen: the unit is Type=notify under the guest's pivot. The firmware's
 	// own start commits nothing -- only a trial start does -- but it says READY at the same
 	// point, once the port it exists to serve is open.
 	_ = sdnotify.Ready()
@@ -109,7 +109,7 @@ func runGuest(ctx context.Context) error {
 	// A clean EOF: the host disconnected (a host-agent restart, a re-adopt). Hand the port back
 	// so qemu buffers the next host request instead of losing it, then pause before exiting --
 	// with the host end gone for good the reopened port returns EOF at once, and without this
-	// pause Restart=always spun ~48 times in 30 s ([B.35]).
+	// pause Restart=always spun ~48 times in 30 s.
 	conn.Close()
 	select {
 	case <-ctx.Done():
@@ -124,7 +124,7 @@ const hostAbsentPause = 5 * time.Second
 
 // guestStopGrace is how long a cancelled firmware may take to unwind before it is ended
 // outright. Strictly longer than PowerOffGrace, so a detached os.poweroff can finish its reply
-// before the process that carries it is killed ([B.132]).
+// before the process that carries it is killed.
 const guestStopGrace = 5 * time.Second
 
 const _ = uint(guestStopGrace - guestfirmware.PowerOffGrace)

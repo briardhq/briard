@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestHealthReadsTheAppNotTheWebServer ([B.167], [B.167b]'s probes): recovery mode keeps the web
+// TestHealthReadsTheAppNotTheWebServer (measured by probe): recovery mode keeps the web
 // server answering while the app is down, and only /api/config says so. Every row is one case the
 // design names.
 func TestHealthReadsTheAppNotTheWebServer(t *testing.T) {

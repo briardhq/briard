@@ -12,16 +12,16 @@ import (
 // Nix let-bindings in guest-image/configuration.nix, because the host agent writes the files and
 // the guest image reads the same ones — and they are different languages, so there is no shared Go
 // constant to import. A rename on either side silently breaks the pairing; a comment cannot catch
-// that, but this test reads both sides and fails loudly. It is the cheap mechanism [V3.16](j)
-// chose over a generator: no build step, and the guest image is a sibling file already in the tree.
+// that, but this test reads both sides and fails loudly. It is the cheap mechanism
+// chosen over a generator: no build step, and the guest image is a sibling file already in the tree.
 //
 // ITS SUBJECT HAS CHANGED TWICE, which is the point of having the mechanism rather than the
-// subject. It was written for the payload slot's `payloadPinPath`/`payloadServeTag`
-// ([V3.16](j)), which [V3b.3](e1) deleted; it then paired the TLS directory, which [B.160]
+// subject. It was written for the payload slot's `payloadPinPath`/`payloadServeTag`,
+// which the service-warm re-cut deleted; it then paired the TLS directory, which the agent-written units
 // deleted from the Nix side when the front door's unit moved to the agent and nothing in the
 // image read the path any more.
 //
-// WHAT IT PAIRS NOW is what [B.160] left genuinely shared. The tool profile is the load-bearing
+// WHAT IT PAIRS NOW is what the move of the units into the agent left genuinely shared. The tool profile is the load-bearing
 // one: it is the ONLY thing the image and the pushed agent agree on by name, so a rename on
 // either side is a guest whose units point at nothing -- and, because the agent refuses to
 // render without it, a guest that will not serve at all. The other two are read by the image's
@@ -33,7 +33,7 @@ func TestVolumePathsMatchGuestImage(t *testing.T) {
 	}
 	nix := string(raw)
 
-	// THE TOOL PROFILE ([B.160]). Nix states it relative to /etc, because that is what
+	// THE TOOL PROFILE. Nix states it relative to /etc, because that is what
 	// `environment.etc.<name>` takes; Go states the bin directory inside it, because that is
 	// what a unit's PATH is. One pairing, spelled from each side's own end.
 	if want := "/etc/" + nixLet(t, nix, "toolsEtc") + "/bin"; want != defaultToolsBin {
@@ -48,7 +48,7 @@ func TestVolumePathsMatchGuestImage(t *testing.T) {
 		// The mount the VIP's scripts read the flock's stored address from, and the agent
 		// mounts.
 		{"dataMountRoot", dataMountRoot, "btrfsRoot"},
-		// The topology word node storage writes and the hold's steps dispatch on ([B.145c]).
+		// The topology word node storage writes and the hold's steps dispatch on.
 		// A rename here is a hold that reads "node storage has not run on this boot" on every
 		// node and skips itself -- silent, and only visible when something has to hand over.
 		{"topologyEnvPath", topologyEnvPath, "topologyEnvPath"},

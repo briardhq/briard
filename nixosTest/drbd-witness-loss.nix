@@ -55,7 +55,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service") # the image, warm before any promotion
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
@@ -76,7 +76,7 @@ pkgs.testers.runNixOSTest {
     service_units = fixture_units(primary)
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
-    # THE CRASH BELOW MUST FIND AN UPTODATE REPLICA ([B.145a]) -- here to keep the refusal HONEST
+    # THE CRASH BELOW MUST FIND AN UPTODATE REPLICA -- here to keep the refusal HONEST
     # rather than to enable a promotion. The product's seed path syncs a joiner for real, so a crash
     # that lands mid-resync leaves a SyncTarget, and a SyncTarget cannot promote whatever quorum
     # says: every assertion below would hold for the wrong reason. Quorum is the claim under test,

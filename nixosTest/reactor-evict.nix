@@ -61,7 +61,7 @@ pkgs.testers.runNixOSTest {
 
     # The front door answers before anything is installed -- the shipped state -- and the service
     # then goes onto the volume from whichever node promoted. Every later handover renders it
-    # again from there ([V3b.3](f)), which is what an eviction is really moving.
+    # again from there, which is what an eviction is really moving.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):

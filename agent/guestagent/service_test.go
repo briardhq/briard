@@ -175,7 +175,7 @@ func TestServiceInstalledReadsBack(t *testing.T) {
 	}
 }
 
-// The pre-eviction flush ([B.100a]). What matters: it syncs the MOUNTED volume and answers
+// The pre-eviction flush. What matters: it syncs the MOUNTED volume and answers
 // "skipped" -- success, not error -- on a node that has it unmounted, because a Secondary
 // asked to make its dirty data small is already done.
 func TestFsSyncFlushesTheMountedVolume(t *testing.T) {
@@ -218,7 +218,7 @@ func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 	}
 }
 
-// THE PER-SERVICE SPLIT ([V3b.3](b)): the volume must be able to say WHICH service a manifest
+// THE PER-SERVICE SPLIT: the volume must be able to say WHICH service a manifest
 // belongs to. With one unnamed file, installing a second service recorded its identity over the
 // first's -- so the first's prior became unreadable, and on the host side filesToRemove then
 // deleted that service's rendered units as a renamed prior's orphans.
@@ -264,7 +264,7 @@ func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
 
 // service.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
 // it is how a node that promoted into somebody else's install can say what it runs at all
-// ([V3b.3](e1) — measured: a survivor served the fixture while reporting no services).
+// (measured: a survivor served the fixture while reporting no services).
 func TestServiceListNamesTheVolumesServices(t *testing.T) {
 	f := &fakeExec{output: []byte("dummy.json\nhome-assistant.json\nnot-a-manifest\n")}
 	g := dial(t, f)

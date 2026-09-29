@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The message IS the safety margin ([B.150](b)): every way the selection goes wrong ends with a
+// The message IS the safety margin: every way the selection goes wrong ends with a
 // guest that boots and is unreachable, and the only thing standing between a user and that is
 // what this line tells them. So each failing shape must carry the override, a copy-pasteable
 // example off THIS machine, and the devices to choose from.

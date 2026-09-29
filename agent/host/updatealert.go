@@ -12,7 +12,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// updateAlerter is the reader the timer path never had ([B.161](a)).
+// updateAlerter is the reader the timer path never had.
 //
 // EVERY OTHER TRIGGER OF THE FROZEN UPDATE UNIT HANDS ITS VERDICT TO SOMEBODY: `briard update`
 // prints the line to whoever typed it, and the cloud's directive carries it back as an outcome.
@@ -22,11 +22,11 @@ import (
 // household that has silently stopped updating therefore looks exactly like one that is current.
 //
 // That is the failure the upgrade floor exists to prevent, arriving through the other door. A
-// node below the floor ([B.159](e)) is refused BY DESIGN, keeps serving, and is supposed to be
+// node below the floor is refused BY DESIGN, keeps serving, and is supposed to be
 // reinstalled -- and until this existed, nobody was ever told to reinstall it.
 //
-// ⚠️ THE READER IS THE AGENT, NOT THE UNIT. The frozen layer carries no product knowledge
-// ([B.86] rule 1): briard-update reports a line and an exit status, and what "this node has
+// ⚠️ THE READER IS THE AGENT, NOT THE UNIT. The frozen layer carries no product knowledge:
+// briard-update reports a line and an exit status, and what "this node has
 // stopped updating" MEANS to a household is the product's to say, not a shell script's. So this
 // watches the unit from above rather than teaching the script to alert -- and the frozen side
 // needs no release to make it work.

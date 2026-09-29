@@ -30,7 +30,7 @@ func guestMan(version, system, minHost string) install.Manifest {
 		Artifacts: []install.Entry{{Name: "nixos.qcow2.zst"}}}
 }
 
-// The vm chain's comparison ([B.86d]), one row each: the closure is the truth, min_briard is
+// The vm chain's comparison, one row each: the closure is the truth, min_briard is
 // the one direction that can go wrong, and the host chain's ordering rules apply after both.
 func TestDecideGuest(t *testing.T) {
 	const host = "v3.20260906.aaaaaaa"
@@ -233,10 +233,10 @@ func withImage(t *testing.T, c *guestChannel, m install.Manifest, contents strin
 	return m
 }
 
-// The directive end to end ([B.86h]): a signed guest release resolved on the channel, its
+// The directive end to end: a signed guest release resolved on the channel, its
 // image fetched, verified, expanded and staged beside the one in use, the swap handed to the
 // upgrader with the release it must prove, the node-local record written with the exact
-// signed bytes -- and, once there, a no-op that says so. [[verification-assertions-must-fail]]:
+// signed bytes -- and, once there, a no-op that says so. The assertion proves the positive:
 // the staged image is the manifest's expanded artifact, byte for byte.
 func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	c, key := newGuestChannel(t)
@@ -349,7 +349,7 @@ func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	}
 }
 
-// AN EMPTY PAYLOAD RESOLVES `stable`, NOT `latest` ([B.159](f)). The two pointers name different
+// AN EMPTY PAYLOAD RESOLVES `stable`, NOT `latest`. The two pointers name different
 // releases here on purpose, because that is the only shape in which the default is observable:
 // a directive carrying no target is what an operator or a cloud sends when they mean "just
 // update", and until this it walked the node onto whatever was published last -- a release the

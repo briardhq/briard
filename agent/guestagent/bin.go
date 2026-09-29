@@ -10,9 +10,9 @@ import (
 	"briard.io/agent/guestfirmware"
 )
 
-// The HOST end of the push protocol ([B.86j], re-cut by [B.138]): the three verbs the host
+// The HOST end of the push protocol: the three verbs the host
 // dresses a guest through. The guest end -- staging, the cheap gate, the trial and its aftermath
-// -- is the FIRMWARE's ([B.139], agent/guestfirmware/bin.go), because it is the one part of the
+// -- is the FIRMWARE's (agent/guestfirmware/bin.go), because it is the one part of the
 // protocol the image bakes and the pushed agent must keep speaking unchanged.
 
 // BinStage streams one binary to the guest in BinChunkSize chunks and has the guest verify the

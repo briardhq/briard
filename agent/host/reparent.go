@@ -16,7 +16,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// RE-PARENTING ([B.150](e)) — what happens when the device the guest's L2 hangs off goes away.
+// RE-PARENTING — what happens when the device the guest's L2 hangs off goes away.
 //
 // ⚠️ QEMU WILL NOT TELL YOU. When a macvtap's parent disappears the child device vanishes with it,
 // and qemu keeps running with a dead NIC: the guest is alive, healthy by its own account, and
@@ -33,7 +33,7 @@ import (
 // — which means stopping and relaunching the guest. A healthy household loses its service for the
 // length of a boot. That is why the pacing below exists at all.
 
-// The tiers, and what each is paying for ([B.150](e), durations set by the owner 2026-09-15).
+// The tiers, and what each is paying for.
 //
 // ⚠️ THESE ARE A STARTING POINT AND ARE MEANT TO BE REVISED. What they are trading is stated so
 // that a later reader can judge them rather than guess at them: too short and an ordinary blip --
@@ -55,8 +55,8 @@ const (
 )
 
 // ⚠️ THERE IS NO "DIFFERENT SUBNET" DURATION, and that is the decision rather than an omission
-// (owner, 2026-09-15). A machine on a different subnet has MOVED, and a paired node that rebuilds
-// itself on a LAN its peer is not on is a split flock -- the one outcome this whole item exists to
+// A machine on a different subnet has MOVED, and a paired node that rebuilds
+// itself on a LAN its peer is not on is a split flock -- the one outcome this whole mechanism exists to
 // avoid. So it is not a longer wait: it is an explicit operator action, `NIC` in config.env, which is
 // already the escape hatch for every other way our selection can be wrong. (A cloud-side way out
 // for managed nodes may come later; it would arrive through the directive path, not through a
@@ -92,7 +92,7 @@ func (cfg Config) networkRecordPath() string {
 //
 // Durable, because it is a fact whose only copy is this file and a power cut must not lose it:
 // losing it turns the next re-parent decision into Unknown, which refuses -- safe, but it strands
-// a node that could have healed itself. tmp + fsync + rename is the canonical shape (AGENTS §5).
+// a node that could have healed itself. tmp + fsync + rename is the canonical shape.
 func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) {
 	path := cfg.networkRecordPath()
 	// nil is the ordinary state on every agent that owns no network -- every rig, every lab node,
@@ -201,7 +201,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 	if cfg.net == nil || cfg.net.Parent == "" || cfg.net.Bridge {
 		// Nothing to re-parent: either this agent does not own the network, or the guest's L2
 		// hangs off a bridge the USER owns. A bridge that disappears is the user's to restore --
-		// we never created it and must not start now ([B.150](c)).
+		// we never created it and must not start now.
 		return "", nic.Unknown
 	}
 	if nic.Up(cfg.net.Parent) || exists("/sys/class/net/"+cfg.net.Parent) {
@@ -272,8 +272,8 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 // way to do it (the upgrader interface says so).
 //
 // ⚠️ NOTHING HERE TOUCHES THE HOST'S OWN ADDRESSING OR ROUTES, which is what keeps the agent's
-// path to the cloud intact across a re-parent (owner, 2026-09-15). It is true by construction
-// rather than by care: since [B.150](c) we never move a host address anywhere, so the only
+// path to the cloud intact across a re-parent. It is true by construction
+// rather than by care: we never move a host address anywhere, so the only
 // devices in play are ours.
 func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier, dev string, rel nic.Relation, logf func(string, ...any)) error {
 	from := cfg.net.Parent
@@ -325,7 +325,7 @@ func (r *reparenter) say(logf func(string, ...any), msg string) {
 
 // configPathForMessage names the file an operator would edit. It is the message's job to be
 // actionable, and "set NIC" is not actionable without saying where. (The key is NIC in config.env;
-// BRIARD_NIC is its name at INSTALL time, where the report card reads it -- [B.157] made the two
+// BRIARD_NIC is its name at INSTALL time, where the report card reads it -- the two are
 // one rule: every config key K is settable as BRIARD_K when the installer runs.)
 func (cfg Config) configPathForMessage() string {
 	if p := os.Getenv("BRIARD_CONFIG"); p != "" {
@@ -334,8 +334,8 @@ func (cfg Config) configPathForMessage() string {
 	return defaultConfigFile
 }
 
-// checkMovedLAN is the one thing a re-parent cannot fix and must therefore say out loud
-// ([B.150](e)): this node's system subnet was DRAWN against the collision landscape of a
+// checkMovedLAN is the one thing a re-parent cannot fix and must therefore say out loud:
+// this node's system subnet was DRAWN against the collision landscape of a
 // different network, and on a new LAN that check is simply stale.
 //
 // ⚠️ IT NEVER RENUMBERS. The subnet is flock-scoped -- re-drawing it here would break a peer that

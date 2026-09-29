@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// THE FORMAT HANDLING, AGAINST REAL OUTPUT ([B.153]).
+// THE FORMAT HANDLING, AGAINST REAL OUTPUT.
 //
 // Every fixture below is a verbatim capture from a running kernel (brie, 2026-09-21) rather than
 // something written to match the parser -- which is the point of the split these tests exist to
@@ -116,7 +116,7 @@ func TestParseIfFlags(t *testing.T) {
 	}
 }
 
-// THE SYMLINK'S DEPTH VARIES, and that is the bug this test is here for ([B.153]): a port whose
+// THE SYMLINK'S DEPTH VARIES, and that is the bug this test is here for: a port whose
 // own sysfs node is virtual sits one level from its bridge, a physical NIC several. A prefix trim
 // of a single `../` answers the first shape and silently mangles the second, so Converged would
 // have answered false forever on a bridge parented by a real card -- and the tick would have
@@ -143,7 +143,7 @@ func TestIPArgv(t *testing.T) {
 		t.Errorf("macvtapAddArgs = %q, want %q", got, want)
 	}
 	// The probe's whole claim is that it creates THE VERY THING the install creates, so it must
-	// render the same argv but for the device name ([B.150](b)).
+	// render the same argv but for the device name.
 	probe := macvtapAddArgs(probeDev, "eno1")
 	install := macvtapAddArgs("sys-n1", "eno1")
 	for i := range probe {
@@ -160,7 +160,7 @@ func TestIPArgv(t *testing.T) {
 		t.Errorf("allmulticastOnArgs = %q, want %q", allmulticastOnArgs("sys-n1"), w)
 	}
 	// The knob is per-DEVICE under conf/<dev>/, not the `default` or `all` node: writing those
-	// would change the host's own policy rather than this one macvtap's ([B.106]).
+	// would change the host's own policy rather than this one macvtap's.
 	if w := "/proc/sys/net/ipv6/conf/sys-n1/disable_ipv6"; disableIPv6Path("sys-n1") != w {
 		t.Errorf("disableIPv6Path = %q, want %q", disableIPv6Path("sys-n1"), w)
 	}

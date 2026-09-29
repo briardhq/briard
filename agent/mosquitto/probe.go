@@ -127,7 +127,7 @@ func persist(ctx context.Context, x Executor, container string) error {
 const flushSettle = 3 * time.Second
 
 // Flush makes the broker write its persistence database and waits for it, so a clock sample taken
-// next holds what the broker had rather than its last autosave ([B.167d]). The signal is
+// next holds what the broker had rather than its last autosave. The signal is
 // asynchronous, which is why the wait is part of it.
 func Flush(ctx context.Context, x Executor, container string) error {
 	if err := safeName(container); err != nil {

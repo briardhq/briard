@@ -10,7 +10,7 @@
 // So this package delivers two capabilities, and the line between them is what each one
 // can only do from where it stands. The first is an authenticated HA API available to
 // the guest from the moment HA starts, for consumers OUTSIDE Home Assistant. The second
-// is briard's own integration, running INSIDE it ([B.124]): everything that wants a
+// is briard's own integration, running INSIDE it: everything that wants a
 // running Home Assistant rather than a stopped one — offering the node's broker today,
 // restore intent and entities next — belongs in a process that already holds `hass`,
 // not in a stopped-window script talking HTTP to a process it is inside of.
@@ -76,7 +76,7 @@ const Name = "home-assistant"
 // every converge. Nothing here is replicated and nothing survives a guest reboot —
 // deliberately, since the token rotates per boot and the extracted script must match
 // the digest THIS node is running.
-// ⚠️ NAMED FOR THE SERVICE, not for this package ([B.143]; it was /run/briard/hass). The agent
+// ⚠️ NAMED FOR THE SERVICE, not for this package (it was /run/briard/hass). The agent
 // resolves an inbound caller by reading the run directory and taking a DIRECTORY NAME as the
 // service, so a directory named after the Go package would resolve to a service that does not
 // exist. agent/mosquitto already followed the convention; this was the one exception.
@@ -107,7 +107,7 @@ const wrapperPath = Dir + "/run"
 // scriptPath is the mint, run one-shot on the image's own python.
 const scriptPath = Dir + "/ensure-token.py"
 
-// notifierPath is the inbound-channel client ([B.143]): it tells the guest agent this service is
+// notifierPath is the inbound-channel client: it tells the guest agent this service is
 // starting and waits for the reply, which is what makes the stopped window an ordering guarantee
 // rather than a race. It decides nothing -- see notify.py.
 const notifierPath = Dir + "/notify.py"
@@ -121,7 +121,7 @@ const planterPath = Dir + "/plant.py"
 const stubDir = Dir + "/stub"
 
 // implDir is where the integration's implementation is mounted, read-only, OUTSIDE /config —
-// which is the whole placement decision ([B.124]): the restore wipe never sees it, no backup
+// which is the whole placement decision: the restore wipe never sees it, no backup
 // can carry it, and the stub in /config stays inert wherever it is restored. The stub names
 // this same path; the two agree on a path and a module name and on nothing else.
 const implDir = Dir + "/integration"
@@ -184,7 +184,7 @@ type Executor interface {
 // knowledge too. Render stays a pure function of the manifest: the same manifest
 // renders the same units on every node.
 //
-// ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE ([B.143]): one directory per service, read-only at
+// ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE: one directory per service, read-only at
 // /briard, is the product's general shape rather than this service's arrangement, so
 // agent/services writes it for every service that has one. What stays is the half that IS Home
 // Assistant knowledge — our s6 wrapper shadow-mounted over the image's own `run`, at a path only
@@ -199,7 +199,7 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 }
 
 // RestoreMarker is the file Home Assistant writes inside its config directory to say that a
-// restore of one of ITS OWN backups is in flight ([B.143]).
+// restore of one of ITS OWN backups is in flight.
 //
 // The household asks a live HA for the restore; HA writes this and exits 100 to be restarted into
 // it. The restore then unlinks the marker in a `finally` right after parsing and BEFORE the wipe
@@ -218,8 +218,8 @@ const RestoreMarker = ".HA_RESTORE"
 // other service.
 //
 // IT RUNS AT CONVERGE, not at install, and the difference is a node that was down when
-// the install ran. Converge is what a promoting survivor executes against the volume
-// ([V3b.3](f)); an install-time-only step would leave that node mounting a wrapper
+// the install ran. Converge is what a promoting survivor executes against the volume;
+// an install-time-only step would leave that node mounting a wrapper
 // that does not exist. /run is tmpfs, so this is also the only placement that survives
 // a guest reboot. One code path covers install, upgrade, reboot and cold promotion.
 //

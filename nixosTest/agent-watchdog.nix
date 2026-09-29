@@ -1,4 +1,4 @@
-# systemd's watchdog restarts a host agent that is ALIVE BUT WEDGED (V3.32) — the one rung of the
+# systemd's watchdog restarts a host agent that is ALIVE BUT WEDGED — the one rung of the
 # unresponsive-guest ladder that neither the guest deadman nor the host's own recovery can reach.
 # A crashed agent self-heals through Restart=; a HUNG one does not, because systemd sees a healthy
 # process and nothing fires.
@@ -19,7 +19,7 @@
 # THAT WEDGE USED TO BE THE PRODUCT'S OWN, and why it no longer is belongs here. writeTelemetry did
 # an un-`ctx`'d os.WriteFile in the observe loop every cycle, so pointing TELEMETRY_PATH's ".tmp"
 # sibling at a reader-less FIFO wedged the agent with no fault-injection hook at all. That was a
-# real latent defect (B.87) and not a contrivance — telemetry, the least important thing in the
+# real latent defect and not a contrivance — telemetry, the least important thing in the
 # loop, could take the node's supervisor down — and fixing it moved the write onto its own
 # goroutine. Which took the lever away: the shape this test must produce is exactly the shape the
 # fix makes unreachable. So the lever is now EXPLICIT, `WEDGE_FIFO`, opened at the same
@@ -39,7 +39,7 @@
 # as good as its false-positive rate: an agent doing work that legitimately takes minutes must
 # NOT be killed for it. `dispatch` runs synchronously on the observe loop and that loop is the
 # only pinger, so every directive longer than WatchdogSec is a SIGABRT rather than an outcome --
-# which is exactly what [V3b.15] found in the field, on a verb measured working two months
+# which is exactly what a field install found, on a verb measured working two months
 # earlier. Step 3 is that case, and it fails without the lease.
 #
 # It also asserts the two things that make the feature worth having rather than merely working:
@@ -53,7 +53,7 @@
 # And, before any of that, it proves READY=1 means THE AGENT rather than THE NODE: under
 # Type=notify `systemctl start` blocks until READY, so the start returning in seconds — long
 # before the guest has converged — is the assertion. With READY gated on first healthy
-# convergence, as it was before V3.32, this unit would sit in `activating` past TimeoutStartSec
+# convergence, as it once was, this unit would sit in `activating` past TimeoutStartSec
 # and be killed.
 #
 # Heavy (nested VM), so it rides the `integration` tag. Run:
@@ -98,7 +98,7 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_DISK = "/tmp/guest.qcow2";
-          # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+          # Where the host keeps its guest bundle tree, the way install.sh sets it.
           UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
@@ -141,7 +141,7 @@ pkgs.testers.runNixOSTest {
     # The shipped NIC contract (as agent-readopt): carrier-bearing parent, the guest's two LAN NICs
     # as macvtap children in install.sh's order (sys0 -> eth1, svc0 -> eth2), and the private
     # host<->guest link as a plain tap at 10.11.9.1/24. The macvlan shim this used to build was the
-    # rig granting itself reachability the product lacked ([V3b.19a]); the VIP now answers here
+    # rig granting itself reachability the product lacked; the VIP now answers here
     # because the agent routes it over that link.
     #
     # Worth knowing for the wedge steps below: a WEDGED agent cannot reconcile, so the route it
@@ -159,9 +159,9 @@ pkgs.testers.runNixOSTest {
     # === 1) READY MEANS THE AGENT, NOT THE NODE ===
     # Under Type=notify this call blocks until READY=1. It has to return in seconds, well before
     # the guest converges (that takes minutes). Gated on first healthy convergence, as it was
-    # before V3.32, systemd would kill this unit at TimeoutStartSec=30 instead.
+    # before READY moved to loop entry, systemd would kill this unit at TimeoutStartSec=30 instead.
     t0 = int(host.succeed("date +%s").strip())
-    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the
+    # The host holds a guest bundle tree, as install.sh lays on every install: the
     # image bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the
     # store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
@@ -193,7 +193,7 @@ pkgs.testers.runNixOSTest {
     # no-op that this test could not distinguish from a working fix.
     host.wait_until_succeeds("test -s /tmp/telemetry.json", timeout=30)
 
-    # === 2) B.87: A HUNG TELEMETRY PATH IS NO LONGER THE AGENT'S PROBLEM ===
+    # === 2) A HUNG TELEMETRY PATH IS NO LONGER THE AGENT'S PROBLEM ===
     # This is the wedge this test used to USE, kept as the thing it now DEFENDS. os.WriteFile
     # opens "<TELEMETRY_PATH>.tmp" O_WRONLY|O_CREATE|O_TRUNC; on a FIFO with no reader that
     # open(2) blocks forever, and it stands in for the realistic trigger — an NFS or FUSE mount
@@ -214,7 +214,7 @@ pkgs.testers.runNixOSTest {
     b87_now = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
     assert b87_now == b87_restarts, (
         f"a hung TELEMETRY_PATH took the agent down ({b87_restarts} -> {b87_now} restarts) — "
-        "the telemetry write is back on the observe goroutine (B.87)"
+        "the telemetry write is back on the observe goroutine"
     )
     host.succeed("systemctl is-active briard-agent")
     host.succeed("curl -fsS http://192.168.1.100/healthz")
@@ -223,7 +223,7 @@ pkgs.testers.runNixOSTest {
     # fresh one. Removing the FIFO here only stops the NEXT process re-wedging on it.
     host.succeed("rm -f /tmp/telemetry.json.tmp")
 
-    # === 3) V3b.15: AN HONEST LONG DIRECTIVE MUST NOT TRIP THE WATCHDOG ===
+    # === 3) AN HONEST LONG DIRECTIVE MUST NOT TRIP THE WATCHDOG ===
     # Step 2's question asked the other way round, and this is the half that shipped broken.
     # A wedged agent must be caught; an agent doing work that legitimately takes minutes must not
     # be. `dispatch` is called synchronously on the observe loop (host.go), and that loop is the
@@ -233,7 +233,7 @@ pkgs.testers.runNixOSTest {
     #
     # NOT A RACE -- IT SHIPPED. `WatchdogSec=20` landed 2026-08-13 on a `service install` measured
     # at 48.8 s from the published channel a week earlier, and the next person to run the verb was
-    # a stranger, seven days after that ([V3.29] -> [V3b.15]). Twenty-one seconds from `directive
+    # a stranger, seven days after that. Twenty-one seconds from `directive
     # kind=service-install submitted locally` to `Watchdog timeout (limit 20s)!`, then SIGABRT and
     # a CLI printing "the agent closed the connection without reporting an outcome" -- because the
     # admin socket died with the process holding it.
@@ -284,7 +284,7 @@ pkgs.testers.runNixOSTest {
     assert trips == "0", (
         f"the watchdog fired {trips}x during a legitimate directive -- dispatch runs synchronously "
         f"on the observe loop, which is the only pinger, so nothing pinged systemd for the "
-        f"{took}s the install took. The agent was SIGABRTed mid-work (V3b.15)"
+        f"{took}s the install took. The agent was SIGABRTed mid-work"
     )
 
     # ...and it is still the same process that took the directive. MainPID reads 0 while the unit
@@ -293,12 +293,12 @@ pkgs.testers.runNixOSTest {
     assert long_pid_now == long_pid, (
         f"the agent is no longer the process that took the directive ({long_pid} -> "
         f"{long_pid_now}; 0 means it is down and has not been restarted yet) -- it was killed "
-        f"mid-install (V3b.15)"
+        f"mid-install"
     )
     long_now = int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip())
     assert long_now == long_restarts, (
         f"the agent restarted across a {took}s directive ({long_restarts} -> {long_now}) -- "
-        f"dispatch is running unleased under the watchdog (V3b.15)"
+        f"dispatch is running unleased under the watchdog"
     )
 
     # NON-VACUOUS -- the assertion that must be able to fail, and deliberately placed AFTER
@@ -318,7 +318,7 @@ pkgs.testers.runNixOSTest {
     # holding a dead socket, which reads as "did that work?" rather than "that did not work".
     assert rc != 0, f"the install reported success against an unreachable catalog:\n{out}"
     assert "without reporting an outcome" not in out, (
-        f"the CLI lost the socket mid-directive -- the agent died under it (V3b.15):\n{out}"
+        f"the CLI lost the socket mid-directive -- the agent died under it:\n{out}"
     )
 
     host.succeed("iptables -D INPUT -p tcp --dport 8098 -j DROP")
@@ -368,7 +368,7 @@ pkgs.testers.runNixOSTest {
     # (`single`) the dump would name that and stop, and this frame could not appear. Its presence
     # means the traceback reached the goroutine that is actually stuck, and named the exact call:
     #   os.OpenFile -> briard.io/agent/host.Config.wedgeForTest
-    # (before B.87 this frame read host.Config.writeTelemetry, which is the whole story of this
+    # (before the fix this frame read host.Config.writeTelemetry, which is the whole story of this
     # test in one line: the same assertion, now naming a fixture instead of a defect.)
     host.succeed(
         f"journalctl -u briard-agent --since='{since}' | grep -q 'host.Config.wedgeForTest'"

@@ -8,7 +8,7 @@ import (
 )
 
 // EventReconsider is what briard fires on Home Assistant's own event bus when something OUTSIDE
-// Home Assistant changed that briard's integration may want to act on ([B.131]).
+// Home Assistant changed that briard's integration may want to act on.
 //
 // THE NAME IS HALF THE CONTRACT, and the other half is that it carries NOTHING. It does not say
 // what changed, and adding a payload later would be the wrong repair: the integration re-derives
@@ -23,7 +23,7 @@ const EventReconsider = "briard_reconsider"
 
 // Nudge tells a RUNNING Home Assistant to reconsider — and the emphasis is the whole reason this
 // exists. Everything briard's integration does, it does when Home Assistant starts, and converge
-// deliberately restarts only the services whose rendered bytes changed ([V3b.3](f)). So installing
+// deliberately restarts only the services whose rendered bytes changed. So installing
 // the BROKER next to a Home Assistant that is already up leaves it running, unwired and
 // unaware, until something happens to restart it — which for a household is "briard says the
 // broker is installed and Home Assistant disagrees, indefinitely".

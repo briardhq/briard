@@ -1,12 +1,12 @@
 // Package mosquitto is the product-side knowledge Briard holds about one catalogued service: the
-// MQTT broker a Home Assistant household needs anyway ([V3b.4]).
+// MQTT broker a Home Assistant household needs anyway.
 //
 // WHY THE PRODUCT HOLDS A SERVICE'S CONFIG AT ALL, and why this is not a manifest field. The
 // manifest is a document a publisher writes, and its schema withholds host binds ON PURPOSE, so
 // a catalog entry cannot reach the host. But mosquitto cannot be usefully run as its image ships
 // it -- persistence is off by default and the image takes no configuration from the environment
 // -- so SOMETHING has to put a config file in front of it. Doing that from the product, keyed on
-// the catalog name, is the same call [V3b.29] made for the readiness registry and rests on the
+// the catalog name, is the same call the readiness registry made and rests on the
 // same fact: the catalog is curated precisely so Briard can encode how each service is operated.
 // agent/hass is the first instance of this shape; this is the second.
 //
@@ -51,7 +51,7 @@ const MQTTPort = 1883
 // Protocol is what a client must SPEAK to the published port, and it is product knowledge for the
 // same reason MQTTPort and ServiceType are: a manifest names ports and never protocols, so without
 // it the install verb can only say "point clients at <name>:1883" -- an address with no
-// instruction attached to it. [B.48a] generalised that sentence off mosquitto and the word went
+// instruction attached to it. A later change generalised that sentence off mosquitto and the word went
 // with it; tier 4 caught the loss.
 const Protocol = "MQTT"
 
@@ -63,7 +63,7 @@ const Protocol = "MQTT"
 // in eclipse-mosquitto -- the daemon has no notion of announcing its own existence -- so a broker
 // sitting on a household LAN is invisible to the Tasmota- and ESPHome-class devices that look
 // `_mqtt._tcp` up precisely in order to find one. The announcement therefore has to come from
-// outside the container, which for us costs nothing: the guest already runs avahi ([V3b.19]) and
+// outside the container, which for us costs nothing: the guest already runs avahi and
 // already publishes the service's name from the routing table.
 //
 // `_mqtt._tcp` is the registered type for plain MQTT (`_secure-mqtt._tcp` is the TLS one, which

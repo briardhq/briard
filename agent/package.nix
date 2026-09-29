@@ -9,8 +9,8 @@
 # unaffected by build tags (the vendor dir carries every dep; tags only change what links).
 #
 # subPackage: which main to build. `agent/cmd/briard-agent` is the HOST agent (and the `briard`
-# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent ([B.137]), which the host PUSHES; and
-# `agent/cmd/briard-guest-firmware` is the push protocol alone ([B.139]), the ONE binary the guest
+# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent, which the host PUSHES; and
+# `agent/cmd/briard-guest-firmware` is the push protocol alone, the ONE binary the guest
 # image bakes. Each is its own main, so what each links is an import graph the arch tests fence
 # rather than a build tag.
 #

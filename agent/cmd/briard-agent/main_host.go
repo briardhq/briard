@@ -34,12 +34,12 @@ func runGuestShutdown(ctx context.Context, qmpSock string) error {
 // the VM image under dest/vm, each beside the manifest that verified it. The channel root, the
 // release to install and the release keyring PEM come from the environment (install.sh sets
 // BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING, the last the bundled release public
-// key). It lives here, not main.go; the guest is its own main ([B.137]) and never links
+// key). It lives here, not main.go; the guest is its own main and never links
 // install/net/http (the trim).
 //
 // All-or-nothing across the two chains as well as within each: dest appears only once both
 // have verified, so install.sh never sees a briard bundle without the VM image it was
-// published beside ([B.86e]: briard/stable + vm/stable IS the tested pair, by construction).
+// published beside (briard/stable + vm/stable IS the tested pair, by construction).
 func runFetchInstall(ctx context.Context, dest string) error {
 	base := os.Getenv("BRIARD_CHANNEL_URL")
 	if base == "" {
@@ -75,7 +75,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 		}
 	}()
 	// The briard chain first -- it has a platform level and this binary installs the Linux arm --
-	// and then the vm release ITS MANIFEST NAMES ([B.86i]): the VM image is a function of its
+	// and then the vm release ITS MANIFEST NAMES: the VM image is a function of its
 	// inputs and is re-published only when they change, so its id is no longer derivable from the
 	// briard id, and the briard manifest is where the pairing lives. One selector still installs
 	// one tested pair; it is just the briard side that resolves it.
@@ -88,7 +88,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 		return fmt.Errorf("read the fetched briard manifest: %w", err)
 	}
 	if bm.VM == "" {
-		return fmt.Errorf("briard release %s names no vm release -- published before [B.86i]; the alpha reinstalls from a current channel", bm.Version)
+		return fmt.Errorf("briard release %s names no vm release -- published before releases carried one; the alpha reinstalls from a current channel", bm.Version)
 	}
 	vf := &install.Fetcher{BaseURL: base, Chain: install.ChainVM, Keyring: kr, Logf: log.Printf}
 	if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, install.ChainVM)); err != nil {
@@ -101,7 +101,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	return nil
 }
 
-// runFetchUpdate is the update unit's verb ([B.86a]): resolve target on the briard chain, decide
+// runFetchUpdate is the update unit's verb: resolve target on the briard chain, decide
 // against the installed manifest, stage + arm the agent if due, and return the one line the run
 // ended on. The layout comes from the same env the agent unit carries (UPDATE_BASE /
 // UPDATE_RUN_DIR), which the frozen unit passes through -- so the candidate lands exactly where
@@ -140,7 +140,7 @@ func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inpu
 	return install.WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs)
 }
 
-// runUninstall is `briard uninstall` ([V3c.2]). The flags are parsed here and the work is the host
+// runUninstall is `briard uninstall`. The flags are parsed here and the work is the host
 // agent's (host.Uninstall); agent/cli carries the verb's help. Without -yes it only says what would
 // go and what would stay, the way `briard rescue` does: there is no undo for either half.
 func runUninstall(args []string) int {

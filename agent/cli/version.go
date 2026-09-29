@@ -14,7 +14,7 @@ import (
 // in a binary built without the stamp.
 var Version string
 
-// guestReleaseRecord is the node's record of the VM release it runs ([B.86d]). It mirrors
+// guestReleaseRecord is the node's record of the VM release it runs. It mirrors
 // ConfigFromEnv's GUEST_RELEASE_CACHE default (agent/host/config.go); a test asserts the two agree.
 const guestReleaseRecord = "/var/lib/briard/guest-release.json"
 

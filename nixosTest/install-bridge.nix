@@ -4,7 +4,7 @@
 # Nothing here re-proves any of that.
 #
 # What is bridge-specific and load-bearing:
-#   1. THE SUBSTRATE IS DERIVED FROM THE DEVICE ([B.150](c)): nothing is told this is a bridge
+#   1. THE SUBSTRATE IS DERIVED FROM THE DEVICE: nothing is told this is a bridge
 #      install. The host owns a bridge carrying its address and its default route; the agent
 #      selects that bridge BECAUSE it holds the route, sees what it is, and adds ONE PORT to it.
 #   2. the installer refuses cleanly on a device it cannot use, leaving the user's bridge exactly
@@ -14,7 +14,7 @@
 # ⚠️ WHAT THIS FILE USED TO TEST AND DELIBERATELY NO LONGER DOES, because the product stopped
 # doing it: the installer enslaving the host's own NIC, moving its address and default route onto
 # a bridge of ours, and arming a self-cancelling watchdog to undo that if doing so cut the
-# operator's SSH session. [B.150](c) deleted the whole gesture -- we never CREATE a bridge, we
+# operator's SSH session. Agent-owned networking deleted the whole gesture -- we never CREATE a bridge, we
 # only join one the user already owns -- so there is no irreversible step here any more and no
 # footing to lose. The rig declares the bridge in its own NixOS config instead, which is a more
 # faithful test of the real case than enslaving one ourselves ever was.
@@ -22,10 +22,10 @@
 # The shared install chain lives in install-macvtap.nix, on the Linux default substrate; this file
 # is only the bridge delta.
 #
-# ⚠️ THIS FILE IS NOT A DELETION CANDIDATE, and its header said it was until [V3b.26]. Bridge mode
+# ⚠️ THIS FILE IS NOT A DELETION CANDIDATE, and its header said it was until the NIC fork. Bridge mode
 # stopped being a fallback on its way out and became Windows' ONLY possible L2 shape, plus the Linux
 # clone of it we support for testing -- so this CONVERTED into the bridge-mode test rather than
-# being deleted, in [V3b.26d] (2026-08-25).
+# being deleted.
 #
 # What "bridge mode" means since that conversion, and what DELTA 2 below is here to catch if it
 # ever silently reverts: ONE tap on the bridge, not two. The guest gets one kernel NIC (eth1,
@@ -34,9 +34,9 @@
 # host<->guest link: a bridged tap already puts host and guest on one L2, so the host holds its
 # system-subnet address on the BRIDGE and reaches its guest natively.
 #
-# ⚠️ The honest limit, per [[fleet-macvtap-fidelity]]'s both-ways rule: this clones the
+# ⚠️ The honest limit, since rig fidelity fails both ways: this clones the
 # GUEST-VISIBLE shape, not the Windows pathology underneath it (tap-windows6's boot-establishment
-# rule, `netsh bridge`, the checksum offload). Those stay [V3b.1a]'s territory and a real desktop's.
+# rule, `netsh bridge`, the checksum offload). Those stay the Windows host's and a real desktop's.
 #
 # Heavy (a nested guest boot on the bundled qemu), rides the `install` nightly tag.
 # Run: nix build .#tests.install-bridge -L
@@ -50,7 +50,7 @@ let
     mkdir -p "$out/qemu"
     cp ${agent}/bin/briard-agent "$out/briard-agent"
     cp ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
-    # The units and the agent's three frozen scripts, shipped verbatim ([B.157]): install.sh copies
+    # The units and the agent's three frozen scripts, shipped verbatim: install.sh copies
     # them out of staging rather than writing them, so a staging dir without them is one it refuses.
     cp ${../scripts/units/briard-agent.service}  "$out/briard-agent.service"
     cp ${../scripts/units/briard-update.service} "$out/briard-update.service"
@@ -59,9 +59,9 @@ let
     cp ${../scripts/agent/briard-commit}  "$out/briard-commit"
     cp ${../scripts/agent/briard-update}  "$out/briard-update"
     cp -r ${qemuBundle}/. "$out/qemu/"
-    # THE GUEST BUNDLE ([B.86j]/[B.138]): the briard binaries the host pushes into the guest at
+    # THE GUEST BUNDLE: the briard binaries the host pushes into the guest at
     # bring-up. Without it the guest runs the image's firmware, which REFUSES every non-firmware
-    # verb -- the crash loop [B.141] found here, three weeks after the change that made a bundle
+    # verb -- the crash loop found here, three weeks after the change that made a bundle
     # mandatory. Plain tar: the staging path takes it uncompressed, where the signed channel
     # install-macvtap builds takes the zstd'd one.
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
@@ -85,12 +85,12 @@ pkgs.testers.runNixOSTest {
         # 14 GB, not 10: this test runs install.sh TWICE, and the first (must-fail) invocation stages
         # ~2 GB before dying at the NIC check -- so the real run's report card measures a disk the
         # previous run already ate into. Against the product's own 8 GB floor that left under a GB of
-        # margin, and V3.19's artifact growth tipped it: the card refused with "7 GB free" and the
+        # margin, and a release's artifact growth tipped it: the card refused with "7 GB free" and the
         # install never ran. Headroom, so the test stops measuring the admission floor by accident.
         virtualisation.diskSize = 14336;
         virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM in L1
         virtualisation.vlans = [ 1 ]; # eth1 on the shared 192.168.1.0/24 L2 (the LAN)
-        # THE USER'S BRIDGE, declared by the HOST rather than built by the installer ([B.150](c)).
+        # THE USER'S BRIDGE, declared by the HOST rather than built by the installer.
         # This is the whole shape of the test now: a machine that already bridges its LAN NIC --
         # which is what a libvirt/Proxmox/Incus box looks like, and what a Windows host running
         # `netsh bridge` looks like -- and briard joining it rather than re-plumbing it.
@@ -112,7 +112,7 @@ pkgs.testers.runNixOSTest {
         # device to use: the agent selects the one holding the main table's default route, so this
         # line is what makes it choose br0 -- and choosing br0 is what derives the substrate. Take
         # it away and the install refuses for want of a default route, which is exactly the
-        # behaviour [B.150](b) wanted and precisely why it must be stated here rather than assumed.
+        # behaviour device-derived selection wants and precisely why it must be stated here, not assumed.
         # The client is not a router and never forwards anything; the ROUTE is what is needed.
         networking.defaultGateway = { address = "192.168.1.2"; interface = "br0"; };
         # Host tools install.sh needs; NOTE no pkgs.qemu (the bundle is the only qemu).
@@ -147,7 +147,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("bridge link show | grep -q eth1")
     host.succeed("ip -o -4 route show default | grep -qw br0")
 
-    # THE HOST'S FOOTPRINT, for DELTA 6's residue check ([V3c.2]) -- the same scan as
+    # THE HOST'S FOOTPRINT, for DELTA 6's residue check -- the same scan as
     # install-macvtap's, taken before the refused install below because that one leaves empty dirs.
     def footprint():
         return set(host.succeed(
@@ -164,7 +164,7 @@ pkgs.testers.runNixOSTest {
 
     # --- DELTA 2: refuse cleanly, and leave the USER'S bridge alone ---
     # A bogus device must be refused before anything is written. It is the report card that
-    # refuses now ([B.150](b)) rather than a NIC check halfway through the networking step, so
+    # refuses now rather than a NIC check halfway through the networking step, so
     # this fails earlier and for a better-stated reason -- but the property under test is the same
     # one, and it is sharper here than on macvtap: this is the path where a half-done networking
     # step used to be able to strand the box off the net.
@@ -185,7 +185,7 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         "BRIARD_ARTIFACTS=${staging} BRIARD_UNIT_DIR=/run/systemd/system "
         # The test DECLARES the address it is about to curl. install.sh has no default any more
-        # (V3.19c step 3): unset means DHCP, and this L2 has no server. Stating it here is the
+        # (the baked VIP is gone): unset means DHCP, and this L2 has no server. Stating it here is the
         # point of the change -- a default every test agreed with is what hid the baked VIP.
         "BRIARD_VIP_ADDR=192.168.1.100/24 "
         "sh ${installScript}"
@@ -204,18 +204,18 @@ pkgs.testers.runNixOSTest {
     host.succeed("journalctl -u briard-agent | grep -q \"the guest's L2 hangs off br0\"")
     client.succeed("ping -c1 -W2 192.168.1.1")  # host still reachable through its own bridge
 
-    # --- DELTA 2 (the conversion, [V3b.26d]): ONE tap on the bridge, and no private link.
+    # --- DELTA 2 (the conversion): ONE tap on the bridge, and no private link.
     #
     # This is the assertion that makes the file worth keeping. Windows admits exactly one tap per
-    # qemu process ([V3b.1a]), so a second one here would be a Linux-only shape pretending to be
-    # the Windows twin -- the macvlan-shim mistake again ([[fleet-macvtap-fidelity]]), and
+    # qemu process, so a second one here would be a Linux-only shape pretending to be
+    # the Windows twin -- the macvlan-shim mistake again, and
     # invisible from every other angle because two taps work perfectly well on Linux.
     host.succeed("bridge link show | grep -q briard-drbd0")
     host.fail("bridge link show | grep -q briard0")
     host.fail("ip link show briard-priv0")
 
     # The host holds its system-subnet address on the BRIDGE -- it is genuinely on that L2 here,
-    # which is why there is no private link to carry it. Read from the drawn subnet ([V3b.26f]),
+    # which is why there is no private link to carry it. Read from the drawn subnet,
     # never spelled: a rig that spells a subnet the installer draws asserts about a coincidence.
     system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
     node_ip, host_ip = f"{system_subnet}.1", f"{system_subnet}.129"
@@ -267,7 +267,7 @@ pkgs.testers.runNixOSTest {
         timeout=60,
     )
 
-    # --- DELTA 5: A ROLE CYCLE, observed off-box ([V3b.26d]).
+    # --- DELTA 5: A ROLE CYCLE, observed off-box.
     #
     # ⚠️ READ WHAT THIS DOES NOT PROVE FIRST, because an earlier version of this block claimed more
     # and was VACUOUS. It asserted that a demoted node's flock MAC "goes quiet" by flushing the
@@ -276,10 +276,10 @@ pkgs.testers.runNixOSTest {
     # VIP ADDRESS whatever it does with the link, and a node does not answer ARP for an address it
     # does not hold. The probe measured "the address is gone", which was never in doubt.
     #
-    # The [B.100]/[B.101] hazard is that a Secondary keeping the flock MAC UP teaches the switch
+    # The two-node MAC hazard is that a Secondary keeping the flock MAC UP teaches the switch
     # the wrong port by EMITTING (an IPv6 RS, an mDNS query) -- and on a lone node there is no wrong
     # port, because there is only one port that could serve. That hazard is two-node by nature and
-    # is [B.113]'s to catch. Nothing here can stand in for it.
+    # is a two-node rig's to catch. Nothing here can stand in for it.
     #
     # What IS provable with one node, and is asserted below:
     #   1. a demote really stops service, seen from off-box rather than from the node's own opinion;
@@ -304,7 +304,7 @@ pkgs.testers.runNixOSTest {
         f"mode it is a device the guest rebuilt"
     )
 
-    # --- DELTA 6: UNINSTALL -delete-data LEAVES THE HOST AS IT FOUND IT ([V3c.2]) ---
+    # --- DELTA 6: UNINSTALL -delete-data LEAVES THE HOST AS IT FOUND IT ---
     # The bridge is where uninstall touches something it must leave standing: the agent put its
     # system-subnet address on the USER's bridge, and that one address has to come off it while
     # the bridge, its port and the host's own address stay. The macvtap rig proves the default

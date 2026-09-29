@@ -14,7 +14,7 @@ func svc(name, host string, port string) Service {
 	}
 }
 
-// The name shape is the one measured constraint the whole design turns on (V3.19d): ONE label
+// The name shape is the one measured constraint the whole design turns on: ONE label
 // before `.local`, because `mdns4_minimal` -- the resolver in Debian/Ubuntu's nsswitch -- handles
 // exactly one. A hierarchical `home-assistant.briard-brave-elf.local` would publish fine and
 // resolve nowhere, which is the failure that is invisible from the publishing side.
@@ -257,7 +257,7 @@ func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
 	}
 }
 
-// The casa name ([V3c.4]) is the service under the flock under the zone, and nothing for a flock
+// The casa name is the service under the flock under the zone, and nothing for a flock
 // with no name -- the same rule HostName follows, so a nameless node routes nothing in either form.
 func TestCasaHostNameIsTheServiceUnderTheFlock(t *testing.T) {
 	if got := CasaHostName("brave-elf", "home-assistant"); got != "home-assistant.brave-elf.briard.casa" {

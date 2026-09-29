@@ -1,14 +1,14 @@
-// Package selfupdate holds the on-disk half of the host-agent self-update mechanism
-// : a flat two-binary layout the frozen systemd wrappers act on.
+// Package selfupdate holds the on-disk half of the host-agent self-update mechanism:
+// a flat two-binary layout the frozen systemd wrappers act on.
 //
 //	<base>/briard-agent        the COMMITTED binary — what ExecStart runs (mutable state, seeded
 //	                           on install, since a /nix/store path can't be overwritten in place)
 //	<base>/briard-agent.next   a staged candidate on the SAME filesystem, so the commit the
 //	                           briard-commit wrapper does is a single atomic rename(2)
 //	<base>/manifest.json       the signed manifest of the committed release — what an update
-//	                           compares the channel against ([B.86a])
+//	                           compares the channel against
 //	<base>/manifest.json.next  the candidate's manifest, committed beside it by the same wrapper
-//	<base>/briard-net-wrap     the guest launch shim, cattle that rides with the agent ([B.86b])
+//	<base>/briard-net-wrap     the guest launch shim, cattle that rides with the agent
 //	<base>/briard-net-wrap.next
 //	<base>/qemu                a SYMLINK to the committed qemu tree, qemu-<release>/ beside it —
 //	                           so committing qemu is one rename(2) of a link, never a recursive
@@ -25,7 +25,7 @@
 //
 // The commit and revert are dumb, frozen, agent-INDEPENDENT shell wrappers
 // (briard-exec / briard-commit) + systemd `Type=notify` — so a bug in the volatile agent
-// can never wedge the update mechanism. The FETCH is likewise below the agent ([B.86a]): a
+// can never wedge the update mechanism. The FETCH is likewise below the agent: a
 // frozen oneshot (briard-update.service) pulls a fresh agent from the channel and lets THAT
 // binary do the verified fetch, so a fetch bug in the running agent cannot prevent its own
 // replacement. This package is therefore small: it owns only what the *proven* side does —
@@ -33,7 +33,7 @@
 // ARM the trial, and pass the messages. It deliberately does NOT implement commit or revert
 // (those are the wrappers), keeping the pivot out of Go.
 //
-// The bundle moves as ONE release ([B.86b]): whatever of {agent, manifest, net-wrap, qemu} a
+// The bundle moves as ONE release: whatever of {agent, manifest, net-wrap, qemu} a
 // release changed is staged as `.next` siblings, and briard-commit commits every `.next` it
 // finds, each existence-guarded — a partial set is the normal case (an unchanged artifact is
 // not re-fetched), not an error. All-or-nothing is the point: a trial that fails leaves every
@@ -84,7 +84,7 @@ const (
 	qemuLink     = "qemu"
 	nextQEMULink = "qemu.next"
 	qemuTree     = "qemu-" // + release id: one extracted bundle per release, beside the link
-	// The guest bundle ([B.86j]) -- the binaries the host dresses its guest with -- rides the
+	// The guest bundle -- the binaries the host dresses its guest with -- rides the
 	// same mechanics: one extracted tree per release, a link the frozen commit moves with -T.
 	guestLink     = "guest"
 	nextGuestLink = "guest.next"
@@ -187,7 +187,7 @@ func (l Layout) StageNextQEMU(tree string) error {
 
 // stageTreeLink points `link` at an extracted `<prefix><release>` tree under Base, atomically:
 // the link is made in a temp dir and renamed over any existing one. Shared by the qemu and the
-// guest bundle ([B.86j]); the frozen commit moves each `.next` link with `mv -T`.
+// guest bundle; the frozen commit moves each `.next` link with `mv -T`.
 func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
 	if filepath.Dir(tree) != l.Base || !strings.HasPrefix(filepath.Base(tree), prefix) {
 		return fmt.Errorf("selfupdate: tree %s is not a %s* directory under %s", tree, prefix, l.Base)
@@ -211,7 +211,7 @@ func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
 	return os.Remove(tmp)
 }
 
-// The guest bundle's tree and links ([B.86j]): the same shape as qemu's, and the same commit --
+// The guest bundle's tree and links: the same shape as qemu's, and the same commit --
 // briard-commit renames guest.next onto guest with -T after READY.
 func (l Layout) GuestPath() string                  { return filepath.Join(l.Base, guestLink) }
 func (l Layout) NextGuestPath() string              { return filepath.Join(l.Base, nextGuestLink) }
@@ -239,7 +239,7 @@ func (l Layout) PruneGuestTrees() ([]string, error) {
 	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree, func() (string, bool) { return l.qemuTarget(l.GoodGuestPath()) })
 }
 
-// THE PERMANENT REVERT ([B.86j], owner 2026-09-07). The guest's own pivot falls back only until
+// THE PERMANENT REVERT. The guest's own pivot falls back only until
 // its next launch (a fresh overlay knows nothing), so the host remembers two things beside the
 // committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, a link like the
 // others, so its tree survives pruning) and which release it REFUSED (`guest.reverted`, an id).

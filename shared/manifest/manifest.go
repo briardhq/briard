@@ -21,7 +21,7 @@
 //     capable shape, which is the property working as stated), and asking for host is a deliberate
 //     act recorded in the identity hash.
 //
-//     ⚠️ THE TEST FOR THE NEXT FIELD, owed by [B.48](a) because the risk here is not one bad field
+//     ⚠️ THE TEST FOR THE NEXT FIELD, because the risk here is not one bad field
 //     but a plausible fourth, fifth and sixth: a field earns its place only if a CATALOGUED service
 //     cannot be operated correctly without it, AND the alternative is worse than the field. Host
 //     networking passes both — Home Assistant cannot find devices without it, and the alternative
@@ -94,7 +94,7 @@ type Manifest struct {
 	// Primary (see Container.Primary).
 	Containers []Container `json:"containers"`
 	// Size is what a node DOWNLOADS to install this service: the compressed layers of every
-	// container's image, summed -- the number a progress bar is a fraction of ([V3b.31j]).
+	// container's image, summed -- the number a progress bar is a fraction of.
 	// InstalledSize is what the image store HOLDS once pulled: the same layers uncompressed --
 	// the number a free-space check is against, because compressed bytes understate disk by
 	// two to four times (Home Assistant 2026.7.1: 622 MB down, 2.49 GB on disk). Two scalars
@@ -135,7 +135,7 @@ type Manifest struct {
 	//
 	// THE CATALOG PICKS THEM, which makes this a node-level allocation decided in a published
 	// document — safe because the catalog is curated and hand-checked for conflicts, which is the
-	// same argument that refused a runtime port-collision pre-flight ([B.48](a)). Two entries
+	// same argument that refused a runtime port-collision pre-flight. Two entries
 	// wanting one port is a review failure, not a runtime one.
 	//
 	// It is how a service that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and

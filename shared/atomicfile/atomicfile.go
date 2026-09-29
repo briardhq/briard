@@ -4,19 +4,19 @@
 // WHY THIS EXISTS AS A PACKAGE, since the contract says to wait for three call sites. It had two --
 // the cloud assignment cache and the service-manifest cache -- and `agent/cloud/cache.go` recorded
 // the trigger in writing: "two call sites in two packages is the rule of three's second instance…
-// The third one moves it." The mesh cache ([V3b.16b]) is the third, so this is that move, not a new
+// The third one moves it." The mesh cache is the third, so this is that move, not a new
 // guess about what might be reused later.
 //
 // WHY DURABLE AND NOT MERELY ATOMIC, which is the part that is easy to drop. Every caller here
 // writes a fact whose ONLY copy is the file, read on a path that exists for a power cut. Atomic but
 // unflushed means the write returns, the caller believes the fact is recorded, and a crash any time
 // in the next commit interval takes it -- so the one boot the cache is for is the boot that finds it
-// missing. That is [V3.23]'s defect verbatim. The directory fsync is [V3.23]'s too: on a first write
+// missing. That is the mesh cache's defect verbatim. The directory fsync is part of the same fix: on a first write
 // the file is NEW, so the rename that publishes it lives only in the parent's dirent until the
 // parent is flushed.
 //
 // It is deliberately a few small functions and no type: callers own their paths, their permissions
-// and their encoding. AGENTS §5's durable-write convention is what this implements, not a new one.
+// and their encoding. The durable-write convention is what this implements, not a new one.
 package atomicfile
 
 import (

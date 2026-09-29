@@ -59,7 +59,7 @@ func main() {
 	// It is load-bearing rather than tidy, because an unanswered flag here is IGNORED and not
 	// rejected: systemd then runs a second whole driver as the stop job of the unit it is
 	// stopping, and that driver re-enters platform.Launch from inside the very invocation
-	// holding the unit's name ([B.110]).
+	// holding the unit's name.
 	guestShutdown := flag.String("guest-shutdown", "",
 		"power the guest at this QMP socket off cleanly -- the guest unit's ExecStop, not an operator command")
 	flag.Parse()
@@ -109,7 +109,7 @@ func main() {
 		// Single node: majority-of-1 is quorate, so the reactor promotes.
 		Peers: []drbd.Peer{{Name: node, NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice}},
 	}
-	// THE PRODUCT'S OWN RENDERER ([V3b.33](d)). The storage spec is the host's to compose, and
+	// THE PRODUCT'S OWN RENDERER. The storage spec is the host's to compose, and
 	// this driver is the harness standing in for the host -- so it calls host.StorageSpec rather
 	// than assembling a spec of its own, and a rig therefore exercises the real composition.
 	// DATA_ENCRYPTION reaches it the same way it reaches the agent, which is what lets a rig ask
@@ -124,7 +124,7 @@ func main() {
 	spec := guestagent.BringUpSpec{
 		Storage: storage,
 		// The ordered unit: data mount -> converge -> VIP claim. The same three units on every
-		// node whatever is installed ([V3b.3](e2)) -- what a node runs comes off the VOLUME at
+		// node whatever is installed -- what a node runs comes off the VOLUME at
 		// promotion, so the chain has nothing to vary with.
 		Promoter: promoterUnits(),
 	}

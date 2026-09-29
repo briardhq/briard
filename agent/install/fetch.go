@@ -39,7 +39,7 @@ import (
 	"briard.io/agent/selfupdate"
 )
 
-// THE CHANNEL TREE ([B.86e]). The channel root serves one directory per release CHAIN, and under
+// THE CHANNEL TREE. The channel root serves one directory per release CHAIN, and under
 // each chain one directory per version plus two POINTERS; the briard chain adds one more level,
 // the PLATFORM, because the briard bundle is built per host OS while the VM image is the same VM
 // on every host:
@@ -50,9 +50,9 @@ import (
 //	<root>/vm/<version>/                manifest.json(+.sig), nixos.qcow2.zst
 //	<root>/vm/{stable,latest}/          manifest.json(+.sig)
 //
-// THE CHAINS ARE NAMED FOR THE UPGRADE UNIT, NOT THE SIDE ([B.163]). `briard` is every briard
-// artifact wherever it lands -- the agent, net-wrap, the qemu bundle, the GUEST bundle
-// ([B.86j]), the frozen scripts, the units, install.sh -- and `vm` is the OS image and the
+// THE CHAINS ARE NAMED FOR THE UPGRADE UNIT, NOT THE SIDE. `briard` is every briard
+// artifact wherever it lands -- the agent, net-wrap, the qemu bundle, the GUEST bundle,
+// the frozen scripts, the units, install.sh -- and `vm` is the OS image and the
 // closure it boots. `host` and `guest` are runtime LOCATIONS (which journal, which agent, which
 // side of the virtio port a binary runs on) and name no release line: our binaries run on both
 // sides, so a chain named for a side lies about half of what it carries, and a word doing both
@@ -81,7 +81,7 @@ const (
 	ChainVM     = "vm"     // nixos.qcow2.zst — no platform level
 
 	// PlatformLinux is the host platform this binary installs on; the Windows arm
-	// (`windows`) is published beside it ([V3b.27](b)) with no consumer until v5.
+	// (`windows`) is published beside it with no consumer until v5.
 	PlatformLinux = "linux"
 
 	// TargetStable and TargetLatest are the two pointer paths every chain serves. Anything else
@@ -148,7 +148,7 @@ type Manifest struct {
 	Platform  string  `json:"platform,omitempty"` // briard chain only; the VM image has no platform
 	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
-	// The vm chain names the CLOSURE, not just the image ([B.86d]): System is the store path of
+	// The vm chain names the CLOSURE, not just the image: System is the store path of
 	// the NixOS toplevel the image boots -- the bytes still come from the binary cache and nix
 	// verifies them itself, so naming it adds no trust root, but it makes image and closure a PAIR
 	// (what an upgrade activates, and what a rescue must land on). MinBriard is the oldest briard
@@ -157,7 +157,7 @@ type Manifest struct {
 	// exact-pinned old briard resolving vm/stable). Both are empty on the briard chain.
 	System    string `json:"system,omitempty"`
 	MinBriard string `json:"min_briard,omitempty"`
-	// The pair, named from the briard side ([B.86i]): VM is the vm release this briard release
+	// The pair, named from the briard side: VM is the vm release this briard release
 	// was published beside -- what an installer fetches after the briard chain, and what
 	// `promote` moves vm/stable to. The vm chain stopped deriving its id from the commit (its
 	// image is a function of its INPUTS and is re-published only when they change), so the
@@ -167,7 +167,7 @@ type Manifest struct {
 	// decides whether a stage re-publishes the vm chain or reuses the release that already
 	// serves these exact inputs. Empty on the briard chain.
 	Inputs string `json:"inputs,omitempty"`
-	// MinUpgradeFrom is the UPGRADE FLOOR ([B.159](e)): the oldest INSTALLED release this one can
+	// MinUpgradeFrom is the UPGRADE FLOOR: the oldest INSTALLED release this one can
 	// be installed over. Empty means no floor, which is the normal state. It is the mirror image
 	// of MinBriard and must not be confused with it -- MinBriard points from the VM at briard
 	// (inner declaring a minimum on the outer, so briard upgrades first), while this points
@@ -254,7 +254,7 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 
 	// 3. All artifacts verified against the signed manifest — publish atomically.
 	//
-	// ATOMIC, NOT DURABLE, deliberately ([B.79]). This set is a staging dir: install.sh copies
+	// ATOMIC, NOT DURABLE, deliberately. This set is a staging dir: install.sh copies
 	// it into /opt/briard, deletes it, and flushes what it laid down. Flushing here as well would
 	// write the largest thing we ship to disk twice for a copy nobody keeps. A caller that keeps
 	// what this places must flush it itself (atomicfile.SyncTree).
@@ -266,7 +266,7 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 }
 
 // Manifest resolves target on the fetcher's chain: the verified manifest and the exact bytes
-// that verified, and nothing on disk -- what the guest chain's resolver needs ([B.86d]), since a
+// that verified, and nothing on disk -- what the guest chain's resolver needs, since a
 // guest upgrade activates a closure from the cache rather than fetching an artifact.
 func (f *Fetcher) Manifest(ctx context.Context, target string) (Manifest, []byte, error) {
 	return f.fetchManifest(ctx, target)
@@ -494,7 +494,7 @@ func validSegment(s string) bool {
 }
 
 // Artifact fetches one entry of version's release into dir, verified against the manifest that
-// named it -- the guest chain's image, for the host to stage beside the one in use ([B.86h]).
+// named it -- the guest chain's image, for the host to stage beside the one in use.
 func (f *Fetcher) Artifact(ctx context.Context, version, dir string, a Entry) error {
 	if !validSegment(version) {
 		return fmt.Errorf("install: bad release version %q", version)

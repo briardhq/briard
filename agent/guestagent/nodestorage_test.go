@@ -25,12 +25,12 @@ const (
 type storageFake struct {
 	*fakeExec
 	// luks is what `cryptsetup isLuks <dev>` reports, and it is THREE-VALUED for the reason
-	// [B.126] exists: a bool here cannot say "the probe failed for a reason that is not an
+	// the three-valued probe exists: a bool here cannot say "the probe failed for a reason that is not an
 	// answer", so a fake carrying one encodes the very assumption the defect rested on and no
 	// test written against it can reach the dangerous branch.
 	luks      luksState
 	present   map[string]bool // `test -b <path>` exit 0
-	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata ([B.145c])
+	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata
 }
 
 // exitStatus is the fake's stand-in for os/exec's *ExitError: the one thing production reads off
@@ -317,7 +317,7 @@ func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 	}
 }
 
-// AN UNREADABLE PROBE IS NOT A BLANK DISK ([B.126]). `cryptsetup isLuks` exits non-zero for far
+// AN UNREADABLE PROBE IS NOT A BLANK DISK. `cryptsetup isLuks` exits non-zero for far
 // more than "not LUKS" -- busy (5), no permission (2), wrong device (4) -- and when it did so on a
 // device that IS formatted, bring-up fell through to the blank-disk path and luksFormat'ed over
 // the household's header. That is a crypto-erase, not a wipe: the clear-key token lives in the
@@ -487,7 +487,7 @@ func TestNodeStorageRefusesADiskTooSmallForData(t *testing.T) {
 	}
 }
 
-// loneSpec is a node that runs no DRBD ([B.145c]): the data LV is the device, and there is no .res.
+// loneSpec is a node that runs no DRBD: the data LV is the device, and there is no .res.
 func loneSpec(fresh bool) nodestorage.Spec {
 	s := demoSpec(nodestorage.ModeAuto, fresh)
 	s.Resource.Replicated = false
@@ -567,11 +567,11 @@ func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
 	}
 }
 
-// ★ THE CONVERT ROW ([B.145d]): a lone node joining its first peer. Its LVs exist and hold THE
+// ★ THE CONVERT ROW: a lone node joining its first peer. Its LVs exist and hold THE
 // data, the metadata LV holds nothing, and the spec now says replicated and seed. So: no mkfs,
 // create-md --force on the metadata LV, the disk up, disconnected and declared UpToDate BEFORE the stock
 // target connects anything -- the order that keeps a joiner already dialling from being marked
-// UpToDate without a sync ([B.145a]'s lesson).
+// UpToDate without a sync (the harness lesson).
 func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.present["/dev/mapper/briardservice-data"] = true
@@ -626,7 +626,7 @@ func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 	}
 }
 
-// ★ THE DISABLE ROW ([B.145d]): alone, metadata present, and the one-shot intent asserted by an
+// ★ THE DISABLE ROW: alone, metadata present, and the one-shot intent asserted by an
 // unpair. The metadata is wiped (mandatory, not a courtesy: the next enable would find and attach
 // it) and the flock's .res goes with it; nothing else of DRBD runs.
 func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
@@ -661,7 +661,7 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 }
 
 // The probe reads ABSENT off one phrase and nothing else: metadata a Primary left "unclean"
-// fails dump-md too (measured on a rebooted failover survivor, [B.145d]) and is metadata all the
+// fails dump-md too (measured on a rebooted failover survivor) and is metadata all the
 // same -- so a lone spec over it is refused, and only the phrase that means garbage lets it pass.
 func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
@@ -683,7 +683,7 @@ func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 // depends on rather than checking it: that what `osExecutor.Run` hands back on a non-zero exit is
 // something `errors.As` can read an ExitCode off. If that assumption were wrong, `cryptsetup
 // isLuks`'s exit 1 would read as could-not-tell and EVERY FRESH INSTALL would refuse to format --
-// a green suite and a product that cannot install ([B.126]).
+// a green suite and a product that cannot install.
 //
 // `*exec.ExitError` carries ExitCode() through its embedded *os.ProcessState; a command that never
 // ran yields `*exec.Error`, which carries none. The second case is the one worth stating: absent a

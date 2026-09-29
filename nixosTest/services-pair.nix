@@ -1,4 +1,4 @@
-# TWO services on one node, which is the claim [V3b.3] made and nothing measured ([V3b.4]).
+# TWO services on one node, which is the claim converge-at-promotion made and nothing measured.
 #
 # The coordination went plural — one promoter, N services rendered from the volume by
 # briard-services at promotion — but with one service in the catalog every test of it was a test
@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
     def broker_mgmt(m, path="/api/v1/listeners"):
         """The broker's management API ON THIS NODE.
 
-        It runs on a PRIVATE pod ([B.48](a)), so the address is the pod's and not the guest's
+        It runs on a PRIVATE pod, so the address is the pod's and not the guest's
         loopback -- and it is per node, because each node allocates from its own pool, which is
         exactly what a failover exercises. Resolved through the routing table, which is where the
         product's own health probe resolves it: a test that hardcoded an address would be asserting
@@ -145,7 +145,7 @@ pkgs.testers.runNixOSTest {
     assert broker_version(primary) == "2.1.1", "the pair did not start on its `from` version"
 
 
-    # ---- (1b) TWO SERVICES, TWO NAMES, ONE DOOR -- AND THE BROKER IS NOT BEHIND IT ([B.48]) ----
+    # ---- (1b) TWO SERVICES, TWO NAMES, ONE DOOR -- AND THE BROKER IS NOT BEHIND IT ----
     # N=1 could not test any of this. The properties that only exist at N=2 are that each name
     # reaches its OWN service, and that "fronted" is a per-service decision rather than a property
     # of there being exactly one thing to forward to.
@@ -189,8 +189,8 @@ pkgs.testers.runNixOSTest {
     # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)
-    # THE ROLLBACK POINT, TAKEN QUIESCED -- which is [B.143]'s rule, and this rig is what measured
-    # why it is one. Taken LIVE (which is what applyServiceInstall did until B.143 put the stop
+    # THE ROLLBACK POINT, TAKEN QUIESCED -- which is the product's rule, and this rig is what measured
+    # why it is one. Taken LIVE (which is what applyServiceInstall did until the stop was put
     # in) the snapshot did not
     # contain the message the broker had already accepted: mosquitto holds retained state in memory
     # and writes it on a clean stop or every autosave_interval, so a live snapshot of a service
@@ -250,7 +250,7 @@ pkgs.testers.runNixOSTest {
     # is what makes this a claim about DRBD carrying what the service durably wrote.
     primary.wait_until_succeeds(f"grep -aq before-the-kill {broker_root}/broker/mosquitto.db", timeout=120)
     primary.succeed("sync")
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
     # cannot promote. "Replicated" is the claim under test, so assert the disk state before
     # removing the only UpToDate copy.
@@ -277,7 +277,7 @@ pkgs.testers.runNixOSTest {
 
 
     # ---- (5) THE S1 PROBE, ON A REAL BROKER ---------------------------------------------------
-    # The gate above the liveness floor ([V3b.4](d)): a token left in the service's own durable
+    # The gate above the liveness floor: a token left in the service's own durable
     # state before a change and looked for after. What is asserted here is the SIGNAL -- that the
     # real probe discriminates the three states a broker can be in -- because a lib.nix rig cannot
     # run the host's install path at all. The verdicts those states map to are unit-tested

@@ -2,8 +2,8 @@
 //
 // It is a leaf — no briard imports — because both ends of the install need it. The report card
 // asks before anything is written, so a host that cannot carry a guest is refused rather than
-// half-installed ([B.150](b)); the agent asks again at bring-up, because the answer is a property
-// of the machine on the day it is asked and machines change ([B.150](d)).
+// half-installed; the agent asks again at bring-up, because the answer is a property
+// of the machine on the day it is asked and machines change.
 //
 // ONE SELECTOR, ONE PROBE, AND A MESSAGE. The selector is the default route and nothing else. The
 // probe does not select — it validates the selection by creating the very thing the install will
@@ -52,7 +52,7 @@ type Selection struct {
 	// changes the message and nothing else: a user who named a device does not need to be told
 	// how we would have guessed.
 	Override bool
-	// Bridge is whether Dev is a bridge, which is the SUBSTRATE FORK ([B.150](c)): a bridge gets
+	// Bridge is whether Dev is a bridge, which is the SUBSTRATE FORK: a bridge gets
 	// one port and the guest makes its own service identity inside; anything else gets macvtap
 	// children. Asked of the device rather than selected by a knob, because there is one true
 	// answer and the machine holds it.
@@ -72,7 +72,7 @@ type Selection struct {
 }
 
 // Choose makes the selection and VALIDATES it — for a caller that is about to create devices on
-// the answer. override is BRIARD_NIC — kept under that name (widened: since [B.150](c) it may
+// the answer. override is BRIARD_NIC — kept under that name (widened: it may now
 // name a bridge) because renaming it would cost a sweep of every rig that sets it and buy nothing.
 func Choose(ctx context.Context, override string) Selection {
 	s := Select(override)
@@ -96,7 +96,7 @@ func Choose(ctx context.Context, override string) Selection {
 // anything on the answer, and must not pay for a probe to find out where its existing devices
 // hang. The agent's hot path is exactly that: on a restart the taps are already up, so there is
 // nothing to create and nothing to validate, and probing every ten seconds (or on every agent
-// start on a lab node) would be a netlink write to answer a question nobody asked ([B.150](d)).
+// start on a lab node) would be a netlink write to answer a question nobody asked.
 func Select(override string) Selection {
 	s := Selection{Candidates: Candidates()}
 	switch {
@@ -188,7 +188,7 @@ func Probe(ctx context.Context, dev string) error {
 	// probe fail with EEXIST -- i.e. would condemn a perfectly good NIC. Clear it first.
 	_, _ = ip(ctx, "link", "del", probeDev)
 	// THE SAME ARGV THE INSTALL USES, from the same builder -- that identity is the whole claim
-	// this probe makes, so it is shared rather than restated ([B.153]).
+	// this probe makes, so it is shared rather than restated.
 	out, err := ip(ctx, macvtapAddArgs(probeDev, dev)...)
 	if err != nil {
 		return fmt.Errorf("a macvtap could not be created on it (%s)", firstLine(out, err))
@@ -218,7 +218,7 @@ const procRoute = "/proc/net/route"
 // propagate (see Read's best-effort rule), and there is nothing a caller could do with the error
 // that "" does not already say.
 //
-// Reading whole rather than scanning is what lets the parser above it be pure ([B.153]): these
+// Reading whole rather than scanning is what lets the parser above it be pure: these
 // files are a few hundred bytes, and the split is what makes the format handling testable.
 func readText(path string) string {
 	b, err := os.ReadFile(path)
@@ -250,7 +250,7 @@ func procTable(text string) [][]string {
 func DefaultRoute() string { return parseDefaultRouteDev(readText(procRoute)) }
 
 // parseDefaultRouteDev pulls the default route's interface out of /proc/net/route's text. Pure, so
-// the format handling is unit-tested against real output rather than trusted ([B.153]).
+// the format handling is unit-tested against real output rather than trusted.
 func parseDefaultRouteDev(text string) string {
 	for _, f := range procTable(text) { // Iface Destination Gateway Flags ...
 		if len(f) >= 2 && f[1] == "00000000" {

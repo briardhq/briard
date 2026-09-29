@@ -3,8 +3,8 @@
 #
 # WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's service
 # slot, which was a mechanism no user had: a shipped node installs services at
-# runtime from a manifest ([V3.16]). Every test riding the baked slot therefore proves a path
-# nobody ships. This module is the other half of retiring it ([V3b.3](e)) — the same fixture,
+# runtime from a manifest. Every test riding the baked slot therefore proves a path
+# nobody ships. This module is the other half of retiring it — the same fixture,
 # delivered the shipped way.
 #
 # WHY NO REGISTRY, which is the part that was assumed impossible and turned out not to be. The
@@ -39,7 +39,7 @@
   healthPath ? "/healthz",
   env ? { },
   version ? "0.0.0",
-  # THE POD'S NETWORKING, defaulting to host ([B.48](a)). Host rather than the schema's own default
+  # THE POD'S NETWORKING, defaulting to host. Host rather than the schema's own default
   # because this fixture is the SUBSTRATE for the DRBD, promoter and converge tests -- putting a new
   # networking mode underneath tests whose subject is something else makes every future failure
   # ambiguous. The private path is proven where it IS the subject: by mosquitto, which is private in
@@ -50,7 +50,7 @@
   ports ? [ ],
   # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
   # pinned upstream image instead, which is what lets a REAL service be catalogued rather than only
-  # the fixture ([V3b.3](e2) -- the baked slot was how HA reached a guest before).
+  # the fixture (the baked slot was how HA reached a guest before).
   #
   # `imageFile` is a docker-archive derivation and `imageName` is the repo the manifest names.
   # MEASURED 2026-08-28 (podman 5.8.2, skopeo 1.22.2), because the digest question is not obvious

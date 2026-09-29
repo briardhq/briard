@@ -203,7 +203,7 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 	}
 }
 
-// The load-bearing negatives (all failable, [[verification-assertions-must-fail]]): each one
+// The load-bearing negatives (each able to fail): each one
 // must refuse AND leave the staging dest pristine.
 
 func TestFetchVerifiedRefusesTamperedArtifact(t *testing.T) {
@@ -249,7 +249,7 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 // A genuine, correctly signed manifest for the OTHER chain is refused: the signature proves the
 // bytes are ours, the chain field proves they are the wrong release line, and a fetch that
 // accepted them would install a guest image where a host bundle was expected (or compare a
-// guest date against a host date and silently no-op, which is the failure [B.86a] names).
+// guest date against a host date and silently no-op, which is the failure the update verb exists to refuse).
 func TestFetchVerifiedRefusesWrongChain(t *testing.T) {
 	c := goodChannel(t)
 	// Serve the briard chain's (signed, chain:"briard") manifest where the vm chain's would be.

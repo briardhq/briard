@@ -1,5 +1,4 @@
-# Mosquitto as a hermetically-pinned OCI image, in the two versions the upgrade tests need
-# ([V3b.4]).
+# Mosquitto as a hermetically-pinned OCI image, in the two versions the upgrade tests need.
 #
 # Same discipline as ./home-assistant-image: pull the official container by per-arch content
 # digest, never a mutable tag, so Nix reproduces it bit-for-bit. A pair rather than a single pin

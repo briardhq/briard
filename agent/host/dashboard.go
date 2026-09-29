@@ -16,10 +16,10 @@ type handoffWriter interface {
 	DashboardHandoff(ctx context.Context, h dashboard.Handoff) error
 }
 
-// applyDashboard handles a DirectiveDashboard ([V3b.31b]): mint a one-time code, hand it to the
+// applyDashboard handles a DirectiveDashboard: mint a one-time code, hand it to the
 // guest with what the payload says about the OS account, and report the URL to open.
 //
-// THE CODE IS MINTED HERE, ON THE HOST, and nowhere else. Identity is the host's ([[logic-on-host]]),
+// THE CODE IS MINTED HERE, ON THE HOST, and nowhere else. Identity is the host's,
 // and what this code proves is that its holder could drive the CLI on this machine -- so the
 // mint sits behind the local door, and the guest only ever receives one. A fresh directive is a
 // fresh code: the previous one is overwritten, which is how `briard open` doubles as the

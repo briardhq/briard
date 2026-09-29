@@ -4,10 +4,10 @@
 # promote exactly one and start the ordered unit {promote → data mount → service
 # → VIP} there. Assert it converges on the primary and runs nowhere else.
 #
-# The service in that chain is a RUNTIME-INSTALLED one ([V3b.3](e)): the fixture arrives as a
+# The service in that chain is a RUNTIME-INSTALLED one: the fixture arrives as a
 # catalogued manifest, is rendered by the real renderer at boot, and its units are what the
 # promoter starts. It used to be a build-time payload slot -- a mechanism no shipped node had --
-# so the chain this test drove was one no user could produce ([V3b.3](e2) deleted it).
+# so the chain this test drove was one no user could produce (the slot is deleted).
 { pkgs, guestModule, fixture }:
 
 let
@@ -35,10 +35,10 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         # The fixture's image is warmed onto every node before anything promotes, the way
         # install and prewarm warm it in the product. Nothing is rendered or chained here --
-        # briard-services does that at promotion, from the volume ([V3b.3](f)).
+        # briard-services does that at promotion, from the volume.
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("modprobe drbd")
-        # The product's own storage bring-up ([V3b.33](d)): build the tier, write the `.res`,
+        # The product's own storage bring-up: build the tier, write the `.res`,
         # create metadata, then attach through the STOCK unit (drbd@<res>.target →
         # drbd@<res>.service → `drbdadm adjust`), which leaves the node Secondary.
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
@@ -63,7 +63,7 @@ pkgs.testers.runNixOSTest {
     # there. install_fixture ends by running the product's own converge.
     import time
 
-    # ⚠️ WAIT FOR A COMPLETED PROMOTION, NOT FOR A ROLE ([B.151]).
+    # ⚠️ WAIT FOR A COMPLETED PROMOTION, NOT FOR A ROLE.
     #
     # This used to be `wait_until_succeeds("drbdadm role r0 | grep -qE 'Primary|Secondary'")`,
     # which is VACUOUS: a node is always one or the other, so it returned on the first poll having
@@ -97,7 +97,7 @@ pkgs.testers.runNixOSTest {
 
     # BEFORE the install, the promoter has already run a full promotion with ZERO services --
     # briard-services converged to nothing and the VIP came up anyway. That is the shipped state
-    # of every node a stranger installs, and it must not be a failure ([V3.15]).
+    # of every node a stranger installs, and it must not be a failure.
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     primary.succeed("systemctl is-active briard-services.service")
 

@@ -18,7 +18,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE VM CHAIN ([B.86d]). The guest OS is its own release line -- `vm.<date>.<inputs>` beside
+// THE VM CHAIN. The guest OS is its own release line -- `vm.<date>.<inputs>` beside
 // briard's `v3.<date>.<rev>` -- and its signed manifest names the CLOSURE the image boots
 // (Manifest.System) and the oldest briard that tolerates it (Manifest.MinBriard). Resolving a vm
 // release is therefore: fetch and verify the target's manifest, refuse it if the installed
@@ -40,7 +40,7 @@ import (
 // (the exact signed manifest bytes), seeded by install.sh from the release it installed. It is
 // what the stable path orders against: the guest itself knows only a closure path, not a
 // release id. NOT $PREFIX/guest-image/manifest.json -- that one describes the IMAGE on disk,
-// which lags the running OS until [B.86f] fetches the new image after an upgrade commits.
+// which lags the running OS until the new image is fetched after an upgrade commits.
 const guestReleaseCacheName = "guest-release.json"
 
 // systemReader is the one guest fact the resolver needs: which closure the guest runs. The
@@ -49,7 +49,7 @@ type systemReader interface {
 	SystemPath(ctx context.Context) (string, error)
 }
 
-// applyGuestUpdate is the update-vm directive ([B.86d]): resolve d.Payload (a target:
+// applyGuestUpdate is the update-vm directive: resolve d.Payload (a target:
 // `latest`, `stable`, or an exact vm id; "" is stable) on the vm chain and, if due, run
 // the OS upgrade to the closure it names. The outcome is the upgrade's own -- done, rolled back,
 // failed -- and a refusal before anything moved (an unverifiable manifest, a briard too old, a pin
@@ -59,7 +59,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	target := d.Payload
-	// AN EMPTY PAYLOAD IS `stable`, not `latest` ([B.159](f)). Every update target on every path
+	// AN EMPTY PAYLOAD IS `stable`, not `latest`. Every update target on every path
 	// defaults to the promoted pointer; `latest` is proven by a canary that names it on purpose.
 	if target == "" {
 		target = install.TargetStable
@@ -116,7 +116,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: dec.Reason}
 	}
 	logf("directive update-vm: %s — staging %s's image", dec.Reason, want.Version)
-	// THE IMAGE, STAGED BEFORE ANYTHING STOPS ([B.86h]): fetched and verified into a private
+	// THE IMAGE, STAGED BEFORE ANYTHING STOPS: fetched and verified into a private
 	// dir beside the image in use (same filesystem, so the swap is a rename), expanded, and
 	// placed at nextImage(). A fetch or hash failure returns here with the node untouched.
 	uctx, cancel := cfg.beat.budget(ctx, cfg.UpgradeBudget)
@@ -176,7 +176,7 @@ func (cfg Config) stageGuestImage(ctx context.Context, f *install.Fetcher, rel i
 		return err
 	}
 	expanded := filepath.Join(tmp, strings.TrimSuffix(guestImageArtifact, ".zst"))
-	// Flushed before the rename, and the rename flushed after ([B.79]): an unflushed image under
+	// Flushed before the rename, and the rename flushed after: an unflushed image under
 	// the .next name is a truncated OS that ImageUpgrade would install as verified.
 	if err := atomicfile.SyncTree(expanded); err != nil {
 		return fmt.Errorf("flush the staged image: %w", err)

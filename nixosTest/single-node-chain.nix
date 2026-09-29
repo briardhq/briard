@@ -1,8 +1,8 @@
-# THE LONE NODE RUNS NO DRBD ([B.145c]).
+# THE LONE NODE RUNS NO DRBD.
 #
 # Every user starts single-node, and with one copy DRBD protects nothing: it turns any single
-# bad block into a dead node ([B.144]). So a lone anchor mounts its data LV directly, and the
-# promoter chain -- the same seven members, in the same order -- is started by a static target
+# bad block into a dead node (measured by the media-error rigs). So a lone anchor mounts its data LV directly, and the
+# promoter chain -- the same five members, in the same order -- is started by a static target
 # instead of drbd-reactor. This rig is what single-node-promoter was for that topology: a lone
 # node converges, serves, survives the OS-upgrade bracket's gesture, and holds-and-restarts.
 #
@@ -13,7 +13,7 @@
 #     disturb the chain
 #   4 a member that spends its start limit is HELD -- the chain stops and the volume unmounts --
 #     and then RESTARTED by the hold itself, with no reboot: hold-and-restart, the lone node's
-#     symmetry with a flock's demote-and-re-promote ([V3b.5](c))
+#     symmetry with a flock's demote-and-re-promote (the chain-member contract)
 #
 # The status verb's second branch (Primary = chain active) is unit-tested; the install rigs
 # exercise it end to end through a real host agent. What this rig owns is the guest side.

@@ -20,7 +20,7 @@ import (
 // the peer, verify who took over, or sequence a roll. `drbd-reactorctl evict` says "not me", not
 // "you": the destination is drbd-reactor's own election. So the only honest thing a node can
 // report is that the eviction RAN, and the only place that can say where the work LANDED is the
-// side that can see every node -- the cloud (the sequencer, [[logic-on-host-by-default]]).
+// side that can see every node -- the cloud (the sequencer).
 // A node that claimed more than it can see would be guessing on the house's behalf.
 
 // guestEvictor is the slice of the guest client a handover drives. Narrow on purpose: this path
@@ -40,7 +40,7 @@ const fsSyncTimeout = 60 * time.Second
 // evictBudget bounds the eviction itself, and it is generous for the reason the number looks
 // arbitrary: the evict stops the services and unmounts, and an unmount SYNCS. The pre-eviction
 // flush above usually means that writeback owes little -- the sequencer sends a `sync` directive
-// ahead of the handover ([B.100a]) and this function's own FsSync catches the settle window --
+// ahead of the handover and this function's own FsSync catches the settle window --
 // but "usually" is not a bound, and a write-heavy service on a slow device is exactly when a
 // handover matters most.
 //
@@ -48,7 +48,7 @@ const fsSyncTimeout = 60 * time.Second
 // the caller's unbounded context, on the observe loop, which is the one shape beat.budget cannot
 // paper over -- Lease refuses a context with no deadline, correctly, because an unbounded guest
 // RPC on that loop is the wedge the watchdog exists to catch rather than something to excuse
-// ([V3b.15]'s sweep; the number is the owner's, 2026-08-21).
+// (the number is the owner's).
 const evictBudget = 15 * time.Minute
 
 // Handover payload words. Deliberately three named states rather than a bool pair: "" is the
@@ -88,7 +88,7 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 		logf("directive kind=handover: handing the work to a peer")
 	}
 	if !unmask {
-		// Flush the data volume FIRST ([B.100a]): the eviction's unmount writes back every
+		// Flush the data volume FIRST: the eviction's unmount writes back every
 		// dirty page inside the demote path — under the peer's promotion and DRBD's ping
 		// deadline — and that flush is unbounded (proportional to dirty data, not to time).
 		// Syncing here moves the bulk across while nothing is racing; the unmount then owes
@@ -115,7 +115,7 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 }
 
 // ApplySync handles a DirectiveSync: flush the replicated volume now, on its own, so a handover
-// sent moments later unmounts a volume that owes almost nothing ([B.100a] — the sequencer's
+// sent moments later unmounts a volume that owes almost nothing (the sequencer's
 // sync → settle → evict ordering; applyHandover's own sync then moves only the settle window's
 // accumulation). Unlike the in-handover sync this one REPORTS failure: the caller asked for
 // exactly this flush and deserves the truth about it, and nothing downstream is blocked on the

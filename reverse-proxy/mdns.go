@@ -1,6 +1,6 @@
 package main
 
-// The household's mDNS responder ([B.152]), which lives in the door for the reason the door
+// The household's mDNS responder, which lives in the door for the reason the door
 // exists: a `.local` name means "this service is reachable here", and the door is what "here"
 // is. It answers off the SAME routing table the router reads, so a name that is published but
 // not routed is not expressible, where a separate publisher could only assert it, because it
@@ -9,18 +9,18 @@ package main
 // ⚠️ IT ANSWERS QUERIES AND SAYS NOTHING UNSOLICITED. No probing, no announcements, no goodbyes.
 // That is the whole robustness argument for replacing avahi rather than a shortcut: avahi's
 // failures were a state machine we could not see into — an entry group that wedged, silently,
-// permanently, if the address moved inside its probe window (V3.22) or an interface appeared
-// inside it ([V3b.30](a)) — and a responder with no probe has no such state. "What address does
+// permanently, if the address moved inside its probe window or an interface appeared
+// inside it — and a responder with no probe has no such state. "What address does
 // this name have" is a field read when the answer is written.
 //
-// ⚠️ THE COST, ACCEPTED ON THE OWNER'S CALL ([B.152]): a browsing client learns of a NEW service
+// ⚠️ THE COST, ACCEPTED ON THE OWNER'S CALL: a browsing client learns of a NEW service
 // on its next periodic query rather than instantly, and an uninstalled one leaves a stale PTR
 // until its TTL. Failover needs none of it — both nodes publish byte-identical records, because
 // every name is flock-scoped and points at a VIP whose address does not change when it moves.
 // ⚠️ If an announcer is ever added, `nixosTest/install-macvtap`'s cold-cache assertion needs its
 // announcement-tail wait back: an announcement is the same packet as a response, so a client can
 // be answered by a multicast it never asked for, and the assertion silently becomes a cache read
-// ([B.129] is what that hid: inbound mDNS dropped on the macvtap while egress worked perfectly).
+// (that is what it once hid: inbound mDNS dropped on the macvtap while egress worked perfectly).
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	seen := map[string]bool{}
 	add := func(n string) {
 		// Only `.local` is ours to claim on the LAN: the table also carries each service's
-		// `<service>.<flock>.briard.casa` name ([V3c.4]), which public DNS answers for and
+		// `<service>.<flock>.briard.casa` name, which public DNS answers for and
 		// mDNS must not -- a multicast responder for a unicast name is a name that lies.
 		if n == "" || seen[n] || !strings.HasSuffix(n, ".local") {
 			return
@@ -221,7 +221,7 @@ func (r *mdnsResponder) open(w mdnsWorld) (*pmdns.Conn, error) {
 	}
 	if len(r.ifaces) > 0 {
 		// The household's NICs and nothing else -- never the interfaces podman creates, which is
-		// the exclusion avahi's allowInterfaces expressed ([V3b.30](a)).
+		// the exclusion avahi's allowInterfaces expressed.
 		opts = append(opts, pmdns.WithInterfaces(r.ifaces...))
 	}
 	conn, err := pmdns.NewServer(ipv4.NewPacketConn(l4), p6, opts...)
@@ -294,7 +294,7 @@ const (
 )
 
 // householdNICs are the interfaces a household is on, and the exclusions are the point: never the
-// interfaces podman creates ([V3b.30](a) -- a veth appearing mid-probe is what wedged avahi), and
+// interfaces podman creates (a veth appearing mid-probe is what wedged avahi), and
 // never the host link. Whichever of these exist are used; none existing is a fault worth failing
 // on, because a responder answering on no interface is a name that resolves nowhere.
 var householdNICs = []string{"eth1", "eth2", "eth3"}
@@ -340,7 +340,7 @@ func envValue(path, key string) string {
 //
 // ⚠️ IT IS THE RECORDED ADDRESS, NOT THE INTERFACE'S. Reading the device would be the ground truth
 // net.vip reports, but a household NIC can carry the node's own address as well as the VIP
-// ([V3b.26]'s node-IP doctrine), and picking between them here would be a SECOND rule for which
+// (the node-IP doctrine), and picking between them here would be a SECOND rule for which
 // address is the VIP. The live file is the existing one.
 func mdnsVIP(livePath, cfgPath string) string {
 	addr := envValue(livePath, "VIP_ADDR")
@@ -356,7 +356,7 @@ func mdnsVIP(livePath, cfgPath string) string {
 // ⚠️ THE FIRST PASS IS SYNCHRONOUS AND ITS ERROR IS THE CALLER'S TO ESCALATE. A door that cannot
 // publish is a node a `.local`-only household cannot reach at all, so the failure belongs in the
 // promoter chain rather than in a log line -- which is the whole lesson of the daemon this
-// replaces ([B.151]: avahi died, said nothing, and the name was gone for days). Having NOTHING to
+// replaces (avahi died, said nothing, and the name was gone for days). Having NOTHING to
 // publish is not that failure and never fails: a node with no minted flock name serves HTTP and
 // says nothing on the LAN.
 func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) error {
@@ -397,7 +397,7 @@ func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) err
 //
 // It is derived from what the responder is actually serving, never from what it was asked to
 // serve: the host reads this every cycle to answer "what name does this node really have", and
-// echoing the request would rebuild the failure the read-back exists to end (V3.19).
+// echoing the request would rebuild the failure the read-back exists to end.
 func writePublished(path, flock string, names []string) error {
 	want := routes.FlockHostName(flock)
 	serving := false

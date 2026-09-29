@@ -14,16 +14,16 @@ import (
 	"time"
 )
 
-// THE PUSH PROTOCOL ([B.86j], re-cut by [B.138] and [B.139]): every briard binary the guest runs
+// THE PUSH PROTOCOL: every briard binary the guest runs
 // rides the HOST bundle, and the host dresses the guest with them over this channel -- at
 // bring-up, after a host commit, after any guest restart. The image bakes ONE binary,
 // briard-guest-firmware, whose whole content is this protocol -- these three verbs, the
 // handshake, os.poweroff -- so the guest chain moves when the protocol moves and not when the
-// agent does ([B.139]). The guest AGENT, the front door and the dashboard exist in the guest
+// agent does. The guest AGENT, the front door and the dashboard exist in the guest
 // only as pushed files. A pushed set lives in a disposable directory and is what the units run
 // until the next boot.
 //
-// The set commits as ONE, or not at all ([B.138], owner's design):
+// The set commits as ONE, or not at all (owner's design):
 //
 //	bin.stage     every binary lands as <name>.next, verified (sha256 over the whole file)
 //	bin.test      every staged file is run with --test-launch; any failure discards the whole
@@ -39,8 +39,8 @@ import (
 // finds the flag consumed and execs the committed file; one failed start out of the unit's
 // budget, which is why a failed upgrade never demotes (the promotion hold fires on start-limit
 // exhaustion only -- configuration.nix, chainMemberFailure). A passing verdict opens the control
-// port and then COMMITS, in this process and before a single verb is served (BinCommit,
-// [B.148]): every staged name plus the release id together. A failing verdict exits 1 without
+// port and then COMMITS, in this process and before a single verb is served (BinCommit):
+// every staged name plus the release id together. A failing verdict exits 1 without
 // opening the port; the agent's own picker brings the committed agent back -- or the FIRMWARE,
 // when the first dress is what failed and nothing is committed yet -- and that start runs
 // the AFTERMATH rule: staged files present on a non-trial start mean the set failed -- discard
@@ -49,7 +49,7 @@ import (
 // staged file). When it was the door, that is three door restarts a few seconds apart. Accepted.
 //
 // The host reads the outcome in the next handshake's Bundle: the pushed release means the set
-// took; anything else means it was refused, recorded for good ([B.86j]).
+// took; anything else means it was refused, recorded for good.
 //
 // Frozen contract: the verbs are versioned additively, like briard-exec.
 const (
@@ -108,7 +108,7 @@ const selfBin = "briard-guest-agent"
 // dashboard's in-flight start job -- and a member whose start job fails that way fires
 // `OnFailure=` exactly like one that failed on its own (the same trap configuration.nix's
 // chainMemberFailure note records for a lost promotion race), so the node demoted in the middle
-// of an upgrade. Measured on install-macvtap, [B.138]. Earliest first, and a door the earlier
+// of an upgrade. Measured on install-macvtap. Earliest first, and a door the earlier
 // one's restart already carried is verified rather than restarted again.
 var doorNames = []string{"briard-reverse-proxy", "briard-dashboard"}
 
@@ -131,7 +131,7 @@ const (
 // /var/lib/briard: in the guest that path is the REPLICATED DATA VOLUME, mounted only while the
 // node holds the house -- binaries put there before promotion vanish under the mount, and
 // binaries running from it hold the volume open so the node cannot demote (measured on the first
-// install-macvtap run of [B.86j]: "Device is held open by someone"). BinRunDir is tmpfs: the
+// install-macvtap run: "Device is held open by someone"). BinRunDir is tmpfs: the
 // trial flags, single-use, read by the picker.
 const (
 	defaultBinDir    = "/var/lib/briard-bin"
@@ -144,7 +144,7 @@ const (
 )
 
 // BinDir is exported because the unit the PUSHED AGENT writes for itself has to name the
-// committed path ([B.160], agent/guestagent/units.go) -- the same path this package's commit
+// committed path (agent/guestagent/units.go) -- the same path this package's commit
 // creates, so a second spelling of it would be a second thing to keep in step. It stays a
 // function rather than a const for the reason the override exists: a rig that dresses a stub
 // moves the directory.
@@ -290,7 +290,7 @@ func stagedSet() []string {
 // The restart is on a context detached from the dispatch one, for the reason os.poweroff
 // spells out: it is this agent's own unit, and the SIGTERM it earns would otherwise cancel the
 // command that asked for it. The reply is written before it takes effect only because the serve
-// loop holds the port until it is ([B.127]).
+// loop holds the port until it is.
 func activate(ctx context.Context, x Executor, a BinActivation) error {
 	if a.Release == "" || strings.ContainsAny(a.Release, "/ \n") {
 		return fmt.Errorf("bin.activate: bad release id %q", a.Release)
@@ -328,8 +328,8 @@ func activate(ctx context.Context, x Executor, a BinActivation) error {
 	// OUR OWN UNIT, and the reason this is not a plain restart: the restart SIGTERMs this
 	// process's whole cgroup -- `systemctl` included -- before it returns, so the command
 	// dies with `signal: terminated` and the host reads a push that WORKED as a failure
-	// (measured on install-macvtap, the first run of [B.86j]; os.poweroff hit the same
-	// trap, [B.132]). A transient timer runs OUTSIDE this cgroup and fires after the reply
+	// (measured on install-macvtap, on the first run; os.poweroff hit the same
+	// trap). A transient timer runs OUTSIDE this cgroup and fires after the reply
 	// has left; the host then meets the restart as a dropped channel and reconnects.
 	rctx := context.WithoutCancel(ctx)
 	out, err := x.Run(rctx, "systemd-run", "--quiet", "--collect", "--on-active=1", "--timer-property=AccuracySec=100ms",
@@ -366,7 +366,7 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 		// follows, and for the same reason: everything ordered after a member comes back with it
 		// in one transaction, so one call suffices, and a second overlapping one would cancel the
 		// start jobs the first had queued (a cancelled start job fires `OnFailure=`; measured on
-		// install-macvtap, [B.138], when this restarted the dashboard first and the door second).
+		// install-macvtap, when this restarted the dashboard first and the door second).
 		// The staged files are already gone, so every picker in that transaction lands on the
 		// committed binary. A door the transaction did not reach still reads `trial` and is
 		// restarted by the next turn of this loop.
@@ -401,7 +401,7 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 //     records the same trap for a lost promotion race: a member whose start job fails with result
 //     `dependency` fires `OnFailure=` exactly like one that failed on its own. This is what
 //     demoted a node mid-upgrade when the loop restarted the dashboard first and the door second
-//     (install-macvtap, [B.138]). Hence: earliest member first, blocking, and a door the earlier
+//     (install-macvtap). Hence: earliest member first, blocking, and a door the earlier
 //     restart already carried is verified rather than restarted again.
 //  3. The start budget, the ordinary way the hook fires: `StartLimitBurst` inside
 //     `StartLimitIntervalSec`, 5 in 300 s here. A trial spends up to three, so it clears the
@@ -450,7 +450,7 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 		// WHAT IT ACTUALLY RAN, and the reason the two checks above are not enough: a staged copy
 		// that exits 1 fails its start, systemd's own auto-restart brings the unit back on the
 		// COMMITTED binary 2 s later, and the restart job then reports success -- active, exit 0,
-		// nothing to see. Measured on the first install-macvtap run of [B.138]: the verdict passed
+		// nothing to see. Measured on an install-macvtap run: the verdict passed
 		// and committed a door that had already reverted. The picker leaves the answer behind.
 		if ran := pickerRan(n); ran != "trial" {
 			return fmt.Errorf("bin: trial of %s REFUSED: %s is active but running the %s binary, not the staged one -- its start failed and systemd restarted it onto what it ran before", release, n, ran)
@@ -463,7 +463,7 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 
 // BinCommit is the ONE commit of the pushed set -- every staged name plus RELEASE, moved
 // together, and every flag cleared. It runs IN THE AGENT, after the control port is open and
-// BEFORE the port is served or READY is sent ([B.148]).
+// BEFORE the port is served or READY is sent.
 //
 // WHY IT IS HERE AND NOT AN ExecStartPost. It used to be guest-image/pivot.nix's
 // briard-bin-commit, run by systemd only after READY=1, so that a start systemd had not seen
@@ -559,11 +559,11 @@ func unitActive(ctx context.Context, x Executor, unit string) bool {
 // runningBundle is what the handshake reports: the bundle id when this process runs from the
 // pushed directory, "" when it runs the firmware.
 //
-// It reads the COMMITTED file and nothing else. Between [B.138] and [B.148] it had to prefer
+// It reads the COMMITTED file and nothing else. Before the commit moved ahead of the port it had to prefer
 // RELEASE.next on a trial start, because a handshake could be answered in the window between
 // READY and the ExecStartPost commit, where only the staged id existed -- reading RELEASE there
 // handed the host the OLD id and had a good dress recorded as a permanent revert (measured on
-// the first install-macvtap run of [B.138]). BinCommit now runs before this process serves
+// install-macvtap). BinCommit now runs before this process serves
 // anything, so that window is gone: by the time any handshake is answered RELEASE holds the id
 // just committed, and the `.ran` marker the inversion keyed off has been cleared. A trial that
 // FAILS never opens the port at all, so this can only ever report a release the doors earned.

@@ -119,7 +119,7 @@ func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
 	if len(f.broughtUp.Promoter) == 0 {
 		t.Error("a disk-bearing anchor runs the promoter (it can be promoted on failover)")
 	}
-	// The mesh reaches the guest as the rendered `.res` now, not as a peer slice ([V3b.33](d)),
+	// The mesh reaches the guest as the rendered `.res` now, not as a peer slice,
 	// so the assertion reads the document the guest will actually attach with.
 	res := f.broughtUp.Storage.Resource.Config
 	for _, want := range []string{"on anchorA", "on anchorB", "on w"} {
@@ -286,7 +286,7 @@ func TestApplyPairOutcome(t *testing.T) {
 	}
 }
 
-// THE DEFECT THIS EXISTS FOR, asserted end-to-end at the host seam ([V3b.16b]): a node that was
+// THE DEFECT THIS EXISTS FOR, asserted end-to-end at the host seam: a node that was
 // paired at RUNTIME must still be in that mesh after its agent restarts, because bring-up rewrites
 // the guest's .res from cfg.Resource on every pass.
 //
@@ -378,7 +378,7 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 	}
 }
 
-// THE HOST WITNESS-FORWARDER IS RE-CREATED AT BRING-UP ([V3b.16b]). It is a transient systemd unit
+// THE HOST WITNESS-FORWARDER IS RE-CREATED AT BRING-UP. It is a transient systemd unit
 // on purpose, so a HOST reboot ends it -- and applyPair was the only thing that ever started one,
 // while the cloud sends a pair directive on demand rather than on registration. A mesh restored from
 // the cache would then name a witness address nothing was listening on.
@@ -458,7 +458,7 @@ func TestWitnessHopSkippedWhereThereIsNone(t *testing.T) {
 }
 
 // A hop that cannot start WARNS and lets bring-up continue -- deliberately the opposite of
-// [V3b.16a]'s "absence of configuration is an error", because this node can still serve on 2/3 with
+// the promoter gate's "absence of configuration is an error", because this node can still serve on 2/3 with
 // its peer and failing bring-up would leave it serving nothing at all (the promoter is gated).
 func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
 	cfg := witnessCfg("anchorA")
@@ -478,10 +478,10 @@ func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
 	}
 }
 
-// A PAIRING THAT CANNOT BE PERSISTED IS A FAILED PAIRING (owner, 2026-08-22). This warned once, on
+// A PAIRING THAT CANNOT BE PERSISTED IS A FAILED PAIRING. This warned once, on
 // the reasoning that the guest had already applied the mesh -- but an uncached pairing is not a
 // meshed node, it is a node that un-meshes itself on its next guest reboot, which is the defect
-// [V3b.16b] exists to end. The outcome the cloud sees must say so, because Pair is idempotent and a
+// the host-held mesh cache exists to end. The outcome the cloud sees must say so, because Pair is idempotent and a
 // re-delivery is the thing that fixes it.
 func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 	// A cache path whose parent cannot be created: MkdirAll over a regular file is ENOTDIR. A
@@ -552,7 +552,7 @@ func (m meshReader) ServiceActive(context.Context, string) (bool, error) { retur
 func (m meshReader) MDNSPublished(context.Context) (string, error)       { return "", nil }
 func (m meshReader) VIP(context.Context, string) (string, error)         { return "", nil }
 
-// A GUEST REPLICATING TO PEERS THE HOST HAS NO RECORD OF IS AN ALERT ([V3b.16b]). Such a node is
+// A GUEST REPLICATING TO PEERS THE HOST HAS NO RECORD OF IS AN ALERT. Such a node is
 // serving and replicating right now, and will come back a mesh-of-one on its next guest reboot,
 // because bring-up rewrites the .res from cfg.Resource. Nothing else on this node reports it: the
 // redundancy alerter is gated on the very peer count that is missing, so it is not even built.
@@ -619,7 +619,7 @@ func TestForgottenMeshStaysQuiet(t *testing.T) {
 	}
 }
 
-// fakeRebooter records the guest reboots a topology transition asks for ([B.145d]).
+// fakeRebooter records the guest reboots a topology transition asks for.
 type fakeRebooter struct{ reboots int }
 
 func (r *fakeRebooter) RebootGuest(_ context.Context) error {
@@ -635,7 +635,7 @@ func pairedRes() drbd.Resource {
 	}}
 }
 
-// ★ A LONE NODE'S FIRST PAIRING IS A CONVERSION ([B.145d]): it runs no DRBD to adjust, so the
+// ★ A LONE NODE'S FIRST PAIRING IS A CONVERSION: it runs no DRBD to adjust, so the
 // primary's side records the mesh and reboots the guest -- and never Adjusts, never BringUps.
 func TestReconcileMeshLonePrimaryConvertsThroughAReboot(t *testing.T) {
 	dir := t.TempDir()
@@ -657,7 +657,7 @@ func TestReconcileMeshLonePrimaryConvertsThroughAReboot(t *testing.T) {
 	}
 }
 
-// ★ THE REMOVAL ([B.145d]): refused unless this node is serving and UpToDate; a still-replicated
+// ★ THE REMOVAL: refused unless this node is serving and UpToDate; a still-replicated
 // remainder adjusts in place; a remainder of one records the mesh, asserts the one-shot disable
 // intent, and reboots.
 func TestApplyUnpair(t *testing.T) {

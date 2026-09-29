@@ -99,24 +99,24 @@ type fakeStatus struct {
 	volume        map[string]string
 	volumeErr     error
 	noServiceList bool // a guest too old to list: the host must fall back, not fail
-	// The ring ([B.143]): what this service's history already holds, what the loop asked to take,
+	// The ring: what this service's history already holds, what the loop asked to take,
 	// and the two refusals -- a guest too old for the ring at all, and a take that fails.
 	members    map[string][]quadlet.SnapshotEntry
 	membersErr error
 	took       *[]takenMember
 	snapErr    error
 	noRing     bool
-	noQuiesce  bool  // advertises the ring but not the quiesced take ([B.143])
+	noQuiesce  bool  // advertises the ring but not the quiesced take
 	held       bool  // the service held still across a quiesced take
 	quiesceErr error // the quiesced take failed outright
 }
 
 // takenMember is one call to Snapshot: where the member went, and the sidecar that went with it.
 // `asked` is the sidecar the HOST rendered, before the guest had its say: the two differ only on
-// a quiesced take, which is the whole point ([B.143]).
+// a quiesced take, which is the whole point.
 type takenMember struct{ member, sidecar, asked string }
 
-// The ring's slice of the guest ([B.143]). The observe loop carries the nightly member, so the
+// The ring's slice of the guest. The observe loop carries the nightly member, so the
 // reader it is handed has to be able to take one.
 func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.SnapshotEntry, error) {
 	return f.members[service], f.membersErr
@@ -124,7 +124,7 @@ func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.Snapsh
 func (f fakeStatus) SupportsMembers() bool        { return !f.noRing }
 func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
 
-// The QUIESCED take ([B.143]): `held` is what the fake service reports, and the recorded sidecar
+// The QUIESCED take: `held` is what the fake service reports, and the recorded sidecar
 // carries the class the GUEST would have written — upgraded only when it held, which is the thing
 // the host's side must not be able to claim on its own.
 func (f fakeStatus) QuiescedSnapshot(_ context.Context, service, _, dest, sidecar string) (bool, string, error) {
@@ -177,7 +177,7 @@ func (f fakeStatus) ServiceHealth(_ context.Context, url string) (bool, error) {
 	return f.health, f.hlthErr
 }
 
-// ServiceHealthOf is the PER-SERVICE probe ([B.48]), keyed on the service name rather than on a
+// ServiceHealthOf is the PER-SERVICE probe, keyed on the service name rather than on a
 // URL: `svcHealth` maps a name to what the guest would answer, and an absent entry stands for the
 // service the guest cannot resolve -- which must leave the field empty, not report it unhealthy.
 func (f fakeStatus) ServiceHealthOf(_ context.Context, service string) (services.Health, error) {
@@ -223,10 +223,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// The config file is the DEFAULT layer under the environment ([B.150](a)) -- it delivers what
+// The config file is the DEFAULT layer under the environment -- it delivers what
 // the unit's `Environment=` lines used to, and it loses to anything the environment says,
 // INCLUDING an explicitly empty entry. That last part is not a nicety: empty is how the
-// substrate fork says "this node has no service tap" ([V3b.26c]), so a file value winning there
+// substrate fork says "this node has no service tap", so a file value winning there
 // would render a NIC the node does not have.
 func TestConfigFromEnv_FileIsTheLayerUnderTheEnvironment(t *testing.T) {
 	cfgFile := filepath.Join(t.TempDir(), "config.env")
@@ -291,7 +291,7 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	}
 }
 
-// ⚠️ NOTHING THE INSTALL LAID DOWN IS DEFAULTED, and this is the assertion that says so ([B.157]).
+// ⚠️ NOTHING THE INSTALL LAID DOWN IS DEFAULTED, and this is the assertion that says so.
 //
 // install.sh writes paths to files it CREATED OR STAGED -- the qemu tree it extracted, the disks it
 // allocated -- because those are facts about this host. The agent must not invent them, and the
@@ -340,7 +340,7 @@ func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
 	}
 }
 
-// THE ENVIRONMENT CANNOT INSTALL A SERVICE, which is the end state [V3b.3](e1) was after: there
+// THE ENVIRONMENT CANNOT INSTALL A SERVICE, which is the end state the services work was after: there
 // is no SERVICE_IMAGE (or any sibling) left to read, so an anchor comes up with the empty set and
 // fills it from what it was actually installed with -- the node-local cache, or the volume once it
 // promotes. Setting the old variables must therefore do NOTHING, which is what this asserts: a
@@ -355,8 +355,8 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// The chain is STATIC — data -> services -> vip — on every data node, whatever is installed
-// ([V3b.3](f)). That is what makes converge-at-promotion possible: the chain is what drbd-reactor
+// The chain is STATIC — data -> services -> vip — on every data node, whatever is installed.
+// That is what makes converge-at-promotion possible: the chain is what drbd-reactor
 // promotes WITH, but the volume it must converge to is only readable AFTER promotion, so the
 // start-list cannot name the services themselves.
 //
@@ -365,9 +365,9 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 // precisely the state `curl | sh` lands in. briard-services is why it can now be unconditional —
 // the guest image defines it always, exactly as it defines briard-primary-storage and briard-vip.
 //
-// Nothing is conditional any more ([V3b.3](e1) took the last member out): the chain is the same
+// Nothing is conditional any more (the last conditional member is gone): the chain is the same
 // units on every anchor, whatever the node is running and whatever the environment says. The
-// SHAPE is what this guards, not the membership -- [B.125] added the two mDNS publishers, and the
+// SHAPE is what this guards, not the membership -- the two mDNS publishers were added later, and the
 // property that must survive any such change is that nothing about the environment or the
 // installed services can alter the list.
 func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
@@ -394,7 +394,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	}
 }
 
-// There is NO baked probe target any more (V3.19c step 3). The old default was the lab's own
+// There is NO baked probe target any more. The old default was the lab's own
 // http://192.168.1.100/healthz, and the reason it survived so long is that every test agreed with
 // it — a guess about someone else's network that nothing in our own could contradict. Unset now
 // means "resolve it from the address the guest actually holds", which is the only source that can
@@ -446,13 +446,13 @@ func TestConfigFromEnv_WitnessHasNoPromoter(t *testing.T) {
 }
 
 // ⚠️ THE TWO HALVES OF `declared`, which is what lets the NIC names default in config.go without
-// losing the one meaning an empty value carries ([B.157]).
+// losing the one meaning an empty value carries.
 //
 // A key nobody named takes the shipped answer -- that is every install now, since install.sh stopped
 // writing device names it had no opinion about. A key named EMPTY keeps the empty: that is how a
 // node says it has no such NIC, and env() cannot express it (it reads an explicit empty as unset and
 // hands back the default). Getting this wrong renders a NIC the node does not have, on the substrate
-// where that is precisely the fork ([V3b.26c]).
+// where that is precisely the fork.
 func TestConfigFromEnv_NICNamesDefaultButAnExplicitEmptyWins(t *testing.T) {
 	for _, k := range []string{"SYSTEM_TAP", "SERVICE_TAP", "WITNESS_TAP", "SYSTEM_DEV", "VIP_DEV"} {
 		os.Unsetenv(k)
@@ -502,7 +502,7 @@ func TestConfigFromEnv_SystemNIC(t *testing.T) {
 func TestParsePeers(t *testing.T) {
 	got := parsePeers("n1@10.0.0.2/disk, n2@10.0.0.3:7000/sdb , w@10.0.0.4/none")
 	want := []drbd.Peer{
-		// The disk field is a DISKFUL/DISKLESS FLAG, not a path ([V3b.33]): every diskful node
+		// The disk field is a DISKFUL/DISKLESS FLAG, not a path: every diskful node
 		// runs on the one seam LV, so ANY non-"none" value means that device and nothing else --
 		// which is why "sdb" below, a device name that would once have been honoured, no longer
 		// gives one node a backing it can disagree with the flock about.
@@ -632,7 +632,7 @@ func TestSnapshot_UnknownPublishedNameIsEmptyNotTheConfiguredOne(t *testing.T) {
 }
 
 // A WITNESS's health follows quorum, and the thing that says so is its ROLE. This used to be
-// keyed on an empty HealthURL, which read the same but meant something else: V3.19 gives a data
+// keyed on an empty HealthURL, which read the same but meant something else: unbaking the VIP gives a data
 // node an address it acquires by DHCP, so "no configured URL" stops being witness-shaped. The
 // two now answer differently on purpose -- see the data-node case below.
 func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
@@ -792,7 +792,7 @@ func trialled(log []string) bool {
 	return slices.ContainsFunc(log, func(l string) bool { return strings.Contains(l, trialLine) })
 }
 
-// [B.147] A STANDALONE NODE ACTS ON AN ARMED CANDIDATE. The check used to sit inside the
+// A STANDALONE NODE ACTS ON AN ARMED CANDIDATE. The check used to sit inside the
 // report-succeeded branch, which needs a cloud reporter — so on a free install (no controller
 // URL, hence rep == nil) it was unreachable, and a staged, verified binary waited for the frozen
 // unit's grace to force a restart on a LATER timer tick, up to a day out. Seen live on a test
@@ -875,7 +875,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 }
 
 // With no address of our own choosing, the loop probes the one the GUEST reports -- the DHCP
-// lease it acquired at promotion. This is the whole point of V3.19c: the host stops deciding the
+// lease it acquired at promotion. This is the whole point of unbaking the VIP: the host stops deciding the
 // service address, so it has to be told what the address turned out to be, every cycle.
 func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 	var probed string
@@ -893,7 +893,7 @@ func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 
 // An address WE set is the address we probe, even though the guest could be asked. The device
 // can hold more than one address (dhcpcd still serves the service NIC), and preferring what it
-// reports would reintroduce V3.19's own failure shape at the worst moment: a node-local lease
+// reports would reintroduce the baked VIP's own failure shape at the worst moment: a node-local lease
 // that keeps answering after the VIP has moved to the peer -- healthy while not serving.
 func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 	var probed string
@@ -906,8 +906,8 @@ func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 }
 
 // A PRIMARY with no address -- neither configured nor reported -- is not healthy. It is the node
-// nobody in the house can reach, which is the defect V3.19 exists for; answering it like a witness
-// ("healthy == quorate") is how that defect stayed invisible. B.90 is what it looks like in the
+// nobody in the house can reach, which is the defect unbaking the VIP exists for; answering it like a witness
+// ("healthy == quorate") is how that defect stayed invisible. This is what it looked like in the
 // flesh: briard-vip timed out waiting for DHCP, took drbd-services@r0 down with it, and the node
 // went on being quorate the whole time.
 func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
@@ -932,7 +932,7 @@ func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 // A SECONDARY holds no service address because the VIP is promoter-driven, not because anything
 // is wrong with it -- so its health is participation, the same rule the witness follows. Reporting
 // it unhealthy made every correct HA pair read DEGRADED in the cloud's view forever, with a
-// standing "1 node unhealthy" nobody could act on (B.91).
+// standing "1 node unhealthy" nobody could act on.
 func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T) {
 	cfg := Config{Node: "n2", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	participating := model.QuorumState{Primary: false, Quorate: true, Diskful: true, UpToDate: true}
@@ -1015,7 +1015,7 @@ func TestConfigFromEnv_UpgradeBudgetDefault(t *testing.T) {
 // The VIP's MAC is the VIP's identity, so it must be FLOCK-scoped: two nodes of one flock present
 // the same service MAC, draw the same DHCP lease, and therefore keep the same address when the VIP
 // moves between them. The DRBD and witness MACs must stay NODE-scoped -- those have to differ per
-// node or the NICs collide and ARP never resolves (V3.19b).
+// node or the NICs collide and ARP never resolves.
 func TestServiceMACIsFlockScopedAndOthersAreNot(t *testing.T) {
 	a := Config{Node: "anchorA", FlockID: "flock-1"}
 	b := Config{Node: "anchorB", FlockID: "flock-1"}
@@ -1052,7 +1052,7 @@ func TestServiceMACFallsBackToNodeWithoutFlockID(t *testing.T) {
 // asserts the line that answers them, and that it comes from ASKING qemu
 // (`query-accelerators`) rather than from re-reading the argv we chose.
 //
-// The table asks for a NAME, which is what [V3b.28] changed. The case that decides it is the
+// The table asks for a NAME, which is what the accelerator check now does. The case that decides it is the
 // third: an accelerated guest whose accelerator is not KVM must not log a warning — under the
 // old `query-kvm` it did, because the question was KVM-shaped and WHPX answers it "no".
 func TestLogAccelerationSaysWhatTheVMActuallyGot(t *testing.T) {
@@ -1076,7 +1076,7 @@ func TestLogAccelerationSaysWhatTheVMActuallyGot(t *testing.T) {
 		{
 			// The case the swap exists for: a hypervisor that is not KVM is still a
 			// hypervisor. Asking `query-kvm` here answered {"enabled":false} and this line
-			// called a correctly accelerated node emulated (measured on Windows, [V3b.27](a)).
+			// called a correctly accelerated node emulated (measured on Windows).
 			name:    "accelerated by something that is not KVM",
 			accel:   `{"return":{"enabled":"whpx","present":["qtest","tcg","whpx"]}}`,
 			want:    []string{"accelerated by whpx"},
@@ -1122,7 +1122,7 @@ func TestLogAccelerationSilentWithoutQMP(t *testing.T) {
 }
 
 // A cancellation during bring-up is the shutdown the agent was ASKED to perform, not a failure of
-// it ([B.133]). Run must return nil, because main hands a non-nil return to log.Fatalf: without
+// it. Run must return nil, because main hands a non-nil return to log.Fatalf: without
 // this, a `systemctl restart` (or a host reboot) landing in the bring-up window makes systemd
 // record `Failed with result 'exit-code'` against a unit that did exactly what it was told, and a
 // false fault in the journal is worth as much as a missing one.
@@ -1161,7 +1161,7 @@ func TestRunTreatsACancellationDuringBringUpAsAShutdown(t *testing.T) {
 	}
 }
 
-// The guest's machine UUID is a pure function of the node name ([B.86g]): stable across boots
+// The guest's machine UUID is a pure function of the node name: stable across boots
 // with no persisted state, distinct per node, and a well-formed version-5 UUID.
 func TestDeriveUUID(t *testing.T) {
 	a, b := deriveUUID("briard-node-a1b2c3"), deriveUUID("briard-node-d4e5f6")
@@ -1179,7 +1179,7 @@ func TestDeriveUUID(t *testing.T) {
 	}
 }
 
-// NodeStatus.System is the guest RELEASE this node runs ([B.86h]): the record the host keeps of
+// NodeStatus.System is the guest RELEASE this node runs: the record the host keeps of
 // the release whose image it booted -- not something read from the guest, which knows only a
 // closure. The shipped zero-service anchor reports it like any node (a node the rollout cannot
 // see is a node it cannot update); a witness, diskless, has no guest and reports nothing; a

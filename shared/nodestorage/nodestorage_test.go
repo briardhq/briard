@@ -197,7 +197,7 @@ func TestMetadataBytes(t *testing.T) {
 	}
 }
 
-// A LONE NODE IS A LEGITIMATE SPEC, AND ITS TWO FIELDS MUST AGREE ([B.145c]). Not replicated
+// A LONE NODE IS A LEGITIMATE SPEC, AND ITS TWO FIELDS MUST AGREE. Not replicated
 // means "mount the data LV directly": the .res is not required, the device must BE that LV, and
 // a witness -- which exists to arbitrate between two copies -- has nothing to do there.
 func TestValidateLoneNode(t *testing.T) {

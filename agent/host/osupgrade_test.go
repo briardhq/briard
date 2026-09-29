@@ -317,7 +317,7 @@ func TestStopCleanlyTreatsAnAlreadyStoppedGuestAsClean(t *testing.T) {
 
 // fakeGuest is a guest whose STATE the test controls, which the socket-and-unit rig above
 // cannot do: `newStopRig`'s unit does not exist, so its machine reads as already-stopped no
-// matter what, and the one state [B.98] lives in -- STOPPING, i.e. QEMU gone but the unit not
+// matter what, and the one state the lost reply lives in -- STOPPING, i.e. QEMU gone but the unit not
 // yet reaped -- has no expression there. The QMP wiring these fakes stand in for is asserted
 // directly in agent/platform/qmp_test.go; what is under test here is the ESCALATION DECISION.
 //
@@ -366,7 +366,7 @@ func (g *fakeGuest) Shutdown(context.Context, time.Duration) error {
 	return nil
 }
 
-// [B.98] THE LOST REPLY, on a guest that is STILL STOPPING rather than already stopped.
+// THE LOST REPLY, on a guest that is STILL STOPPING rather than already stopped.
 //
 // `os.poweroff` is `--no-block`, so a guest doing exactly as it was told can close the channel
 // before the reply lands: the host sees EOF, which is indistinguishable from a dead agent. Both
@@ -407,7 +407,7 @@ func TestStopCleanlyWaitsOutAGuestThatIsStillStopping(t *testing.T) {
 // The fallback still has to fire for the case it exists for: the agent route is unusable AND the
 // machine is genuinely still up.
 //
-// This used to run on `newStopRig`, and [B.98] retired that rig here rather than adapting it: its
+// This used to run on `newStopRig`, and the lost-reply fix retired that rig here rather than adapting it: its
 // unit does not exist, so its machine reads as ALREADY STOPPED. Once a failed request stopped
 // being treated as a refusal, "already stopped" correctly means the power button is never
 // pressed -- so the old rig could no longer express "still up", and the assertion only ever held
@@ -434,8 +434,8 @@ func TestStopCleanlyFallsBackToThePowerButton(t *testing.T) {
 // And it must still FAIL when neither route works on a machine that stays up. This is the
 // outcome the reboot path depends on being loud: it leaves the node running on its old
 // generation -- degraded but serving -- rather than power-cutting a guest whose bootloader it
-// has just rewritten. Worth pinning next to the two clean-stop cases above, because [B.98]
-// changed how long this takes to decide and it would be easy to lose the refusal itself.
+// has just rewritten. Worth pinning next to the two clean-stop cases above, because the lost-reply
+// fix changed how long this takes to decide and it would be easy to lose the refusal itself.
 func TestStopCleanlyReportsAGuestThatWillNotGoDown(t *testing.T) {
 	cconn, sconn := net.Pipe()
 	go guestagent.Serve(context.Background(), sconn, &statusExec{})

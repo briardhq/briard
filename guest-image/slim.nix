@@ -2,14 +2,14 @@
 #
 # Every base-OS bump is a closure pull onto every node in the field, so the guest's size is not
 # cosmetic -- it is the wait and the bandwidth on every fleet update, on household links we do not
-# choose. This file is the answer to [B.5], carried since v1.
+# choose. This file is the answer to the size question, carried since v1.
 #
 # MEASURED, ONE LEVER AT A TIME (2026-08-11, `nix path-info -S` on the shipped
 # `artifacts.guest-disk.system`), not reasoned about: 1613.7 MB -> 978.0 MB, a 40% cut with the
 # stock kernel untouched. The per-lever numbers below are what each one actually removed, because a
 # number nobody measured is a number that will be wrong after the next nixpkgs bump.
 #
-# THE SHAPE OF THE FAT WAS NOT WHAT THE ORIGINAL B.5 ENTRY GUESSED. It said "docs/man/locales, trim
+# THE SHAPE OF THE FAT WAS NOT WHAT THE ORIGINAL GUESS SAID. It said "docs/man/locales, trim
 # perl activation, minimal profile". Docs were real (94 MB); locales were already trimmed (3 MB
 # total); perl is NOT removable (`update-users-groups.pl` runs at every activation, and
 # `system.etc.overlay` -- the documented way off the other perl script -- measured 0.3 MB because of
@@ -25,7 +25,7 @@
 #     the largest single path in the closure, and a trimmed kernel would plausibly reach ~20 MB --
 #     but it means we build and own the kernel: DRBD 9.2 rebuilds against our config and we inherit
 #     a kernel-config security obligation. Evaluated and declined -- not worth becoming a kernel
-#     distributor. What IS here instead, since [B.136], is modules.nix: the upstream kernel byte for
+#     distributor. What IS here instead is modules.nix: the upstream kernel byte for
 #     byte, with the module TREE copied minus the hardware families a virtio guest cannot have.
 #     Same saving in the download (the modules are pre-compressed .ko.xz, so they were 141 MB of
 #     the 358 MB image), none of the ownership; the measured numbers are in that file's header.

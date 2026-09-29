@@ -17,7 +17,7 @@ import (
 // The per-service readiness registry: which catalogued services the product knows how to judge
 // beyond "it answers", and how.
 //
-// WHY A REGISTRY AND NOT A MANIFEST FIELD ([V3b.29]). A service upgrade that gates on liveness
+// WHY A REGISTRY AND NOT A MANIFEST FIELD. A service upgrade that gates on liveness
 // alone lets Home Assistant come back, answer /manifest.json with a 200, and serve a house whose
 // integrations are half dead. Judging that needs to know what a config entry is, which states are
 // terminal, and which are HA's own retry noise — knowledge no generic schema can carry without
@@ -27,11 +27,11 @@ import (
 //
 // The default is the current behaviour. An unknown name gets no assessor, and no assessor is the
 // liveness floor alone — exactly what every service got before this existed, and what mosquitto
-// and every future entry get on the day they land ([V3b.4]).
+// and every future entry get on the day they land.
 //
 // The DECISION is here; how to obtain the sample is in the guest (agent/hass), because the token
-// and the service's loopback are both there. That is the same line the rest of the product draws
-// ([[logic-on-host-by-default]]): identity and decisions on the host, hands in the guest.
+// and the service's loopback are both there. That is the same line the rest of the product draws:
+// identity and decisions on the host, hands in the guest.
 
 // readinessProbe is the slice of the guest the registry's assessors drive — a narrow interface for
 // DI, not a seam. Deliberately its own rather than a widening of `upgrader`: an OS upgrade must not
@@ -41,7 +41,7 @@ import (
 // speaks one service's API and returns that service's own shape. The generic thing is the
 // ASSESSOR seam above (guest.ReadinessAssessor), which knows none of this.
 //
-// NO CAPABILITY CHECKS, deliberately (owner, 2026-08-30). The agent and the guest closure are
+// NO CAPABILITY CHECKS, deliberately. The agent and the guest closure are
 // published together and the alpha reinstalls rather than upgrading in place, so a guest that
 // does not know one of these verbs is a mismatched pair — a fault to see, not a configuration to
 // tolerate. What remains is the different rule it was once confused with: a sample that FAILS at
@@ -177,7 +177,7 @@ const probeSettle = 30 * time.Second
 const probeRetry = 2 * time.Second
 
 // probeAssessor is the S1 gate for a service whose work is invisible to a sample: it leaves a
-// token in the service's own durable state before the change and looks for it after ([V3b.4]).
+// token in the service's own durable state before the change and looks for it after.
 //
 // The two findings it can produce are kept apart on purpose, because they are different failures
 // with the same symptom at the floor — a service that answers:

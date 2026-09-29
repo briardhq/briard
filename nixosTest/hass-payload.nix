@@ -7,13 +7,13 @@
 # wiring, not failover (that is hass-failover), and HA is heavy enough that one instance is the
 # right cost.
 #
-# It also carries [V3b.30](b), the one measurement that needs real HA and a real announcement in
+# It also carries the zeroconf claim (b), the one measurement that needs real HA and a real announcement in
 # one place: whether HA's OWN zeroconf library, inside HA's own container, sees a record the
 # guest published. The broker is installed alongside for exactly that, and for nothing else.
 #
 # HA reachable THROUGH the front door under its own name is asserted again, at the bottom of this
-# file ([B.48] landed the routing table). It was lost when the build-time service slot went
-# ([V3b.3](e2)) -- the door's `-backend` came from that slot, so with the slot gone no node routed
+# file (the routing table landed it). It was lost when the build-time service slot went
+# -- the door's `-backend` came from that slot, so with the slot gone no node routed
 # to a service at all -- and it comes back keyed on the SERVICE's name rather than on there being
 # exactly one thing to forward to, which is what the table changed.
 { pkgs, guestModule, fixture, mosquitto }:
@@ -60,7 +60,7 @@ let
   '';
 
   node = h.mkNode {
-    # The broker rides along for ONE claim -- [V3b.30](b), at the bottom of this file: whether
+    # The broker rides along for ONE claim -- (b), at the bottom of this file: whether
     # HA's own zeroconf stack sees what the guest announces. It needs a real service record on
     # the LAN, and the product publishes exactly one.
     fixtures = [
@@ -85,7 +85,7 @@ pkgs.testers.runNixOSTest {
       # onto the writable root (disk, not RAM), and HA's Python stack wants ~1 GB live.
       # 2048 is MEASURED, not guessed: a guest grows page cache into whatever it is given, so
       # this test sat at 3166 MB resident of 3072 declared and would have sat at 4192 of 4096.
-      # At 2048 it is 2143 MB resident and the same 129s ([B.127]).
+      # At 2048 it is 2143 MB resident and the same 129s.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
     };
@@ -115,7 +115,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
 
-    # ⚠️ THE INBOUND SOCKET MUST EXIST BEFORE ANY CONTAINER STARTS ([B.143]). The rendered unit
+    # ⚠️ THE INBOUND SOCKET MUST EXIST BEFORE ANY CONTAINER STARTS. The rendered unit
     # binds it into the container, and podman CREATES a missing bind source as a root-owned
     # DIRECTORY -- which then poisons the path for every later attempt, because a socket cannot
     # go where a directory now sits. In the product the listener is up before anything converges
@@ -174,7 +174,7 @@ pkgs.testers.runNixOSTest {
     assert perms == "600", f"the token is mode {perms}; it is a credential for the whole HA API"
     token = node1.succeed("cat /run/briard/home-assistant/token").strip()
 
-    # ---- THE INBOUND CHANNEL, and the ring member Home Assistant's own start took ([B.143]) ----
+    # ---- THE INBOUND CHANNEL, and the ring member Home Assistant's own start took ----
     # This is the ONLY place the channel is reachable end to end: the rigs that run Home Assistant
     # are agent-less, so the harness starts the product's listener (nixosTest/lib.nix), and what
     # runs inside the container is the product's `run` wrapper calling the product's notify.py.
@@ -210,7 +210,7 @@ pkgs.testers.runNixOSTest {
     assert sidecar["service"] == "home-assistant", sidecar
     assert sidecar["trigger"] == "start", sidecar
 
-    # THE START IS EVALUATED AFTER ITS BOOT ([B.167c]). The pre-start hook writes the sample
+    # THE START IS EVALUATED AFTER ITS BOOT. The pre-start hook writes the sample
     # pending; only the long-running agent's evaluator (here the harness's --inbound-listen) clears
     # it, and it does so with the boot's service health, which for Home Assistant is /api/config
     # through our token. A pending sample left behind, or one without that verdict, means the
@@ -255,7 +255,7 @@ pkgs.testers.runNixOSTest {
     )
     assert '"state"' in entries, f"config entries carry no state: {entries[:200]}"
 
-    # ---- THE CLOCK SAMPLE, HELD STILL BY HOME ASSISTANT ITSELF ([B.143]) ----
+    # ---- THE CLOCK SAMPLE, HELD STILL BY HOME ASSISTANT ITSELF ----
     # THIS IS THE ONE ASSERTION GUARDING AN INTERNAL API. The clock sample is taken while Home
     # Assistant RUNS, and what makes it application-consistent rather than something HA has to
     # recover from is HA's own `recorder.lock_database()` -- not a documented integration surface.
@@ -302,7 +302,7 @@ pkgs.testers.runNixOSTest {
     )
     print(f"the clock sample {nightly} was taken with Home Assistant's recorder locked")
 
-    # OUR INTEGRATION IMPORTS OFF THE EVENT LOOP ([B.169]). Home Assistant flags a blocking import
+    # OUR INTEGRATION IMPORTS OFF THE EVENT LOOP. Home Assistant flags a blocking import
     # made on the loop at every start, and refuses some blocking calls from custom integrations
     # outright -- so a stub that imported on the loop is one Home Assistant release from not
     # loading at all. The integration is set up by now (the quiesce above went through it).
@@ -329,7 +329,7 @@ pkgs.testers.runNixOSTest {
     ctr = "briard-home-assistant-app"
     started_before = node1.succeed(f"podman inspect -f '{{{{.State.StartedAt}}}}' {ctr}").strip()
 
-    # ONE MEMBER PER BOUNDARY ([B.172]). A container start is the unit pre-start's to take (it
+    # ONE MEMBER PER BOUNDARY. A container start is the unit pre-start's to take (it
     # reads the clean-stop marker), so `run` does not notify on the container's first run; it
     # notifies on every later one. Counted in the unit's journal, where both land: the pre-start
     # logs `service-starting …: took`, and notify.py prints `briard: <outcome>` on EVERY call.
@@ -358,7 +358,7 @@ pkgs.testers.runNixOSTest {
     # been serving since early in the same phase. So a restart asked for on the strength of a 200
     # from /manifest.json can be discarded in silence, with nothing to retry it. `/api/config`
     # carries HA's own state, so RUNNING is the boundary to wait on -- the same gate the second
-    # restart in this file already uses. [B.127] measured the alternative: two of six contended
+    # restart in this file already uses. Measured, the alternative: two of six contended
     # tier runs lost the restart exactly here, and HA served on for the next thirty minutes.
     node1.wait_until_succeeds(
         f"curl -fsS -H 'Authorization: Bearer {access}' http://127.0.0.1:8123/api/config "
@@ -400,13 +400,13 @@ pkgs.testers.runNixOSTest {
         f"the container restarted ({started_before} -> {started_after}); the mint must ride "
         "the service-start boundary, not a container bounce"
     )
-    # ...and that restart, the container's second run, is the one `run` notifies for ([B.172]).
+    # ...and that restart, the container's second run, is the one `run` notifies for.
     node1.wait_until_succeeds(f"test \"$({unit_log} | grep -c 'briard: ')\" = 1", timeout=60)
 
     # ── THROUGH THE FRONT DOOR ───────────────────────────────────────────────────────
     #
-    # THE ASSERTION THIS FILE OWED BACK ([B.48]). Until [V3.15] the door forwarded to a backend
-    # baked at guest-build time; [V3b.3](e2) deleted that slot, and for two epochs no node routed
+    # THE ASSERTION THIS FILE OWED BACK. The door once forwarded to a backend
+    # baked at guest-build time; deleting that slot left, for two epochs, no node routing
     # to a runtime-installed service at all -- an installed HA answered only on :8123 while the
     # VIP's :80 served Briard's own page. It comes back keyed on the service's NAME, from the table
     # the guest's converge wrote.
@@ -435,17 +435,17 @@ pkgs.testers.runNixOSTest {
     # expressible. The mDNS publisher reads this same table with jq; there is no flattened second
     # copy for it to read while stale, and this is the assertion that keeps it that way.
 
-    # ── (b) DOES HA'S OWN ZEROCONF SEE WHAT THE GUEST ANNOUNCES? ([V3b.30](b)) ────────
+    # ── (b) DOES HA'S OWN ZEROCONF SEE WHAT THE GUEST ANNOUNCES? ────────
     #
-    # THE GATE, and it is a MEASUREMENT rather than a feature: [V3b.29] §6.5 sketched an in-HA
+    # THE GATE, and it is a MEASUREMENT rather than a feature: an earlier design sketched an in-HA
     # integration discovered over zeroconf and left two legs unverified, of which this is one --
-    # that HA's zeroconf sees the guest's mDNS FROM INSIDE THE CONTAINER. It decides [V3b.30](a)'s
+    # that HA's zeroconf sees the guest's mDNS FROM INSIDE THE CONTAINER. It decides the integration's
     # reach into HA, (d)'s worth, and Music Assistant's wiring, and it is cheap, so it is measured
     # rather than reasoned. The reasoning said it SHOULD work -- python-zeroconf sets
     # SO_REUSEADDR/SO_REUSEPORT so sharing :5353 is normal, and Linux defaults IP_MULTICAST_LOOP on
     # for IPv4 -- and "should" is not a measurement.
     #
-    # ⚠️ IT IS ALSO THE COEXISTENCE GATE FOR THE DOOR'S RESPONDER ([B.152]). HA is host-networked,
+    # ⚠️ IT IS ALSO THE COEXISTENCE GATE FOR THE DOOR'S RESPONDER. HA is host-networked,
     # so its python-zeroconf and the door's responder bind :5353 in ONE namespace, and the door is
     # a promoter chain member: a responder that cannot bind does not merely lose the name, it fails
     # the door and hands the resource to a peer that would fail identically. This test runs both at
@@ -480,12 +480,12 @@ pkgs.testers.runNixOSTest {
 
     node1.fail("test -e /run/briard/routes.hosts")
 
-    # ── (c) BRIARD'S OWN INTEGRATION, AND THE BROKER WIRED FROM INSIDE IT ([B.124]) ───
+    # ── (c) BRIARD'S OWN INTEGRATION, AND THE BROKER WIRED FROM INSIDE IT ───
     #
     # A household that installs the broker should not then have to tell Home Assistant about it.
     # The wiring is driven through HA's OWN config-flow API -- so `async_validate_broker_settings`
     # runs on submit and a dead broker yields an error instead of an entry pointing at nothing --
-    # and since [B.124] it is driven IN-PROCESS, by briard's own integration, which needs no
+    # and it is now driven IN-PROCESS, by briard's own integration, which needs no
     # token, no HTTP and no waiting for HA to serve because it IS the serving HA.
     #
     # WHAT THE PLACEMENT COSTS AND WHY IT IS ASSERTED HERE. Only a stub lands in /config; the
@@ -559,7 +559,7 @@ pkgs.testers.runNixOSTest {
     # a household pointing HA at their own broker must never find their one slot taken by a
     # localhost entry they did not ask for.
     #
-    # THE WHOLE START IS REPEATED, which is what changed with [B.124]: the wiring is no longer a
+    # THE WHOLE START IS REPEATED, which is what changed with in-process wiring: the wiring is no longer a
     # script that can be re-run on its own, it is what the integration does when Home Assistant
     # starts, so the honest way to run it twice is to start Home Assistant twice.
     #
@@ -596,10 +596,10 @@ pkgs.testers.runNixOSTest {
         f"the entry was replaced rather than left alone: {again} vs {mqtt_entries}"
     )
 
-    # ── (d) A RUNNING HOME ASSISTANT IS RE-WIRED WITHOUT A RESTART ([B.131]) ──────────
+    # ── (d) A RUNNING HOME ASSISTANT IS RE-WIRED WITHOUT A RESTART ──────────
     #
     # Everything above happens at an HA start, and that is the gap this closes. converge restarts
-    # only the services whose rendered bytes changed ([V3b.3](f)), so installing the broker beside
+    # only the services whose rendered bytes changed, so installing the broker beside
     # a Home Assistant that is ALREADY RUNNING leaves it running, unwired, and with nothing in the
     # product that will ever restart it -- the household is told the broker is installed and Home
     # Assistant goes on disagreeing until somebody happens to restart it.
@@ -665,9 +665,9 @@ pkgs.testers.runNixOSTest {
     )
     print("re-wired in place, no restart: " + _zj.dumps(rewired[0]))
 
-    # ── (e) ONBOARDING THROUGH THE DASHBOARD, RESUMABLE BY HA'S OWN FRONTEND ([V3b.31a](f), [V3b.31b]) ──
+    # ── (e) ONBOARDING THROUGH THE DASHBOARD, RESUMABLE BY HA'S OWN FRONTEND ──
     #
-    # The install ends by handing the household a logged-in Home Assistant ([V3b.31a](d)): briard
+    # The install ends by handing the household a logged-in Home Assistant: briard
     # creates the first user through HA's onboarding API and sends the browser to HA's OWN
     # onboarding page with the returned code, which resumes at the first undone step. Every claim
     # below is the SERVER half of that path, driven through the front door under the name the
@@ -693,11 +693,11 @@ pkgs.testers.runNixOSTest {
 
     # NOTHING IS DONE, and in particular the USER step is not: HA marks it done at startup if any
     # OWNER exists, and the system user the control channel minted is not one. That is the
-    # first half of "the briard admin is the HA owner" ([V3b.31a](e)) -- our own user must not
+    # first half of "the briard admin is the HA owner" -- our own user must not
     # have taken the flag before the household's could.
     assert steps_done() == {"user": False, "core_config": False, "analytics": False, "integration": False}, steps_done()
 
-    # THE MINTER REFUSES WITH NO OWNER ([V3b.31d], [V3b.31a](e)): before the user step there is
+    # THE MINTER REFUSES WITH NO OWNER: before the user step there is
     # no owner -- only our system user, which never takes the flag -- and the integration's login
     # view answers 409 rather than minting for whatever admin exists. This is the refuse-and-
     # surface branch measured on a real Home Assistant, not on a fake; the control channel's own
@@ -705,7 +705,7 @@ pkgs.testers.runNixOSTest {
     mint_url = "http://192.168.1.100/api/briard/login"
     mint_body = _sx.quote(_zj.dumps({"client_id": client_id}))
     # A fresh exchange: the restarts above rotated the refresh token, which revoked every access
-    # token issued before them ([V3b.29] §6) -- `access` from the first claim is dead by now.
+    # token issued before them -- `access` from the first claim is dead by now.
     system = exchange(node1.succeed("cat /run/briard/home-assistant/token").strip())
     refused = node1.succeed(
         f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {host}' -H 'Authorization: Bearer {system}' "
@@ -718,7 +718,7 @@ pkgs.testers.runNixOSTest {
     ).strip()
     assert bare == "401", f"the minter answered {bare} to an unauthenticated call; want 401"
 
-    # THE USER STEP RUNS THROUGH THE DASHBOARD ([V3b.31b]), the way the household's does. The
+    # THE USER STEP RUNS THROUGH THE DASHBOARD, the way the household's does. The
     # host's one-time code is written here as the `dashboard.handoff` verb writes it (no host
     # agent drives this rig; the verb has its own test), redeemed under the node's OWN name at the
     # door -- which forwards every name it does not route to the dashboard -- and then "Open Home
@@ -758,7 +758,7 @@ pkgs.testers.runNixOSTest {
     assert q.get("auth_callback") == ["1"] and q.get("code"), loc
     assert _zj.loads(_b64.b64decode(q["state"][0])) == {"hassUrl": origin, "clientId": client_id}, loc
     first = {"auth_code": q["code"][0]}
-    # The password is generated and FORGOTTEN ([V3b.31e]): nothing of it on the volume. Every
+    # The password is generated and FORGOTTEN: nothing of it on the volume. Every
     # later open is minted (below), and the household sets its own in HA's People settings.
     node1.fail("ls /var/lib/briard/dashboard | grep -qi password")
 
@@ -797,7 +797,7 @@ pkgs.testers.runNixOSTest {
     # are here, because nobody ran the location page first. MEASURED 2026-09-04: the first run of
     # this claim waited 120s for a `met` entry that was never going to come. That absence is the
     # cost of completing core_config by API instead of handing the browser to HA's location page,
-    # and it is why the install does the latter ([V3b.31a](d)). The negative is not vacuous: all
+    # and it is why the install does the latter. The negative is not vacuous: all
     # three flows start in the same loop and `met`'s abort has no await before it, so once both
     # unconditional entries exist the `met` flow has run and chosen.
     door("/api/onboarding/core_config", bearer=human, post={})
@@ -832,7 +832,7 @@ pkgs.testers.runNixOSTest {
     )
     print("onboarded by API: " + _zj.dumps(steps_done()))
 
-    # THE LATER OPEN ([V3b.31d]): on a set-up Home Assistant the button MINTS a login for the
+    # THE LATER OPEN: on a set-up Home Assistant the button MINTS a login for the
     # owner through the integration and lands the browser on HA's own auth callback -- the front
     # page, auth_callback=1, the same state as the resume, storeToken so it outlives the tab.
     def owner_tokens():
@@ -879,10 +879,10 @@ pkgs.testers.runNixOSTest {
     )
     print("later open minted for the owner: " + owner_id)
 
-    # THE DEVICE LIST AND REVOKE ([V3b.31f]): the trusted page lists this browser as a device and
+    # THE DEVICE LIST AND REVOKE: the trusted page lists this browser as a device and
     # points at HA's own profile for the session it holds there; revoking it takes it out of
     # briard's registry and out of NOTHING ELSE -- HA's store keeps every refresh token it held
-    # (registry-only by decision, [V3b.31a](a)); the cookie is refused after, on the page and on
+    # (registry-only by decision); the cookie is refused after, on the page and on
     # the button; and the way back is a fresh code, as at install.
     import re as _re
     trusted_page = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/")
@@ -909,7 +909,7 @@ pkgs.testers.runNixOSTest {
     laptop = [l.split(":", 1)[1].split(";")[0].strip() for l in again.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     print(f"device revoked from the registry only; HA kept its {tokens_before} tokens")
 
-    # QUICK-CONNECT ([V3b.31g]): a second browser asks, shows a six-digit code, and the trusted
+    # QUICK-CONNECT: a second browser asks, shows a six-digit code, and the trusted
     # one types it. The session goes to the ASKER's own cookie -- the code alone collects nothing
     # -- and nobody untrusted can approve. Measured through the door under the node's name, the
     # way both browsers would reach it.

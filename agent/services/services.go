@@ -7,7 +7,7 @@
 // channel minted into its container, mosquitto needs a config file in front of an image that
 // takes no configuration from the environment. That knowledge belongs in the PRODUCT, keyed on
 // the catalog name: a curated catalog is exactly the licence to hold it, and the same call
-// [V3b.29] made for readiness assessors (agent/host/readiness.go), for the same reason.
+// was made for readiness assessors (agent/host/readiness.go), for the same reason.
 //
 // THE DEFAULT IS ALWAYS NOTHING. An unknown name gets no binds, no preparation and the plain
 // HTTP reach line -- precisely what every service got before any of this existed. Adding an
@@ -42,7 +42,7 @@ type Executor interface {
 	ReadFile(path string) ([]byte, error)
 }
 
-// THE NODE-SIDE LAYOUT ([B.143]): one directory per service, one socket for the agent.
+// THE NODE-SIDE LAYOUT: one directory per service, one socket for the agent.
 //
 // ⚠️ THE INBOUND CHANNEL STARTED AS A SOCKET PER SERVICE, and the swap is worth recording because
 // the first version was a reasonable-looking mistake. Per-service sockets made a caller's identity
@@ -158,13 +158,13 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 }
 
 // Quiesce asks a service to hold still so a member taken while it RUNS is application-consistent,
-// and returns the release that ends the window ([B.143]).
+// and returns the release that ends the window.
 //
 // THE DEFAULT IS NOTHING, as everywhere here: a service with no way to hold still returns a nil
 // release and an error saying so, the caller takes its member anyway, and the member says
 // crash-consistent.
 //
-// MOSQUITTO CANNOT HOLD STILL BUT CAN FLUSH ([B.167d], owner 2026-09-27): its durability is an
+// MOSQUITTO CANNOT HOLD STILL BUT CAN FLUSH: its durability is an
 // autosave interval, and SIGUSR1 writes the persistence database now. So its member is still
 // labelled crash-consistent, which it is, and misses at most what arrived in the few seconds after
 // the flush rather than up to an autosave interval of it. Low risk, so nothing more: mosquitto has
@@ -193,7 +193,7 @@ func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, con
 	return nil, fmt.Errorf("services: %s has no way to hold still", m.Name)
 }
 
-// Health is SERVICE HEALTH ([B.167]): whether the app works. It is one notion, asked by the status
+// Health is SERVICE HEALTH: whether the app works. It is one notion, asked by the status
 // report, the app-update gate and the history alike. Node health (api.NodeStatus.Healthy) and the
 // S1 readiness gate are different questions with their own names.
 //
@@ -215,7 +215,7 @@ const (
 )
 
 // HealthGate bounds how long an app gets to become healthy after a start: the app-update gate's
-// deadline, and how long a start sample's evaluation waits for the boot's verdict ([B.167]).
+// deadline, and how long a start sample's evaluation waits for the boot's verdict.
 const HealthGate = 5 * time.Minute
 
 // Settled is the verdict once HealthGate has passed since the start: an app still starting is
@@ -229,10 +229,10 @@ func (h Health) Settled() Health {
 }
 
 // HealthOverride is a curated app's own health check, or ok=false for an app that has none, whose
-// health is then its manifest's healthPath answering 200 ([B.167]).
+// health is then its manifest's healthPath answering 200.
 //
 // Home Assistant's reads /api/config with our token, because recovery mode keeps its healthPath
-// answering while the app is down ([B.167b]'s probes; agent/hass/health.go says what each answer
+// answering while the app is down (measured by probe; agent/hass/health.go says what each answer
 // means).
 func HealthOverride(ctx context.Context, x Executor, m manifest.Manifest, port int) (h Health, ok bool) {
 	if m.Name != hass.Name {
@@ -251,10 +251,10 @@ func HealthOverride(ctx context.Context, x Executor, m manifest.Manifest, port i
 
 // RestoreMarkers names the files a service writes inside its own data to say "a restore of MY
 // backups is in flight" — paths relative to that service's data root, one per container that
-// keeps state ([B.143]). The default, as always here, is nothing.
+// keeps state. The default, as always here, is nothing.
 //
 // TWO CALLERS, ONE FACT, which is why it is one function. The guest's inbound take reads them to
-// recognise a household's own restore (its hass-restore-before sample, [B.167]), and the restore
+// recognise a household's own restore (its hass-restore-before sample), and the restore
 // path SWEEPS them out of a member as it is materialised — so that putting such a
 // member back does not replay the restore it was taken around.
 //
@@ -277,7 +277,7 @@ func RestoreMarkers(m manifest.Manifest) []string {
 }
 
 // Detect says what a household changed in a service between two ring members, as the one line its
-// history shows ([B.167]), or "". prev and next are member paths, which hold the data subvolume's
+// history shows, or "". prev and next are member paths, which hold the data subvolume's
 // layout: one directory per container that keeps state. running says next was taken while the
 // service ran.
 //
@@ -285,9 +285,9 @@ func RestoreMarkers(m manifest.Manifest) []string {
 // still has quiet time, which is what catches what no detector sees. Only Home Assistant has one.
 //
 // TWO ANSWERS, because the history tells them apart: what the household CHANGED, as its line or "",
-// and what the app RESET on its own (Home Assistant setting an undecodable store aside, [B.167d]),
+// and what the app RESET on its own (Home Assistant setting an undecodable store aside),
 // as the renames' paths in Corrupt's form. The caller phrases those (ResetPhrase), because a
-// start's boot adds renames of its own that no member holds ([B.172]).
+// start's boot adds renames of its own that no member holds.
 func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed string, resets []string, err error) {
 	if m.Name != hass.Name {
 		return "", nil, nil
@@ -314,7 +314,7 @@ func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next str
 }
 
 // Corrupt names what the app has set aside as undecodable under root -- a member, or the live
-// data root -- as paths relative to it, each under its container's directory ([B.172]).
+// data root -- as paths relative to it, each under its container's directory.
 func Corrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) []string {
 	if m.Name != hass.Name {
 		return nil
@@ -347,7 +347,7 @@ func ResetPhrase(resets []string) string {
 // bind sources this writes, and podman creates a missing source as a root-owned directory, so a
 // service that cannot be prepared must not be started at all.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
-	// THE INBOUND TOKEN, for any service that gets the channel ([B.143]). Minted here because
+	// THE INBOUND TOKEN, for any service that gets the channel. Minted here because
 	// Prepare is the one step that runs on EVERY converge -- the installing primary, the survivor
 	// promoting into a service it was never told about, and every guest reboot -- which is
 	// exactly the set of moments the mount it lands in is (re)made.
@@ -364,8 +364,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	switch m.Name {
 	case hass.Name:
 		// The broker's port travels from one service's package to the other's HERE, which is the
-		// only place that sees both. Home Assistant needs to be told where the broker is
-		// ([V3b.30](c)), and neither package may reach into the other: agent/hass would then
+		// only place that sees both. Home Assistant needs to be told where the broker is,
+		// and neither package may reach into the other: agent/hass would then
 		// carry mosquitto knowledge, and a second copy of the port is a second thing to keep in
 		// step with the catalog.
 		return hass.Prepare(ctx, x, m, mosquitto.MQTTPort)
@@ -380,10 +380,10 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 //
 // LEAD WITH THE NAME, the doctrine install.sh already prints under -- the name stays true if the
 // address moves, and under DHCP the VIP is acquired in-guest, so a plausible-but-wrong address is
-// the failure [V3.17] exists to end. No published name (a witness, or FLOCK_NAME unset) means no
+// the failure this function exists to end. No published name (a witness, or FLOCK_NAME unset) means no
 // URL to promise: say the port and stop.
 //
-// THE NAME IS THE SERVICE'S OWN since [B.48]: `briard-<flock>-<service>.local`, on the front
+// THE NAME IS THE SERVICE'S OWN: `briard-<flock>-<service>.local`, on the front
 // door's :80, rather than the flock name and the service's port. That is the whole user-facing
 // payoff of the routing table -- a port in the address was the shape of a node that could only
 // reach a service by going around its front door.
@@ -406,7 +406,7 @@ func Reach(m manifest.Manifest, flock string) string {
 		}
 		if port == 0 {
 			// Nothing published and nothing fronted: there is no address to promise, and inventing
-			// one is the plausible-but-wrong answer [V3.17] exists to end.
+			// one is the plausible-but-wrong answer this function exists to end.
 			return "it publishes no address of its own yet"
 		}
 		// NAME THE PROTOCOL WHERE WE KNOW IT. A port on its own is an address a user cannot act on:
@@ -440,7 +440,7 @@ func protocol(m manifest.Manifest) string {
 	return ""
 }
 
-// Fronted reports whether the front door may serve this service under its own name ([B.48]).
+// Fronted reports whether the front door may serve this service under its own name.
 //
 // It decides whether converge emits a ROUTE for the service, not a flag the door then has to
 // honour: a service this returns false for is named and probed, and the door is handed no way to
@@ -466,7 +466,7 @@ func protocol(m manifest.Manifest) string {
 // The keying is the same as everything else in this package — the catalog name, product-side, code
 // we ship and review. A manifest cannot say it, which is the point: a publisher must not be able to
 // hand itself the front door. That changes when a manifest can declare its own networking and
-// exposure ([B.48](a)), and this becomes the fallback for entries that say nothing.
+// exposure, and this becomes the fallback for entries that say nothing.
 func Fronted(m manifest.Manifest) bool {
 	return m.Name != mosquitto.Name
 }
@@ -484,7 +484,7 @@ func Fronted(m manifest.Manifest) bool {
 // broker, the image cannot advertise itself (agent/mosquitto), and a broker on a LAN announcing
 // nothing is simply a service being impolite. The port is MQTT's, never the manifest's -- the
 // manifest names the management endpoint the health floor probes, which is bound inside the pod
-// and is nobody else's business ([B.48](a)).
+// and is nobody else's business.
 //
 // The instance label is the flock-scoped name, composed once in shared/routes, so what a device
 // offers a household to pick from names the flock it belongs to.

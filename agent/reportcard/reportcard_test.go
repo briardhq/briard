@@ -18,7 +18,7 @@ func capable() HostFacts {
 		// fixture is the machine we expect to admit, not merely one we could not fault.
 		NIC:        nic.Selection{Dev: "eth0", Probed: true, Candidates: []string{"eth0"}},
 		DiskFreeMB: 64 * 1024,
-		// A capable host on an ordinary home network holds a DHCP lease, and since V3.19c step 3
+		// A capable host on an ordinary home network holds a DHCP lease, and
 		// that is what makes the default install -- no BRIARD_VIP_ADDR, address from the router --
 		// pass rather than warn. The fixture describes the machine we expect to admit.
 		HostLeased: true,
@@ -72,7 +72,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		{"no iproute2", func(f *HostFacts) { f.HasIP = false }, "iproute2", "iproute2"},
 		{"not booted with systemd", func(f *HostFacts) { f.SystemdBooted = false }, "systemd", "systemd units"},
 		{"below RAM floor", func(f *HostFacts) { f.MemTotalMB = 2048 }, "memory", "4 GB"},
-		// The three ways the guest's L2 has nowhere to hang ([B.150](b)). Each refuses with the
+		// The three ways the guest's L2 has nowhere to hang. Each refuses with the
 		// override named, because a user who disagrees with our selection needs the way to say so
 		// on the same screen as the refusal.
 		{"no network at all", func(f *HostFacts) {
@@ -88,7 +88,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		// The selected NIC is a wireless station. The probe PASSES there -- the kernel makes the
 		// macvtap without complaint and the frames die at the access point -- so this refuses
 		// separately from it, saying Wi-Fi is coming rather than leaving the household a node
-		// nobody can reach ([V3c.3]).
+		// nobody can reach.
 		{"wifi only", func(f *HostFacts) {
 			f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
 		}, "network", "coming soon"},
@@ -115,7 +115,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 
 // Warns steer honestly but still admit: below-recommended RAM, no local mDNS resolver.
 func TestAssessWarnsStillAdmit(t *testing.T) {
-	// [V3b.19] A host with no mDNS resolver is told BEFORE the install that the name it is about
+	// A host with no mDNS resolver is told BEFORE the install that the name it is about
 	// to be handed will not resolve on this box, and is admitted anyway: the address always works,
 	// the rest of the LAN resolves the name fine, and this is a fact about the household's own
 	// software. Refusing over it would block a perfectly good server for a convenience.
@@ -226,7 +226,7 @@ func TestMacvtapAdvisories(t *testing.T) {
 	})
 }
 
-// THE V3.19 REGRESSION. A node's VIP is an address on the USER'S LAN, and nothing compared the two
+// THE BAKED-VIP REGRESSION. A node's VIP is an address on the USER'S LAN, and nothing compared the two
 // until this check existed: the card admitted a 192.168.9.0/24 home for an install that would claim
 // a baked 192.168.1.100, and the node then reported READY while unreachable (the readiness probe
 // runs in-guest, against an address the guest itself owns). These are the exact facts of the machine
@@ -370,7 +370,7 @@ func TestMemoryThresholdsAllowForFirmwareReservation(t *testing.T) {
 	}
 }
 
-// The AES axis ([V3b.33](c)): a CPU without AES acceleration still admits -- it is a perfectly
+// The AES axis: a CPU without AES acceleration still admits -- it is a perfectly
 // good node -- but the card says out loud that its data volume will be created unencrypted, so the
 // split is stated before the install rather than discovered after it.
 func TestAssessAESlessWarnsButAdmits(t *testing.T) {

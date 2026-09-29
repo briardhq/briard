@@ -34,9 +34,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 // the cheap way to make the write fail after the caller has committed to it.
 //
 // STATED PLAINLY, because the point of these tests is not to flatter the diff: this one does NOT
-// cover the fsync [V3.26b] added -- it passes against the pre-fsync implementation too, which
+// cover the fsync a later change added -- it passes against the pre-fsync implementation too, which
 // already staged through a temp file. Durability is not observable from userspace without cutting
-// power mid-write, so the fsync is closed by reading the code and by [V3.9]'s rig if it is ever
+// power mid-write, so the fsync is closed by reading the code and by a power-cut rig if it is ever
 // built, not here. What this locks down is the atomicity the fsync sits on top of, which nothing
 // else asserted. (agent/host's sibling test IS a real mutation guard -- that one was a bare
 // WriteFile.)

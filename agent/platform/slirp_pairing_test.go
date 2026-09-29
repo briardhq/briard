@@ -8,7 +8,7 @@ import (
 )
 
 // TestSlirpAddressingMatchesGuestImage guards a pairing that only exists because the guest stopped
-// running a DHCP client on eth0 (B.78): the host tells qemu what the SLIRP network is, and the
+// running a DHCP client on eth0: the host tells qemu what the SLIRP network is, and the
 // guest configures eth0 statically from the same numbers. Nothing at runtime reconciles them --
 // that is the point, since the reconciler we removed was the dhcpcd whose presence hijacked the
 // VIP's own client -- so a change on one side and not the other yields a guest with an address on

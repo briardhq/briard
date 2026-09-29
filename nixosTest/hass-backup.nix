@@ -22,7 +22,7 @@ let
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
   # HA's data, where the RENDERER puts it: the service's subvolume plus its container's
-  # subdirectory, bind-mounted to /config inside ([V3b.3](e2) -- the old build-time slot chose
+  # subdirectory, bind-mounted to /config inside (the old build-time slot chose
   # this path itself, and a test that restated it would drift from the product).
   haDir = "/var/lib/briard/${fixture.name}/${fixture.container}";
   storage = "${haDir}/.storage";
@@ -40,7 +40,7 @@ pkgs.testers.runNixOSTest {
     {
       imports = [ node ];
       # 2048, MEASURED: a guest grows page cache into whatever it is given, so this sat at 4191
-      # MB resident of 4096 declared and sits at 2142 MB of 2048, in the same 112s ([B.127]).
+      # MB resident of 4096 declared and sits at 2142 MB of 2048, in the same 112s.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 20480;
       environment.systemPackages = [ pkgs.sqlite pkgs.diffutils briardBackup ];

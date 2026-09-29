@@ -17,7 +17,7 @@ func demoRes() drbd.Resource {
 	}
 }
 
-// pairRes is the flock: two diskful members, so the resource is real ([B.145]).
+// pairRes is the flock: two diskful members, so the resource is real.
 func pairRes() drbd.Resource {
 	r := demoRes()
 	r.Peers = append(r.Peers, drbd.Peer{Name: "n2", NodeID: 1, Address: "10.0.0.2:7789", Disk: drbd.DataDevice})
@@ -87,7 +87,7 @@ func TestStorageSpecDiskful(t *testing.T) {
 }
 
 // Every mode the host may hold has to survive the trip, Adiantum included -- carrying it is the
-// whole reason this document exists ([V3b.33](c) could not build it for want of a channel).
+// whole reason this document exists (a boot unit could not build it for want of a channel).
 func TestStorageSpecCarriesEveryMode(t *testing.T) {
 	for _, m := range []nodestorage.Mode{nodestorage.ModeAuto, nodestorage.ModeOff, nodestorage.ModeAdiantum} {
 		cfg := Config{Node: "n1", DataEncryption: m}
@@ -146,7 +146,7 @@ func TestConfigFromEnvDataEncryption(t *testing.T) {
 	}
 }
 
-// THE TWO-LV LAYOUT REACHES THE SPEC ([B.145a]): the metadata LV by the name the .res's
+// THE TWO-LV LAYOUT REACHES THE SPEC: the metadata LV by the name the .res's
 // `meta-disk` will look for, the replicated device the mount unit will read, and the peer-slot
 // count the metadata is created with -- all from the constants the .res itself is rendered from.
 func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
@@ -170,7 +170,7 @@ func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
 	}
 }
 
-// THE TOPOLOGY RULE ([B.145]): a resource is worth running only with two DISKFUL members. A lone
+// THE TOPOLOGY RULE: a resource is worth running only with two DISKFUL members. A lone
 // anchor mounts its data LV directly; an anchor beside a witness is that same lone anchor (the
 // witness holds no copy); and a witness in such a mesh is a spec that must not exist.
 func TestStorageSpecLoneNode(t *testing.T) {

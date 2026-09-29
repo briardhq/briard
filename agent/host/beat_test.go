@@ -135,7 +135,7 @@ func TestLeaseReleasesOnCancel(t *testing.T) {
 }
 
 // ============================================================================================
-// THE GUARD AGAINST THE NEXT [V3b.15], and it is here rather than in report_test.go because
+// THE GUARD AGAINST THE NEXT UNLEASED BUDGET, and it is here rather than in report_test.go because
 // what it defends is a property of the BEAT: a directive that declares a budget must lease it.
 //
 // The defect it exists to catch is not subtle in hindsight and was invisible in practice.
@@ -181,7 +181,7 @@ func heldUntilPinged(pinged <-chan struct{}) func() error {
 			return nil
 		case <-time.After(5 * time.Second):
 			return errors.New("no watchdog ping arrived while this directive ran -- its budget " +
-				"was never leased, so systemd would kill the agent mid-work (V3b.15)")
+				"was never leased, so systemd would kill the agent mid-work")
 		}
 	}
 }

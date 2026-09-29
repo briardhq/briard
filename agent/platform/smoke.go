@@ -24,7 +24,7 @@ var smokeTimeout = 20 * time.Second
 var smokeDevices = []string{"virtio-blk-pci", "virtio-net-pci", "virtio-serial-pci", "virtserialport"}
 
 // SmokeTest proves a STAGED qemu tree runs on this host, before the release that brought it
-// commits ([B.86b]). Two tiers. First, without a VM and in milliseconds: `-version` proves the
+// commits. Two tiers. First, without a VM and in milliseconds: `-version` proves the
 // binary execs and its libraries resolve; `-device help` proves it carries the device models we
 // depend on; `-M help` proves the default machine type exists. Then a scratch machine -- the
 // requested accelerator and CPU model, a throwaway raw disk on virtio-blk, a virtio NIC on a

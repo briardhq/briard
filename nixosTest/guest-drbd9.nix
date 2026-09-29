@@ -7,13 +7,13 @@
 # replication is covered by drbd-replicate and the promoter-driven failover
 # unit by drbd-promote.
 #
-# THE PROMOTER-GATE ASSERTION LIVES HERE ([V3b.16a]). This is the only test that boots the guest
+# THE PROMOTER-GATE ASSERTION LIVES HERE. This is the only test that boots the guest
 # module with nothing declared over it, so it is the only place the PRODUCT's own default is
 # observable — every other node either forces the reactor off (lib.nix) or runs a real agent. It
 # used to `wait_for_unit("drbd-reactor.service")`: the daemon ran from boot, idle until a snippet
 # appeared. That boot start is what raced the host agent's net.configure on every reboot of every
 # install, and on the reboot it won it claimed the service VIP on the DRBD NIC under a second DHCP
-# identity ([V3b.16]). The agent arms the promoter now, so an unconfigured guest must sit inert.
+# identity. The agent arms the promoter now, so an unconfigured guest must sit inert.
 #
 # `pkgs` must already carry the drbd-reactor overlay; runNixOSTest makes the
 # nodes inherit it (their nixpkgs.pkgs is read-only and derived from this pkgs).

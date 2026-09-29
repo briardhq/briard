@@ -92,7 +92,7 @@ func TestDressGuestPushesWhenTheBundleDiffers(t *testing.T) {
 		t.Errorf("bin.test was asked to prove %v, want the whole set", g.tested)
 	}
 
-	// THE CHEAP GATE ([B.138]): a staged copy that fails its test launch refuses the dress before
+	// THE CHEAP GATE: a staged copy that fails its test launch refuses the dress before
 	// anything is armed -- and the refusal is recorded like a trial's, so the release is never
 	// pushed again and the good tree (none here) is what a later launch gets.
 	g = &fakeDresser{push: true, bundle: "v3.20260901.old0000", testErr: io.ErrUnexpectedEOF}

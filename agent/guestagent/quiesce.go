@@ -19,7 +19,7 @@ import (
 type quiescedResult struct {
 	Held bool   `json:"held"`
 	Why  string `json:"why,omitempty"`
-	// How long getting the lock and holding it took ([B.167]): what an hourly sample costs Home
+	// How long getting the lock and holding it took: what an hourly sample costs Home
 	// Assistant, and the first thing to look at if its quiesce starts degrading after an update.
 	// Zero when there was no lock to take.
 	Acquire time.Duration `json:"acquire,omitempty"`
@@ -27,7 +27,7 @@ type quiescedResult struct {
 }
 
 // quiescedMember takes one member of a RUNNING service, asking it to hold still across the
-// snapshot ([B.143]). It is the clock sample's verb.
+// snapshot. It is the clock sample's verb.
 //
 // THE ORDER IS HOLD, SNAPSHOT, RELEASE, LABEL — and the label is last because only the release
 // knows what to write. Home Assistant reports whether its lock survived the window (it breaks its
@@ -110,7 +110,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why, Acquire: acquire, Hold: hold}, nil
 }
 
-// TakeClockMember is the quiesced take FOR A GUEST WITH NO HOST ([B.143]) — the same
+// TakeClockMember is the quiesced take FOR A GUEST WITH NO HOST — the same
 // accommodation `--inbound-listen` and `--write-units` make, and for the same reason.
 //
 // In the product this verb arrives from the host, which owns the cadence and renders the sidecar

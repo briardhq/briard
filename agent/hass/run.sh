@@ -8,13 +8,13 @@
 # and no race.
 #
 # NO STEP HERE HOLDS STATE OR DECIDES ANYTHING, and that is a rule rather than an
-# accident ([B.143]). Everything a step needs to know, the guest agent can derive on its
+# accident. Everything a step needs to know, the guest agent can derive on its
 # own side — from the ring on disk, from the manifest on the volume, from the container
 # unit's own start time — and the agent is where it is testable and where a container
 # cannot tamper with it. So this file stays three calls and an exec.
 #
 # ONE EXCEPTION, and it is a fact about this container rather than a decision: whether
-# `run` has run in it before ([B.172]). The first run follows a container start, which the
+# `run` has run in it before. The first run follows a container start, which the
 # unit's pre-start has already snapshotted with the clean-stop marker's answer; notifying
 # again would take the same bytes twice. The flag lives in the container's own /run, so it
 # dies with the container and nothing can go stale. Tampering with it gains nothing: a
@@ -34,7 +34,7 @@
 # ⚠️ THE SHEBANG IS LOAD-BEARING AND ITS ABSENCE IS NOT SUBTLE: s6-supervise reports
 # `unable to spawn ./run (waiting 60 seconds): Exec format error` and retries forever,
 # so Home Assistant simply never starts. Measured, by losing it to a careless edit.
-# FIRST, AND IT BLOCKS ([B.143]). The guest agent is told this service is starting and gets
+# FIRST, AND IT BLOCKS. The guest agent is told this service is starting and gets
 # to act before Home Assistant opens a single file — which is what makes a member taken there
 # application-consistent by construction rather than crash-consistent by luck. Ahead of the
 # two steps below deliberately: they write into /config, and a rollback point is worth more
@@ -51,7 +51,7 @@ fi
 
 python3 /briard/ensure-token.py /config /briard/token || true
 
-# briard's own integration ([B.124]): the stub package into /config/custom_components,
+# briard's own integration: the stub package into /config/custom_components,
 # the `briard:` line into configuration.yaml, and — on a node's first boot only — Home
 # Assistant's own default config, so that line has a file to live in before HA reads it.
 python3 /briard/plant.py /config /briard/stub || true

@@ -12,9 +12,9 @@ import (
 
 // THE TIERS, and the one that is not a duration.
 //
-// "Different subnet" is an explicit operator action rather than a longer wait (owner,
-// 2026-09-15): a paired node that rebuilds itself on a LAN its peer is not on is a split flock,
-// which is the outcome this whole item exists to avoid. Unknown takes the same answer, because
+// "Different subnet" is an explicit operator action rather than a longer wait: a paired node
+// that rebuilds itself on a LAN its peer is not on is a split flock,
+// which is the outcome this whole mechanism exists to avoid. Unknown takes the same answer, because
 // "we could not tell" must never be cheaper than "we could tell, and it was elsewhere".
 func TestReparentWait(t *testing.T) {
 	for _, tc := range []struct {
@@ -89,7 +89,7 @@ func TestReparenterResetsWhenTheParentComesBack(t *testing.T) {
 }
 
 // A node whose L2 hangs off a bridge is never re-parented: the bridge is the USER's, we never
-// created one, and a bridge that disappears is theirs to restore ([B.150](c)). Nor is a node that
+// created one, and a bridge that disappears is theirs to restore. Nor is a node that
 // owns no network at all.
 func TestReparenterLeavesWhatIsNotOurs(t *testing.T) {
 	for _, tc := range []struct {

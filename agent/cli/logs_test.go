@@ -50,9 +50,9 @@ func fakeSources(t *testing.T, journal string, journalErr error, consoleBody str
 			t.Fatal(err)
 		}
 	}
-	// A node's console path lives in ITS CONFIG FILE, not on its unit ([B.150](a)) -- so the fake
+	// A node's console path lives in ITS CONFIG FILE, not on its unit -- so the fake
 	// is shaped the way a shipped node is: the unit names the config file, the config file names
-	// the console. A fake that put GUEST_SERIAL on the unit is exactly what hid [B.157]'s bug.
+	// the console. A fake that put GUEST_SERIAL on the unit is exactly what hid the bug.
 	conf := filepath.Join(dir, "config.env")
 	if err := os.WriteFile(conf, []byte("NODE=n1\nGUEST_SERIAL="+path+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestReadVerbsRejectArguments(t *testing.T) {
 }
 
 // noConsole writes a config.env that switches the capture OFF -- GUEST_SERIAL named, and named
-// EMPTY, which is the only thing that means off ([B.157]'s `declared`).
+// EMPTY, which is the only thing that means off (the reader's `declared`).
 //
 // ⚠️ NOT an absent file and NOT a missing key: both of those mean "take the shipped default", which
 // is what an ordinary node has. Writing the fixture the other way is precisely the mistake that
@@ -277,8 +277,8 @@ func noConsole(t *testing.T) string {
 	return p
 }
 
-// ⚠️ THE REGRESSION THIS FILE EXISTS FOR ([B.157]). consolePath asked systemd for GUEST_SERIAL,
-// which was true until [B.150](a) moved the node's values off the frozen unit and into config.env
+// ⚠️ THE REGRESSION THIS FILE EXISTS FOR. consolePath asked systemd for GUEST_SERIAL,
+// which was true until the agent took ownership of the network and moved the node's values off the frozen unit and into config.env
 // -- after which `systemctl show` reported nothing and this verb told every installed node it
 // captured no console while the capture sat on disk. It stayed green because the only test stubbed
 // unitProps with a GUEST_SERIAL it had written itself.
@@ -370,7 +370,7 @@ func TestDefaultConfigFileMatchesTheShippedUnit(t *testing.T) {
 	}
 }
 
-// ⚠️ THE PIN THAT WOULD HAVE CAUGHT [B.157]'s RUNNER FAILURE, and the reason it is worth a test
+// ⚠️ THE PIN THAT WOULD HAVE CAUGHT THE RUNNER FAILURE, and the reason it is worth a test
 // rather than a comment.
 //
 // `briard logs` resolves the console path from config.env, falling back to a literal copied here.
@@ -392,7 +392,7 @@ func TestDefaultConsoleMatchesTheAgents(t *testing.T) {
 
 // ⚠️ THE ORDINARY NODE, and the case no unit test covered until the rig failed on it.
 //
-// config.env carries GUEST_SERIAL only when an operator named one ([B.157]), so on every normal
+// config.env carries GUEST_SERIAL only when an operator named one, so on every normal
 // install the key is simply ABSENT and the AGENT's default decides where the console goes. A reader
 // that treats absent as "capture is off" contradicts the file sitting on disk -- which is exactly
 // what `briard logs` did on install-macvtap: the console was there, non-empty, correctly moded, and

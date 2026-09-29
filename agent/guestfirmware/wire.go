@@ -14,7 +14,7 @@ import (
 // The framing of the host<->guest control channel: length-prefixed JSON request/response over
 // any io.ReadWriteCloser -- a net.Pipe in tests, a virtio-serial port in the guest. It is the
 // guest link's only transport, and it lives in the FIRMWARE because the firmware is the half of
-// the protocol the image bakes ([B.139]): the pushed agent layers its own verbs on this framing
+// the protocol the image bakes: the pushed agent layers its own verbs on this framing
 // and never redefines it.
 
 const maxFrame = 8 << 20 // 8 MiB cap so a corrupt length prefix can't allocate wildly
@@ -84,7 +84,7 @@ type Conn struct {
 // open across a host re-dial, so an agent killed mid-call leaves its reply sitting in the
 // channel for its successor to read. Handshake resyncs past such a frame BY ID, which
 // separates the two sessions only while their ids differ -- and ids that restart at 1
-// collide on the one frame every session has, the reply to its hello [V3b.17]. A clock
+// collide on the one frame every session has, the reply to its hello. A clock
 // base makes a later session's ids strictly greater than an earlier session's, so a
 // leftover frame is decidably stale rather than coincidentally distinguishable.
 func NewConn(rw io.ReadWriteCloser) *Conn {
@@ -196,8 +196,7 @@ func channelDown(ctx context.Context, err error) error {
 // waiting on: the shutdown that verb starts is what SIGTERMs this process, so the race was not a
 // rare interleaving but the guaranteed outcome of the one verb whose answer decides what the host
 // does next. A lost reply reads as EOF, EOF is indistinguishable from a crashed agent, and the
-// host escalated to the ACPI power button on a guest that had done exactly as it was asked
-// ([B.127]).
+// host escalated to the ACPI power button on a guest that had done exactly as it was asked.
 //
 // So the close waits for the reply being written, and only for that: after ctx is done the loop
 // above returns before reading another request, so this can hold up the close by one handler and

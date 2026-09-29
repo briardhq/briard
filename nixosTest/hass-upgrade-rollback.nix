@@ -37,7 +37,7 @@ let
   canary = ./fixtures/briard_canary;
   # The RENDERER's layout, never restated here: the SUBVOLUME is the service's (what a rollback
   # point snapshots), and HA writes into its container's subdirectory inside it, bind-mounted as
-  # /config ([V3b.3](e2) -- the build-time slot used to choose both).
+  # /config (the build-time slot used to choose both).
   subvol = "/var/lib/briard/${fixture.name}";
   haDir = "${subvol}/${fixture.container}";
   db = "${haDir}/home-assistant_v2.db";
@@ -66,7 +66,7 @@ pkgs.testers.runNixOSTest {
       # grows page cache into what it is given, so 4096 measured 4192 MB resident and 3072
       # measures 3167, in the same time to within the noise. The recorder SCHEMA MIGRATION this
       # test drives is the one workload whose peak could grow with a future HA, so it keeps a
-      # margin the others do not need ([B.127]).
+      # margin the others do not need.
       virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       environment.systemPackages = [ pkgs.sqlite pkgs.btrfs-progs pkgs.jq entrygateEval ];
@@ -119,7 +119,7 @@ pkgs.testers.runNixOSTest {
     # default_config entry can't be mistaken for the canary settling).
     canary_is = lambda st: f"jq -e '.[]|select(.domain==\"briard_canary\" and .state==\"{st}\")' ${entriesFile} >/dev/null"
     node1.wait_until_succeeds(canary_is("loaded"), timeout=240)
-    # THE SAMPLE THE GATE JUDGES COMES FROM THE PRODUCT, not from the fixture ([V3b.29](b)).
+    # THE SAMPLE THE GATE JUDGES COMES FROM THE PRODUCT, not from the fixture.
     # The canary's dump is still what we WAIT on -- it is the cheapest way to know the entry has
     # settled -- but computing the verdict from it would prove the fixture can write a file. This
     # goes through agent/hass: read the control token off tmpfs, exchange it for an access token,
@@ -148,7 +148,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
 
     # THE UPGRADE: the `to` manifest under the same service name, applied by the product's own
-    # converge, which bounces the container onto the new digest ([V3b.3](e2)).
+    # converge, which bounces the container onto the new digest.
     install_fixture(node1, variant="to")
 
     # ---- Post-upgrade: HA serves, the recorder migrates, the canary regresses ----

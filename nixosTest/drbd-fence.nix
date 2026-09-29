@@ -82,7 +82,7 @@ pkgs.testers.runNixOSTest {
     # first) and demotes. VIP gone, service stopped, DRBD no longer Primary.
     primary.wait_until_fails("ip -4 addr show dev eth1 | grep -q 192.168.1.100")
     # The services stop with the fence too, and by a different route than the VIP: they are not
-    # chain members ([V3b.3](f)), so what stops them is briard-services' own ExecStop unwinding
+    # chain members, so what stops them is briard-services' own ExecStop unwinding
     # converge. A fenced node that kept serving would be exactly the split the fence exists for.
     for unit in service_units:
         primary.wait_until_fails(f"systemctl is-active {unit}")

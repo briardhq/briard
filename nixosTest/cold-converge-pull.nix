@@ -1,7 +1,7 @@
 # A SPIKE, not a suite member: how long does a COLD converge hold the promotion when the pull it
-# has to make is very slow? ([B.56], re-scoped.)
+# has to make is very slow?
 #
-# WHY THIS EXISTS. [V3b.3](f) put a fetch on the promotion path. `briard-services` is a chain
+# WHY THIS EXISTS. Converging at promotion put a fetch on the promotion path. `briard-services` is a chain
 # member, its failure fails the promotion, and `warmImage` (agent/guestagent/converge.go) answers a
 # missing image with `systemctl start <unit>-image.service` -- a blocking `podman image pull`.
 # The comment there argues the case and is right about the design: a node that was down when the
@@ -15,16 +15,16 @@
 # it. `briard-services` is `Type=oneshot`, and systemd disables `TimeoutStartSec=` by default for
 # oneshot; quadlet's generated `.image` unit is a oneshot too, and neither we nor quadlet set a
 # timeout on either. If that holds, a slow pull holds the resource Primary with no VIP and no
-# services, indefinitely, and the demote-and-hand-over the eight rules prove ([V3b.5](c)) never
-# fires -- because the member never fails, it just never finishes.
+# services, indefinitely, and the demote-and-hand-over the eight rules prove (chain-member-contract)
+# never fires -- because the member never fails, it just never finishes.
 #
 # WHY IT IS NOT IN THE NIGHTLY. It is a stopwatch, not an assertion: its whole output is a
 # timeline, and it deliberately runs its observation window to the end rather than failing early.
 # It rides `debug` for the same reason `drbd-link-split` does -- run it by hand, read the log.
 #
-# ONE NODE, DELIBERATELY. The peer half of [B.56]'s original shape ("withhold the prewarm from one
+# ONE NODE, DELIBERATELY. The peer half of the question's original shape ("withhold the prewarm from one
 # anchor") is not what is unmeasured: a cold winner handing over to a warm peer is rules 5/7/8 with
-# a different trigger, and peer-image caching ([B.117]) is expected to remove the asymmetry
+# a different trigger, and peer-image caching is expected to remove the asymmetry
 # entirely. What no topology answers is this node's own behaviour, so this rig has no peer.
 #
 # SLOW, NOT STALLED, and that distinction is the measurement. A stalled socket would only tell us
@@ -240,7 +240,7 @@ pkgs.testers.runNixOSTest {
         print(f"  briard-services: {final['services']} after {final['t']}s, restarts={final['restarts']}")
         print(f"  the node held the promotion throughout: role={final['role']} mounted={final['mounted']} vip={final['vip']}")
         print("  nothing bounded the pull: no timeout fired, the member never failed, so the")
-        print("  demote-and-hand-over of [V3b.5](c) rules 5/7/8 was never reached.")
+        print("  demote-and-hand-over of chain-member-contract rules 5/7/8 was never reached.")
     else:
         print(f"VERDICT: the start job settled at t={settled['t']}s -> {settled['services']} result={settled['result']}")
         print(f"  something DOES bound it. Final: role={final['role']} vip={final['vip']} masked={final['masked']}")

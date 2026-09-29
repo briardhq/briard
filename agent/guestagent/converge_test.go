@@ -105,7 +105,7 @@ func dummyNode(t *testing.T) *convergeExec {
 	return x
 }
 
-// TestConvergeRendersFromTheVolume is the item's whole point ([V3b.3](f)): a node that was never
+// TestConvergeRendersFromTheVolume is the item's whole point: a node that was never
 // told about a service -- never rendered, never cached, never chained -- still runs it, because
 // the volume said so. The measured failure was a survivor that promoted and served nothing.
 func TestConvergeRendersFromTheVolume(t *testing.T) {
@@ -158,7 +158,7 @@ func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 	}
 }
 
-// TestConvergeDoesNotPullAPresentImage is [V3.17]'s doctrine on the failover path: running and
+// TestConvergeDoesNotPullAPresentImage is the running-never-needs-network doctrine on the failover path: running and
 // failing over never need the network. Starting an .image unit IS a registry pull (measured with
 // podman's own generator), so a resident image must not have its unit started.
 func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
@@ -202,7 +202,7 @@ func TestConvergeFailsWhenAnAbsentImageCannotBeFetched(t *testing.T) {
 	}
 }
 
-// TestAServiceThatWillNotStartDoesNotFailConverge is the failure rule ([V3b.3](f)): converge's
+// TestAServiceThatWillNotStartDoesNotFailConverge is the failure rule: converge's
 // OWN failure demotes, a SERVICE's failure alerts and promotes. A code fault is deterministic, so
 // the peer running the identical closure hits it identically and the failover only flaps; and one
 // broken service must not take the other N-1 down with it.
@@ -396,7 +396,7 @@ func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
 
 // TestServiceForgetRemovesTheManifestAndFlushes: reverting a FRESH install has to remove the
 // service's identity from the volume, not just stop its units — under converge the volume is what
-// every future promotion, on every node, renders from ([V3b.3](f)).
+// every future promotion, on every node, renders from.
 //
 // The `sync -f` is the durable half and is asserted rather than assumed: the fact that has to
 // survive a power cut here is the directory ENTRY's removal, the same reason provisionService
@@ -561,7 +561,7 @@ func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
 	}
 }
 
-// The front door's routing table is converge's output too ([B.48]): the same pass that renders the
+// The front door's routing table is converge's output too: the same pass that renders the
 // units writes where each service can be reached and under what name. Before this, a
 // runtime-installed service was reachable only on its own port -- the door kept serving the
 // landing page over a running household.
@@ -711,7 +711,7 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	}
 }
 
-// mosquitto is in the table with a name and an address and NO ROUTE ([B.48]). The address is
+// mosquitto is in the table with a name and an address and NO ROUTE. The address is
 // real and is what the health floor probes; what must not happen is the front door forwarding LAN
 // traffic to it, because that address is the broker's MANAGEMENT API, bound to the guest's
 // loopback on purpose — and the door runs inside that guest. A routing table that fronted it would
@@ -752,7 +752,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if _, err := serviceHealthURL(x, "mosquitto"); err != nil {
 		t.Errorf("the broker cannot be health-probed (%v); having no route must not decide that", err)
 	}
-	// AND IT ANNOUNCES ITSELF ([V3b.30](a)). The one service the household's other devices go
+	// AND IT ANNOUNCES ITSELF. The one service the household's other devices go
 	// looking for rather than type a name at -- and the record must carry MQTT's port, not the
 	// management port two lines above that the door is being kept away from.
 	if len(mq.Announce) != 1 {
@@ -924,7 +924,7 @@ func TestAPodNetworkOnTheWrongSubnetIsRefused(t *testing.T) {
 	}
 }
 
-// TestConvergeStopsWhatItNoLongerRenders ([B.168]): pods outlive their containers now, so that a
+// TestConvergeStopsWhatItNoLongerRenders: pods outlive their containers now, so that a
 // crashed container is restarted -- which means a service that is forgotten (a first install that
 // failed) or uninstalled leaves its pod running unless converge stops it. A stale pod holds its
 // address and ports, and a reinstall would join it. Containers before their pod; what is still

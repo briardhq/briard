@@ -9,7 +9,7 @@ import (
 
 // identity minting has exactly two questions -- has somebody else named this node, and has this
 // node named itself before -- and both answers are destructive to get wrong. A re-mint costs the
-// node its own DRBD metadata ([V3.20]: the `on <name>` is keyed to it); a mint where a harness
+// node its own DRBD metadata (the `on <name>` is keyed to it); a mint where a harness
 // already said who it is hands every rig a random service MAC and a random mDNS name.
 
 func idCfg(t *testing.T) Config {
@@ -131,7 +131,7 @@ func TestConfigFromEnvReadsTheRecordedIdentity(t *testing.T) {
 }
 
 // A node told nothing and holding no record is still the literal every install answered to before
-// [V3.20]. That fallback is what keeps a hand-run agent and the unit tests working.
+// each got its own. That fallback is what keeps a hand-run agent and the unit tests working.
 func TestConfigFromEnvFallsBackToTheDefaultNodeName(t *testing.T) {
 	os.Unsetenv("NODE")
 	t.Cleanup(func() { os.Unsetenv("NODE") })

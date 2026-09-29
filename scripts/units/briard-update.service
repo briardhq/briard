@@ -1,7 +1,7 @@
 # briard-update.service -- SHIPPED VERBATIM, not generated. A signed artifact of the host chain
-# that install.sh copies into place; see briard-agent.service for why ([B.157]).
+# that install.sh copies into place; see briard-agent.service for why.
 [Unit]
-Description=briard update: converge this node's agent to the release channel ([B.86a])
+Description=briard update: converge this node's agent to the release channel
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -12,7 +12,7 @@ Type=oneshot
 # minimal and on NixOS it does not reach curl at all (same line, same reason, as briard-agent).
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
 # The node's own configuration, so the script READS CHANNEL_URL and UPDATE_KEYRING rather than
-# having them written into it ([B.157]). config.env is already KEY=value, one per line, unquoted,
+# having them written into it. config.env is already KEY=value, one per line, unquoted,
 # which is exactly what systemd parses here.
 #
 # ⚠️ The leading `-` means "start anyway if the file is absent", and here that is the point rather

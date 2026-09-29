@@ -68,7 +68,7 @@ func TestPoolsAreStructurallyDisjoint(t *testing.T) {
 
 func TestPickRejectsWhatTheHostAlreadyHas(t *testing.T) {
 	// A corporate VPN that named 10.173.0.0/16, plus this machine's own LAN at 10.11.71.0/24 --
-	// the L3 collision that made the LINK's subnet need a draw of its own ([V3b.26f]): it never
+	// the L3 collision that made the LINK's subnet need a draw of its own: it never
 	// touches the LAN, but the host's routing table is shared.
 	obs := Observed{
 		Prefixes: []netip.Prefix{
@@ -119,7 +119,7 @@ func TestPickProbesTheFlockSubnetOnly(t *testing.T) {
 }
 
 // Exhaustion must REFUSE, not invent: a host that really has 10/8 carved up gets a message naming
-// the variable, which is DESIGN §4's existing posture for the VIP.
+// the variable, which is the existing posture for the VIP.
 func TestPickRefusesWhenEveryCandidateCollides(t *testing.T) {
 	all := Observed{Prefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}
 	_, err := Pick(all, octets(173, 94), nil)

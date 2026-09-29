@@ -1,17 +1,17 @@
 // Command briard-guest-agent is the in-guest half of Briard: the control agent that serves the
 // host over the virtio-serial channel, the host-agent deadman, and the converge step
-// drbd-reactor runs at promotion. It is its OWN main ([B.137]) so that what the guest links is
+// drbd-reactor runs at promotion. It is its OWN main so that what the guest links is
 // an import graph, not a build tag: this package imports guestagent and what guestagent needs,
 // and nothing of the host -- no channel fetcher, no self-update layout, no CLI, no report card,
 // no QEMU launcher. `internal/arch` asserts the fence, and the flake hashes exactly this graph
-// to decide when the guest image changed ([B.86i]).
+// to decide when the guest image changed.
 //
 // The argv is the contract the image's units and the pushed bundle share (guest-image/
-// disk-image.nix, configuration.nix, [B.86j]'s picker passes it through verbatim):
+// disk-image.nix, configuration.nix, the pushed-binary picker passes it through verbatim):
 //
 //	briard-guest-agent run --guest      serve the host (Type=notify; READY once the port is open)
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
-//	briard-guest-agent run --inbound-listen  the inbound channel alone ([B.143]); `run --guest`
+//	briard-guest-agent run --inbound-listen  the inbound channel alone; `run --guest`
 //	                                    does this itself, so only an agent-less rig invokes it
 //	briard-guest-agent --converge       render, warm and start every service the volume names
 //	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
@@ -19,10 +19,10 @@
 //	                                    from the spec the host wrote (briard-node-storage)
 //	briard-guest-agent --primary-storage      format on first use + mount the replicated volume
 //	briard-guest-agent --primary-storage-stop unmount it (briard-primary-storage's ExecStop)
-//	briard-guest-agent --write-units    render the units the agent owns ([B.160]); `run --guest`
+//	briard-guest-agent --write-units    render the units the agent owns; `run --guest`
 //	                                    does this itself, so only an agent-less rig invokes it
 //	briard-guest-agent --test-launch    the cheap self-test a staged copy passes before it is
-//	                                    trialled ([B.138]): execs, parses, sees the port device
+//	                                    trialled: execs, parses, sees the port device
 package main
 
 import (
@@ -62,7 +62,7 @@ func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent run", flag.ExitOnError)
 	guest := fs.Bool("guest", false, "serve the host over the virtio-serial control channel")
 	deadman := fs.Bool("deadman", false, "run the host-agent deadman")
-	inboundListen := fs.Bool("inbound-listen", false, "serve the inbound channel alone -- what `run --guest` does inside itself, for a harness with no host ([B.143])")
+	inboundListen := fs.Bool("inbound-listen", false, "serve the inbound channel alone -- what `run --guest` does inside itself, for a harness with no host")
 	_ = fs.Parse(args)
 
 	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
@@ -89,7 +89,7 @@ func runDaemon(args []string) {
 			log.Fatalf("guest agent: %v", err)
 		}
 	case *inboundListen:
-		// FOR A GUEST WITH NO HOST ([B.143]), the same accommodation --write-units makes and for
+		// FOR A GUEST WITH NO HOST, the same accommodation --write-units makes and for
 		// the same reason. In the product the inbound listener runs INSIDE the long-running agent
 		// (runGuest below), which is the whole point of it -- the logic lives where everything it
 		// reasons about lives, rather than in something short-lived beside it. But the agent-less
@@ -101,7 +101,7 @@ func runDaemon(args []string) {
 		// Nothing in the product invokes this. The harness supplies the trigger the host would
 		// have supplied, and nothing else.
 		// The start evaluator rides along for the same reason: it is the other half of the ring
-		// that lives in the long-running agent ([B.167]).
+		// that lives in the long-running agent.
 		go guestagent.EvaluateStarts(ctx, guestfirmware.NewOSExecutor())
 		if err := guestagent.ListenInbound(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("inbound channel: %v", err)
@@ -113,7 +113,7 @@ func runDaemon(args []string) {
 }
 
 // runInternal is the flag-shaped surface a unit file invokes: converge-at-promotion, in the
-// guest ([V3b.3](f)). briard-services.service runs these as a promoter CHAIN MEMBER between the
+// guest. briard-services.service runs these as a promoter CHAIN MEMBER between the
 // data mount and the VIP, so the exit code is load-bearing: a non-zero ExecStart fails the whole
 // promotion, the node never claims the VIP, and a primary with no address is already reported
 // unhealthy. Converge failing is a node that cannot serve, and it must say so rather than
@@ -126,11 +126,11 @@ func runInternal(args []string) {
 	nodeStorage := fs.Bool("node-storage", false, "build every tier /run/briard/node-storage.json names and attach the resource -- briard-node-storage.service's ExecStart")
 	primaryStorage := fs.Bool("primary-storage", false, "format on first use, mount the replicated volume -- briard-primary-storage.service's ExecStart")
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
-	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host ([B.160])")
-	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): check what a staged copy can check without the port, then exit 0")
-	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre ([B.143])")
-	clock := fs.String("clock", "", "take this service's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host ([B.143], [B.167])")
-	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost ([B.143])")
+	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host")
+	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test: check what a staged copy can check without the port, then exit 0")
+	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre")
+	clock := fs.String("clock", "", "take this service's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host")
+	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -150,7 +150,7 @@ func runInternal(args []string) {
 	defer stop()
 
 	if *writeUnits {
-		// FOR A GUEST WITH NO HOST ([B.160]). In the product this is the first thing `run --guest`
+		// FOR A GUEST WITH NO HOST. In the product this is the first thing `run --guest`
 		// does, so nothing invokes this flag; the nixosTest machines have no host to dress them
 		// and no control channel to serve, and this is how they get the product's own units
 		// instead of a harness's copy of them (nixosTest/lib.nix). A rig that declared its own
@@ -177,7 +177,7 @@ func runInternal(args []string) {
 	}
 
 	if *serviceStarting != "" {
-		// THE GENERIC HOOK ([B.143]): every catalogued service gets a member at container start,
+		// THE GENERIC HOOK: every catalogued service gets a member at container start,
 		// which is the only boundary visible from outside the container. Home Assistant adds its
 		// OWN restarts through the inbound channel; everything else has just this.
 		//
@@ -200,7 +200,7 @@ func runInternal(args []string) {
 	}
 
 	if *clock != "" {
-		// FOR A GUEST WITH NO HOST ([B.143]), like --inbound-listen beside it: the rigs that get
+		// FOR A GUEST WITH NO HOST, like --inbound-listen beside it: the rigs that get
 		// Home Assistant running are agent-less, and this is the only way an L0 run can exercise
 		// the recorder lock against a REAL Home Assistant. Nothing in the product invokes it.
 		detail, err := guestagent.TakeClockMember(ctx, guestfirmware.NewOSExecutor(), *clock, time.Now())
@@ -212,7 +212,7 @@ func runInternal(args []string) {
 	}
 
 	if *serviceStopped != "" {
-		// THE CLEAN-STOP MARKER ([B.143]), the other half of the question the member above
+		// THE CLEAN-STOP MARKER, the other half of the question the member above
 		// answers: whether this service's data was FLUSHED, which a stopped container does not
 		// prove on its own. systemd's own $SERVICE_RESULT is the evidence, and it exists only in
 		// an ExecStopPost — which is why the rendered unit puts this there.
@@ -227,7 +227,7 @@ func runInternal(args []string) {
 	}
 
 	if *nodeStorage {
-		// STORAGE IS THE HOST'S DECISION AND THE GUEST'S WORK ([V3b.33](d)): the spec was
+		// STORAGE IS THE HOST'S DECISION AND THE GUEST'S WORK: the spec was
 		// written by the host before this unit was started, so there is nothing to pass on the
 		// command line and nothing for this process to decide. A non-zero exit fails the verb
 		// the host is still waiting on.
@@ -265,10 +265,10 @@ func runInternal(args []string) {
 // Cancellation is a deadline, not a hope. A `systemctl stop` lands while Serve is parked in a
 // blocking read of the port, which sees no cancellation; closing the port is what unparks it, and
 // guestStopGrace bounds the case where even that is not enough -- the host's clean-shutdown
-// timing ([B.51], [B.127]) depends on this process actually ending.
+// timing depends on this process actually ending.
 func runGuest(ctx context.Context) error {
 	x := guestfirmware.NewOSExecutor()
-	// THE UNITS THIS BINARY OWNS, BEFORE ANYTHING ELSE ([B.160]): the guest image no longer
+	// THE UNITS THIS BINARY OWNS, BEFORE ANYTHING ELSE: the guest image no longer
 	// defines them, so nothing this agent is about to do -- the trial verdict below, the host's
 	// first bring-up verb after the port -- can name a unit until it has been written. Ordering
 	// it ahead of the trial is also what makes a trial honest: a staged agent is judged on the
@@ -276,7 +276,7 @@ func runGuest(ctx context.Context) error {
 	if err := guestagent.WriteUnits(ctx, x); err != nil {
 		return err
 	}
-	// THE INBOUND CHANNEL ([B.143]): one socket, bound unconditionally, whether this node runs
+	// THE INBOUND CHANNEL: one socket, bound unconditionally, whether this node runs
 	// zero services or five. It needs no service list because a caller identifies itself with a
 	// token converge minted, so there is nothing to learn and nothing to re-learn when a
 	// promotion brings a service this process was never told about.
@@ -290,11 +290,11 @@ func runGuest(ctx context.Context) error {
 			log.Printf("inbound channel: %v; services' own restarts will not be snapshotted", err)
 		}
 	}()
-	// THE START EVALUATOR ([B.167]): a start sample is evaluated once its boot has a verdict,
+	// THE START EVALUATOR: a start sample is evaluated once its boot has a verdict,
 	// which only a process that outlives the pre-start hook can wait for. Its own goroutine, for
 	// the reason above.
 	go guestagent.EvaluateStarts(ctx, x)
-	// THE PUSH PROTOCOL'S START-TIME DUTY ([B.138]), before the port: a trial start is the
+	// THE PUSH PROTOCOL'S START-TIME DUTY, before the port: a trial start is the
 	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
 	// verdict exits here, port never opened, so the host's reconnect meets the committed agent
 	// and reads the old release. A non-trial start with a staged set left behind discards it.
@@ -309,7 +309,7 @@ func runGuest(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// THE COMMIT ([B.148]), here and nowhere else: the port is open, which is the last thing this
+	// THE COMMIT, here and nowhere else: the port is open, which is the last thing this
 	// binary had left to prove, and NOTHING HAS BEEN SERVED YET. The host's gate is the port, not
 	// READY -- so anything committed after the first verb is a set the units bring-up starts
 	// cannot exec (briard-node-storage names the committed path directly). BinCommit says why in
@@ -321,9 +321,9 @@ func runGuest(ctx context.Context) error {
 		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
 	}()
 
-	// READY at listen ([B.86j]): the unit is Type=notify under the guest's pivot. A pushed agent
+	// READY at listen: the unit is Type=notify under the guest's pivot. A pushed agent
 	// that cannot open the port never says it, and the next start falls back to the committed
-	// one. Since [B.148] the set is already committed when this is sent, so READY means "serving
+	// one. The set is already committed when this is sent, so READY means "serving
 	// the binaries this node keeps" rather than "about to commit them".
 	_ = sdnotify.Ready()
 	if err := guestagent.ServeStamped(ctx, conn, x); err != nil {
@@ -333,7 +333,7 @@ func runGuest(ctx context.Context) error {
 	// A clean EOF: the host disconnected (a host-agent restart, a re-adopt). Hand the port back
 	// so qemu buffers the next host request instead of losing it, then pause before exiting --
 	// with the host end gone for good the reopened port returns EOF at once, and without this
-	// pause Restart=always spun ~48 times in 30 s ([B.35]).
+	// pause Restart=always spun ~48 times in 30 s.
 	conn.Close()
 	select {
 	case <-ctx.Done():
@@ -348,7 +348,7 @@ const hostAbsentPause = 5 * time.Second
 
 // guestStopGrace is how long a cancelled guest agent may take to unwind before it is ended
 // outright. Strictly longer than PowerOffGrace, so a detached os.poweroff can finish its reply
-// before the process that carries it is killed ([B.132]).
+// before the process that carries it is killed.
 const guestStopGrace = 5 * time.Second
 
 const _ = uint(guestStopGrace - guestfirmware.PowerOffGrace)

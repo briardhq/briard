@@ -14,7 +14,7 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// THE NODE'S BLOCK STORAGE, BUILT FROM A SPEC THE HOST WROTE ([V3b.33](d)).
+// THE NODE'S BLOCK STORAGE, BUILT FROM A SPEC THE HOST WROTE.
 //
 // briard-node-storage.service's ExecStart, on every node at every bring-up. It builds each tier
 // the spec names -- open or create LUKS, activate or create the two-LV VG, format the seed's
@@ -23,16 +23,16 @@ import (
 // `/dev/drbd0` attached and goes no further: the mount is briard-primary-storage's, on the one
 // node that promoted.
 //
-// IT REPLACES A BOOT UNIT, and the reason is scope rather than tidiness. [V3b.33](b)/(c) built
-// the seam from `multi-user.target` with no inputs but what it could read off the machine, so
+// IT REPLACES A BOOT UNIT, and the reason is scope rather than tidiness. The storage seam was first built
+// from `multi-user.target` with no inputs but what it could read off the machine, so
 // there was nowhere for a decision to arrive -- which is why (c) could not build the Adiantum
 // opt-in it specified. Storage policy is a node-scoped fact the host holds durably and pushes at
-// bring-up (AGENTS §5), so the host writes nodestorage.Path and starts this.
+// bring-up, so the host writes nodestorage.Path and starts this.
 //
 // AND IT REPLACES drbd.provision/drbd.up/drbd.init-uptodate, which is what retires
 // /run/briard/data.fresh: "is this LV brand new" was an inference from `drbdadm create-md`'s exit
 // code, an inference ENCRYPTION BROKE (dm-crypt returns ciphertext for sectors nobody wrote, so
-// the blank-probe found "some data" on every fresh encrypted node, [V3b.33](c)). One program now
+// the blank-probe found "some data" on every fresh encrypted node). One program now
 // runs both `lvcreate` and `create-md`, so it knows in-process and no marker carries the fact
 // between two components.
 
@@ -61,7 +61,7 @@ const (
 	// loneProbeDevice is the device name drbdmeta wants for its lock file when the metadata
 	// probe runs on a node that has no DRBD device at all. It names nothing that exists.
 	loneProbeDevice = "/dev/drbd0"
-	// chainTarget is the lone node's promotion: the static target carrying the seven chain
+	// chainTarget is the lone node's promotion: the static target carrying the five chain
 	// members in the reactor's order (guest-image/configuration.nix). PAIRED with that name.
 	chainTarget = "briard-chain.target"
 	// chainRoot is the chain's first member, the mount. Every other member Requires= it
@@ -99,7 +99,7 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	// `pvmove`'s transient mirror is a dm-mirror target, and LVM cannot autoload it here: it
 	// shells out to /sbin/modprobe, which does not exist on a NixOS guest, so the first
 	// conversion dies with "Required device-mapper target(s) not detected in your kernel"
-	// (measured, [V3b.33](a)). Loading it now means the module a conversion needs is never the
+	// (measured). Loading it now means the module a conversion needs is never the
 	// reason one cannot start. A witness builds no tier and converts nothing.
 	if len(spec.Tiers) > 0 {
 		if err := run("modprobe", "dm-mirror"); err != nil {
@@ -120,7 +120,7 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		}
 	}
 
-	// THE FORMAT, HERE AND ONLY HERE ([B.145a]). The two facts that make it safe are both known
+	// THE FORMAT, HERE AND ONLY HERE. The two facts that make it safe are both known
 	// in this process: the data LV was created a moment ago by the `lvcreate` above (so there is
 	// nothing on it to lose), and the host designated this node the seed of a NEW flock (a
 	// joiner's blank LV is left blank, to be filled by the resync). "A reboot can never format"
@@ -139,15 +139,15 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		}
 	}
 
-	// THE TOPOLOGY, FOR THE UNITS THAT CANNOT READ THE SPEC ([B.145c]): the hold unit's steps are
+	// THE TOPOLOGY, FOR THE UNITS THAT CANNOT READ THE SPEC: the hold unit's steps are
 	// shell, and they need one word -- flock or alone. Beside vip.env, same lifetime, and written
 	// on every node so the word is never missing on the one that reads it.
 	if err := x.WriteFile(topologyEnvPath, []byte(topologyEnv(spec.Resource.Replicated))); err != nil {
 		return err
 	}
 
-	// THE PROBE IS THE DRBD MAGIC, NOT BLANKNESS ([B.145]). Both LVs sit above LUKS, so a never-
-	// written metadata LV reads as ciphertext ([B.126]'s trap one layer up); "metadata present"
+	// THE PROBE IS THE DRBD MAGIC, NOT BLANKNESS. Both LVs sit above LUKS, so a never-
+	// written metadata LV reads as ciphertext (the blank-probe trap one layer up); "metadata present"
 	// is `drbdmeta dump-md` succeeding, which is exact on garbage. It is what tells the spec ×
 	// disk rows apart -- a returning node from a converting one, a plain lone node from a
 	// forgotten flock -- and it is not asked on LVs this run just made (garbage by construction)
@@ -164,14 +164,14 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		return err
 	}
 
-	// THE REPLICATED ROWS ([B.145d]), by what the disk says:
+	// THE REPLICATED ROWS, by what the disk says:
 	//   metadata present            -> attach: a returning node, its replica on the persisted
 	//                                  volume; never re-created, never re-seeded (a blind
 	//                                  --force would split-brain against the peer that kept
 	//                                  serving);
 	//   no metadata, LVs just made  -> create: a seed or a blank joiner (today's first init);
 	//   no metadata, LVs existing   -> CONVERT: a lone node joining its first peer, whose data
-	//                                  is THE data ([B.145]); or a blank re-joiner whose old LVs
+	//                                  is THE data; or a blank re-joiner whose old LVs
 	//                                  are discarded by the resync. Same command either way.
 	// `--force`, because the probe above has already said there is nothing to protect -- the
 	// refusal create-md would otherwise raise is the same fact read less precisely.
@@ -193,7 +193,7 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	//
 	// ⚠️ WITH NO PEER CONNECTED, which is why the resource is brought up and then DISCONNECTED
 	// before the word is said. `--clear-bitmap` with a peer CONNECTED declares that peer
-	// UpToDate too, with no sync -- the [B.145a] harness lesson, and on a conversion the joiner
+	// UpToDate too, with no sync -- the harness lesson, and on a conversion the joiner
 	// may already be up and dialling. `drbdadm attach` alone cannot do it (the minor does not
 	// exist until `up`, and drbdadm has no new-minor of its own -- measured, "Device minor not
 	// allocated"), so: `up` (which may let a dialling peer in for a moment -- two Inconsistent
@@ -224,8 +224,8 @@ func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) boo
 	data, _ := spec.Tier(nodestorage.TierData)
 	out, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md")
 	// ABSENT IS ONE PHRASE, AND EVERYTHING ELSE IS PRESENT. dump-md exits non-zero for more than
-	// garbage: metadata a Primary left behind reads "unclean, please apply-al first" (measured,
-	// [B.145d] -- the survivor of a failover, rebooted), and that is metadata as surely as a
+	// garbage: metadata a Primary left behind reads "unclean, please apply-al first" (measured
+	// on the survivor of a failover, rebooted), and that is metadata as surely as a
 	// clean dump is. A device drbdmeta cannot open at all lands on the present side too, which
 	// is the conservative one for every row: alone, it refuses rather than mounts; replicated,
 	// it attaches and fails loudly rather than creating over what it could not read.
@@ -241,7 +241,7 @@ func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) boo
 	return true
 }
 
-// loneNode is the spec × disk rows for a node that runs no DRBD ([B.145c], [B.145d]). The LVs
+// loneNode is the spec × disk rows for a node that runs no DRBD. The LVs
 // are up and, on a first init, formatted, so there is nothing left to build: the mount is
 // briard-primary-storage's, exactly as on a flock, off the data LV the spec names. What differs
 // is what the metadata LV says:
@@ -323,7 +323,7 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 	// physical loss only (theft, RMA, resale); the key is right there. What it buys is that
 	// arming later is a keyslot operation instead of a multi-hour migration nobody opts into.
 	//
-	// ⚠️ AND AN UNREADABLE PROBE IS NOT A BLANK DISK ([B.126]). Falling through on it reaches the
+	// ⚠️ AND AN UNREADABLE PROBE IS NOT A BLANK DISK. Falling through on it reaches the
 	// blank-disk path below, whose first act is luksFormat on this very device -- so a disk that is
 	// busy, or whose header read failed, would be crypto-erased by a bring-up that was only ever
 	// asking a question. Refuse instead: a genuinely blank device answers, and a retry costs a
@@ -373,7 +373,7 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 		pv = crypt
 	}
 
-	// `pvcreate` WITHOUT -f is the blank probe, and it is [B.126]'s idiom rather than a second
+	// `pvcreate` WITHOUT -f is the blank probe, and it is the blank probe's one idiom rather than a second
 	// one: it refuses on ANY existing signature (the prompt hits a closed stdin and aborts) and
 	// it fails on a device it cannot read. So "pvcreate succeeded" means the device was readable
 	// AND blank -- the distinction a `blkid ||` probe cannot make, which is the mistake that once
@@ -388,7 +388,7 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 	if err := run("vgcreate", t.VG, pv); err != nil {
 		return false, err
 	}
-	// TWO LVs, DATA FIRST ([B.145a]). LVM hands out the lowest free extents, so creating the data
+	// TWO LVs, DATA FIRST. LVM hands out the lowest free extents, so creating the data
 	// LV at "everything but the metadata's share" and then the metadata LV as 100%FREE lands the
 	// metadata at the END of the PV with no extent arithmetic -- the placement DRBD gives its
 	// internal metadata, spelled in LVM. The share is computed from the whole VG rather than
@@ -604,14 +604,14 @@ func writePrivate(x Executor, path string, data []byte) error {
 // seam has always used for the data tier.
 //
 // ⚠️ The seam invariant tells this device from the LV by its dm TARGET (`crypt` vs `linear`), not
-// by its name -- INVARIANTS §13 allows a crypt device and never requires one, because arming is
+// by its name -- the storage-seam invariant allows a crypt device and never requires one, because arming is
 // per-node (the AES axis) and not fleet-wide.
 func cryptName(t nodestorage.Tier) string { return t.VG + "-crypt" }
 
 func cryptDevice(t nodestorage.Tier) string { return "/dev/mapper/" + cryptName(t) }
 
-// luksState is the three answers the format decision needs, and the reason it is not a bool
-// ([B.126]): a device that IS formatted, one that provably is NOT, and one the probe could not
+// luksState is the three answers the format decision needs, and the reason it is not a bool:
+// a device that IS formatted, one that provably is NOT, and one the probe could not
 // read. The third is not the second, and collapsing them is what routes an unreadable encrypted
 // disk into luksFormat. The zero value is the conservative one on purpose.
 type luksState int

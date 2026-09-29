@@ -21,8 +21,8 @@
 //
 // SEVERAL CATALOGS, ONE KEY, and that is what the pair form is for. A version ROTATION publishes
 // a second manifest for the SAME service name over the first, and the node that fetches it holds
-// exactly one keyring -- given to it, out of band, before any of this ([V3b.3](e1)'s fleet and
-// soak rotate). So each catalog gets its own directory (the files collide: both are `<name>.json`)
+// exactly one keyring -- given to it, out of band, before any of this (the fleet and
+// soak rigs rotate it). So each catalog gets its own directory (the files collide: both are `<name>.json`)
 // and they all verify against the same trust root. The private key never leaves this process.
 //
 //	catalog-sign <manifest.json> <outdir> [<manifest.json> <outdir>]...

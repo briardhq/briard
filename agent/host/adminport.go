@@ -1,7 +1,7 @@
-// The guest's admin port ([V3b.31i]) -- the household dashboard's way to ask the host for
+// The guest's admin port -- the household dashboard's way to ask the host for
 // something.
 //
-// The dashboard lives in the guest ([V3b.31a](b)) and a service install is a host directive, so
+// The dashboard lives in the guest and a service install is a host directive, so
 // "Set up Home Assistant" needs a way for a process in the guest to reach the supervisor. It is
 // NOT the network: the host and the guest already share a virtio-serial bus, and qemu serves a
 // second port on it as a unix socket on the host, exactly like the control channel with the roles
@@ -33,13 +33,13 @@ import (
 
 // guestMayAsk is the allowlist: the directives whose effect stays inside the guest.
 //
-// service-restore joins them ([B.143]): its effect is one service's data and code on this node,
+// service-restore joins them: its effect is one service's data and code on this node,
 // the same blast radius an install already has, and the picker that asks for it is the dashboard
 // behind the same door.
 func guestMayAsk(kind string) bool {
 	return kind == api.DirectiveServiceInstall || kind == api.DirectiveServicePrewarm ||
 		kind == api.DirectiveServiceRestore || kind == api.DirectiveServiceMembers ||
-		kind == api.DirectiveCasaClaim // [V3c.4]: a name for this household, asked from its own page
+		kind == api.DirectiveCasaClaim // a name for this household, asked from its own page
 }
 
 // serveAdminPort dials the host end of the guest's admin port and serves it until ctx ends,

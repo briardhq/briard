@@ -58,7 +58,7 @@ import (
 // well inside a stop worth waiting for.
 //
 // IT WAS 90 s, WHICH IS SYSTEMD'S DefaultTimeoutStopSec, AND THE COLLISION HID A BUG FOR MONTHS
-// ([B.85]). A unit inside the guest was deadlocking on stop and eating that exact timeout; this
+// A unit inside the guest was deadlocking on stop and eating that exact timeout; this
 // grace expired in the same instant the guest's SIGKILL fired, so the ACPI fallback appeared to
 // power the machine off in 1.5 s when all it had done was arrive as the deadlock resolved
 // itself. Every clean stop paid 90 s and looked like it worked. A grace SHORTER than the guest's
@@ -70,7 +70,7 @@ const shutdownGrace = 30 * time.Second
 // stop routes have failed to say anything useful about it. It is deliberately much shorter than
 // shutdownGrace because it waits for something much smaller: not a guest shutting down (that has
 // already had its grace by then) but systemd finishing with a QEMU process that has already
-// exited. Measured at ~3 s live ([B.98]); this is three times that and still cheap enough that
+// exited. Measured at ~3 s live; this is three times that and still cheap enough that
 // the reboot path's worst case stays inside rebootGuest's budget.
 const reapGrace = 10 * time.Second
 
@@ -164,7 +164,7 @@ func (u *osUpgrade) resume(ctx context.Context) error {
 // guestStopper is the two-method slice of *platform.Guest that stopCleanly actually uses: ask
 // the machine to stop, and ask whether it has. Narrowed to an interface so the STOPPING window
 // -- a guest that is on its way down but not yet gone -- can be exercised without a live systemd
-// unit, which is the state [B.98] hid in and which no test could reach while this took a
+// unit, which is the state the lost-reply bug hid in and which no test could reach while this took a
 // concrete *Guest. Both methods are nil-receiver-safe on the real type, so nothing changes for
 // a caller holding a nil guest.
 type guestStopper interface {
@@ -209,7 +209,7 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 		// Both routes' errors are therefore evidence about a REQUEST, never about the machine.
 		// Only one question settles it: is the VM still there?
 		//
-		// IT ASKED WITH A ZERO GRACE UNTIL [B.98], WHICH ANSWERS ONE INSTANT TOO EARLY. Stopping
+		// A ZERO GRACE ANSWERS ONE INSTANT TOO EARLY. Stopping
 		// is not instantaneous and it is not one event: QEMU unlinks its monitor socket the
 		// moment it exits, while the unit stays active until systemd reaps it. Measured live on
 		// a standby, socket gone at :25 and unit inactive at :28 -- so a glance inside that gap
@@ -232,15 +232,15 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 	return nil
 }
 
-// IMAGE-LEVEL OS UPGRADE ([B.86h]). The guest chain's release is an IMAGE, and moving the node
+// IMAGE-LEVEL OS UPGRADE. The guest chain's release is an IMAGE, and moving the node
 // to it is the reboot method with the file swap where the snapshot used to be: stop cleanly,
 // rename the image the overlay is built on (the old one kept beside it), rebuild the overlay
 // on the new one, bring the guest up, prove the booted closure is the one the release's
 // signed manifest names, health-gate, then drop the old image or put it back. No generation,
 // no boot selector, no in-guest step: the guest is an appliance and the host holds the file.
 //
-// It coexists with the closure path (Upgrade / RebootUpgrade) until [B.86h]'s second half
-// retires it together with the lab and cloud demos that still drive closures; a node with a
+// It coexists with the closure path (Upgrade / RebootUpgrade) until the closure path is
+// retired together with the lab and cloud demos that still drive closures; a node with a
 // cloud sees the closure directive, an OSS node the image path.
 
 // nextImage / prevImage name the staged and the superseded image beside the one in use. The
@@ -312,7 +312,7 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	if e := os.Rename(nextImage(backing), backing); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("place the new image: %w", e))
 	}
-	// The swap is flushed before an overlay is built on it ([B.79]): otherwise a power cut can
+	// The swap is flushed before an overlay is built on it: otherwise a power cut can
 	// bring back the old names under an overlay made for the new image.
 	if e := atomicfile.SyncDir(filepath.Dir(backing)); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("flush the image swap: %w", e))
@@ -376,7 +376,7 @@ func (u *osUpgrade) restoreImage(ctx context.Context, qspec platform.QEMUSpec, b
 			}
 		} else {
 			// Said positively: a clean stop is what lets DRBD record its quorum on the way out,
-			// so the rebooted base can re-quorate with no successor ([B.62]); a rig asserts this
+			// so the rebooted base can re-quorate with no successor; a rig asserts this
 			// line rather than the absence of "forcing".
 			u.logf("image-upgrade: rollback stopped the guest cleanly")
 		}

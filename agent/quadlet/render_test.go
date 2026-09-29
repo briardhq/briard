@@ -70,7 +70,7 @@ func TestPromotionNeverPulls(t *testing.T) {
 	}
 }
 
-// TestContainerSupervisesItself: the service units are NOT promoter chain members ([V3b.3](f)),
+// TestContainerSupervisesItself: the service units are NOT promoter chain members,
 // so drbd-reactor neither restarts nor watches them. A container that dies must be brought back
 // by its own unit or it stays dead with nothing noticing — the recovery the promoter used to
 // provide, in the only place left to put it.
@@ -137,7 +137,7 @@ func TestNothingAutoStarts(t *testing.T) {
 // for oneshot — so the ABSENCE of this line means "wait forever", not "wait for the default".
 // converge starts this unit on the promotion path, and nixosTest/cold-converge-pull.nix measured
 // what that costs: a node Primary with no VIP, no services and nothing in `failed`, for as long
-// as a registry cares to dribble bytes ([B.56]).
+// as a registry cares to dribble bytes.
 //
 // The DURATION is asserted only as a floor, on purpose. The exact number is a judgement that may
 // move, and pinning it here would make this test a copy of the constant rather than a check on
@@ -155,7 +155,7 @@ func TestImagePullIsBounded(t *testing.T) {
 		t.Fatalf("ImagePullTimeout is %s: too short to be safe. An expiry loses all progress, so a "+
 			"bound near a slow household's real pull time never converges", ImagePullTimeout)
 	}
-	// SIZED BY THE MANIFEST ([V3b.31k]): an entry that says its download gets the allowance plus
+	// SIZED BY THE MANIFEST: an entry that says its download gets the allowance plus
 	// the bytes at the floor bitrate -- Home Assistant's 622 MB is ~22 minutes, a 10 MB broker
 	// the allowance plus 16 seconds -- and never less than the allowance, which is what keeps a
 	// small image from being given seconds for a pull that is mostly registry round-trips.
@@ -188,7 +188,7 @@ func TestImagePullIsBounded(t *testing.T) {
 // TestUnitOrder: the pod, then its members. Naming the members explicitly is required — the
 // quadlet spike proved that starting the pod service does not start its containers.
 //
-// This used to assert a promoter start-list (data -> pod -> members -> VIP), which [V3b.3](f)
+// This used to assert a promoter start-list (data -> pod -> members -> VIP), which converge-at-promotion
 // retired along with the function that built it: the chain is static and these units are not
 // members of it. What survives is the property that actually mattered — the order converge starts
 // them in.
@@ -322,8 +322,8 @@ func TestRenderRefusesInvalid(t *testing.T) {
 }
 
 // TestBrokerRendersItsConfigAndItsData: the second catalogued service renders as a plain unit
-// plus the one bind the product holds for it — its config, read-only, over the image's baked one
-// ([V3b.4]). The negative half is the same one the control channel gets: the same manifest under
+// plus the one bind the product holds for it — its config, read-only, over the image's baked one.
+// The negative half is the same one the control channel gets: the same manifest under
 // another name renders without it.
 //
 // It is here rather than only in agent/services because THIS is where a bind reaches a unit file:
@@ -356,7 +356,7 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 	}
 }
 
-// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until [B.48](a) it was made the
+// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until a service asked for a private network it was made the
 // same way for everyone. These are the three shapes it can take, asserted on the rendered bytes
 // because that is what podman reads.
 func TestPodNetworkingFollowsTheManifest(t *testing.T) {
@@ -432,7 +432,7 @@ func TestImagesNeedsNoAddress(t *testing.T) {
 // and it has to be: everywhere else derives the name from this function, so only here can the
 // FORMAT itself be wrong without something else covering for it.
 //
-// Three properties, each load-bearing ([B.143]). The trigger is in the name, so a human scanning
+// Three properties, each load-bearing. The trigger is in the name, so a human scanning
 // `.snapshots` can tell an update point from a clock one without opening a sidecar. The
 // timestamp is UTC and fixed-width, so lexical order is chronological order and the picker needs
 // no parsing to sort. And the whole thing is one path element — a member is a btrfs subvolume,
@@ -493,7 +493,7 @@ func TestSnapshotMemberTimeIsTheOrder(t *testing.T) {
 	}
 }
 
-// TestDataContainerTakesARingMemberAtStart: the generic hook ([B.143]). Every catalogued service
+// TestDataContainerTakesARingMemberAtStart: the generic hook. Every catalogued service
 // gets a member at container start, which is the only boundary visible from outside the
 // container -- Home Assistant adds its own internal restarts through the inbound channel, and
 // nothing else can.
@@ -538,7 +538,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 		t.Errorf("a container with no data of its own takes a member:\n%s", side)
 	}
 
-	// AND THE STOP HALF ([B.143]): a clean stop records that this service's data was flushed, so
+	// AND THE STOP HALF: a clean stop records that this service's data was flushed, so
 	// the next start's member can say what its bytes ARE. Without it every start after a container
 	// stop would read as crash-consistent -- which is what a promotion after a dead primary is,
 	// and what an ordinary restart is not.
@@ -561,7 +561,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	}
 }
 
-// TestThePodOutlivesItsContainers ([B.168]): with quadlet's default exit policy a crashed container
+// TestThePodOutlivesItsContainers: with quadlet's default exit policy a crashed container
 // takes its pod down, systemd stops the container unit as the pod's dependent, and that stop
 // suppresses Restart=always -- a crashed Home Assistant stayed down. Every network shape gets it.
 func TestThePodOutlivesItsContainers(t *testing.T) {

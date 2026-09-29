@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// LiveFacts is what `briard doctor` reads off an INSTALLED host by itself ([V3c.3]) -- the half
+// LiveFacts is what `briard doctor` reads off an INSTALLED host by itself -- the half
 // that still answers with the agent down, which is when someone is most likely to run it. The
 // agent's half (agent/host, doctor.go) judges what only the agent can see.
 type LiveFacts struct {
@@ -38,7 +38,7 @@ func AssessLive(f LiveFacts) []Check {
 	default:
 		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%d GB free on this machine", f.DiskFreeMB/1024), ""})
 	}
-	// THE CLOCK ([V3c.9]). A wrong clock turns a valid cert into a refusal and misdates every
+	// THE CLOCK. A wrong clock turns a valid cert into a refusal and misdates every
 	// alert and backup, and an RTC-less board boots with whatever time it last saved.
 	switch f.NTPSynced {
 	case "yes":
@@ -60,7 +60,7 @@ func GatherLive(ctx context.Context) LiveFacts {
 
 // NTPSynced is timedatectl's NTPSynchronized: "yes", "no", or "" when it could not be read (no
 // timedatectl, as on Windows, or no answer in 5 s). The doctor and the agent's clock alert
-// ([V3c.9]) both read it here.
+// both read it here.
 func NTPSynced(ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -67,7 +67,7 @@ pkgs.testers.runNixOSTest {
 
     primary = next(m for m in machines if role(m) == "Primary")
     # The service is installed onto the VOLUME by whoever holds it. The survivor never runs an
-    # install: it renders from that same volume when it promotes ([V3b.3](f)), which is the half
+    # install: it renders from that same volume when it promotes, which is the half
     # this test is really about.
     dataroot = install_fixture(primary)
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
@@ -77,7 +77,7 @@ pkgs.testers.runNixOSTest {
     t1 = int(json.loads(primary.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"primary={primary.name} tick={t1}")
 
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
     # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
     # the claim under test, so assert the disk state before removing the only UpToDate copy.

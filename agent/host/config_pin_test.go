@@ -8,7 +8,7 @@ import (
 )
 
 // ⚠️ THE ONE DUPLICATED DEFAULT IN THE PRODUCT, pinned here because it is deliberate and therefore
-// easy to let drift ([B.157], owner's call).
+// easy to let drift (owner's call).
 //
 // scripts/agent/briard-update is FROZEN, agent-independent shell: it is what replaces the agent, so
 // it must not ask the agent anything. Its unit hands it config.env as an EnvironmentFile, but

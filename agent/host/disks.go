@@ -6,11 +6,11 @@ import (
 	"briard.io/agent/platform"
 )
 
-// stateDiskSize is the node-local state disk's ceiling ([B.86g]). Sparse, so this is a bound and
+// stateDiskSize is the node-local state disk's ceiling. Sparse, so this is a bound and
 // not a charge against the report card's free-space floor -- the guest grows into it as it pulls
 // service images, keeps a journal and records the deadman's backoff.
 //
-// A constant rather than a knob, for the reason [B.157] makes most of them one: nothing ever set
+// A constant rather than a knob, for the reason the install layout makes most of them one: nothing ever set
 // the installer's version of it, and a ceiling on a sparse file is not a decision a household has
 // an opinion about.
 const stateDiskSize = 8 << 30 // 8 GiB
@@ -20,11 +20,11 @@ const stateDiskSize = 8 << 30 // 8 GiB
 // ⚠️ IT PROVISIONS ONLY WHAT IT WAS TOLD ABOUT, and that predicate is doing real work rather than
 // being defensive. An empty path is how five agent-* rigs say "this node has no state disk, no data
 // disk" -- they run an agent against a guest that has neither -- so a path invented here would hand
-// qemu a `-drive` for a file nobody made. Same rule as everywhere else in [B.157]: the installer
+// qemu a `-drive` for a file nobody made. Same rule as everywhere else in the install layout: the installer
 // decides the LAYOUT and writes the paths down; the agent makes what those paths name.
 //
 // The overlay is not here. It is rebuilt on the image at every fresh launch anyway
-// (platform.RebuildOverlay), which since [B.157] also lays the first one down -- so the guest's OS
+// (platform.RebuildOverlay), which also lays the first one down -- so the guest's OS
 // disk needs nothing from this function.
 func (cfg Config) provisionDisks(logf func(string, ...any)) error {
 	if cfg.DataDisk != "" {

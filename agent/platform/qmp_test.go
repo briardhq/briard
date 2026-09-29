@@ -301,7 +301,7 @@ func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
 	}
 }
 
-// THE CONSOLE SOCKET LIVES BESIDE THE MONITOR ([B.142a]), derived from it and never configured
+// THE CONSOLE SOCKET LIVES BESIDE THE MONITOR, derived from it and never configured
 // on its own. Launch makes the QMP directory 0700 root, so a socket placed there inherits that
 // containment; the same socket somewhere world-reachable would be an open door onto an autologin
 // root shell. This asserts there is exactly one input and that nothing can pull the two apart --

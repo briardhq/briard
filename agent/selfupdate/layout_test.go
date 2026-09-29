@@ -117,7 +117,7 @@ func TestFlagsAreSeparateFromBinaries(t *testing.T) {
 	}
 }
 
-// The bundle siblings of [B.86b]: net-wrap stages beside the agent, qemu stages as a RELATIVE
+// The bundle siblings: net-wrap stages beside the agent, qemu stages as a RELATIVE
 // link to a tree under Base (replacing an earlier link atomically), a link to anything else
 // is refused, and the two resolve back to absolute tree paths.
 func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {

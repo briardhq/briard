@@ -5,7 +5,7 @@
 # "TLS survives failover", folded in here).
 #
 # The node behind the door runs NOTHING, deliberately: routing the front door to a
-# runtime-installed service is deferred ([V3.16]), so a test that put one there would prove the
+# runtime-installed service is deferred, so a test that put one there would prove the
 # door forwards to nothing in particular. Termination, replication and hot-reload are the layers
 # under test, and none of them needs a backend.
 #
@@ -67,7 +67,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     for m in disk_nodes:
@@ -112,7 +112,7 @@ pkgs.testers.runNixOSTest {
     print("renewed cert hot-reloaded live at the VIP (no restart)")
 
     # ---- TLS survives failover: the RENEWED cert (replicated), same VIP, on the survivor ----
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
     # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
     # the claim under test, so assert the disk state before removing the only UpToDate copy.

@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-// THE DISKS A NODE'S GUEST RUNS ON, ALLOCATED BY THE AGENT ([B.157]).
+// THE DISKS A NODE'S GUEST RUNS ON, ALLOCATED BY THE AGENT.
 //
 // install.sh laid them down with `fallocate`, `truncate` and a `dd` fallback, behind a `noclobber`
 // trick -- three shell calls and a subtlety, none of which a Windows host can reuse. Here they are
@@ -24,7 +24,7 @@ import (
 // up front makes "is there room for this node's data?" a question answered once, by a call that
 // either succeeds or refuses, rather than months later by a write that fails.
 //
-// ⚠️ THE CREATION IS THE PROOF OF ABSENCE ([B.126]), which is why this opens with O_EXCL rather
+// ⚠️ THE CREATION IS THE PROOF OF ABSENCE, which is why this opens with O_EXCL rather
 // than asking `Stat` first. "Absent" and "present but unstat-able" are different facts that a stat
 // cannot separate, and the allocation below writes from byte 0 -- so a check-then-create would let
 // an unreadable-but-present data volume be flattened. O_EXCL makes the kernel answer, atomically:

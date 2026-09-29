@@ -19,9 +19,9 @@ import (
 // blast radius); the code half (SystemPath/Switch) is whole-VM. The OS upgrade moves neither
 // service nor data: it is a property of the node, and it leaves the workload alone.
 //
-// NO SNAPSHOT/RESTORE HERE ANY MORE ([B.143], 2026-09-22). They were the {data} half of an OS
+// NO SNAPSHOT/RESTORE HERE ANY MORE. They were the {data} half of an OS
 // upgrade that no longer touches services, and the service-install sequence
-// (agent/host/service.go) has owned moving manifest and data back together since [V3b.3](e1) —
+// (agent/host/service.go) has owned moving manifest and data back together since the service-warm re-cut —
 // driving the guest agent's data.snapshot/data.restore verbs directly, pinned to the manifest
 // rather than to a system closure.
 type GuestManager interface {
@@ -102,7 +102,7 @@ type Config struct {
 	// VIP at all -- so there is no address to resolve and nothing to probe. (It used to mean the
 	// guest fell back to a baked eth1, which in the agent-less harnesses also carries the DRBD
 	// address: "the first address on eth1" was then the replication link rather than the VIP.
-	// [V3b.16a] deleted that fallback; [V3b.16] is what it cost in the field.)
+	// Deleting that fallback is what it cost in the field to learn.)
 	VIPDev string
 	// Diskless marks a witness: no services, no VIP, nothing to probe — its health follows
 	// quorum. This is the ONLY thing that means "never probe". Emptiness cannot carry that
@@ -236,7 +236,7 @@ type VIPReader interface {
 //   - an address we configured is the address we probe. We set it on the guest, so reading it
 //     back would tell us nothing new — but it would tell us something WRONG whenever the
 //     device also holds a lease (dhcpcd still serves the service NIC), and the failure that
-//     hides behind is the one V3.19 exists for: probing a node-local address that answers
+//     hides behind is the one the LAN-owned address exists to end: probing a node-local address that answers
 //     after the VIP has moved away, i.e. healthy-while-not-serving.
 //   - no configured address means the VIP came from DHCP inside the guest, so the guest is the
 //     only one who knows it. Ask, every cycle — the lease can change and the VIP moves on
@@ -308,9 +308,9 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// THE SERVICE SNAPSHOT USED TO LIVE HERE, and it had been dead since the day the OS upgrade left
-// ([B.143], removed 2026-09-22). Manager.Snapshot/Restore and their SnapshotRef named
-// `<service>-<id>` members under .snapshots — a SERIES, which is exactly what B.143 is building —
+// THE SERVICE SNAPSHOT USED TO LIVE HERE, and it had been dead since the day the OS upgrade left.
+// Manager.Snapshot/Restore and their SnapshotRef named
+// `<service>-<id>` members under .snapshots — a SERIES, which is exactly what the ring is —
 // each pinned to the OS closure, because what they served was the whole-VM {code+data} rollback.
 // That sequence moved to the host (it owns the OS disk) and stopped touching services at all; the
 // service half moved to agent/host/service.go and pins the MANIFEST. Nothing called these
@@ -318,7 +318,7 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 //
 // Deleted rather than reused, deliberately: the ring's identity is the manifest and its primitive
 // is the guest agent's data.snapshot verb, so keeping a second naming scheme alive here would have
-// left B.143 picking between two and the next reader inventing a third.
+// left the ring picking between two and the next reader inventing a third.
 
 // THE OS UPGRADE USED TO LIVE HERE, and where it went is worth a sentence.
 //
@@ -335,7 +335,7 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 // both paths, rather than composed into a second sequence. The service half went the other way
 // entirely: {manifest + data} rolling back together is still the whole point, but a service is
 // installed from a runtime manifest now, so that sequence lives host-side with the manifest
-// ([V3b.3](e1)/(e2)) and this package's payload upgrade is gone.
+// and this package's payload upgrade is gone.
 
 // EnterMaintenance holds the promoter for the service's resource, if configured.
 func (m *Manager) EnterMaintenance(ctx context.Context) error {
@@ -475,7 +475,7 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 // captured) makes assess a no-op — the floor + rollback window stand alone.
 // OSReadyServing is OSReady with the vacuous half closed: the node must be PRIMARY and its front
 // door must answer. For the lone holder of the house -- the only serving node an OS upgrade is
-// allowed to reboot ([B.54]: with a takeover-capable peer it refuses) -- "if I am serving, I am
+// allowed to reboot (with a takeover-capable peer it refuses) -- "if I am serving, I am
 // serving" is not enough, because the node's own failure handling can make it stop serving
 // before the gate looks. Measured 2026-09-07 (lab os-rollback, a front door that fails
 // outright): the release booted, promoted, the front door hit its start limit at 14 s, OnFailure
@@ -512,7 +512,7 @@ type Readiness struct {
 // each other. The OS-upgrade path drives it through a Manager, which is where the assessor is
 // configured; the SERVICE-install path has no Manager at all — it is handed a narrow guest
 // interface, and `upgrader` deliberately carries nothing that can name a service, so an OS
-// upgrade cannot touch one ([V3b.29]). Two copies of these twenty lines would be two S1 gates
+// upgrade cannot touch one. Two copies of these twenty lines would be two S1 gates
 // that could drift on the only question that matters: when to roll a household back.
 type Gate struct {
 	// Assessor is the service-specific differential signal. nil = the liveness floor alone,

@@ -13,7 +13,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// THE GUEST'S ADMIN PORT ([V3b.31i]), with a unix socket standing in for qemu's host end and a
+// THE GUEST'S ADMIN PORT, with a unix socket standing in for qemu's host end and a
 // test standing in for the dashboard: an install rides the same channel as the local door and
 // comes back with the loop's outcome; anything else the guest asks for is refused by name
 // without reaching the loop; a half-line from a dead writer is answered with an ID-less failure

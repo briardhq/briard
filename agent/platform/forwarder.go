@@ -8,7 +8,7 @@ import (
 // ForwarderSpec configures the anchor-side witness-forwarder: the host-held
 // mTLS hop that tunnels the guest's DRBD cloud-witness connection to the cloud witness-proxy, so the
 // DRBD kernel socket speaks only plaintext over the trusted private guest↔host link and never the
-// internet ([[cloud-witness-v3-1d]], [[logic-on-host-by-default]]). Listen is the private address
+// internet (logic lives on the host by default). Listen is the private address
 // the guest's DRBD dials (= the witness peer's mesh Address, e.g. "10.11.9.1:7789"); Target is the
 // cloud proxy; Cert/Key/CA are the host-held anchor identity (the cert path).
 type ForwarderSpec struct {
@@ -22,8 +22,8 @@ type ForwarderSpec struct {
 	Unit       string // transient unit name; empty = ForwarderUnit
 }
 
-// ForwarderUnit is the transient systemd service the witness-forwarder runs as. Like the guest
-// , it is detached from the agent's cgroup so an agent restart leaves the witness hop
+// ForwarderUnit is the transient systemd service the witness-forwarder runs as. Like the guest,
+// it is detached from the agent's cgroup so an agent restart leaves the witness hop
 // serving -- dropping it would break the DRBD connection to the cloud witness and cost quorum.
 const ForwarderUnit = "briard-witness-forwarder.service"
 

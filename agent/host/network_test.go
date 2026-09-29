@@ -13,7 +13,7 @@ import (
 	"briard.io/shared/model"
 )
 
-// macvtapCfg is what install.sh writes: the shape every Linux node ships in ([B.150](c)).
+// macvtapCfg is what install.sh writes: the shape every Linux node ships in.
 func macvtapCfg() Config {
 	return Config{
 		SystemTap: "briard-drbd0", ServiceTap: "briard0", WitnessTap: "briard-priv0",
@@ -44,7 +44,7 @@ func TestNetSpecMacvtap(t *testing.T) {
 // A BRIDGE PARENT IS A DIFFERENT NODE, and the narrowing is what makes the config true rather
 // than merely quiet: a second tap and a private link do not exist on this substrate, so naming
 // them would render the guest a NIC it cannot use. ONE port, the guest makes its own service
-// identity on top ([V3b.26c]), and the host's address is on the bridge because it is genuinely on
+// identity on top, and the host's address is on the bridge because it is genuinely on
 // that segment -- which is also why the /32 has to become a /24.
 func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	s := macvtapCfg().netSpec("br0", true)
@@ -92,7 +92,7 @@ func TestApplySubstrateMacvtapDefaultsTheMode(t *testing.T) {
 		t.Errorf("nothing should have been narrowed: %+v", cfg)
 	}
 	// A rig that set NET_MODE itself keeps it -- the environment still wins where the substrate
-	// is not the thing deciding ([B.150](a)). Only a NON-EMPTY value can say so, and that is not
+	// is not the thing deciding. Only a NON-EMPTY value can say so, and that is not
 	// a gap: platform.NetBridge IS the empty string, so "configured as by-name" and "not
 	// configured" are the same value and always were. Unset now means DERIVE, and on a
 	// non-bridge parent the derivation is macvtap -- which is what the assertion above pins.
@@ -167,7 +167,7 @@ func (c *degradedClient) ReportMetrics(context.Context, string, []api.MetricAggr
 	return nil
 }
 
-// A NODE WITH NO USABLE GUEST DEVICE STILL HAS A VOICE ([B.150](f)). It reports the identity half
+// A NODE WITH NO USABLE GUEST DEVICE STILL HAS A VOICE. It reports the identity half
 // -- who it is, what it runs, unhealthy -- rather than going silent for as long as it stays
 // degraded, which is the one tier where being told matters most: the household cannot fix it.
 func TestReportDegradedSendsIdentityAndRefusesTerminally(t *testing.T) {

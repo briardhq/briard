@@ -52,7 +52,7 @@
 , agentVersion ? "0.0.0-dev" }:
 let
   lib = nixpkgs.lib;
-  # THE ONE BRIARD BINARY THIS IMAGE BAKES ([B.139]): the push protocol, and nothing else. The
+  # THE ONE BRIARD BINARY THIS IMAGE BAKES: the push protocol, and nothing else. The
   # guest AGENT is pushed by the host like the doors are, so an edit to it does not move this
   # image's inputs hash and does not republish a 400 MB guest chain (flake.nix guestInputPackages).
   briardFirmware = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-firmware"; version = agentVersion; };
@@ -64,7 +64,7 @@ let
     {
       imports = [ "${modulesPath}/profiles/qemu-guest.nix" ]; # virtio_blk/pci/console in initrd
       networking.hostName = "guest"; # DRBD .res on-block name (matches the driver's NODE)
-      # THE GUEST IS AN APPLIANCE IMAGE ([B.86h]): one generation, no nix at runtime. The OS
+      # THE GUEST IS AN APPLIANCE IMAGE: one generation, no nix at runtime. The OS
       # moves only by the host swapping this image for the next release's, so nothing in here
       # ever stages, switches or collects a closure -- `nix` itself is not installed, which
       # also takes the daemon, the store tooling and their closure out of every household.
@@ -87,8 +87,8 @@ let
         device = "/dev/disk/by-label/nixos";
         fsType = "ext4";
       };
-      # THE STATE DISK ([B.86g]). The OS disk is disposable -- the host discards it at will, a
-      # rescue rebuilds it, [B.86h] swaps it for a new image -- so the guest keeps what a restart
+      # THE STATE DISK. The OS disk is disposable -- the host discards it at will, a
+      # rescue rebuilds it, an OS release swaps it for a new image -- so the guest keeps what a restart
       # must not cost on a separate node-local disk the host attaches by serial. The list is
       # CLOSED and short, and adding to it is a design decision: podman's storage (the service
       # images, content-addressed and digest-pinned by the quadlets -- re-pulling gigabytes after
@@ -152,7 +152,7 @@ let
       # guest deletes is given back to the host file only once something TRIMs it. Weekly is the
       # usual cadence; podman's churn is bursty and a sweep bounds the footprint at a week's peak.
       services.fstrim.enable = true;
-      # The BUILD this image is, readable on the console. Since [B.86i] it is the version the
+      # The BUILD this image is, readable on the console. It is the version the
       # image was built with: for the product image that is `guest-build.<inputs hash>` -- a
       # function of the image's inputs, never of the commit, so an unchanged image is the same
       # build -- and a rig's disk carries the rig's version. The RELEASE id (`vm.<date>.<inputs>`) is a
@@ -162,7 +162,7 @@ let
       boot.kernelParams = [
         "console=ttyS0" # serial console for debugging
         # The machine-id comes from the VM's DMI product UUID, which the host derives from the
-        # node name ([B.86g]): systemd no longer does that on its own (it fell back to a random
+        # node name: systemd no longer does that on its own (it fell back to a random
         # id on the first rig run), so it is asked to. With no -uuid (a rig that predates it)
         # qemu's all-zero UUID is rejected and systemd falls back to random, as before.
         "systemd.machine_id=firmware"
@@ -197,7 +197,7 @@ let
       #
       # WHAT IT IS NOT is a supported way to operate this appliance, which is why nothing
       # advertises it -- `briard debug shell` is absent from the CLI's help on purpose. The
-      # containment is not the lock, it is that the guest is DISPOSABLE ([B.86]): the OS moves by
+      # containment is not the lock, it is that the guest is DISPOSABLE: the OS moves by
       # image swap and `briard rescue` rebuilds it from the image, so anything hand-edited in
       # this root is erased at the next update. Only the data volume survives, and that is
       # replicated and snapshotted.
@@ -234,7 +234,7 @@ let
       # sense for a vanilla OS that must cope with whatever it is plugged into; this guest is
       # neither vanilla nor surprised by its own NICs.
       #
-      # It also removes a defect rather than working around one ([B.78]): with a system dhcpcd
+      # It also removes a defect rather than working around one: with a system dhcpcd
       # running, briard-vip's per-interface invocation for eth2 never became an instance -- it
       # forwarded its argv to that master as a control command, and the master had eth2 in
       # denyInterfaces (which we had put there), so DHCP silently never ran and the node refused
@@ -257,8 +257,8 @@ let
       # It carries an address at all for one measured reason: avahi joins the IPv4 mDNS group on an
       # interface only if that interface HAS a v4 address. Without one this NIC answers mDNS over
       # IPv6 alone, and the far end of that conversation is a stranger's host which may have v6
-      # off -- so [V3b.19]'s name half would break silently, the household's own machine unable to
-      # find its own node while everything else works ([V3b.26b]; install-macvtap runs with v6
+      # off -- so the private link's name half would break silently, the household's own machine unable to
+      # find its own node while everything else works (install-macvtap runs with v6
       # disabled precisely so nothing can pass for a reason we do not control).
       #
       # NOT BAKED, and the objection to that is answered rather than dropped. The address used to be baked
@@ -271,7 +271,7 @@ let
       # because with `-no-reboot` that guest's unit ENDS and the host's rung 2 relaunches it
       # (which runs bring-up) instead of asking a gate.
 
-      # drbd.conf includes the .res files the agent drops at runtime. TMPFS since [V3b.16b]: the
+      # drbd.conf includes the .res files the agent drops at runtime. TMPFS: the
       # `.res` is node-scoped, the host re-derives it at every bring-up (from cfg.Resource, which
       # the mesh cache now durably holds even for a runtime pairing), and a copy that outlives the
       # agent that wrote it is the only kind that can be stale. /etc/drbd.conf itself stays put --
@@ -298,9 +298,9 @@ let
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs for data.snapshot/restore, mkfs.btrfs for the one-time format
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
-          pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry ([V3b.33](b))
+          pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry
           # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
-          # differently-wrapped copy of the runtime (configuration.nix explains; [B.5]).
+          # differently-wrapped copy of the runtime (configuration.nix explains).
           config.virtualisation.podman.package # podman, for the renderer + service.* verbs
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
@@ -314,17 +314,17 @@ let
         # This comment used to claim a virtio-serial read BLOCKS while no host is connected, so a
         # reopened port just waits and there is no flapping. That is true only of a BRIEF gap: with
         # the host end gone for good, the reopened port returns EOF on the first read and the exit
-        # is immediate, so Restart=always spun ~48x in 30s ([B.35]). The agent now pauses before
+        # is immediate, so Restart=always spun ~48x in 30s. The agent now pauses before
         # exiting on a clean EOF (hostAbsentPause in main.go) -- the restart policy here is
         # unchanged, and correct; what was wrong was the assumption that made it free.
         startLimitIntervalSec = 0; # [Unit] section: never permanently give up on this channel
         serviceConfig = {
-          # THROUGH THE PIVOT ([B.86j], [B.138], [B.139], pivot.nix): the agent the host pushed
+          # THROUGH THE PIVOT (pivot.nix): the agent the host pushed
           # when there is one, else the baked firmware -- which is the ONE binary this image
           # carries, and serves only the handshake, the three push verbs and os.poweroff. This
           # unit is the one an activation restarts, and its start is the verdict on the doors:
           # trial verdict, then the port, then the ONE commit of the whole pushed set, and only
-          # then READY (the mains). ⚠️ NO ExecStartPost, and its absence is the fix of [B.148]:
+          # then READY (the mains). ⚠️ NO ExecStartPost, and its absence is deliberate:
           # a commit systemd ran after READY ran after the host's first bring-up verbs too, and
           # those start units that exec the committed path. It is the agent's own job now.
           Type = "notify";
@@ -345,7 +345,7 @@ let
       # a peer its quorum: every other way of asking rides the channel whose death is the trigger.
       # BRIARD_GATE_ADDR is a PORT with no address: the gate answers on whatever this node holds,
       # because its address is now the node IP -- agent-assigned, flock-scoped, and not a thing the
-      # image can know (DESIGN §4). Binding wide is safe here in a way it would not be for any
+      # image can know. Binding wide is safe here in a way it would not be for any
       # other listener: the gate READS NOTHING from a connection (accept, write one line, close),
       # so there is no request to parse and no parser to get wrong.
       #
@@ -366,7 +366,7 @@ let
           pkgs.systemd # systemctl reboot
         ];
         environment = { BRIARD_GATE_ADDR = ":7790"; } // guestAgentEnv;
-        # ⚠️ IT RUNS THE PUSHED AGENT, NOT THE FIRMWARE ([B.139]), and NOT through the picker:
+        # ⚠️ IT RUNS THE PUSHED AGENT, NOT THE FIRMWARE, and NOT through the picker:
         # the picker's arm flag and `.ran` marker are keyed by BINARY NAME, so a second unit
         # going through it would consume the flag the trial belongs to. The committed path is
         # named directly, which means this unit cannot start until the guest has been dressed --
@@ -389,7 +389,7 @@ let
       modules = [
         { nixpkgs.overlays = [ overlay ]; }
         ./configuration.nix
-        # The denylisted module tree ([B.136]) is an IMAGE fact: it pins the initrd to what this
+        # The denylisted module tree is an IMAGE fact: it pins the initrd to what this
         # qemu machine has (virtio disks, NICs, console) and drops what it cannot have. Test VMs
         # that build configuration.nix on their own hardware do not import it.
         ./modules.nix
@@ -399,7 +399,7 @@ let
 
   # The one generation this image boots, with any pre-staged service images baked in and
   # warmed at boot. There is no second OS generation any more, baked or fetched: a different OS
-  # is a different IMAGE ([B.86h]), built by importing this file with a different
+  # is a different IMAGE, built by importing this file with a different
   # `commonModules` delta.
   sys = mkGuest [
     {
@@ -412,18 +412,18 @@ let
     config = sys.config;
     # DO NOT BAKE THE NIXPKGS CHANNEL INTO THE IMAGE. make-disk-image defaults this to `true`,
     # which copies the whole nixpkgs source tree in so that `<nixpkgs>` and `nix-env -iA nixos.x`
-    # work for a human at the console. Measured [B.5]: 188 MB of source costing **512 MB of the
+    # work for a human at the console. Measured: 188 MB of source costing **512 MB of the
     # shipped disk**, because it is 52,665 mostly-tiny .nix files and every one of them rounds up
     # to a 4 KiB block.
     #
     # ⚠️ IT IS INVISIBLE TO THE CLOSURE. The channel is not referenced by `system.build.toplevel`,
     # so `nix path-info -S` on the system says 982 MB and is RIGHT while the artifact a stranger
-    # downloads is 1691 MB. Measuring the closure is not measuring the download; B.5 slimmed the
+    # downloads is 1691 MB. Measuring the closure is not measuring the download; the slimming pass cut the
     # closure by 631 MB and did not touch this at all.
     #
     # Nothing in the product reads it -- the agent updates by handing `nix-env --set` an explicit
     # store path and running switch-to-configuration, which never evaluates an expression. Its only
-    # purpose was console convenience, and [B.5] had already disabled most of that without meaning
+    # purpose was console convenience, and the slimming had already disabled most of that without meaning
     # to: `setNixPath = false` leaves the guest with no `nix-path`, nix 2.34's compiled-in default
     # for it is EMPTY (checked, not assumed), so `<nixpkgs>` already resolved to nothing and
     # `nix-shell -p` / `nix-build '<nixpkgs>'` already failed. The one surviving user was
@@ -468,7 +468,7 @@ in
 # `system` is the image's toplevel, surfaced beside it (a passthru via //, so
 # `${guestDisk}/nixos.qcow2` and `nix build` still work): what the guest manifest names as the
 # closure this image boots, and what the host proves the booted guest against after an image
-# swap ([B.86d]/[B.86h]). It is deliberately not `nixosConfigurations.guest`: that is the
+# swap. It is deliberately not `nixosConfigurations.guest`: that is the
 # framework-boot variant (no bootloader, no briard-agent units), a closure no field guest ever
 # runs. Building this attr builds only the toplevel, not the qcow2.
 image

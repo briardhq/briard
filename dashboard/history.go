@@ -1,6 +1,6 @@
 package main
 
-// THE HISTORY ([B.143], [B.167]): what happened to an app, and undoing it.
+// THE HISTORY: what happened to an app, and undoing it.
 //
 // It is the dashboard's half of the ring, and it relays exactly like the install button does —
 // `service-members` to list, `service-restore` to act, both already on the host's guest-may-ask
@@ -48,7 +48,7 @@ type historyView struct {
 	Service string
 	Rows    []rowView // newest FIRST here, unlike the CLI: a page is read from the top
 	// Banner is the row whose undo returns an UNHEALTHY app to its last healthy state, or nil while
-	// the app is healthy ([B.167]).
+	// the app is healthy.
 	Banner  *rowView
 	Op      *restoreOpView
 	Refresh bool
@@ -66,9 +66,9 @@ type rowView struct {
 	Back    string
 	Version string
 	// MovesCode says the point runs a different version of the app than the one running now,
-	// which is the difference between undoing an edit and the DESIGN §8 rollback.
+	// which is the difference between undoing an edit and the designed {code identity + data} rollback.
 	MovesCode bool
-	// Caption is the red-marked line under a row whose app did not start cleanly after it ([B.167]).
+	// Caption is the red-marked line under a row whose app did not start cleanly after it.
 	Caption string
 	// Offer says this row is the banner's undo (quadlet.Unhealthy).
 	Offer bool

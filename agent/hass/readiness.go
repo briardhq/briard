@@ -40,7 +40,7 @@ var client = &http.Client{Timeout: 10 * time.Second}
 // already does (`service.health`), and for the same reason — on the macvtap substrate the host
 // cannot reach the guest's addresses at all.
 //
-// THIS IS NOT A DECISION, and the split matters ([[logic-on-host-by-default]]). What lives here
+// THIS IS NOT A DECISION, and the split matters (logic lives on the host by default). What lives here
 // is how you TALK to Home Assistant: where the token is, that a refresh token has to be exchanged
 // for an access token first, which path lists config entries, and which three fields of the
 // answer mean anything. What the samples MEAN — which regressions are the upgrade's fault, how

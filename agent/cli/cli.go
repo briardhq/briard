@@ -47,7 +47,7 @@ import (
 const defaultSock = "/run/briard/admin.sock"
 
 // A command is one row of the CLI's SINGLE source of truth: `commands` is both the dispatch table
-// and the help text. The fault this shape exists to prevent is the one that produced [V3b.23] —
+// and the help text. The fault this shape exists to prevent is the one the CLI once shipped —
 // a help listing and a real surface that had drifted apart, with no test able to notice, because
 // they were two hand-maintained lists. TestEveryCommandIsDocumented walks this table from both
 // ends, so a verb cannot be added without a line in the help or removed without losing it.
@@ -71,7 +71,7 @@ const (
 )
 
 // The order here is the order in the help. Everyday first, because the first screen should answer
-// "what do I do" rather than show the reader everything we can do ([V3b.20]).
+// "what do I do" rather than show the reader everything we can do.
 var commands = []command{
 	{
 		name: "alerts", group: groupEveryday,
@@ -190,7 +190,7 @@ var commands = []command{
 // the UI) drives, so an op that rolled back must be distinguishable from one that worked without
 // parsing prose — an admin tool that always exits 0 is one nobody can automate against.
 //
-// No arguments prints the help and succeeds, which is the ordinary CLI contract ([V3b.23]) and
+// No arguments prints the help and succeeds, which is the ordinary CLI contract and
 // used to be "start the privileged host agent". Nothing reaches this path with the daemon in
 // mind any more: the units say `run`.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -313,7 +313,7 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // which is the shape every later verb should copy. `briard app install ha` is exactly
 // `briard directive service-install ha`, so there is one path through the agent and the CLI adds
 // only a name a human would guess. (The verb a user types is `app`; *service* stays the
-// engineering term in identifiers and on the wire — [V3c.10].)
+// engineering term in identifiers and on the wire.)
 //
 // It blocks until the node reaches a terminal state, because an install is a maintenance
 // operation on a live promoted resource: returning early would leave an operator guessing whether
@@ -386,7 +386,7 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 // back — belongs to whatever can see every node (the cloud, or a lab script driving both). This
 // verb evicts the node it runs on and says what happened, which is exactly what a node can know:
 // `drbd-reactorctl evict` says "not me", never "you". Run it on the peer to come back.
-// runRescue rebuilds this node's guest from the verified image under its OS-disk overlay (B.10).
+// runRescue rebuilds this node's guest from the verified image under its OS-disk overlay.
 //
 // IT REQUIRES -yes, and that is the only place in this CLI that does. Every other verb here is
 // reversible or health-gated: an OS upgrade rolls back, a service install restores its data, a
@@ -528,8 +528,8 @@ func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 }
 
 // runDashboard is `briard open`: it asks the agent for a one-time link to the Briard page
-// ([V3b.31b]; the verb a user types is `open`, and *dashboard* stays the engineering name of the
-// guest unit and the directive — [V3c.10]). The account details ride along because THIS is where
+// (the verb a user types is `open`, and *dashboard* stays the engineering name of the
+// guest unit and the directive). The account details ride along because THIS is where
 // the OS account is visible: the agent is a service with no SUDO_USER, and the guest knows
 // nothing about the host's users at all.
 func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -560,7 +560,7 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "briard: %s: %s\n", o.State, o.Detail)
 		return 1
 	}
-	// What the browser is about to show, before the link to it ([B.157]). The installer prints this
+	// What the browser is about to show, before the link to it. The installer prints this
 	// verb's output as the last thing an install says, so the sentence that used to be its own shell
 	// scan lives here -- and a household running the verb a month later gets the same answer.
 	if line := installedLine(installedServices(serviceCacheDir)); line != "" {
@@ -599,7 +599,7 @@ func accountLang() string {
 	return strings.ToLower(l)
 }
 
-// runAppHistory is `briard app history <name>` and `briard app undo <point>` ([B.143], [B.167]).
+// runAppHistory is `briard app history <name>` and `briard app undo <point>`.
 //
 // TWO VERBS AND NOT ONE INTERACTIVE PICKER, deliberately. An index into a list ("undo 3") is stale
 // the moment anything takes a member, and members are taken on every service start — so the second
@@ -645,7 +645,7 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// where the operator is looking. The row shows the EVENT's time; the point under it is what
 	// undoing it puts back.
 	//
-	// A row whose app did not start cleanly carries the page's red caption as a `!` line ([B.167]).
+	// A row whose app did not start cleanly carries the page's red caption as a `!` line.
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
 		fmt.Fprintf(stdout, "%s  %s%s\n", r.At.Local().Format("2006-01-02 15:04"), r.What, consistencyNote(r.Point.Meta.Consistency))
@@ -662,7 +662,7 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
-// consistencyNote is how the listing keeps the two kinds of point apart ([B.143]). A point taken
+// consistencyNote is how the listing keeps the two kinds of point apart. A point taken
 // while the app was running is one the app has to recover from on the way back up, which is a
 // thing the household is entitled to know BEFORE choosing it.
 //

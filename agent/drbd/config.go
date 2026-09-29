@@ -6,7 +6,7 @@ import (
 )
 
 // THE SEAM'S NAMES. DataDevice is the backing device every diskful node runs its data resource
-// on: the data LV of the guest's VG ([V3b.33]). DRBD names it and never anything else, and that
+// on: the data LV of the guest's VG. DRBD names it and never anything else, and that
 // is the whole point of the seam -- the LV's table can be reloaded underneath, so the backing can
 // be moved onto an encrypted PV and back with `pvmove` while DRBD's device object stays open. A
 // bare disk has no table to reload, and inserting a seam later means DRBD must close and reopen.
@@ -18,11 +18,11 @@ const (
 	// DataVG, DataLV and MetaLV are the volume group and the two logical volumes the seam
 	// builds. They are the parts, and the device paths are composed from them rather than
 	// restated beside them: the host names the VG and the LVs separately when it renders the
-	// node's storage spec ([V3b.33](d), shared/nodestorage), and literals that must agree are
+	// node's storage spec (shared/nodestorage), and literals that must agree are
 	// places for them to stop agreeing.
 	DataVG = "briardservice"
 	DataLV = "data"
-	// MetaLV holds DRBD's EXTERNAL metadata ([B.145a]), at the end of the PV at a computed size
+	// MetaLV holds DRBD's EXTERNAL metadata, at the end of the PV at a computed size
 	// -- DRBD's own internal-metadata placement, spelled in LVM so the data LV can carry a
 	// filesystem that fills it and still be attached later without shrinking anything.
 	MetaLV = "metadata"
@@ -75,7 +75,7 @@ type Resource struct {
 }
 
 // DiskfulPeers counts the members that carry a replica -- what decides whether the resource is
-// worth running at all ([B.145]). It is the DISKFUL count on purpose: a witness is diskless, so
+// worth running at all. It is the DISKFUL count on purpose: a witness is diskless, so
 // one anchor beside a witness has one copy and no peer that could hold another, and a gate
 // written as "peers > 0" would run DRBD on exactly the node it exists to spare.
 func (r Resource) DiskfulPeers() int {
@@ -195,7 +195,7 @@ func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 // units in the order they must come up (workload → VIP).
 //
 // ⚠️ `adjust-resource-on-start = false` DRAWS THE LAYER LINE, and omitting it cost a real defect
-// (V3.22). drbd-reactor's promoter defaults it to TRUE, which makes the reactor run its own
+// once. drbd-reactor's promoter defaults it to TRUE, which makes the reactor run its own
 // `drbdadm adjust` -- i.e. ATTACH the backing device -- the moment it reads this snippet. But
 // attaching is not the promoter's job here: the agent fires the stock `drbd@<res>.target`
 // (drbd-utils' own "(Re)configure DRBD resource" unit) and reads its result, because a supervisor
@@ -211,7 +211,7 @@ func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 // races it. Upstream provides this key for exactly this split: the promoter promotes, the drbd@
 // chain configures.
 //
-// ⚠️ `target-as = Wants` IS THE OTHER LAYER LINE, and it cost a measured outage class ([V3b.5](c)).
+// ⚠️ `target-as = Wants` IS THE OTHER LAYER LINE, and it cost a measured outage class.
 // The promoter's default is `Requires`, which reactor writes onto the TARGET pointing at each
 // member. `Requires=` is a JOB-level dependency: systemd consults it when a stop or restart job is
 // enqueued on a member, never against a member's state. And `Restart=` enqueues its auto-restart

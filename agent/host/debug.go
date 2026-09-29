@@ -1,6 +1,6 @@
 package host
 
-// The debug console's two directives ([B.142a]). Arming swaps the guest's second serial port
+// The debug console's two directives. Arming swaps the guest's second serial port
 // (ttyS1) onto a unix socket so the getty that has been sitting there since boot becomes
 // reachable; disarming puts it back on a null backend and QEMU unlinks the socket.
 //

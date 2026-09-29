@@ -17,11 +17,8 @@ import (
 //
 // The tree was clean when this was written, so the guard is purely prospective.
 //
-// It replaced a wider "leak gate" that also banned references to the private
-// design docs and to maintainer identifiers. Both were dropped once the repo split
-// landed: a confidentiality check that runs *in* the public repo fires after the
-// content is already published, so it could never do the job it was named for, and
-// the identifier check had to name the identifiers it was hiding.
+// It guards secrets only. A pointer at the maintainers' private docs is a
+// readability defect, not a leak; TestNoPrivateReferences owns those.
 func TestNoSecretMaterial(t *testing.T) {
 	patterns := map[string]*regexp.Regexp{
 		"private key block": regexp.MustCompile(`BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY`),

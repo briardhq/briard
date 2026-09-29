@@ -173,7 +173,7 @@ func TestDetectCleansWhatTheWorkloadWrote(t *testing.T) {
 }
 
 // TestSignalsNamesACorruptRenameWithoutReadingIt: the file set aside may be the recorder
-// database, and its name is the whole signal ([B.167d]).
+// database, and its name is the whole signal.
 func TestSignalsNamesACorruptRenameWithoutReadingIt(t *testing.T) {
 	d := "/m/app"
 	got, err := Signals(context.Background(), fakeFS{d + "/home-assistant_v2.db.corrupt.2026-09-25T10:00:00": "a whole database"}, d)
@@ -187,7 +187,7 @@ func TestSignalsNamesACorruptRenameWithoutReadingIt(t *testing.T) {
 
 // TestResetsNamesWhatWasLostOnce: a rename new since the previous sample is a reset, named for what
 // the household lost; one already there is not found again, and a second reset of the same store
-// is ([B.167d], the renames hass-health-probe measured).
+// is (the renames hass-health-probe measured).
 func TestResetsNamesWhatWasLostOnce(t *testing.T) {
 	old := ".storage/core.config_entries.corrupt.2026-09-24T09:00:00"
 	prev := sig(old, "")

@@ -13,7 +13,7 @@ import (
 
 // The HOST end of the push protocol: the streaming client, and the capability check that tells
 // a dressable guest from one that predates the protocol. The guest end's own proofs live with
-// the firmware ([B.139], agent/guestfirmware/bin_test.go).
+// the firmware (agent/guestfirmware/bin_test.go).
 
 // A binary larger than the frame cap streams in chunks and lands as <name>.next, verified
 // against the digest the LAST chunk carries, executable.
@@ -57,7 +57,7 @@ func TestHandshakeAdvertisesBinPush(t *testing.T) {
 }
 
 // The firmware's own capability list is a STRICT SUBSET of the dressed agent's, and the push
-// verbs are in it: a host that meets a firmware must still be able to dress it ([B.139]).
+// verbs are in it: a host that meets a firmware must still be able to dress it.
 func TestFirmwareCapabilitiesAreASubsetOfTheAgents(t *testing.T) {
 	full := map[string]bool{}
 	for _, v := range guestCapabilities {

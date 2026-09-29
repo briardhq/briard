@@ -1,6 +1,5 @@
 // Package guestfirmware is the FIRMWARE half of the host<->guest control protocol: the part the
-// guest image bakes, and the only part whose change moves the guest image's inputs hash
-// ([B.86i], [B.139]).
+// guest image bakes, and the only part whose change moves the guest image's inputs hash.
 //
 // It is a deliberately small graph -- the framing, the handshake, the three push verbs and their
 // trial/aftermath rules, `os.poweroff`, and the Executor those shell out through. Everything
@@ -38,21 +37,21 @@ const (
 
 // The handshake the channel opens with. It lives HERE, not in shared/api, because the firmware
 // is what answers one before anything has been pushed, and hashing the whole of shared/ into the
-// image's inputs would republish a 400 MB guest chain for every unrelated shared/ edit ([B.139]).
+// image's inputs would republish a 400 MB guest chain for every unrelated shared/ edit.
 // It is not north-bound telemetry -- nothing here leaves the house -- so shared/api's audited
 // allowlist is not the register it belongs in.
 //
-// ⚠️ THERE IS NO PROTOCOL VERSION NUMBER, and adding one back is a decision, not a tidy-up
-// ([B.143]). Negotiation is by VERB NAME: the guest advertises the set it serves, and
+// ⚠️ THERE IS NO PROTOCOL VERSION NUMBER, and adding one back is a decision, not a tidy-up.
+// Negotiation is by VERB NAME: the guest advertises the set it serves, and
 // Client.Supports refuses exactly the one path a guest cannot serve while every other path keeps
-// working -- the instrument service.warm set ([V3b.3](e1)) and data.member follows. A number can
+// working -- the instrument service.warm set and data.member follows. A number can
 // only ever refuse the WHOLE channel, and the channel is what fixes a node: applying a vm release
 // runs through the guest's os.* verbs (agent/host/guestupdate.go), so a host that refuses the
 // handshake can never reach the image that would satisfy it. That deadlock is reachable from the
 // call graph, not a matter of how the floor is chosen.
 //
 // A number would also have nothing left to measure. The guest agent is PUSHED at every bring-up
-// ([B.86j]) from the host's own tree, so a host that compares versions with a guest it dressed is
+// from the host's own tree, so a host that compares versions with a guest it dressed is
 // comparing a constant with itself. The only binary that can differ is this firmware, whose
 // contract is frozen and additive (the bin.* verbs) and whose five names Supports already checks.
 // What the host needs about a guest it did not push it gets from facts richer than an integer:
@@ -65,7 +64,7 @@ const (
 //
 // What a name cannot absorb is a RENAME, which breaks a whole family at once (the `payload.*` ->
 // `service.*` cut, agent/guestagent). That is affordable only under the alpha reinstall-only
-// policy ([[alpha-reinstall-only-policy]]) -- every node re-runs the installer, so there is no
+// policy -- every node re-runs the installer, so there is no
 // fleet to strand -- and it is the policy, not a number on the wire, that makes it safe.
 
 // The two verbs the firmware serves besides the three push ones: the handshake, and the clean
@@ -89,14 +88,14 @@ var Capabilities = []string{VerbHello, VerbBinStage, VerbBinTest, VerbBinActivat
 //
 // BootID is the guest kernel's boot_id, and it is the host's only way to tell "the in-guest
 // agent bounced" from "the guest rebooted underneath me" -- two events that look identical
-// on the channel and need opposite responses ([B.102]). The agent serves one connection then
+// on the channel and need opposite responses. The agent serves one connection then
 // exits, so a handshake re-running proves nothing; the boot_id is stable across that and
 // changes only across an actual boot. Empty from a guest too old to send it, which reads as
 // "no evidence" rather than "a new boot" -- the host must not re-converge on silence.
 type Hello struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	BootID       string   `json:"boot_id,omitempty"`
-	// Bundle is the guest bundle this agent RUNS ([B.86j]): the host release id whose
+	// Bundle is the guest bundle this agent RUNS: the host release id whose
 	// pushed binaries it was started from, or "" when it runs the firmware baked into the
 	// image. The host compares it with the bundle it holds and dresses the guest when they
 	// differ -- at bring-up, after a host commit, after any guest restart (the overlay is
@@ -105,7 +104,7 @@ type Hello struct {
 }
 
 // bootIDPath is the kernel's per-boot identifier, which the handshake reports so the host can
-// recognise a guest that rebooted underneath it ([B.102]). The kernel mints it once per boot and
+// recognise a guest that rebooted underneath it. The kernel mints it once per boot and
 // it survives every in-guest agent restart, which is exactly the line the host needs drawn --
 // and unlike a hostname or an address it is not something bring-up sets, so it cannot be
 // confused with the convergence it is used to trigger.
@@ -116,7 +115,7 @@ const bootIDPath = "/proc/sys/kernel/random/boot_id"
 // anything else.
 //
 // The boot_id rides along because the host cannot otherwise tell a bounced agent from a
-// rebooted guest ([B.102]). Read best-effort: a hello that FAILED would be a guest the host
+// rebooted guest. Read best-effort: a hello that FAILED would be a guest the host
 // refuses to drive, and no host has ever needed this field to drive one -- so an unreadable
 // boot_id is reported as absent, not as an error.
 func HelloReply(x Executor, caps []string) Hello {
@@ -166,7 +165,7 @@ func (osExecutor) Sethostname(name string) error {
 // verb is cancelled when the agent is asked to stop, and that is correct -- a service pull fetching a
 // closure has nothing worth finishing once the machine is going down. `os.poweroff` is the
 // exception, and the reason is circular: the shutdown it asks for is what SIGTERMs this process,
-// so inheriting that cancellation means the verb is killed by its own success ([B.132]).
+// so inheriting that cancellation means the verb is killed by its own success.
 //
 // Detached, it needs a ceiling of its own -- nothing else can stop it, and the handler holds the
 // serve loop's reply lock, which holds the control port open. Sized far above what the command
@@ -183,7 +182,7 @@ const powerOffPollEvery = 100 * time.Millisecond
 // systemStopping answers the one question that settles `os.poweroff`: has the manager entered
 // shutdown? It exists because the command that asks for one is routinely killed BY the shutdown it
 // asks for, so its exit status reports a failure for a request that worked. Two mechanisms did
-// that, in sequence -- the dispatch context ([B.132]) and then systemd's own cgroup SIGTERM -- and
+// that, in sequence -- the dispatch context and then systemd's own cgroup SIGTERM -- and
 // the second is what makes this the right shape rather than a third patch on the first: the verb
 // stops inferring its outcome from how a process died and observes the state it claims to cause.
 //
@@ -210,7 +209,7 @@ func systemStopping(ctx context.Context, x Executor) bool {
 	// answer" and "never started" are indistinguishable from in here, and guessing between them is
 	// the habit this function exists to break. Being wrong costs a bounded, already-budgeted
 	// escalation -- the host presses the ACPI button and then asks the question that does settle
-	// it, whether the VM is still there (host.stopCleanly, [B.98]).
+	// it, whether the VM is still there (host.stopCleanly).
 	for {
 		// Error deliberately dropped: a probe that was killed, or a manager that answers
 		// non-zero because it is not `running`, are both just "no answer yet, ask again".
@@ -246,10 +245,10 @@ func systemStopping(ctx context.Context, x Executor) bool {
 // agent's unit late, so its SIGTERM can land while `systemctl` is still exiting.
 // That cancels the dispatch context, exec.CommandContext kills the child, and Wait
 // reports `context canceled` for a request that WORKED. The host reads that as "the
-// agent route failed" and reaches for the ACPI power button -- the [B.85] regression
-// guest-rescue greps for, seen live on the nightly 2026-09-03 ([B.132]).
+// agent route failed" and reaches for the ACPI power button -- the clean-shutdown regression
+// guest-rescue greps for, seen live on the nightly.
 //
-// [B.127] fixed the neighbouring half: the serve loop now holds the control port
+// The serve loop's fix covered the neighbouring half: the serve loop now holds the control port
 // open until this reply is written, so the answer does reach the host. That is why
 // the failure changed shape from a lost reply into a delivered error -- and why the
 // fix belongs here rather than in the channel. The reply was never the problem; the
@@ -260,7 +259,7 @@ func systemStopping(ctx context.Context, x Executor) bool {
 // every process in the agent's cgroup -- `systemctl` included -- and the error
 // changes shape again, from `context canceled` to `signal: terminated`. Measured on
 // run 33978948462, one sample in four on an idle L0: the host read a request that
-// had WORKED as a refusal and reached for the ACPI button, which is [B.85] going
+// had WORKED as a refusal and reached for the ACPI button, which is guest-rescue going
 // red for the third distinct reason.
 //
 // So stop inferring the outcome from how the command died and ASK THE MANAGER. Being

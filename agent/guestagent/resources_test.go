@@ -204,7 +204,7 @@ func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 	})
 }
 
-// N SERVICES, EACH MEASURED AND EACH NAMED ([V3b.3](b)). The alternative was summing them into
+// N SERVICES, EACH MEASURED AND EACH NAMED. The alternative was summing them into
 // the three scalars this replaced, and summing is what loses the signal: NRestarts exists to make
 // a crash-loop loud, and one service flapping inside a total reads as a small climb. So the
 // assertion is that a crash-looping service is attributable BY NAME while its quiet neighbour

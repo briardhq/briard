@@ -1,4 +1,4 @@
-// `briard uninstall` ([V3c.2]): take briard off this machine and leave the host the way install.sh
+// `briard uninstall`: take briard off this machine and leave the host the way install.sh
 // found it.
 //
 // THE INSTALL IS THE SPEC. Everything here undoes one thing that install.sh or the agent made, and
@@ -14,7 +14,7 @@
 // identity, and its address and name are records beside it, so a data.img without them is a file
 // nothing can open -- while the whole dir is exactly what a reinstall resumes, the same way the
 // cattle/pet reinstall does (install-macvtap). Deleting it is the one destructive act here, and it
-// is gated on the explicit flag the CLI asks for, never implied (AGENTS §4.9).
+// is gated on the explicit flag the CLI asks for, never implied.
 //
 // ORDER IS THE SAFETY. Units first, and a unit that will not stop ends the uninstall there: nothing
 // is deleted from under a guest that is still running. /opt/briard goes last, because it holds this

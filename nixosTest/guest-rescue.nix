@@ -1,4 +1,4 @@
-# B.10's last rung: REBUILD THE GUEST FROM THE IMAGE UNDER IT, AND KEEP THE DATA.
+# The rescue ladder's last rung: REBUILD THE GUEST FROM THE IMAGE UNDER IT, AND KEEP THE DATA.
 #
 # `briard rescue` discards the guest's OS-disk overlay and lays down a fresh one on the signed
 # backing image it was installed from. The claim it makes -- and the only reason the verb is safe
@@ -46,7 +46,7 @@ pkgs.testers.runNixOSTest {
     {
       virtualisation.memorySize = 4096;
       virtualisation.cores = 4;
-      virtualisation.diskSize = 16384; # the image copy, a staged image and a set-aside one coexist during an upgrade ([B.86h])
+      virtualisation.diskSize = 16384; # the image copy, a staged image and a set-aside one coexist during an upgrade
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ]; # nested KVM
       environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.e2fsprogs ]; # debugfs reads the state disk
@@ -60,7 +60,7 @@ pkgs.testers.runNixOSTest {
     # veth parent, the guest's two LAN NICs as macvtap children in install.sh's order (sys0 -> eth1,
     # svc0 -> eth2), and the private host<->guest link as a plain tap at 10.11.9.1/24. The macvlan
     # shim this used to build was the rig granting itself reachability the product lacked; the VIP
-    # curls below now pass because the agent routes it over the private link ([V3b.19a]).
+    # curls below now pass because the agent routes it over the private link.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -77,21 +77,21 @@ pkgs.testers.runNixOSTest {
     # This test hit that on its own final assertion after the fix had landed in the product, which
     # is a small piece of evidence that the fix was addressing something real rather than a quirk
     # of one environment.
-    # A WRITABLE copy of the image, because [B.86h] swaps the file the overlay backs onto and
+    # A WRITABLE copy of the image, because an OS upgrade swaps the file the overlay backs onto and
     # the store is read-only; install.sh lays the image down as a copy too.
     host.succeed("cp ${guestDisk}/nixos.qcow2 /tmp/nixos.qcow2 && chmod 0644 /tmp/nixos.qcow2")
     host.succeed("qemu-img create -f qcow2 -b /tmp/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
-    # The state disk ([B.86g]): empty, sparse; the guest formats it on its first boot and the
+    # The state disk: empty, sparse; the guest formats it on its first boot and the
     # rescue below must NOT format it again -- that is the whole claim of the disk.
     host.succeed("truncate -s 2G /tmp/state.img")
-    # The release keyring the agent verifies guest releases against ([B.86h]) is read at agent
+    # The release keyring the agent verifies guest releases against is read at agent
     # START, so it is minted before the launch and used by the channel section below.
     host.succeed("${stub}/bin/briard-selfupdate-stub keygen /root/release.key /root/keyring.pem")
     backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
     assert "nixos.qcow2" in backing, f"the guest disk is not an overlay on the image; rescue would refuse:\n{backing}"
 
-    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the image
+    # The host holds a guest bundle tree, as install.sh lays on every install: the image
     # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
     # because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
@@ -99,21 +99,21 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
-        # agent shells out to systemd-run, systemctl and -- since [V3b.19] -- `ip`, all BY NAME, and
+        # agent shells out to systemd-run, systemctl and -- since it owns the host's route -- `ip`, all BY NAME, and
         # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
-        # is the point: the rig gets what the product gets ([V3b.19a]).
+        # is the point: the rig gets what the product gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+        # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
-        # The vm chain ([B.86h]): the channel this rig serves, the keyring it mints, the record.
+        # The vm chain: the channel this rig serves, the keyring it mints, the record.
         "--setenv=CHANNEL_URL=http://127.0.0.1:8099 --setenv=UPDATE_KEYRING=/root/keyring.pem --setenv=GUEST_RELEASE_CACHE=/tmp/guest-release.json "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=ADMIN_SOCK=/run/briard/admin.sock "
         "--setenv=NODE=guest --setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
-        # GUEST_SERIAL is the only window into the guest during a stop, and it is why [B.85] sat
+        # GUEST_SERIAL is the only window into the guest during a stop, and it is why the fallback stop sat
         # unexplained: the host watches the VM's systemd unit and has no console on what is
         # inside it, so 90 seconds of a guest ignoring `os.poweroff` and 90 seconds of a guest
         # shutting down slowly look identical from out here. The chardev APPENDS across launches
@@ -125,7 +125,7 @@ pkgs.testers.runNixOSTest {
         host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     except Exception:
         # A guest that never converged is diagnosable only from inside it: dump its console
-        # ([[guest-console-is-the-window]]) and the guest unit's own stderr before failing.
+        # (the console is the window) and the guest unit's own stderr before failing.
         print("=== guest console (tail) ===")
         print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -200 || true"))
         print(host.succeed("journalctl -u briard-guest.service --no-pager | tail -40 || true"))
@@ -158,7 +158,7 @@ pkgs.testers.runNixOSTest {
         """The data volume's identity, read off the backing file: the LUKS2 header's own UUID.
 
         THE HANDLE USED TO BE THE TAIL of the file, where `meta-disk internal` puts DRBD's
-        metadata -- non-zero there meant "something seeded this disk". [V3b.33] put a seam under
+        metadata -- non-zero there meant "something seeded this disk". The storage seam went under
         DRBD (`data.img -> LUKS -> PV -> VG -> LV -> DRBD`) and the tail stopped meaning that:
         LVM rounds the LV to whole extents, so the last megabytes of the PV are unallocated
         remainder that nothing ever writes, and the tail reads as zeroes on a perfectly healthy
@@ -197,8 +197,8 @@ pkgs.testers.runNixOSTest {
     # Counted through the same `tr` the dump uses: collapsing carriage returns CHANGES the line
     # count, so a mark taken any other way indexes into a different file.
     console_mark = int(host.succeed("tr '\\r' '\\n' < /tmp/guest-console.log | wc -l").strip())
-    # The state disk's ext4 UUID (superblock at 1024, s_uuid at +0x68), before the rescue
-    # ([B.86g]): read from the host side, with no guest cooperation.
+    # The state disk's ext4 UUID (superblock at 1024, s_uuid at +0x68), before the rescue:
+    # read from the host side, with no guest cooperation.
     state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
     assert state_uuid and state_uuid != "0" * 32, "the state disk carries no filesystem before the rescue -- the guest never formatted it"
 
@@ -208,7 +208,7 @@ pkgs.testers.runNixOSTest {
         timeout=900,
     )
 
-    # === [B.85]: THE CLEAN STOP MUST ACTUALLY BE THE CLEAN ROUTE ===
+    # === THE CLEAN STOP MUST ACTUALLY BE THE CLEAN ROUTE ===
     # The stop above goes through host.stopCleanly, which asks the guest agent first (`os.poweroff`
     # -> `systemctl poweroff --no-block`) and keeps the ACPI power button as the fallback for a
     # guest whose agent is gone. It was measured taking the fallback EVERY time on a healthy node,
@@ -218,7 +218,7 @@ pkgs.testers.runNixOSTest {
     #
     # What it showed: the shutdown STARTED a second after the request, then drbd-reactor deadlocked
     # on its own stop for a full 90s TimeoutStopSec and was SIGKILLed -- the promote-vs-stop
-    # deadlock of [B.28], on the shutdown path, where nothing was
+    # deadlock, on the shutdown path, where nothing was
     # defusing it. Fixed on drbd-reactor.service's ExecStop (guest-image/configuration.nix).
     #
     # TWO ASSERTIONS, because either alone passes for the wrong reason. The fallback line proves
@@ -236,7 +236,7 @@ pkgs.testers.runNixOSTest {
     # used to cut the match at the opening paren. That threw away exactly what separates a unit
     # stalling a few seconds under a loaded runner from one sitting there until it was SIGKILLed.
     # Both trip the assertion below and they are not the same finding: the first is a race whose
-    # window load widened, the second is [B.28]'s deadlock back on the shutdown path. Every run had
+    # window load widened, the second is the promote-vs-stop deadlock back on the shutdown path. Every run had
     # already recorded which of the two it was, on the console, and the regex discarded it.
     #
     # Matched up to the CLOSING paren rather than to end-of-line, because \r is stripped above and
@@ -251,7 +251,7 @@ pkgs.testers.runNixOSTest {
     # question -- did the clean route work, and if not, what inside the guest stopped it -- so
     # whichever trips, the console is the evidence for it. Hanging the dump off the `stuck` half
     # alone left the ACPI-fallback failure reporting a host-side log line and nothing at all from
-    # inside the guest, which is the side the answer is on; [B.85] was invisible in precisely that
+    # inside the guest, which is the side the answer is on; the fallback stop was invisible in precisely that
     # way until GUEST_SERIAL existed. Measured, not reasoned: the fallback half failed on a run
     # while this was still one-sided, and the log could say nothing about why.
     #
@@ -269,10 +269,10 @@ pkgs.testers.runNixOSTest {
 
     assert "trying the power button" not in stopleg, (
         "the guest agent's os.poweroff did not stop the machine and stopCleanly fell back to ACPI "
-        f"-- [B.85] is back, and the clean route is not the route being taken:\n{stopleg}"
+        f"-- the fallback stop is back, and the clean route is not the route being taken:\n{stopleg}"
     )
     assert not stuck.strip(), (
-        f"the guest's shutdown had to wait on a unit, which is what [B.85] was:\n{stuck}"
+        f"the guest's shutdown had to wait on a unit, which is what the fallback stop was:\n{stuck}"
     )
     print("clean stop: the agent route took it, and no unit held the guest's shutdown")
 
@@ -315,10 +315,10 @@ pkgs.testers.runNixOSTest {
 
     print("the guest was rebuilt from its backing image, kept its data disk, and re-converged")
 
-    # (5) THE STATE DISK SURVIVED ([B.86g]), and the guest is the same machine. The disk carried a
+    # (5) THE STATE DISK SURVIVED, and the guest is the same machine. The disk carried a
     # filesystem before the rescue (the guest formatted it on its first boot), and its ext4 UUID,
     # read from the host side, is the same after: the rescue's fresh OS found the disk and kept
-    # it. [[verification-assertions-must-fail]]: a reformat changes the UUID. (The mkfs itself
+    # it. This can fail: a reformat changes the UUID. (The mkfs itself
     # never reaches the console -- systemd-makefs is silent there -- so a count of it is no proof.)
     assert state_uuid == host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), \
         "the state disk's filesystem UUID changed across the rescue -- it was reformatted"
@@ -326,7 +326,7 @@ pkgs.testers.runNixOSTest {
 
     print("the state disk survived the rescue untouched, and the guest kept its machine identity")
 
-    # === (6) THE OS MOVES BY IMAGE ([B.86h]). The vm chain's release is a whole image; the
+    # === (6) THE OS MOVES BY IMAGE. The vm chain's release is a whole image; the
     #        agent fetches and verifies it, stages it beside the one in use, stops the guest,
     #        swaps the file, rebuilds the overlay, boots, proves the booted closure is the one the
     #        signed manifest names, health-gates, and drops the old image. Then the failable

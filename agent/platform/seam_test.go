@@ -17,7 +17,7 @@ var hostOSLiterals = []string{"systemctl", "systemd-run", "ip", "drbdadm", "jour
 
 var hostOSPrefixes = []string{"/proc/", "/sys/", "/run/systemd"}
 
-// TestHostOSCallsStayBehindTheSeam is what keeps [V3b.27](d)'s cut from decaying back into a
+// TestHostOSCallsStayBehindTheSeam is what keeps the host-OS seam's cut from decaying back into a
 // comment. `GOOS=windows go build ./...` cannot do this job alone: it catches a Linux-only
 // SYMBOL (syscall.Statfs), but exec.Command("systemctl", ...) compiles perfectly on Windows and
 // fails only when someone runs it there. So the shell-level dependency needs an assertion of its

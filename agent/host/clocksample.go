@@ -10,7 +10,7 @@ import (
 	"briard.io/shared/model"
 )
 
-// THE CLOCK SAMPLE ([B.143], [B.167]): a ring member taken by the CLOCK rather than by an event,
+// THE CLOCK SAMPLE: a ring member taken by the CLOCK rather than by an event,
 // whenever a service's newest member is an hour old.
 //
 // WHY THE RING NEEDS ONE AT ALL. Every other member is taken at a service start or an operation,
@@ -19,11 +19,11 @@ import (
 // quiet time still gets its restore points -- so undo's granularity is the interval, not the uptime.
 //
 // HOURLY, AND MEASURED CHEAP: the recorder lock costs 76 ms p95 at 100 writes/s and never broke
-// (hass-quiesce-cost, B.167a in V3c.md), and Home Assistant runs its automations with the recorder
+// in the quiesce-cost measurement, and Home Assistant runs its automations with the recorder
 // down entirely -- only history waits. "Unless a recent one exists": any member counts, so a
 // service that restarts often is sampled by its starts and the clock adds nothing.
 //
-// SCHEDULED BY THE HOST, TAKEN BY THE GUEST (DESIGN §9.8). The host owns cadence and policy; the
+// SCHEDULED BY THE HOST, TAKEN BY THE GUEST. The host owns cadence and policy; the
 // guest owns the volume and does the work. It rides the observe loop rather than a timer of its
 // own, because that loop already runs on a cadence, already knows whether this node is serving,
 // and already holds the channel — a second scheduler would need all three again.
@@ -33,14 +33,14 @@ import (
 // offers exactly the mechanism its own backups use (a truncating WAL checkpoint plus a held
 // transaction, agent/hass/quiesce.go); a service that offers nothing gets a member that says
 // crash-consistent, which is what it is. Shipping a member whose trustworthiness nobody can tell
-// is the thing [B.143] refuses, and the class is how that stays true when the asking fails.
+// is the thing the ring refuses, and the class is how that stays true when the asking fails.
 const clockInterval = time.Hour
 
 // memberTaker is the slice of the guest a member costs: read the manifest it is pinned to, ask for
 // the member, and — only when this process has forgotten — read back what the ring already holds.
 type memberTaker interface {
 	// QuiescedSnapshot takes a member of a RUNNING service, asking it to hold still across the
-	// snapshot, and answers whether it did ([B.143]). The guest writes that sidecar itself.
+	// snapshot, and answers whether it did. The guest writes that sidecar itself.
 	QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error)
 	SupportsQuiescedSnapshot() bool
 	ServiceInstalled(ctx context.Context, name string) (string, error)
@@ -95,7 +95,7 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, 
 	}
 }
 
-// takeRunning takes the clock's member of a RUNNING service ([B.143]), asking the service to hold
+// takeRunning takes the clock's member of a RUNNING service, asking the service to hold
 // still if the guest can ask.
 //
 // ⚠️ THE SIDECAR IS RENDERED SAYING `crash` EITHER WAY, and the guest upgrades it when the service

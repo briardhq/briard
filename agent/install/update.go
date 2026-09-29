@@ -17,7 +17,7 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// THE UPDATE VERB ([B.86a]). `briard-agent --fetch-update <target>` is the narrowed fetch the
+// THE UPDATE VERB. `briard-agent --fetch-update <target>` is the narrowed fetch the
 // frozen update unit runs — on a FRESH binary it just pulled from the target's pointer, never on
 // the committed one, so a fetch/verify/manifest bug in the running agent cannot prevent its own
 // replacement (install.sh's bootstrap pattern, on a timer). Everything here is therefore the
@@ -27,7 +27,7 @@ import (
 // forcing after a grace is the backstop. That separation is what keeps "the case where forcing
 // is risky" and "the case where forcing happens" from ever overlapping.
 //
-// Scope is the BRIARD BUNDLE ([B.86b]): the agent, the guest launch shim and the qemu tree move
+// Scope is the BRIARD BUNDLE: the agent, the guest launch shim and the qemu tree move
 // as one release, staged as .next siblings and committed together by briard-commit. Only
 // entries whose sha256 differs from the installed manifest's are fetched -- a JSON compare, no
 // hashing of the 86 MB qemu tree -- which is what keeps a daily tick at the agent's ~9 MB
@@ -43,17 +43,17 @@ const (
 	artifactAgent   = "briard-agent"
 	artifactNetWrap = "briard-net-wrap"
 	artifactQEMU    = "qemu-bundle.tar.zst"
-	artifactGuest   = "guest-bundle.tar.zst" // the binaries the host dresses its guest with ([B.86j])
+	artifactGuest   = "guest-bundle.tar.zst" // the binaries the host dresses its guest with
 )
 
 // ErrBelowFloor is returned for an exact pin older than the current stable (or one whose floor
 // cannot be read): refused loudly, so a bad pin looks like one to whoever sent it.
 var ErrBelowFloor = errors.New("install: pinned release is below the stable floor")
 
-// ErrTooOldToUpgrade is the UPGRADE FLOOR's refusal ([B.159](e)): the installed release is older
+// ErrTooOldToUpgrade is the UPGRADE FLOOR's refusal: the installed release is older
 // than the oldest this one can be installed over, so the remedy is a reinstall rather than
 // another update. Loud, and naming the remedy, because the alpha's answer to an unupgradable
-// node is exactly that ([[alpha-reinstall-only-policy]]) and a node that cannot say so is a node
+// node is exactly that (it is reinstall-only) and a node that cannot say so is a node
 // whose owner discovers it from the symptom instead.
 var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to that release")
 
@@ -75,7 +75,7 @@ var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to
 // together.
 //
 // ⚠️ THE FLOOR AND THE PUBLISH GATE INTERACT, and the interaction is not optional. Gate 3
-// ([B.159](c), lab/vanilla-linux/tests/upgrade.sh) drives `stable` -> the candidate; a floor
+// (lab/vanilla-linux/tests/upgrade.sh) drives `stable` -> the candidate; a floor
 // ABOVE the current stable makes that refusal correct and the gate red for a true reason. So a
 // release that raises the floor past stable has DELIBERATELY CLOSED its own upgrade path, and
 // the publish sequence has to record the refusal as the declared outcome rather than as a
@@ -87,8 +87,8 @@ var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to
 // accumulate forever.
 //
 // ⚠️ A var, not a const, for ONE reason: the wiring that carries it into a manifest cannot be
-// tested against a value that never varies, and a test that cannot fail is not a test
-// ([[verification-assertions-must-fail]]). Nothing at runtime writes it -- the only writer
+// tested against a value that never varies, and a test that cannot fail is not a test.
+// Nothing at runtime writes it -- the only writer
 // besides this line is TestWriteManifestCarriesTheTreesFloor, which restores it.
 var MinUpgradeFrom = "v3.20260920.ec4d22a"
 
@@ -120,13 +120,13 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		return Decision{}, fmt.Errorf("%w: installed %s, offered %s", ErrWrongChain,
 			path.Join(have.Chain, have.Platform), path.Join(want.Chain, want.Platform))
 	}
-	// THE UPGRADE FLOOR, BEFORE ANY TARGET RULE ([B.159](e)). It is a fact about the pair
+	// THE UPGRADE FLOOR, BEFORE ANY TARGET RULE. It is a fact about the pair
 	// (installed, offered) rather than about the target word, so it gates `stable`, `latest` and
 	// an exact pin alike -- there is no target that may cross it, because the release simply
 	// cannot complete the upgrade. A node with nothing installed is a fresh install and has
 	// nothing to be too old for.
 	//
-	// ⚠️ THE ONE DIRECTION A FLOOR MAY POINT ([B.159](e)'s rule): outer-to-inner, with the older
+	// ⚠️ THE ONE DIRECTION A FLOOR MAY POINT (the floor's one rule): outer-to-inner, with the older
 	// SELF as the inner term. A release may refuse the past it cannot carry; it may never declare
 	// a minimum on a layer it is itself responsible for upgrading -- if the host needs a newer
 	// guest, the host upgrades the guest, it does not wait for one. That keeps the graph a DAG
@@ -170,8 +170,8 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		// ⚠️ "AT OR PAST" IS FOR THE CASE IT DESCRIBES, AND EQUALITY IS NOT IT. A node sitting on
 		// the release stable names falls through to the shared `already at X` line below, which
 		// is what `briard update` promises to print (agent/cli/cli.go's help row) and
-		// what an operator reads as "nothing owed". Found by the rigs the moment [B.159](f) made
-		// `stable` the default: the bare verb started taking this branch instead of latest's, and
+		// what an operator reads as "nothing owed". Found by the rigs the moment the default became
+		// `stable`: the bare verb started taking this branch instead of latest's, and
 		// two host-agent rigs asserting `already at <id>` went red on the wording alone.
 		// The longer line stays for what it actually means -- installed is genuinely PAST stable,
 		// which is a pin, and saying so is the point.
@@ -321,7 +321,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 			}
 			qemuTree = tree
 		case artifactGuest:
-			// The guest bundle rides exactly qemu's mechanics ([B.86j]): one extracted tree per
+			// The guest bundle rides exactly qemu's mechanics: one extracted tree per
 			// release, a `.next` link the frozen commit moves, hash-skipped when unchanged.
 			if unchanged(have, *a) {
 				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
@@ -430,7 +430,7 @@ func extractTree(ctx context.Context, tarball, dest string) error {
 		os.RemoveAll(tmp)
 		return err
 	}
-	// Flushed before the rename, and the rename flushed after ([B.79]): otherwise the name can
+	// Flushed before the rename, and the rename flushed after: otherwise the name can
 	// reach the disk before the bytes, and a power cut leaves a whole-looking tree of lost files
 	// that the next commit makes current.
 	if err := atomicfile.SyncTree(tmp); err != nil {
@@ -460,14 +460,14 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 	return &m
 }
 
-// DirectiveUpdateVM is the LOCAL directive kind of the vm chain ([B.86d]): `briard update --vm`
+// DirectiveUpdateVM is the LOCAL directive kind of the vm chain: `briard update --vm`
 // and the agent's own nightly timer submit it through the admin door; the payload is a target
-// (`stable`, `latest`, an exact vm id; "" is stable — [B.159](f)). It is deliberately NOT in
+// (`stable`, `latest`, an exact vm id; "" is stable). It is deliberately NOT in
 // shared/api: the cloud names closures (`upgrade-system`) and the wire allowlist stays closed --
 // a kind that never crosses to the cloud does not belong in the contract that says what can.
 // It lives here rather than in agent/host so the CLI and the host share one spelling.
 //
-// ⚠️ IT WAS `update-guest` UNTIL [B.159](i), and the rename was safe for the reason the comment
+// ⚠️ IT WAS `update-guest` ONCE, and the rename was safe for the reason the comment
 // above already gives: nothing carries this kind across a version boundary. The cloud never
 // emits it, the CLI reaches a binary it is symlinked to, the timer is in-process, and no spool
 // persists a kind across an upgrade. What DID read the old spelling was the journal -- the fleet
@@ -483,8 +483,8 @@ var ErrBriardTooOld = errors.New("install: briard is older than the vm release r
 // briard is at or past it (ordered on the date field, as the stable path is), ErrBriardTooOld
 // otherwise. An empty minBriard places no requirement. The message names both remedies, because
 // a briard that cannot update past the floor is a node outside its support window, and the
-// answer there is reinstall -- it must never drift silently ([B.86e]). One vocabulary end to end
-// ([B.163]): the wire field, the thing compared and the remedy all say `briard`.
+// answer there is reinstall -- it must never drift silently. One vocabulary end to end:
+// the wire field, the thing compared and the remedy all say `briard`.
 func BriardSatisfies(minBriard, briard string) error {
 	if minBriard == "" {
 		return nil

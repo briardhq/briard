@@ -41,7 +41,7 @@ func (p *probe) HassReadiness(_ context.Context, port int) ([]hass.Entry, error)
 	return nil, nil
 }
 
-// The probe half of the seam ([V3b.4]). `stored` is what the service is holding: a write puts the
+// The probe half of the seam. `stored` is what the service is holding: a write puts the
 // token there, a read hands it back — so a test makes the service LOSE its state by clearing it
 // between the two calls, which is what a broken upgrade does.
 func (p *probe) MosquittoProbe(_ context.Context, token string) (mosquitto.Sample, error) {
@@ -100,7 +100,7 @@ func judge(t *testing.T, pre, post []hass.Entry) (guest.Verdict, string) {
 // floor alone.
 //
 // The unknown name here USED to be "mosquitto", which is the nicest possible demonstration of
-// what this test is for: the day the broker landed ([V3b.4]) it stopped being unknown, and the
+// what this test is for: the day the broker landed it stopped being unknown, and the
 // example had to move rather than the contract.
 func TestAssessorIsKeyedOnTheServiceName(t *testing.T) {
 	cfg := Config{}
@@ -139,8 +139,7 @@ func TestAssessorUsesTheManifestsPort(t *testing.T) {
 	}
 }
 
-// TestAFailedSampleLeavesTheInstallOnTheFloor — what replaced the old-guest test ([V3b.4], owner's
-// call): the capability check it exercised is gone, because agent and guest closure publish
+// TestAFailedSampleLeavesTheInstallOnTheFloor — what replaced the old-guest test: the capability check it exercised is gone, because agent and guest closure publish
 // together and the alpha reinstalls, so a guest that cannot sample is a mismatched pair rather
 // than a supported configuration.
 //

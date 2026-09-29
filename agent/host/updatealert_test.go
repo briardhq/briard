@@ -68,8 +68,8 @@ func TestUpdateAlerterEdges(t *testing.T) {
 	}
 }
 
-// ⚠️ THE REGRESSION THIS ITEM IS ABOUT. The alerter must NOT prime: a node that was already
-// failing when the agent came up is the steady state of the case [B.161](a) exists for (a
+// ⚠️ THE REGRESSION THIS ALERTER IS ABOUT. The alerter must NOT prime: a node that was already
+// failing when the agent came up is the steady state of the case the alerter exists for (a
 // floored node's agent is the one agent that never gets replaced), so the FIRST reading must
 // fire. An alerter that primed like the redundancy one would be silent here forever, and this
 // test is what fails when somebody adds that symmetry back.

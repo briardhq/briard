@@ -45,7 +45,7 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_DISK = "/tmp/guest.qcow2";
-          # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+          # Where the host keeps its guest bundle tree, the way install.sh sets it.
           UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
@@ -57,7 +57,7 @@ pkgs.testers.runNixOSTest {
           WITNESS_CIDR = "10.11.9.2/24";
           SERVICE_TAP = "svc0";
           WITNESS_TAP = "briard-priv0";
-          # The test declares its service address: the image bakes none (V3.19c step 3) and unset
+          # The test declares its service address: the image bakes none and unset
           # means DHCP, which nothing answers here. HEALTH_URL stays unset so the agent resolves the
           # probe target from the address the guest actually holds.
           VIP_DEV = "eth2";
@@ -78,7 +78,7 @@ pkgs.testers.runNixOSTest {
     # children in install.sh's order (sys0 -> eth1, svc0 -> eth2, the VIP), and the private
     # host<->guest link as a plain tap at 10.11.9.1/24.
     #
-    # ⚠️ THE VIP POLLER BELOW IS WHY THIS RIG MATTERS MOST ([V3b.19a]). It samples the VIP every
+    # ⚠️ THE VIP POLLER BELOW IS WHY THIS RIG MATTERS MOST. It samples the VIP every
     # 0.5s across `systemctl restart briard-agent` and asserts ZERO dropped ticks -- and since the
     # agent now owns the host's route to that address, the poller is measuring the route as well as
     # the guest. That caught a real regression while this conversion was being written: the
@@ -96,7 +96,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Boot: the agent launches the guest as a transient service and drives bring-up.
-    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the
+    # The host holds a guest bundle tree, as install.sh lays on every install: the
     # image bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the
     # store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
@@ -165,7 +165,7 @@ pkgs.testers.runNixOSTest {
     print("agent restart was transparent to the guest: same qemu, Primary held, VIP uninterrupted")
     print(host.succeed("journalctl -u briard-agent | tail -30"))
 
-    # === ACT 2 [V3.26a]: the other half of the same contract. ===
+    # === ACT 2: the other half of the same contract. ===
     # Act 1 proved stopping the AGENT leaves the guest alone. This proves stopping the GUEST UNIT
     # powers the machine down rather than pulling its plug — the case a host reboot creates, since
     # systemd stops every unit on the way down. Before the unit had an ExecStop, that SIGTERMed

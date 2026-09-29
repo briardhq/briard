@@ -11,12 +11,12 @@
 # once; nothing it writes can be reached by a release afterwards. So it does only what never
 # changes: fetch and verify, lay the files down, say where they went, register the units, report.
 #
-# EVERYTHING ELSE IS THE AGENT'S ([B.157]), and there are two tests for whether something belongs
+# EVERYTHING ELSE IS THE AGENT'S, and there are two tests for whether something belongs
 # here, the second wider than the first:
 #
 #   1. would a RELEASE ever need to change it?  Which device the guest's L2 hangs off, which
 #      substrate that implies, which addresses this node numbers itself from, whether the tun
-#      driver is loaded -- all revisited at every start, none of them frozen here ([B.150]).
+#      driver is loaded -- all revisited at every start, none of them frozen here.
 #   2. would a WINDOWS installer have to write it again?  The disks, the identifiers, the console's
 #      rotation. None of those is a decision a release revisits, so the first test alone would have
 #      left them in this file -- and left a PowerShell installer to reimplement every one.
@@ -41,7 +41,7 @@
 # tests, and a future offline install). Unset = the signed network fetch over the channel.
 set -eu
 # ---- what this script needs to know -------------------------------------------------
-# ⚠️ THE KNOBS ARE NOT HERE, and adding one back is the mistake ([B.157]). Every `BRIARD_*` in the
+# ⚠️ THE KNOBS ARE NOT HERE, and adding one back is the mistake. Every `BRIARD_*` in the
 # environment is COPIED into config.env with the prefix stripped -- `BRIARD_CPU=qemu64` becomes
 # `CPU=qemu64` -- so the installer carries no list of them, no defaults for them and no
 # documentation of them. What each key means and what it defaults to is agent/host/config.go's,
@@ -82,7 +82,7 @@ RELEASE_KEYRING_PEM='__BRIARD_RELEASE_KEYRING_PEM__'
 say() { printf 'briard: %s\n' "$*"; }
 die() { printf 'briard: ERROR: %s\n' "$*" >&2; exit 1; }
 # open_for_user hands the dashboard link to the invoking user's browser, on a desktop and only
-# there ([V3b.31h]): a user to run it AS (the browser must be theirs, never root's), a display
+# there: a user to run it AS (the browser must be theirs, never root's), a display
 # they can see (sudo keeps DISPLAY and XAUTHORITY; a Wayland session carries DISPLAY through
 # Xwayland), and xdg-open present. Best-effort and silent otherwise -- a headless install is the
 # printed link opened on a phone, not a failure -- and never waited on: xdg-open may block until
@@ -138,7 +138,7 @@ else
 	#
 	# Fetched from the TARGET's path, never a fixed one: the bootstrap is the binary that parses
 	# the manifest, and a stale one that cannot parse a newer manifest is exactly the
-	# forward-compat bricking the channel layout exists to prevent ([B.86]). `briard-agent` is the
+	# forward-compat bricking the channel layout exists to prevent. `briard-agent` is the
 	# one artifact the channel duplicates under its pointers for this fetch.
 	boot="$PREFIX/bootstrap-agent"
 	fetch_url "$CHANNEL/briard/$RELEASE/linux/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/briard/$RELEASE/linux"
@@ -174,13 +174,13 @@ fi
 # Lay down /opt/briard from the staging dir. The agent binary + qemu bundle + guest
 # image are the self-updating cattle; the base guest image is read-only backing.
 mkdir -p "$PREFIX/guest-image"
-STAGING_OURS="" # the staging dir this script created, if any -- see [B.128] below
+STAGING_OURS="" # the staging dir this script created, if any -- see the staging-dir removal below
 if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	# The host is admitted: now the bootstrap fetches and verifies the whole set (qemu bundle, guest
 	# image, a fresh briard-agent) against the bundled keyring, refusing anything unsigned.
 	src="$PREFIX/staging"
 	rm -rf "$src"
-	# OURS TO DELETE, and the only staging dir that is ([B.128]). Recorded here, in the branch
+	# OURS TO DELETE, and the only staging dir that is. Recorded here, in the branch
 	# that CREATES it, rather than re-derived from BRIARD_ARTIFACTS at the far end of the script:
 	# the caller's artifact dir on the other branch is read-only and not ours, and deleting it
 	# would be a considerably worse bug than the leak this closes.
@@ -205,14 +205,14 @@ if [ -z "${BRIARD_ARTIFACTS:-}" ]; then
 	install -m0755 "$HOSTSRC/briard-agent" "$PREFIX/agent/briard-agent"
 fi
 # The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
-# ExecStart on the macvtap substrate. Cattle that rides with the agent ([B.86b]): it lands here,
+# ExecStart on the macvtap substrate. Cattle that rides with the agent: it lands here,
 # and an update stages briard-net-wrap.next beside it for briard-commit to move.
 NET_WRAP=""
 if [ -f "$HOSTSRC/briard-net-wrap" ]; then
 	install -m0755 "$HOSTSRC/briard-net-wrap" "$PREFIX/agent/briard-net-wrap"
 	NET_WRAP="$PREFIX/agent/briard-net-wrap"
 fi
-# THE QEMU TREE, REACHED THROUGH A LINK ([B.86b]). One extracted bundle per release lives at
+# THE QEMU TREE, REACHED THROUGH A LINK. One extracted bundle per release lives at
 # $PREFIX/agent/qemu-<release>/ -- inside the directory the frozen pivot commits in -- and
 # $PREFIX/agent/qemu is a symlink to the current one. An update extracts the next release's
 # tree beside it and stages qemu.next as a link; briard-commit then commits qemu with ONE
@@ -235,11 +235,11 @@ ln -sfnT "$(basename "$QEMU_TREE")" "$PREFIX/agent/qemu"
 # An install that predates the link laid a real directory here; a link cannot replace one.
 if [ -d "$PREFIX/qemu" ] && [ ! -L "$PREFIX/qemu" ]; then rm -rf "$PREFIX/qemu"; fi
 ln -sfnT agent/qemu "$PREFIX/qemu"
-# THE GUEST BUNDLE ([B.86j]): the briard binaries the guest runs, shipped in the host chain and
+# THE GUEST BUNDLE: the briard binaries the guest runs, shipped in the host chain and
 # pushed into the guest by the agent at every bring-up. Same tree-and-link shape as qemu, same
 # commit (briard-commit moves guest.next with -T). Existence-guarded: a channel that predates the
-# bundle carries none, and the guest then runs the image's firmware -- which is a REFUSAL now
-# ([B.138]), not a degraded mode, so an install that finds a bundle must land it.
+# bundle carries none, and the guest then runs the image's firmware -- which is a REFUSAL now,
+# not a degraded mode, so an install that finds a bundle must land it.
 if [ -f "$HOSTSRC/guest-bundle.tar" ]; then
 	GUEST_TREE="$PREFIX/agent/guest-${QEMU_REL:-install}"
 	rm -rf "$GUEST_TREE"
@@ -248,19 +248,19 @@ if [ -f "$HOSTSRC/guest-bundle.tar" ]; then
 	# Freeing the tarball is an OPTIMISATION for the network path, where $HOSTSRC is our own temp
 	# dir -- not a step whose failure may abort an install. BRIARD_ARTIFACTS points at a read-only
 	# staging dir (a Nix store path, which is how the install rigs run), and under `set -e` the
-	# bare rm would take the whole install down with it ([B.141]).
+	# bare rm would take the whole install down with it.
 	rm -f "$HOSTSRC/guest-bundle.tar" 2>/dev/null || true
 	chmod -R u+w "$GUEST_TREE"
 	ln -sfnT "$(basename "$GUEST_TREE")" "$PREFIX/agent/guest"
 fi
 cp -f "$GUESTSRC/nixos.qcow2" "$PREFIX/guest-image/nixos.qcow2"
 # THE INSTALLED MANIFESTS, one per chain, each beside what it describes: the exact signed bytes
-# that verified, so the node can say which release it is on -- and so the update path ([B.86b])
+# that verified, so the node can say which release it is on -- and so the update path
 # can diff the target's manifest against it and fetch only what changed. Absent on the local
 # staging path, which has no manifest to keep.
 [ -f "$HOSTSRC/manifest.json" ]  && install -m0644 "$HOSTSRC/manifest.json"  "$PREFIX/agent/manifest.json"
 [ -f "$GUESTSRC/manifest.json" ] && install -m0644 "$GUESTSRC/manifest.json" "$PREFIX/guest-image/manifest.json"
-# The guest chain's node-local RECORD of the release this node runs ([B.86d]): pet state, beside
+# The guest chain's node-local RECORD of the release this node runs: pet state, beside
 # the identity, because the guest itself knows only a closure path and the stable path orders
 # on a release id. The copy under guest-image/ describes the IMAGE on disk; this one follows the
 # running OS as updates land. Same bytes today, and they part ways at the first guest update.
@@ -278,14 +278,14 @@ ln -sfn "$PREFIX/agent/briard-agent" /usr/local/bin/briard 2>/dev/null ||
 # NOTHING IS CONFIGURED HERE. The agent owns the whole of it: which device the guest's L2 hangs
 # off, whether that device's being a bridge makes the substrate one port or two macvtap children,
 # the addresses on the host's side, and the tun driver behind them. All of it converges on the
-# agent's ordinary status tick, out of a binary the channel can fix ([B.150]).
+# agent's ordinary status tick, out of a binary the channel can fix.
 #
 # One thing still has to be true, and it is checked rather than assumed: the fd-passing launch
 # wrapper must be staged. Without it the agent cannot attach a macvtap to qemu, and that failure
 # belongs at the install rather than at the first guest launch.
 [ -n "$NET_WRAP" ] || die "the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC"
 
-# ---- 5. where this node's disks GO -- the agent makes them ([B.157]) ----------------
+# ---- 5. where this node's disks GO -- the agent makes them --------------------------
 # THREE PATHS AND NO mkfs. The agent creates each of these at its first start, before it launches
 # anything that would attach one (agent/host/disks.go, agent/platform/alloc.go) -- thick for the
 # data volume, sparse for the state disk, a qcow2 overlay on the image for the guest's OS disk.
@@ -296,7 +296,7 @@ ln -sfn "$PREFIX/agent/briard-agent" /usr/local/bin/briard 2>/dev/null ||
 # how a harness says "this node has no such disk", and inventing one would hand qemu a `-drive`
 # for a file nobody created.
 #
-# ⚠️ The exclusivity that guarded the data volume ([B.126]) moved WITH it and got stronger on the
+# ⚠️ The exclusivity that guarded the data volume moved WITH it and got stronger on the
 # way: `[ ! -f ]` is true for "absent" and for "present but unstat-able" alike, and the allocation
 # writes from byte 0 -- so the creation has to BE the proof of absence. It was a `noclobber`
 # subshell here; it is O_EXCL there, which is the same idea the kernel answers directly.
@@ -306,13 +306,13 @@ OVERLAY="$PREFIX/guest.qcow2"   # cattle: rebuilt on the image at every launch, 
 
 # ---- 6. the node's own files: the agent's scripts, its config, its units ------------
 # SIX FILES, and only ONE of them is generated. The three scripts and the three units are shipped
-# artifacts copied out of the verified staging dir ([B.157]); config.env is written here because it
+# artifacts copied out of the verified staging dir; config.env is written here because it
 # is the only one whose content is about THIS host.
 mkdir -p "$UNIT_DIR"
 
-# ---- the agent's three frozen scripts: copied, not written ([B.157]) -----------------
-# briard-exec and briard-commit are self-update's on-disk pivot ([B.84]); briard-update is the
-# fetch, which must not be shipped by the thing it updates ([B.86a]) -- an agent that runs fine
+# ---- the agent's three frozen scripts: copied, not written ---------------------------
+# briard-exec and briard-commit are self-update's on-disk pivot; briard-update is the
+# fetch, which must not be shipped by the thing it updates -- an agent that runs fine
 # and has a bug in fetch/verify/stage could otherwise never be replaced, fleet-wide at once.
 #
 # FROZEN, which is the safety property, and SHIPPED, which is new. Frozen means dumb,
@@ -326,7 +326,7 @@ for s in briard-exec briard-commit briard-update; do
 	[ -f "$HOSTSRC/$s" ] || die "$s is absent from staging; this release cannot be installed"
 	install -m0755 "$HOSTSRC/$s" "$PREFIX/agent/$s"
 done
-# ---- the node's configuration: A FILE, NOT THE UNIT ([B.150](a)) -------------------------
+# ---- the node's configuration: A FILE, NOT THE UNIT --------------------------------------
 # Everything the agent is told about this host lives here, and the agent reads it with the
 # environment layered ON TOP (agent/host/config.go, loadConfigFile), so a rig that exports a
 # variable still wins.
@@ -335,7 +335,7 @@ done
 # decision it can revisit has to live somewhere it can rewrite. Plain and greppable at 2am; 0600
 # because it is root's business alone.
 #
-# ⚠️ TWO KINDS OF LINE, AND ONLY TWO ([B.157]). What this script LAID DOWN -- the files it created
+# ⚠️ TWO KINDS OF LINE, AND ONLY TWO. What this script LAID DOWN -- the files it created
 # or staged -- and what the OPERATOR said, copied verbatim from the environment. There is
 # deliberately no third kind: NO DEFAULTS. A key that is absent is a key the agent answers from its
 # own shipped default, which a release can change and a line in this file could not.
@@ -373,7 +373,7 @@ EOF
 # The exclusions are the names that configure THE INSTALL rather than the node: where to fetch
 # from, which release, and where the units go -- plus BRIARD_CONFIG, which names this very file, so
 # copying it in would be a node telling itself where it already is. The list shrank when the disks
-# moved ([B.157]): BRIARD_DATA_SIZE is an ordinary knob now, because the AGENT allocates the volume
+# moved: BRIARD_DATA_SIZE is an ordinary knob now, because the AGENT allocates the volume
 # and therefore the size is a value the node holds rather than a step this script performs.
 #
 # Sorted, so two installs given the same environment produce byte-identical files. Values are
@@ -383,7 +383,7 @@ env | grep '^BRIARD_[A-Z0-9_]*=' |
 	sed 's/^BRIARD_//' | LC_ALL=C sort >> "$PREFIX/config.env"
 chmod 0600 "$PREFIX/config.env"
 
-# ---- the units: copied, not written ([B.157]) ---------------------------------------
+# ---- the units: copied, not written -------------------------------------------------
 # The three unit files are SHIPPED ARTIFACTS of the host chain, so they arrive in the staging dir
 # beside the agent binary and are hashed by the same signed manifest. Copying them rather than
 # rendering them is the whole point: a unit written here by heredoc is frozen where no release can
@@ -398,7 +398,7 @@ for u in briard-agent.service briard-update.service briard-update.timer; do
 	install -m0644 "$HOSTSRC/$u" "$UNIT_DIR/$u"
 done
 
-# ---- the staging dir goes ([B.128]) -------------------------------------------------
+# ---- the staging dir goes -----------------------------------------------------------
 # Every artifact above has been copied out, so what is left here is a second copy of the largest
 # thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- 1.2 GB,
 # measured on briard-test, which is 13% of a 9.5 GiB disk, held by nothing, on the same filesystem
@@ -408,13 +408,13 @@ done
 # the caller (a Nix store path, in the install rigs) and must survive us.
 #
 # Last, and never fatal: this is space reclaimed from a finished install, not a step whose failure
-# means the install did not happen ([B.141]'s rule for the guest-bundle tarball, same reasoning).
+# means the install did not happen (the guest-bundle tarball's rule above, same reasoning).
 if [ -n "$STAGING_OURS" ]; then
 	say "removing the staging directory"
 	rm -rf "$STAGING_OURS" 2>/dev/null || true
 fi
 
-# ---- everything above reaches the disk before anything runs it ([B.79]) ----------------
+# ---- everything above reaches the disk before anything runs it -------------------------
 # cp, tar and install return with the bytes in the page cache, and a rename or a new file's name
 # can reach the disk before its contents do. A power cut in the next few seconds would leave a
 # truncated qemu or image under a verified name, and it would surface at the next BOOT, where
@@ -440,7 +440,7 @@ if command -v systemctl >/dev/null 2>&1; then
 		say "starting briard-agent (+ the daily update timer)"
 		systemctl start briard-agent.service briard-update.timer
 	fi
-	# THE NAME IS READ, NOT KNOWN. The agent mints it at its first start ([B.157]) and records it
+	# THE NAME IS READ, NOT KNOWN. The agent mints it at its first start and records it
 	# at $STATE/flock-name, so this script has to wait for the agent before it can say what the
 	# household should type. That reordering is the whole cost of the move, and it buys back the
 	# closing message being about a node that EXISTS rather than one about to.
@@ -456,13 +456,13 @@ if command -v systemctl >/dev/null 2>&1; then
 		waited=$((waited + 2))
 	done
 
-	# THE NAME, AND ONLY THE NAME ([B.157]). The address is deliberately not here any more: under
+	# THE NAME, AND ONLY THE NAME. The address is deliberately not here any more: under
 	# DHCP there is none to print yet, and offering a second way in made the sentence long to say
 	# a thing that is true of fewer installs than it sounds. The name is the one that stays true
 	# when the address moves, and it is what the front door routes on.
 	#
 	# NOTE what this deliberately does NOT promise: that the router's client list shows this same
-	# name. It does not, and that is a decision rather than an oversight (V3.20) -- DHCP option 12
+	# name. It does not, and that is a decision rather than an oversight -- DHCP option 12
 	# stays `briard-<mac tail>`, derived in-guest from the NIC's own address, because changing a
 	# hostname mid-lease is a change no one can predict a server's reaction to and a rename must
 	# never risk the address.
@@ -475,8 +475,8 @@ if command -v systemctl >/dev/null 2>&1; then
 	else
 		say "installed. briard is starting; it will answer at http://briard-$FLOCK_NAME.local/"
 	fi
-	# THE LINK IS THE LAST THING THE INSTALLER PRINTS ([V3b.31h]). The dashboard's only door is a
-	# one-time link the agent mints ([V3b.31b]), and the guest has to be up for it -- so wait for
+	# THE LINK IS THE LAST THING THE INSTALLER PRINTS. The dashboard's only door is a
+	# one-time link the agent mints, and the guest has to be up for it -- so wait for
 	# it, bounded, on the agent's OWN word: the status line it logs once the node is primary and
 	# the chain (the front door, the dashboard) passed its health gate. That is the same signal
 	# the tier-4 rig waits on, and it is local -- no name to resolve, no address to know under
@@ -484,7 +484,7 @@ if command -v systemctl >/dev/null 2>&1; then
 	# how instead, as it always did: a link printed before the door is up would 503 in the
 	# household's face, and a link that expired during a slow boot would be worse.
 	#
-	# ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here ([B.157]). `briard open` says
+	# ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here. `briard open` says
 	# what is on the node and hands over the link; this script shows what it said. The two used to
 	# be separate renderings of the same facts -- an install-time sentence in shell and an any-time
 	# one in Go -- which is two things that can disagree about a household's own node.

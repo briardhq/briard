@@ -23,11 +23,11 @@ const testUpgradeBudget = time.Minute
 // fakeUpgrader records the upgrade call a directive drives.
 type fakeUpgrader struct {
 	hold            func() error // blocks inside the budget (see beat_test.go)
-	rescued         bool         // RescueGuest was called (B.10)
+	rescued         bool         // RescueGuest was called
 	certCert        string       // WriteCert's cert PEM
 	certKey         string       // WriteCert's key PEM
 	err             error
-	imageTarget     install.Manifest // ImageUpgrade's release ([B.86h])
+	imageTarget     install.Manifest // ImageUpgrade's release
 	imageErr        error
 	imageRolledBack bool
 }
@@ -125,7 +125,7 @@ func TestApplyDirectiveAgentUpdateTriggersTheUnit(t *testing.T) {
 
 // The load-bearing negative: a refused update (a pin below the floor, a bad signature, a failed
 // fetch) reports FAILED carrying the unit's own line, and escalates -- and nothing was staged,
-// so the running binary is kept. [[verification-assertions-must-fail]]
+// so the running binary is kept.
 func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v1", triggerErr: fmt.Errorf("v0 is older than stable v1 — move stable to go there")}
 	fn := &fakeNotifier{}

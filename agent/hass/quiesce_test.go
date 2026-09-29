@@ -100,7 +100,7 @@ func TestQuiesceHoldsAndReleasesThroughTheSameToken(t *testing.T) {
 }
 
 // TestReleaseReportsALockThatDidNotHold is the whole reason this is a pair rather than a fire and
-// forget ([B.143]). Home Assistant breaks its own lock if the events it is buffering pile up, and
+// forget. Home Assistant breaks its own lock if the events it is buffering pile up, and
 // it says so on the release — a member taken under a broken lock is crash-consistent, and the
 // caller may only learn that here.
 func TestReleaseReportsALockThatDidNotHold(t *testing.T) {

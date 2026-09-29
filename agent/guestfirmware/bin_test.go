@@ -47,7 +47,7 @@ func stageSet(t *testing.T, dir string) {
 }
 
 // Activation arms a trial flag per binary, records the release for the commit, and restarts
-// ONE unit: the guest agent's own, whose start is the verdict on the rest ([B.138]). Nothing is
+// ONE unit: the guest agent's own, whose start is the verdict on the rest. Nothing is
 // armed or restarted when any named binary is not staged, or when the set leaves the agent out.
 func TestBinActivateArmsTheSetAndRestartsTheAgentAlone(t *testing.T) {
 	dir, run := binDirs(t)
@@ -88,7 +88,7 @@ func TestBinActivateArmsTheSetAndRestartsTheAgentAlone(t *testing.T) {
 	}
 }
 
-// THE CHEAP GATE ([B.138]): bin.test runs every staged copy's --test-launch in order; the first
+// THE CHEAP GATE: bin.test runs every staged copy's --test-launch in order; the first
 // failure names the binary and discards the WHOLE staged set, so nothing half-proven is ever
 // armed and a later non-trial start finds nothing to clean up.
 func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
@@ -226,7 +226,7 @@ func clearMarkers(t *testing.T, run string) {
 	}
 }
 
-// THE VERDICT ([B.138]): a trial start try-restarts each door that is running and passes only
+// THE VERDICT: a trial start try-restarts each door that is running and passes only
 // if every one comes back active; on a secondary (nothing running) it passes at once. A door
 // that fails refuses the trial -- and the trial agent restarts nothing itself: the failed
 // door's own auto-restart is the revert.
@@ -270,7 +270,7 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	// transaction, so the dashboard is verified where it stands rather than restarted again. Two
 	// restarts across an ordered chain are how a start job gets cancelled, and a cancelled start
 	// job fires OnFailure= -- which demoted a node mid-upgrade when this loop ran dashboard-first
-	// (install-macvtap, [B.138]). And the budget reset must precede the restart it pays for.
+	// (install-macvtap). And the budget reset must precede the restart it pays for.
 	clearMarkers(t, run)
 	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
@@ -323,11 +323,11 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	}
 }
 
-// THE HANDSHAKE REPORTS THE COMMITTED RELEASE, and after [B.148] that is the whole rule: the
+// THE HANDSHAKE REPORTS THE COMMITTED RELEASE, and that is the whole rule: the
 // commit runs before the port is served, so every handshake a host can read is taken after it.
 // This used to prefer RELEASE.next on a trial start, because the host could get in between READY
 // and the ExecStartPost commit and reading the committed file there handed it the OLD id -- a
-// good dress recorded as a permanent revert ([B.138]). The window is gone; so is the inversion.
+// good dress recorded as a permanent revert. The window is gone; so is the inversion.
 func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	_, run := binDirs(t)
 	exe, err := os.Executable()
@@ -367,7 +367,7 @@ func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	}
 }
 
-// THE COMMIT ([B.148]): only a trial start moves the set, it moves every staged name plus
+// THE COMMIT: only a trial start moves the set, it moves every staged name plus
 // RELEASE together, it gives the doors their start budget back, and it clears every flag --
 // on a non-trial start too, where the markers are all it touches.
 func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
@@ -449,7 +449,7 @@ func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 	}
 }
 
-// THE AFTERMATH ([B.138]): a non-trial start that finds a staged set discards it and puts both
+// THE AFTERMATH: a non-trial start that finds a staged set discards it and puts both
 // doors back on the committed files -- whichever of the three failed, because it cannot know.
 // A non-trial start with nothing staged does nothing at all.
 func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {

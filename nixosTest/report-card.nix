@@ -14,13 +14,13 @@ pkgs.testers.runNixOSTest {
     # arithmetic is unit-tested; what only a real host can show is that the reader read THIS
     # machine, that a refusal carries its FIX rather than a bare verdict, and that the process
     # exits non-zero. Asserting PASS instead cost 10 GB the guest never touched (659 MB resident
-    # of 10240 declared, [B.127]) to exercise the one branch the unit tests already own.
+    # of 10240 declared) to exercise the one branch the unit tests already own.
     # iproute2 present so the `ip` gate PASSes; KVM/tun depend on the runner, so the overall
     # verdict is asserted for self-consistency rather than for a value.
     virtualisation.memorySize = 2048;
     environment.systemPackages = [ agent pkgs.iproute2 ];
     # nss-mdns in nsswitch, so the mdns gate has a deterministic PASS to assert. It is the one
-    # gate whose fact is read out of a CONFIG FILE rather than /proc or /sys ([V3b.19]), and the
+    # gate whose fact is read out of a CONFIG FILE rather than /proc or /sys, and the
     # unit tests can only exercise the pure check above it -- this is what puts the reader itself
     # in front of a real /etc/nsswitch.conf.
     services.avahi = { enable = true; nssmdns4 = true; };
@@ -50,7 +50,7 @@ pkgs.testers.runNixOSTest {
     # THE MEMORY REFUSAL, END TO END: the reader read THIS machine (2 GB, under the 3584 MB floor),
     # and the refusal carries the FIX that makes it actionable rather than a bare verdict. Asserting
     # PASS here instead cost 10 GB the guest never touched, to exercise the one branch `Assess`'s
-    # unit tests already own ([B.127]).
+    # unit tests already own.
     #
     # The overall verdict was ALREADY refused before this, and not by the memory gate: the test
     # VM's root has under a gigabyte free, so the disk gate refuses and the exit-code assertion
@@ -64,7 +64,7 @@ pkgs.testers.runNixOSTest {
     # here means hasMDNSResolver failed to see a resolver that is demonstrably present.
     assert gate("mdns") == "PASS", f"mdns gate = {gate('mdns')}, want PASS (nss-mdns is configured)"
     machine.succeed("grep -qE '^hosts:.*mdns' /etc/nsswitch.conf")
-    # THE AES AXIS, read off THIS machine rather than assumed ([V3b.33](c)): the gate must agree
+    # THE AES AXIS, read off THIS machine rather than assumed: the gate must agree
     # with /proc/cpuinfo, so a gatherer that stopped reading the flag would be caught either way
     # round -- this runs under KVM on a builder whose CPU has AES, and under TCG on one that hides
     # it. Never a REFUSE: an AES-less box is a perfectly good node.

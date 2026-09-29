@@ -14,7 +14,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// DRESSING THE GUEST ([B.86j], re-cut by [B.138] and [B.139]). Every briard binary the guest runs
+// DRESSING THE GUEST. Every briard binary the guest runs
 // rides the HOST bundle: the committed tree at <base>/guest ->
 // guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}. The image bakes
 // ONE binary, briard-guest-firmware -- the push protocol alone, which is what receives the first
@@ -35,15 +35,14 @@ import (
 // peer to fall back on) it try-restarts it onto the staged copy and reads READY or failure; on a
 // secondary the doors are not running and the cheap gate was the only one. Only a passing
 // verdict opens the port, and it commits the set plus the release id together before it serves
-// the reconnect below -- so a handshake this host can read is a handshake taken after the commit
-// ([B.148]).
+// the reconnect below -- so a handshake this host can read is a handshake taken after the commit.
 // A failed door has already reverted itself by its own auto-restart (flag consumed), one start
 // out of its budget -- a failed upgrade never demotes; the refused agent exits without opening
 // the port, the committed agent comes back, discards the staged set and puts both doors on the
 // committed files. (guest-image/pivot.nix, agent/guestfirmware/bin.go.)
 //
 // The host's own trial gate stays "the agent started"; a host update never waits for its guest
-// to be dressed ([V3.32]: a host update may be what fixes the guest). The host learns the outcome
+// to be dressed (a host update may be what fixes the guest). The host learns the outcome
 // from the next handshake: the new id means the set took, the old one means it was refused --
 // and because the port opens only after the verdict, there is no handshake in between.
 //
@@ -195,7 +194,7 @@ func (cfg Config) judgeDress(g dresser, pushed string, logf func(string, ...any)
 	return false
 }
 
-// recordRefusal writes the durable record that makes a refusal permanent ([B.86j]).
+// recordRefusal writes the durable record that makes a refusal permanent.
 func (cfg Config) recordRefusal(release string, logf func(string, ...any)) {
 	if err := cfg.layout().MarkGuestReverted(release); err != nil {
 		logf("guest bundle: recording the refusal of %s failed: %v", release, err)

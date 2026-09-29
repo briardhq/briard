@@ -1,4 +1,4 @@
-# [V3b.33] — ENCRYPTION IS A `pvmove`, AND IT IS REVERSIBLE.
+# ENCRYPTION IS A `pvmove`, AND IT IS REVERSIBLE.
 #
 # The item was admitted on a premise that turned out to be false — "format the volume encrypted at
 # install, because you can never add it later". You can. What has to exist in advance is not the
@@ -88,7 +88,7 @@ let
 
   node = h.mkNode {
     inherit fixture;
-    # The resource names the LV -- as every node does since [V3b.33](b) -- and every move below
+    # The resource names the LV -- as every node does since the storage seam -- and every move below
     # happens underneath that name, which is the whole now-decision the item turns on.
     resource = h.mkResource [
       {
@@ -197,7 +197,7 @@ pkgs.testers.runNixOSTest {
     def move(m, src, dst, label):
         """One `pvmove --atomic`, timed. Atomic so the LVs are either wholly on the source or wholly
         on the target: an interrupted conversion has no third state to be recovered from. BOTH LVs
-        move -- data and DRBD's metadata beside it ([B.145a]) -- because the pair travels together:
+        move -- data and DRBD's metadata beside it -- because the pair travels together:
         a `vgreduce` of the source with either left behind is refused, and a data LV on one PV with
         its metadata on another is a layout nobody decided on."""
         t0 = now(m)
@@ -261,10 +261,10 @@ pkgs.testers.runNixOSTest {
     # HA's 2.4 GB image is resident before anything promotes, as on a real node.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     # ── THE SEAM, BUILT BY THE PRODUCT ─────────────────────────────────────────────────────────
-    # briard-node-storage.service lays this down from the spec the host writes ([V3b.33](d)), and
+    # briard-node-storage.service lays this down from the spec the host writes, and
     # it also loads dm-mirror -- the target pvmove builds its transient mirror out of, which LVM
     # cannot autoload on a NixOS guest (it shells out to /sbin/modprobe, which does not exist
-    # there; [V3b.33](a) measured the refusal). Nothing here builds a seam of its own: a rig that
+    # there; the conversion spike measured the refusal). Nothing here builds a seam of its own: a rig that
     # did would be proving a stack no household runs.
     node1.succeed("modprobe drbd")
     node1.succeed("briard-test-storage --seed")
@@ -278,7 +278,7 @@ pkgs.testers.runNixOSTest {
 
     # ── AND THE RESOURCE ON TOP OF IT, from the same unit run above: it created the LV, created
     # metadata on it, attached, and -- being the seed -- declared it UpToDate and armed the
-    # one-time format. One unit, which is what [V3b.33](d) bought.
+    # one-time format. One unit, which is what the storage seam bought.
     name_the_flock(node1)
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)

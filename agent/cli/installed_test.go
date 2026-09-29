@@ -20,7 +20,7 @@ func TestServiceCacheDirMatchesTheAgents(t *testing.T) {
 }
 
 // The cache holds each service's manifest VERBATIM, so the name comes from the manifest's own
-// parser rather than from a second reader of the format ([B.157]). install.sh used to `grep -o` for
+// parser rather than from a second reader of the format. install.sh used to `grep -o` for
 // `"name":"..."` and take the first match, which is a different implementation of a format whose
 // identity is its content hash.
 func TestInstalledServicesReadsTheManifests(t *testing.T) {

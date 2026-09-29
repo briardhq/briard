@@ -1,16 +1,16 @@
-# WHAT ONE BAD SECTOR COSTS A LONE NODE: ONE FILE ([B.145c]'s exit assertion, [B.144]'s question).
+# WHAT ONE BAD SECTOR COSTS A LONE NODE: ONE FILE (the lone-node-runs-no-DRBD exit assertion; the companion flock rig's question).
 #
-# [B.144] measured the DRBD answer on this same injector: with no UpToDate diskful peer, DRBD turns
+# The companion flock rig measured the DRBD answer on this same injector: with no UpToDate diskful peer, DRBD turns
 # a single unreadable sector into a whole-volume outage in every `on-io-error` mode -- `detach`
 # drops the disk and fails everything, `pass_on` downgrades it to Inconsistent and
 # `drbd_data_accessible()` finds no UpToDate copy, and forcing UpToDate is undone by the next read
-# of the bad sector. That measurement is why a lone node runs no DRBD ([B.145]); this rig is the
+# of the bad sector. That measurement is why a lone node runs no DRBD; this rig is the
 # other half of the argument, on the product's own stack: LVM on a dm-dust device, btrfs on the
 # data LV, the chain started from its target, a fixture serving -- then one sector under a data
 # file goes bad. The verdict is that EXACTLY ONE file becomes unreadable, every other file still
 # reads, the front door still answers, the chain stays up and nothing was held or rebooted.
 #
-# THE INJECTOR IS dm-dust, as in [B.144]: `addbadblock` fails reads of one sector, in place, with
+# THE INJECTOR IS dm-dust, as in the flock rig: `addbadblock` fails reads of one sector, in place, with
 # the filesystem mounted. The tier is built on the dust device (mkNode's tierDevice), not on
 # /dev/vdb, so the sector is bad underneath everything the product stacks on it. Encryption is
 # OFF for this rig only so the arithmetic from a btrfs chunk to a dust sector has one constant

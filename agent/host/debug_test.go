@@ -9,7 +9,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// THE GATE, AND IT MUST FAIL IF SOMEBODY WIDENS IT ([B.142a]). Every local-only kind is refused
+// THE GATE, AND IT MUST FAIL IF SOMEBODY WIDENS IT. Every local-only kind is refused
 // when it arrives on the cloud's down-channel and accepted on the local admin door. Enumerating
 // localOnlyKinds rather than naming the two by hand is deliberate: a third local-only verb added
 // to that table without a thought about the cloud edge gets this assertion for free, and one

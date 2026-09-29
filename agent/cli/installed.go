@@ -14,7 +14,7 @@ import (
 // install.sh used to answer this with `grep -o '"name":"[^"]*"' | head -1` over the cache, to end
 // the install with "home-assistant is already installed on it and is coming back up" rather than
 // the flat lie "no service is installed on it yet" that a reinstall would otherwise print. The
-// sentence was right and its home was wrong ([B.157]): it reads the node's own state to say
+// sentence was right and its home was wrong: it reads the node's own state to say
 // something to a person, which is the shape of a thing that changes -- and the installer is the one
 // file no release can reach.
 //

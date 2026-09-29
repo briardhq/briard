@@ -258,7 +258,7 @@ func TestRescueRefusedExitsNonZero(t *testing.T) {
 }
 
 // TestNoArgsIsHelp: `briard` alone prints the help and SUCCEEDS. It used to start the privileged
-// host agent ([V3b.23]) — a bare word away from the CLI, and the one invocation a curious user is
+// host agent — a bare word away from the CLI, and the one invocation a curious user is
 // most likely to try first. The daemon is `briard run` now, and nothing reaches this path
 // expecting a process to stay up.
 func TestNoArgsIsHelp(t *testing.T) {
@@ -408,7 +408,7 @@ func TestAccountLang(t *testing.T) {
 	}
 }
 
-// `briard update -vm` ([B.86d]) is the vm chain's human trigger: it submits the local
+// `briard update -vm` is the vm chain's human trigger: it submits the local
 // update-vm directive with the target, and reports the upgrade's outcome -- a refusal
 // (rolled back, node serving) distinguished from a breakage, as `os upgrade` once did.
 func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
@@ -444,11 +444,11 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	}
 }
 
-// THE DEFAULT IS `stable`, AND THE OLD VERBS ARE GONE ([B.159](f), [B.163]). Both halves are
+// THE DEFAULT IS `stable`, AND THE OLD VERBS ARE GONE. Both halves are
 // asserted here rather than read off the flag declaration. The default is the only thing between
 // an admin typing three words and a release nothing has promoted -- `latest` exists to be proven
-// by a canary that names it on purpose. And the alpha ships no aliases
-// ([[alpha-reinstall-only-policy]]), so every retired positional -- `host`/`guest`, then
+// by a canary that names it on purpose. And the alpha ships no aliases (it is
+// reinstall-only), so every retired positional -- `host`/`guest`, then
 // `self`/`vm` -- has to fail loudly rather than quietly keep working: a rename nobody can observe
 // is a rename that did not happen. The chain is the FLAG now, and a positional word is refused
 // whatever it spells.
@@ -473,7 +473,7 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 }
 
 // TestAppUndoNamesThePointExactly: `undo` takes the point as history printed it, never an
-// index into that listing ([B.143]).
+// index into that listing.
 //
 // An index is stale the moment anything takes a member, and members are taken on every service
 // start -- so "undo 3" would act on a different point than the one the operator read. This is
@@ -523,7 +523,7 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 	}
 }
 
-// TestAppHistoryTellsTheTwoKindsOfPointApart ([B.143]): a point taken while the app was running is
+// TestAppHistoryTellsTheTwoKindsOfPointApart: a point taken while the app was running is
 // one the app has to recover from on the way back up, and the household chooses BEFORE that
 // happens. A clean point says nothing extra — a note on every line is a note nobody reads.
 func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
@@ -568,7 +568,7 @@ func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
 	}
 }
 
-// TestAppHistoryShowsEventsNotSamples ([B.167]): a sample that anchors nothing is not a row. The
+// TestAppHistoryShowsEventsNotSamples: a sample that anchors nothing is not a row. The
 // history is what happened, and the ring's plain samples are how it is kept, not what it says.
 func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
@@ -594,7 +594,7 @@ func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 	}
 }
 
-// TestAppHistoryMarksAnAppThatDidNotStart ([B.167]): the page's red caption is a `!` line here, and its
+// TestAppHistoryMarksAnAppThatDidNotStart: the page's red caption is a `!` line here, and its
 // banner a line naming the last healthy state, while the app is unhealthy.
 func TestAppHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)

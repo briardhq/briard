@@ -1,6 +1,6 @@
 package main
 
-// Live pull progress ([V3b.31j]): how far a service install's download has got, read off the
+// Live pull progress: how far a service install's download has got, read off the
 // guest itself while the bytes move. Nothing here asks podman anything.
 //
 // Three local facts make a fraction:
@@ -10,7 +10,7 @@ package main
 //   - FINISHED layers are in podman's own layer store, overlay-layers/layers.json, each with its
 //     compressed size and creation time -- every layer created since the pull started is this
 //     pull's, so no journal parsing and no digest matching;
-//   - the layer IN FLIGHT is the bytes under the pull unit's private tmp (PrivateTmp, [B.56]),
+//   - the layer IN FLIGHT is the bytes under the pull unit's private tmp (PrivateTmp),
 //     which shrinks as a layer completes exactly as the finished sum grows by it.
 //
 // The number is monotonic to within a poll, honest about what it cannot know (no total -> no
@@ -31,7 +31,7 @@ type pullPaths struct {
 	records string // where the host's pull records land (shared/dashboard.Dir)
 	layers  string // podman's overlay-layers/layers.json
 	// tmp is the directory the pull unit's PrivateTmp roots under. /var/tmp, not /tmp: a pull
-	// stages through /var/tmp/container_images_storage<random> ([B.56], measured), and
+	// stages through /var/tmp/container_images_storage<random> (measured), and
 	// PrivateTmp gives the unit its own of BOTH, each under its own systemd-private-* root.
 	tmp string
 }

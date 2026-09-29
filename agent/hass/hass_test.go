@@ -212,7 +212,7 @@ func TestPrepareFailsLoudly(t *testing.T) {
 // TestVolumesAreTheTwoBinds: one read-only mount for the whole directory, plus the shadow over
 // the image's own run script. Both sources are outside /config, so HA's restore wipe — which
 // clears the config directory wholesale — never sees them.
-// ⚠️ ONE BIND NOW, not two ([B.143]): the service directory at /briard is the PRODUCT's general
+// ⚠️ ONE BIND NOW, not two: the service directory at /briard is the PRODUCT's general
 // shape and agent/services writes it for every service that has one, so what is left here is the
 // half that is Home Assistant knowledge -- the s6 wrapper over a path only this image has.
 func TestVolumesAreTheImageSpecificBind(t *testing.T) {
@@ -357,7 +357,7 @@ func TestExtractionFailureNamesTheLayout(t *testing.T) {
 }
 
 // TestPrepareMaterialisesTheIntegration — briard's own integration is delivered the same way the
-// mint is, and the broker's port is SUBSTITUTED rather than hardcoded ([B.124]). The port belongs
+// mint is, and the broker's port is SUBSTITUTED rather than hardcoded. The port belongs
 // to the other service, so it arrives from the registry; what this checks is that it lands.
 func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	f := withImage()
@@ -418,7 +418,7 @@ func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
 	if !strings.Contains(stubSource, "return await impl.async_setup(hass, config)") {
 		t.Error("the stub does not delegate async_setup")
 	}
-	// OFF THE LOOP ([B.169]): Home Assistant flags an import made on its event loop at every start,
+	// OFF THE LOOP: Home Assistant flags an import made on its event loop at every start,
 	// and refuses some blocking calls from custom integrations outright.
 	if strings.Contains(stubSource, "impl = importlib.import_module(") || !strings.Contains(stubSource, "async_add_import_executor_job") {
 		t.Error("the stub imports the implementation on the event loop")
@@ -465,7 +465,7 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	if !strings.Contains(wrapperSource, mountPoint+"/plant.py") {
 		t.Error("the wrapper does not run the planter")
 	}
-	// THE NOTIFIER IS FIRST, and the ORDER is the property ([B.143]): the two steps after it
+	// THE NOTIFIER IS FIRST, and the ORDER is the property: the two steps after it
 	// write into /config, so a rollback point taken after them already contains briard's own
 	// edits. Asserted by position rather than by presence.
 	ni := strings.Index(wrapperSource, mountPoint+"/notify.py")

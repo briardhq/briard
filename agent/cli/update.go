@@ -14,14 +14,14 @@ import (
 
 // runUpdate is `briard update` and `briard update --vm`: the human trigger of each release chain.
 //
-// THE VERB NAMES THE CHAIN, AND THE CHAIN IS THE UPGRADE UNIT, NOT THE SIDE ([B.163]). Every
+// THE VERB NAMES THE CHAIN, AND THE CHAIN IS THE UPGRADE UNIT, NOT THE SIDE. Every
 // briard binary the machine runs -- the agent, net-wrap, qemu AND the guest's own binaries
-// ([B.86j]) -- rides the briard chain; the VM image is the platform underneath them. So the thing
+// -- rides the briard chain; the VM image is the platform underneath them. So the thing
 // a user updates to get newer briard is briard, whichever side of the virtio port the binary
 // lands on, and the VM is the platform it runs on. `host`/`guest` describe where code RUNS, and
 // our code runs on both sides, so neither names a release line; `briard logs -host/-guest` keeps
 // those words because there they name which journal to read, which genuinely is a side. `vm` is
-// DESIGN's word and is deliberately NOT `machine` -- a machine is the user's box ([V3c.10]), and
+// the design's word and is deliberately NOT `machine` -- a machine is the user's box, and
 // "update your machine" is the one reading this must not invite.
 //
 // THE DEFAULT IS THE ARGUMENT. Nearly every publish moves the briard chain and few move the VM,
@@ -30,7 +30,7 @@ import (
 // `briard update` therefore acts rather than printing the help -- the high-stakes one is the
 // flagged one, and an update to `stable` is what the nightly timer does on its own anyway.
 //
-// BRIARD ([B.86a]) is NOT an injector, and that is the whole point. The other verbs speak
+// BRIARD is NOT an injector, and that is the whole point. The other verbs speak
 // api.Directive to the running agent over the admin socket; this chain must not, because the
 // case it exists for is the agent being DOWN -- an agent that cannot fetch its own replacement
 // is exactly what the unit below it is for. So it does what the cloud's handler and the timer
@@ -38,14 +38,14 @@ import (
 // (which blocks), and print the one line the run ended on. The unit's exit status is the
 // verb's, for free.
 //
-// VM ([B.86d]) IS an injector, and correctly so: the guest OS is moved by the agent (stage
+// VM IS an injector, and correctly so: the guest OS is moved by the agent (stage
 // from the cache, switch or reboot, health-gate, commit or revert), so there is nothing to do
 // when the agent is down but bring the agent back. It submits the update-vm directive --
 // the same one the agent's own nightly timer submits -- and reports the upgrade's outcome the
 // way `directive upgrade-system` would, with the release named. ⚠️ The DIRECTIVE KIND keeps its
 // name: it is a wire word, and the fleet tests read it out of journals.
 //
-// THE DEFAULT IS `stable`, on every path ([B.159](f)). `latest` exists to be proven before it is
+// THE DEFAULT IS `stable`, on every path. `latest` exists to be proven before it is
 // promoted, by a canary pinned to it deliberately; it is not somewhere to arrive by typing four
 // words. Naming it explicitly stays supported -- only the default moved.
 func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int {

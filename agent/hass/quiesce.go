@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// QUIESCING HOME ASSISTANT FOR A RING MEMBER ([B.143]) — the pair of calls that make a clock sample
+// QUIESCING HOME ASSISTANT FOR A RING MEMBER — the pair of calls that make a clock sample
 // application-consistent instead of crash-consistent.
 //
 // WHY HOME ASSISTANT DOES THE LOCKING AND NOT US. The recorder's SQLite database is the one part

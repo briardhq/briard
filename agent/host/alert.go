@@ -11,7 +11,7 @@ import (
 
 // redundancy is what this node's replica set currently is, and it is three states rather than
 // two because "a peer is gone" and "the only other copy of the household's data is gone" are
-// different facts that the peer COUNT cannot tell apart ([B.102], inherited from [B.100]). On
+// different facts that the peer COUNT cannot tell apart. On
 // the shipped anchor+anchor+witness flock both losses read as connected 1-of-2; only one of
 // them means the house is down to a single disk.
 type redundancy int
@@ -135,7 +135,7 @@ func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
 }
 
 // clockAlerter warns when the host's clock has not been synchronised with a time server for
-// clockUnsyncedFor, and says so again when it is ([V3c.9]). A wrong clock turns a valid cert into
+// clockUnsyncedFor, and says so again when it is. A wrong clock turns a valid cert into
 // a refusal and misdates every alert and backup; an RTC-less board boots with whatever time it
 // last saved. We only report: keeping time is the OS's job, and a host whose NTP is on keeps it.
 //

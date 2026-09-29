@@ -5,7 +5,7 @@
 #
 # It is the counterpart to every other test in this directory, which INSTALL the dummy fixture as
 # a catalogued service after promoting. Nothing bakes a workload into a guest any more
-# ([V3b.3](e2)), so this shape is no longer one test's careful arrangement — it is what every node
+# (the build-time slot is gone), so this shape is no longer one test's careful arrangement — it is what every node
 # boots as, and what the others then add something to.
 #
 # The failure it guards against is specific and was real: with a workload unit unconditionally in
@@ -46,7 +46,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
@@ -71,7 +71,7 @@ pkgs.testers.runNixOSTest {
     survivor = next(m for m in disk_nodes if m != primary)
     print(f"primary={primary.name} survivor={survivor.name}")
 
-    # CONVERGE RAN AND CONVERGED TO NOTHING ([V3b.3](f)). briard-services is a chain member on
+    # CONVERGE RAN AND CONVERGED TO NOTHING. briard-services is a chain member on
     # every data node now, so a failure there would take the VIP down on the one node shape every
     # stranger installs — precisely the failure this test exists to guard, arriving via a new unit.
     # Succeeding against an empty volume is the shipped state, not a degraded one.
@@ -86,13 +86,12 @@ pkgs.testers.runNixOSTest {
 
     # And a human who opens the VIP gets an ANSWER, not a connection refused -- but an answer that
     # tells them nothing until they are trusted. The bare address is a name the front door does not
-    # route, so it forwards to the household dashboard ([V3b.31b]), which refuses a browser with no
-    # session: 401, one instruction, no inventory. Reaching the VIP is not authentication
-    # ([V3b.31a](a)).
+    # route, so it forwards to the household dashboard, which refuses a browser with no
+    # session: 401, one instruction, no inventory. Reaching the VIP is not authentication.
     #
     # This used to assert the node's own page here ("Nothing is installed"), and that page is gone
     # by design rather than by accident -- an unauthenticated reader learning what a node runs is
-    # the thing V3b.31a removed. `-f` is dropped because 401 is now the expected answer and would
+    # the thing the dashboard's session gate removed. `-f` is dropped because 401 is now the expected answer and would
     # make curl itself fail; the code is asserted instead, so "the door is down" and "the door
     # refused me" stay distinguishable, which is the whole content of the original claim.
     refused = primary.succeed("curl -sS -o /tmp/vip.html -w '%{http_code}' http://192.168.1.100/").strip()
@@ -102,7 +101,7 @@ pkgs.testers.runNixOSTest {
     # inventory assertion that matters lives in service-install.nix, where a service IS installed.
     assert "Nothing is installed" not in page, f"the refusal still renders the node's page: {page!r}"
 
-    # The routing table exists and is EMPTY, which is not the same as absent ([B.48]): converge
+    # The routing table exists and is EMPTY, which is not the same as absent: converge
     # writes it on every promotion, so "this node routes nothing" is something the node has said
     # rather than something nobody has got around to writing. An absent file here would mean the
     # door was reading whatever the last install left behind.
@@ -120,7 +119,7 @@ pkgs.testers.runNixOSTest {
     # replicating and able to take over BEFORE it has a workload, so that installing one
     # later lands on a substrate already proven.
     #
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
     # cannot promote. "Replicated" is the claim under test, so assert the disk state before
     # removing the only UpToDate copy. This rig is the most exposed of the eight that crash a
@@ -131,7 +130,7 @@ pkgs.testers.runNixOSTest {
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
     print("an empty node fails over and still answers at the VIP — the substrate is the product")
 
-    # THE CLEAR KEY IS THE WHOLE POINT, AND A POWER CUT IS WHERE IT IS PROVED ([V3b.33](c)). The
+    # THE CLEAR KEY IS THE WHOLE POINT, AND A POWER CUT IS WHERE IT IS PROVED. The
     # node just lost power with its volume encrypted; it comes back and opens it with nothing
     # supplied by anybody, because slot 0's passphrase is in a LUKS2 token on the same disk. That
     # is what makes encryption-by-default possible on a stranger's LAN, where there is no unlock
@@ -142,7 +141,7 @@ pkgs.testers.runNixOSTest {
     # this is the one rig that already pays for one.
     primary.start()
     primary.wait_for_unit("multi-user.target")
-    # The unit is started by the HOST now, never at boot ([V3b.33](d)) -- so the harness starts
+    # The unit is started by the HOST now, never at boot -- so the harness starts
     # it, exactly as it did the first time, and the node opens its own volume from the token on
     # it. Re-running is the assertion: nothing here supplies a key.
     primary.succeed("briard-test-storage")

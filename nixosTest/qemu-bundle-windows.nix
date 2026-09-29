@@ -1,6 +1,6 @@
 # The Windows qemu bundle.
 #
-# WHY IT IS REPACKAGED UPSTREAM BYTES AND NOT A BUILD OF OURS -- the decision [V3b.27](b) was filed
+# WHY IT IS REPACKAGED UPSTREAM BYTES AND NOT A BUILD OF OURS -- the decision the Windows derisk was filed
 # to make, with the reason named so nobody re-derives it. `pkgsCross.mingwW64.qemu` was the preferred
 # candidate (ours, reproducible, same flake, same signed manifest) and it is BLOCKED, measured on the
 # pinned nixpkgs: qemu's `meta.platforms` excludes Windows; forcing past that, both `glib` and

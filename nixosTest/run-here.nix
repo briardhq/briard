@@ -1,4 +1,4 @@
-# A VM test result is evidence about THIS machine, so it must never arrive from a cache ([B.149]).
+# A VM test result is evidence about THIS machine, so it must never arrive from a cache.
 #
 # WHAT THIS CLOSES. A nixosTest's output is a marker meaning "this passed", addressed by the hash
 # of its inputs — so once the marker exists anywhere nix can reach, asking for it again returns it

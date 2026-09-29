@@ -1,4 +1,4 @@
-"""What an hourly clock sample costs Home Assistant ([B.167a]).
+"""What an hourly clock sample costs Home Assistant.
 
 Seeds the recorder with synthetic history, keeps writing at each rate given, takes samples through
 the product's own path (`briard-guest-agent --clock`), and meanwhile times a probe automation.

@@ -6,7 +6,7 @@
 # assert convergence, and vanish — no external state. They are NOT the lab/ soak fleet
 # (Tier 2, driven by cmd/soak, never `nix build`).
 #
-# `tags` groups the tests. A group is DATA, never a build target ([B.149]): flake.nix turns these
+# `tags` groups the tests. A group is DATA, never a build target: flake.nix turns these
 # into `.#test-manifest` (name lists + per-test cost), and one test at a time is what you build.
 #   nix build .#tests.<name> -L                            (one test, e.g. drbd-fence)
 #   cat $(nix build --no-link --print-out-paths .#test-manifest)/tags/drbd
@@ -22,21 +22,21 @@
   # The release id stamped into the shipped agent + guest disk. Defaulted so a direct
   # import (no flake) still evaluates; flake.nix passes the real one, derived from `self`.
 , agentVersion ? "0.0.0-dev"
-# The guest image's own version and inputs hash ([B.86i], flake.nix): what the product image is
+# The guest image's own version and inputs hash (flake.nix): what the product image is
 # stamped with and what `.#artifacts.guest-disk.inputs` reports to the publish script.
 , guestVersion ? agentVersion, guestInputs ? "" }:
 let
-  # THE GUEST AS SHIPPED, and now the only one the framework tests boot ([V3b.3](e2)). There used
+  # THE GUEST AS SHIPPED, and now the only one the framework tests boot. There used
   # to be two: this one, which zero-service alone used, and a `dummy-guest` that baked the fixture
   # into a build-time payload slot for everything else. The slot is deleted, so a test that needs a
   # workload INSTALLS one -- the same way a shipped node gets one -- and the guest under test is
   # the guest that ships.
   guestModule = ../guest-image/configuration.nix;
   # The dummy fixture as a CATALOGUED service: a digest-pinned manifest plus the tarball it names.
-  # This is how a test gets a workload onto a node ([V3b.3](e2) deleted the build-time slot that
+  # This is how a test gets a workload onto a node (converge-at-promotion deleted the build-time slot that
   # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
   fixture = import ./fixture-service.nix { inherit pkgs; };
-  # HOME ASSISTANT AS A CATALOGUED SERVICE ([V3b.3](e2)). HA used to reach a guest through the
+  # HOME ASSISTANT AS A CATALOGUED SERVICE. HA used to reach a guest through the
   # build-time payload slot, which is how nothing else could: the slot is gone, and HA is now
   # exactly what a user's service is -- a signed manifest naming a digest-pinned image, installed
   # onto the volume after promotion. Only the manifest's fields differ from the dummy's: /config,
@@ -73,7 +73,7 @@ let
   };
 
 
-  # THE BROKER AS A CATALOGUED SERVICE ([V3b.4]) -- the second real entry, and the one that proves
+  # THE BROKER AS A CATALOGUED SERVICE -- the second real entry, and the one that proves
   # "N services" rather than "one service, twice". Its manifest differs from HA's in the way that
   # matters: `port` is the broker's HTTP MANAGEMENT endpoint (the only thing the liveness floor can
   # probe -- MQTT is not HTTP), bound to the guest's loopback by the config the product renders
@@ -143,7 +143,7 @@ let
   # Kill the primary → HA fails over with config intact at the same VIP.
   hassFailover = import ./hass-failover.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
-  # [V3b.33](a): the DRBD backing moves between a plaintext and an encrypted PV, live, both ways,
+  # The encryption conversion: the DRBD backing moves between a plaintext and an encrypted PV, live, both ways,
   # with HA serving throughout. Carries HA's cost because the claim is about a running household.
   luksConvert = import ./luks-convert.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
@@ -177,9 +177,9 @@ let
 
   driverPkg = pkgs.callPackage ./driver/package.nix { };
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (the host agent)
-  # THE GUEST BUNDLE ([B.86j]): every briard binary the guest runs, built with the HOST release's
+  # THE GUEST BUNDLE: every briard binary the guest runs, built with the HOST release's
   # version because it ships in the briard chain and is pushed by the host at every bring-up. The
-  # image bakes ONE binary, briard-guest-firmware ([B.139]: the push protocol alone, which is what
+  # image bakes ONE binary, briard-guest-firmware (the push protocol alone, which is what
   # receives the first push); the AGENT, the door and the dashboard exist in the guest only once
   # pushed. One directory, `bin/<name>`, the names the guest's pivot and the push verbs agree on
   # (agent/guestfirmware/bin.go BinNames).
@@ -191,11 +191,11 @@ let
     install -m0755 ${pkgs.dashboard}/bin/dashboard $out/bin/briard-dashboard
   '';
 
-  # THE LAYOUT A RIG'S HOST DRESSES FROM ([B.138]). install.sh lays this on every install, so a
+  # THE LAYOUT A RIG'S HOST DRESSES FROM. install.sh lays this on every install, so a
   # host without it is not a product state -- and since the image bakes no door, a guest launched
   # by a host that holds no bundle tree can never serve. The five rigs that launch a REAL guest
   # (agent-bringup/readopt/recover/watchdog, guest-rescue) copy this to UPDATE_BASE and let the
-  # host dress the guest exactly as the product does; before [B.138] they leaned on the image's
+  # host dress the guest exactly as the product does; before the layout existed they leaned on the image's
   # baked door instead, which is why they needed nothing. Copied, not linked: the host writes
   # `guest.good` beside the tree.
   rigGuestRelease = "v3.20260908.rig00000";
@@ -214,8 +214,8 @@ let
   agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; };
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # host restarts a wedged guest
-  agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # V3.32: init restarts a wedged AGENT
-  # The image the guest chain moves a node TO ([B.86h]): the shipped disk plus one /etc file,
+  agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # init restarts a wedged AGENT
+  # The image the guest chain moves a node TO: the shipped disk plus one /etc file,
   # so its toplevel -- what the manifest names and what the booted guest must report -- differs
   # from the shipped one while everything else is identical.
   nextGuestDisk = import ../guest-image/disk-image.nix {
@@ -236,7 +236,7 @@ let
     ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain vm --release "$GV"  --system ${guestDisk.system}     --min-briard "$V"
     ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain vm --release "$GV2" --system ${nextGuestDisk.system} --min-briard "$V"
   '';
-  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # B.10: rebuild the guest from its image, keep the data; B.86h: move it to a new image
+  guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # rebuild the guest from its image, keep the data; and move it to a new image
 
   # The host-agent deadman on a lone node must HOLD, never self-outage. Needs a guest with
   # a SHORT T_deadman so the reflex fires in seconds (baked into the guest-agent unit's env).
@@ -271,7 +271,7 @@ let
   # instead of through the agent's verbs on a nested guest — see the file's header.
   maintenanceContract = import ./maintenance-contract.nix { inherit pkgs fixture guestModule; };
 
-  # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing [B.85]:
+  # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing the shutdown deadlock:
   # a lib.nix node converged the same way — DRBD Primary, volume mounted, service serving, VIP up,
   # the reactor's `Before=` drop-in present — powered itself off in 1.5s while the SHIPPED guest
   # sat in that deadlock for 90s. The throwaway harness that showed this is not kept: it was green
@@ -319,7 +319,7 @@ let
   # The machine report card on a real host (the free-local install gate).
   reportCard = import ./report-card.nix { inherit pkgs; agent = agentPkg; };
 
-  # BRIDGE mode -- Windows' official L2 shape and its Linux testing clone ([V3b.26d]) -- a pure
+  # BRIDGE mode -- Windows' official L2 shape and its Linux testing clone -- a pure
   # DELTA over installMacvtap: the NIC enslave, the host-IP move, and a clean abort at that
   # irreversible step. Nothing mode-independent lives here; that chain is installMacvtap's.
   installBridge = import ./install-bridge.nix {
@@ -342,7 +342,7 @@ let
 in
 {
   # The hermetic mechanism tests, grouped into tags. flake.nix turns each group into a name list
-  # in `.#test-manifest` + a flat `.#tests.<name>`; a tag is not itself buildable ([B.149]).
+  # in `.#test-manifest` + a flat `.#tests.<name>`; a tag is not itself buildable.
   tags = {
     # The DRBD failover net (7 topologies): bring-up, promote, failover, fence,
     # witness, and minority-refuses-to-promote (quorum). The fast mechanism core.
@@ -355,19 +355,19 @@ in
       drbd-fence = import ./drbd-fence.nix { inherit pkgs fixture guestModule; };
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
-      single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD ([B.145c])
-      # The exit assertion of [B.145c], a guard since the lone node stopped running DRBD: one bad
-      # sector under a data file costs ONE file, and the node keeps serving. (The [B.144] spike
+      single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
+      # The exit assertion of the lone node running no DRBD, a guard since the lone node stopped running DRBD: one bad
+      # sector under a data file costs ONE file, and the node keeps serving. (The media-error spike
       # this grew out of measured the DRBD answer -- whole-volume outage -- and is history at the
       # item; the flock's companion spike stays in `debug` below.)
       media-error-lone = import ./media-error-lone.nix { inherit pkgs fixture guestModule; };
-      runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # a lone node converts to a 3-node mesh, and the survivor back to alone ([B.145d])
+      runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # a lone node converts to a 3-node mesh, and the survivor back to alone
       drbd-loopback-path = import ./drbd-loopback-path.nix { inherit pkgs guestModule; }; # loopback-path gating experiment
       # The maintenance-mode contract (pause → poke → resume). It sat in `integration`
       # while it drove the agent's verbs over a nested guest's channel; V3.17e4 made it
       # hermetic, so it belongs with the other one-node promoter mechanisms. Nightly either way.
       maintenance-contract = maintenanceContract;
-      # The chain-member contract ([V3b.5](c)): what a unit in the promoter start-list may
+      # The chain-member contract: what a unit in the promoter start-list may
       # and may not do to the promotion. Two nodes, because rule 2 needs a race loser and
       # rule 5's consequence is a HANDOVER -- on one node the demote is followed 40ms later
       # by the same node re-promoting, which is what hid this defect's severity.
@@ -377,7 +377,7 @@ in
     };
 
     # Version-change + TLS-serving mechanisms. `service-install` is the version change now
-    # ([V3b.3](e2)): the three tests that used to live here drove the baked slot's image re-pin,
+    # (the baked slot is gone): the three tests that used to live here drove the baked slot's image re-pin,
     # which no longer exists. Their subjects did not go with them — `service-install`'s upgrade
     # half is the in-place version change, its broken half is the health-gated rollback, and its
     # reboot half is converge-at-promotion (a node that renders from the volume, having been told
@@ -387,7 +387,7 @@ in
     };
 
 
-    # THE CATALOGUED SERVICES THEMSELVES ([V3b.4]). Everything else here tests a mechanism with a
+    # THE CATALOGUED SERVICES THEMSELVES. Everything else here tests a mechanism with a
     # service standing in it; these test the services, and the properties that only exist once
     # there is more than one of them.
     services = {
@@ -402,7 +402,7 @@ in
       hass-upgrade-rollback = hassUpgradeRollback; # real regression trips the gate → {code+data} rollback
       hass-backup = hassBackup; # off-site encrypted .storage backup + restore
       # The storage seam under all of them: arming a node is a pvmove and disarming it is the
-      # same move back, neither of which HA notices ([V3b.33](a)).
+      # same move back, neither of which HA notices.
       luks-convert = luksConvert;
     };
 
@@ -453,7 +453,7 @@ in
       # agent, no nesting, config baked into the image — and when is decided, this is its
       # acceptance test.
       drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs fixture guestModule; };
-      # — **ALSO RED BY DESIGN** ([B.100]), and the mirror image of the one above. That is the GAIN
+      # — **ALSO RED BY DESIGN**, and the mirror image of the one above. That is the GAIN
       # side of the tiebreaker guard: a restarted survivor has no runtime `quorum[NOW]`, so it can
       # never gain quorum from a diskless node. This is the KEEP side: a broken link BETWEEN the
       # two anchors leaves `quorum[NOW]` true on BOTH, so both keep quorum, both may write, and the
@@ -461,32 +461,32 @@ in
       # `block()`/`crash()` cannot express, because nothing leaves the cluster — only the edge
       # between the two data nodes fails, and the witness stays reachable from both.
       drbd-link-split = import ./drbd-link-split.nix { inherit pkgs guestModule; };
-      # — **THE COMPANION SPIKE** ([B.144] acts (a)+(b)): the same bad sector on a node that HAS a
+      # — **THE COMPANION SPIKE** (acts (a)+(b)): the same bad sector on a node that HAS a
       # peer. (a) proves the silent fallback in its purest form -- the read of the BROKEN sector
       # succeeds, served over the network, so nothing above DRBD can tell it happened -- and then
-      # measures the re-attach resync, the partial-vs-full question left open in [B.140a]/[V5.7].
+      # measures the re-attach resync, the partial-vs-full question still left open.
       # (b) does it under `pass_on` and drives the reconnect that is the only thing which starts a
       # resync while Established. The alert half of (a) is NOT here and cannot be: the redundancy
       # alerter is host-agent code and a hermetic node has no host.
       media-error-flock = import ./media-error-flock.nix { inherit pkgs guestModule; };
-      # — **A STOPWATCH WITH A VERDICT** ([B.167a]). What an hourly history sample costs a Home
+      # — **A STOPWATCH WITH A VERDICT**. What an hourly history sample costs a Home
       # Assistant with synthetic history under write load: the recorder lock's acquire and hold,
       # whether it holds, whether an automation notices, and the space a member pins. L0 is nested
       # and contended, so its numbers are an upper bound and move with the box -- not a nightly shape.
       hass-quiesce-cost = import ./hass-quiesce-cost.nix { inherit pkgs guestModule; fixture = hassFixture; };
-      # — **A DISCOVERY PROBE** ([B.167b]). Breaks Home Assistant one way at a time (bad YAML,
+      # — **A DISCOVERY PROBE**. Breaks Home Assistant one way at a time (bad YAML,
       # corrupt .storage, broken custom integrations, a corrupt recorder) and records what each
       # candidate health signal says, so the history's health signal is chosen from evidence.
       hass-health-probe = import ./hass-health-probe.nix { inherit pkgs guestModule; fixture = hassFixture; };
-      # — **A STOPWATCH, NOT AN ASSERTION** ([B.56]). Measures how long a COLD converge holds the
-      # promotion when its pull is throttled to a crawl: [V3b.3](f) put a fetch on the promotion
+      # — **A STOPWATCH, NOT AN ASSERTION**. Measures how long a COLD converge holds the
+      # promotion when its pull is throttled to a crawl: converge-at-promotion put a fetch on the promotion
       # path and every chain rule we have was measured with an INSTANT failure. It runs its full
       # observation window on purpose and prints a timeline, which is not a nightly shape.
       cold-converge-pull = import ./cold-converge-pull.nix {
         inherit pkgs guestModule;
         quadletRender = quadletRenderPkg;
       };
-      # — **THE OTHER HALF OF THE SAME QUESTION** ([B.56]). A bound on the pull is only half a
+      # — **THE OTHER HALF OF THE SAME QUESTION**. A bound on the pull is only half a
       # strategy: what it buys is a RETRY, and that is worth having only if a retry keeps the
       # bytes already fetched. Counts the registry's transmitted bytes across an uninterrupted
       # pull and an interrupted-then-completed one; the two totals differ by a third or they do
@@ -510,6 +510,6 @@ in
     # tier-4 Windows rig, not CI -- a Linux runner cannot run it.
     qemu-bundle-windows = qemuBundleWindows.bundle;
     net-wrap = netWrap; # macvtap launch wrapper; the fleet runs on it too
-    guest-bundle = guestBundle; # the guest's briard binaries, shipped in the host chain ([B.86j])
+    guest-bundle = guestBundle; # the guest's briard binaries, shipped in the host chain
   };
 }

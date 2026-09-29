@@ -322,7 +322,7 @@ func TestLaunchArgsNoMonitorNoStopContract(t *testing.T) {
 	}
 }
 
-// TestUnitAtRest pins the reading that [B.103] turned on: "deactivating" is a unit that is
+// TestUnitAtRest pins the reading the stop path turned on: "deactivating" is a unit that is
 // still running its ExecStop, and calling it stopped is what let a Launch collide with the
 // guest it had just asked to go away. The at-rest set is deliberately small -- anything not
 // named here keeps the caller waiting.
@@ -354,7 +354,7 @@ func TestUnitAtRest(t *testing.T) {
 // A unit NAME is free only once systemctl has forgotten the unit: systemd-run refuses a name
 // that is still loaded, and a unit stays loaded through its whole stop and past it, until the
 // corpse is collected. Reading "not running" as "free" is what spent three relaunch attempts in
-// one second on a guest that was still stopping ([V3b.18]).
+// one second on a guest that was still stopping.
 func TestUnitLoaded(t *testing.T) {
 	for _, tc := range []struct {
 		state string
@@ -394,7 +394,7 @@ func TestWaitUnitFreeGivesUpAndNamesTheState(t *testing.T) {
 
 // insideUnit must be able to say YES, or the guard it feeds is decoration -- and the guard is
 // the only thing standing between a stop job that asks for its own unit's name and a wait that
-// cannot end ([B.110]).
+// cannot end.
 //
 // The positive case needs a real invocation to point at, so it BORROWS one that is already
 // running on this machine rather than inventing a fixture: an id we made up would prove only
@@ -445,7 +445,7 @@ func borrowedInvocation(t *testing.T) (unit, id string) {
 	return "", ""
 }
 
-// The state disk ([B.86g]) is attached by SERIAL -- the guest mounts /dev/disk/by-id/virtio-
+// The state disk is attached by SERIAL -- the guest mounts /dev/disk/by-id/virtio-
 // briard-state, never a bus position -- and the machine UUID rides -uuid; neither appears when
 // unset, so rigs that predate them launch exactly as before.
 func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
@@ -471,7 +471,7 @@ func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
 
 // Disks are explicit devices in ascending order -- root, data, state -- with the root marked
 // bootable: mixing `-drive if=virtio` with `-device` put the state disk on a lower PCI slot than
-// the root and SeaBIOS booted the blank disk (B.86g). The guest's vda/vdb/vdc depend on this order.
+// the root and SeaBIOS booted the blank disk. The guest's vda/vdb/vdc depend on this order.
 func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/r.qcow2", DataDisk: "/d.img", StateDisk: "/s.img"}), " ")
 	root := strings.Index(got, "virtio-blk-pci,drive=briard-root,bootindex=0")

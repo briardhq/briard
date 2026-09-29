@@ -1,4 +1,4 @@
-# The test manifest — what the tier CONTAINS, as data rather than as a build target ([B.149]).
+# The test manifest — what the tier CONTAINS, as data rather than as a build target.
 #
 # WHY THIS EXISTS. The membership, the curation and the per-test cost used to be carried by a
 # `linkFarm` per tag (`.#drbd` … `.#all`): building one realised every member, so the aggregates
@@ -16,7 +16,7 @@
 #
 # WHY TSV AND NOT JSON. The only machine consumer is `lab/scripts/tier-concurrency.sh`, which is
 # awk throughout; a JSON nobody parses would be a second encoding of the same facts to keep in
-# step (AGENTS §5). The per-tag name lists exist for the other consumer — a person — because a tag
+# step. The per-tag name lists exist for the other consumer — a person — because a tag
 # was a thing you could run and has to stay one.
 { pkgs, tags, name ? "briard-test-manifest" }:
 
@@ -31,7 +31,7 @@ let
   tagsOf = n: lib.attrNames (lib.filterAttrs (_n: g: g ? ${n}) tags);
   nodesOf = t: lib.attrValues t.nodes;
 
-  # The cost model, verbatim from [B.127]: the guests' declared memory (a hard ceiling — qemu gets
+  # The cost model: the guests' declared memory (a hard ceiling — qemu gets
   # `-m N` with no balloon and no free-page reporting, so a guest's pages are faulted in and never
   # handed back) plus ~128 MB of qemu overhead per node. Recorded as its two components rather
   # than the sum, so a reader can see which half moved.
@@ -65,7 +65,7 @@ lib.throwIf (tags ? all) "manifest.nix: `all` is reserved as the curated-set tag
       cp ${tsv} $out/tests.tsv
       ${lib.concatMapStrings (t: "cp ${tagFile t} $out/tags/${t}\n") tagNames}
       # A manifest with no rows would sail through every consumer as "nothing to run, nothing
-      # failed" — the vacuous-green shape this whole tier keeps relearning (B.81).
+      # failed" — the vacuous-green shape this whole tier keeps relearning.
       [ -s $out/tests.tsv ] || { echo "manifest is empty — no tests were enumerated" >&2; exit 1; }
     ''
 )

@@ -1,16 +1,16 @@
-// Package dashboard is the host→guest HANDOFF behind the household dashboard's one-time code
-// ([V3b.31b]): the file the host writes onto the guest's tmpfs through the `dashboard.handoff`
+// Package dashboard is the host→guest HANDOFF behind the household dashboard's one-time code:
+// the file the host writes onto the guest's tmpfs through the `dashboard.handoff`
 // verb, and the dashboard consumes exactly once.
 //
 // The code is the whole of the dashboard's bootstrap authentication. Proof of identity is proof
-// of access to the `briard` CLI ([V3b.31a](a)) -- whoever can drive it already owns the node --
+// of access to the `briard` CLI -- whoever can drive it already owns the node --
 // so the CLI asks the agent to mint a code, the agent hands it to the guest here, and the browser
 // that presents it becomes a trusted device. Nothing about a person is authenticated beyond that,
 // on purpose: there is no briard password to invent, hide or reset, and `briard open` IS the
 // reset.
 //
 // It also carries what the host knows about the OS account, because that is where the account
-// is visible: the dashboard creates Home Assistant's first user from it ([V3b.31a](d)).
+// is visible: the dashboard creates Home Assistant's first user from it.
 package dashboard
 
 import (
@@ -64,7 +64,7 @@ func URL(flock, code string) string {
 	return "http://briard-" + flock + ".local/?code=" + code
 }
 
-// AdminPort is the second virtio-serial port between host and guest ([V3b.31i]): the guest end
+// AdminPort is the second virtio-serial port between host and guest: the guest end
 // of the host's admin door. The dashboard -- and only the dashboard, a root-owned unit in the
 // guest -- opens AdminPortDev and relays a household's directive to the host agent as one JSON
 // line, reading the outcome back the same way; it is the protocol `briard` speaks to the admin
@@ -76,7 +76,7 @@ const (
 	AdminPortDev = "/dev/virtio-ports/" + AdminPort
 )
 
-// PullPath is where the host records a service install's pull for the dashboard ([V3b.31j]): the
+// PullPath is where the host records a service install's pull for the dashboard: the
 // manifest's Size and InstalledSize and when the pull started, written through `service.pulling`
 // before the first byte moves and removed once the image is present. The manifest itself lands on
 // the volume only AFTER the pull, so this is the one place a total exists while a bar is wanted.
@@ -90,8 +90,8 @@ type Pull struct {
 	Started       time.Time `json:"started"`
 }
 
-// CasaPath is where the host keeps the dashboard told about the household's casa name
-// ([V3c.4]): written through `dashboard.casa` whenever the host's view changes and again at
+// CasaPath is where the host keeps the dashboard told about the household's casa name:
+// written through `dashboard.casa` whenever the host's view changes and again at
 // every bring-up, because the guest is disposable and this is the host's fact, not the
 // guest's. The dashboard renders it; the claim itself is a directive it asks for through the
 // admin port, and the host decides.

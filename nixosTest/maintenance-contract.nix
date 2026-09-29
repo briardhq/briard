@@ -6,7 +6,7 @@
 # One node promotes r0, then the script drives one pause → poke → resume lifecycle and checks
 # each contract point in turn:
 #
-#   #1 the pause completes promptly            — no promote-vs-stop deadlock ([B.28]), defused on
+#   #1 the pause completes promptly            — no promote-vs-stop deadlock, defused on
 #                                                drbd-reactor.service's ExecStop; here the pause
 #                                                is just the lifecycle's entry.
 #   #2 the pause is NON-DESTRUCTIVE            — still Primary+quorate, and the service is the
@@ -27,7 +27,7 @@
 #                                                Primary again in ~40ms. The two harsher gestures
 #                                                this began as — crashing a chain member, and
 #                                                merely restarting one — are measured RED and are
-#                                                [V3b.5](c)'s, not the bracket's; see the check.
+#                                                the chain-member contract's, not the bracket's; see the check.
 #
 # HERMETIC. Driving it through a nested guest and the agent's verbs would add nothing: drive the lifecycle
 # through the agent's reactor.*/service.* verbs over virtio-serial (the driver's PAUSE_ONLY hook).
@@ -88,7 +88,7 @@ pkgs.testers.runNixOSTest {
         # down and rebuilt returns to Primary in well under a second (measured: 40ms), so reading
         # the ROLE afterwards cannot see it -- the first cut of #5 asserted exactly that and
         # passed through a demote it never noticed. These two timestamps DO move, so the
-        # round trip is visible after the fact ([[verification-assertions-must-fail]]).
+        # round trip is visible after the fact, so the check can fail.
         return node1.succeed(
             "systemctl show -p ActiveEnterTimestampMonotonic --value drbd-promote@r0.service",
             "systemctl show -p ActiveEnterTimestampMonotonic --value briard-primary-storage.service",
@@ -120,7 +120,7 @@ pkgs.testers.runNixOSTest {
     born = since()
     # NON-VACUITY for the pause below: the drop-in must be armed, or the stop could not have
     # deadlocked and a clean pause would prove nothing. Its REMOVAL is now the unit's job
-    # (drbd-reactor.service ExecStop, [B.85]) rather than this script's.
+    # (drbd-reactor.service ExecStop) rather than this script's.
     node1.succeed("test -f ${beforeOverride}")
 
     # === #1 THE PAUSE =========================================================================
@@ -133,7 +133,7 @@ pkgs.testers.runNixOSTest {
     #
     # NOTHING IS DISARMED FIRST any more. The verb used to `rm` drbd-reactor's `Before=` drop-in
     # and reload before stopping, to dodge the promote-vs-stop deadlock, and this file mirrored
-    # it; [B.85] moved that defusal onto drbd-reactor.service's ExecStop, so the bare stop below
+    # it; a later change moved that defusal onto drbd-reactor.service's ExecStop, so the bare stop below
     # is the whole of it. The DURATION is not gated anywhere now (the isolated harness could not
     # fail when the defusal was removed, so it was deleted) — what is
     # under test here is that a pause is non-destructive, a claim about the state the stop leaves
@@ -194,13 +194,13 @@ pkgs.testers.runNixOSTest {
 
     # === #5 THE PAUSE ACROSS A DAEMON-RELOAD =================================================
     # #3 proves the paused promoter ignores a deliberate SERVICE stop. This asks about a CHAIN
-    # MEMBER, which after [V3b.3](f) is a different question: service units are not members any
+    # MEMBER, which after converge-at-promotion is a different question: service units are not members any
     # more -- briard-services converges them from the volume -- so a crashed container cannot
     # reach the promoter's target at all ("a service error alerts, never demotes"). Six units
     # still are members, and the target `Requires=` them.
     #
     # ONLY THE RELOAD IS ASSERTED HERE, AND THE TWO GESTURES THAT ARE NOT ARE THE POINT OF
-    # [V3b.5](c) -- recorded rather than quietly omitted. Measured 2026-09-02 on this rig: with the
+    # the chain-member contract -- recorded rather than quietly omitted. Measured on this rig: with the
     # promoter PAUSED, one `systemctl kill -s KILL` of briard-reverse-proxy, and equally one plain
     # `systemctl restart` of a HEALTHY member, stop the target -> unmount the data volume ->
     # demote DRBD -> re-promote. That is not a bracket defect: the same crash does the same thing
@@ -215,7 +215,7 @@ pkgs.testers.runNixOSTest {
     # The verdict does NOT read the role, and that correction is worth keeping: a torn-down chain
     # rebuilds and is Primary again in ~40ms, so `drbdadm role` a settle window later says Primary
     # either way -- the first cut of this check asserted exactly that and passed straight through a
-    # full demote + unmount + re-promote ([[verification-assertions-must-fail]]).
+    # full demote + unmount + re-promote, so the check can fail.
     node1.succeed("systemctl stop drbd-reactor.service")
     require_primary("second-pause")
 

@@ -9,7 +9,7 @@
 # WHAT IS REAL HERE, because the value of this test is entirely in what it does NOT stub:
 #   - a real OCI registry over TLS, and a real DIGEST-PINNED `podman pull` from it (decided registries; a plain-HTTP registry is not an option — containers/image refuses HTTP for every
 #     address including localhost, which a probe confirmed, so the test runs a real CA);
-#   - the REAL renderer — and since [V3b.3](f) it runs where the product runs it, inside
+#   - the REAL renderer — and since converge-at-promotion it runs where the product runs it, inside
 #     `briard-guest-agent --converge`, off the manifest this test puts on the replicated volume. Nothing
 #     copies rendered units in from the side any more;
 #   - real quadlet generation (files under /run/containers/systemd becoming units at daemon-reload),
@@ -28,7 +28,7 @@
 # to a manifest whose container never becomes healthy (the dummy's BRIARD_BROKEN mode), proves the
 # health gate WOULD trip (the container stays active but its own endpoint stays 503, and the data
 # is poisoned), proves the node STAYS PROMOTED through it (a service failure alerts, it does not
-# demote — [V3b.3](f)'s failure rule), and then ROLLS BACK to the prior service with its data
+# demote — converge-at-promotion's failure rule), and then ROLLS BACK to the prior service with its data
 # intact — the service-level twin of the {code+data} OS rollback. The host agent's orchestration of
 # that sequence is unit-tested in agent/host/service_test.go (it drives the guest over
 # virtio-serial, absent here); this proves the REAL mechanisms it relies on — a real broken
@@ -79,7 +79,7 @@ let
   ];
   # Promoter = false: the test writes the snippet itself, at the moment it chooses, so that the
   # node is seen promoting with ZERO services before the install and with one after. The chain it
-  # writes is the STATIC production one ([V3b.3](f)) — it is no longer derived from a rendering,
+  # writes is the STATIC production one — it is no longer derived from a rendering,
   # by anyone.
   node =
     { config, ... }:
@@ -180,7 +180,7 @@ pkgs.testers.runNixOSTest {
     # the half of an install that legitimately needs the network. Running it on every node is what
     # makes the failover path able to promise it never will.
     #
-    # The rendered units are NOT copied anywhere here any more ([V3b.3](f)): converge writes them
+    # The rendered units are NOT copied anywhere here any more: converge writes them
     # itself, from the manifest on the volume, on whichever node promotes. Copying them in from
     # the side would put this harness back in the business of standing in for the product.
     for m in disk_nodes:
@@ -203,16 +203,16 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
-    # THE CHAIN IS STATIC, and no longer derived from the rendering at all ([V3b.3](f)). The chain
+    # THE CHAIN IS STATIC, and no longer derived from the rendering at all. The chain
     # is what drbd-reactor promotes WITH, but the volume it must converge to is only readable
     # AFTER promotion — so the start-list cannot name the services, and briard-services is what
     # renders and starts them once the mount exists.
     #
-    # TAKEN FROM lib.nix rather than restated ([B.125]). This used to be a hand-written list
+    # TAKEN FROM lib.nix rather than restated. This used to be a hand-written list
     # annotated "exactly what host.promoterUnits writes in production", which is the kind of claim
     # that stops being true silently: when the front door and the mDNS publishers became chain
     # MEMBERS, this copy still had three units, so the door never started here at all and the
@@ -232,7 +232,7 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name}")
 
     # IT PROMOTED WITH ZERO SERVICES FIRST, which is the shipped state of every node a stranger
-    # installs ([V3.15]): briard-services converged to nothing, the VIP came up, and the front
+    # installs: briard-services converged to nothing, the VIP came up, and the front
     # door answers. Asserted before the install so the install's effect is a change and not a
     # coincidence.
     primary.wait_until_succeeds("test $(systemctl is-active briard-services.service) = active", timeout=120)
@@ -270,7 +270,7 @@ pkgs.testers.runNixOSTest {
     assert "ok" in primary.succeed("curl -fsS http://127.0.0.1:8080/healthz"), "service /healthz did not report ready"
     print("the installed service answers healthy on its own endpoint — install -> promote -> serve")
 
-    # === 5c. AND THROUGH THE FRONT DOOR, under its own name ([B.48]) ===
+    # === 5c. AND THROUGH THE FRONT DOOR, under its own name ===
     # The install above happened on a node with no flock name, so it was routed and UNNAMED --
     # which is a real shipped state (a node publishes nothing rather than a guess) and the one this
     # asserts first: the table carries the service, with no host to reach it by.
@@ -297,9 +297,9 @@ pkgs.testers.runNixOSTest {
     assert "1 service(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
     # A name nobody serves still lands on the NODE's door rather than on some service's 404 --
     # the fall-through is the property, and it is unchanged. What the door then says is not: since
-    # [V3b.31b] it forwards to the household dashboard, which refuses a browser with no session
-    # (401, one instruction, no inventory) because reaching the VIP is not authentication
-    # ([V3b.31a](a)). The half of the old claim that a household "reads which names this node
+    # the dashboard landed it forwards to the household dashboard, which refuses a browser with no session
+    # (401, one instruction, no inventory) because reaching the VIP is not authentication.
+    # The half of the old claim that a household "reads which names this node
     # answers to" HERE is therefore gone -- that reading needs a session now, and the
     # unauthenticated version of it is /healthz, asserted just above.
     #
@@ -333,7 +333,7 @@ pkgs.testers.runNixOSTest {
     #     each node renders its own units from it, so there is one identity and no second durable
     #     copy to drift from it. The consequence is that a reboot erases every rendered unit.
     #
-    #     ⚠️ THIS TEST'S CONCLUSION REVERSED WITH [V3b.3](f). It used to assert the premise and
+    #     ⚠️ THIS TEST'S CONCLUSION REVERSED WITH CONVERGE-AT-PROMOTION. It used to assert the premise and
     #     stop there — "after a reboot the service is gone and stays gone until something
     #     re-renders, which is why the HOST must, from its node-local cache at bring-up". Converge
     #     makes that cure unnecessary and the claim false: briard-services is a promoter chain
@@ -360,7 +360,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("systemctl start drbd-reactor.service")
 
     # WHICHEVER node holds the volume must be serving the fixture again, and it does not matter
-    # which — that indifference IS the property ([V3b.3](f)). The peer very likely took over while
+    # which — that indifference IS the property. The peer very likely took over while
     # this node was down, in which case it is serving a service it never installed, having read
     # the manifest off the volume and rendered for itself. If the returning node takes its role
     # back instead, it re-rendered from the same volume after a reboot wiped its tmpfs. Both are
@@ -389,7 +389,7 @@ pkgs.testers.runNixOSTest {
     print(f"pre-upgrade good tick = {good_tick}")
 
     # --- STOP, THEN snapshot the rollback point — applyServiceInstall's quiesce + data.snapshot,
-    #     in that order since [B.143]. A live snapshot is only crash-consistent, and the catalog
+    #     in that order since the rollback point started being taken quiesced. A live snapshot is only crash-consistent, and the catalog
     #     cannot promise every service survives one: services-pair.nix measured mosquitto losing
     #     exactly the retained message a rollback would be FOR. The container unit, never the pod
     #     — the pod would take the volume down under every other service.
@@ -416,7 +416,7 @@ pkgs.testers.runNixOSTest {
         '"env":{"BRIARD_BROKEN":"1"}}]}'
     )
 
-    # --- THE SWITCH, and it no longer takes a maintenance bracket ([V3b.3](f)). It used to:
+    # --- THE SWITCH, and it no longer takes a maintenance bracket. It used to:
     #     pause both nodes' promoters, quiesce the container, re-render on every node, resume. All
     #     of that existed because the service units WERE promoter chain members, so touching them
     #     under a live reactor meant stopping the reactor first. They are not members now, so an
@@ -443,7 +443,7 @@ pkgs.testers.runNixOSTest {
     assert poisoned > good_tick, f"broken upgrade did not poison the data (tick={poisoned}); the rollback proof would be vacuous"
     print(f"health gate would TRIP: container active, its own endpoint 503, data poisoned to tick {poisoned}")
 
-    # --- AND THE NODE IS STILL PROMOTED, which is the failure rule ([V3b.3](f)): converge's own
+    # --- AND THE NODE IS STILL PROMOTED, which is the failure rule: converge's own
     #     failure demotes, a SERVICE's failure alerts and promotes. A code fault is deterministic,
     #     so a peer running the identical closure would hit it identically and the failover would
     #     only flap; and one broken service must not take the other N-1 down with it. Asserted

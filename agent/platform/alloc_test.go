@@ -35,7 +35,7 @@ func TestAllocateThickReservesTheSpace(t *testing.T) {
 	}
 }
 
-// ⚠️ THE DESTRUCTIVE CASE ([B.126]). A data volume that is already there is never written over --
+// ⚠️ THE DESTRUCTIVE CASE. A data volume that is already there is never written over --
 // and the guard has to hold for "present but unstat-able" too, which is why the creation itself is
 // the proof of absence rather than a check before it. Here the file is present and readable, which
 // is the case a stat WOULD catch; the O_EXCL open is what makes the unreadable one safe as well.

@@ -11,7 +11,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// THE AGENT OWNS THE NETWORK NOW ([B.150](c)+(d)).
+// THE AGENT OWNS THE NETWORK NOW.
 //
 // It used to be `net-up.sh`: a script the installer generated with this host's NIC, device names,
 // addresses and gateway baked into a heredoc, run inline once and again at every boot from
@@ -19,7 +19,7 @@ import (
 // three are gone.
 //
 // A FROZEN FILE NO RELEASE COULD REACH. Every bug in those lines shipped a fix that landed on no
-// installed node ([B.106]'s accept_ra, ALLMULTI's expiring-cache trap).
+// installed node (accept_ra, ALLMULTI's expiring-cache trap).
 //
 // A ONESHOT THAT COULD NOT ADAPT. A macvtap cannot be re-parented — you delete and recreate,
 // invalidating the fd handed to qemu, which means relaunching the guest. Only the thing that runs
@@ -48,7 +48,7 @@ func (cfg Config) linksPresent() bool {
 }
 
 // netSpec derives the host side of the guest's L2 from the selected device. It is DERIVED and not
-// configured ([B.150](c)): the substrate is the answer to "is the parent a bridge", not a mode
+// configured: the substrate is the answer to "is the parent a bridge", not a mode
 // somebody typed, because the thing that decides it is the machine rather than the operator.
 func (cfg Config) netSpec(dev string, bridge bool) nic.Spec {
 	// ⚠️ NARROWED FIRST, and here rather than at the caller so the two cannot disagree. The spec
@@ -86,7 +86,7 @@ func (cfg Config) netSpec(dev string, bridge bool) nic.Spec {
 // that makes a bridge parent's config true.
 //
 // ⚠️ It overrides what config said, which is the one place in the agent that does. The rule
-// everywhere else is that the environment wins ([B.150](a)), and it still does for the values
+// everywhere else is that the environment wins, and it still does for the values
 // nothing here touches; but a node whose parent is a bridge HAS no second tap and no private
 // link, and honouring a configured name for a device that cannot exist would render a NIC the
 // guest then cannot use. The substrate is a fact about the machine, not a preference.
@@ -97,10 +97,10 @@ func (cfg Config) applySubstrate(bridge bool) Config {
 		}
 		return cfg
 	}
-	// The Linux clone of the Windows shape ([V3b.26c]): ONE tap, so the guest gets one kernel NIC
+	// The Linux clone of the Windows shape: ONE tap, so the guest gets one kernel NIC
 	// and MAKES its service identity as a macvlan child of it. No second tap, so no eth2 from us;
 	// no third, so no eth3 -- host and guest already share one L2 here, and the private link
-	// would be a second tap Windows cannot give us anyway ([V3b.26a]).
+	// would be a second tap Windows cannot give us anyway.
 	cfg.ServiceTap, cfg.WitnessTap, cfg.WitnessCIDR = "", "", ""
 	cfg.VIPParent = "eth1"
 	cfg.NetMode = platform.NetBridge
@@ -233,7 +233,7 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 	}
 }
 
-// degraded is what the wait loop needs to keep TALKING while it waits ([B.150](f)).
+// degraded is what the wait loop needs to keep TALKING while it waits.
 //
 // A node whose host network is fine but whose selected device cannot carry the guest's L2 used to
 // go silent up-channel for as long as it stayed that way: the fleet saw nothing, and a managed
@@ -258,7 +258,7 @@ type degraded struct {
 // installed from the node-local cache -- with Healthy false and no Quorum. That is the same
 // shape snapshot already produces when it cannot reach the guest, and it is the honest one: the
 // node exists, it is registered, it is not serving. ⚠️ It does NOT say WHY, because the upward
-// schema is a closed allowlist and widening it is a deliberate, surfaced act (AGENTS §4.8) --
+// schema is a closed allowlist and widening it is a deliberate, surfaced act --
 // the reason lives in the journal and behind the admin door, where it already is.
 func (cfg Config) reportDegraded(ctx context.Context, dg *degraded, logf func(string, ...any)) {
 	if dg == nil || dg.rep == nil {
@@ -329,11 +329,11 @@ func (cfg Config) waitTick(ctx context.Context, local <-chan localRequest, why s
 // It exists because the host's devices are not ours alone to keep: under the bridge substrate our
 // system-subnet address sits on a device NetworkManager manages, and NM reconciles addresses when
 // a connection reactivates -- an `nmcli con up`, a carrier bounce or an NM restart can flush ours.
-// Converging is the answer to that rather than being careful once ([B.150](c)).
+// Converging is the answer to that rather than being careful once.
 //
 // It does NOT re-select. Re-running the selector every tick would macvtap-probe the parent every
 // ten seconds forever, and re-parenting is a different act with its own trigger and its own cost
-// (it restarts the guest) -- that is [B.150](e), not this.
+// (it restarts the guest) -- that is re-parenting (reparent.go), not this.
 func (cfg Config) convergeNetwork(ctx context.Context, logf func(string, ...any)) {
 	if cfg.net == nil || cfg.net.Parent == "" || nic.Converged(*cfg.net) {
 		return

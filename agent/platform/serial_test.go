@@ -11,7 +11,7 @@ import (
 // than left to the one rig that boots a guest.
 //
 // Its whole contract is: bound the capture, own the mode, and NEVER be a reason a guest does not
-// launch ([B.157]).
+// launch.
 
 // A capture past the cap rolls to .prev, and the file the next boot writes to starts empty. One
 // generation, so the pair costs at most 2x the cap.

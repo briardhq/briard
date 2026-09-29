@@ -79,7 +79,7 @@ func TestSetVIPRoute_RejectsIncompleteSpec(t *testing.T) {
 // and pins the derived MAC, and that the route carries a src.
 //
 // Failable in the way that matters -- drop `nud permanent` and the kernel expires the entry, then
-// re-ARPs for an address the guest will not answer for on this interface (arp_ignore=1, [B.101]),
+// re-ARPs for an address the guest will not answer for on this interface (arp_ignore=1, the ARP-flux fix),
 // and the path dies minutes after it was proven working.
 func TestNodeRouteArgs(t *testing.T) {
 	r := NodeRoute{GuestIP: "10.0.0.1", Dev: "briard-priv0", Src: "10.0.0.129", LLAddr: "52:54:00:ab:cd:ef"}

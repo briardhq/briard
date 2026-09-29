@@ -8,17 +8,17 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// THE FILESYSTEM HALF OF STORAGE, ON THE ONE NODE THAT PROMOTED ([V3b.33](d)).
+// THE FILESYSTEM HALF OF STORAGE, ON THE ONE NODE THAT PROMOTED.
 //
 // briard-primary-storage.service's ExecStart and ExecStop -- a promoter chain member, between the
 // promotion and everything that needs the volume. Where briard-node-storage does block work on
 // EVERY node, this does filesystem work only where the volume is mounted, and the cut between
 // them is by scope rather than by tidiness.
 //
-// IT NEVER FORMATS ([B.145a]). The one-time format lives in briard-node-storage, in the same
+// IT NEVER FORMATS. The one-time format lives in briard-node-storage, in the same
 // process and the same branch as the `lvcreate` that made the volume, so "this is brand new" is
 // a fact known where it is acted on rather than carried here on a marker. What that removes is
-// the shape [B.126] and [V3b.33](d) each had to guard: a destructive operation on a path that runs
+// the shape the blank probe and the storage spec each had to guard: a destructive operation on a path that runs
 // at every promotion, on every node, forever. There is no such operation on this path now.
 
 // snapshotsDir is the pre-upgrade snapshot store, a sibling of the service data subvolumes rather
@@ -50,7 +50,7 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 	if err := run("mkdir", "-p", dataMountRoot); err != nil {
 		return err
 	}
-	// MOUNT GUARDED, because this unit may be RETRIED ([B.125](b)): mounting an already-mounted
+	// MOUNT GUARDED, because this unit may be RETRIED: mounting an already-mounted
 	// path stacks a second mount rather than failing, so the retry has to ask first.
 	if _, err := x.Run(ctx, "mountpoint", "-q", dataMountRoot); err != nil {
 		if err := run("mount", spec.Resource.Device, dataMountRoot); err != nil {

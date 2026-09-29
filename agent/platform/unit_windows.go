@@ -9,7 +9,7 @@ import (
 // translation: the SCM covers Type=notify, Restart=, After= and TimeoutStopSec= closely enough,
 // but has no WatchdogSec, no ExecStartPost and no systemd-run. What replaces each -- a frozen
 // warden service, a Job Object, and which half of the commit doctrine survives -- is decided in
-// DESIGN §9.9.1, not to be improvised here. Until then the host agent refuses on Windows rather
+// the design, not to be improvised here. Until then the host agent refuses on Windows rather
 // than half-working.
 
 func startTransient(context.Context, []string) ([]byte, error) { return nil, errors.ErrUnsupported }

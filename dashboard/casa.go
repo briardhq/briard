@@ -1,6 +1,6 @@
 package main
 
-// The household's name on its page ([V3c.4]): `<flock>.briard.casa`, with a real certificate,
+// The household's name on its page: `<flock>.briard.casa`, with a real certificate,
 // claimed by typing an email and clicking the link it receives. The first thing the page
 // offers, and skippable -- the anonymous install stays first-class, and "Skip" is the whole of
 // what that costs.

@@ -1,17 +1,17 @@
 // Package subnet draws the two private IPv4 ranges a briard node needs and cannot ask anyone
-// for: the FLOCK SUBNET (DESIGN §4's system subnet -- the guests' node IPs and the DRBD mesh,
+// for: the FLOCK SUBNET (the system subnet -- the guests' node IPs and the DRBD mesh,
 // which rides the household's own L2 by design) and the PRIVATE LINK (the point-to-point tap
 // between a host and its own guest, the guest's eth3).
 //
 // WHY DRAW RATHER THAN HARDCODE. Both used to be constants -- 10.0.0.0/24 and 10.11.9.0/24 --
 // and 10.0.0.0/24 is one of the most common real household subnets there is: every Xfinity
 // gateway ships it. Two subnets with the same numbers on one L2 is not a degraded install, it is
-// an install that cannot talk to half the house, and [V3b.26b] made it live rather than latent
-// (before it, a lone node had no system address at all). The link's collision is quieter and
-// just as real: it never touches the LAN, so it cannot collide at L2 -- but the HOST'S ROUTING
-// TABLE is shared, so a household on 10.11.9.0/24 gives the host two identical on-link /24s and
+// an install that cannot talk to half the house, and giving a lone node a system address made
+// it live rather than latent (before that, a lone node had no system address at all). The
+// link's collision is quieter and just as real: it never touches the LAN, so it cannot collide at
+// L2 -- but the HOST'S ROUTING TABLE is shared, so a household on 10.11.9.0/24 gives the host two identical on-link /24s and
 // Linux picks between them by metric and insertion order. Both directions then break, and which
-// one is not ours to say ([V3b.26f]).
+// one is not ours to say.
 //
 // THE SHAPE OF THE ANSWER: draw with real entropy, exclude the ranges convention has already
 // spoken for, and check the draw against what this host can actually see. That turns "unlikely to
@@ -38,7 +38,7 @@ import (
 type Draw struct {
 	System string // the flock subnet -- LAN-scoped, shared by every node in the flock
 	Priv   string // the private host<->guest link -- node-private, never on the LAN
-	// Pod is the pool the guest's PRIVATE SERVICE NETWORKS are allocated from ([B.48](a)) --
+	// Pod is the pool the guest's PRIVATE SERVICE NETWORKS are allocated from --
 	// node-private and guest-internal, never configured on the host at all. That last part is the
 	// point rather than an omission: the host holding no address and no route in this range is
 	// what makes a pod unreachable from outside the guest BY CONSTRUCTION, with nothing to
@@ -133,7 +133,7 @@ func draw(rnd io.Reader, propose func(io.Reader) (netip.Prefix, error), reject f
 // THE POOL IS 10.0.0.0/8 AND NOWHERE ELSE. 172.16.0.0/12 is Docker's in practice (default bridge
 // 172.17.0.0/16, compose networks upward from 172.18); 192.168.0.0/16 is the most CPE-collided
 // space there is; and 100.64.0.0/10 (RFC 6598) is actively hostile -- ISP CGNAT on the DS-Lite
-// market DESIGN §4.3 names, Tailscale, and our own NetBird-class overlay all live there. The
+// market, Tailscale, and our own NetBird-class overlay all live there. The
 // benchmarking and documentation ranges (198.18.0.0/15, 192.0.2.0/24, 198.51.100.0/24,
 // 203.0.113.0/24) are unrouted and therefore tempting, but squatting non-private space breaks the
 // day a user legitimately needs to reach it.

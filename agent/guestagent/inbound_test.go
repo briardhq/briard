@@ -75,7 +75,7 @@ func ringExec(members ...string) *fakeExec {
 }
 
 // restoreRig is a ring whose Home Assistant manifest names the container that holds the data, so
-// the registry can say where the restore marker would be ([B.143]). `marker` is that file's
+// the registry can say where the restore marker would be. `marker` is that file's
 // content, or "" for a service with no restore in flight. Its `rm` really removes, because the
 // pending fact is consumed by one and a fake that kept it would hide a second restore half.
 func restoreRig(marker string, members ...string) *fakeExec {
@@ -117,7 +117,7 @@ func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
 	return took, meta
 }
 
-// A CONTAINER START WHOSE DATA WAS NEVER FLUSHED ([B.143]). This is the case quadlet.Consistency
+// A CONTAINER START WHOSE DATA WAS NEVER FLUSHED. This is the case quadlet.Consistency
 // exists for and the one a stopped container cannot answer: after a promotion nothing is running
 // either, but the old primary never shut the service down.
 func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
@@ -177,7 +177,7 @@ func TestAnInnerRestartDoesNotReadTheMarker(t *testing.T) {
 	}
 }
 
-// TestInboundRecordsTheBackupRestore ([B.143], [B.167]) is the one operation only this channel can
+// TestInboundRecordsTheBackupRestore is the one operation only this channel can
 // see. Home Assistant's own restore unlinks its marker before the wipe, so nothing that polls from
 // outside can ever catch one in flight -- and the household's history gets a row that says what
 // happened, on the point that undoes it.
@@ -243,7 +243,7 @@ func serve(t *testing.T, f *fakeExec, body string) inboundResponse {
 
 // TestInboundStartingTakesAMember is the channel's whole purpose: a service about to start says
 // so, and the member exists before it is answered — which is what makes the caller's wait the
-// ordering guarantee ([B.143]).
+// ordering guarantee.
 func TestInboundStartingTakesAMember(t *testing.T) {
 	f := ringExec()
 	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
@@ -277,7 +277,7 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	}
 	// QUIESCED, and STATED rather than left to be inferred: this runs in the unit's pre-start, so
 	// the container is not up and the previous one was stopped before the restart. A member that
-	// does not say what its bytes are is one [B.32] may not use and the picker cannot rank, which
+	// does not say what its bytes are is one the integrity check may not use and the picker cannot rank, which
 	// is the whole reason the field exists.
 	if meta.Consistency != quadlet.Quiesced {
 		t.Errorf("consistency = %q, want quiesced", meta.Consistency)
@@ -294,12 +294,12 @@ func markPending(f *fakeExec, name string) {
 	f.files[quadlet.SnapshotSidecar(member)] = string(b)
 }
 
-// TestAStartReplacesTheStartStillPending ([B.172]): a crash loop restarts every few seconds, and
+// TestAStartReplacesTheStartStillPending: a crash loop restarts every few seconds, and
 // a start whose boot has no verdict yet stands for a boot that never finished. The new start is
 // taken, and the pending one goes, sidecar and all, so a loop holds ONE pending member.
 //
 // It is also the abuse bound. The caller is a container, so this is what stops anything running
-// as the service from filling the replicated volume on purpose ([B.155] by a new road).
+// as the service from filling the replicated volume on purpose (the full-volume failure by a new road).
 func TestAStartReplacesTheStartStillPending(t *testing.T) {
 	base := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-time.Hour)), quadlet.SnapshotsDir)
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
@@ -347,7 +347,7 @@ func TestAStartDoesNotTouchAnotherServicesPendingStart(t *testing.T) {
 	}
 }
 
-// TestAnUnreadablePendingStartIsKept (AGENTS §4.9): the delete is gated on the sidecar SAYING
+// TestAnUnreadablePendingStartIsKept: the delete is gated on the sidecar SAYING
 // pending. One that cannot be read says nothing, and the answer to "I could not tell" is keep.
 func TestAnUnreadablePendingStartIsKept(t *testing.T) {
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
@@ -651,8 +651,8 @@ func deleted(f *fakeExec) []string {
 }
 
 // TestRingReplacesSamplesThatAnchorNothing: an unbounded ring grows on every service start,
-// costs its space on every diskful peer, and arrives as [B.155]'s failure by a new road. What
-// bounds it is that a sample anchoring no event is replaced by the next one ([B.167]) -- once the
+// costs its space on every diskful peer, and arrives as the full-volume failure by a new road. What
+// bounds it is that a sample anchoring no event is replaced by the next one -- once the
 // next one is evaluated. A start is pending until its boot has a verdict, so the newest evaluated
 // sample, which that evaluation compares with, stays until then.
 func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
@@ -747,7 +747,7 @@ func (f *fakeExec) ran(argv ...string) bool {
 }
 
 // TestListMembersSkipsWhatItCannotIdentify: the picker offers a household a rollback point, so an
-// entry it cannot describe must not appear at all ([B.143]).
+// entry it cannot describe must not appear at all.
 //
 // The take path REMOVES a member it could not label, so a member with no readable sidecar here
 // means something outside the ring made it -- a human's copy, an interrupted older build. Offering
@@ -842,7 +842,7 @@ func recordRing(members ...string) *fakeExec {
 	return f
 }
 
-// TestADetectedChangeLandsOnThePointBeforeIt is the model ([B.167]): the change happened between
+// TestADetectedChangeLandsOnThePointBeforeIt is the model: the change happened between
 // two samples, so undoing it puts back the EARLIER one -- which is where its reason is written.
 // Written by replacement, so a power cut cannot leave a half-written sidecar.
 func TestADetectedChangeLandsOnThePointBeforeIt(t *testing.T) {
@@ -961,8 +961,8 @@ func TestQuietTimeWaits(t *testing.T) {
 }
 
 // TestTheHostsTakesAreRecordedToo: the *-before samples come in over data.member, not through
-// the start path, and the history must not depend on which door a sample came through
-// ([B.167]). Here the host's take replaces the plain sample before it.
+// the start path, and the history must not depend on which door a sample came through.
+// Here the host's take replaces the plain sample before it.
 func TestTheHostsTakesAreRecordedToo(t *testing.T) {
 	old := ringOf("home-assistant", 1)
 	f := ringExec(old...)
@@ -980,8 +980,7 @@ func TestTheHostsTakesAreRecordedToo(t *testing.T) {
 }
 
 // TestAResetAndAChangeShareTheirPoint: one comparison can find both, and both happened in the same
-// interval, so they are two reasons on ONE record -- the point before the sample that found them
-// ([B.167d]).
+// interval, so they are two reasons on ONE record -- the point before the sample that found them.
 func TestAResetAndAChangeShareTheirPoint(t *testing.T) {
 	now := time.Now()
 	prevAt := now.Add(-time.Hour)
@@ -1050,7 +1049,7 @@ func TestTheStartHookLeavesItsSamplePending(t *testing.T) {
 	}
 }
 
-// TestAStartWaitsForItsBootsVerdict ([B.167]): healthy is conclusive at once; anything else only
+// TestAStartWaitsForItsBootsVerdict: healthy is conclusive at once; anything else only
 // once HealthGate has passed, since a booting app refuses and answers 5xx. An unhealthy verdict
 // after a healthy one lands on the sample before the start; a second in a row registers nothing.
 func TestAStartWaitsForItsBootsVerdict(t *testing.T) {
@@ -1145,7 +1144,7 @@ func setAside(f *fakeExec, dir string, names ...string) {
 
 const brokenEntries = "core.config_entries.corrupt.2026-09-28T10:00:00"
 
-// TestABootsResetLandsOnThePointBeforeTheStart ([B.172]): the start's member was taken before the
+// TestABootsResetLandsOnThePointBeforeTheStart: the start's member was taken before the
 // boot, so it holds the undecodable store; undoing to it would bring the reset straight back. What
 // the boot set aside is read from the LIVE data at the verdict and lands on the sample before.
 func TestABootsResetLandsOnThePointBeforeTheStart(t *testing.T) {
@@ -1184,7 +1183,7 @@ func TestABootsResetLandsOnThePointBeforeTheStart(t *testing.T) {
 	}
 }
 
-// TestAReplacedBootsResetIsCarried ([B.172]): a start replaced before its verdict takes its boot's
+// TestAReplacedBootsResetIsCarried: a start replaced before its verdict takes its boot's
 // renames with it into the member that replaced it, and the new boot has nothing left to rename.
 // After an update nothing compares the members either (the update's point is a *-before sample),
 // so the carried record is the only way the reset reaches the update's point -- which is the
@@ -1228,7 +1227,7 @@ func TestAReplacedBootsResetIsCarried(t *testing.T) {
 // TestReplacingKeepsTheWeakerConsistency: a Home Assistant container start takes two members
 // seconds apart -- the unit's pre-start, which read the clean-stop marker, and the `run`
 // wrapper's, which cannot and says quiesced. After a promotion the first says crash, and the kept
-// member holds the same bytes, so it must say crash too ([B.172]).
+// member holds the same bytes, so it must say crash too.
 func TestReplacingKeepsTheWeakerConsistency(t *testing.T) {
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-3*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(pending)

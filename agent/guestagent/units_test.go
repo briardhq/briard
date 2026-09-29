@@ -55,10 +55,10 @@ func guestWithTools(t *testing.T) (unitDir, tools string) {
 	return unitDir, tools
 }
 
-// THE UNIT EXISTS, AND IT IS THE ONE THE HOST IS ABOUT TO START ([B.160]). The whole item is
+// THE UNIT EXISTS, AND IT IS THE ONE THE HOST IS ABOUT TO START. The whole item is
 // "the unit can never be older than the binary that wrote it", so what is asserted is that this
 // binary's start produces a loadable briard-node-storage.service naming this binary's committed
-// path and this image's tool profile -- the two halves the crash of [B.159](c) had disagree.
+// path and this image's tool profile -- the two halves the crash-loop had disagree.
 func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 	dir, tools := guestWithTools(t)
 	f := &diskExec{}
@@ -90,7 +90,7 @@ func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 }
 
 // A UNIT WRITTEN AND NOT RELOADED IS A UNIT systemctl SAYS DOES NOT EXIST -- the same symptom
-// [B.159](c) measured, reached by a different route. systemd reads unit files at load, so the
+// the crash-loop measured, reached by a different route. systemd reads unit files at load, so the
 // reload is not housekeeping and its absence would pass every content assertion above.
 func TestWriteUnitsReloadsSystemd(t *testing.T) {
 	guestWithTools(t)
@@ -109,7 +109,7 @@ func TestWriteUnitsReloadsSystemd(t *testing.T) {
 	}
 }
 
-// AN IMAGE THAT PREDATES [B.160] HAS NO TOOL PROFILE, and the agent must refuse to serve on it
+// AN IMAGE THAT PREDATES THE TOOL PROFILE HAS NONE, and the agent must refuse to serve on it
 // rather than write units whose PATH resolves to nothing. That refusal is what makes a
 // too-new agent safe: the trial fails, the picker restores the committed binary, and the node
 // keeps running the release it had -- instead of promoting into units it cannot support.
@@ -188,7 +188,7 @@ func TestWriteUnitsIsIdempotent(t *testing.T) {
 
 // THE CHAIN IS AN ORDERED CHAIN, and the order is a dependency rather than a preference: each
 // member Requires= and After= the PREVIOUS one, so the door starts only once briard-vip holds
-// the address its names resolve to ([B.160], shared/chain). A rendered set that got this wrong
+// the address its names resolve to (shared/chain). A rendered set that got this wrong
 // would still start on a lone node -- the target Wants them all -- and would start them in
 // whatever order systemd liked, which is how a door comes up before its address.
 func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
@@ -213,7 +213,7 @@ func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 		}
 	}
 	// The lone node's target carries the identical list, so a lone node and a flock run ONE
-	// chain and the members cannot tell which target started them ([B.145c]).
+	// chain and the members cannot tell which target started them.
 	tgt := u[chain.Target]
 	for _, k := range []string{"Wants=", "After="} {
 		if !strings.Contains(tgt, k+strings.Join(members, " ")+"\n") {
@@ -222,7 +222,7 @@ func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 	}
 }
 
-// EVERY CHAIN MEMBER HANDS THE RESOURCE ON WHEN IT GIVES UP ([V3b.5](c)). OnFailure= is the
+// EVERY CHAIN MEMBER HANDS THE RESOURCE ON WHEN IT GIVES UP. OnFailure= is the
 // STATE hook that fires on the transition into failed, and the start limit is what decides when
 // that is -- a member rendered without either would crash quietly forever while the household
 // had no service, which is the shape the budget exists to end.
@@ -248,7 +248,7 @@ func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	if strings.Contains(u[holdUnit], "OnFailure=") {
 		t.Errorf("the hold must not hand the resource on to itself:\n%s", u[holdUnit])
 	}
-	// NOR IS THE RENEWAL TIMER'S SERVICE ([V3b.5c]): a renewal that fails must never be able to
+	// NOR IS THE RENEWAL TIMER'S SERVICE: a renewal that fails must never be able to
 	// demote a serving node.
 	if strings.Contains(u[vipRenewUnit], "OnFailure=") || strings.Contains(u[vipRenewUnit], "PartOf="+chain.Target) {
 		t.Errorf("the lease renewal must not be able to demote a serving node:\n%s", u[vipRenewUnit])
@@ -274,8 +274,8 @@ func TestWriteUnitsHoldStopsEveryMemberInReverse(t *testing.T) {
 	if !strings.Contains(hold, "reset-failed "+strings.Join(members, " ")) {
 		t.Errorf("the hold does not clear every member's start limit:\n%s", hold)
 	}
-	// AND THE LONE NODE'S RESTART IS HANDED THE TARGET IT MUST START ([B.145c]). Measured on the
-	// first single-node-chain run of [B.160]b: the step took `$1`, the unit passed nothing, and
+	// AND THE LONE NODE'S RESTART IS HANDED THE TARGET IT MUST START. Measured on the
+	// first single-node-chain run: the step took `$1`, the unit passed nothing, and
 	// `set -u` made it "unbound variable" -- on an ExecStopPost the unit deliberately marks `-`,
 	// so systemd swallowed it and the lone node simply never came back. Hold-and-restart is the
 	// lone node's whole answer to a member giving up; a silent no-op there is a dead house.
@@ -300,7 +300,7 @@ func TestWriteUnitsHoldSecs(t *testing.T) {
 // EVERY Exec* LINE IS AN ABSOLUTE PATH, because systemd requires one for the first word and
 // silently refuses the unit otherwise -- a failure that shows up as "unit not found"-shaped
 // noise at promotion rather than at render. And every unit that shells out carries the profile
-// on its PATH, which after [B.160] includes the doors: the picker they exec is shell, and it
+// on its PATH, which includes the doors: the picker they exec is shell, and it
 // `rm`s its own trial flag.
 func TestWriteUnitsExecLinesAreAbsoluteAndPathed(t *testing.T) {
 	_, tools := guestWithTools(t)
@@ -324,7 +324,7 @@ func TestWriteUnitsExecLinesAreAbsoluteAndPathed(t *testing.T) {
 	}
 }
 
-// A DOWNGRADE INSIDE ONE BOOT MUST NOT LEAVE THE NEWER AGENT'S UNITS BEHIND ([B.160]). A
+// A DOWNGRADE INSIDE ONE BOOT MUST NOT LEAVE THE NEWER AGENT'S UNITS BEHIND. A
 // refused release is reverted by pushing the previous bundle and restarting the agent, which is
 // not a reboot -- so tmpfs does not clear it, and what would be left is a newer unit pointing at
 // an older binary: this item's own defect with the ages swapped, and the harder direction to
@@ -387,7 +387,7 @@ func TestWriteUnitsSweepSparesEverythingElse(t *testing.T) {
 	}
 }
 
-// A MASK MUST SURVIVE A RENDER ([B.160]). `handover -keep-masked` exists so a machine about to
+// A MASK MUST SURVIVE A RENDER. `handover -keep-masked` exists so a machine about to
 // reboot for its own upgrade cannot take the house back before anyone has verified its new
 // generation -- and the agent restarts on that path. If the render overwrote the mask, the
 // refusal would last exactly until the next agent start, which is precisely when it is needed.
@@ -435,7 +435,7 @@ func TestWriteUnitsLeavesAMaskAlone(t *testing.T) {
 
 // AND UNMASKING PUTS THE UNIT BACK. Dropping the symlink leaves NO unit file, because every
 // render while the mask stood skipped it -- so an unmask that did not re-render would hand
-// `systemctl start` a unit that does not exist, which is the [B.159](c) crash by another road.
+// `systemctl start` a unit that does not exist, which is the crash-loop by another road.
 //
 // The fake systemctl MODELS the one thing that matters here: `unmask --runtime` removes the
 // symlink. A fake that did nothing would leave the mask in place, the re-render would skip it

@@ -25,7 +25,7 @@ import (
 // written into a stopped container, HTTP dialled at a running one — and the asymmetry was not an
 // accident, so reversing it for one feature deserves its own file and its own rules.
 //
-// WHY IT HAS TO EXIST ([B.143]). The generic snapshot hook fires at CONTAINER start, which is the
+// WHY IT HAS TO EXIST. The generic snapshot hook fires at CONTAINER start, which is the
 // only boundary the guest agent can see from outside. Home Assistant restarts itself far more
 // often than its container does — `homeassistant.restart` exits 100 and s6 re-runs the service —
 // and each of those is a stopped window where a snapshot is application-consistent. The container
@@ -46,11 +46,11 @@ import (
 //     quadlet.SnapshotMember). A verb taking a path is a verb that reads or writes anywhere the
 //     agent can.
 //   - NO VERB CHOOSES WHAT IS DESTROYED OR REWRITTEN. The ring prunes itself and records events
-//     after every take, but both are derived from the ring on disk ([B.167]); restoring and
+//     after every take, but both are derived from the ring on disk; restoring and
 //     deleting on request stay on the host's side, where the caller is the product.
 //   - EVERY VERB IS BOUNDED. A start replaces the start still pending before it (replacePending),
 //     so a hostile or looping caller holds ONE pending member however often it calls, and cannot
-//     fill the replicated volume, which is [B.155]'s failure arriving by a new road. What such a
+//     fill the replicated volume, which is the full-volume failure arriving by a new road. What such a
 //     caller costs is a take and a delete per call, one call at a time (ListenInbound).
 //
 // ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session and no state carried
@@ -154,7 +154,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 // same answer as one that has.
 // containerStart says this is the CONTAINER's own start (the rendered unit's pre-start) rather than
 // a restart inside a container that stayed up -- the only caller that may read the clean-stop
-// marker, since the marker is a claim about the last container stop ([B.143]).
+// marker, since the marker is a claim about the last container stop.
 func startingMember(ctx context.Context, x Executor, service string, containerStart bool) (string, error) {
 	if err := safeUnitName(service); err != nil { // the name becomes a path element
 		return "", err
@@ -167,7 +167,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
-	// WHAT THE BYTES ARE, and only the container's own start may ask ([B.143]). The marker is a
+	// WHAT THE BYTES ARE, and only the container's own start may ask. The marker is a
 	// claim about the last STOP, so it belongs to the boundary where the container stopped and
 	// started again — not to Home Assistant restarting itself inside a container that never went
 	// down, where the previous instance ended the way HA's own restart ends and the marker has
@@ -182,7 +182,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	var ev *quadlet.Event
 	if backup, ok := hassRestore(x, service, raw); ok {
 		trigger = quadlet.TriggerHassRestoreBefore
-		// The household's own restore is an event, on the point that undoes it ([B.167]).
+		// The household's own restore is an event, on the point that undoes it.
 		ev = &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonHassRestore, What: "Restored " + backup}}}
 	}
 	meta := quadlet.SnapshotMeta{
@@ -212,7 +212,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	return "took " + path.Base(member), nil
 }
 
-// recordMember is what every take does once its member exists ([B.167]): evaluate it, add any
+// recordMember is what every take does once its member exists: evaluate it, add any
 // reasons that finds to the member they land on, and prune. One function for the three ways a
 // member is taken (a start, the host's data.member, the quiesced clock sample), so the history
 // cannot depend on which door a sample came through.
@@ -240,7 +240,7 @@ func recordMember(ctx context.Context, x Executor, member string, meta quadlet.S
 	pruneRing(ctx, x, meta.Service, meta.TakenAt)
 }
 
-// replacePending deletes the starts still pending before a new one ([B.172]). A start with no
+// replacePending deletes the starts still pending before a new one. A start with no
 // verdict yet stands for a boot that never finished, so the new start's boot is the one its
 // verdict is about, and content is compared from the last EVALUATED sample to the new start.
 // An evaluated start is never replaced: "change something, restart" keeps its row.
@@ -253,7 +253,7 @@ func recordMember(ctx context.Context, x Executor, member string, meta quadlet.S
 // new here over the replaced member goes into the new sidecar's Resets, to land with the verdict.
 // So is a crash-consistent label (below).
 //
-// ⚠️ A DELETE, GATED ON A POSITIVE READ (AGENTS §4.9): the sidecar parsed, and it says a pending
+// ⚠️ A DELETE, GATED ON A POSITIVE READ: the sidecar parsed, and it says a pending
 // start with no event. listMembers leaves out what it cannot read, so an unreadable member is
 // kept. The carried renames are written first, and a failed write keeps the old members.
 func replacePending(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
@@ -387,7 +387,7 @@ func previousEvaluated(members []quadlet.SnapshotEntry, member string) (quadlet.
 	return prev, prev.Member != ""
 }
 
-// evaluate is a new member's one evaluation ([B.167]): the member its reasons land on, and the
+// evaluate is a new member's one evaluation: the member its reasons land on, and the
 // reasons, or none when nothing is registered.
 //
 // COMPARE ONLY IF THE APP RAN BETWEEN THE TWO. The previous member is never a *-before sample when
@@ -395,12 +395,12 @@ func previousEvaluated(members []quadlet.SnapshotEntry, member string) (quadlet.
 // *-before member itself IS compared with the one before it, so edits made just before an update
 // are caught, and its finding lands on that earlier member rather than on the operation's own.
 //
-// A comparison can find two things at once, a change and a reset ([B.167d]), and a start's
+// A comparison can find two things at once, a change and a reset, and a start's
 // evaluation may add its health (`extra`); all happened in the same interval, so all are reasons on
 // the same point. Nothing found, at a member that is not an operation's own point, is quiet time
 // (quadlet.QuietPoint).
 //
-// A START'S BOOT RESETS ARE ITS OWN (meta.Resets, [B.172]): read after the boot, so they are not in
+// A START'S BOOT RESETS ARE ITS OWN (meta.Resets): read after the boot, so they are not in
 // the member and are counted whatever prev is. The earlier side's are not found again: they were
 // its boot's, already landed.
 func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, prev quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta, extra []quadlet.Reason) (quadlet.SnapshotEntry, []quadlet.Reason) {
@@ -487,7 +487,7 @@ func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.Snap
 // startEvalTick is how often the long-running agent looks for a start whose boot has a verdict.
 const startEvalTick = 10 * time.Second
 
-// EvaluateStarts evaluates each pending start sample once its boot has a verdict ([B.167]), until
+// EvaluateStarts evaluates each pending start sample once its boot has a verdict, until
 // ctx ends. It runs in the LONG-RUNNING agent, beside the inbound listener, because the pre-start
 // hook that takes a start sample cannot wait for the boot it precedes. Everything it decides is
 // read from the ring and the volume, so a restart of this process loses nothing: a pending sample
@@ -521,7 +521,7 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 // UNHEALTHY REGISTERS ONLY ON A TRANSITION: the newest evaluated sample carried healthy (or no
 // verdict yet). The reason lands on the sample before the start, which is what undoing it restores.
 //
-// SO DOES A BOOT'S RESET ([B.172]): what the app set aside as undecodable during this boot is in
+// SO DOES A BOOT'S RESET: what the app set aside as undecodable during this boot is in
 // the LIVE data and not in the start's member, which holds the undecodable original. Undoing to
 // the start would put that file back and the next boot would set it aside again, so the reset is
 // the boot's verdict on the start's data, like health.
@@ -560,7 +560,7 @@ func evaluatePending(ctx context.Context, x Executor, service string, now time.T
 	pruneRing(ctx, x, service, now)
 }
 
-// THE CLEAN-STOP MARKER ([B.143]): the one fact that says whether a service's data was FLUSHED,
+// THE CLEAN-STOP MARKER: the one fact that says whether a service's data was FLUSHED,
 // which is the question quadlet.Consistency actually asks and the one a stopped container does not
 // answer.
 //
@@ -580,7 +580,7 @@ func evaluatePending(ctx context.Context, x Executor, service string, now time.T
 // ⚠️ ITS LIMIT, stated rather than papered over: a clean unit stop is not proof the application
 // flushed. podman stops a container with a signal and a timeout, and a workload that ignores both
 // is killed while the unit still ends `success`. It is the same evidence the upgrade point has
-// claimed since [B.121] — one stop, believed — and it is strictly better than assuming every
+// claimed — one stop, believed — and it is strictly better than assuming every
 // start had one.
 func cleanStopPath(service string) string { return manifestDir + "/" + service + ".clean" }
 
@@ -618,7 +618,7 @@ func consumeCleanStop(ctx context.Context, x Executor, service string) quadlet.C
 	return quadlet.Quiesced
 }
 
-// THE BACKUP RESTORE ([B.143], [B.167]): a household restoring one of Home Assistant's OWN
+// THE BACKUP RESTORE: a household restoring one of Home Assistant's OWN
 // backups, which is a different operation from undoing to one of our members and has its own
 // *-before sample.
 //
@@ -685,7 +685,7 @@ func backupName(body []byte) string {
 // after the first failed, the fleet stopped converging, and the error named the filesystem rather
 // than the collision it actually was.
 //
-// ⚠️ THAT DELETE IS FATAL TO A RING ([B.143]). Members are a series now
+// ⚠️ THAT DELETE IS FATAL TO A RING. Members are a series now
 // (quadlet.SnapshotMember), so they are distinct by construction and nothing legitimately
 // supersedes anything. A delete-before-take kept here would silently destroy a member whenever two
 // landed in the same second -- losing history inside the one function whose job is keeping it.
@@ -794,7 +794,7 @@ func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
 // ListenInbound binds the one inbound socket and serves it until ctx ends.
 //
 // IT RUNS IN THE LONG-RUNNING AGENT, which is the whole of the correction the token made
-// possible ([B.143], 2026-09-22). The first build gave each service its own socket, which made a
+// possible. The first build gave each service its own socket, which made a
 // caller's identity a property of the transport -- and made the listener SET a function of the
 // service list, which only converge knows, which runs in two processes, which forced systemd to
 // own the binds: template units, socket activation, fd inheritance, a per-connection process. All
@@ -896,7 +896,7 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 
 // ToolsBin is the image's tool profile, for a caller that must put it on PATH itself.
 //
-// The generic pre-start hook is that caller ([B.143]): it is an ExecStartPre on a unit podman's
+// The generic pre-start hook is that caller: it is an ExecStartPre on a unit podman's
 // quadlet generator writes, and teaching the RENDERER about the image's profile would give a pure
 // function of the manifest a second thing to know. The entry point sets its own PATH instead, so
 // the rendered line stays one absolute path and a service name.

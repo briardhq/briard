@@ -40,7 +40,7 @@ DOMAIN = "briard"
 class LoginView(HomeAssistantView):
     """POST /api/briard/login — an auth code that logs a browser in as Home Assistant's OWNER.
 
-    THE ONE THING THIS INTEGRATION MINTS, and why it may ([V3b.31a](e), [V3b.31d]): the household
+    THE ONE THING THIS INTEGRATION MINTS, and why it may: the household
     dashboard has already authenticated the browser — a trusted device, by proof of access to the
     `briard` CLI — so handing it a login to the Home Assistant it owns is delegated auth, not a
     bypass. The shape is HA's own onboarding's: `create_auth_code` is what the user step calls,
@@ -49,7 +49,7 @@ class LoginView(HomeAssistantView):
     ALWAYS THE OWNER, NEVER ANOTHER USER. HA's `is_owner` flag, not ours: stateless, and as true
     of an adopted or restored HA as of one we set up. With no owner — the flag is deletable — this
     REFUSES and says so; it never picks an admin instead, which would be asserting an identity
-    nobody authenticated ([V3b.31]).
+    nobody authenticated.
 
     Behind HA's own auth and gated on admin. The caller is the node's control channel, whose
     system user is admin; that token already drives the whole HA API, so nothing here widens it.
@@ -82,7 +82,7 @@ class LoginView(HomeAssistantView):
 class QuiesceView(HomeAssistantView):
     """POST /api/briard/quiesce — hold the recorder still while the node takes a ring member.
 
-    WHY THIS IS HOME ASSISTANT'S JOB ([B.143]). The node snapshots /config's subvolume while Home
+    WHY THIS IS HOME ASSISTANT'S JOB. The node snapshots /config's subvolume while Home
     Assistant is RUNNING for its clock sample, and the recorder's SQLite database is the one part
     of it a snapshot can catch mid-write. Home Assistant already has the mechanism its own backups
     use — a truncating WAL checkpoint and a held `BEGIN IMMEDIATE` — and it runs on the recorder's
@@ -153,7 +153,7 @@ class QuiesceView(HomeAssistantView):
 
 # The event the node fires on Home Assistant's own bus when something OUTSIDE Home Assistant
 # changed that this integration may want to act on — today, a broker that was installed next to an
-# HA already running ([B.131]). The other half of the contract is agent/hass/nudge.go's, and it is
+# HA already running. The other half of the contract is agent/hass/nudge.go's, and it is
 # that the event carries NOTHING: it means "reconsider", and everything below re-derives its world
 # from scratch, so a lost, duplicated or unrelated one all cost the same.
 EVENT_RECONSIDER = "briard_reconsider"
@@ -196,7 +196,7 @@ async def async_setup(hass, config):
 
     # The login minter, from the moment HA serves: it needs nothing loaded but the auth manager.
     hass.http.register_view(LoginView())
-    # And the recorder hold ([B.143]). Registered here for the same reason: it resolves the
+    # And the recorder hold. Registered here for the same reason: it resolves the
     # recorder per request, so it is correct from the moment HA serves and stays correct if the
     # recorder is reloaded under it.
     hass.http.register_view(QuiesceView())

@@ -374,7 +374,7 @@ func TestHealthWithAServiceStillRequiresTheUnitActive(t *testing.T) {
 
 // ── ResolveHealthURL: what we probe, decided per call ──────────────────────────────
 //
-// V3.19c takes the service address away from build time and gives it to the LAN, so "what do we
+// Handing the service address to the LAN takes it away from build time and gives it to the LAN, so "what do we
 // probe?" stops being config and becomes a question. It is asked on the ROLLBACK PATH (the OS
 // health gate), which is why the whole predicate is enumerated here rather than sampled: a wrong
 // answer does not fail loudly, it reverts a healthy node.
@@ -406,7 +406,7 @@ func TestResolveHealthURL(t *testing.T) {
 		{"no address held", false, "eth2", "", "", nil, ""},
 
 		// A device we did not NAME is a device we know nothing about: with VIP_DEV unset this
-		// node claims no VIP, so there is no address to ask about. (Before [V3b.16a] it fell back
+		// node claims no VIP, so there is no address to ask about. (It used to fall back
 		// to a baked eth1, which in the agent-less harnesses also carries the DRBD address --
 		// "the first address on eth1" would have been the replication link.)
 		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},

@@ -11,7 +11,7 @@
 #     nix flake check                       # flake integrity (boots no VMs)
 #
 # A whole tag is a list of names in `.#test-manifest`, run with an explicit `--max-jobs`
-# cap — see CONTRIBUTING.md. There is no `.#all` and no `.#drbd` on purpose ([B.149]).
+# cap — see CONTRIBUTING.md. There is no `.#all` and no `.#drbd` on purpose.
 name: ci
 
 on:
@@ -58,7 +58,7 @@ jobs:
       - name: Go checks (fmt, vet, unit + architecture guards)
         run: nix develop --command bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test ./...'
 
-      # The GOOS seam is only a seam while something re-runs this ([V3b.27](d)). It is a
+      # The GOOS seam is only a seam while something re-runs this. It is a
       # CROSS-COMPILE, not a test run — a Windows test binary cannot execute on this runner, and
       # does not need to: what decays is a shared file quietly growing a Linux-only symbol, and
       # the compiler is what sees that. `vet` is the load-bearing half, because it type-checks

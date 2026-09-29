@@ -18,7 +18,7 @@ import (
 // read that fails reads as "absent/false", which flows into a Refuse/Warn with a fix -- never a
 // crash. All the verdict logic lives in the pure Assess (this is just the eyes).
 //
-// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer ([B.150](b)).
+// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer.
 // It used to be re-read per fact from the default route, which quietly judged a different device
 // than the install would use whenever BRIARD_NIC was set.
 func Gather(ctx context.Context) HostFacts {
@@ -86,7 +86,7 @@ const arpProbeWait = 750 * time.Millisecond
 // AddressAnswers reports whether some machine on this segment already owns cidr's address.
 //
 // Exported for its second caller: the subnet draw asks the same question of a candidate flock
-// subnet's .1 ([V3b.26f]). One mechanism, two questions -- the VIP's is "is the address the user
+// subnet's .1. One mechanism, two questions -- the VIP's is "is the address the user
 // named already taken", the draw's is "is another flock already living here".
 //
 // It provokes the kernel into resolving ARP by sending one datagram at the address (discard port,
@@ -196,7 +196,7 @@ func hostCIDR(dev string) string {
 // reinstall /opt/briard already exists and is the honest thing to measure, and on a fresh host the
 // walk ends at / anyway.
 //
-// The prefix is a CONSTANT, not a knob ([B.157]): the qemu bundle bakes it into its own ELF
+// The prefix is a CONSTANT, not a knob: the qemu bundle bakes it into its own ELF
 // interpreter, so an install anywhere else produces a qemu that cannot execute. This used to read
 // BRIARD_PREFIX, which nothing set and which could not have worked if anything had.
 func installRoot() string {
@@ -251,7 +251,7 @@ func cpuHasVirtFlags() bool {
 //
 // It reads both "flags" (x86) and "Features" (aarch64), because the two facts it answers live on
 // different lines depending on the architecture: virtualization is x86-only in practice, but AES
-// acceleration is exactly the question a Pi has to answer ([V3b.33](c)) and a Pi says "Features".
+// acceleration is exactly the question a Pi has to answer and a Pi says "Features".
 func cpuHasFlag(want string) bool {
 	f, err := os.Open("/proc/cpuinfo")
 	if err != nil {
@@ -328,7 +328,7 @@ func memTotalMB() int {
 	return 0
 }
 
-// The any-ethernet / wired-ethernet survey used to live here, and [B.150](b) retired it: it asked
+// The any-ethernet / wired-ethernet survey used to live here, and the NIC selection retired it: it asked
 // whether the MACHINE had a wired device, not whether the device the install would actually use
 // was one. A laptop with an unplugged eth0 and the default route on wlan0 passed it, and then
 // macvtapped onto the wireless station. The question is now asked of nic.Choose's answer.

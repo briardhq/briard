@@ -42,7 +42,7 @@ func TestVerifyAcceptsAGoodSignature(t *testing.T) {
 }
 
 // The load-bearing negative: a tampered artifact (or a wrong key) must be refused, so the
-// caller never stages it and the committed binary stays. [[verification-assertions-must-fail]]
+// caller never stages it and the committed binary stays.
 func TestVerifyRefusesTamperedArtifact(t *testing.T) {
 	pub, priv := genKey(t)
 	kr, _ := NewKeyring(pubPEM(t, pub))

@@ -1,4 +1,4 @@
-"""What each candidate health signal says when Home Assistant is broken in a given way ([B.167b]).
+"""What each candidate health signal says when Home Assistant is broken in a given way.
 
 A discovery probe, not a gate: for each fault it restores a known-good copy of the data, injects
 the fault, restarts Home Assistant the way converge does, and samples every candidate signal for a
@@ -100,7 +100,7 @@ FAULTS = {
                                   "    time.sleep(3600)\n    return True\n"),
     "recorder-db": lambda: sh("dd", "if=/dev/urandom", f"of={CONFIG}/home-assistant_v2.db",
                               "bs=4096", "count=4", "conv=notrunc"),
-    # The second pass ([B.167b]): a config-entry integration that fails or is not ready, and a
+    # The second pass: a config-entry integration that fails or is not ready, and a
     # real event-loop spin during setup and after the start.
     "entry-setup-error": lambda: config_entry("probe_entry_error",
                                               "async def async_setup_entry(hass, entry):\n"
@@ -168,7 +168,7 @@ def observe():
         st, body, _ = get("/api/error_log", tok)
         if st == 200:
             s["errors"] = sum(1 for line in body.decode(errors="replace").splitlines() if " ERROR " in line)
-    # The corrupt renames Home Assistant makes at boot, in /config and .storage ([B.167b]).
+    # The corrupt renames Home Assistant makes at boot, in /config and .storage.
     s["corrupt"] = sorted(n for d in (CONFIG, CONFIG + "/.storage") if os.path.isdir(d)
                           for n in os.listdir(d) if ".corrupt." in n)
     s["unit"] = unit("ActiveState")

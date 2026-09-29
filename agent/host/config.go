@@ -14,7 +14,7 @@ import (
 )
 
 // promoterUnits is the ordered drbd-reactor promoter chain for a data node, from the ONE
-// definition both halves of the bundle read ([B.160], shared/chain). The host hands it to
+// definition both halves of the bundle read (shared/chain). The host hands it to
 // drbd-reactor as the start-list; the guest agent writes the same order into every member's
 // Requires=/After= and into the lone node's target. shared/chain carries why the list is what
 // it is, and why nothing in it is conditional.
@@ -47,7 +47,7 @@ func versionBanner(version string) string {
 	return "briard-agent starting, version " + version
 }
 
-// THE INSTALL LAYOUT, AND WHY IT IS HERE RATHER THAN IN THE INSTALLER ([B.157]).
+// THE INSTALL LAYOUT, AND WHY IT IS HERE RATHER THAN IN THE INSTALLER.
 //
 // install.sh is fetched from the channel root and run once, so every value it writes is frozen
 // where no release can reach it. It therefore writes only what it COMPUTES about this host -- the
@@ -62,7 +62,7 @@ const (
 	stateDir  = "/var/lib/briard"
 	runDir    = "/run/briard"
 
-	// defaultConfigFile is where install.sh writes this node's configuration ([B.150](a)). The
+	// defaultConfigFile is where install.sh writes this node's configuration. The
 	// shipped unit states it in BRIARD_CONFIG so `systemctl cat` answers the question; this is the
 	// answer for a hand-run agent, which is told nothing.
 	defaultConfigFile = prefixDir + "/config.env"
@@ -77,7 +77,7 @@ const (
 // THE POINT IS THAT A FILE CAN BE REWRITTEN AND A UNIT CANNOT. Network decisions are made from
 // what this host can see, and what it can see changes — a NIC is replaced, a cable moves, the
 // household's router is swapped. Decisions baked into a generated unit are frozen where no
-// release can reach them; in a file the agent can converge them ([B.150]).
+// release can reach them; in a file the agent can converge them.
 //
 // Deliberately dumber than a .env parser: no quoting, no expansion, no `export`, no multi-line
 // values. Every value written here is a path, a device name, an address or a duration, and a
@@ -102,7 +102,7 @@ func loadConfigFile(path string) {
 		// value here can want one: they are paths, device names, addresses and durations.
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
 		// LookupEnv, not Getenv: an explicitly EMPTY environment entry is a decision — it is how
-		// the substrate fork says "this node has no service tap" ([V3b.26c]) — so it must win
+		// the substrate fork says "this node has no service tap" — so it must win
 		// over the file exactly as a non-empty one does.
 		if _, set := os.LookupEnv(k); k == "" || set {
 			continue
@@ -119,7 +119,7 @@ func ConfigFromEnv() Config {
 	// THIS NODE'S OWN NAME, resolved before the struct because the DRBD self-peer below is named
 	// after it. Three tiers, the same order every value here uses: the environment, then the record
 	// this node minted for itself (identity.go), then the literal every install answered to before
-	// [V3.20] gave each one its own.
+	// each one got its own.
 	id := recordedIdentity(filepath.Dir(env("ASSIGNMENT_CACHE", stateDir+"/assignment.json")))
 	node := env("NODE", id.node)
 	if node == "" {
@@ -131,9 +131,9 @@ func ConfigFromEnv() Config {
 	// unset we keep the single-node self-peer from PEER_ADDR.
 	//
 	// ITS DISK IS NOT CONFIGURABLE, and there used to be a DATA_DEV knob here saying otherwise.
-	// It was the third leg of V1.0's single-node tripod -- who (NODE), where (PEER_ADDR), which
+	// It was the third leg of the first single-node tripod -- who (NODE), where (PEER_ADDR), which
 	// disk (DATA_DEV) -- from the era when the backing really was the raw disk and a node might
-	// answer that differently. [V3b.33](b) ended the question: every diskful node runs on the one
+	// answer that differently. The storage seam ended the question: every diskful node runs on the one
 	// LV the seam builds, so `Peer.Disk` is the diskful/diskless flag it always was, and the only
 	// thing the knob could still express was a disagreement with the seam. Nothing ever set it.
 	peers := parsePeers(os.Getenv("PEERS"))
@@ -145,7 +145,7 @@ func ConfigFromEnv() Config {
 		}}
 	}
 	cfg := Config{
-		// ⚠️ THE BUNDLE AND THE DISKS ARE NOT DEFAULTED, and that is the other half of [B.157]'s
+		// ⚠️ THE BUNDLE AND THE DISKS ARE NOT DEFAULTED, and that is the other half of the install-layout
 		// rule: install.sh writes paths to what it CREATED OR STAGED -- the qemu tree it extracted,
 		// the disks it allocated -- because those are facts about this host, not defaults. An empty
 		// one is a decision too: it is how every agent-* rig says "no state disk", "no -L", "no
@@ -178,11 +178,11 @@ func ConfigFromEnv() Config {
 		// On by default, because an admin door only an expert can find is not a door.
 		// The CLI defaults to this same path (agent/cli); keep the two literals in step.
 		AdminSock: env("ADMIN_SOCK", "/run/briard/admin.sock"),
-		// The guest's admin port ([V3b.31i]), beside the control socket it mirrors.
+		// The guest's admin port, beside the control socket it mirrors.
 		AdminPortSock: env("ADMIN_PORT_SOCK", "/run/briard-admin.sock"),
 		// THE GUEST'S THREE NICS, by the name of the host device behind each. `declared` and not
 		// `env`: an explicitly EMPTY entry is how a node says it has no such NIC, and the default
-		// must not overrule it ([V3b.26c]). Unset -- every shipped install, whose config.env names
+		// must not overrule it. Unset -- every shipped install, whose config.env names
 		// a tap only when the operator did -- takes the shipped names.
 		ServiceTap: declared("SERVICE_TAP", "briard0"),      // eth2, where the VIP lives
 		SystemTap:  declared("SYSTEM_TAP", "briard-drbd0"),  // eth1, the node IP and DRBD
@@ -191,7 +191,7 @@ func ConfigFromEnv() Config {
 		VIPParent:  os.Getenv("VIP_PARENT"),                 // bridge substrate only: the NIC the guest builds VIP_DEV on
 		NetWrapBin: os.Getenv("NET_WRAP_BIN"),               // the fd-passing launch wrapper install.sh staged
 		// The device the guest's L2 hangs off, when an operator named one. The agent asks the same
-		// question the report card did, so it reads the same override ([B.150](b)).
+		// question the report card did, so it reads the same override.
 		NICOverride:  os.Getenv("NIC"),
 		PrivHostCIDR: os.Getenv("PRIV_HOST_CIDR"), // the host's end of the private link, e.g. 10.11.9.1/24
 		// The guest's serial console, captured to the host. Under macvtap the host cannot reach the
@@ -231,7 +231,7 @@ func ConfigFromEnv() Config {
 		// Exactly one node seeds a fresh cluster (skip-initial-sync); the rest sync
 		// from it. The first peer is that node by convention (single-node: itself).
 		FreshInit: node == peers[0].Name,
-		// The node's storage policy ([V3b.33](d)), which install.sh sets from
+		// The node's storage policy, which install.sh sets from
 		// BRIARD_DATA_ENCRYPTION. Defaulting to auto here rather than to the empty string is
 		// what makes every node the installer has never heard the question asked of behave as
 		// the shipped default -- and an unparseable value is refused at bring-up (storageSpec),
@@ -246,7 +246,7 @@ func ConfigFromEnv() Config {
 		// service port directly is what left a freshly installed node reporting unhealthy
 		// forever with no reflex able to tell that apart from a broken service.
 		//
-		// NO DEFAULT, deliberately (V3.19c step 3). It used to be the lab's own
+		// NO DEFAULT, deliberately. It used to be the lab's own
 		// `http://192.168.1.100/healthz` -- a guess about someone else's network that agreed
 		// with every test we ran, which is precisely how the baked VIP stayed invisible. Unset
 		// now means "ask the guest what address it actually holds" (guest.ResolveHealthURL, via
@@ -259,7 +259,7 @@ func ConfigFromEnv() Config {
 		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),             // the OS-upgrade bound, incl. the degraded wait before a revert
 		ControllerURL:   os.Getenv("CONTROLLER_URL"),                          // "" -> standalone, no north-bound report
 		ControllerToken: os.Getenv("CONTROLLER_TOKEN"),                        // bearer on seam calls; "" -> no auth
-		CasaURL:         env("CASA_URL", "https://api.briard.io"),             // the casa name service ([V3c.4]); the lab overrides
+		CasaURL:         env("CASA_URL", "https://api.briard.io"),             // the casa name service; the lab overrides
 		CasaWorkerURL:   env("CASA_WORKER_URL", "https://casa.briard.io"),     // the Worker the node writes its own address at
 		AssignmentCache: env("ASSIGNMENT_CACHE", stateDir+"/assignment.json"), // cold-boot cache
 		NotifyURL:       os.Getenv("NOTIFY_URL"),                              // ntfy topic URL for alerts; "" -> log-only
@@ -277,8 +277,8 @@ func ConfigFromEnv() Config {
 		// what a node runs is installed at runtime and rebuilt from the node-local manifest cache
 		// at bring-up (Run -> installedServices), or read off the volume when this node promotes
 		// (adoptVolumeServices). The environment described the build-time payload slot, which is
-		// gone ([V3b.3](e1)); the empty set is the shipped state and every node starts there.
-		// The catalog is published signed static content (OSS §10.1: an apt-mirror, not an API),
+		// gone; the empty set is the shipped state and every node starts there.
+		// The catalog is published signed static content (an apt-mirror, not an API),
 		// which is exactly what the release channel already is -- so it lives in the same bucket,
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
@@ -290,7 +290,7 @@ func ConfigFromEnv() Config {
 		GuestReleaseCache: env("GUEST_RELEASE_CACHE", stateDir+"/guest-release.json"),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
-		// the signed CATALOG (service install), not self-update any more: since [B.86a] the
+		// the signed CATALOG (service install), not self-update any more: the
 		// agent's own update is fetched and verified by the frozen unit below it, under the same
 		// keyring file, and the agent only watches the arm flag. Base/RunDir/Unit default in
 		// newSelfUpdater. Version is baked at build time (buildVersion), overridable by env for
@@ -319,7 +319,7 @@ func ConfigFromEnv() Config {
 // an `on <name>` stanza), so NodeID is the entry's position and the ordering must
 // be identical fleet-wide. Each entry is "name@host[:port]/disk": host defaults to
 // port 7789; disk "none" (or empty) is a diskless witness, anything else is a DISKFUL
-// node. The field is a flag, not a path, and that is what [V3b.33] made of it: a diskful
+// node. The field is a flag, not a path, and that is what the storage seam made of it: a diskful
 // node's backing is one value fleet-wide (drbd.DataDevice, the LV the guest's seam unit
 // builds), so a mesh string that could name a different device per node would only be a
 // way to disagree with the seam. Malformed entries are skipped. Returns nil for an empty
@@ -399,9 +399,9 @@ func durEnv(k string, def time.Duration) time.Duration {
 //
 // env() cannot express one: it falls back to the default for an explicitly empty entry, which is
 // right for a URL or a duration and wrong for a device name, where "" is how a node says it has no
-// such NIC ([V3b.26c]'s substrate fork). So the default here applies only when the key is not
+// such NIC (the substrate fork). So the default here applies only when the key is not
 // declared at all -- which is exactly the shipped install, whose config.env carries a key only when
-// the operator named it ([B.157]).
+// the operator named it.
 func declared(k, def string) string {
 	if v, ok := os.LookupEnv(k); ok {
 		return v

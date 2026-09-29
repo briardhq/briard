@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// CHANGE DETECTION ([B.167]): what a household did to Home Assistant between two samples, read
+// CHANGE DETECTION: what a household did to Home Assistant between two samples, read
 // off the two members rather than watched live.
 //
 // A CLOSED LIST OF SIGNALS, never "the bytes differ". Home Assistant writes its history and entity
@@ -30,7 +30,7 @@ import (
 //
 //   - a `*.corrupt.*` file new since the previous sample. Home Assistant found a store or its
 //     database undecodable, renamed it aside and started empty — silent data loss that no health
-//     signal sees, and undo is its remedy ([B.167d]; measured by hass-health-probe, B.167b).
+//     signal sees, and undo is its remedy (measured by hass-health-probe).
 
 // signalYAML maps each top-level YAML signal to the phrase a change to it reads as.
 var signalYAML = map[string]string{
@@ -85,7 +85,7 @@ func Signals(ctx context.Context, x Executor, dir string) (map[string][]byte, er
 // BY NAME ONLY: the file set aside may be the recorder database, and reading it would cost a copy
 // of the household's history for a fact the listing already has. Home Assistant puts them in two
 // places — the stores in .storage/, the database beside it. dir may be the LIVE config directory:
-// a boot's renames are read after that boot, before any sample holds them ([B.172]).
+// a boot's renames are read after that boot, before any sample holds them.
 func Corrupt(ctx context.Context, x Executor, dir string) []string {
 	var out []string
 	for _, sub := range []string{"", storageDir} {

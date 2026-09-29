@@ -25,7 +25,7 @@ const (
 // overrides it. On a flock it is DRBD's view (role and quorum, `drbdsetup status`), which is
 // where the names come from. It is computed in ONE place, the guest's node-status verb, and
 // readers ask Serving() for "does this node hold the house" rather than spelling the answer
-// from the fields -- so a node that runs no DRBD (a lone anchor, [B.145]) is made to read as
+// from the fields -- so a node that runs no DRBD (a lone anchor) is made to read as
 // Primary and quorate by that verb alone, and no reader learns a second shape.
 type QuorumState struct {
 	Primary   bool `json:"primary"`   // is this node the write authority (on a flock: the DRBD primary)?

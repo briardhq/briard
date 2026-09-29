@@ -104,7 +104,7 @@ func sidecarOf(t *testing.T, f *fakeExec) quadlet.SnapshotMeta {
 	return quadlet.SnapshotMeta{}
 }
 
-// THE CLOCK SAMPLE, QUIESCED ([B.143]): hold, snapshot, release — and the class is written from what
+// THE CLOCK SAMPLE, QUIESCED: hold, snapshot, release — and the class is written from what
 // the RELEASE said, because Home Assistant is the only party that knows whether its lock survived.
 func TestQuiescedMemberUpgradesTheClassWhenTheServiceHeld(t *testing.T) {
 	h := &haStub{held: true}
@@ -113,7 +113,7 @@ func TestQuiescedMemberUpgradesTheClassWhenTheServiceHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quiescedMember: %v", err)
 	}
-	// WHAT IT COST, reported rather than inferred ([B.167]): the hourly sample's price to Home
+	// WHAT IT COST, reported rather than inferred: the hourly sample's price to Home
 	// Assistant is exactly these two numbers.
 	if res.Acquire <= 0 || res.Hold <= 0 {
 		t.Errorf("result = %+v, want the acquire and hold durations", res)
@@ -219,7 +219,7 @@ func TestQuiescedMemberReleasesEvenWhenTheSnapshotFails(t *testing.T) {
 	}
 }
 
-// TestMosquittosClockSampleFlushesFirst ([B.167d], owner 2026-09-27): mosquitto cannot hold still,
+// TestMosquittosClockSampleFlushesFirst: mosquitto cannot hold still,
 // but it can write its persistence database on SIGUSR1, and that happens BEFORE the snapshot. The
 // member still says crash-consistent, which it is.
 func TestMosquittosClockSampleFlushesFirst(t *testing.T) {

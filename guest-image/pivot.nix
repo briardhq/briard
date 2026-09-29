@@ -1,9 +1,9 @@
-# THE GUEST'S FROZEN PIVOT ([B.86j], re-cut by [B.138] and [B.139]): how the set of briard
+# THE GUEST'S FROZEN PIVOT: how the set of briard
 # binaries pushed by the host takes over from what the guest runs, and how it falls back.
 #
 # Every briard binary the guest runs rides the HOST bundle. The image bakes ONE binary,
-# `briard-guest-firmware` -- the push protocol and nothing else ([B.139]: the handshake, the three
-# push verbs, os.poweroff), rebuilt only with the image ([B.86i]), and the thing that receives the
+# `briard-guest-firmware` -- the push protocol and nothing else (the handshake, the three
+# push verbs, os.poweroff), rebuilt only with the image, and the thing that receives the
 # first push. The host dresses the guest with the release's set over the control channel
 # (`bin.stage` / `bin.test` / `bin.activate`, agent/guestfirmware/bin.go) at every bring-up: the
 # overlay the guest boots on is disposable, so every boot starts as firmware and nothing pushed
@@ -12,8 +12,8 @@
 # before rejoin, so nothing can promote a node that has not been dressed.
 #
 # This module is the guest-side half of that -- the PICKER, and the files it chooses between. It
-# is the same shape as the host's own pivot (scripts/install.sh briard-exec / briard-commit,
-# [B.84]) minus the commit, which since [B.148] the agent does itself (see below):
+# is the same shape as the host's own pivot (scripts/install.sh briard-exec / briard-commit)
+# minus the commit, which the agent does itself (see below):
 #
 #   <bin>/<name>.next    a pushed binary, verified by the firmware (sha256 over the whole file)
 #                        and proven by its own --test-launch before anything is armed
@@ -37,7 +37,7 @@
 # passing verdict opens the port. It then COMMITS -- every staged name plus RELEASE, together --
 # and only after that says READY and serves its first verb.
 #
-# ⚠️ THE COMMIT IS NOT A UNIT HOOK, and that is the fix of [B.148]. It was an `ExecStartPost`
+# ⚠️ THE COMMIT IS NOT A UNIT HOOK, and that is deliberate. It was an `ExecStartPost`
 # here (briard-bin-commit, a shell script systemd ran only after READY=1), which read as the
 # tighter gate and was not: the host is outside the guest and cannot see READY, so what it
 # actually waits on is the PORT -- opened before READY, and before systemd schedules any
@@ -59,7 +59,7 @@
 # Frozen in the sense that matters: a pushed binary can change everything about itself except the
 # picker it is started by, --test-launch, and the verbs it is reached through -- those are the
 # contract the firmware keeps, versioned additively. That contract is now also the image's
-# CHANGE CONDITION: the firmware's import graph is the guest chain's input hash ([B.139]), so the
+# CHANGE CONDITION: the firmware's import graph is the guest chain's input hash, so the
 # guest image moves when the protocol does and not when the agent does.
 { lib, pkgs, config, ... }:
 let
@@ -69,11 +69,11 @@ let
   # was measured).
   binDir = "/var/lib/briard-bin";
   runDir = "/run/briard-bin"; # tmpfs: the single-use flags
-  # ⚠️ The SET is not listed here any more ([B.148]): the commit that used to walk it moved into
+  # ⚠️ The SET is not listed here any more: the commit that used to walk it moved into
   # the agent, so guestfirmware/bin.go BinNames is now the only place the names and their order
   # live. This module cares about one name at a time -- whichever its picker was handed.
   # briard-bin-exec <name> <baked|-> [args...]
-  # A PACKAGE, not a bare script, since [B.160]: the units that go through the picker are written
+  # A PACKAGE, not a bare script: the units that go through the picker are written
   # by the pushed agent now, and an agent can only name a fixed path -- so the picker joins the
   # image's tool profile under its own name (configuration.nix, guestTools) instead of being
   # interpolated as a store path into a baked unit.
@@ -82,7 +82,7 @@ let
     name=$1; baked=$2; shift 2
     # Each choice is said on stderr (the journal, forwarded to the console): a rig that watches a
     # dress go wrong reads the pivot's own account rather than inferring it from a handshake.
-    # WHAT THIS START RAN, written on every branch below ([B.138]). It is the ONLY record: it says
+    # WHAT THIS START RAN, written on every branch below. It is the ONLY record: it says
     # both "this start is a trial" (which the commit needs) and "this unit is running the staged
     # copy" (which the trial agent's verdict needs, because `systemctl try-restart` alone is not
     # enough -- a staged copy that exits 1 fails its start, systemd's own auto-restart brings the

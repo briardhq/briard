@@ -56,7 +56,7 @@ func newFakePort() *fakePort {
 	return &fakePort{answer: make(chan api.DirectiveOutcome, 1), waiting: make(chan struct{}, 1)}
 }
 
-// "SET UP HOME ASSISTANT" ([V3b.31i]): the button relays exactly one service-install directive
+// "SET UP HOME ASSISTANT": the button relays exactly one service-install directive
 // to the host and nothing else; while the host works the page says so and polls itself; a second
 // click while it runs asks nothing more; a refusal from the host is shown with its reason and the
 // CLI; success is forgotten the moment the routes table lists the service, and the ordinary card

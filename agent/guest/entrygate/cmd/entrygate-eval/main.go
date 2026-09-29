@@ -9,7 +9,7 @@
 // Each file is a JSON array of {entry_id, domain, state} (HA's config-entry shape).
 // Prints one line: `VERDICT=<pass|hold|rollback> <reason>`, exit 0.
 //
-// It also TAKES a sample, which is the half [V3b.29](b) added:
+// It also TAKES a sample, the half added when the gate grew a sampler:
 //
 //	entrygate-eval -sample <port>   # print this node's live config-entry states as JSON
 //

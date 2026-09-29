@@ -230,8 +230,7 @@ func TestZeroValueIsTheShippedLadder(t *testing.T) {
 // THE BURST IS THREE TRIES, NOT THREE SHOTS. A relaunch that fails in milliseconds -- a unit
 // name that has not come free, a device the kernel still holds -- must not spend the next attempt
 // before the condition it failed on could possibly have changed. In the field all three landed in
-// the same logged second and the node then sat out the two-hour cadence with nothing left to try
-// ([V3b.18]).
+// the same logged second and the node then sat out the two-hour cadence with nothing left to try.
 //
 // The assertion is on the SPREAD rather than on the floor alone: what matters is how long the
 // budget takes to spend, so raising the burst or dropping the floor both have to keep it real.
@@ -252,7 +251,7 @@ func TestTheRelaunchBurstCannotBeSpentInOneSecond(t *testing.T) {
 }
 
 // The window has to be long enough that no ordinary channel bounce reaches this rung. The
-// reconnect that matters lands in about a second (B.23); a guest agent that exits per connection
+// reconnect that matters lands in about a second; a guest agent that exits per connection
 // is back within its RestartSec. A window of seconds would make the host restart VMs for events
 // the guest heals by itself.
 func TestRecoveryWindowIsLongerThanAnyOrdinaryBounce(t *testing.T) {
@@ -322,7 +321,7 @@ func dialBoot(t *testing.T, boot string) *guestagent.Client {
 	return c
 }
 
-// [B.102]: a guest that reboots underneath the agent comes back on a channel that looks exactly
+// A guest that reboots underneath the agent comes back on a channel that looks exactly
 // like a bounced in-guest agent's, and the host must not resume observing a guest it never
 // converged. The boot id is the only thing that separates the two, and it must be conclusive in
 // BOTH directions -- silence from an old guest is not a reboot, or every ordinary bounce would

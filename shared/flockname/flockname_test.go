@@ -30,7 +30,7 @@ func digest(list []string) string {
 // TestListsAreAppendOnly is the whole contract in one assertion.
 //
 // A flock name is written into pet state at install and, after a claim, into the cloud -- which
-// per OSS §10.2 never reissues a released name. So the lists can only ever grow. Remove a word
+// never reissues a released name. So the lists can only ever grow. Remove a word
 // and every household that already drew it fails Valid at its next claim: the cloud stops
 // recognising a name that is published on their LAN, printed in their installer output, and
 // (once there is an account) is their domain. Reorder a word and nothing breaks today, but the
@@ -154,7 +154,7 @@ func TestValidRejectsWhatIsNotAName(t *testing.T) {
 	}
 	// ...and the shape it must accept, including the two words the owner kept deliberately.
 	//
-	// NOTE the absent example: `amber-otter`, the name V3.20 was designed around, is NOT one of
+	// NOTE the absent example: `amber-otter`, the name the flock-name design was drawn around, is NOT one of
 	// these lists' names -- petname's adjectives are QUALITIES rather than colours, and it has no
 	// otter. Real names read `brave-elf`, `curious-alien`, `sacred-cardinal`. Adding `amber` and
 	// `otter` later is free, because append-only forbids removals and permits additions forever;

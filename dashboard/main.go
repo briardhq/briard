@@ -1,6 +1,6 @@
-// Command dashboard is the HOUSEHOLD DASHBOARD ([V3b.31b]): the page a home opens at its own name,
+// Command dashboard is the HOUSEHOLD DASHBOARD: the page a home opens at its own name,
 // served from the guest at the VIP behind the front door, which forwards to it every name it does
-// not route. It is the first-open slice of [V3b.31a] -- the one-time code, a trusted device, and
+// not route. It is the first-open slice of the household auth design -- the one-time code, a trusted device, and
 // "Open Home Assistant" landing on Home Assistant's own onboarding page, logged in.
 //
 // WHAT AUTHENTICATES A BROWSER IS THE CODE THE HOST MINTED, and nothing else. Proof of identity is
@@ -8,7 +8,7 @@
 // agent mint a code, the agent hands it to this guest (shared/dashboard), and the first browser to
 // present it becomes a trusted device: a per-device token in an HttpOnly cookie, its hash on the
 // replicated volume. No briard password exists; `briard open` re-mints, which is the reset.
-// The page lists the trusted devices and revokes one -- from the registry only ([V3b.31f]).
+// The page lists the trusted devices and revokes one -- from the registry only.
 //
 // WHY THE BUTTON NEEDS THAT: "Open Home Assistant" creates HA's first user and hands out its
 // login. Unauthenticated, that is a LAN race -- whoever reaches the URL first during the install
@@ -21,7 +21,7 @@
 //
 // DELIBERATELY PLAIN: templates and a stylesheet, no build step, nothing fetched from anywhere --
 // it has to render on a node with no internet, and it is a supervisor next to Home Assistant, not
-// a rival to it ([V3b.31a](g)).
+// a rival to it.
 package main
 
 import (
@@ -67,10 +67,10 @@ func main() {
 	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (a service install rides it)")
 	layersPath := flag.String("layers", defaultPullPaths.layers, "podman's layer store, for pull progress")
 	tmpPath := flag.String("pull-tmp", defaultPullPaths.tmp, "where the pull units' PrivateTmp roots live, for pull progress")
-	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): exec, parse, bind-and-release a loopback port, exit 0")
+	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test: exec, parse, bind-and-release a loopback port, exit 0")
 	flag.Parse()
 	if *testLaunch {
-		// A staged copy proving itself before it is trialled ([B.138]): it execs here, its flags
+		// A staged copy proving itself before it is trialled: it execs here, its flags
 		// parsed, the page template compiled (a package-level Must), and the network stack it
 		// links can bind -- on an ephemeral loopback port, never the real one (in use on a
 		// primary). The state directory is on the volume and may be absent; the real start
@@ -88,7 +88,7 @@ func main() {
 	a.pulls = pullPaths{records: dashboard.Dir, layers: *layersPath, tmp: *tmpPath}
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("dashboard: serving %s; routes from %s, state at %s", *listen, *routesPath, *statePath)
-	// Listen, THEN say READY ([B.138]): the unit is Type=notify under the guest's pivot, and a
+	// Listen, THEN say READY: the unit is Type=notify under the guest's pivot, and a
 	// trial agent reads this unit's start as its verdict on the pushed copy -- so READY means
 	// "the port is bound", never "the process exists".
 	ln, err := net.Listen("tcp", *listen)
@@ -106,21 +106,21 @@ type app struct {
 	// mu serialises the things that must not race: consuming the code, writing the registry,
 	// and the pending quick-connect requests. Everything else is read-mostly.
 	mu sync.Mutex
-	// pending is quick-connect ([V3b.31g]): the devices asking to be let in, by the code each
+	// pending is quick-connect: the devices asking to be let in, by the code each
 	// one shows. In memory on purpose -- a request outlives neither its five minutes nor this
 	// process, and the volume keeps only what is trusted.
 	pending map[string]*pending
-	// port is the host's admin port ([V3b.31i]); installs is what was asked through it, by
+	// port is the host's admin port; installs is what was asked through it, by
 	// service, from the click until the routes table lists the service.
 	port     adminPort
 	installs map[string]*install
-	// restores is the picker's half ([B.143], history.go): one restore in flight per app, from
+	// restores is the picker's half (history.go): one restore in flight per app, from
 	// the confirmation until the host answers. In memory for the same reason installs is.
 	restores map[string]*restoreOp
-	// pulls is where a pull's progress is read from ([V3b.31j]): podman's layer store and the
+	// pulls is where a pull's progress is read from: podman's layer store and the
 	// pull units' private tmp.
 	pulls pullPaths
-	// casaPath is the host's view of the household's name ([V3c.4], casa.go); casaAsked the
+	// casaPath is the host's view of the household's name (casa.go); casaAsked the
 	// last claim asked from this page, until the host's view moves past it.
 	casaPath  string
 	casaAsked *casaAsk
@@ -222,7 +222,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // refuse is what a browser with no trusted session gets: no information, one instruction. The
 // page says where a code comes from and nothing about what is installed, because reaching this
-// port is not authentication ([V3b.31a](a)).
+// port is not authentication.
 func (a *app) refuse(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
@@ -232,7 +232,7 @@ func (a *app) refuse(w http.ResponseWriter) {
 // refuseCode is a code that opens nothing: spent, unparseable, expired, or wrong. A browser that
 // already holds a session gets the dashboard it was asking for instead of the refusal -- the link
 // the terminal printed is the same link on the second click, and the code behind it is gone
-// because THIS browser spent it ([B.165]). An untrusted browser gets the refusal, which is all
+// because THIS browser spent it. An untrusted browser gets the refusal, which is all
 // reaching this port may ever teach it.
 func (a *app) refuseCode(w http.ResponseWriter, r *http.Request, msg string) {
 	if _, ok := a.session(r); ok {
@@ -345,7 +345,7 @@ type device struct {
 // a browser holds one cookie, so the session this one replaces is retired in the same write
 // rather than left on the list forever -- a browser is listed exactly once, and a household using
 // the `briard open` link as a bookmark does not grow a Trusted devices list of rows nothing can
-// ever present again ([B.165]).
+// ever present again.
 func (a *app) addDevice(tok, agent, replaces string) error {
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -370,8 +370,7 @@ func (a *app) addDevice(tok, agent, replaces string) error {
 	return a.writeState(devicesFile, reg)
 }
 
-// revoke takes a device out of the registry, and out of nothing else ([V3b.31a](a), decided
-// 2026-09-04): the Home Assistant session that device already holds is HA's to end, in HA's own
+// revoke takes a device out of the registry, and out of nothing else: the Home Assistant session that device already holds is HA's to end, in HA's own
 // profile -- a minted code becomes a refresh token that carries no per-device handle, so there
 // is nothing here to look it up by, and the page says so next to the list. A device revoking
 // ITSELF is a sign-out: the cookie goes with it. The last device may go too -- an empty
@@ -412,7 +411,7 @@ func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// QUICK-CONNECT ([V3b.31g], [V3b.31a](a)): a browser that is not trusted asks; a browser that is
+// QUICK-CONNECT: a browser that is not trusted asks; a browser that is
 // lets it in. The new device SHOWS a six-digit code, and the household TYPES that code on any
 // trusted device. That binds the approval to the device in the person's hand, not to "the
 // request that is pending": a stranger asking at the same moment has a different code, so
@@ -643,7 +642,7 @@ type view struct {
 	// Install is a Home Assistant install the household asked for from this page, while it
 	// runs or after it failed; Refresh makes the page poll itself while something is moving.
 	Install *installView
-	// Casa is the household's name ([V3c.4], casa.go): the first card, until skipped or done.
+	// Casa is the household's name (casa.go): the first card, until skipped or done.
 	Casa    *casaView
 	Refresh bool
 }
@@ -687,7 +686,7 @@ type haView struct {
 	Host      string
 	URL       string
 	Reachable bool // answers HTTP
-	Running   bool // HA's own RUNNING state -- the boundary an action may be taken on ([B.127])
+	Running   bool // HA's own RUNNING state -- the boundary an action may be taken on
 	Onboarded bool // every onboarding step done
 }
 
@@ -736,13 +735,12 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 //   - user step not done: create the first user from the account the host handed over, mark
 //     analytics done with the control channel's token (the user's code is single-use and
 //     belongs to the browser), and send the browser to HA's onboarding page with that code --
-//     it resumes at the location step, then discovered devices, then logs in ([V3b.31a](d),
-//     measured in (f));
-//   - user step done: MINT a login for HA's owner through the in-HA integration ([V3b.31d]) and
+//     it resumes at the location step, then discovered devices, then logs in (measured);
+//   - user step done: MINT a login for HA's owner through the in-HA integration and
 //     send the browser to HA's own auth callback -- its front page once onboarding is done,
 //     the onboarding page (which resumes) while it is not. Minted at click time, so the code's
 //     ten minutes are never in play. Every trusted device is the owner: the unit is the device,
-//     not the person ([V3b.31a](a)).
+//     not the person.
 //
 // The first open refuses while HA is not RUNNING: a Home Assistant serving HTTP is not yet one
 // that will act on a user step, and the code it returned would be for a user in a store that is
@@ -787,7 +785,7 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		Name: or(acct.Name, "Home"), Username: or(acct.Username, "home"), Password: pw,
 		ClientID: hass.ClientID(origin), Language: or(acct.Language, "en"),
 	}
-	// The password is GENERATED AND FORGOTTEN ([V3b.31e]): every later open is minted, so no
+	// The password is GENERATED AND FORGOTTEN: every later open is minted, so no
 	// session ever depends on it, and the household sets its own -- for the companion app -- in
 	// Home Assistant's People settings, where the owner needs no old password. briard keeps no
 	// copy: one it could not keep current would only ever lie.
@@ -806,7 +804,7 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 
 // openAsOwner is every open after the first: a code minted for HA's owner, and HA's own callback.
 // A refusal is SURFACED, with the plain address as the way in: the minter mints for the owner
-// and nobody else, so with no owner (deleted -- measured, [V3b.31a](f)4) the household logs in
+// and nobody else, so with no owner (deleted -- measured) the household logs in
 // by hand, and a Home Assistant our integration did not load on gets its own login screen.
 func (a *app) openAsOwner(ctx context.Context, w http.ResponseWriter, r *http.Request, ha *homeAssistant, origin, access string, done bool) {
 	landing := origin + "/onboarding.html"

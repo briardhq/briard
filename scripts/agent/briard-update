@@ -1,7 +1,7 @@
 #!/bin/sh
-# briard-update: converge this node's agent to the release channel ([B.86a]).
+# briard-update: converge this node's agent to the release channel.
 #
-# SHIPPED VERBATIM and FROZEN ([B.157]): a signed artifact of the host chain that install.sh copies
+# SHIPPED VERBATIM and FROZEN: a signed artifact of the host chain that install.sh copies
 # into place, never a heredoc. The freeze is the safety property and it is unchanged by shipping --
 # this is dumb, agent-INDEPENDENT shell, so a bug in the volatile agent can never wedge the thing
 # that replaces it. What shipping adds is that the file is now versioned, diffable and covered by
@@ -15,8 +15,8 @@ set -eu
 # The node's own configuration, when it has one. The unit delivers it as an EnvironmentFile, so
 # what lands here is CHANNEL_URL and UPDATE_KEYRING exactly as the operator set them at install.
 #
-# ⚠️ THE TWO DEFAULTS BELOW ARE A DELIBERATE SECOND COPY of agent/host/config.go's (owner's call,
-# [B.157]). config.env carries a key only when somebody named one, so on an ordinary install there
+# ⚠️ THE TWO DEFAULTS BELOW ARE A DELIBERATE SECOND COPY of agent/host/config.go's (owner's call).
+# config.env carries a key only when somebody named one, so on an ordinary install there
 # is nothing here to read -- and this script must not ask the agent, which is the thing it exists
 # to replace. Two literals, pinned by a test that reads both files.
 CHANNEL="${CHANNEL_URL:-https://get.briard.io}"

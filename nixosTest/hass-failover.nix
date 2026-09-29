@@ -30,7 +30,7 @@ let
       imports = [ baseNode ];
       # 2048 per node, MEASURED: three guests each grow page cache into what they are given, so
       # this trio sat at 9498 MB resident of 9216 declared -- the heaviest test in the tier by
-      # far -- and sits at 6426 MB of 6144, in 140s rather than 155s ([B.127]).
+      # far -- and sits at 6426 MB of 6144, in 140s rather than 155s.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
     };
@@ -86,7 +86,7 @@ pkgs.testers.runNixOSTest {
 
     # The front door comes up on the elected primary with nothing installed, then HA is installed
     # onto the volume that node holds. The SURVIVOR never runs an install: it renders HA from the
-    # same volume when it promotes ([V3b.3](f)), which is the half this test is about.
+    # same volume when it promotes, which is the half this test is about.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     primary = next(m for m in machines if role(m) == "Primary")
     print(f"primary={primary.name}")
@@ -117,7 +117,7 @@ pkgs.testers.runNixOSTest {
         # tag could match an image the manifest does not name.
         m.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
 
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
     # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
     # the claim under test, so assert the disk state before removing the only UpToDate copy.

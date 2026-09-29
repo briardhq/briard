@@ -30,8 +30,8 @@
         if self ? shortRev
         then "v3.${builtins.substring 0 8 self.lastModifiedDate}.${self.shortRev}"
         else "v3.dirty";
-      # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT ([B.86i]), AND
-      # ITS INPUTS ARE THE PUSH PROTOCOL ([B.139]). `publish-release.sh stage` asks whether the
+      # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT, AND
+      # ITS INPUTS ARE THE PUSH PROTOCOL. `publish-release.sh stage` asks whether the
       # live channel already serves an image with THESE inputs and re-stages the 400 MB guest
       # chain only when they changed; what makes that condition honest is that the image bakes
       # ONE binary, briard-guest-firmware, whose graph is the protocol and nothing else. An edit
@@ -48,7 +48,7 @@
       guestInputPackages = [
         "agent/cmd/briard-guest-firmware" "agent/guestfirmware" "shared/sdnotify"
       ];
-      guestInputDirs = [ "guest-image" ] ++ guestInputPackages; # every other briard binary is pushed, not baked ([B.138], [B.139])
+      guestInputDirs = [ "guest-image" ] ++ guestInputPackages; # every other briard binary is pushed, not baked
       noTests = path: type: !(lib.hasSuffix "_test.go" (baseNameOf path)) && baseNameOf path != "testdata";
       inputPath = p: toString (builtins.path { path = ./. + "/${p}"; name = builtins.replaceStrings [ "/" ] [ "-" ] p; filter = noTests; });
       guestInputs = builtins.hashString "sha256" (lib.concatStringsSep "\n" (
@@ -124,13 +124,13 @@
         drbd-reactor = final.callPackage ./guest-image/pkgs/drbd-reactor { };
         dummy-service = final.callPackage ./nixosTest/dummy-service/package.nix { };
         reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # front door at the VIP
-        dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the door ([V3b.31b])
+        dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the door
         # HA as a digest-pinned upstream OCI image — the real service.
         home-assistant-image = final.callPackage ./guest-image/pkgs/home-assistant-image { };
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =
         # 2025.12.0 (schema 53)}, straddling the recorder v52 `unit_class` migration.
         home-assistant-upgrade-pair = final.callPackage ./guest-image/pkgs/home-assistant-image-pair { };
-        # The broker, in the two versions the [V3b.4] upgrade tests switch between.
+        # The broker, in the two versions the upgrade tests switch between.
         mosquitto-upgrade-pair = final.callPackage ./guest-image/pkgs/mosquitto-image { };
       };
 
@@ -155,7 +155,7 @@
 
       # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- a service is
       # installed at runtime from a signed manifest, so there is nothing to select here and no
-      # `guest-ha` variant any more ([V3b.3](e2)). The lab's `fleet-demo*` / `runner-host`
+      # `guest-ha` variant any more. The lab's `fleet-demo*` / `runner-host`
       # hosts join these when `lab/` is present.
       nixosConfigurations = {
         guest = nixpkgs.lib.nixosSystem {
@@ -173,7 +173,7 @@
       # boots no VM test. These are Tier-1 hermetic tests, NOT the lab/ soak fleet (cmd/soak,
       # never `nix build`).
       #
-      # ⚠️ THERE IS DELIBERATELY NO `.#all`, AND NO `.#drbd` ([B.149]). Those were linkFarms, so
+      # ⚠️ THERE IS DELIBERATELY NO `.#all`, AND NO `.#drbd`. Those were linkFarms, so
       # building one started every member at nix's default `--max-jobs` — ~40 nixosTests × 2–3
       # nested QEMU nodes at once, which does not fail slowly, it takes the machine down. The
       # aggregate could not guard itself (its builder runs after its members are realised) and a

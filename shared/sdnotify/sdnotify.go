@@ -7,7 +7,7 @@
 // trips TimeoutStartSec and reverts. So Ready() is the one piece of agent code in the update
 // loop: the new binary proving itself.
 //
-// WHAT READY ASSERTS, AND WHAT IT DELIBERATELY DOES NOT (V3.32). It asserts that THE AGENT
+// WHAT READY ASSERTS, AND WHAT IT DELIBERATELY DOES NOT. It asserts that THE AGENT
 // started — config read, loop entered. It does NOT assert that the node is healthy, and it used
 // to: the agent sent READY on first healthy convergence, which coupled a supervisor's readiness
 // to the health of the thing it supervises. Two costs, and the first is fatal. systemd arms the
@@ -18,7 +18,7 @@
 // it can supervise; a broken guest is work for a healthy agent, not evidence of a sick one.
 //
 // The gate that rides on it is thinner as a result — "the binary runs" rather than "the node is
-// healthy" — and that is a deliberate trade recorded in V3.32, not an oversight. It still catches
+// healthy" — and that is a deliberate trade, not an oversight. It still catches
 // a binary that will not exec, panics immediately, or cannot parse its config. What it stopped
 // catching, it never really caught: an agent restart re-adopts a guest that was already running,
 // so a healthy guest after an update mostly restates that it was healthy before one.
@@ -40,7 +40,7 @@ var adopted atomic.Pointer[string]
 // once, early, from a process that is itself the unit's main PID — the host agent does, before it
 // starts anything.
 //
-// WHY, and it is not tidiness ([V3b.21e]). $NOTIFY_SOCKET is an ordinary environment variable, so
+// WHY, and it is not tidiness. $NOTIFY_SOCKET is an ordinary environment variable, so
 // every child inherits it — and `systemctl`, which the agent shells out to constantly, ends each
 // run by reporting its own exit status to whatever notify socket it finds: `EXIT_STATUS=0`. Under
 // NotifyAccess=main systemd refuses those, and on systemd 255 says so on every start of every
@@ -48,7 +48,7 @@ var adopted atomic.Pointer[string]
 // readiness and feeds its watchdog has no business being reachable from a `systemctl show`.
 // libsystemd's counterpart is sd_notify's unset_environment argument, which exists for this.
 //
-// The seam rather than a sweep of cmd.Env at every exec site, per [V3b.15]: an opt-in at N call
+// The seam rather than a sweep of cmd.Env at every exec site: an opt-in at N call
 // sites is forgotten at site N+1, and silently.
 //
 // SAFE ONLY BECAUSE NOTHING RE-EXECS. A successor started from this process would find no

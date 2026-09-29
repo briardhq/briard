@@ -141,7 +141,7 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 // The verb that forced this is `os.poweroff`: the shutdown it starts is what SIGTERMs the guest
 // agent, so its reply is ALWAYS the one in flight when the context is cancelled. Losing it looked
 // exactly like a crashed agent, and the host escalated to the ACPI power button on a guest that
-// had shut itself down as asked ([B.127]). Here the handler blocks until the context is cancelled
+// had shut itself down as asked. Here the handler blocks until the context is cancelled
 // and only then returns, so the close and the reply are in the order that used to lose.
 func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 	cconn, sconn := net.Pipe()

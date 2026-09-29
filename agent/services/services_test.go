@@ -44,14 +44,14 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 	if x.runs != 0 {
 		t.Errorf("an unknown service ran %d command(s) on the node", x.runs)
 	}
-	// The service's OWN name on the front door's :80 ([B.48]), not the flock name and a port: the
+	// The service's OWN name on the front door's :80, not the flock name and a port: the
 	// port in this sentence was the shape of a node that could only be reached around its door.
 	if got := Reach(m, "home"); got != "reach it at http://briard-home-something-else.local/" {
 		t.Errorf("Reach = %q", got)
 	}
 }
 
-// TestRestoreMarkersAreHomeAssistantsAlone ([B.143]): the registry's default is nothing, and a
+// TestRestoreMarkersAreHomeAssistantsAlone: the registry's default is nothing, and a
 // marker list that leaked to another service would have the restore path unlinking a file inside
 // somebody else's data on the strength of a name Home Assistant chose.
 //
@@ -117,7 +117,7 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 		t.Errorf("the reach line does not name the MQTT port: %q", got)
 	}
 	// THE PROTOCOL, not just the port -- the assertion this test was named for and did not make.
-	// [B.48a] generalised the sentence off mosquitto and the word "MQTT" went with it while every
+	// A later change generalised the sentence off mosquitto and the word "MQTT" went with it while every
 	// check here still passed, because a port and a name both survive a protocol going missing.
 	// Tier 4 caught it against the live channel: a ten-minute VM run standing in for a string
 	// compare.
@@ -137,7 +137,7 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 }
 
 // TestOnlyTheBrokerIsNotFronted — the front door's exposure decision, keyed on the catalog name
-// like everything else here ([B.48]). It is a security property: mosquitto's manifest port is its
+// like everything else here. It is a security property: mosquitto's manifest port is its
 // management API, which mosquitto.conf binds to 127.0.0.1 deliberately, and the door runs inside
 // that same guest — so fronting it would republish a loopback-only endpoint on the LAN through a
 // mechanism that never mentions the bind.
@@ -197,7 +197,7 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 // TestInboundBindIsReadWriteAndOnlyForHomeAssistant: connect(2) on a unix socket needs write
 // permission on the socket file, so a read-only bind would make the channel unreachable from
 // inside the container rather than merely read-only -- a failure that looks like "the agent is
-// not listening" and is not ([B.143]).
+// not listening" and is not.
 //
 // And it is OPT-IN: every container that gets this socket widens what a compromised service can
 // reach, so a service with no in-container restart boundary gets nothing.
@@ -392,7 +392,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 // for the Go package rather than the service would resolve to a service that does not exist, and
 // every call from that container would come back "unknown caller" with nothing pointing at why.
 //
-// The directory is named for the service, as agent/mosquitto's is ([B.143]).
+// The directory is named for the service, as agent/mosquitto's is.
 func TestServiceDirMatchesTheRegistry(t *testing.T) {
 	for _, c := range []struct{ name, dir string }{
 		{hass.Name, hass.Dir},

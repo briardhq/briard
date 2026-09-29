@@ -1,4 +1,4 @@
-# WHICH SIGNAL SAYS HOME ASSISTANT IS BROKEN? ([B.167b]) -- a discovery probe, run by hand.
+# WHICH SIGNAL SAYS HOME ASSISTANT IS BROKEN? -- a discovery probe, run by hand.
 #
 # The history marks an event red when the app is unhealthy after it, and the design names the
 # per-service probe (`/manifest.json`) as the signal while doubting it: Home Assistant's recovery
@@ -19,7 +19,7 @@
 # Assistant is up), is injected, and is followed by a converge-shaped restart and a 3-minute
 # window. The work is health-probe.py; this file stands Home Assistant up, takes the copy, and
 # prints the matrix. It asserts that the baseline is healthy on every signal -- a probe whose
-# control is broken measures nothing -- and that a crash is restarted ([B.168]).
+# control is broken measures nothing -- and that a crash is restarted.
 { pkgs, guestModule, fixture }:
 
 let
@@ -99,7 +99,7 @@ pkgs.testers.runNixOSTest {
     assert matrix["baseline"]["door_200_share_last_60s"] == 1 and base.get("auth") and str(base.get("state")).upper() == "RUNNING" \
         and not base.get("recovery"), f"the control is not healthy, so nothing above means anything: {matrix['baseline']}"
 
-    # A CRASHED HOME ASSISTANT IS RESTARTED ([B.168]), the one product claim this probe carries. Under
+    # A CRASHED HOME ASSISTANT IS RESTARTED, the one product claim this probe carries. Under
     # quadlet's default exit policy the pod goes down with its container, systemd stops the unit as
     # its dependent, and Restart=always never fires; the pod's ExitPolicy=continue is what prevents it.
     crash = matrix["custom-crash"]

@@ -52,7 +52,7 @@ func TestDebugVerbIsReachable(t *testing.T) {
 	}
 }
 
-// THE CLIENT CANNOT NAME A MONITOR ([B.142a]). The console socket is derived by the AGENT from
+// THE CLIENT CANNOT NAME A MONITOR. The console socket is derived by the AGENT from
 // its own QMP path, which is what keeps it inside the 0700 root directory Launch creates. A
 // `-qmp` flag here would hand that choice back to the caller, and a console socket somewhere
 // world-reachable is the one way this feature becomes the vulnerability it currently is not.

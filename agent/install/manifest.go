@@ -15,8 +15,8 @@ import (
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
 // the manifest cannot list itself, nor its signature. Nothing else is excluded, because a
 // release directory holds exactly what its manifest names -- INSTALL.SH INCLUDED, since
-// [B.159](a) made it an ordinary artifact of briard/<version>/linux that `promote` byte-copies to
-// the channel root. Excluding it would re-open what that item was filed against: the root copy
+// it is an ordinary artifact of briard/<version>/linux that `promote` byte-copies to
+// the channel root. Excluding it would re-open the gap this closed: the root copy
 // is served unsigned, because the one-liner fetches it before anything exists that could verify
 // a signature, and this manifest hashing it is the only thing that ties those bytes to a release.
 var notArtifacts = map[string]bool{
@@ -43,7 +43,7 @@ var notArtifacts = map[string]bool{
 // is signed, and a set that reordered itself would churn the signature for no reason.
 //
 // system, minBriard and inputs are the vm chain's extra facts (Manifest.System / MinBriard /
-// Inputs) and vm is the briard chain's ([B.86i]: the vm release this briard release pairs with);
+// Inputs) and vm is the briard chain's (the vm release this briard release pairs with);
 // each is refused on any other chain, because a briard manifest naming a closure would be a lie
 // the reader has no way to catch.
 func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
@@ -83,7 +83,7 @@ func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs 
 	if err != nil {
 		return fmt.Errorf("install: read staging dir %s: %w", dir, err)
 	}
-	// THE FLOOR IS TAKEN FROM THE TREE, NEVER FROM A PARAMETER ([B.159](e)). Every other fact
+	// THE FLOOR IS TAKEN FROM THE TREE, NEVER FROM A PARAMETER. Every other fact
 	// here is something the pipeline knows and this function is told; the floor is something the
 	// CODE knows, so the binary that writes the manifest is the right one to answer it. Briard
 	// chain only: the VM image is replaced whole and has no past of its own to be too old for,

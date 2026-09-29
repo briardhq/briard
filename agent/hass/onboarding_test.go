@@ -12,7 +12,7 @@ import (
 
 // The URL the browser is handed is HA's own resume path, and its `state` is what
 // home-assistant-js-websocket decodes and checks against the page's origin under
-// limitHassInstance: hassUrl WITHOUT the trailing slash, clientId WITH it ([V3b.31a](f)1).
+// limitHassInstance: hassUrl WITHOUT the trailing slash, clientId WITH it (measured).
 func TestOnboardingURLCarriesTheStateTheFrontendChecks(t *testing.T) {
 	u, err := url.Parse(OnboardingURL("http://briard-brave-elf-home-assistant.local", "abc"))
 	if err != nil {
@@ -56,7 +56,7 @@ func TestOnboardingStepsTreats404AsDone(t *testing.T) {
 	}
 }
 
-// The later open ([V3b.31d]): the minter is asked with the control channel's bearer and the
+// The later open: the minter is asked with the control channel's bearer and the
 // browser's client_id, and its answers map to the two refusals the dashboard surfaces by name.
 func TestMintLogin(t *testing.T) {
 	var got map[string]string

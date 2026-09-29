@@ -10,8 +10,8 @@
 #
 # It is CATTLE, not part of the frozen pivot, although it sits beside briard-exec/briard-commit
 # in $PREFIX/agent and looks like them. Those two are written once by install.sh and never
-# updated ([B.84]); this is a shipped artifact of the host bundle, staged as briard-net-wrap.next
-# and committed WITH the agent by briard-commit ([B.86b]) -- because its contract is with the
+# updated; this is a shipped artifact of the host bundle, staged as briard-net-wrap.next
+# and committed WITH the agent by briard-commit -- because its contract is with the
 # agent (the argv below, and the fd numbers both sides agree on), so the two must never
 # straddle a release boundary.
 #

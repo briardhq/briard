@@ -12,9 +12,9 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE HOST-SIDE RUNG OF THE UNRESPONSIVE-GUEST LADDER (B.22b).
+// THE HOST-SIDE RUNG OF THE UNRESPONSIVE-GUEST LADDER.
 //
-// B.22a made the control channel survive a drop: observe returns ErrChannelDown and Run
+// The control channel was made to survive a drop: observe returns ErrChannelDown and Run
 // re-dials rather than going blind for the rest of the process's life. Re-dialling FOREVER is
 // the right answer to every gap the guest closes by itself -- the in-guest agent serves one
 // connection then exits, an OS upgrade bounces the channel on its way through, a per-call
@@ -67,7 +67,7 @@ import (
 // The residual risk is smaller than it was but not zero, and it is named rather than argued
 // away: a guest whose agent is wedged AND whose deadman is dead (so the gate is unreachable)
 // while its services still serve gets rebooted, and on a node with no peer that is an outage the
-// host chose. That is the trade B.22b locked in 2026-07-14 -- serving is not healthy; reboot
+// host chose. That is the trade locked in here -- serving is not healthy; reboot
 // serving nodes, patiently -- and it is now confined to the case where two independent in-guest
 // processes are both gone.
 
@@ -82,7 +82,7 @@ const (
 	// own reboot is what failed. guestrecover_test.go asserts the inequality, because a later
 	// tuning of either number could silently invert it and every test would still pass.
 	//
-	// Generous in absolute terms too: the reconnect that matters lands in about a second (B.23),
+	// Generous in absolute terms too: the reconnect that matters lands in about a second,
 	// so silence at this scale is not a slow guest, it is a stopped one.
 	//
 	// Unit tests set this through recover()'s arguments and need no knob. The one caller that
@@ -110,7 +110,7 @@ const (
 	// three shots inside one second is not three tries: whatever the launch failed on -- a unit
 	// name that is still stopping, a device the kernel has not released -- cannot have cleared in
 	// the time it takes to ask systemd twice, so the budget is spent before the thing it is
-	// waiting for could possibly have happened ([V3b.18], where all three landed in the same
+	// waiting for could possibly have happened (in the field all three landed in the same
 	// logged second and the node then sat out the two-hour cadence).
 	//
 	// It floors only the FAILING path. A relaunch that starts a VM leaves this function, and a
@@ -251,8 +251,8 @@ const (
 )
 
 // next is the whole decision, taken apart from anything that can restart a VM so it can be proven
-// without one -- the same split the guest-side deadman uses (its pure Decide under a driver,
-// V3.4d). Calling it CONSUMES an attempt when it acts, because that is a one-shot fact about the
+// without one -- the same split the guest-side deadman uses (its pure Decide under a driver).
+// Calling it CONSUMES an attempt when it acts, because that is a one-shot fact about the
 // incident and a caller that had to remember to record it separately would eventually forget on
 // one path.
 //
@@ -302,7 +302,7 @@ func (r *guestRecovery) next(g gateVerdict, sinceAction time.Duration, unitDown 
 // It is a method on osUpgrade because osUpgrade already owns this swap. A reboot replaces the
 // VM, the channel and the Manager together, and there is exactly one place that knows how to
 // put all three back -- the same place the rollback leg uses. A second one would be a second
-// way to do it (AGENTS §5).
+// way to do it.
 func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Notifier) (*guestagent.Client, error) {
 	var lastAction time.Time // zero -> "nothing done yet this incident"; sinceAction reads as huge
 	for {
@@ -362,7 +362,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		// within one window rather than waiting out the full two hours.
 		client, err := u.awaitChannel(ctx, r.waitFor())
 		if err == nil {
-			// ANSWERING IS NOT CONVERGED, and telling the two apart is [B.102]. The guest unit is
+			// ANSWERING IS NOT CONVERGED, and telling the two apart is the point. The guest unit is
 			// Restart=always and qemu runs -no-reboot, so a guest kernel panic exits qemu and
 			// systemd relaunches it with NO agent involved. What comes back is the baked image:
 			// runtime identity -- hostname, addresses, the .res -- is applied by bring-up and is
@@ -428,8 +428,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 // platform.Running), then drives the same hostname -> addresses -> DRBD -> quorate sequence
 // either way. Both of this ladder's non-reboot exits therefore share it -- the guest whose unit
 // stopped and had to be started, and the guest that came back on its own but came back FRESH
-// ([B.102]) -- because they need the identical thing done and there is no second way to do it
-// (AGENTS §5).
+// -- because they need the identical thing done and there is no second way to do it.
 //
 // Detached from the caller's context for the reason the rollback leg is: this IS the recovery,
 // and it must not inherit a deadline in order to find there is no time left to recover.
@@ -452,7 +451,7 @@ func (u *osUpgrade) converge(ctx context.Context) (*guestagent.Client, error) {
 // Both sides must be known for this to answer yes. A guest too old to report a boot id sends
 // nothing, and silence is not evidence of a reboot -- reading it as one would re-converge a
 // healthy serving Primary on every ordinary channel bounce, which is a worse fault than the one
-// this detects ([B.102]).
+// this detects.
 func (u *osUpgrade) guestRebooted(fresh *guestagent.Client) (bool, string, string) {
 	if u.client == nil || fresh == nil {
 		return false, "", ""
@@ -516,7 +515,7 @@ func (u *osUpgrade) awaitChannel(ctx context.Context, window time.Duration) (*gu
 	defer cancel()
 	// The single longest legitimate stall in the agent -- ten minutes on a wedged guest, by design.
 	// Leased on its OWN deadline, so the watchdog neither misfires through it nor has to be widened
-	// to survive it. Ending the wait ends the lease, whichever way it ends (V3.32).
+	// to survive it. Ending the wait ends the lease, whichever way it ends.
 	u.cfg.beat.Lease(wctx)
 	return reconnect(wctx, u.cfg.ControlSock, u.logf)
 }
@@ -534,7 +533,7 @@ func (u *osUpgrade) rebootGuest(ctx context.Context) (*guestagent.Client, error)
 	// ahead of it does not: stopCleanly spends up to a full shutdownGrace, and u.vm.Stop() takes no
 	// context at all -- so rb's deadline bounds this stretch on paper while nothing is watching it.
 	// That is precisely the shape the watchdog is for, and precisely why the lease must be here
-	// rather than only inside bringUp (V3.32; the un-ctx'd Stop is why an enclosing deadline is not
+	// rather than only inside bringUp (the un-ctx'd Stop is why an enclosing deadline is not
 	// a bound).
 	u.cfg.beat.Lease(rb)
 
@@ -562,7 +561,7 @@ func (u *osUpgrade) rebootGuest(ctx context.Context) (*guestagent.Client, error)
 
 	// Nothing is armed and nothing is restored: the disk is the disk. This is a power cycle of
 	// a wedged machine, not a rollback -- there is no upgrade in flight to undo, and bringUp is
-	// idempotent (B.22b's other half) precisely so it can be re-driven like this.
+	// idempotent precisely so it can be re-driven like this.
 	g, client, e := u.cfg.bringUp(rb, qspec, u.logf)
 	if e != nil {
 		return nil, fmt.Errorf("guest-recovery: bring the guest back up: %w", e)
@@ -578,7 +577,7 @@ func (u *osUpgrade) fire(ctx context.Context, n notify.Notifier, al notify.Alert
 	fireAlert(ctx, n, u.logf, al)
 }
 
-// RescueGuest is a RESTART ([B.86h]): stop the guest and bring it up again, which lays a fresh
+// RescueGuest is a RESTART: stop the guest and bring it up again, which lays a fresh
 // OS disk on the image (bringUp rebuilds the overlay at every launch) and pushes everything the
 // guest is dressed with. The data disk and the state disk are not touched. It used to be the
 // one rung that discarded state a restart kept; with the OS disk disposable by construction
@@ -607,7 +606,7 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 	return nil
 }
 
-// RebootGuest is a topology transition's one act ([B.145d]): stop the guest cleanly and bring
+// RebootGuest is a topology transition's one act: stop the guest cleanly and bring
 // it back up, so the bring-up re-reads the recorded membership and node-storage runs the spec ×
 // disk table. It is the recovery ladder's power cycle, called on purpose -- and on this type
 // rather than beside it for the reason RescueGuest is: a second owner of the VM+channel+Manager

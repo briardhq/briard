@@ -1,4 +1,4 @@
-# THE HOST RESTARTS A GUEST THAT STOPPED ANSWERING (B.22b, host-side rung).
+# THE HOST RESTARTS A GUEST THAT STOPPED ANSWERING (the host-side rung).
 #
 # The guest-side half of this ladder is proven separately (agent-deadman: the guest reboots
 # itself when the HOST goes silent). This is the mirror, and the harder direction: the GUEST
@@ -51,7 +51,7 @@ pkgs.testers.runNixOSTest {
     # qemu.go assigns NICs positionally, so omitting sys0 lands the witness NIC on eth2 and the
     # private link silently fails to exist.
     #
-    # ⚠️ THIS BUILT A HOST-SIDE MACVLAN SHIM until [V3b.19a], because macvtap isolates host<->guest
+    # ⚠️ THIS BUILT A HOST-SIDE MACVLAN SHIM until the agent owned the host's route, because macvtap isolates host<->guest
     # and L1 could not otherwise curl the VIP -- the rig handing itself a reachability the product
     # did not have. The curls below are unchanged and now pass because the agent routes the VIP over
     # the private link. Note the isolation itself is still real and still load-bearing HERE: it is
@@ -65,7 +65,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
-    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the image
+    # The host holds a guest bundle tree, as install.sh lays on every install: the image
     # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
     # because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
@@ -73,19 +73,19 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
-        # agent shells out to systemd-run, systemctl and -- since [V3b.19] -- `ip`, all BY NAME, and
+        # agent shells out to systemd-run, systemctl and -- since it owns the host's route -- `ip`, all BY NAME, and
         # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
-        # is the point: the rig gets what the product gets ([V3b.19a]).
+        # is the point: the rig gets what the product gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+        # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         # The guest console, because this test's failure mode is "the guest never answered" and
         # everything else here observes from OUTSIDE the VM. agent-readopt/deadman/watchdog all
-        # carry it for the same reason ([[guest-console-is-the-window]]).
+        # carry it for the same reason (the console is the window).
         "--setenv=GUEST_SERIAL=/tmp/guest-serial.log "
-        # THE RECOVERY WINDOW, SHORTENED FROM THE SHIPPED TEN MINUTES ([B.127]). Proving a
+        # THE RECOVERY WINDOW, SHORTENED FROM THE SHIPPED TEN MINUTES. Proving a
         # ten-minute timer by waiting ten minutes cost 730s of an 800s tier -- 91% of the wall
         # clock for one idle wait -- and the principle it served does not scale: nobody would
         # wait out a two-day timer to watch it fire. This still runs the SHIPPED binary on a
@@ -119,7 +119,7 @@ pkgs.testers.runNixOSTest {
     killed_at = time.monotonic()
     host.succeed(f"kill -9 {gone}")
 
-    # [V3b.19] THE HOST'S ROUTE FOLLOWS THE GUEST AWAY, and this is the live proof of the rule that
+    # THE HOST'S ROUTE FOLLOWS THE GUEST AWAY, and this is the live proof of the rule that
     # matters most: the agent is ALIVE and the channel is DEAD, which is exactly when a peer may
     # have taken the VIP over. Leaving a /32 pointing at our own dead guest would replace the
     # working LAN path to that peer with a black hole, so the withdrawal fails OPEN.
@@ -143,7 +143,7 @@ pkgs.testers.runNixOSTest {
         )
     except Exception:
         # The guest is the only place that knows why it did not answer, and the console is the only
-        # way in once the control channel is down ([[guest-console-is-the-window]]).
+        # way in once the control channel is down (the console is the window).
         print("=== guest console ===")
         print(host.execute("tail -120 /tmp/guest-serial.log")[1])
         print("=== agent ===")
@@ -165,7 +165,7 @@ pkgs.testers.runNixOSTest {
     # yet. systemd-run refuses it ("already loaded or has a fragment file"), and because a refusal
     # costs milliseconds, all three relaunch attempts are spent inside one logged second, on a
     # condition that clears by itself in a few. The node then sat out the two-hour cadence with
-    # nothing left to try: [V3b.18], measured on a stranger's machine.
+    # nothing left to try -- measured on a stranger's machine.
     #
     # The window is made WIDE and certain rather than raced for. SIGSTOP the guest QEMU first: the
     # control channel dies at once, and the graceful stop that follows cannot complete, because the
@@ -213,7 +213,7 @@ pkgs.testers.runNixOSTest {
     # channel that is about to come back, which is the whole reason for the wait.
     host.fail("journalctl -u briard-agent | grep -q 'restarting an unresponsive guest'")
 
-    # It waits out the recovery window (shortened to 60s above, [B.127]), then says what it is
+    # It waits out the recovery window (shortened to 60s above), then says what it is
     # about to do -- on the local trail
     # `briard alerts` reads (notify.LogMarker), because on the free tier that trail is the only
     # delivery there is.
@@ -257,7 +257,7 @@ pkgs.testers.runNixOSTest {
     print(f"guest restarted: pid {frozen} -> {restarted}")
 
     # And it is a node again, not merely a running process: bring-up re-drove the whole
-    # sequence on the persisted data disk (idempotent by B.22b's other half -- attach, never
+    # sequence on the persisted data disk (idempotent by the same rule as the guest-side rung -- attach, never
     # re-seed) and the front door answers.
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'guest-recovery: guest restarted and converged'",

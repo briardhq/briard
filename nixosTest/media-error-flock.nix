@@ -1,15 +1,15 @@
-# [B.144] acts (a)+(b) — WHAT ONE BAD SECTOR DOES TO A NODE THAT HAS A PEER.
+# Acts (a)+(b) — WHAT ONE BAD SECTOR DOES TO A NODE THAT HAS A PEER.
 #
 # The companion to media-error-lone, and the acts are the same fault in the topology where DRBD
-# has somewhere to turn. Two questions, and the first one is the whole reason [B.140a] exists:
+# has somewhere to turn. Two questions, and the first one is the whole reason the agent's media-error policy exists:
 #
 #   (a) `on-io-error detach` + a live peer -> the node drops its disk and keeps serving over the
 #       network. Predicted: the APPLICATION SEES NOTHING AT ALL -- even the read of the broken
 #       sector succeeds, because DRBD retries it on the peer. No error, no role change, no quorum
 #       change, no failing unit. That is the silent fallback in its purest form, and it is what
-#       [B.140a]'s agent policy exists to stop being silent.
-#       Then, on re-attach: IS THE RESYNC BITMAP-PARTIAL OR FULL? That question is open in both
-#       [B.140a] and [V5.7], and the whole economics of "repair rather than rebuild" rests on it.
+#       the agent's media-error policy exists to stop being silent.
+#       Then, on re-attach: IS THE RESYNC BITMAP-PARTIAL OR FULL? That question is still open,
+#       and the whole economics of "repair rather than rebuild" rests on it.
 #   (b) `on-io-error pass_on` + a live peer -> the device stays attached and the disk goes
 #       Inconsistent, with the bad block marked out-of-sync. Then a reconnect: does the bitmap
 #       resync actually write that block back -- the write that, on real hardware, is what makes
@@ -131,7 +131,7 @@ pkgs.testers.runNixOSTest {
     assert bad_read, "(a) the read of the BROKEN sector must succeed -- served from the peer"
     assert good_read, "(a) good sectors must still read -- served from the peer"
     # `client` separates the witness's INTENTIONAL disklessness from this accidental one
-    # ([B.140a]); if this comes back true the predicate that item rests on is wrong.
+    # (the media-error policy tells them apart); if this comes back true the predicate that policy rests on is wrong.
     assert client_a == "false", f"(a) accidental diskless must report client=false, got {client_a}"
     print("VERDICT (a): CONFIRMED -- silent network fallback; only a status field records it")
 
@@ -207,7 +207,7 @@ pkgs.testers.runNixOSTest {
     # the thread had only reasoned about: with the disk Inconsistent, the peer is the ONLY source
     # for the marked blocks, so dropping the connection would strand a serving Primary. The repair
     # therefore CANNOT be driven on the node that is serving -- it has to hand over first, which is
-    # exactly [B.140a]'s eviction, arrived at from the other direction.
+    # exactly the media-error policy's eviction, arrived at from the other direction.
     demote_rc, demote_out = node1.execute("drbdadm secondary r0 2>&1")
     print(f"VERDICT (b1): demote before repair rc={demote_rc} out={demote_out!r} role={role(node1)}")
     node1.succeed("drbdadm disconnect r0")

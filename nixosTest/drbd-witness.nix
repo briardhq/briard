@@ -52,7 +52,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     # All three connected (node1 ↔ node2 + the diskless witness), then skip the
     # initial sync. The per-node volume form needs the volume id (r0/0).
@@ -80,7 +80,7 @@ pkgs.testers.runNixOSTest {
     # so the survivor promotes and serves — the diskless-quorum win (a lone disk
     # node would be 1 of 2 and self-fence).
     survivor = next(m for m in disk_nodes if m != primary)
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
     # cannot promote. "Replicated" is the claim under test, so assert the disk state before
     # removing the only UpToDate copy.

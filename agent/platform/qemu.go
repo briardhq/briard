@@ -38,24 +38,24 @@ type QEMUSpec struct {
 	MemoryMB  int
 	Cores     int
 	DiskImage string // guest OS disk; empty in kernel/initrd boots
-	// BaseImage is the read-only image DiskImage is an overlay ON ([B.86h]) -- what an OS update
+	// BaseImage is the read-only image DiskImage is an overlay ON -- what an OS update
 	// swaps. It is what lets RebuildOverlay lay the overlay down on a node that has none yet
-	// ([B.157]) rather than only rebuild one it can read the backing out of; empty leaves that
+	// rather than only rebuild one it can read the backing out of; empty leaves that
 	// bootstrap to whoever made the disk.
 	BaseImage string
 	DataDisk  string // backing block device for the DRBD volume -> guest /dev/vdb
-	// StateDisk is the node-local STATE disk ([B.86g]): the one place the guest keeps what the
+	// StateDisk is the node-local STATE disk: the one place the guest keeps what the
 	// host cannot push and a restart must not cost -- podman's storage, the journal, the deadman's
 	// backoff. Attached with a fixed serial so the guest finds it by id whatever the bus order.
 	// Empty = none (rigs that predate it; the guest's mounts are nofail).
 	StateDisk string
 	// MachineUUID is the VM's DMI product UUID, from which systemd derives the guest's
-	// machine-id when the OS disk carries none ([B.86g]: a disposable OS must still be the same
+	// machine-id when the OS disk carries none (a disposable OS must still be the same
 	// machine each boot -- journal continuity, DHCP identity). Derived from the node name, so it
 	// needs no disk. Empty = qemu's random one.
 	MachineUUID string
 	ControlSock string // host end of the virtio-serial control channel
-	// AdminPortSock is the host end of the guest's admin port ([V3b.31i]): the second serial
+	// AdminPortSock is the host end of the guest's admin port: the second serial
 	// port, direction reversed -- the guest's dashboard writes a directive, the host answers.
 	// Empty = no port (what every test that never runs a dashboard passes).
 	AdminPortSock string
@@ -75,8 +75,8 @@ type QEMUSpec struct {
 	// NetMode selects the substrate for the *service + system* NICs:
 	// NetBridge (default) = host taps qemu opens by name (`ifname=`, the install.sh bridge-
 	// enslave substrate); NetMacvtap = macvtap chardevs qemu attaches to via an inherited fd
-	// (`fd=N` on /dev/tap<ifindex>), which gives the guest L2 citizenship without a host bridge
-	//. The witness NIC is ALWAYS a plain tap regardless -- macvtap isolates guest<->host,
+	// (`fd=N` on /dev/tap<ifindex>), which gives the guest L2 citizenship without a host bridge.
+	// The witness NIC is ALWAYS a plain tap regardless -- macvtap isolates guest<->host,
 	// Which is exactly the private link the witness-forwarder needs.
 	NetMode string
 	// NetWrapBin is the bundled fd-passing launch wrapper (briard-net-wrap) required by
@@ -93,7 +93,7 @@ type QEMUSpec struct {
 }
 
 const (
-	// StateDriveID / StateDiskSerial name the state disk ([B.86g]): the drive id on the command
+	// StateDriveID / StateDiskSerial name the state disk: the drive id on the command
 	// line, and the serial the guest sees it by (/dev/disk/by-id/virtio-briard-state).
 	StateDriveID    = "briard-state"
 	StateDiskSerial = "briard-state"
@@ -107,7 +107,7 @@ const (
 	// command-line order, so the slots ascend root < data < state and the guest sees vda/vdb/vdc
 	// (see qemuArgs, and the boot-order bug that comment records). Named here, beside the line
 	// that attaches it second, because the host now has to TELL the guest which device to build
-	// its storage tier on ([V3b.33](d), shared/nodestorage) instead of the guest assuming it.
+	// its storage tier on (shared/nodestorage) instead of the guest assuming it.
 	GuestDataDevice = "/dev/vdb"
 )
 
@@ -179,7 +179,7 @@ func qemuArgs(s QEMUSpec) []string {
 		"-device", "virtserialport,chardev=briardctl,name="+guestfirmware.ControlPort,
 	)
 	if s.AdminPortSock != "" {
-		// The guest's admin port ([V3b.31i]): the same shape as the control channel with the
+		// The guest's admin port: the same shape as the control channel with the
 		// roles reversed -- the dashboard in the guest writes, the host agent answers. A
 		// second port on the same virtio-serial bus, so it exists on every platform the
 		// control channel does, and nowhere the network is.
@@ -207,7 +207,7 @@ func qemuArgs(s QEMUSpec) []string {
 	// needs one because a serial is a device property) it took PCI slot 4 while the root disk
 	// landed at slot 6 -- SeaBIOS booted the blank state disk, grub's embedded prefix pointed at
 	// it, and the guest sat at a rescue prompt on a VGA nobody captures, with an empty serial
-	// console and a host that could only say "no handshake" (B.86g's first rig run). Explicit
+	// console and a host that could only say "no handshake" (the state disk's first rig run). Explicit
 	// devices in command-line order keep the slots ascending root < data < state -- so the guest
 	// sees vda/vdb/vdc as it always has -- and bootindex=0 on the root says which one boots
 	// whatever else is ever attached. The drive ids are what QMP addresses (the snapshot work on
@@ -216,7 +216,7 @@ func qemuArgs(s QEMUSpec) []string {
 		// discard=unmap on the overlay and the state disk: a guest TRIM punches the range out of
 		// the host file (qcow2 cluster or sparse-raw hole), so deleting in the guest gives space
 		// back to the host. Without it a sparse disk only ever grows toward its ceiling, however
-		// little the guest keeps ([B.86h]; the guest runs fstrim weekly).
+		// little the guest keeps (the guest runs fstrim weekly).
 		args = append(args, "-drive", "file="+s.DiskImage+",if=none,discard=unmap,id="+RootDriveID,
 			"-device", "virtio-blk-pci,drive="+RootDriveID+",bootindex=0")
 	}
@@ -241,15 +241,15 @@ func qemuArgs(s QEMUSpec) []string {
 	// managed/pair-capable guest, idle until a pairing addresses it (no hotplug, no
 	// reboot -- extends c-ii's uniform layout). Which NIC carries the VIP is the
 	// agent's to say (net.configure); nothing is baked guest-side, so there is no
-	// default for a positional shape to be correct against ([V3b.16a] deleted the
-	// last one).
+	// default for a positional shape to be correct against (the
+	// last one was deleted).
 	//
-	// ⚠️ THE NIC COUNT IS THE SUBSTRATE FORK, and since [V3b.26c] it is two shapes
+	// ⚠️ THE NIC COUNT IS THE SUBSTRATE FORK, and it is two shapes
 	// rather than one. Under macvtap install.sh sets all three, so the guest boots
 	// eth1/eth2/eth3. Under BRIDGE mode it sets only SystemTap: one tap is all
-	// Windows can express ([V3b.1a]), so the guest boots eth1 alone and MAKES eth2
+	// Windows can express, so the guest boots eth1 alone and MAKES eth2
 	// itself -- a macvlan child carrying the flock MAC -- and there is no eth3 at all
-	// ([V3b.26a] option (iii): a bridged tap already puts host and guest on one L2,
+	// (a bridged tap already puts host and guest on one L2,
 	// so the private link has nothing left to do). Both shapes present the same L3.
 	//
 	// ⚠️ Omitting SystemTap is still the thing that breaks: it slides whatever else is
@@ -281,7 +281,7 @@ func qemuArgs(s QEMUSpec) []string {
 		//
 		// ⚠️ NetBridge is passed here as "a tap qemu opens by name", NOT as "this node is in
 		// bridge mode" -- the two meanings share a constant and no longer coincide. A node
-		// actually in bridge mode has no WitnessTap at all ([V3b.26c]), so this branch is
+		// actually in bridge mode has no WitnessTap at all, so this branch is
 		// reached only under macvtap.
 		args = append(args,
 			"-netdev", netdevArg("net3", s.WitnessTap, NetBridge, 0),
@@ -490,7 +490,7 @@ const serialLogMax = 32 << 20
 // creates what it opens under the unit's umask, so the containment has to be applied first.
 //
 // ⚠️ THE BOUND HAS TO BE PER LAUNCH, and that is what this being here rather than in the
-// installer's ExecStartPre buys ([B.157], closing what V3.27 recorded and deferred). qemu appends
+// installer's ExecStartPre buys. qemu appends
 // and never truncates -- deliberately, so a relaunch does not overwrite the boot that explains it
 // (serialArgs says why) -- and the guest is relaunched on every OS upgrade, every rollback, every
 // rung of the recovery ladder. A check that ran once when the AGENT started missed every one of
@@ -544,7 +544,7 @@ func unitState(unit string) (string, error) {
 // unitAtRest reports whether an ActiveState reading means the unit is FINISHED -- gone or
 // dead, with nothing of it still running -- as distinct from merely not-"active".
 //
-// The distinction is the whole of [B.103]. A transient unit spends its ExecStop in
+// The distinction is the whole point. A transient unit spends its ExecStop in
 // "deactivating", which is not "active"; a caller that asks `is-active` therefore hears
 // "stopped" about a guest that is still flushing, and the next Launch trips over the unit it
 // was told had gone ("already loaded or has a fragment file"), rolling back a good upgrade.
@@ -586,11 +586,11 @@ func unitLoaded(state string, err error) bool {
 
 // waitUnitFree blocks until the transient unit name can be created again.
 //
-// It is [B.103]'s distinction one step earlier, and the step that was missing. The relaunch
+// It is the same distinction one step earlier, and the step that was missing. The relaunch
 // decision asks `is-active`, so a unit spending its ExecStop reads as *not running* — true, and
 // not the same as *creatable*: systemd-run then trips over the unit that is still there, which
 // on the guest-recovery ladder spent all three relaunch attempts inside one second on a
-// condition that clears by itself in a few ([V3b.18]).
+// condition that clears by itself in a few.
 //
 // reset-failed is the one prod that helps: a unit that has finished is garbage-collected on its
 // own (`--collect`), but a corpse someone still references is not, and clearing it is free.
@@ -603,7 +603,7 @@ func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
 		}
 		// Asked ONCE, and only once the name is known to be taken: if WE are the invocation
 		// holding it, waiting is not slow but impossible, and saying so beats spending the
-		// whole grace to say nothing ([B.110]).
+		// whole grace to say nothing.
 		if first && insideUnit(unit) {
 			return fmt.Errorf("platform: refusing to wait for unit %s to come free: this process is "+
 				"part of that unit's own invocation, so the name cannot be released until we return", unit)
@@ -634,7 +634,7 @@ func waitUnitFree(ctx context.Context, unit string, grace time.Duration) error {
 // slow wait but a closed loop: the name is held BY the caller, so the only thing that could
 // release it is the return this call is blocking. Nothing about it looks wrong from inside --
 // every state the wait reads is legitimately "still stopping" -- so it spends the caller's
-// whole budget in silence and the guest gets power-cut at the far end ([B.110]).
+// whole budget in silence and the guest gets power-cut at the far end.
 //
 // The seam is $INVOCATION_ID, which systemd exports to every process it starts for a unit and
 // which the unit itself answers with for as long as that invocation lasts. Measured, from
@@ -698,7 +698,7 @@ func stopUnit(unit string) error {
 	return nil
 }
 
-// RemoveUnit takes one of briard's units off this machine ([V3c.2], `briard uninstall`): stopped,
+// RemoveUnit takes one of briard's units off this machine (`briard uninstall`): stopped,
 // disabled, and its unit file deleted. A unit the manager has never heard of is already removed.
 //
 // A PLAIN STOP, never forceStopUnit. On the guest unit that runs its ExecStop -- the clean
@@ -805,7 +805,7 @@ func serialArgs(s QEMUSpec) []string {
 
 // UnitState is unitState for callers outside this package: one unit's ActiveState, read
 // through the same service-manager seam every other systemctl call goes through, so the host
-// agent does not grow a second way to ask systemd a question ([B.161](a)).
+// agent does not grow a second way to ask systemd a question.
 //
 // The error return keeps unitState's meaning and it is the part a caller must not flatten: the
 // manager answers for units that do not exist as well ("inactive", exit 0), so an error is the

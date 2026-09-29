@@ -1,4 +1,4 @@
-# THE KERNEL MODULE TREE, DENYLISTED ([B.136]).
+# THE KERNEL MODULE TREE, DENYLISTED.
 #
 # The stock module tree was 149 MB on disk and -- because modules ship as .ko.xz and compress no
 # further -- 141 MB of the 358 MB image a household downloads (39%): 7296 modules, of which a
@@ -102,8 +102,8 @@ in
   # Loaded at boot by systemd-modules-load: DRBD (configuration.nix) and loop; NixOS's default
   # `atkbd` (a PS/2 keyboard driver) would now fail to load and fail the unit.
   # `evdev` is loaded EXPLICITLY rather than left to udev's modalias matching: it is what carries
-  # the ACPI power button, and a clean stop of this guest is the host's whole shutdown contract
-  # ([B.51], [B.127], [B.132]). A shutdown path must not depend on a device-matching rule firing.
+  # the ACPI power button, and a clean stop of this guest is the host's whole shutdown contract.
+  # A shutdown path must not depend on a device-matching rule firing.
   # NixOS's own default here is `atkbd`, for a keyboard this guest does not have.
   boot.kernelModules = lib.mkForce [ "drbd" "loop" "evdev" ];
 }

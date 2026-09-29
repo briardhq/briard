@@ -25,7 +25,7 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// The node's half of the casa name service ([V3c.4], shared/casa): `<flock>.briard.casa`, claimed
+// The node's half of the casa name service (shared/casa): `<flock>.briard.casa`, claimed
 // from the household's own dashboard, confirmed by an emailed link, and from then on kept by
 // this loop -- the address written directly at the Worker whenever the VIP moves, and a
 // wildcard certificate renewed at 30 days out through the cloud. Nothing periodic goes up.

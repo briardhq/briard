@@ -48,7 +48,7 @@ func shortSmoke(t *testing.T) {
 
 // Tier 1 refusals, each a way a release can fail to run on a host without a VM ever starting:
 // a binary that will not exec, one that carries no virtio device model, one with no `pc`
-// machine. [[verification-assertions-must-fail]]: the test refuses for the stated reason.
+// machine. The assertion must be able to fail: the test refuses for the stated reason.
 func TestSmokeTestRefusesABrokenTier1(t *testing.T) {
 	shortSmoke(t)
 	for _, tc := range []struct{ name, version, devices, machines, want string }{

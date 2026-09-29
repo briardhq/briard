@@ -13,8 +13,7 @@ import (
 // machine RUNNING the guest is the one machine on the LAN that cannot open the address the guest
 // serves. Every other house on the network reaches it; a second briard host reaches it (that
 // traffic goes out the wire and back); only the host itself cannot. Measured on a stranger's
-// desktop, the same instant: from the host `http://<vip>/ -> 000`, from the router `-> OK`
-// ([V3b.19]).
+// desktop, the same instant: from the host `http://<vip>/ -> 000`, from the router `-> OK`.
 //
 // The private host<->guest link is NOT isolated -- it is a plain tap on both ends (install.sh
 // creates it with `ip tuntap`, and qemu.go keeps it NetBridge even under macvtap, deliberately,
@@ -26,7 +25,7 @@ import (
 // 10.11.9.2. That address is node-scoped -- it is TRANSPORT -- while the VIP and the name are
 // flock-scoped and survive a failover it does not. A household that bookmarked the private
 // address would have bookmarked a machine instead of a service, which is the same incoherence
-// [V3.20] took out of the mDNS name.
+// an earlier change took out of the mDNS name.
 
 // VIPRoute is the host-side route to the guest's service address over the private link.
 type VIPRoute struct {
@@ -40,7 +39,7 @@ type VIPRoute struct {
 // cannot be inferred from reading it is unit-tested rather than trusted.
 //
 // ⚠️ `via <guest>` AND NOT `dev <tap>`, which is the form that looks simpler and does not work.
-// The guest sets arp_ignore=1 (guest-image/configuration.nix, the [B.101] ARP-flux fix): it
+// The guest sets arp_ignore=1 (guest-image/configuration.nix, the ARP-flux fix): it
 // answers ARP only on the interface that HOLDS the address being asked for. An on-link route
 // makes the host ARP for the VIP on the tap; the VIP lives on the guest's eth2 and the request
 // arrives on its eth3, so the guest stays silent and the route black-holes. Going `via` makes
@@ -76,7 +75,7 @@ func SetVIPRoute(ctx context.Context, r VIPRoute) error {
 }
 
 // NodeRoute is the host's standing path to its own guest's NODE IP over the private link -- the
-// one address anything uses to reach that node (DESIGN §4). Unlike VIPRoute it does not come and
+// one address anything uses to reach that node. Unlike VIPRoute it does not come and
 // go: the node IP is not a thing the guest can lose to a failover, so this is installed once at
 // bring-up and simply re-asserted.
 type NodeRoute struct {
@@ -91,7 +90,7 @@ type NodeRoute struct {
 //
 // ⚠️ THE NEIGHBOUR ENTRY IS NOT AN OPTIMISATION -- without it this route black-holes. The guest's
 // node IP lives on eth1 while the host's ARP request for it arrives on eth3, and arp_ignore=1
-// (the [B.101] fix) makes the guest answer ARP only on the interface that HOLDS the address
+// (the ARP-flux fix) makes the guest answer ARP only on the interface that HOLDS the address
 // asked for. So the guest stays silent and nothing resolves. Pinning the MAC means the host never
 // asks: the entry is `permanent`, so the kernel never expires it and never revalidates it. That
 // is safe precisely because the MAC is not discovered but DERIVED -- deriveMAC(node, "wit") is
@@ -100,7 +99,7 @@ type NodeRoute struct {
 // This is also why the link needs no addressing of its own. The older shape gave both ends
 // addresses on a private 10.11.9.0/24 purely so the host could `via` a resolvable address; pinning
 // the neighbour removes the reason for the subnet, and with it an invented range that could
-// collide with a household's LAN just as 10.0.0.0/24 can ([V3b.26f]).
+// collide with a household's LAN just as 10.0.0.0/24 can.
 func nodeRouteArgs(r NodeRoute) []string {
 	return []string{"route", "replace", r.GuestIP + "/32", "dev", r.Dev, "src", r.Src}
 }

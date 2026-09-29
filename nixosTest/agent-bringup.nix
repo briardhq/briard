@@ -27,8 +27,8 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")  # nested KVM present in L1
 
-    # THE SHIPPED NIC CONTRACT, and it is the rig's job to match it rather than improve on it
-    # ([V3b.19a]). A carrier-bearing parent (a veth whose peer is up -- a dummy has no carrier and
+    # THE SHIPPED NIC CONTRACT, and it is the rig's job to match it rather than improve on it.
+    # A carrier-bearing parent (a veth whose peer is up -- a dummy has no carrier and
     # macvlan bridge-mode won't forward), then the guest's two LAN NICs as macvtap CHILDREN of it in
     # install.sh's order -- sys0 -> the guest's eth1 (the DRBD NIC, idle on one node), svc0 -> eth2
     # (the VIP) -- and the private host<->guest link as a plain tap holding 10.11.9.1/24, exactly as
@@ -39,7 +39,7 @@ pkgs.testers.runNixOSTest {
     # ⚠️ THIS USED TO BUILD A HOST-SIDE MACVLAN SHIM INSTEAD (shim0, 192.168.1.1/24), because macvtap
     # isolates host<->guest and without something L1 could not curl the VIP at all. That shim was the
     # rig granting itself a reachability THE PRODUCT DID NOT HAVE -- so no test could fail on the gap,
-    # and a stranger found it instead of us ([V3b.19]). The curl below is unchanged and now passes for
+    # and a stranger found it instead of us. The curl below is unchanged and now passes for
     # the shipped reason: the agent routes the VIP over the private link. A shim here would hide that
     # working or broken, which is the whole argument for deleting it.
     host.succeed(
@@ -56,7 +56,7 @@ pkgs.testers.runNixOSTest {
     # Run the product agent (host mode = plain `run`): boots the guest, drives the
     # ordered bring-up (data -> VIP, no service -- the shipped disk runs none), then holds it in
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
-    # The host holds a guest bundle tree, as install.sh lays on every install ([B.138]): the image
+    # The host holds a guest bundle tree, as install.sh lays on every install: the image
     # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
     # because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
@@ -64,25 +64,25 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
-        # agent shells out to systemd-run, systemctl and -- since [V3b.19] -- `ip`, all BY NAME, and
+        # agent shells out to systemd-run, systemctl and -- since it owns the host's route -- `ip`, all BY NAME, and
         # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
-        # is the point: the rig gets what the product gets ([V3b.19a]).
+        # is the point: the rig gets what the product gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        # Where the host keeps its guest bundle tree ([B.138]), the way install.sh sets it.
+        # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest --setenv=GUEST_SERIAL=/tmp/guest-console.log "
         # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
         # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV/SYSTEM_CIDR are
         # set, as they now are on a shipped single node too: eth1 carries this node's NODE IP, the
-        # one address anything uses to reach it, and the gate below answers there ([V3b.26b]).
+        # one address anything uses to reach it, and the gate below answers there.
         # SYSTEM_HOST_CIDR is the host's own end of that subnet, on the tap -- the rig states all
         # three because it is standing in for install.sh, which sets them together or not at all.
         "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
         "--setenv=STATUS_EVERY=2s "
         # The test DECLARES the service address it is about to curl. The guest image bakes none
-        # (V3.19c step 3) and unset means DHCP, which nothing answers on a nixosTest's L2.
+        # and unset means DHCP, which nothing answers on a nixosTest's L2.
         # HEALTH_URL is deliberately left unset alongside it, so the agent resolves its probe
         # target from the address the guest actually holds -- the shipped path, exercised here
         # rather than bypassed by a baked URL that happens to agree.
@@ -94,7 +94,7 @@ pkgs.testers.runNixOSTest {
         "${agent}/bin/briard-agent run"
     )
 
-    # THE CONSOLE IS THE WINDOW ([[guest-console-is-the-window]]), and it covers BRING-UP too --
+    # THE CONSOLE IS THE WINDOW, and it covers BRING-UP too --
     # not just the front door. Bring-up is the first thing that can fail and the one whose cause is
     # entirely inside the guest: a chain member that would not start, a device the resource names
     # and the guest does not have. Without the dump here, the only evidence is the agent's one-line
@@ -120,7 +120,7 @@ pkgs.testers.runNixOSTest {
         raise
     # ...and it reaches it THE WAY A REAL HOST DOES: over the private link, on a route the agent
     # put there. Asserted rather than inferred from the curl, because the curl passing is what a
-    # rig-built shim used to buy too -- this is the line that tells the two apart ([V3b.19a]).
+    # rig-built shim used to buy too -- this is the line that tells the two apart.
     route = host.succeed("ip route get 192.168.1.100")
     print(f"host route to the VIP: {route.strip()}")
     assert "briard-priv0" in route and "10.0.0.1" in route, (
@@ -179,7 +179,7 @@ pkgs.testers.runNixOSTest {
     # Closed again on the way out, and the socket is the evidence: nothing else records the
     # state, so if this file survives the verb, a node stays open after a support call.
     host.fail("test -e /run/briard/qmp/console.sock")
-    # THE AGENT'S OWN JOURNAL, not merely the journal ([B.142a]): arm and disarm are directives it
+    # THE AGENT'S OWN JOURNAL, not merely the journal: arm and disarm are directives it
     # applies, so the record is its log line like every other action on this node. Scoped to the
     # unit because that is the claim -- a CLI writing its own audit from outside would satisfy an
     # unscoped `journalctl` just as well, which is exactly the arrangement this replaced.

@@ -15,15 +15,14 @@ let
   # by the harness is rendered by the same code the agent runs.
   quadletRender = pkgs.callPackage ./quadlet-render-pkg.nix { };
 
-  # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed
-  # ([V3b.3](f)/(e1)). `briard-services` is what converges this node to the manifests on the volume
+  # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed.
+  # `briard-services` is what converges this node to the manifests on the volume
   # once the mount exists, which is why the services themselves are not members. The front door and
-  # the two mDNS publishers ARE members since [B.125]: on a node with no `.casa` domain those names
+  # the two mDNS publishers ARE members: on a node with no `.casa` domain those names
   # are the ONLY way to reach a service and the door is the only thing that answers them, so a node
   # that cannot publish or cannot serve should hand the resource on rather than look healthy while
   # reaching nobody. This mirrors what the host agent writes in production (host.promoterUnits),
-  # which also takes no arguments any more, and the two lists are kept in step BY HAND
-  # ([V3b.3](f)).
+  # which also takes no arguments any more, and the two lists are kept in step BY HAND.
   promoterSnippet =
     let
       units = [
@@ -47,7 +46,7 @@ let
   # volume id (r0/0) — the one testScript quirk of this form.
   #
   # A diskful node's backing is `/dev/mapper/briardservice-data` on every node in the product and in
-  # every rig ([V3b.33]), with DRBD's metadata beside it on `briardservice-metadata` ([B.145a]): the
+  # every rig, with DRBD's metadata beside it on `briardservice-metadata`: the
   # two LVs briard-node-storage builds from the host's spec, restated here because a `.res` is text
   # and cannot import Go's `drbd.DataDevice` / `drbd.MetaDevice`.
   mkResource =
@@ -86,13 +85,13 @@ let
   # storage and lay down the manifest the harness will later install from.
   #
   # It used to do far more — run the renderer, copy the units into the quadlet directory and write
-  # the promoter chain from the renderer's output. [V3b.3](f) takes all of that away from the
+  # the promoter chain from the renderer's output. Converge-at-promotion takes all of that away from the
   # harness and gives it to the PRODUCT: `briard-services` renders from the volume at promotion,
   # from a static chain the harness no longer writes. So what is left here is exactly the part a
   # test legitimately stands in for — the bytes a host agent would have fetched from the catalog
   # and warmed onto the node before anything promoted.
   #
-  # This is what replaced the baked payload slot ([V3b.3](e2)). The slot put a container in the
+  # This is what replaced the baked payload slot. The slot put a container in the
   # guest image at BUILD time through `oci-containers` — a mechanism no user has, since a shipped
   # node installs at runtime from a manifest. Tests riding the slot therefore proved a path nobody
   # ships; tests riding this one prove the path everyone does.
@@ -105,7 +104,7 @@ let
   #
   # NO REGISTRY, and that is measured rather than assumed — see fixture-service.nix for the three
   # facts. The image arrives as a tarball whose digest the manifest already pins.
-  # ONE UNIT, N FIXTURES ([V3b.4]). A node may carry more than one catalogued service, because the
+  # ONE UNIT, N FIXTURES. A node may carry more than one catalogued service, because the
   # coordination is plural and a harness that can stage only one can only ever prove the singular
   # case — which is exactly how "N services" stayed a fixture-shaped claim.
   #
@@ -182,7 +181,7 @@ let
   # the host agent's Primary-only orchestration. It writes the manifest to the REPLICATED volume
   # (what `service.provision` records as the service's identity), creates its storage, and then
   # hands over to the PRODUCT — `briard-guest-agent --converge` is the same code drbd-reactor runs at
-  # every promotion, not a harness re-implementation of it ([V3b.3](f)).
+  # every promotion, not a harness re-implementation of it.
   #
   # It must run AFTER a node has promoted, because everything it touches is on the replicated
   # volume and only a Primary has it mounted. That is not a harness quirk; it is the exact
@@ -196,8 +195,8 @@ let
   # test never restates the layout the product decides.
   fixtureHelpers = ''
     def fixture_dir(service=None):
-        """Where a staged fixture lives. `service` names one when the node carries several
-        ([V3b.4]); the default is the symlink to the first, which is what a single-service node
+        """Where a staged fixture lives. `service` names one when the node carries several;
+        the default is the symlink to the first, which is what a single-service node
         has always read."""
         return "/run/briard/fixture" if service is None else f"/run/briard/fixtures/{service}"
 
@@ -219,13 +218,13 @@ let
         m.succeed("sync")
         # The product's own converge, by the same entry point briard-services.service uses. On a
         # version change it is also what BOUNCES the container: converge restarts what it has not
-        # started with exactly these bytes ([V3b.3](e1)).
+        # started with exactly these bytes.
         m.succeed("briard-guest-agent --converge")
         return dataroot
 
     def fixture_units(m, service=None):
         """The service units the RENDERER produced -- never a list restated here. They are NOT
-        promoter chain members ([V3b.3](f)): briard-services starts them, which is what keeps a
+        promoter chain members: briard-services starts them, which is what keeps a
         crashed container from demoting the node."""
         units = m.succeed(f"cat {fixture_dir(service)}/units").split()
         assert units, f"the renderer produced no service units: {units}"
@@ -233,7 +232,7 @@ let
 
     def name_the_flock(m, name="brave-elf"):
         """Give the node a flock name the way the AGENT does -- net.mdnsname writes exactly this
-        file, and converge composes the per-service names from it ([B.48]). Without it a node has
+        file, and converge composes the per-service names from it. Without it a node has
         no name to route on: the service is installed and reachable on its port, but nothing
         answers for it at the front door, which is the honest state of a node whose flock has
         never been named."""
@@ -254,16 +253,16 @@ let
 
   # A test node: the unit image + a backing disk (unless diskless) + its private
   # DRBD address + the resource. `promoter` adds the promoter snippet; the tests provision DRBD,
-  # then start drbd-reactor by hand -- which since [V3b.16a] is what the PRODUCT does too (the
+  # then start drbd-reactor by hand -- which is what the PRODUCT does too (the
   # agent arms the promoter at bring-up), so this file no longer has to force it off. That
   # divergence was the last one between the disk-image guest and these nodes, and it was the
-  # divergence [V3b.16] fell into.
+  # divergence the guest-parity bugs fell into.
   mkNode =
     {
       resource,
       diskless ? false,
       promoter ? true,
-      # false = a node that runs no DRBD ([B.145c]): the spec names the data LV as the device,
+      # false = a node that runs no DRBD: the spec names the data LV as the device,
       # node-storage writes no .res and attaches nothing, and the chain is started by
       # `systemctl start briard-chain.target` instead of drbd-reactor. The default keeps every
       # existing rig on DRBD -- a harness may build a one-node flock the product never writes
@@ -275,11 +274,11 @@ let
       tierDevice ? "/dev/vdb",
       # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
-      # This is the ONLY way a test node gets a workload ([V3b.3](e2) deleted the build-time service
+      # This is the ONLY way a test node gets a workload (converge-at-promotion deleted the build-time service
       # slot), and it is the way a shipped node gets one, which is the point: a test that put a
       # container on a node by a mechanism no user has proves a path nobody runs.
       fixture ? null,
-      # SEVERAL catalogued services on one node ([V3b.4]). `fixture` is the one-service spelling
+      # SEVERAL catalogued services on one node. `fixture` is the one-service spelling
       # and stays exactly as it was; anything listed here is staged beside it, each under its own
       # name, so a test can prove what the plural coordination actually does — that installing or
       # upgrading one service leaves the others alone.
@@ -296,13 +295,13 @@ let
       vipAddr = "192.168.1.100/24";
       vipEnvFile = pkgs.writeText "vip.env" "VIP_DEV=${vipDev}\nVIP_ADDR=${vipAddr}\n";
 
-      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR STORAGE ([V3b.33](d)) ──────────────────────
+      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR STORAGE ───────────────────────────────────
       # Storage policy is the host's, pushed at bring-up as /run/briard/node-storage.json, and
       # briard-node-storage.service carries it out. These nodes have no host, so the harness
       # writes the spec and starts the unit -- which is the WHOLE POINT of the re-cut: a rig used
       # to hand-roll `modprobe drbd; create-md --force; drbd@r0.target; new-current-uuid; touch
       # data.format`, a harness re-implementing the product, and the divergence is what hid
-      # [V3b.33](c)'s encrypted-blank-device bug from every hermetic test (their `--force` could
+      # the encrypted-blank-device bug from every hermetic test (their `--force` could
       # not meet the probe that broke).
       #
       # freshInit is FALSE here and set per node by the script below, because the seed is a
@@ -336,7 +335,7 @@ let
       #   briard-test-storage --mode off ...formatted in the clear, whatever the CPU can do
       #   briard-test-storage --alone    ...running no DRBD (the spec names the data LV), or
       #                       --flock    ...replicated -- either overrides mkNode's `replicated`,
-      #                                  which is how a rig drives a TRANSITION ([B.145d]): the host
+      #                                  which is how a rig drives a TRANSITION: the host
       #                                  would record the mesh and reboot the guest; the harness
       #                                  rewrites the spec and re-runs node-storage
       #   briard-test-storage --alone --disable  ...with the one-shot convert-disable intent an
@@ -359,7 +358,7 @@ let
           esac
           shift
         done
-        # THE UNIT BEFORE THE START ([B.160]). briard-node-storage.service is written by the
+        # THE UNIT BEFORE THE START. briard-node-storage.service is written by the
         # agent, not by the image, and the stand-in that writes it is ordered before
         # multi-user.target -- but the framework's backdoor shell is not, so a rig that runs this
         # command the moment it can would race the render. Starting the oneshot is the barrier:
@@ -379,10 +378,10 @@ let
     { config, ... }:
     {
       # HOW LONG A NODE REFUSES TO PROMOTE after one of its chain members gave up. A field node
-      # runs the agent's own 300s ([V3b.5](c), agent/guestagent/units.go defaultHoldSecs); this
+      # runs the agent's own 300s (agent/guestagent/units.go defaultHoldSecs); this
       # option exists for exactly one reason and always did -- the contract rigs drive the whole
       # hold lifecycle and cannot wait five minutes. It is declared HERE rather than in the
-      # product module since [B.160], because the unit is the agent's now and an option the image
+      # product module, because the unit is the agent's now and an option the image
       # no longer reads would be a lie. What it configures is the renderer's environment, below.
       imports = [
         guestModule
@@ -394,14 +393,14 @@ let
           };
         }
       ];
-      # No host pushes the guest's binaries into a nixosTest machine ([B.138], [B.139]): the
+      # No host pushes the guest's binaries into a nixosTest machine: the
       # image bakes only the firmware, so link the pushed set in as if a host had dressed it.
       briard.pivot.preDressed = {
         briard-reverse-proxy = "${pkgs.reverse-proxy}/bin/reverse-proxy";
         briard-dashboard = "${pkgs.dashboard}/bin/dashboard";
         briard-guest-agent = "${config.briard.agentPackage}/bin/briard-guest-agent";
       };
-      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR UNITS ([B.160]) ───────────────────────────
+      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR UNITS ─────────────────────────────────────
       # The image no longer defines the units the agent owns; the pushed agent writes them into
       # /run/systemd/system as the first thing `run --guest` does. These machines run no
       # `run --guest` -- there is no host on the other end of a control channel -- so the unit
@@ -416,7 +415,7 @@ let
       # After the tmpfiles that link preDressed into the pivot's binDir -- the binary this unit
       # runs is one of them.
       systemd.services.briard-test-write-units = {
-        description = "Harness stand-in for the host's dress: render the agent's own units ([B.160])";
+        description = "Harness stand-in for the host's dress: render the agent's own units";
         wantedBy = [ "multi-user.target" ];
         after = [ "systemd-tmpfiles-setup.service" ];
         before = [ "multi-user.target" ];
@@ -428,7 +427,7 @@ let
           ExecStart = "${config.briard.pivot.binDir}/briard-guest-agent --write-units";
         };
       };
-      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR THE INBOUND CHANNEL ([B.143]) ─────────────
+      # ── THE HARNESS AS THE HOST'S STAND-IN, FOR THE INBOUND CHANNEL ───────────────────────
       # The same accommodation as the unit render above, for the same reason. In the product the
       # inbound listener runs INSIDE the long-running agent -- that is the whole point of it,
       # since the logic belongs where everything it reasons about lives -- and these machines run
@@ -439,7 +438,7 @@ let
       # It runs the PRODUCT's own listener rather than faking a socket here: a harness that
       # re-implements the thing under test cannot notice the product changing it.
       systemd.services.briard-test-inbound = {
-        description = "Harness stand-in for the agent's own inbound listener ([B.143])";
+        description = "Harness stand-in for the agent's own inbound listener";
         wantedBy = [ "multi-user.target" ];
         after = [ "briard-test-write-units.service" ];
         serviceConfig = {
@@ -461,13 +460,13 @@ let
       # Primary-only half, which in the product runs btrfs from the guest agent unit's own PATH
       # and converge from briard-services'. install_fixture runs both from a test shell, so both
       # have to be reachable there.
-      # lvm2/cryptsetup are the SEAM's tooling ([V3b.33]) in a test shell: the product reaches them
-      # through the image's tool profile, which is briard-node-storage's whole PATH ([B.160]), and a
+      # lvm2/cryptsetup are the SEAM's tooling in a test shell: the product reaches them
+      # through the image's tool profile, which is briard-node-storage's whole PATH, and a
       # rig that has to look at the stack it built -- `dmsetup deps`, `cryptsetup isLuks`, `pvs` --
       # runs from outside any unit. Free in size: both are already in this guest's closure.
       environment.systemPackages = [ pkgs.curl pkgs.lvm2.bin pkgs.cryptsetup testStorage ]
         ++ lib.optionals (allFixtures != [ ]) [ pkgs.btrfs-progs config.briard.agentPackage ];
-      # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS (V3.19c step 3). The guest image bakes
+      # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS. The guest image bakes
       # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
       # L2. So the harness states the address it is going to curl, rather than inheriting one
       # from the product image -- which is the point of the change and not merely its cost. A
@@ -478,24 +477,24 @@ let
       # where their private DRBD address lives. That co-location is the reason briard-vip only
       # takes the NIC down when the address came from DHCP.
       #
-      # ⚠️ IT IS STATED ONCE NOW, in the tmpfiles symlink below ([B.160]). briard-vip used to
+      # ⚠️ IT IS STATED ONCE NOW, in the tmpfiles symlink below. briard-vip used to
       # carry a `serviceConfig.Environment` override of the same two values beside it, because
       # the unit was a NixOS one this file could reach; it is written by the agent at runtime
       # now and cannot be. Nothing is lost -- the override was already redundant with the file,
-      # which the product REQUIRES as an EnvironmentFile ([V3b.16a]) and which the mDNS
+      # which the product REQUIRES as an EnvironmentFile and which the mDNS
       # publishers read anyway -- and one statement of an address is one fewer thing that can
       # disagree with itself.
       # /etc/drbd.conf is the one file drbdadm looks for at a path we do not choose, so the harness
       # states it here (the shipped image states the identical glob in disk-image.nix, which these
       # nodes do not import).
       environment.etc."drbd.conf".text = ''include "/run/briard/drbd.d/*.res";'';
-      # BOTH agent-written files are on TMPFS in the product now ([V3b.16b]), so neither can be
+      # BOTH agent-written files are on TMPFS in the product now, so neither can be
       # declared through environment.etc any more. tmpfiles symlinks put the same store files at the
       # exact paths the agent would write, which keeps the harness stating its own configuration
       # while running the product's own layout -- and drbd-reactor reads a symlinked snippet
       # identically (the etc form was a store symlink too, which is why `drbd-reactorctl evict`
       # never minded). Paths that match the product are the point: the divergence between these
-      # nodes and the disk-image guest is where [V3b.16] lived.
+      # nodes and the disk-image guest is where the guest-parity bugs lived.
       systemd.tmpfiles.rules = [
         # The VIP configuration at the path the AGENT would have written it. briard-vip has the
         # Environment override above and does not need this; the two mDNS publishers do, because
@@ -505,7 +504,7 @@ let
         # (ConditionPathExists on mdns.env), so the noise was invisible until one asserted mDNS.
         "d /run/briard 0755 root root -"
         "L+ /run/briard/vip.env - - - - ${vipEnvFile}"
-        # ⚠️ THE `.res` IS NOT DECLARED HERE ANY MORE ([V3b.33](d)). It used to be a tmpfiles
+        # ⚠️ THE `.res` IS NOT DECLARED HERE ANY MORE. It used to be a tmpfiles
         # symlink to a store file, which was right while the harness SUPPLIED it and nothing
         # wrote it. briard-node-storage writes the `.res` itself now, exactly as the product
         # does -- and writing through a store symlink is `read-only file system`, which is how
@@ -513,7 +512,7 @@ let
         # in it is the unit's, from the spec above.
         "d /run/briard/drbd.d 0755 root root -"
       ]
-      # The snippet is STATIC ([V3b.3](f)): the chain names briard-services, and what the node runs
+      # The snippet is STATIC: the chain names briard-services, and what the node runs
       # comes from the VOLUME at promotion, so no test's workload choice can change it.
       ++ lib.optionals promoter [
         "d /run/briard/drbd-reactor.d 0755 root root -"
@@ -530,7 +529,7 @@ in
     fixtureInstall
     fixturesInstall
     fixtureHelpers
-    # Exported since [B.125] because two rigs write their OWN reactor snippet -- runtime-join needs
+    # Exported because two rigs write their OWN reactor snippet -- runtime-join needs
     # no baked r0.res, service-install installs one from the testScript -- and both restated the
     # chain by hand. That was survivable while every non-member rode briard-vip on wantedBy; it is
     # not now that the door and the publishers are MEMBERS, because a rig whose list is short does

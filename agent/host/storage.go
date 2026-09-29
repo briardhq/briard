@@ -8,17 +8,17 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// THE NODE'S STORAGE SPEC IS THE HOST'S TO RENDER ([V3b.33](d), AGENTS §5).
+// THE NODE'S STORAGE SPEC IS THE HOST'S TO RENDER.
 //
 // Storage policy is a node-scoped fact the host holds durably and pushes at bring-up, and until
-// this existed the guest decided it: [V3b.33](b)/(c) built the seam in a BOOT unit whose only
+// this existed the guest decided it: the seam was first built in a BOOT unit whose only
 // inputs were facts it could read off the machine. That shape has no way to carry a decision --
 // which is exactly why Adiantum, specified as an install-time opt-in, could not be built. The
 // host renders the whole spec here and the guest carries it out.
 
 // dataTier is the one tier every diskful node holds: the replicated volume, on the second virtio
-// disk, as the two-LV VG the seam invariant fences (INVARIANTS §13) -- the data LV and, at the
-// end of the PV, DRBD's external metadata ([B.145a]).
+// disk, as the two-LV VG the seam invariant fences -- the data LV and, at the
+// end of the PV, DRBD's external metadata.
 //
 // The names come from the two packages that already own them -- the raw device from the file
 // that attaches it, the VG and LVs from the package DRBD's backing paths are composed in -- so
@@ -40,7 +40,7 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // It takes the resource and the two decisions rather than reading them off c, because the join
 // path brings up a DIFFERENT resource under different terms -- a joiner is hard-wired
 // FreshInit=false, and a witness is diskless -- and a builder that read cfg.FreshInit would seed
-// a joiner ([V3b.33](d) does not change that rule; it only moves where it is carried out).
+// a joiner (rendering on the host does not change that rule; it only moves where it is carried out).
 //
 // It returns an error rather than a spec-and-a-hope: the unit on the other side of this document
 // runs luksFormat and lvcreate, so a policy nobody can parse must stop bring-up here, loudly,
@@ -50,9 +50,9 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // EXPORTED FOR THE TEST DRIVER, the harness that stands in for this agent (nixosTest/driver): it
 // renders its spec through here rather than assembling one of its own, so a rig exercises the
 // product's composition -- the DATA_ENCRYPTION knob included -- instead of a second opinion about
-// it. That is the whole point of [V3b.33](d)'s re-cut.
+// it. That is the whole point of rendering the spec on the host.
 func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodestorage.Spec, error) {
-	// A RESOURCE IS WORTH RUNNING ONLY WITH TWO COPIES ([B.145]). With one diskful member DRBD
+	// A RESOURCE IS WORTH RUNNING ONLY WITH TWO COPIES. With one diskful member DRBD
 	// protects nothing and turns any single bad block into a dead node, so a lone anchor runs
 	// btrfs on its LV directly and DRBD is introduced when the second anchor joins. The rule is
 	// the DISKFUL count: a witness beside one anchor is that same lone anchor, and a witness with
@@ -97,7 +97,7 @@ func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodest
 		// loudly enough that guessing here would only get in the way.
 		for _, p := range res.Peers {
 			if p.Name == c.Node && p.Disk != "" && p.Disk != tier.Mapper() {
-				return nodestorage.Spec{}, fmt.Errorf("node %s: the seam builds %s but %s attaches %s -- every diskful node runs on the one LV since [V3b.33](b)", c.Node, tier.Mapper(), res.Name, p.Disk)
+				return nodestorage.Spec{}, fmt.Errorf("node %s: the seam builds %s but %s attaches %s -- every diskful node runs on the one LV", c.Node, tier.Mapper(), res.Name, p.Disk)
 			}
 		}
 	}

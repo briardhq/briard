@@ -4,7 +4,7 @@
 # shares the module-wide vendorHash (one definition, vendor-hash.nix).
 #
 # It lives under nixosTest/: it is a fixture, and since the payload slot was deleted
-# ([V3b.3](e2)) nothing in the product tree refers to it at all -- the tests install it the way a
+# nothing in the product tree refers to it at all -- the tests install it the way a
 # user installs a service.
 { buildGoModule }:
 buildGoModule {

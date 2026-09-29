@@ -19,7 +19,7 @@ import (
 // second, with the replicated DATA disk untouched and the node's identity (which lives on that
 // disk) intact.
 //
-// That is the whole of B.10's Tier 3 -- and it is deliberately NOT wired to any reflex. Failures
+// That is the whole of the rollback tier -- and it is deliberately NOT wired to any reflex. Failures
 // during an OS upgrade are common and their cause is known, which is why rollback there is
 // automatic. Failures during normal operation are rare and of unknown cause, and this is a drastic
 // remedy with an uncertain result: the rebuilt guest must re-pull its OCI images over the WAN at
@@ -104,7 +104,7 @@ func (s QEMUSpec) BackingFile(ctx context.Context) (string, error) {
 // The data disk is not named here, not passed here, and not reachable from here. That is the
 // separation the whole verb rests on, and it is kept by the signature rather than by a comment.
 func (s QEMUSpec) RebuildOverlay(ctx context.Context) (backing string, err error) {
-	// A NODE THAT HAS NO OVERLAY YET gets one here ([B.157]). install.sh used to lay the first one
+	// A NODE THAT HAS NO OVERLAY YET gets one here. install.sh used to lay the first one
 	// down with the same `qemu-img create` this function ends in, which meant the installer owned
 	// a step the agent already performs at every launch -- and a Windows host would have had to
 	// own it a second time. The BASE is the config's, not something read back off a disk that does

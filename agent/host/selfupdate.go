@@ -8,14 +8,14 @@ import (
 	"briard.io/agent/selfupdate"
 )
 
-// hostSelfUpdater is the production selfUpdater. Since [B.86a] it is a FLAG-WATCHER plus a
+// hostSelfUpdater is the production selfUpdater. It is a FLAG-WATCHER plus a
 // trigger: the fetch, verify and stage happen below the agent, in the frozen update unit and the
 // fresh binary it pulls, so this type keeps only what the running agent must still do -- hand a
 // cloud directive's version to that unit, notice an armed candidate, and restart itself at its
 // safe point (DETACHED, through the Type=notify pivot).
 //
-// It is NO LONGER KEYRING-GATED, and that is a trust-boundary change rather than a relocation
-// ([B.86c]): the keyring now gates the unit's fetch, and the agent honours an arm flag it did
+// It is NO LONGER KEYRING-GATED, and that is a trust-boundary change rather than a relocation:
+// the keyring now gates the unit's fetch, and the agent honours an arm flag it did
 // not create and cannot verify. That is correct -- verification already happened upstream, on
 // bytes the unit staged under the same keyring this agent used to hold -- and it is what lets
 // the timer path work on a node whose agent is wedged, which is the case the whole design exists
@@ -44,7 +44,7 @@ func (cfg Config) newSelfUpdater() selfUpdater {
 	}
 }
 
-// Trigger is the cloud trigger of [B.86a]: the target as a message, one `systemctl start` of the
+// Trigger is the cloud trigger: the target as a message, one `systemctl start` of the
 // frozen unit, its one-line verdict back.
 func (h *hostSelfUpdater) Trigger(ctx context.Context, version string) (string, error) {
 	return h.layout.Trigger(ctx, h.update, version)

@@ -14,7 +14,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// ring is what the host answers `service-members` with ([B.167]): quiet time on an older version
+// ring is what the host answers `service-members` with: quiet time on an older version
 // whose point was taken while the app ran, the update to 2026.8.0 on the point before it, and the
 // start after it -- a sample, which anchors nothing and is not a row.
 func ring() string {
@@ -77,7 +77,7 @@ func answerMembers(port *fakePort) {
 	}()
 }
 
-// THE HISTORY ([B.143], [B.167]): the page lists the EVENTS the host's ring holds, and says the two
+// THE HISTORY: the page lists the EVENTS the host's ring holds, and says the two
 // things a list of times cannot -- which points the app has to recover from, and which ones move
 // its version as well as its data. A sample that anchors nothing is not a row.
 func TestHistoryListsWhatTheHostReports(t *testing.T) {
@@ -210,7 +210,7 @@ func TestHistoryRefusesAPointThatIsGone(t *testing.T) {
 	}
 }
 
-// TestHistoryNeedsATrustedBrowser: reaching this port is not authentication ([V3b.31a](a)), and
+// TestHistoryNeedsATrustedBrowser: reaching this port is not authentication, and
 // these two routes read a household's history and can discard part of it.
 func TestHistoryNeedsATrustedBrowser(t *testing.T) {
 	r := newRig(t)
@@ -252,7 +252,7 @@ func TestHistoryRefusesSomethingThatIsNotAPoint(t *testing.T) {
 	}
 }
 
-// TestHistoryMarksAnAppThatDidNotStart ([B.167]): a row with an `unhealthy` reason carries the red
+// TestHistoryMarksAnAppThatDidNotStart: a row with an `unhealthy` reason carries the red
 // mark, and while the app is unhealthy a banner offers the undo back to its last healthy state --
 // and says nothing once it is healthy again.
 func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {

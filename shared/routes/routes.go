@@ -52,7 +52,7 @@ type Service struct {
 	Name string `json:"name"`
 	// Hosts are the names this service answers to: the mDNS label HostName composes, first —
 	// it is the SRV target announcements point at — and the per-home `<service>.<flock>.briard.casa`
-	// name CasaHostName composes ([V3c.4]), which resolves only once the household has claimed
+	// name CasaHostName composes, which resolves only once the household has claimed
 	// its name and is harmless in the table until then.
 	//
 	// MATERIALISED RATHER THAN DERIVED, though both forms are computable from (flock, slug). The
@@ -66,7 +66,7 @@ type Service struct {
 	// still reachable on any port it publishes; it simply has no name yet.
 	Hosts []string `json:"hosts,omitempty"`
 	// Address is the host this service answers on — the guest's own loopback while the pod shares
-	// the guest's network namespace, the pod's address once it does not ([B.48](a)). A bare host,
+	// the guest's network namespace, the pod's address once it does not. A bare host,
 	// with no port: a service is ONE pod and a pod is ONE network namespace, so one address serves
 	// every port it listens on, and Health and Routes below carry only the port.
 	//
@@ -154,11 +154,11 @@ const ListenName = "name"
 
 // HostName is the single place a service's LAN name is composed: `briard-<flock>-<service>.local`.
 //
-// ONE LABEL, and that is measured rather than stylistic (V3.19d): `mdns4_minimal`, the resolver in
+// ONE LABEL, and that is measured rather than stylistic: `mdns4_minimal`, the resolver in
 // Debian/Ubuntu's nsswitch, handles exactly ONE label before `.local`. So the flock-scoped
 // `briard-picked-hornet-home-assistant.local` resolves on a stock client and the prettier
 // `home-assistant.briard-picked-hornet.local` would publish fine and resolve nowhere — the same
-// trap V3.19d found for the flock name itself, one level down.
+// trap measured for the flock name itself, one level down.
 //
 // FLOCK-SCOPED rather than bare `home-assistant.local`, which is the name every Home Assistant
 // tutorial uses and the one thing a household might already own. Measured 2026-08-23: two avahi
@@ -176,7 +176,7 @@ func HostName(flock, service string) string {
 	return "briard-" + flock + "-" + service + ".local"
 }
 
-// CasaHostName is the service's name under the household's casa domain ([V3c.4]):
+// CasaHostName is the service's name under the household's casa domain:
 // `<service>.<flock>.briard.casa`, covered by the flock's wildcard certificate and answered by
 // the same door that answers the `.local` name. Composed for every named flock, claimed or not:
 // a name that does not resolve routes nothing, and the alternative -- the table knowing whether
@@ -194,7 +194,7 @@ func CasaHostName(flock, service string) string {
 // briard flocks in one house must be told apart by the person choosing between them.
 //
 // DERIVED FROM HostName ON PURPOSE, rather than assembled a second time: the instance and the SRV
-// target it points at are then the same name by construction, and a future name form ([V3b.14])
+// target it points at are then the same name by construction, and a future name form
 // changes one function.
 func InstanceName(flock, service string) string {
 	return strings.TrimSuffix(HostName(flock, service), ".local")
@@ -392,10 +392,10 @@ func Normalise(host string) string {
 // FlockHostName is the flock's OWN name — `briard-<flock>.local`, the one a household types to
 // reach this node's dashboard and the SRV target nothing else composes. It lives here for the
 // reason HostName does: every rule for building a name belongs to one function, so a second name
-// form ([V3b.14]) is one change rather than one per language.
+// form is one change rather than one per language.
 //
 // The publisher composes nothing: it claims the names this package builds, so the door and the
-// agent cannot disagree about what a flock is called ([B.152]).
+// agent cannot disagree about what a flock is called.
 //
 // An empty flock name yields no name at all, the same rule HostName follows: a node with no minted
 // name publishes nothing rather than `briard-.local`, which is worse than silence.

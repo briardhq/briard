@@ -18,8 +18,8 @@ import (
 )
 
 // certRequester holds the node-side state of the CSR renewal handshake. On a
-// DirectiveCertRequest it generates a fresh keypair + CSR -- the private key stays home
-// ([[cloud-issues-certs-not-node]]) -- stashing the key until the signed cert returns and
+// DirectiveCertRequest it generates a fresh keypair + CSR -- the private key stays home --
+// stashing the key until the signed cert returns and
 // queuing the CSR to ride the next report up. On the DirectiveCert it pairs the returned
 // cert with the stashed key and writes both to the replicated volume. In-memory only: a
 // restart drops the stash, and the cloud simply re-requests a CSR on its next tick.
@@ -75,9 +75,9 @@ func (cr *certRequester) keyFor(name string) string {
 // not touch services, and a signature with nothing to name a service with is a
 // separation the compiler keeps rather than one a reader has to.
 type upgrader interface {
-	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // [B.86h]: the guest chain's release, image already staged
+	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // the guest chain's release, image already staged
 	WriteCert(ctx context.Context, cert, key string) error                               //: apply a renewed cert to the vol
-	// RescueGuest rebuilds the guest from the verified image under its overlay (B.10) -- the one
+	// RescueGuest rebuilds the guest from the verified image under its overlay -- the one
 	// recovery rung that is never a reflex. It is on this interface rather than beside it because
 	// it performs the same VM+channel+Manager swap the upgrade legs do, and a second owner of that
 	// swap would be a second way to do it.
@@ -86,7 +86,7 @@ type upgrader interface {
 
 // selfUpdater is the slice of the host-agent self-update the agent-update directive drives
 // -- narrow so the dispatch is unit-testable without a real binary/systemd. Trigger hands the
-// offered version to the frozen update unit BELOW the agent ([B.86a]) and blocks on its one-line
+// offered version to the frozen update unit BELOW the agent and blocks on its one-line
 // verdict: the unit pulls a fresh agent from the channel and lets that binary fetch, verify,
 // stage and arm (refuse-and-stay on a bad pin or signature: current kept, the line says why).
 // The host loop then triggers Restart once the outcome is acked, so the Type=notify pivot
@@ -108,7 +108,7 @@ type selfUpdater interface {
 // back so the cloud moves the intent terminal -- the durable answer a post-outage reconcile
 // polls. Re-delivery of an already-applied directive is an idempotent no-op that re-reports done.
 //
-// IT TAKES NO SERVICE, and that is the shape [V3b.3](e1) left behind: nothing here acts on one.
+// IT TAKES NO SERVICE, and that is deliberate: nothing here acts on one.
 // A version change is a service-install directive carrying a catalog name (applyServiceInstall),
 // an OS upgrade must not touch services at all, and the image re-pin that needed a single named
 // service died with the build-time payload slot.
@@ -191,7 +191,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 			logf("directive agent-update: already running %s; nothing to do", u.Version)
 			return done // idempotent: a re-offer of the running version is a no-op
 		}
-		// THE CLOUD TRIGGER ([B.86a]): write the target and start the frozen unit, which pulls a
+		// THE CLOUD TRIGGER: write the target and start the frozen unit, which pulls a
 		// fresh agent from the channel and lets THAT binary fetch, verify, stage and arm -- so a
 		// fetch bug in this running binary cannot prevent its own replacement. `systemctl start`
 		// blocks on the oneshot, bounded here; staging is atomic, so a timeout can't leave a

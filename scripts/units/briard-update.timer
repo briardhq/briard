@@ -1,5 +1,5 @@
 # briard-update.timer -- SHIPPED VERBATIM, not generated. A signed artifact of the host chain
-# that install.sh copies into place; see briard-agent.service for why ([B.157]).
+# that install.sh copies into place; see briard-agent.service for why.
 [Unit]
 Description=briard update check (daily, in the small hours, following stable)
 [Timer]

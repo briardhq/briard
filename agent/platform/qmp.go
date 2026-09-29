@@ -194,7 +194,7 @@ const GuestShutdownGrace = 60 * time.Second
 // useless here, in either direction the underlying check could go. Guest.Shutdown confirms the
 // stop with WaitStopped, which judges the unit by its ActiveState -- and inside its own unit's
 // ExecStop the unit reads "deactivating" for as long as this function runs. Reading that as
-// stopped (`systemctl is-active`, which is what WaitStopped did before [B.103]) returns SUCCESS
+// stopped (`systemctl is-active`, which is what WaitStopped once did) returns SUCCESS
 // immediately, reporting a clean shutdown while the guest is still flushing, and systemd goes on
 // to kill QEMU underneath it; reading it as still-running, which is what WaitStopped does now,
 // waits on a state only this function's own return can clear. Vacuous one way, self-deadlocked
@@ -265,9 +265,9 @@ func qmpReachable(ctx context.Context, path string) bool {
 // ⚠️ IT ASKS FOR A NAME, NOT FOR A YES/NO ABOUT KVM, and the difference is not cosmetic. The
 // older `query-kvm` answers `{"enabled": false, "present": false}` on a perfectly accelerated
 // WHPX guest, because it is asking whether the accelerator is KVM specifically -- measured on
-// Windows in [V3b.27](a). Its `present` field was no better: QEMU implements it as
+// Windows. Its `present` field was no better: QEMU implements it as
 // `accel_find("kvm")`, i.e. *is KVM compiled into this binary*, so on every Linux build it is
-// true no matter what the host can do ([V3b.28]).
+// true no matter what the host can do.
 //
 // `query-accelerators` needs QEMU 10.2+, which is what qemu-bundle.nix ships. An older qemu
 // errors here and the caller logs that it could not ask; there is deliberately no `query-kvm`
@@ -304,7 +304,7 @@ const AccelTCG = "tcg"
 // ACPI button) returns as soon as the request is accepted, and the caller's next act is
 // usually to touch the disk QEMU still has open.
 //
-// "Gone" means the unit is at rest, not merely non-"active" -- see unitAtRest and [B.103].
+// "Gone" means the unit is at rest, not merely non-"active" -- see unitAtRest.
 func (g *Guest) WaitStopped(ctx context.Context, grace time.Duration) error {
 	if g == nil || g.unit == "" {
 		return nil
@@ -344,7 +344,7 @@ func (g *Guest) Reset(ctx context.Context) error {
 // DebugConsoleName is the debug console's socket; DebugConsolePath puts it BESIDE the monitor
 // that arms it, rather than anywhere a second setting could name.
 //
-// THAT DERIVATION IS THE CONTAINMENT ([B.142a]). Launch makes the QMP directory 0700 root
+// THAT DERIVATION IS THE CONTAINMENT. Launch makes the QMP directory 0700 root
 // (secureQMPDir), so a socket placed there inherits it; the same socket in, say, /tmp would be a
 // world-reachable door onto an autologin root shell. There is therefore exactly one input -- the
 // monitor's own path -- and no configuration that can pull the two apart.

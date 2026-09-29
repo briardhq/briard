@@ -65,7 +65,7 @@ func TestNotifyUnreachableSocketErrors(t *testing.T) {
 }
 
 // Adopt takes the socket OUT of the environment while keeping it usable from this process: the
-// agent goes on signalling, and the children it execs inherit nothing ([V3b.21e] — `systemctl`
+// agent goes on signalling, and the children it execs inherit nothing (`systemctl`
 // reports its own EXIT_STATUS=0 to any notify socket it finds, and systemd logs the refusal on
 // every start).
 //

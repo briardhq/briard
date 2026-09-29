@@ -60,12 +60,12 @@ func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
 // what install.sh leaves behind, and the whole free tier. Those nodes have a guest, and load
 // average, journal size, podman-store size and the guest's KERNEL ERRORS are node-scoped facts
 // that need neither a unit nor a data dir. Skipping the read lost all of them, so a zero-service
-// anchor's kernel problems were invisible to the soak oracle. Same bug as [V3b.3](d), one layer
-// out, and the same lesson: the test had encoded it.
+// anchor's kernel problems were invisible to the soak oracle. Same bug as the per-service gate
+// that hid zero-service nodes, one layer out, and the same lesson: the test had encoded it.
 //
 // Rewritten to assert the read HAPPENS and carries the node-scoped series, with no per-service
 // entries because there are no services. Confirmed to fail against the old gate before it passed
-// against the new one ([[verification-assertions-must-fail]]).
+// against the new one.
 func TestResourcesZeroServiceNodeStillReadsTheAppliance(t *testing.T) {
 	cfg := Config{} // the empty set: nothing installed, the shipped state
 	r := &recordingReader{fakeStatus: fakeStatus{res: telemetry.NodeResources{Load1: 0.4, LogSizeKB: 900, KernelErrors: []string{"oops"}}}}
@@ -122,7 +122,7 @@ func TestResourcesProbesTheServingUnit(t *testing.T) {
 	}
 }
 
-// N SERVICES, EACH MEASURED SEPARATELY ([V3b.3](b)). Summing them was the alternative and it is
+// N SERVICES, EACH MEASURED SEPARATELY. Summing them was the alternative and it is
 // the one that loses the signal: NRestarts exists to make a crash-loop loud, and one service
 // flapping inside a total reads as a small climb. So the probe names every service and the oracle
 // gets one series per name.

@@ -30,7 +30,7 @@ const vipVerbTimeout = 5 * time.Second
 // service NIC is measured to hold -- and never cfg.VIPAddr or cfg.HealthURL, which say what we
 // asked for rather than what happened.
 //
-// This OBSERVES a failover; it never drives one (AGENTS §4.2). Nothing here promotes, demotes or
+// This OBSERVES a failover; it never drives one (CONTRIBUTING.md invariant 2). Nothing here promotes, demotes or
 // claims an address -- drbd-reactor moves the VIP and this notices afterwards.
 
 // vipRouter holds the one fact the reconcile needs to remember: what it last installed. Without
@@ -46,7 +46,7 @@ type vipRouter struct {
 	// installed is the address currently routed over the link; "" = no route of ours exists.
 	installed string
 	// set/clear are the platform calls, as fields so the transition table below can be tested
-	// without a live network. Not a seam (AGENTS §4.6) -- a test double inside one component.
+	// without a live network. Not a seam -- a test double inside one component.
 	set   func(context.Context, platform.VIPRoute) error
 	clear func(context.Context, string, string) error
 }
@@ -87,7 +87,7 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 	// A SHUTDOWN IS NOT A DEMOTION, and this guard is the whole of that distinction.
 	//
 	// The guest is a DETACHED unit: it keeps serving across an agent stop, and an agent restart is
-	// exactly what a self-update is ([V3.4]). Reading a cancelled context as "the guest did not
+	// exactly what a self-update is. Reading a cancelled context as "the guest did not
 	// answer" would withdraw the route on the way out, so every restart would blip the
 	// household's reachability from its own machine for a node that never stopped serving.
 	// agent-readopt polls the VIP across a restart and asserts it never drops -- which is where

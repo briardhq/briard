@@ -1,8 +1,8 @@
 // Package nodestorage is the node's block-storage spec: the document the HOST renders and the
-// guest's briard-node-storage.service reads to build every tier this node holds ([V3b.33](d)).
+// guest's briard-node-storage.service reads to build every tier this node holds.
 //
-// IT EXISTS BECAUSE STORAGE POLICY IS THE HOST'S (AGENTS §5: a node-scoped fact the host holds
-// durably and pushes at bring-up). [V3b.33](b)/(c) shipped the seam as a BOOT unit whose only
+// IT EXISTS BECAUSE STORAGE POLICY IS THE HOST'S (a node-scoped fact the host holds
+// durably and pushes at bring-up). The seam first shipped as a BOOT unit whose only
 // inputs were facts it could read off the machine -- today /proc/cpuinfo -- and that shape cannot
 // carry a decision anybody made: the moment there is one (do not encrypt this node; force
 // Adiantum; here is a key) a boot unit has nowhere to read it from. That is precisely why
@@ -17,9 +17,9 @@
 // one arrives.
 //
 // WHAT IS DELIBERATELY NOT HERE: the drbd-reactor promoter snippet. Arming the promoter is its
-// own verb and deliberately the LAST act of bring-up ([V3b.16a]), so a document named
+// own verb and deliberately the LAST act of bring-up, so a document named
 // node-storage that also carried the promotion chain would be exactly the drift the seam's own
-// fence (INVARIANTS §13) exists to catch. Storage brings the resource up to `/dev/drbd0 attached`
+// fence exists to catch. Storage brings the resource up to `/dev/drbd0 attached`
 // and stops there.
 package nodestorage
 
@@ -77,9 +77,9 @@ func (m Mode) Valid() bool {
 
 // Tier is one block-storage tier this node holds: the raw device, the VG built on it (via LUKS,
 // per Mode), and its two LVs -- the data LV DRBD attaches to and the metadata LV it keeps its
-// external metadata on ([B.145a]).
+// external metadata on.
 //
-// THE LINEAR LV IS THE SEAM ([V3b.33], INVARIANTS §13). The data LV's table is one `linear` line,
+// THE LINEAR LV IS THE SEAM. The data LV's table is one `linear` line,
 // so the backing can be moved onto an encrypted PV and back with `pvmove` while the device object
 // above it never closes. Anything that adds a second dm layer here (striped, cached, thin) stops
 // the seam being free, which is why the oracle fences the shape rather than trusting this
@@ -97,7 +97,7 @@ type Tier struct {
 	// opinion about the same string.
 	VG string `json:"vg"`
 	LV string `json:"lv"`
-	// MetaLV names the SECOND logical volume in the VG: DRBD's external metadata ([B.145a]).
+	// MetaLV names the SECOND logical volume in the VG: DRBD's external metadata.
 	// It sits at the END of the PV at a size computed from the data LV (MetadataBytes), which
 	// is DRBD's own internal-metadata placement spelled in LVM -- and what makes a filesystem
 	// that already fills the data LV convertible to a replicated one in place: `create-md`
@@ -149,19 +149,19 @@ type Resource struct {
 	Name string `json:"name"`
 	// Device is the replicated block device the resource presents, e.g. /dev/drbd0 -- what the
 	// .res names as `device` and what briard-primary-storage mounts. Carried so the mount unit
-	// reads the device off the same document the block layer was built from ([B.145a]) rather
+	// reads the device off the same document the block layer was built from rather
 	// than restating a constant beside it.
 	Device string `json:"device"`
 	// Replicated says the resource is real: DRBD runs on this node, the .res is written, the
-	// metadata is created and attached, and Device is the DRBD device. False is a LONE node
-	// ([B.145]): a home with one diskful member runs btrfs on the data LV directly -- no DRBD,
+	// metadata is created and attached, and Device is the DRBD device. False is a LONE node:
+	// a home with one diskful member runs btrfs on the data LV directly -- no DRBD,
 	// no metadata, no promoter, since with no second copy DRBD only turns a bad block into a
 	// dead node -- and Device names that LV. The host decides it from the mesh (two or more
 	// DISKFUL members; a witness beside one anchor holds no copy), the guest carries it out at
 	// bring-up and reads it back for everything that used to key on DRBD state. A joiner and a
 	// witness are always replicated.
 	Replicated bool `json:"replicated,omitempty"`
-	// Convert is the ONE-SHOT intent that lifts the refuse cell ([B.145d]): a node whose spec says
+	// Convert is the ONE-SHOT intent that lifts the refuse cell: a node whose spec says
 	// alone but whose metadata LV holds DRBD metadata is refused, because that is what a forgotten
 	// flock looks like -- unless the host ASSERTS, from the removal verb and nowhere else, that
 	// the flock ended and the metadata is to be wiped. ConvertDisable is the only value; enable
@@ -185,7 +185,7 @@ type Resource struct {
 	// of a NEW flock, so once its metadata is created the resource may be declared UpToDate
 	// (skip the initial sync) and the volume formatted once. A joiner is hard-wired false.
 	//
-	// It is only half, and the other half is what retires /run/briard/data.fresh ([V3b.33](c)):
+	// It is only half, and the other half is what retires /run/briard/data.fresh:
 	// "did we just create this LV" was an inference from `drbdadm create-md`'s exit code, an
 	// inference ENCRYPTION BROKE -- dm-crypt returns ciphertext for sectors nobody has written,
 	// so create-md's blank-probe found "some data" on every fresh encrypted node. One program
@@ -213,7 +213,7 @@ func (s Spec) Tier(name string) (Tier, bool) {
 
 // Parse decodes and validates a spec. Unknown fields are REFUSED, for the same reason
 // shared/routes and shared/manifest refuse them: the host that writes this and the pushed agent
-// that reads it ship together ([B.139]), so a field this build does not understand means the two
+// that reads it ship together, so a field this build does not understand means the two
 // have drifted -- and the operation on the other side of this document is destructive. Building
 // storage from a document you only partly understand is the one failure mode worth refusing to
 // boot over.
@@ -337,7 +337,7 @@ func (s Spec) Validate() error {
 }
 
 // ConvertDisable is the one convert intent: the flock ended, wipe the DRBD metadata this node
-// still carries and run the volume alone ([B.145d]).
+// still carries and run the volume alone.
 const ConvertDisable = "disable"
 
 // lvmName refuses the two characters that would make Mapper lie: a dash, which device-mapper

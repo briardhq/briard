@@ -216,7 +216,7 @@ func TestNoDirectPromoteDemote(t *testing.T) {
 	}
 }
 
-// THE FENCE THAT MAKES THE GUEST CHAIN STAND STILL ([B.86i], [B.139]). The guest image's input
+// THE FENCE THAT MAKES THE GUEST CHAIN STAND STILL. The guest image's input
 // hash (flake.nix guestInputPackages) must cover every Go package the FIRMWARE
 // (agent/cmd/briard-guest-firmware) links, or an edit outside the list would ship a changed baked
 // binary under an unchanged inputs hash -- and `publish-release.sh stage` would then REUSE the old
@@ -239,7 +239,7 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if rest, ok := strings.CutPrefix(l, "briard.io/"); ok {
 			if rest == "agent/guestagent" || strings.HasPrefix(rest, "agent/guestagent/") {
-				t.Errorf("the firmware links %s -- the pushed agent is not the image's business ([B.139])", rest)
+				t.Errorf("the firmware links %s -- the pushed agent is not the image's business", rest)
 			}
 			want[rest] = true
 		}
@@ -281,7 +281,7 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 	}
 }
 
-// THE RIG'S COPY OF THE PROMOTER CHAIN, HELD TO THE PRODUCT'S ([B.160]).
+// THE RIG'S COPY OF THE PROMOTER CHAIN, HELD TO THE PRODUCT'S.
 //
 // nixosTest/lib.nix writes its own drbd-reactor snippet, because two rigs supply a reactor
 // config the harness did not bake and both used to restate the member list by hand. Nix cannot
@@ -289,7 +289,7 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 // in step BY HAND" is exactly the kind of promise nothing enforces.
 //
 // A rig whose list is SHORT does not merely differ, it never starts the missing members: the
-// door and the dashboard became members at [B.125], and a stale snippet would promote a node
+// door and the dashboard are members too, and a stale snippet would promote a node
 // that serves nothing while every assertion about the mount and the VIP still passes. That is
 // the failure this guard exists for, and it is invisible to every other test.
 //

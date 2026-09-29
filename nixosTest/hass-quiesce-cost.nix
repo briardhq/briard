@@ -1,8 +1,8 @@
-# WHAT AN HOURLY SAMPLE COSTS HOME ASSISTANT ([B.167a]) -- a stopwatch with a verdict, run by hand.
+# WHAT AN HOURLY SAMPLE COSTS HOME ASSISTANT -- a stopwatch with a verdict, run by hand.
 #
 # The history samples a running Home Assistant by the clock, and every such sample holds the
 # recorder still (a truncating WAL checkpoint plus a held transaction, agent/hass/quiesce.go).
-# At the hourly clock ([B.167a]), this measures what that costs on a recorder with
+# At the hourly clock, this measures what that costs on a recorder with
 # real history under real write load:
 #
 #   - the pause: how long getting the lock takes and how long it is held (the product reports

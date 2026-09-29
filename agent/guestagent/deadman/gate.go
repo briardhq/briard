@@ -30,14 +30,14 @@ import (
 // It READS NOTHING from the connection. There is no request to parse, so there is no parser to
 // get wrong: accept, write one line, close. That was cheap insurance when the link was private and
 // point-to-point. It answers on this node's own address, which rides the LAN's L2, so the listener
-// is not hidden by addressing -- reading nothing is what makes that safe ([V3b.26b]).
+// is not hidden by addressing -- reading nothing is what makes that safe.
 
 // GatePort is where the gate answers. Adjacent to DRBD's 7789, and the only fixed number left on
-// this path: the ADDRESS is the node's own (DESIGN §4), agent-assigned and flock-scoped, so it
+// this path: the ADDRESS is the node's own, agent-assigned and flock-scoped, so it
 // cannot be a constant here and must not be one anywhere else either.
 //
 // Nothing spells the gate's address twice, which is why no cross-language drift guard is needed
-// for it: the node IP is assigned once and travels over the channel ([V3b.26b]).
+// for it: the node IP is assigned once and travels over the channel.
 const GatePort = 7790
 
 // GateAddr is the address the host dials to read a guest's reboot gate: that node's node IP, the
@@ -136,7 +136,7 @@ func boolDigit(b bool) string {
 // fatal.
 //
 // It binds a PORT rather than an address because the address is the node's own and is assigned at
-// bring-up, so the image cannot name it (DESIGN §4). Answering on every interface is tolerable
+// bring-up, so the image cannot name it. Answering on every interface is tolerable
 // only because of the property above — this reads nothing from a connection, so a wider bind adds
 // no attack surface beyond letting a reader learn whether a reboot is currently allowed.
 func (g *Gate) Serve(ctx context.Context, addr string) error {

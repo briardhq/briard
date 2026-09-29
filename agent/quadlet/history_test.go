@@ -7,7 +7,7 @@ import (
 	"briard.io/agent/services"
 )
 
-// The history's fixtures ([B.167]). `now` is the moment the prune is asked about, and every
+// The history's fixtures. `now` is the moment the prune is asked about, and every
 // member is named by how long before it it was taken, so each case reads as the calendar question
 // it is.
 var retentionNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
@@ -288,7 +288,7 @@ func TestSnapshotMemberParsesEveryTrigger(t *testing.T) {
 }
 
 // TestRetentionWaitsForEvaluation: a pending start is kept, and so is the newest evaluated sample
-// its evaluation will compare with ([B.167]: pruning waits for evaluation).
+// its evaluation will compare with (pruning waits for evaluation).
 func TestRetentionWaitsForEvaluation(t *testing.T) {
 	ev := anchor(TriggerStart, 3*time.Hour, ReasonChanged, time.Hour, "Changed automations")
 	s0 := sample(TriggerClock, 150*time.Minute)

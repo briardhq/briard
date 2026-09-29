@@ -1,7 +1,7 @@
 // Command briard-agent is the host-side Briard daemon (privileged) and the `briard` operator CLI.
 // The host half orchestrates the guest and reports status; the in-guest half -- the control
 // agent that serves the host over virtio-serial, the deadman, the converge step -- is
-// briard-guest-agent, its own main with its own import graph ([B.137]). drbd-reactor inside the
+// briard-guest-agent, its own main with its own import graph. drbd-reactor inside the
 // guest drives failover.
 package main
 
@@ -27,12 +27,12 @@ func main() {
 
 	// `run` is the DAEMON, and it is intercepted here rather than in agent/cli because the daemon
 	// mode (runHost) cannot live in the CLI package. agent/cli documents it
-	// in its command table all the same, so the help lists it ([V3b.23]).
+	// in its command table all the same, so the help lists it.
 	if len(args) > 0 && args[0] == "run" {
 		runDaemon(args[1:])
 		return
 	}
-	// `uninstall` likewise ([V3c.2]): it undoes what the host agent built, read from the host
+	// `uninstall` likewise: it undoes what the host agent built, read from the host
 	// agent's own config, so it lives beside the daemon rather than in agent/cli.
 	if len(args) > 0 && args[0] == "uninstall" {
 		os.Exit(runUninstall(args[1:]))
@@ -53,7 +53,7 @@ func main() {
 }
 
 // runDaemon is `briard run`: the host agent, the long-running process. The in-guest modes that
-// used to hide behind `run --guest` / `run --deadman` are briard-guest-agent's now ([B.137]), a
+// used to hide behind `run --guest` / `run --deadman` are briard-guest-agent's now, a
 // different binary with a different import graph.
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard run", flag.ExitOnError)
@@ -70,7 +70,7 @@ func runDaemon(args []string) {
 	defer stop()
 
 	// Take the notify socket out of the environment before anything is exec'd, so the
-	// children this agent spawns cannot inherit it ([V3b.21e]).
+	// children this agent spawns cannot inherit it.
 	sdnotify.Adopt()
 
 	// Boot the guest, drive bring-up, observe status.
@@ -98,13 +98,13 @@ func runInternal(args []string) {
 	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
 	stageSystem := fs.String("system", "", "with --stage-manifest --chain vm: the store path of the NixOS toplevel the image boots (Manifest.System)")
 	stageMinBriard := fs.String("min-briard", "", "with --stage-manifest --chain vm: the oldest briard release this VM tolerates (Manifest.MinBriard)")
-	stageVM := fs.String("vm", "", "with --stage-manifest --chain briard: the vm release this briard release is published beside ([B.86i])")
+	stageVM := fs.String("vm", "", "with --stage-manifest --chain briard: the vm release this briard release is published beside")
 	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain vm: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
 	_ = fs.Parse(args)
 
 	// The release pipeline's manifest writer, and it is HERE rather than in the shell script that
-	// calls it for exactly the reason the identifiers moved into the agent ([B.157]): the manifest
+	// calls it for exactly the reason the identifiers moved into the agent: the manifest
 	// is a CONTRACT between the
 	// publisher and every installing node, and it used to have two implementations -- a printf
 	// loop in publish-release.sh (hand-assembling JSON, including `"mode":493`, which is 0o755
@@ -113,7 +113,7 @@ func runInternal(args []string) {
 	//
 	// Same category as --report-card and --fetch-install: a pipeline invokes it, it does one
 	// thing, it exits. It costs nothing in the shipped binary -- sha256 and encoding/json are
-	// already linked -- and the guest agent is its own main ([B.137]), so the
+	// already linked -- and the guest agent is its own main, so the
 	// guest trim is unaffected.
 	if *stageManifest != "" {
 		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinBriard, *stageVM, *stageInputs); err != nil {
@@ -126,7 +126,7 @@ func runInternal(args []string) {
 	// Pure host inspection (no host subsystems), so it runs on any build; refuses the unfit with
 	// the fix named before anything is installed.
 	//
-	// Bounded, because since [B.150](b) the card does one thing that can block: it creates and
+	// Bounded, because the card does one thing that can block: it creates and
 	// deletes a throwaway macvtap on the NIC it selected, to turn "this device cannot carry the
 	// guest" into a refusal rather than an unreachable VM. A gate is worthless if it can hang.
 	if *reportCard {
@@ -143,7 +143,7 @@ func runInternal(args []string) {
 
 	// The installer's signed-artifact fetch (assertion e) -- verify the qemu bundle +
 	// guest image against the release keyring before install.sh uses them. Host-only (it pulls
-	// in net/http); the guest agent is its own main and never sees it ([B.137]).
+	// in net/http); the guest agent is its own main and never sees it.
 	if *fetchInstall != "" {
 		if err := runFetchInstall(ctx, *fetchInstall); err != nil {
 			log.Fatalf("fetch-install: %v", err)
@@ -151,7 +151,7 @@ func runInternal(args []string) {
 		return
 	}
 
-	// The frozen update unit's verb ([B.86a]). The unit runs it on a FRESH binary it just
+	// The frozen update unit's verb. The unit runs it on a FRESH binary it just
 	// pulled from the channel, never on the committed one -- so this is the suspect side doing
 	// the verified fetch, and the one line it prints last on stdout is the unit's verdict (the
 	// unit relays it to whoever started the run: the cloud's directive, the timer's journal, or
@@ -188,7 +188,7 @@ func runInternal(args []string) {
 		return
 	}
 
-	// A leading '-' that named none of the above. Not a daemon invocation: since [V3b.23] the
+	// A leading '-' that named none of the above. Not a daemon invocation: the
 	// daemon is `briard run`, and falling through to it here would resurrect the very "a stray
 	// flag silently starts a privileged process" behaviour this recut removed.
 	fmt.Fprintf(os.Stderr, "briard: no internal helper named in %q (did you mean `briard run`?)\n", strings.Join(args, " "))

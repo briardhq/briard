@@ -7,7 +7,7 @@
 // re-cutting the published catalog.
 //
 // IT RUNS IN THE GUEST, and the host/guest line runs through the MANIFEST rather than through
-// this package ([V3b.3](f)). The host owns identity: it fetches the manifest from the catalog,
+// this package. The host owns identity: it fetches the manifest from the catalog,
 // verifies its signature against the release keyring, and writes those exact bytes to the
 // replicated volume. The guest never chooses what to run — it renders what the volume already
 // says, at promotion, from a manifest whose content hash IS the service identity.
@@ -18,7 +18,7 @@
 // belongs next to the podman it renders for, which is the same reason Dir gives for re-rendering
 // rather than replicating the rendered units.
 //
-// This does not soften [[logic-on-host-by-default]]: Render is a pure total function of the
+// This does not soften logic-on-the-host-by-default: Render is a pure total function of the
 // manifest bytes, holding no state, no identity and no decision. What moved is which binary
 // executes it, not who decides.
 //
@@ -49,12 +49,12 @@ const Dir = "/run/containers/systemd"
 
 // ImagePullTimeout bounds one `.image` unit's pull when the manifest does not say how big the
 // image is. See the emit site below for why it is this long and why tightening it is the wrong
-// instinct — in short: an expiry throws away the layer in flight ([B.56], measured), so the bound
+// instinct — in short: an expiry throws away the layer in flight (measured), so the bound
 // exists to make a hopeless pull loud, not to make failure prompt. Named here rather than
 // inlined because the acceptance test varies it.
 const ImagePullTimeout = 45 * time.Minute
 
-// The bound a SIZED entry gets ([V3b.31k]): a fixed allowance for everything that is not bytes
+// The bound a SIZED entry gets: a fixed allowance for everything that is not bytes
 // (the registry round-trips, the token dance, six layers starting at once, decompression at the
 // end), plus the download itself at the slowest link a household is asked to have. 5 Mbit/s is
 // deliberately below any broadband plan and above the mobile-tethering floor; a link slower than
@@ -92,7 +92,7 @@ type Rendered struct {
 	//
 	// A CRASHED CONTAINER NO LONGER DEMOTES THE NODE, and this comment used to say the opposite —
 	// that `Requires=`-propagates-failure "IS the failover trigger; a container that crashes
-	// SHOULD demote the node". [V3b.3](f) reverses that, for two reasons a pod stop's blast
+	// SHOULD demote the node". Converge-at-promotion reverses that, for two reasons a pod stop's blast
 	// radius had obscured: a code fault is DETERMINISTIC, so the peer running the identical
 	// closure hits it identically and the failover only flaps; and one broken service must not
 	// take the other N-1 down with it. The mechanism is non-membership — these units are started
@@ -113,11 +113,11 @@ type Rendered struct {
 	// pod and a pod is ONE network namespace, so one address covers every port it listens on, and
 	// the consumers (the front door's routes, the health probe) carry only the port.
 	//
-	// IT COMES FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION ([B.48]). The
+	// IT COMES FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION. The
 	// manifest names a port; what host that port answers on is decided by the networking this file
 	// writes into the .pod. Under host networking it is the guest's own loopback, which is why
 	// every caller could get away with assembling `127.0.0.1:<port>` for itself — and why they all
-	// break the moment a service asks for a private pod network ([B.48](a)), where the port is not
+	// break the moment a service asks for a private pod network, where the port is not
 	// on the guest's loopback at all. Returning it from the one place that chose it is what makes
 	// that a one-file change: the pod's address reaches the probe and the door together, with no
 	// caller left to update.
@@ -186,7 +186,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	// nothing is written into the pod; under a private network it is this pod's address on the
 	// node's pod pool, and both podman and the front door are told the same value from here — the
 	// property that keeps "where it answers" a single fact rather than an agreement.
-	// ⚠️ ExitPolicy=continue IS WHAT MAKES A CRASHED CONTAINER COME BACK ([B.168]). Quadlet's
+	// ⚠️ ExitPolicy=continue IS WHAT MAKES A CRASHED CONTAINER COME BACK. Quadlet's
 	// default is `stop`: when the pod's last container exits, podman stops the pod, systemd stops
 	// the container unit as the pod's dependent, and a dependency stop suppresses the container's
 	// Restart=always -- so a crashed Home Assistant stayed down until something else started it
@@ -252,7 +252,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// into the generated unit (measured against podman 5.8.2's own generator), and it emits
 		// no Restart= of its own for a container — only for the pod.
 		//
-		// It is required because the service units are NOT promoter chain members ([V3b.3](f)):
+		// It is required because the service units are NOT promoter chain members:
 		// drbd-reactor neither starts, restarts nor watches them, so without a restart policy a
 		// container that dies stays dead with nothing to bring it back. That non-membership is
 		// what makes "a service error alerts but never demotes" mechanically true, and this line
@@ -270,7 +270,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// instead of latching to `failed` and giving up on a transient cause. The loop stays
 		// VISIBLE either way: NRestarts climbs, and the resource telemetry reads it per service.
 		lines = append(lines, "", "[Service]", "Restart=always", "RestartSec=5")
-		// THE RING'S GENERIC HOOK ([B.143]): a member of this service's data, taken while the
+		// THE RING'S GENERIC HOOK: a member of this service's data, taken while the
 		// container is stopped, at the one boundary visible from outside it. Every catalogued
 		// service gets this; Home Assistant adds its own internal restarts through the inbound
 		// channel, which only it can see.
@@ -285,7 +285,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// subvolume and would each take a member of the same bytes at every start.
 		if c.Mount != "" {
 			lines = append(lines, "ExecStartPre=-"+agentBin()+" --service-starting="+m.Name)
-			// AND THE OTHER HALF OF THE SAME QUESTION ([B.143]): a stop that ended cleanly leaves a
+			// AND THE OTHER HALF OF THE SAME QUESTION: a stop that ended cleanly leaves a
 			// marker saying this service's data was flushed, and the next start reads it to say
 			// what its member's bytes ARE. A node that dies writes nothing, so the member taken
 			// when a survivor promotes says crash-consistent — which it is.
@@ -307,7 +307,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// No [Install]: this unit exists to BE started by a guarded caller, never to start
 		// itself. See Render's doc comment.
 		//
-		// AND IT IS BOUNDED, because otherwise it is not ([B.56]). Quadlet generates a
+		// AND IT IS BOUNDED, because otherwise it is not. Quadlet generates a
 		// Type=oneshot unit (measured against podman 5.8.2's own generator), and systemd disables
 		// TimeoutStartSec= by default for oneshot — so an unbounded pull is the shipped behaviour.
 		// converge starts this unit on the PROMOTION path, so a registry that dribbles bytes holds
@@ -370,7 +370,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// Only on the .image unit: this one pulls and exits. The .container unit runs the service
 		// and is deliberately left alone.
 		//
-		// SIZED BY THE MANIFEST since [V3b.31k]: an entry that says how many bytes it downloads
+		// SIZED BY THE MANIFEST: an entry that says how many bytes it downloads
 		// gets PullTimeout(size) -- the fixed allowance plus the download at the floor bitrate --
 		// and the 45 minutes above stay for an entry that does not. The manifest's total is the
 		// service's, not this container's, so a multi-container service bounds each image by the
@@ -391,7 +391,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	}
 	// Where the pod above can be reached. HOST NETWORKING IS WHY IT IS LOOPBACK: the containers
 	// share the guest's network namespace, so the primary's port is the guest's own port. This is
-	// the one line that changes when a service asks for a private network ([B.48](a)) — and it is
+	// the one line that changes when a service asks for a private network — and it is
 	// deliberately the ONLY place that knows, so that changing it moves the front door's route and
 	// the health probe's target together rather than leaving callers to agree.
 	out.Address = addr
@@ -413,26 +413,26 @@ const snapshotStamp = "20060102T150405Z"
 // A Trigger says what caused a member to be taken, and is the half of its name a human scans.
 // The set is closed because the name parser enumerates it: a trigger nobody listed is a member
 // nobody can read back. What a member is KEPT for is not its trigger but the event it anchors
-// (history.go, [B.167]).
+// (history.go).
 type Trigger string
 
 const (
 	// TriggerStart is an ordinary start of the app: its container's, or for an app that can tell
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
-	// a later start may replace, while it is still pending ([B.172]).
+	// a later start may replace, while it is still pending.
 	TriggerStart Trigger = "start"
-	// TriggerClock is the member taken BY THE CLOCK rather than by a start ([B.143]): a stable
+	// TriggerClock is the member taken BY THE CLOCK rather than by a start: a stable
 	// service can run for a month without a restart, and the clock is what still samples it.
 	//
 	// It is the one member taken against a RUNNING service, so it is Crash unless the service held
 	// still for it.
 	TriggerClock Trigger = "clock"
-	// The *-before samples ([B.167]): each is taken with the app stopped, just before an
+	// The *-before samples: each is taken with the app stopped, just before an
 	// operation, and is the restore point of that operation's event. The app does not run again
 	// until the next start, so nothing is ever compared against one (Trigger.Before).
 	//
 	// TriggerAppUpdateBefore precedes briard moving the app to another version. It is the member
-	// [B.121] rules must be taken on a STOPPED container.
+	// the upgrade-point rules say must be taken on a STOPPED container.
 	TriggerAppUpdateBefore Trigger = "app-update-before"
 	// TriggerAppUndoBefore precedes briard putting an earlier member back, for any reason,
 	// including the automatic revert of a failed update. Undoing it is the redo.
@@ -486,7 +486,7 @@ func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.
 
 // SnapshotMember is one member's subvolume path: service, trigger and the moment it was taken.
 //
-// A SERIES, WHICH IS THE WHOLE OF [B.143]. This replaced a single fixed `<service>-preupgrade`
+// A SERIES, WHICH IS THE WHOLE OF THE RING. This replaced a single fixed `<service>-preupgrade`
 // name whose doc read "a rollback point is one replaceable fact, not a series" — true while the
 // only member was the one an in-flight upgrade needed, and the reason `data.snapshot` used to
 // DELETE an existing point before taking the new one. Both are retired together: members are
@@ -512,8 +512,7 @@ func SnapshotMember(service string, trigger Trigger, at time.Time) string {
 // history may rely on rather than a hope.
 func SnapshotSidecar(member string) string { return member + ".json" }
 
-// A Consistency says what a member's bytes ARE, which is not the question its trigger answers
-// ([B.143]).
+// A Consistency says what a member's bytes ARE, which is not the question its trigger answers.
 //
 // QUIESCED means the data was flushed by a clean stop, or held still across the take: restoring it
 // gives the service exactly what it had. CRASH means it was not — the bytes are whatever a power
@@ -532,7 +531,7 @@ func SnapshotSidecar(member string) string { return member + ".json" }
 // is labelled like any other start.
 //
 // The empty value means UNRECORDED — a member taken before this field existed. A reader must treat
-// it as unknown and never as quiesced: [B.32]'s integrity check may trust only what says so.
+// it as unknown and never as quiesced: the integrity check may trust only what says so.
 type Consistency string
 
 const (
@@ -546,12 +545,12 @@ const (
 )
 
 // Note is what a household is told about a point's consistency, in one phrase, or "" when there
-// is nothing to say ([B.143]).
+// is nothing to say.
 //
 // ONE SENTENCE, ONE PLACE. Both front ends render it — `briard app history` and the dashboard's
 // history page — and a household that heard two different descriptions of the same fact would have to
 // work out whether they meant the same thing. It stays out of our vocabulary too: "quiesced" and
-// "crash-consistent" are words for this file, not for somebody's kitchen ([V3c.10]).
+// "crash-consistent" are words for this file, not for somebody's kitchen.
 //
 // The QUIET case is quiet on purpose: most points are clean, and a note on every line is a note
 // nobody reads.
@@ -584,8 +583,8 @@ type SnapshotMeta struct {
 	// (history.go). An operation writes it with its *-before member; what an evaluation finds is
 	// added to the previous member's sidecar as a reason.
 	Event *Event `json:"event,omitempty"`
-	// Pending marks a start sample waiting for its boot's verdict before it is evaluated
-	// ([B.167]). The long-running guest agent clears it; the ring keeps a pending sample.
+	// Pending marks a start sample waiting for its boot's verdict before it is evaluated.
+	// The long-running guest agent clears it; the ring keeps a pending sample.
 	Pending bool `json:"pending,omitempty"`
 	// Health is the app's service health as of this sample, once it is evaluated: a start's is
 	// its boot's verdict, and every other sample carries its predecessor's forward, so the
@@ -593,8 +592,8 @@ type SnapshotMeta struct {
 	// means unknown.
 	Health services.Health `json:"health,omitempty"`
 	// Resets are the renames a start's BOOT made (services.Corrupt's form), found at its verdict
-	// and landed on the sample before it -- with those of the pending starts it replaced
-	// ([B.172]). No member holds them before the next sample does, so a comparison with this
+	// and landed on the sample before it -- with those of the pending starts it replaced.
+	// No member holds them before the next sample does, so a comparison with this
 	// member as the earlier side does not find them again.
 	Resets []string `json:"resets,omitempty"`
 }
@@ -651,7 +650,7 @@ func (r Rendered) String() string {
 // ContainerName is the podman container (and unit prefix) for one container of one service. The
 // renderer decides it, so everything that needs to name a running container asks here rather than
 // rebuilding the string — the host's service spec does, and so does the guest when it has to
-// exec into one ([V3b.4]).
+// exec into one.
 func ContainerName(service, container string) string { return prefix + service + "-" + container }
 
 // PodNetwork is the podman network every private service's pod joins. One network for the node
@@ -692,7 +691,7 @@ func Images(m manifest.Manifest) (Rendered, error) {
 // the alternative is worse: threading it through Render would put it in every caller and every
 // test for the sake of a path that is the same on every node. Render stays a pure function of the
 // manifest in the sense that matters -- the same manifest renders the same units on a node --
-// which is the property [V3b.3](f) needs.
+// which is the property converge-at-promotion needs.
 func agentBin() string { return guestfirmware.BinDir() + "/briard-guest-agent" }
 
 // SnapshotEntry is one ring member as a reader sees it: where it is, and what its sidecar says.

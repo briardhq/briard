@@ -226,7 +226,7 @@ func TestMultiContainerPod(t *testing.T) {
 	}
 }
 
-// THE NETWORK FIELD IS A CLOSED ENUM AND ITS SILENCE MEANS PRIVATE ([B.48](a)). Both halves are
+// THE NETWORK FIELD IS A CLOSED ENUM AND ITS SILENCE MEANS PRIVATE. Both halves are
 // load-bearing: silence yielding the LESS capable shape is property 2 working as stated, and
 // refusing an unrecognised word is what stops a misspelled `"network":"hostt"` from installing,
 // running, and finding no devices with nothing anywhere saying why.

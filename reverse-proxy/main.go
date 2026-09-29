@@ -10,7 +10,7 @@
 // picks it up. A reload that fails (a half-written cert) keeps serving the last good one,
 // so renewal is crash-safe without needing atomic writes.
 //
-// IT ROUTES FROM A TABLE IT DOES NOT BUILD ([B.48]). `-routes` names the file the guest's converge
+// IT ROUTES FROM A TABLE IT DOES NOT BUILD. `-routes` names the file the guest's converge
 // writes at every promotion, install and reboot (shared/routes), and this reloads it by mtime with
 // exactly the same discipline as the cert: a table that will not parse keeps the last good one,
 // because dropping every route because one write was caught half-done would take a household's
@@ -21,14 +21,14 @@
 // manifest names a port, and what host answers on it is whatever the renderer wired the pod for.
 // So this process knows names and forwards; it never knows podman.
 //
-// It has NO PAGE OF ITS OWN ([V3b.31b]): a name it does not route — the bare IP, the node's own
+// It has NO PAGE OF ITS OWN: a name it does not route — the bare IP, the node's own
 // `briard-<flock>.local`, a typo — is forwarded to the household dashboard (`-fallback`), which is a
 // separate guest unit precisely so that nothing of ours lives inside the door and the door itself
 // stays replaceable. /healthz is ALWAYS its own: a node with nothing routed to it is *ready*, not sick, which is
 // what keeps the host agent's health probe honest. That stays true with N services routed, and it
 // is a deliberate reversal of what one backend used to do (forward /healthz to it): with N
 // services there is no single answer to forward, and a service that is down must alert without
-// making the node it runs on look broken enough to fail over ([V3b.3](f) — a service error
+// making the node it runs on look broken enough to fail over (converge-at-promotion: a service error
 // reports, it never demotes). Per-service health is a separate question, asked per service,
 // through this same table.
 package main
@@ -60,10 +60,10 @@ func main() {
 	certPath := flag.String("cert", "/var/lib/briard/tls/fullchain.pem", "certificate chain PEM (on the DRBD volume)")
 	keyPath := flag.String("key", "/var/lib/briard/tls/key.pem", "private key PEM (on the DRBD volume)")
 	fallbackFlag := flag.String("fallback", "", "where a name this node does not route is forwarded: the household dashboard (empty answers 503)")
-	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test ([B.138]): exec, parse, bind-and-release a loopback port, exit 0")
+	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test: exec, parse, bind-and-release a loopback port, exit 0")
 	flag.Parse()
 	if *testLaunch {
-		// A staged copy proving itself before it is trialled ([B.138]): it execs here, its flags
+		// A staged copy proving itself before it is trialled: it execs here, its flags
 		// parsed, and the network stack it links can bind -- on an ephemeral loopback port,
 		// never the real ones (in use on a primary). The cert and the table are allowed to be
 		// absent, as they are on a secondary; the real start tolerates both.
@@ -113,11 +113,11 @@ func main() {
 		*httpAddr, *listen, *certPath, *routesPath, tbl.current().describe())
 	// Either listener dying is fatal: the front door is promoter-owned, so systemd restarts
 	// it on the primary rather than leaving half a door open.
-	// Bind BEFORE saying READY ([B.86j]): the front door runs under the guest's pivot, and this
+	// Bind BEFORE saying READY: the front door runs under the guest's pivot, and this
 	// unit's READY is an INPUT TO THE TRIAL -- the trial agent try-restarts this door and blocks
 	// on the result, so READY must mean "listening", not "started", or a pushed binary that
 	// cannot bind would pass the verdict and be committed. (The commit is the agent's, never this
-	// unit's: no door has an ExecStartPost, and since [B.148] neither does the agent.)
+	// unit's: no door has an ExecStartPost, and neither does the agent.)
 	plainLn, err := net.Listen("tcp", *httpAddr)
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *httpAddr, err)
@@ -127,9 +127,9 @@ func main() {
 		log.Fatalf("reverse-proxy: listen %s: %v", *listen, err)
 	}
 	// THE HOUSEHOLD NAME, BOUND BEFORE READY for the same reason the listeners are. A door that
-	// cannot answer `.local` is a node a household without a [V3c.4] `*.casa` name cannot reach at
+	// cannot answer `.local` is a node a household without a `*.casa` name cannot reach at
 	// all, so the failure belongs in the promoter chain rather than in a log line nobody reads --
-	// which is exactly how the daemon this replaces went missing for two days ([B.151]).
+	// which is exactly how the daemon this replaces went missing for two days.
 	// HAVING NOTHING TO PUBLISH IS NOT THAT FAILURE: a node whose flock has no minted name binds
 	// nothing, says nothing, and serves HTTP.
 	ifaces, err := mdnsIfaces()
@@ -246,7 +246,7 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // the rollback reflex, where a wrong answer costs a failover, while "is home-assistant serving" is
 // read by a household and an alert. The front door used to conflate them by forwarding /healthz to
 // its single backend, and with N services there is no single answer to forward. Per-service health
-// is asked per service, against this same table, by the guest's own probe ([B.48]).
+// is asked per service, against this same table, by the guest's own probe.
 //
 // A NODE WITH NOTHING ROUTED IS READY. That is the shipped state of a fresh install — running,
 // replicating, able to fail over — and calling it unhealthy is the zombie state this replaced.

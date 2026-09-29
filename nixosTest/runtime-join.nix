@@ -1,5 +1,5 @@
-# Runtime anchor pairing, both directions ([B.145d]): a LONE node -- running its volume with no
-# DRBD at all ([B.145]) -- gains its first peer, and later the flock ends and the survivor goes
+# Runtime anchor pairing, both directions: a LONE node -- running its volume with no
+# DRBD at all -- gains its first peer, and later the flock ends and the survivor goes
 # back to running alone.
 #
 # This is the substrate proof for the pairing mechanism. The host agent's role (a DirectivePair or
@@ -20,7 +20,7 @@
 # down and node-storage is re-run on the rewritten spec (the fs must be unmounted either way);
 # for the leave the node is rebooted for real, which is also what empties /run of the flock's
 # `.res`. Same split as the rest of the HA net (lib.nix drives the primitives, the agent logic is
-# at-rest -- [[v3-2-real-ha-upgrade]]).
+# at-rest).
 #
 # No nested KVM (the L1 node runs DRBD directly), so it rides the fast `drbd` tag.
 { pkgs, guestModule, fixture }:
@@ -29,7 +29,7 @@ let
   h = import ./lib.nix { inherit pkgs guestModule; };
 
   # THE NODE IS lib.nix's, NOT A COPY OF IT: a rig that quietly diverges from the shared node is
-  # how [B.141] and [B.125] both got their bugs. Every machine carries the three-node `.res` in
+  # how two earlier bugs (the firmware-only guest and the missing mDNS chain members) got in. Every machine carries the three-node `.res` in
   # its spec; the lone anchor's bring-up ignores it (it writes no `.res` alone) and its conversion
   # writes it, which is the whole point -- there is no mesh-of-one config to grow from any more.
   threeRes = h.mkResource [
@@ -104,7 +104,7 @@ pkgs.testers.runNixOSTest {
     witness.succeed("briard-test-storage")
     # ...and they are already dialling anchor1, which is the shape the conversion has to be safe
     # against: a peer connected at the moment of `new-current-uuid --clear-bitmap` would be
-    # declared UpToDate with no sync ([B.145a]). The convert row declares this disk UpToDate
+    # declared UpToDate with no sync. The convert row declares this disk UpToDate
     # attached-but-not-connected, so the joiner below syncs for real.
 
     # --- THE CONVERSION: anchor1's data LV gets DRBD put under it, in place ---

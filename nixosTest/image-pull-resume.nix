@@ -1,6 +1,6 @@
-# DOES AN INTERRUPTED `podman image pull` RESUME, OR START OVER? ([B.56] follow-on.)
+# DOES AN INTERRUPTED `podman image pull` RESUME, OR START OVER? (A follow-on to the cold-converge-pull stopwatch.)
 #
-# WHY IT DECIDES A DESIGN. [V3b.3](f) put a fetch on the promotion path, and cold-converge-pull
+# WHY IT DECIDES A DESIGN. Converge-at-promotion put a fetch on the promotion path, and cold-converge-pull
 # measured that nothing bounds it: a slow pull holds the promotion forever, Primary with no VIP.
 # The fix under consideration is a `TimeoutStartSec=` on the generated `.image` unit -- but a
 # timeout is only half a strategy. What it buys is a RETRY: a fresh connection, possibly to a
@@ -73,7 +73,7 @@ let
     config.Cmd = [ "/bin/true" ];
   };
 
-  # UNEVEN LAYERS ([B.56], act 4), and the unevenness is the whole point.
+  # UNEVEN LAYERS, and the unevenness is the whole point.
   #
   # The first cut of this act used SIX EQUAL 4 MiB layers and concluded "nothing is kept". That
   # conclusion was not measured. podman copies every layer concurrently, so six equal layers
@@ -378,7 +378,7 @@ pkgs.testers.runNixOSTest {
     # === ACT 5: WHERE DO THE BYTES LIVE, AND WHEN ARE THEY SWEPT? ===
     # The guest has ONE filesystem for all of this (16 GiB root; the replicated volume holds only
     # service DATA), so a pull's scratch space competes with the OS closure, the image store and
-    # the second system generation an OS upgrade stages. [B.49]'s host ENOSPC and the guest disk
+    # the second system generation an OS upgrade stages. The host's ENOSPC handling and the guest disk
     # sizing note in disk-image.nix are the same question from the other side.
     def usage():
         def kb(p):

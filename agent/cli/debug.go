@@ -13,12 +13,12 @@ package cli
 // it withholds is the SUGGESTION that poking at the guest is a supported way to run the product.
 // The product's answers to "something is wrong" are `alerts`, `logs` and `rescue`.
 //
-// WHAT KEEPS THIS SAFE IS NOT THE LOCK. The guest is a disposable appliance ([B.86]): its OS
+// WHAT KEEPS THIS SAFE IS NOT THE LOCK. The guest is a disposable appliance: its OS
 // moves by image swap and `briard rescue` rebuilds it, so whatever an operator edits in there is
 // erased at the next update, and only the replicated data volume survives. A shell here is a
 // window, not a place to keep anything.
 //
-// ARM AND DISARM ARE THE AGENT'S ([B.142a]), submitted over the admin socket as directive kinds
+// ARM AND DISARM ARE THE AGENT'S, submitted over the admin socket as directive kinds
 // the cloud's down-channel is refused (host.localOnlyKinds). This client keeps only what is
 // inherently the operator's: the terminal, the escape key, and the guarantee that every path out
 // of here disarms. The agent owns the act so that it owns the RECORD -- its log reaches the
@@ -273,7 +273,7 @@ func trimNewline(b []byte) []byte {
 	return b
 }
 
-// The record that a node was opened is the AGENT's now ([B.142a]) -- host.applyDebugConsole logs
+// The record that a node was opened is the AGENT's now -- host.applyDebugConsole logs
 // it, and systemd puts the agent's stderr in the journal. What stood here was a syslog writer,
 // which existed only because an interactive process's stderr is the operator's terminal and so
 // reaches no journal at all; it also pinned `log/syslog`, which has no Windows build and broke

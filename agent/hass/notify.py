@@ -1,6 +1,6 @@
 """Tell the guest agent this service is starting, and wait for it to say go.
 
-THE WAIT IS THE WHOLE POINT ([B.143]). briard's s6 `run` wrapper is the one moment Home
+THE WAIT IS THE WHOLE POINT. briard's s6 `run` wrapper is the one moment Home
 Assistant is stopped and its files are closed at every boundary that matters -- container
 start, every `homeassistant.restart` exit-100, and the boot after a config restore -- and the
 agent needs that window to take an application-consistent snapshot. Blocking here before the

@@ -31,7 +31,7 @@ func table(flock string) routes.Table {
 // What a household gets: the flock's own name, one per service, all at the VIP -- and the SRV
 // record pointed at the SERVICE's own name, never at the flock's and never at a hostname. The
 // last part is the one that cost a measurement: a node-scoped target sends every device on the
-// LAN to the machine that has just stopped being Primary (V3.20).
+// LAN to the machine that has just stopped being Primary.
 func TestTheWorldIsTheFlockNameEveryServiceNameAndTheDeclaredRecords(t *testing.T) {
 	w := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
 
@@ -146,7 +146,7 @@ func TestSameNoticesEveryChangeThatMatters(t *testing.T) {
 // Two nodes of one flock publish BYTE-IDENTICAL records, which is why failover needs no
 // announcement to correct anything: the VIP's address does not change when it moves, so the only
 // thing a promotion changes is which machine answers. This is the assumption the decision to ship
-// no announcer rests on ([B.152]), so it is asserted rather than remembered.
+// no announcer rests on, so it is asserted rather than remembered.
 func TestBothNodesOfAFlockPublishTheSameRecords(t *testing.T) {
 	primary := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
 	peer := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
@@ -253,7 +253,7 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-// The table also carries each service's casa name ([V3c.4]), which public DNS answers for: the
+// The table also carries each service's casa name, which public DNS answers for: the
 // publisher must not claim it on the LAN, and must not lose the `.local` name beside it.
 func TestTheCasaNamesAreNotPublishedOnTheLAN(t *testing.T) {
 	tbl := table("brave-elf")

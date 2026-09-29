@@ -16,7 +16,7 @@ import (
 	"briard.io/shared/routes"
 )
 
-// Converge-at-promotion: a node that takes over makes itself match the VOLUME ([V3b.3](f)).
+// Converge-at-promotion: a node that takes over makes itself match the VOLUME.
 //
 // THE PROBLEM IT SOLVES, measured on a real fleet 2026-08-27: an install renders and chains on
 // the node that ran it, and a peer that was Secondary at the time (or absent, or joined later)
@@ -37,8 +37,8 @@ import (
 // RENDERING, deliberately — the renderer belongs next to the podman it renders for. Parse still
 // validates the structure, so a corrupt manifest is refused rather than rendered.
 //
-// ⚠️ This is the natural home for [B.116]'s code↔data identity gate; whether it gates per service
-// or for the whole node is [B.116]'s question, and nothing here answers it yet.
+// ⚠️ This is the natural home for a code↔data identity gate; whether it gates per service
+// or for the whole node is that gate's open question, and nothing here answers it yet.
 
 // unitsFile records the ordered units converge started, so ConvergeStop can stop exactly those.
 // /run (tmpfs), re-derived by every converge, therefore immune to the durable-write rule.
@@ -77,7 +77,7 @@ const unitPrefix = "briard-"
 // an install re-converge in place instead of restarting this unit (restarting a chain member
 // would deactivate the promoter's target and demote the node).
 //
-// THE FAILURE RULE, and it is the whole reason this is split the way it is ([V3b.3](f)):
+// THE FAILURE RULE, and it is the whole reason this is split the way it is:
 //
 //   - CONVERGE's own failure — the volume unreadable, a manifest that will not render, units that
 //     cannot be written, an image that is absent and cannot be fetched — returns an error. This
@@ -128,7 +128,7 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 	// upheld (install warms, prewarm puts the image on every standby) and a pull is the honest
 	// recovery — the digest in the manifest pins the bytes, so a fetch returns exactly those or
 	// fails. A pull that CANNOT happen fails converge, which takes the VIP down and says so,
-	// rather than promoting into a half-started chain ([V3.17]'s doctrine, upheld by failing).
+	// rather than promoting into a half-started chain (the running-never-needs-network doctrine, upheld by failing).
 	warm := make([]string, 0, len(all.ImageRefs))
 	for u := range all.ImageRefs {
 		warm = append(warm, u)
@@ -170,7 +170,7 @@ func Converge(ctx context.Context, x Executor) ([]string, error) {
 	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {
 		return nil, fmt.Errorf("converge: record started units: %w", err)
 	}
-	// The front door's routing table, from the same rendering ([B.48]). Before the start for the
+	// The front door's routing table, from the same rendering. Before the start for the
 	// same reason as the unit record: a service that is coming up must never be running behind a
 	// door that does not know about it, and the door 502s harmlessly for the seconds in between.
 	if err := writeRoutes(x, svcs); err != nil {
@@ -263,7 +263,7 @@ func stopService(ctx context.Context, x Executor, r quadlet.Rendered) {
 // service forgotten after its first install failed, or uninstalled — containers before their pod,
 // as ConvergeStop does. Before the unit sources go, while systemd still has them.
 //
-// ⚠️ THE POD DOES NOT STOP ITSELF, which is why this exists ([B.168]). Pods are rendered with
+// ⚠️ THE POD DOES NOT STOP ITSELF, which is why this exists. Pods are rendered with
 // ExitPolicy=continue so a crashed container is restarted, and the price is that stopping the last
 // container no longer takes the pod down with it. A pod left behind holds its address and its
 // published ports, and a reinstall of the same service would join the stale pod.
@@ -319,7 +319,7 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 // as a per-service list.
 //
 // ORDER IS BY SERVICE NAME, and it owes nothing more than determinism today. A set of services
-// has a real dependency order, which [V3b.3](c) settles once there is a second real service to
+// has a real dependency order, which gets settled once there is a second real service to
 // decide against; until then alphabetical is the cheapest way to be the same on every node.
 //
 // An ABSENT manifest directory is the shipped zero-service node, not a failure. A manifest that
@@ -571,7 +571,7 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // quadlet generates `Wants=network-online.target` + `ExecStart=podman image pull <ref>` with no
 // already-present short-circuit (measured with podman's own generator), so an unconditional start
 // made every guest reboot depend on reaching a registry — the running half of the doctrine that
-// running and failover never need network ([V3b.3](e1)).
+// running and failover never need network.
 //
 // MISSING => pull, and wait for it. Absence is not something to fail on: the image SHOULD already
 // be here (install warms it, prewarm puts it on every standby, and service-install.nix asserts
@@ -587,8 +587,8 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // PULLING IS SAFE BECAUSE THE REF IS DIGEST-PINNED, and that is the whole difference from the
 // baked slot this replaced, which faced the same question and answered it the other way. Its
 // `briard-converge` REFUSED to promote when the pinned image was not staged, and was right to:
-// that pin was a tag plus a pin-file, so a fetch could not guarantee the same bytes ([V3b.3](e2)
-// deleted it). A manifest names `repo@sha256:…`
+// that pin was a tag plus a pin-file, so a fetch could not guarantee the same bytes (the pin is
+// deleted). A manifest names `repo@sha256:…`
 // (shared/manifest refuses anything else), so a pull returns exactly those bytes or fails —
 // identity survives either outcome. One rule, two answers: refuse when you cannot verify what you
 // would get, fetch when the digest pins it.
@@ -683,7 +683,7 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 // runs as a promoter chain member ahead of briard-vip, so a node that cannot write its routing
 // table takes no address and is reported unhealthy, rather than promoting into a front door
 // serving the landing page over a household's running service — the silent-degradation shape
-// [V3b.3](f) was built to end, one layer up.
+// converge-at-promotion was built to end, one layer up.
 func writeRoutes(x Executor, svcs []convergedService) error {
 	t := routesFor(flockName(x), svcs)
 	return putRoutes(x, t)
@@ -735,8 +735,8 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 			Ports:  s.m.Ports,
 		}
 		if h := routes.HostName(flock, s.name); h != "" {
-			// The mDNS label first (announcements point at Hosts[0]), the casa name beside it
-			// ([V3c.4]): the door answers both, the publisher claims only the `.local` one.
+			// The mDNS label first (announcements point at Hosts[0]), the casa name beside
+			// it: the door answers both, the publisher claims only the `.local` one.
 			e.Hosts = []string{h, routes.CasaHostName(flock, s.name)}
 			// Only alongside a name, because an announcement's SRV target is that name. The
 			// registry applies the same rule to itself; the ordering here is what makes it true
@@ -844,7 +844,7 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 	return u.String(), nil
 }
 
-// serviceHealth is SERVICE HEALTH, the one answer to "does this app work" ([B.167]): the registry's
+// serviceHealth is SERVICE HEALTH, the one answer to "does this app work": the registry's
 // override for a curated app that has one (services.HealthOverride), otherwise the manifest's
 // healthPath answering 200. The status report, the app-update gate and the history all ask here.
 //

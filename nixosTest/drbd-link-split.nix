@@ -1,12 +1,12 @@
-# [DRBD.3] A demote landing during a link split BETWEEN THE TWO ANCHORS forks the pair -- the
+# A demote landing during a link split BETWEEN THE TWO ANCHORS forks the pair -- the
 # hermetic, briard-free reproduction backing the upstream report.
 #
-# HISTORY, one line: found as [B.100] (an ha-roll forked the household, ~1-in-13), whose trigger --
+# HISTORY, one line: found in the wild (an ha-roll forked the household, ~1-in-13), whose trigger --
 # an ARP-flux blackhole of our own single-L2 topology -- was explained and fixed at the source
-# ([B.101], guest sysctls). Both are CLOSED. What this file keeps alive is the half that is not
+# (guest sysctls). Both are CLOSED. What this file keeps alive is the half that is not
 # ours to fix: DRBD's tiebreaker licenses a STALE node to promote when a demote lands during the
-# split -- on a plain packet cut, no loss, no asymmetry, no orchestrator. docs/DRBD.md DRBD.3
-# (farm) holds the full analysis, the measured windows and the upstream plan; this test is its
+# split -- on a plain packet cut, no loss, no asymmetry, no orchestrator. The full analysis,
+# the measured windows and the upstream plan live with the upstream report; this test is their
 # evidence, and once the report is filed it doubles as the PIN-BUMP PROBE: if a later DRBD outdates
 # the survivor correctly, this test goes green and the pin can move.
 #
@@ -40,7 +40,7 @@
 # then diverge the generations, and the reconnect ends `Split-Brain detected but unresolved` →
 # StandAlone on both, permanently (no `after-sb-*` policy; DRBD 9's default `disconnect` applies --
 # deliberate, we never silently discard a side's writes). An earlier revision of this file asserted
-# the double-keep itself as a failure; that was [B.100]'s framing and it was wrong -- fact 1 below
+# the double-keep itself as a failure; that was the original framing and it was wrong -- fact 1 below
 # is now a PRECONDITION for the race, not a property violation.
 #
 # PAIRS WITH `drbd-survivor-restart`, AND IS ITS MIRROR IMAGE. That test is the GAIN side of the
@@ -62,7 +62,7 @@
 # the serialization below gives it the same ~20s here).
 #
 # ⚠️ THE MEASURED PHYSICS (2026-08-19, kernel timestamps, local box + L0; the wrong turns are
-# recorded in docs/DRBD.md DRBD.3). "Demote before the survivor detects" DOES NOT EXIST as an
+# recorded in the analysis). "Demote before the survivor detects" DOES NOT EXIST as an
 # ordering, and neither side's detection is an independent timer:
 #
 #   1. The evictor detects on its stock schedule (~10.5s) and its teardown-as-Primary becomes a
@@ -120,7 +120,7 @@
 # armed the demote on an in-guest `events2` watcher; both are measured INERT here -- the 30s
 # hold gives the demote ~20 SECONDS of slack, so plain driver
 # pacing is enough (the watcher's hard-won events2 lore -- `stdbuf -oL`, `connection:` not
-# `conn:` -- is preserved in docs/DRBD.md DRBD.3).
+# `conn:` -- is preserved in the analysis).
 #
 # ⚠️ THE VOID-RUN GUARD. A run where the demote APPLIED after the survivor's evaluation proves
 # nothing -- and looks exactly like a FIXED DRBD, which is fatal for the pin-bump probe. So every
@@ -130,7 +130,7 @@
 # rather than reporting a void as an outcome.
 #
 # ⚠️ THIS TEST IS EXPECTED TO FAIL on DRBD 9.2.19 -- it asserts the property, not the behaviour
-# ([[verification-assertions-must-fail]]). It lives in the `debug` tag for the same reason
+# (an assertion has to be able to fail). It lives in the `debug` tag for the same reason
 # `drbd-survivor-restart` does, stated there: the nightly must stay a statement about what works,
 # and a gate that is red for a known reason trains you to stop reading it. It goes green the day
 # the pinned DRBD outdates the survivor despite the relayed demote.
@@ -185,7 +185,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
@@ -214,7 +214,7 @@ pkgs.testers.runNixOSTest {
     ADDR = {"node1": "10.0.0.1", "node2": "10.0.0.2", "witness": "10.0.0.3"}
 
     # THE CUT IS DELIBERATELY DUMB: DROP rules for the one peer address, both directions. No
-    # asymmetry, no loss, no timing -- the wild trigger's one-way blackhole ([B.101]) played no
+    # asymmetry, no loss, no timing -- the wild trigger's one-way blackhole played no
     # part in the mechanism (any single dead direction breaks BOTH ping round-trips), so the
     # reproducer must not encode it: the report is strongest when the cut is the dumbest possible
     # one.
@@ -224,7 +224,7 @@ pkgs.testers.runNixOSTest {
     # never enters the picture. The nodes stayed Connected and the test sat in the wait below for
     # its full 900s before anyone learned the cut had not happened. Hence both the packet filter
     # and the non-vacuity check under it -- a fault that does not land must fail FAST and say so,
-    # or a red test becomes an expensive way to prove nothing ([[verification-assertions-must-fail]]).
+    # or a red test becomes an expensive way to prove nothing.
     def cut(a, b):
         a.succeed(f"iptables -I INPUT -s {ADDR[b.name]} -j DROP")
         a.succeed(f"iptables -I OUTPUT -d {ADDR[b.name]} -j DROP")
@@ -281,7 +281,7 @@ pkgs.testers.runNixOSTest {
     if len(both_quorate) < 2:
         print("NOTE: the double-keep is GONE -- upstream changed the tiebreaker semantics and the "
               "precondition for this race no longer holds; expect the rest of this test to come "
-              "out safe, and re-read docs/DRBD.md DRBD.3 (farm) before trusting anything else here")
+              "out safe, and re-read the analysis before trusting anything else here")
 
     # ACT 1's demote is LATE ON PURPOSE -- seconds, not milliseconds. It is the control: with the
     # window missed, the survivor has already disqualified itself and the pair must rejoin cleanly.
@@ -479,7 +479,7 @@ pkgs.testers.runNixOSTest {
     else:
         print("the survivor outdated itself DESPITE the relayed demote -- the [lost-peer] "
               "decision no longer takes primary_nodes=0 as a licence. If the DRBD pin moved, "
-              "this answers the pin-bump question in docs/DRBD.md DRBD.3 (farm)")
+              "this answers the pin-bump question")
 
     # Put node1's ping timers back before healing (same reason as in the void path): the skew is
     # for the FAULT, and a 30s ping-timeout makes the reconnect handshake -- the thing that
@@ -499,6 +499,6 @@ pkgs.testers.runNixOSTest {
             f"the pair forked and will not re-join: split-brain on {forked}, left StandAlone "
             "-- permanent, since no after-sb-* policy is configured"
         )
-    assert not failures, "[DRBD.3] " + "; ".join(failures)
+    assert not failures, "link-split: " + "; ".join(failures)
   '';
 }

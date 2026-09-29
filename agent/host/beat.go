@@ -9,7 +9,7 @@ import (
 	"briard.io/shared/sdnotify"
 )
 
-// THE HOST AGENT'S LIVENESS SIGNAL TO systemd (V3.32) — the rung of the unresponsive-guest
+// THE HOST AGENT'S LIVENESS SIGNAL TO systemd — the rung of the unresponsive-guest
 // ladder that neither the guest deadman nor the host's own recovery can reach: an agent that is
 // RUNNING but WEDGED. systemd sees a healthy process, Restart=on-failure never fires, and on a
 // single-node install nothing else can relaunch the guest, because `-no-reboot` means the guest's
@@ -154,10 +154,10 @@ func (b *beat) Lease(ctx context.Context) {
 // budget bounds an operation and puts it under the watchdog IN ONE CALL, and it exists because
 // those two facts must agree and nothing made them.
 //
-// [V3b.15] is what a disagreement costs. Every long operation here already declared a budget;
+// This is what a disagreement cost. Every long operation here already declared a budget;
 // what none of the forward paths did was lease it, so `service install` — a verb measured at
 // 48.8 s — ran unpinged under WatchdogSec=20 and was SIGABRTed on every shipped node for a week.
-// The leases that DID exist were all on recovery and rollback paths ([V3.32] annotated where a
+// The leases that DID exist were all on recovery and rollback paths (annotated where a
 // wedge was feared and not where work is merely long), and the two sets did not overlap at all.
 //
 // So the deadline and the lease are no longer two things a caller has to remember to write next

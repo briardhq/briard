@@ -20,7 +20,7 @@
 // # Why random words and not the user's login name
 //
 // The name is not local. By creating an account the household gets `<name>.briard.casa` as the
-// canonical way to reach the node (OSS §10.2), so the offline name and the domain name want to
+// canonical way to reach the node, so the offline name and the domain name want to
 // be the same string -- one identity, whether or not there is an account. A curated random pair
 // gets three things that `$SUDO_USER` did not: collisions stop mattering (178,928 names, versus
 // every household in the world being `briard-kostas`), the sanitiser disappears entirely (no

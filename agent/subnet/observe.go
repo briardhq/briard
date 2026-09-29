@@ -20,7 +20,7 @@ import (
 // NICs, and the routes it holds. Thin and best-effort throughout -- a read that fails contributes
 // nothing, which draws freely rather than refusing (see Observed).
 //
-// This is the cheap half of DESIGN §4's open unknown-LAN validation, and it costs nothing new:
+// This is the cheap half of the open unknown-LAN validation, and it costs nothing new:
 // the report card already reads the host's interfaces to judge the VIP, so the machine was
 // already being looked at.
 func Observe(ctx context.Context) Observed {
@@ -206,8 +206,8 @@ func worthHonouring(p netip.Prefix) bool {
 }
 
 // LANProbe returns the flock draw's second question: is another flock already living on this
-// candidate subnet? It asks the household's own L2 by ARP -- the same mechanism DESIGN §4 already
-// names for validating BRIARD_VIP_ADDR, so this adds a caller rather than a mechanism.
+// candidate subnet? It asks the household's own L2 by ARP -- the same mechanism already
+// used for validating BRIARD_VIP_ADDR, so this adds a caller rather than a mechanism.
 //
 // ⚠️ THE TEMPORARY ROUTE IS WHY THIS WORKS AT ALL. A candidate subnet is by construction one this
 // host has no address in, so a datagram to it leaves by the default route -- to the router's MAC,

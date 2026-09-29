@@ -110,7 +110,7 @@ func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 	}
 }
 
-// THE BROKER IS PRIVATE AND PUBLISHES ONLY MQTT, which is the shape [B.48](a) exists to make
+// THE BROKER IS PRIVATE AND PUBLISHES ONLY MQTT, which is the shape the port-list schema exists to make
 // expressible -- and the one entry where getting it wrong is a security regression rather than an
 // outage. Its manifest `port` is the MANAGEMENT API, which must reach the guest and nothing else:
 // private keeps it off the LAN, publishing 1883 and only 1883 is what the household actually
@@ -143,7 +143,7 @@ func read(t *testing.T, name string) []byte {
 	return raw
 }
 
-// EVERY ENTRY SAYS WHAT IT COSTS ([V3b.31j]): the bytes a node downloads (`size`, the compressed
+// EVERY ENTRY SAYS WHAT IT COSTS: the bytes a node downloads (`size`, the compressed
 // layers) and the bytes the image store holds afterwards (`installedSize`, uncompressed). The
 // first is a progress bar's denominator, the second the free-space gate's operand; a node can
 // learn neither until the pull is over. Measured with skopeo (copy, then sum the manifest's

@@ -19,7 +19,7 @@
 # Harness scope (in-place, under the running promoter): this drives the core
 # service-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — with
 # drbd-reactor live throughout, which is also the product's shape: a service install
-# never pauses the promoter ([V3b.3](f)); the maintenance bracket belongs to the
+# never pauses the promoter; the maintenance bracket belongs to the
 # OS-upgrade path (covered by the maintenance-contract test), and the health-gated
 # auto-rollback is host-side orchestration (agent/host/service.go, unit-tested there).
 # What is NEW and untested until now — a real recorder schema migration surviving the
@@ -65,7 +65,7 @@ pkgs.testers.runNixOSTest {
       # 3072 measures 3168, 2048 measures 2143, and all three run in the same time to within the
       # noise. What is different here is the recorder SCHEMA MIGRATION -- the one workload in the
       # set whose peak could grow with a future HA -- so this keeps a margin the others do not
-      # need ([B.127]).
+      # need.
       virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       # Sqlite3 to read the recorder DB + btrfs to take the pre-upgrade snapshot
@@ -117,7 +117,7 @@ pkgs.testers.runNixOSTest {
 
     # ---- Snapshot the rollback point, then pin `to` + cycle onto it IN PLACE ----
     # We do NOT touch drbd-reactor here, and neither does the product: a service upgrade
-    # never pauses the promoter ([V3b.3](f)) — the maintenance bracket belongs to the
+    # never pauses the promoter — the maintenance bracket belongs to the
     # OS-upgrade path (proven non-destructive by the maintenance contract). This test's
     # job is the migration. A service restart is not a DRBD event, so the running promoter
     # doesn't react; the volume stays mounted throughout.
@@ -126,8 +126,8 @@ pkgs.testers.runNixOSTest {
     node1.succeed("mkdir -p /var/lib/briard/.snapshots")
     # -r read-only, the exact form the guest agent's data.snapshot verb runs.
     #
-    # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since [B.143] the
-    # install path stops the service first, so this no longer mirrors the product — it is the
+    # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since the
+    # install path started stopping the service first, this no longer mirrors the product — it is the
     # EVIDENCE the product's comments cite: btrfs snapshots atomically, HA replays its WAL on
     # open, so a crash-consistent point is still recoverable FOR HOME ASSISTANT. That is a
     # measured fact about one service, never a catalog-wide guarantee (services-pair.nix measured
@@ -136,8 +136,8 @@ pkgs.testers.runNixOSTest {
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
     # THE UPGRADE: install the `to` manifest under the SAME service name. That is what a version
-    # change is now ([V3b.3](e2)) -- the volume's manifest moves, and converge re-renders and
-    # BOUNCES the container onto the new digest ([V3b.3](e1): starting an already-running unit
+    # change is now -- the volume's manifest moves, and converge re-renders and
+    # BOUNCES the container onto the new digest (starting an already-running unit
     # would have left HA-from serving while every file said otherwise). The bounce cleanly stops
     # HA-from, flushing its DB, before HA-to opens the schema-51 database and migrates it.
     install_fixture(node1, variant="to")

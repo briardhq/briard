@@ -11,7 +11,7 @@ import (
 	"briard.io/shared/flockname"
 )
 
-// THE THREE IDENTIFIERS, AND WHY THE AGENT MINTS THEM ([B.157]).
+// THE THREE IDENTIFIERS, AND WHY THE AGENT MINTS THEM.
 //
 // One job each, and the property the split buys is that a NAME is a label while an IDENTITY is an
 // id -- so renaming what humans see never touches the MAC, the DHCP client-id or the DRBD metadata.
@@ -31,11 +31,11 @@ import (
 // reinstall leaves the guest unable to recognise its OWN metadata on the pet volume it just kept.
 // Minting happens once, on a node that has never minted; after that these files are the answer.
 //
-// And it is Go rather than shell for the reason every move in [B.157] is: a Windows host needs
+// And it is Go rather than shell for the reason every move of the install layout is: a Windows host needs
 // exactly this and can reuse none of a POSIX script.
 
 // defaultNodeName is what a node with no id of its own answers to: the literal every install had
-// before [V3.20] gave each one its own. It survives as the LAST resort under the environment and
+// before each one got its own. It survives as the LAST resort under the environment and
 // the record, and as the value mintIdentity replaces.
 const defaultNodeName = "guest"
 
@@ -153,7 +153,7 @@ func (cfg Config) stateDir() string {
 // on the bare `3f9a2c`).
 //
 // ⚠️ NOT DERIVED FROM ANYTHING. Not the hostname -- the household renames their desktop. Not the
-// MAC -- that is the flock id's job, and this must stay node-scoped. Not the login name: [V3.19d]
+// MAC -- that is the flock id's job, and this must stay node-scoped. Not the login name: we have
 // measured what leaking that onto a LAN looks like.
 func newNodeID() (string, error) {
 	var b [3]byte

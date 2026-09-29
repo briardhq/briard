@@ -34,7 +34,7 @@ import (
 //	fetch+verify manifest -> render units (this node) -> provision (Primary only)
 //	  -> converge -> health-gate -> revert on failure (the {code+data} rollback)
 //
-// The chain is static and service units are not members of it ([V3b.3](f)), so none of this
+// The chain is static and service units are not members of it, so none of this
 // pauses the promoter. The one promoter contact left is a guard: refuse to start while the
 // OS-upgrade path holds the maintenance bracket, so an overlap fails loudly at the beginning
 // instead of mutating a resource mid-bracket. It cannot PREVENT the
@@ -51,7 +51,7 @@ type serviceInstaller interface {
 	// recording its identity would overwrite whatever it already runs. See applyServiceInstall.
 	SupportsServiceInstalled() bool
 	// ServiceConverge makes the node match the VOLUME -- render, warm and start every manifest
-	// recorded there ([V3b.3](f)). It is what an install does instead of rewriting the promoter
+	// recorded there. It is what an install does instead of rewriting the promoter
 	// chain, and SupportsServiceConverge gates it the same way.
 	// ServiceConverge returns the services the node could not PREPARE, having started every other
 	// one. An install must fail when its own service is in that list: the node is still serving
@@ -59,7 +59,7 @@ type serviceInstaller interface {
 	// naming a version nothing is running.
 	ServiceConverge(ctx context.Context) ([]string, error)
 	SupportsServiceConverge() bool
-	// StorageFree measures the guest's image store ([V3b.31j]): the free-space gate reads it
+	// StorageFree measures the guest's image store: the free-space gate reads it
 	// before a pull starts. An older guest that cannot measure gets no gate, not a refusal.
 	StorageFree(ctx context.Context) (free, total int64, err error)
 	SupportsStorageFree() bool
@@ -73,7 +73,7 @@ type serviceInstaller interface {
 	// install requires, now that the volume is what every future promotion renders from.
 	ServiceForget(ctx context.Context, name string) error
 	// ReactorActive is the interim overlap guard, and the ONLY promoter verb left here: an
-	// install no longer takes the maintenance bracket ([V3b.3](f)), it only refuses to start
+	// install no longer takes the maintenance bracket, it only refuses to start
 	// while somebody else holds it. Pausing and resuming belong to the OS upgrade path
 	// (agent/guest), which still changes what a live promoted resource runs.
 	ReactorActive(ctx context.Context) (bool, error)
@@ -84,7 +84,7 @@ type serviceInstaller interface {
 	ServiceStop(ctx context.Context, unit string) error
 	ServiceHealth(ctx context.Context, url string) (bool, error)
 	// ServiceHealthOf is the same floor asked BY NAME, so the guest resolves the address from the
-	// routing table it converged rather than from a URL the host assembled ([B.48]).
+	// routing table it converged rather than from a URL the host assembled.
 	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
 	// The S1 gate.s input, one layer above the liveness floor ServiceHealth answers -- one method
 	// per service that has a signal, named for it (see readinessProbe, which is the same set).
@@ -94,22 +94,22 @@ type serviceInstaller interface {
 	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
 	// HassNudge is the one call here that travels INTO a service rather than sampling it: a
 	// Home Assistant that is already running has to be told that the node's offering changed,
-	// because nothing else will restart it ([B.131]).
+	// because nothing else will restart it.
 	HassNudge(ctx context.Context) (bool, error)
 	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
 	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
-	// SupportsSnapshotMember gates the RING ([B.143]): an older guest advertises data.snapshot but
+	// SupportsSnapshotMember gates the RING: an older guest advertises data.snapshot but
 	// not data.member, and taking the old verb instead would leave an unlabelled member -- the one
 	// thing the sidecar exists to prevent. Refused loudly, never worked around.
 	SupportsSnapshotMember() bool
-	// The QUIESCED take, for the one member taken while the service still RUNS ([B.143]): the
+	// The QUIESCED take, for the one member taken while the service still RUNS: the
 	// guest asks the service to hold still, snapshots, releases, and answers whether it held --
 	// which is what the class is written from, by the guest, since the host cannot see it.
 	QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error)
 	SupportsQuiescedSnapshot() bool
-	// The RESTORE's three ([B.143]): list a service's ring, make one member's images resident
+	// The RESTORE's three: list a service's ring, make one member's images resident
 	// before anything is stopped, and put the data back. All capability-gated, because a guest
 	// older than the ring can do none of them and a fallback would be worse than a refusal.
 	Members(ctx context.Context, service string) ([]quadlet.SnapshotEntry, error)
@@ -117,7 +117,7 @@ type serviceInstaller interface {
 	EnsureImage(ctx context.Context, ref string) error
 	SupportsImageEnsure() bool
 	// Restore materialises a member over the live subvolume, MINUS the markers a household's own
-	// backup restore leaves in it ([B.143]) -- the guest's data.replace. RestoreWithoutSweep is
+	// backup restore leaves in it -- the guest's data.replace. RestoreWithoutSweep is
 	// the frozen old verb, for the revert's one case where no rollback is worse than a stale
 	// marker; nothing else may call it.
 	Restore(ctx context.Context, dataDir, src string, sweep []string) error
@@ -130,7 +130,7 @@ type serviceInstaller interface {
 // the service half-installed.
 const installBudget = 15 * time.Minute
 
-// healthGate is how long the service gets to become HEALTHY ([B.167]: services.Health, the one
+// healthGate is how long the service gets to become HEALTHY (services.Health, the one
 // answer) before the install is judged failed and the chain reverted. HA takes tens of seconds.
 const healthGate = services.HealthGate
 
@@ -172,7 +172,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 
 	m, _, err := cfg.fetchManifest(ctx, d.Payload)
 	if err == nil {
-		// Same re-budget as the install ([V3b.31k]): a prewarm is the pull and nothing else.
+		// Same re-budget as the install: a prewarm is the pull and nothing else.
 		if b := installBudgetFor(m); b > installBudget {
 			cancel()
 			ctx, cancel = cfg.beat.budget(parent, b)
@@ -197,7 +197,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
 		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
 		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
-		// same reason, as bring-up ([V3b.3](e1)).
+		// same reason, as bring-up.
 		if err := g.ServiceWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
@@ -228,21 +228,21 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// volume, so it cannot say which service a manifest belongs to — installing here would record
 	// this service's identity over whatever that node already runs, and a survivor would then
 	// promote against the wrong manifest. Refusing loudly is the answer rather than a compat path
-	// ([[alpha-reinstall-only-policy]]); the guest OS rolls and the verb appears.
+	// -- the alpha reinstalls; the guest OS rolls and the verb appears.
 	if !g.SupportsServiceInstalled() {
 		return failed("this guest is too old to name a service's identity on the volume (no service.installed); update the guest OS before installing")
 	}
-	// Same instrument, same reason, for converge ([V3b.3](f)). A guest without service.converge
+	// Same instrument, same reason, for converge. A guest without service.converge
 	// has no briard-services unit either, so nothing there ever reads the volume — this would
 	// write the manifest, report success, and leave the node serving exactly what it served
-	// before. No compat path ([[alpha-reinstall-only-policy]]); the guest OS rolls and the verb
+	// before. No compat path -- the alpha reinstalls; the guest OS rolls and the verb
 	// appears.
 	if !g.SupportsServiceConverge() {
 		return failed("this guest is too old to converge itself to the volume (no service.converge); update the guest OS before installing")
 	}
-	// Same instrument again, for the ring ([B.143]). It is the capability rather than a protocol
+	// Same instrument again, for the ring. It is the capability rather than a protocol
 	// floor DELIBERATELY: a floor makes every host refuse every not-yet-rolled guest fleet-wide
-	// and its own health gate then reverts the self-update, which gate 3 measured on 2026-09-22 --
+	// and its own health gate then reverts the self-update, which gate 3 measured --
 	// the node could not reach the image that would have fixed it, because reaching it needs the
 	// channel the floor had just closed. This refuses exactly the one path that needs the verb.
 	if !g.SupportsSnapshotMember() {
@@ -257,14 +257,14 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		logf("service install %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
-	// The manifest says how long its pull may take ([V3b.31k]); an install must not expire
+	// The manifest says how long its pull may take; an install must not expire
 	// before the pull it waits on is allowed to. Re-budgeted from the parent, and the deferred
 	// cancel is a closure so it releases whichever lease is current.
 	if b := installBudgetFor(m); b > installBudget {
 		cancel()
 		ctx, cancel = cfg.beat.budget(parent, b)
 	}
-	// THE FREE-SPACE GATE ([V3b.31j]), before the first byte moves: the manifest says what the
+	// THE FREE-SPACE GATE, before the first byte moves: the manifest says what the
 	// image store will hold once pulled, the guest says what its store's filesystem has free,
 	// and a pull that could only end in a full disk is refused here with both numbers -- rather
 	// than at 90 % of the download with a unit that failed for a reason nobody can read. The
@@ -295,12 +295,12 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	}
 
 	// N SERVICES, and everything below is per-service by construction: the node-local cache is a
-	// directory ([V3b.3](a)), the volume's identity file is one per name, `priorService` asks
+	// directory, the volume's identity file is one per name, `priorService` asks
 	// about THIS service, `filesToRemove` compares THIS service's renderings, and the chain is
 	// assembled from all of them. What used to stand here was a refusal of a second distinct
 	// service, and it was load-bearing for exactly as long as nothing could NAME a service through
 	// a seam: a node running two and describing one would have had the cloud confirm a rollout
-	// against whichever came first and a crash-loop in the other go unseen ([V3b.3](b)).
+	// against whichever came first and a crash-loop in the other go unseen.
 	//
 	// It is gone because all three of those are now plural: `NodeStatus.Services` carries one
 	// manifest identity per service, the volume's `.services/<name>.json` says which service a
@@ -335,7 +335,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// This is also the one point where an offline node legitimately fails: `briard service
 	// install` needs the network, while running an installed service never does.
 	//
-	// The pull record for the dashboard's bar ([V3b.31j]): the totals before the first byte,
+	// The pull record for the dashboard's bar: the totals before the first byte,
 	// cleared after the last -- on every exit, because a stale record would draw a bar over an
 	// install that ended. Best-effort: a bar is a courtesy, never a gate on the install.
 	if m.Size > 0 && g.SupportsServicePulling() {
@@ -352,7 +352,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
 		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
 		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
-		// same reason, as bring-up ([V3b.3](e1)).
+		// same reason, as bring-up.
 		if err := g.ServiceWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
@@ -378,7 +378,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// already broken before the upgrade is excluded, and only what this change breaks can trip it.
 	// A sample taken any later is a sample of something already disturbed.
 	//
-	// ⚠️ THIS LINE MUST STAY ABOVE THE STOP AND THE SNAPSHOT that [B.143] put below it: a baseline
+	// ⚠️ THIS LINE MUST STAY ABOVE THE STOP AND THE SNAPSHOT below it: a baseline
 	// captured after a stop is a baseline of a service that is not running, which reads as every
 	// integration having regressed. TestUpgradeCapturesTheBaselineBeforeTheSnapshot asserts the
 	// order by name.
@@ -393,14 +393,14 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		readiness = gate.Capture(ctx)
 	}
 
-	// STOP THE SERVICE, THEN SNAPSHOT THE ROLLBACK POINT — [B.143], landing [B.121]'s ruling.
+	// STOP THE SERVICE, THEN SNAPSHOT THE ROLLBACK POINT.
 	// Its data is what a broken upgrade can poison, and the read-only snapshot on the replicated
 	// volume is what a failed gate restores.
 	//
 	// IT USED TO BE TAKEN LIVE, and `services-pair.nix` measured what that costs: mosquitto holds
 	// retained state in memory and writes it on a clean stop, so a snapshot of a running broker
 	// did not contain the message it had already accepted — the upgrade carried that message
-	// across and the rollback then restored a broker with nothing in it ([V3b.4](c), 2026-08-30).
+	// across and the rollback then restored a broker with nothing in it.
 	// A live snapshot is only crash-consistent, and Home Assistant surviving one (btrfs snapshots
 	// atomically, HA replays its WAL on open) is a measured fact about HA, not a guarantee the
 	// catalog can make. Stopping first makes the point application-consistent by construction,
@@ -415,7 +415,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// re-renders from it and starts exactly what the stop above stopped (converge starts every
 	// unit of every service it does not skip, whether or not its bytes changed, so a unit stopped
 	// out from under it comes back). That is why the two steps below undo rather than abandon:
-	// B.121's ruling is that a failed upgrade snapshot INTERRUPTS the service, and an interruption
+	// The rule is that a failed upgrade snapshot INTERRUPTS the service, and an interruption
 	// the household is never brought out of is just an outage with a directive attached.
 	var snap string
 	stoppedFail := failed
@@ -432,7 +432,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// volume and the one a revert re-provisions. v2's own first member will pin v2, leaving
 		// two members seconds apart with near-identical data and unambiguous meanings: this one
 		// goes back to v1, that one goes to v2 as of then. Both are kept; the duplication is not
-		// fought, and no "who wrote the data" bookkeeping is needed ([B.143]).
+		// fought, and no "who wrote the data" bookkeeping is needed.
 		//
 		at := cfg.takenAt()
 		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerAppUpdateBefore, at)
@@ -440,11 +440,11 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 			Service: m.Name,
 			Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: at,
-			// QUIESCED BY THE STOP ABOVE, which is what [B.121] bought and the reason that
-			// stop is not an optimisation somebody may reorder away.
+			// QUIESCED BY THE STOP ABOVE, which is what that stop buys and the reason it
+			// is not an optimisation somebody may reorder away.
 			Consistency: quadlet.Quiesced,
 			Manifest:    priorRaw,
-			// THE UPDATE'S EVENT, on the point that undoes it ([B.167]). Written before the act
+			// THE UPDATE'S EVENT, on the point that undoes it. Written before the act
 			// because the point is; a revert below records its own undo rather than rewriting this.
 			Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to " + m.Version}}},
 		}
@@ -475,7 +475,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// the explicit revert on each failure path rather than a defer that would also fire on
 	// success.
 	//
-	// THERE IS NO MAINTENANCE BRACKET ANY MORE, and its absence is the point ([V3b.3](f)). This
+	// THERE IS NO MAINTENANCE BRACKET ANY MORE, and its absence is the point. This
 	// used to pause the promoter, quiesce the containers, rewrite the start-list and resume —
 	// because the services WERE chain members and changing what a live promoted resource runs
 	// meant editing the list it was promoted with. With a static chain there is nothing to
@@ -518,8 +518,8 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// failed sample all keep it silently, because S1 must never revert a household's service on
 	// the strength of its own telemetry breaking.
 	//
-	// ⚠️ A Hold currently reaches only the log. On the free tier that is nobody ([B.119] owns
-	// the surface it needs); the rollback window and the user remain the backstop until then.
+	// ⚠️ A Hold currently reaches only the log. On the free tier that is nobody (the surface it
+	// needs is not built yet); the rollback window and the user remain the backstop until then.
 	if err := gate.Judge(ctx, readiness); err != nil {
 		logf("service install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
@@ -535,9 +535,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// lose it from the chain on the next agent restart.
 		logf("service install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
 	}
-	// TELL A HOME ASSISTANT THAT IS ALREADY RUNNING ([B.131]). Everything briard's integration
+	// TELL A HOME ASSISTANT THAT IS ALREADY RUNNING. Everything briard's integration
 	// does, it does at an HA start, and converge restarts only the services whose bytes changed
-	// ([V3b.3](f)) -- so installing the broker beside a live Home Assistant leaves it running and
+	// -- so installing the broker beside a live Home Assistant leaves it running and
 	// unwired until something happens to restart it. Nothing else in the product will.
 	//
 	// UNCONDITIONAL, and that is the cheap half of the design: no "which service implies what"
@@ -576,7 +576,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 // service. Written only after the health gate passes, so a failed install is never the thing a
 // restart converges to.
 //
-// One file per service, holding the manifest's bytes VERBATIM ([V3b.3](a)). The alternative --
+// One file per service, holding the manifest's bytes VERBATIM. The alternative --
 // one file holding the set -- cannot work: a manifest's content hash IS the service identity
 // (shared/manifest), so re-encoding a set would give every member a new identity on every write.
 // Writing per file also makes install and uninstall a file operation instead of a read-modify-write
@@ -588,12 +588,13 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 // installedServices reads an unparseable file as "this service is not installed" and says so once
 // to the log, while the volume's manifests still name the services the node is meant to be
 // running -- bring-up never consults those (only the install path does, via priorService), so the
-// node just quietly comes back without it. Same defect as [V3.23], node-local instead of replicated.
+// node just quietly comes back without it. Same defect as the flock address lost to an unflushed
+// write, node-local instead of replicated.
 //
 // The service specs used to be described here as "the one input to BringUp that comes from a file
 // instead of being re-derived by the host". They were not: the MESH is the other one, and it had no
-// cache at all, so a runtime-paired node's guest reboot rewrote its .res from the stale PEERS env
-// ([V3b.16b]). Two node-scoped facts, two caches, one rule -- see cacheMesh.
+// cache at all, so a runtime-paired node's guest reboot rewrote its .res from the stale PEERS env.
+// Two node-scoped facts, two caches, one rule -- see cacheMesh.
 func (cfg Config) cacheService(name string, raw []byte) error {
 	if cfg.ServiceCache == "" {
 		return nil
@@ -631,8 +632,8 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 	if !ok {
 		return
 	}
-	// Not cfg.Promoter: the chain is static ([V3b.3](f)), and an install that changed it would be
-	// the node-was-told model this item removed.
+	// Not cfg.Promoter: the chain is static, and an install that changed it would be
+	// the node-was-told model the static chain replaced.
 	cfg.Services, cfg.ServiceRendered = specs, rendered
 	for _, spec := range specs {
 		logf("installed service %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
@@ -645,7 +646,7 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 //
 // NO CHAIN COMES BACK, because a service is not a chain member: the promoter chain is the same
 // three units everywhere and `briard-services` starts the services from the volume once the mount
-// exists ([V3b.3](f)). It used to return one, assembled from the services' units, and nothing had
+// exists. It used to return one, assembled from the services' units, and nothing had
 // read it since that landed.
 //
 // The rendered output is returned rather than discarded because the chain alone is not enough
@@ -655,7 +656,7 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 // answer rather than persisting them somewhere durable.
 //
 // ORDER IS BY FILENAME, which is by service name, which makes it deterministic and nothing more.
-// The chain is a start ORDER and a set of services has a real one — [V3b.3](c) turns it into a
+// The chain is a start ORDER and a set of services has a real one — it becomes a
 // dependency order once there is a second real service to decide against. Until then, "stable
 // across restarts" is the only property this owes, and alphabetical is the cheapest way to owe it.
 //
@@ -735,8 +736,8 @@ type volumeReader interface {
 
 // adoptVolumeServices makes this host's view of what it runs match the VOLUME, and caches it.
 //
-// WHY IT EXISTS, measured rather than reasoned (a fleet run, 2026-08-28): converge-at-promotion
-// ([V3b.3](f)) renders and starts from the volume, so a survivor that never installed anything
+// WHY IT EXISTS, measured rather than reasoned (a fleet run): converge-at-promotion
+// renders and starts from the volume, so a survivor that never installed anything
 // runs services this host was never told about. The report is built from the node-local cache,
 // which only a completed install ON A PRIMARY writes -- so the survivor served the upgraded
 // fixture at the VIP, with its tick counter moving, while telling the cloud it ran no services at
@@ -832,7 +833,7 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 // rollback target for an upgrade. Naming the service is what makes it correct at N>1: reading the
 // volume's single unnamed manifest meant installing a second service found the FIRST one's
 // manifest, called it this install's prior, and then had filesToRemove delete that service's
-// rendered units as a renamed prior's orphans ([V3b.3](b)).
+// rendered units as a renamed prior's orphans.
 //
 // Returns (nil, nil, "") for a fresh install, an idempotent re-install of the same
 // manifest, or a prior that no longer parses/renders (no usable rollback target → treated as
@@ -890,11 +891,11 @@ func filesToRemove(have, want map[string]string) []string {
 // failure worth aborting for.
 //
 // NO PROMOTER PAUSE. It used to be called inside the maintenance bracket so the stop was not read
-// as a fault; with the service units out of the chain ([V3b.3](f)) the promoter has no opinion
+// as a fault; with the service units out of the chain the promoter has no opinion
 // about them at all, and `revert` below says the same thing at more length. The stop is also what
 // QUIESCES: it is not a flush or a checkpoint, it is SIGTERM through podman, and a well-behaved
 // service writes what it was holding on the way down — which is exactly what mosquitto's retained
-// message needed and did not get while the rollback point was taken live ([B.143]).
+// message needed and did not get while the rollback point was taken live.
 //
 // It must be handed CONTAINER units, never the pod. The container holds the data Volume bind, so a
 // clean `systemctl stop` of it releases the bind (what data.restore needs) AND leaves the
@@ -921,7 +922,7 @@ func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnit
 // converge, which re-renders from that manifest and starts the prior version fresh. Data is
 // restored BEFORE code, the order the guest manager's rollback uses.
 //
-// NO PROMOTER PAUSE, and the safety it used to buy is bought more cheaply now ([V3b.3](f)). The
+// NO PROMOTER PAUSE, and the safety it used to buy is bought more cheaply now. The
 // old rollback ran under one pause so the promoter could not restart the broken service between
 // steps; with the services out of the chain the promoter has no opinion about them at all, and
 // the units are stopped here by name. The failed-restore case improves outright: it used to
@@ -942,7 +943,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 	// from under their units): releases the data subvolume's bind, which restore needs.
 	cfg.quiesce(rctx, g, next.ContainerUnits, logf)
 	if snap != "" {
-		// SWEPT LIKE ANY OTHER MATERIALISED MEMBER ([B.143]): the pre-upgrade point can carry a
+		// SWEPT LIKE ANY OTHER MATERIALISED MEMBER: the pre-upgrade point can carry a
 		// household's in-flight backup restore like any other, and putting it back unswept would
 		// replay it. The markers come from the PRIOR manifest, which is what this member is
 		// pinned to.
@@ -955,7 +956,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 		if pm, _, err := manifest.Parse([]byte(priorRaw)); err == nil {
 			sweep = services.RestoreMarkers(pm)
 		}
-		// THE REVERT IS AN UNDO ([B.167]) and records itself as one: an event on a point of the
+		// THE REVERT IS AN UNDO and records itself as one: an event on a point of the
 		// failed version's data, quiesced by the stop above, so the history shows the update and
 		// then its undoing -- and the update can still be redone. Best-effort: the rollback matters
 		// more than its entry.
@@ -1002,7 +1003,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 
 // AwaitHealthy polls the SERVICE's OWN health endpoint until it comes up, or the gate expires.
 //
-// IT ASKS BY NAME, and the guest resolves where that is ([B.48]). It used to assemble
+// IT ASKS BY NAME, and the guest resolves where that is. It used to assemble
 // `http://127.0.0.1:<port>` from the manifest, which is correct only while every pod shares the
 // guest's network namespace — the manifest names a port, and which host answers on it is the
 // renderer's decision. Handing the guest a name means the gate probes wherever the front door
@@ -1018,7 +1019,7 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 // until the deadline, exactly like one that is not answering yet, because the two are
 // indistinguishable from outside and only one of them is worth reverting an install over.
 //
-// NOR IS UNKNOWN ([B.167], owner 2026-09-27). Healthy passes at once. At the deadline the last
+// NOR IS UNKNOWN. Healthy passes at once. At the deadline the last
 // answer is Settled: unhealthy, or still starting, reverts, as does an error; unknown keeps the
 // install and says so. Unknown means the app has told us nothing — our login to it failing, which
 // is not the app — and reverting a working app over our own login would be the gate doing the
@@ -1079,7 +1080,7 @@ func gb(n int64) string {
 	return fmt.Sprintf("%d bytes", n)
 }
 
-// installBudgetFor is the whole-operation bound for a manifest ([V3b.31k]): the fixed
+// installBudgetFor is the whole-operation bound for a manifest: the fixed
 // installBudget for an entry that does not say how big it is, and otherwise at least the pull's
 // own bound plus the health gate -- an install must not give up before the pull it is waiting
 // on is allowed to finish.
@@ -1094,7 +1095,7 @@ func installBudgetFor(m manifest.Manifest) time.Duration {
 }
 
 // applyServiceRestore puts one service back to a ring member: its data, and its CODE with it when
-// the member's pinned manifest differs from what is running ([B.143]).
+// the member's pinned manifest differs from what is running.
 //
 // ⚠️ THE ORDER INVERTS revert's, AND THAT IS THE WHOLE DESIGN. A revert runs from a BROKEN state
 // and is allowed to commit: the household already lost the thing it is undoing. A restore runs
@@ -1151,7 +1152,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	}
 
 	// (1) THE IMAGES, BEFORE ANYTHING IS TOUCHED. Not through converge's warm, whose failure is
-	// required to take the VIP down ([V3.17]) -- here a failure must cost nothing at all.
+	// required to take the VIP down -- here a failure must cost nothing at all.
 	for _, ref := range rendered.ImageRefs {
 		if err := g.EnsureImage(ctx, ref); err != nil {
 			return failed(fmt.Sprintf("%s is not available on this node and could not be fetched (%v); nothing was changed", ref, err))
@@ -1165,7 +1166,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// other service (quiesce's own comment carries the trace).
 	//
 	// ABOVE THE UNDO, so the undo is QUIESCED like every other member this product takes
-	// deliberately ([B.143], owner 2026-09-23). Taking it first was the earlier shape and it made
+	// deliberately. Taking it first was the earlier shape and it made
 	// the one member a mis-click depends on the one member whose bytes are crash-consistent — a
 	// bet mosquitto is measured to lose. Nothing is risked by the swap: the images are already
 	// local (step 1, which is the step that must run before anything stops), and a failure below
@@ -1189,14 +1190,14 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	at := cfg.takenAt()
 	undo := quadlet.SnapshotMember(service, quadlet.TriggerAppUndoBefore, at)
 	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
-		// THE UNDO IS ITSELF AN EVENT ([B.167]), on the point that undoes it -- which is the redo.
+		// THE UNDO IS ITSELF AN EVENT, on the point that undoes it -- which is the redo.
 		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo,
 			What: "Undid changes back to " + target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")}}},
 		at, logf); err != nil {
 		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
 	}
-	// (4) THE DATA, keeping [B.126]'s verify -> materialise -> destroy order, and SWEPT of the
-	// markers a household's own backup restore leaves inside a member ([B.143]): a "before
+	// (4) THE DATA, keeping the verify -> materialise -> destroy order, and SWEPT of the
+	// markers a household's own backup restore leaves inside a member: a "before
 	// restoring backup" point put back unswept would hand HA the request and the tar again, and
 	// the household would land straight back where they were trying to leave. Refused rather than
 	// worked around on a guest that cannot sweep — this path's alternative is leaving them exactly
@@ -1215,7 +1216,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("record the member's manifest (the service is left stopped): %v", err))
 	}
 	// (6) CONVERGE, which re-renders from the volume and starts what it now names. Its start sample
-	// is not compared with the undo's point ([B.167]): the app did not run between them.
+	// is not compared with the undo's point: the app did not run between them.
 	if _, err := g.ServiceConverge(ctx); err != nil {
 		return failed(fmt.Sprintf("converge onto the restored member (the service is left stopped): %v", err))
 	}
@@ -1249,7 +1250,7 @@ func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member
 	return g.Snapshot(ctx, quadlet.DataRoot(service), member, string(sidecar))
 }
 
-// applyServiceMembers answers one service's ring as JSON ([B.143]). Read-only: it changes
+// applyServiceMembers answers one service's ring as JSON. Read-only: it changes
 // nothing, and the caller — the CLI's `app history`, the dashboard's history page — renders it.
 func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {

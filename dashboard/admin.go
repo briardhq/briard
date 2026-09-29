@@ -1,6 +1,6 @@
 package main
 
-// The dashboard's end of the host's admin port ([V3b.31i]), and the one thing it asks for.
+// The dashboard's end of the host's admin port, and the one thing it asks for.
 //
 // "Set up Home Assistant" is a host directive pressed from inside the guest. The dashboard opens
 // the second virtio-serial port (shared/dashboard.AdminPortDev), writes the directive as one JSON
@@ -123,7 +123,7 @@ type installView struct {
 	Failed  bool
 	Detail  string
 	Since   string
-	// Progress is the pull so far ([V3b.31j]); nil when the host left no total to measure against.
+	// Progress is the pull so far; nil when the host left no total to measure against.
 	Progress *progressView
 }
 
@@ -144,7 +144,7 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 	a.installs[name] = &install{Started: a.now()}
 	a.mu.Unlock()
 	go func() {
-		// The pull is bounded on the host ([B.56]); this is the ceiling on waiting for its answer.
+		// The pull is bounded on the host; this is the ceiling on waiting for its answer.
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 		defer cancel()
 		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceInstall, Payload: name})

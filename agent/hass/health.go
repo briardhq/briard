@@ -30,9 +30,9 @@ const (
 	VerdictUnhealthy
 )
 
-// Health is Home Assistant's service health ([B.167]): whether the APP works, which its own
+// Health is Home Assistant's service health: whether the APP works, which its own
 // `/manifest.json` cannot say. Recovery mode — a configuration that does not parse — keeps that
-// answering 200 while every integration is down; `/api/config` reports it ([B.167b]'s probes).
+// answering 200 while every integration is down; `/api/config` reports it (measured by probe).
 //
 //   - `state` RUNNING and `recovery_mode` false is healthy; `recovery_mode` true is unhealthy;
 //     NOT_RUNNING or STARTING is starting (still booting, and nothing else); any other state is

@@ -112,7 +112,7 @@ func TestRedundancyAlerterNilAndSingleNode(t *testing.T) {
 	}
 }
 
-// [B.102]/[B.100]: on the shipped anchor+anchor+witness flock, losing the WITNESS and losing
+// On the shipped anchor+anchor+witness flock, losing the WITNESS and losing
 // the PEER ANCHOR both read as connected 1-of-2 -- and only one of them means the household's
 // data is down to a single disk. The count cannot tell them apart; the peer list can, and the
 // owner must be told which one happened.
@@ -218,7 +218,7 @@ func TestRedundancyAlerterResyncingPeerIsNotACopy(t *testing.T) {
 }
 
 // The clock alert fires only after an hour of continuous "no", once, and clears on "yes"; an
-// unknown neither starts nor clears the hour, and reads are paced ([V3c.9]).
+// unknown neither starts nor clears the hour, and reads are paced.
 func TestClockAlerter(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)

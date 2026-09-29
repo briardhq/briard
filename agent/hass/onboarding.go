@@ -1,6 +1,6 @@
 package hass
 
-// Home Assistant's ONBOARDING, from the outside ([V3b.31a](d), measured in (f)).
+// Home Assistant's ONBOARDING, from the outside (measured against a live Home Assistant).
 //
 // The install ends by handing the household a logged-in Home Assistant, and the way it does so is
 // HA's own resume path: briard creates the first user through the onboarding API, and sends the
@@ -11,9 +11,9 @@ package hass
 //
 // THE CODE IS SINGLE-USE AND BELONGS TO THE BROWSER. Anything briard needs to do to HA before the
 // hand-off (marking analytics done, so the page is skipped and analytics stays off) is done with
-// the control channel's OWN token, never by spending the user's code -- measured in [V3b.31a](f):
+// the control channel's OWN token, never by spending the user's code -- measured:
 // the exchange pops the code, and there is no API that mints another for a user we hold a token
-// for. Every LATER open is minted instead ([V3b.31d]): the in-HA integration issues a code for
+// for. Every LATER open is minted instead: the in-HA integration issues a code for
 // HA's owner on request (MintLogin), and the browser lands on HA's own callback with it.
 
 import (
@@ -96,14 +96,14 @@ type NewUser struct {
 	Password string
 	// ClientID is the browser's own origin WITH a trailing slash -- HA's `genClientId()` -- and
 	// the code that comes back is bound to it. The `state` OnboardingURL builds must carry the
-	// same value, or HA's frontend refuses the callback ([V3b.31a](f)1).
+	// same value, or HA's frontend refuses the callback (measured).
 	ClientID string
 	Language string
 }
 
 // CreateUser runs the user step and returns the auth code the browser will exchange. The user is
 // the first non-system one, so HA makes it the OWNER -- the control channel's system user does
-// not count ([V3b.31a](e), measured in (f)4).
+// not count (measured).
 //
 // Refused (403) once the step is done: this is a fresh-HA-only call, by HA's own rule.
 func CreateUser(ctx context.Context, base string, u NewUser) (string, error) {
@@ -140,7 +140,7 @@ func CreateUser(ctx context.Context, base string, u NewUser) (string, error) {
 }
 
 // MarkAnalytics marks the analytics step done WITHOUT setting preferences, which is how analytics
-// stays off and the page is skipped ([V3b.31a](f)2). Any admin's access token will do -- the
+// stays off and the page is skipped (measured). Any admin's access token will do -- the
 // control channel's is the one to use, so the household's code is never spent. Already done is
 // not an error: HA answers 403 for it, and the outcome is the one asked for.
 func MarkAnalytics(ctx context.Context, base, access string) error {
@@ -163,7 +163,7 @@ func MarkAnalytics(ctx context.Context, base, access string) error {
 
 // CoreState reads HA's own lifecycle state from `/api/config` -- "RUNNING" is the boundary an
 // action may be taken on. A Home Assistant serving HTTP is not yet one that will act on what it
-// is asked ([B.127]); the dashboard's button waits for this, not for a 200.
+// is asked; the dashboard's button waits for this, not for a 200.
 func CoreState(ctx context.Context, base, access string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/config", nil)
 	if err != nil {
@@ -203,7 +203,7 @@ func OnboardingURL(origin, authCode string) string {
 }
 
 // LoginURL is where the browser goes with a minted code on a Home Assistant that is already set
-// up ([V3b.31a](d) "later opens"): HA's own auth callback on its front page, with `storeToken`
+// up (the "later opens" path): HA's own auth callback on its front page, with `storeToken`
 // so the tokens outlive the tab -- exactly the URL HA's onboarding sends the browser to at its
 // own end.
 func LoginURL(origin, authCode string) string {
@@ -225,7 +225,7 @@ func callbackQuery(origin, authCode string) url.Values {
 }
 
 // ErrNoOwner is MintLogin's answer when Home Assistant has no owner account: the minter mints for
-// the owner and nobody else ([V3b.31a](e)), and the owner can be deleted (measured, (f)4). The
+// the owner and nobody else, and the owner can be deleted (measured). The
 // caller says so; it never asks for a different user.
 var ErrNoOwner = errors.New("hass: Home Assistant has no owner account")
 

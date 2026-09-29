@@ -11,7 +11,7 @@ import (
 // its home can be given a local-time update window.
 //
 // It reads the HOST's configuration, which is the right place for it twice over: the host is
-// where a human installed the machine and set its clock ([[logic-on-host-by-default]]), and the
+// where a human installed the machine and set its clock (logic lives on the host by default), and the
 // guest is a NixOS appliance whose zone is ours, not the household's.
 //
 // Go's own time.Local is deliberately not used. It resolves to a *zone offset* -- Local.String()

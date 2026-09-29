@@ -8,7 +8,7 @@ import (
 	"briard.io/agent/services"
 )
 
-// THE HISTORY ([B.167]): what a household sees of the ring. Members are SAMPLES, taken at every
+// THE HISTORY: what a household sees of the ring. Members are SAMPLES, taken at every
 // start, by the clock, and just before each operation; what the household reads is a list of
 // EVENTS, and each event is undoable because it sits on a sample, its RESTORE POINT.
 //
@@ -44,7 +44,7 @@ const (
 	// ReasonChanged is what an app's detector found (services.Detect).
 	ReasonChanged ReasonKind = "changed"
 	// ReasonReset is the app setting its own data aside and starting empty: Home Assistant renaming
-	// an undecodable store or database to `*.corrupt.*` ([B.167d]). Silent data loss that no health
+	// an undecodable store or database to `*.corrupt.*`. Silent data loss that no health
 	// signal sees, and undo is its remedy.
 	ReasonReset ReasonKind = "reset"
 	// ReasonUnhealthy is a start whose boot ended unhealthy after a healthy one, on the sample
@@ -96,7 +96,7 @@ func (e *Event) With(r Reason, at time.Time) *Event {
 	return &out
 }
 
-// How long the history keeps what (owner, [B.167]).
+// How long the history keeps what (owner's numbers).
 const (
 	// RetainEvents is how long every event stays undoable.
 	RetainEvents = 5 * 24 * time.Hour
@@ -105,7 +105,7 @@ const (
 	RetainLastUpdate = 14 * 24 * time.Hour
 )
 
-// Quiet time fills the gaps ([B.167]): a stretch with nothing found gets a restore point at its
+// Quiet time fills the gaps: a stretch with nothing found gets a restore point at its
 // start once it has lasted QuietAfter, and about one every QuietEvery after that.
 const (
 	QuietAfter = 5 * time.Hour
@@ -150,8 +150,8 @@ func quietStart(all []SnapshotEntry) int {
 	return 0
 }
 
-// QuietPoint says which member a quiet evaluation of `member` registers a `quiet` event on, if any
-// ([B.167]). The caller has already found nothing at `member`, and `member` carries no event of
+// QuietPoint says which member a quiet evaluation of `member` registers a `quiet` event on, if any.
+// The caller has already found nothing at `member`, and `member` carries no event of
 // its own.
 //
 // Let S₀ be the first sample after the last event. The first quiet sample at least QuietAfter after
@@ -249,8 +249,8 @@ type HistoryRow struct {
 	// What is the row's title, built from its reasons. An `unhealthy` reason is not in it; it is
 	// the row's Caption.
 	What string
-	// Caption is the red-marked line under a row whose app did not come up healthy after it
-	// ([B.167], owner 2026-09-27), or "" for every other row.
+	// Caption is the red-marked line under a row whose app did not come up healthy after it,
+	// or "" for every other row.
 	Caption string
 	// At is the event's creation time, which is what the row shows.
 	At time.Time
@@ -302,7 +302,7 @@ func title(r HistoryRow, next *HistoryRow, loc *time.Location) string {
 
 // Unhealthy says whether the app is unhealthy as of its newest evaluated sample, and if so the
 // restore point that undoes it: the newest row with an `unhealthy` reason, the last healthy state.
-// It is what the history's banner offers ([B.167]).
+// It is what the history's banner offers.
 func Unhealthy(members []SnapshotEntry) (SnapshotEntry, bool) {
 	all := sortedMembers(members)
 	for i := len(all) - 1; i >= 0; i-- {

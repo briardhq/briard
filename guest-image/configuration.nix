@@ -1,5 +1,5 @@
     # NOTHING TO POKE FOR THE NAME: the door re-reads the live file on its own tick and the
-    # records follow the address within seconds ([B.152]). A unit to restart here was what the
+    # records follow the address within seconds. A unit to restart here was what the
     # name cost when a separate publisher held it.
 # Briard VM unit image.
 #
@@ -13,7 +13,7 @@
 { config, pkgs, lib, ... }:
 let
   btrfsRoot = "/var/lib/briard"; # the DRBD btrfs volume mount
-  # ── THE STORAGE SEAM ([V3b.33]) ──────────────────────────────────────────────────────────────
+  # ── THE STORAGE SEAM ─────────────────────────────────────────────────────────────────────────
   # The stack under the mount above is `dataDisk -> LUKS -> PV -> VG -> LV -> DRBD -> btrfs`, and
   # the VG exists for exactly one reason: an LV can have its dm table reloaded underneath a device
   # that is open, so the backing can be moved onto an encrypted PV -- OR OFF ONE -- with `pvmove`
@@ -26,33 +26,33 @@ let
   # LVM beats raw `dmsetup` here: nothing has to rebuild a table at every boot, and "which backing
   # is this node on" lives ON THE DISK rather than in host config.
   #
-  # ⚠️ NONE OF THOSE NAMES LIVE HERE ANY MORE ([V3b.33](d)). The device, the VG, the LV and the
+  # ⚠️ NONE OF THOSE NAMES LIVE HERE ANY MORE. The device, the VG, the LV and the
   # encryption mode arrive in the spec the HOST writes to /run/briard/node-storage.json, because
-  # storage policy is a node-scoped fact the host holds and pushes at bring-up (AGENTS §5) -- and
+  # storage policy is a node-scoped fact the host holds and pushes at bring-up -- and
   # a unit whose only inputs are what it can read off the machine has nowhere for a decision to
-  # arrive, which is why (c) could not build its Adiantum opt-in. This image contributes the unit
+  # arrive, which is why the Adiantum opt-in could not be built in it. This image contributes the unit
   # file; the pushed agent contributes every name and every choice.
   #
   # The one-time format marker and the snapshots directory left with it: both are the pushed
   # agent's now (agent/guestagent's dataFormatMarker and snapshotsDir), because the unit that
   # reads one and makes the other is Go rather than shell.
-  # ⚠️ THE TLS DIRECTORY AND THE VIP's ENV FILE ARE NOT NAMED HERE ANY MORE ([B.160]). Both were
+  # ⚠️ THE TLS DIRECTORY AND THE VIP's ENV FILE ARE NOT NAMED HERE ANY MORE. Both were
   # read only by units -- the front door's `-cert`/`-key`, briard-vip's EnvironmentFile -- and
   # those are the pushed agent's now, which already had its own spellings of both
   # (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath). The SCRIPTS below still write and read
   # the VIP's live/stored addresses, which is why vipLivePath and vipAddrFile stay.
-  # The topology word node-storage writes beside vip.env ([B.145c]): `flock` or `alone`, and the
+  # The topology word node-storage writes beside vip.env: `flock` or `alone`, and the
   # only thing a shell unit needs to know about the spec. PAIRED with the Go const
   # guestagent.topologyEnvPath and the two values its topologyEnv writes.
   topologyEnvPath = "/run/briard/topology.env";
-  # ── THE IMAGE'S HALF OF A UNIT THE AGENT WRITES ([B.160]) ────────────────────────────────────
+  # ── THE IMAGE'S HALF OF A UNIT THE AGENT WRITES ──────────────────────────────────────────────
   #
-  # THE IMAGE CONTRIBUTES THE CLOSURE; THE PUSHED AGENT CONTRIBUTES THE UNIT. Since [B.86j] the
-  # image bakes exactly one binary and every other briard binary rides the host bundle -- but the
+  # THE IMAGE CONTRIBUTES THE CLOSURE; THE PUSHED AGENT CONTRIBUTES THE UNIT. The
+  # image bakes exactly one binary now and every other briard binary rides the host bundle -- but the
   # units that start them were left behind here, and a unit is mostly an ExecStart plus the
   # environment that binary needs, so the two moved on different cadences. Measured: a pushed
   # agent asked its older image for a unit that image did not define, and the node crash-looped 53
-  # times with the household's app gone ([B.159](c)). The agent writes the units it owns into
+  # times with the household's app gone. The agent writes the units it owns into
   # /run/systemd/system at every start now -- the only place it can, since NixOS makes
   # /etc/systemd/system a read-only store path -- so a unit can never be older than the binary
   # that wrote it, and the whole defect class is unrepresentable rather than merely detectable.
@@ -71,7 +71,7 @@ let
   # ⚠️ AN OLDER IMAGE HAS NO PROFILE AT ALL, and that is the good failure: the agent stats this
   # directory before it renders and refuses to serve when it is missing, so its trial fails, the
   # committed agent comes back, and the node keeps running the release it had. Refusing the
-  # upgrade is what this buys; stopping the host from OFFERING it is [B.159](e)'s floor, which is
+  # upgrade is what this buys; stopping the host from OFFERING it is the release floor's job, which is
   # still wanted for genuine on-disk migrations.
   guestTools = pkgs.buildEnv {
     name = "briard-guest-tools";
@@ -80,9 +80,9 @@ let
       # carried in their own `path =` before they moved.
       pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange/vgs -- the `bin` output, already in this closure
       pkgs.cryptsetup
-      pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here ([V3b.33](a))
+      pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here
       pkgs.drbd # drbdadm create-md / new-current-uuid, and drbdmeta for the lone-node probe
-      pkgs.btrfs-progs # mkfs.btrfs, once, on the LV node storage just created ([B.145a])
+      pkgs.btrfs-progs # mkfs.btrfs, once, on the LV node storage just created
       pkgs.coreutils # install, test, rm; sleep, for the hold
       pkgs.util-linux # mount/umount/mountpoint/findmnt, the primary-storage half
       pkgs.iproute2 # ip, for the VIP
@@ -99,7 +99,7 @@ let
       pkgs.gnugrep
       pkgs.gnused
       # The MODULE's podman, not `pkgs.podman` -- naming the latter ships a second,
-      # differently-wrapped copy of the runtime ([B.5]).
+      # differently-wrapped copy of the runtime.
       config.virtualisation.podman.package
       # And the NAMED TOOLS a unit's ExecStart points at directly, because systemd wants an
       # absolute path for the first word and the agent can only know a fixed one.
@@ -115,18 +115,18 @@ let
   # PAIRED with the Go const guestagent.defaultToolsBin, which is what an agent-written unit puts
   # on its PATH. Different languages, so no shared import; the agent-side comment names this back.
   toolsEtc = "briard/tools";
-  # ⚠️ THE CHAIN IS NOT STATED HERE ANY MORE ([B.160]). It was one of four copies -- this one, the
+  # ⚠️ THE CHAIN IS NOT STATED HERE ANY MORE. It was one of four copies -- this one, the
   # lone node's target, the hold's stop-and-reset lists, and the host's promoterUnits() -- kept in
   # step by hand. The units that named it are written by the pushed agent now, from the one Go
   # definition both halves of the bundle read (shared/chain), and the steps below take it as
   # arguments instead of baking it.
-  # A hold step with one body per topology ([B.145c]). The word decides; a missing word is
+  # A hold step with one body per topology. The word decides; a missing word is
   # "node storage has not run on this boot", and an unknown one names itself rather than
   # guessing -- both are failures of the step, and what a failed step means is the unit's to say
   # (ExecCondition skips, ExecStartPre escalates).
   #
-  # A NAMED TOOL IN THE PROFILE SINCE [B.160], because the unit that runs these is written by the
-  # pushed agent and can only name a fixed path. The split is the item's: the image keeps the
+  # A NAMED TOOL IN THE PROFILE, because the unit that runs these is written by the
+  # pushed agent and can only name a fixed path. The split is deliberate: the image keeps the
   # dispatch and the commands -- they are store paths and they do not change with a release --
   # and the agent passes in the one thing only it knows, the chain's members, as `"$@"`.
   byTopology =
@@ -195,7 +195,7 @@ let
   # A lease that EXPIRES needs nothing from this hook either: the interface then holds no
   # address, net.vip reports "" as ground truth, and the node reads not-ready by the same rule
   # that covers every other addressless data node. The honest signal already flows.
-  # ── THE HOLD'S STEPS ([V3b.5](c), [B.145c]), AS IMAGE-SIDE TOOLS ([B.160]) ───────────────────
+  # ── THE HOLD'S STEPS, AS IMAGE-SIDE TOOLS ────────────────────────────────────────────────────
   #
   # The unit that runs them is written by the pushed agent, so what lives here is only what the
   # agent cannot carry: the topology dispatch and the store paths. Every step that used to bake
@@ -223,7 +223,7 @@ let
     # drbd-demote-or-escalate@ too, which demoted an already-Secondary node and exited 0. The same
     # trigger only became dangerous when the action grew a five-minute mask.
     #
-    # ⚠️ AND ON A LONE NODE THE GUARD IS ALWAYS MET ([B.145c]): there is no loser to protect and
+    # ⚠️ AND ON A LONE NODE THE GUARD IS ALWAYS MET: there is no loser to protect and
     # nobody else who could be holding the volume, so every member failure is this node's own to
     # hold -- and to restart from, below.
     (byTopology "briard-hold-only-if-holding" {
@@ -245,7 +245,7 @@ let
     # below is a confirmation rather than the thing doing the work.
     #
     # The lone node has no promote unit to wait on, so its stop NAMES every unit -- the target and
-    # then the members in reverse, which the AGENT passes in ([B.160]): a stop of several units
+    # then the members in reverse, which the AGENT passes in: a stop of several units
     # returns when all of them are down.
     (byTopology "briard-hold-stop" {
       flock = "${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service";
@@ -266,7 +266,7 @@ let
       flock = "${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target; ${config.systemd.package}/bin/systemctl daemon-reload";
       alone = ":";
     })
-    # Alone, the restart is ours ([B.145c]): no reactor re-promotes, so the hold starts the chain
+    # Alone, the restart is ours: no reactor re-promotes, so the hold starts the chain
     # it stopped -- hold-and-restart, forever, and no reboot, which is what a flock does through
     # its reactor. `--no-block`, because this runs inside the hold's own stop and the start must
     # not wait on it. The target is `$1`, from the agent, for the same reason the stop list is.
@@ -305,7 +305,7 @@ let
     fi
     ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "''${interface}"
     printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
-    # Synced for the same reason as the promotion-time write ([V3.23]): this is the path where the
+    # Synced for the same reason as the promotion-time write: this is the path where the
     # router hands us a DIFFERENT address, so it is the one where the previously stored value is
     # actively WRONG. Losing this write to the page cache leaves the flock remembering an address
     # it has already yielded. (vipLivePath above is /run -- tmpfs, nothing to sync.)
@@ -313,7 +313,7 @@ let
     VIP_DEV="''${interface}" ${vipArping}/bin/briard-vip-arping || true
     # THE NAME NEEDS NOTHING FROM HERE. The door publishes it and re-reads this file on its own
     # tick, so the records follow the address within seconds with no unit to poke and no ordering
-    # between the two to get wrong ([B.152]).
+    # between the two to get wrong.
     exit 0
   '';
 
@@ -348,7 +348,7 @@ let
   #     Left on, dhcpcd's answer to "no server answered" is to self-assign 169.254.x.x -- and
   #     measured, that is exactly what it did: the node then probed its own link-local address,
   #     passed (it owns it), and reported HEALTHY while nobody on the LAN could reach it. That is
-  #     V3.19's own failure restored by its replacement, and a house whose router is briefly down
+  #     the old baked-address failure restored by its replacement, and a house whose router is briefly down
   #     at boot would have hit it. A VIP is the flock's address or it is nothing; a self-assigned
   #     one is worse than none because it looks like success.
   #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + this NIC's
@@ -363,7 +363,7 @@ let
   #     the literal string "-h" as the client-id (dnsmasq recorded `00:2d:68`: type 0, then ASCII
   #     "-h"), which also consumed the -h option, so every node sent its SYSTEM hostname ("guest")
   #     and an identical client-id. Two different flocks on one LAN would then have fought over a
-  #     single lease. Found by [B.78]'s router the first time anything looked at what we actually
+  #     single lease. Found by a real router the first time anything looked at what we actually
   #     transmit. Never ask for a default when you can state the value.
   #   -h briard-<xxxxxx> is the FLOCK's name (option 12), taken from the low three bytes of the
   #     service NIC's own MAC -- which IS the flock id's derivative, read as ground truth off the
@@ -455,7 +455,7 @@ let
     # WHY there is no stored address, not merely that there isn't one. `stored=<none>` has three
     # very different causes -- the volume is not mounted, the volume is mounted and the file is
     # absent, or this flock genuinely never held an address -- and the line above cannot tell them
-    # apart. That ambiguity is [V3.23]: the address is written on one boot
+    # apart. That ambiguity is the lost-address bug: the address is written on one boot
     # ("remembered ... for the flock") and read back as <none> on the next, and no log anywhere
     # says which of the three it was. One `findmnt` and one `ls` at the moment of the read settle
     # it, in the field as well as in a harness.
@@ -480,9 +480,9 @@ let
       #   ...also with noprefixroute, or the full dhcpcd shape -> 0
       #
       # So the broadcast alone is the whole difference. A withdrawal here is no longer able to
-      # wedge a name -- the responder claims names without probing ([B.152]) -- but an address
+      # wedge a name -- the responder claims names without probing -- but an address
       # that blinks is still an address that is briefly not there, for the ARP cache of every
-      # device mid-connection. V3.22 is the epoch record of what it used to cost.
+      # device mid-connection. A wedged publisher once showed what that used to cost.
       ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
       # A lease-holder here, never a gate: -b returns immediately, so nothing downstream of this
       # unit waits on a DHCP server. Failing to start it is not failing to serve -- the address
@@ -499,7 +499,7 @@ let
       # dhcpcd daemonises satisfied by an IPv6 address, the IPv4-only read below finds nothing,
       # and this unit fails on a network where nothing is wrong. It cannot be caught by a test
       # topology that sends no RAs, because there "any family" and "IPv4" are the same behaviour
-      # (V3.21, found on the first install onto a real home LAN).
+      # (found on the first install onto a real home LAN).
       ${dhcpcdRun} "$VIP_DEV" "" --waitip=4
       # The field after `inet`, which is the same rule net.vip reads ground truth by -- never a
       # prefix match, which would accept an inet6 link-local and hand us an address to claim
@@ -522,7 +522,7 @@ let
     # why "the peer came back with no address" could not be told apart from "the store was never
     # written". Non-fatal is a decision about whether to stop; it is not a decision to say nothing.
     if [ -z "$configured" ]; then
-      # ⚠️ THE SYNC IS THE POINT, not hygiene ([V3.23]). This file exists so that an UNPLANNED
+      # ⚠️ THE SYNC IS THE POINT, not hygiene. This file exists so that an UNPLANNED
       # failover -- the case where the household router is least likely to be answering -- can
       # re-claim the flock's address without asking anyone. An unplanned failover is, by
       # definition, usually a power cut. Writing it into the page cache and hoping means the one
@@ -537,7 +537,7 @@ let
       # small write per address acquisition, not per request.
       if printf '%s\n' "$addr" >${vipAddrFile} 2>/dev/null &&
          ${pkgs.coreutils}/bin/sync -f ${vipAddrFile} 2>/dev/null; then
-        # The mount is named on the WRITE as well as the read ([V3.23]): "written here, read back
+        # The mount is named on the WRITE as well as the read: "written here, read back
         # empty there" is only diagnosable if both lines say which `there` they meant.
         echo "briard-vip: remembered $addr for the flock at ${vipAddrFile} (mount=$(${pkgs.util-linux}/bin/findmnt -no SOURCE,FSTYPE ${btrfsRoot} 2>/dev/null || echo '<NOT MOUNTED>'))"
       else
@@ -571,15 +571,15 @@ let
     # TAKE THE NIC DOWN WHEN IT IS OURS ALONE. The MAC on a dedicated service NIC is flock-scoped
     # and therefore shared with the PEER, and a Secondary holding it up teaches the switch the
     # wrong port for the VIP the moment it emits any frame at all (an IPv6 RS, an mDNS query) --
-    # traffic for the service then goes to the node that is not serving. That is the [B.100]/[B.101]
+    # traffic for the service then goes to the node that is not serving. That is the wrong-port
     # class, and it is silent: nothing is down, the address is gone, and the packets still vanish.
     #
-    # ⚠️ THE QUESTION IS THE DEVICE, NOT WHERE THE ADDRESS CAME FROM, and it took [V3b.26d] to see
+    # ⚠️ THE QUESTION IS THE DEVICE, NOT WHERE THE ADDRESS CAME FROM, and it took a second look to see
     # that. This used to read `[ -z "$configured" ]` -- down only under DHCP -- on the reasoning
     # "static address => the NIC is shared => leave it up". That is a PROXY, and it stands for the
     # thing actually feared: the agent-less harnesses set VIP_DEV=eth1, the DRBD NIC, where a
     # link-down takes replication with it. On a SHIPPED node the proxy is simply false. A household
-    # that sets BRIARD_VIP -- a documented, supported option (DESIGN §4) -- gets VIP_DEV=eth2, a
+    # that sets BRIARD_VIP -- a documented, supported option -- gets VIP_DEV=eth2, a
     # dedicated service NIC shared with nothing local, and every Secondary in that flock kept the
     # flock MAC up. The hazard the old comment described was live on the very configuration it
     # exempted.
@@ -588,8 +588,8 @@ let
     # reading -- the proxy is false, and this makes the static path behave like the DHCP path on a
     # hazard the file already treats as real. What is NOT demonstrated is the hazard biting: a
     # Secondary teaching the switch a wrong port needs a RIGHT port to exist, so it takes two nodes,
-    # and no test in the tree moves work between two installed nodes ([B.113]). [V3b.26d] tried to
-    # catch it with one and produced an assertion that passed identically against fixed and unfixed
+    # and no test in the tree moves work between two installed nodes. An attempt to
+    # catch it with one produced an assertion that passed identically against fixed and unfixed
     # guests -- because a standby deletes the VIP address either way, and nobody answers ARP for an
     # address they do not hold. Do not read the install rigs' green as cover for this line.
     #
@@ -606,17 +606,17 @@ let
 
 in
 {
-  # What this appliance does not carry ([B.5]). Imported here rather than folded into the callers so
+  # What this appliance does not carry. Imported here rather than folded into the callers so
   # that the SAME slimming applies to the shipped disk and to every nixosTest that boots this
   # module -- a guest the tests exercise fatter than the one strangers install would prove nothing
   # about the one strangers install.
-  # modules.nix (the denylisted module tree, [B.136]) is NOT imported here: it pins the initrd to
+  # modules.nix (the denylisted module tree) is NOT imported here: it pins the initrd to
   # the virtio set the IMAGE boots with, and the nixosTests that build this module into test VMs
   # mount their store over virtiofs (measured: three nodes panicked in the initrd). It joins in
   # disk-image.nix, where the machine is known.
   imports = [ ./slim.nix ./pivot.nix ];
 
-  # THE GUEST AGENT BUILD A TEST NODE IS PRE-DRESSED WITH ([B.139]). No unit in the SHIPPED image
+  # THE GUEST AGENT BUILD A TEST NODE IS PRE-DRESSED WITH. No unit in the SHIPPED image
   # names it: the image bakes the firmware alone, and every unit that needs the agent reaches it
   # at its committed path under the pivot's binDir, where the host's dress put it. A nixosTest
   # machine has no host to dress it, so nixosTest/lib.nix links this build in as if one had
@@ -645,7 +645,7 @@ in
   config = lib.mkMerge [ {
     system.stateVersion = "26.05";
 
-    # No substituters and no baked cache key ([B.86i]): the guest has no nix (disk-image.nix,
+    # No substituters and no baked cache key: the guest has no nix (disk-image.nix,
     # `nix.enable = false`), so nothing in it ever fetches a store path. An OS release reaches a
     # node as a whole signed IMAGE over the guest chain, verified by the release keyring the HOST
     # holds; the image is what a release IS, and cache.briard.io and its narinfo key retired with
@@ -722,13 +722,13 @@ in
     ];
 
     # drbd-reactor's promoter snippet lives on TMPFS, and is agent-written like everything else
-    # node-scoped ([V3b.16b]). The host re-derives it from cfg.Promoter at every bring-up, so
+    # node-scoped. The host re-derives it from cfg.Promoter at every bring-up, so
     # persisting it bought nothing and cost the one thing that matters: a snippet on the overlay
     # outlived the agent that wrote it, which is what let a boot-started reactor promote against
-    # configuration nobody had just restated ([V3b.16]). One lifetime for every fact the agent
+    # configuration nobody had just restated. One lifetime for every fact the agent
     # writes means stale configuration cannot exist.
     #
-    # A second, nearly-free backstop to [V3b.16a]'s gate, and the reason this is worth doing rather
+    # A second, nearly-free backstop to the arm-by-agent gate below, and the reason this is worth doing rather
     # than merely tidy: a reactor with no snippet is IDLE even if something starts it. The two
     # mechanisms fail independently.
     #
@@ -739,10 +739,10 @@ in
       snippets = "${reactorSnippetDir}"
     '';
 
-    # THE TOOL PROFILE AN AGENT-WRITTEN UNIT PUTS ON ITS PATH ([B.160], `guestTools` above says
+    # THE TOOL PROFILE AN AGENT-WRITTEN UNIT PUTS ON ITS PATH (`guestTools` above says
     # why it exists at all). A fixed path in /etc rather than a store path the agent would have to
     # be told: the whole point is that the two halves share a NAME and nothing else, so an agent
-    # and an image that both speak B.160 need no handshake to agree.
+    # and an image that both know the name need no handshake to agree.
     environment.etc.${toolsEtc}.source = guestTools;
     systemd.tmpfiles.rules = [
       "d /run/briard 0755 root root -"
@@ -750,7 +750,7 @@ in
       # DRBD's own state dir. Without it every attach logs
       #   lk_bdev_save(/var/lib/drbd/drbd-minor-0.lkbd) failed: No such file or directory
       # which is harmless (it caches the backing device's last known size) but sat directly on top
-      # of the real error while V3.22 was being read, and cost time twice. Upstream ships this dir
+      # of the real error while a wedged name publisher was being diagnosed, and cost time twice. Upstream ships this dir
       # in its package; nixpkgs' drbd does not create it.
       "d /var/lib/drbd 0700 root root -"
       # NIX'S CACHE DIR NEVER SURVIVES A BOOT. A crash-consistent guest disk can hand
@@ -777,25 +777,25 @@ in
 
     # THIS NODE'S NAME is set by the agent at every bring-up (sys.hostname) and NOTHING in this
     # image restores it. A `briard-identity` oneshot used to, reading it back from
-    # /etc/briard/node-id before drbd-reactor could act; [V3b.16b] deleted the unit and the file.
+    # /etc/briard/node-id before drbd-reactor could act; the unit and the file are gone.
     # The reasoning is kept because it is a shape rather than one unit's story.
     #
-    # What it solved (V3.20): the baked hostname is "guest" (disk-image.nix) and
+    # What it solved: the baked hostname is "guest" (disk-image.nix) and
     # syscall.Sethostname does not survive a reboot, while the `.res` naming this node did. So a
     # rebooted guest ran as "guest" against a persistent config saying `on briard-node-<id>`, the
     # boot-started reactor promoted into the mismatch, drbd@<res> failed, and a failed promote is
     # never retried -- the node parked quorate but never Primary, with no VIP and no address.
-    # Invisible before V3.20 because the baked hostname and the node name were the SAME LITERAL.
+    # Invisible before nodes had their own names because the baked hostname and the node name were the SAME LITERAL.
     #
     # The fix then was to give the two facts one lifetime by making the NAME persistent. This is the
     # same principle read the other way: make the `.res` EPHEMERAL and the name with it. Both are
     # node-scoped, the host re-derives both at every bring-up (cfg.Node, cfg.Resource), and
-    # [V3b.16a] means nothing can promote before that bring-up has happened. Two facts with one
+    # the agent-armed promoter means nothing can promote before that bring-up has happened. Two facts with one
     # lifetime cannot disagree -- and this way there is no third copy on disk to be right or wrong
     # about, which is what a restored-at-boot file always is.
 
-    # THE PROMOTER IS ARMED BY THE AGENT, NEVER BY BOOT ([V3b.16a]). Failover is still entirely
-    # drbd-reactor's (AGENTS §4.2 is untouched: nothing here promotes or demotes) -- what changed
+    # THE PROMOTER IS ARMED BY THE AGENT, NEVER BY BOOT. Failover is still entirely
+    # drbd-reactor's (nothing here promotes or demotes) -- what changed
     # is WHEN the orchestrator is allowed to start, and the answer is "once the host has told this
     # guest who it is, where its NICs are, and what its promoter chain is". guestagent's BringUp
     # ends in `systemctl start drbd-reactor.service`, and that is now the only thing that starts it.
@@ -804,22 +804,22 @@ in
     # overlay, so on a first install there is no snippet and the ordering held by construction --
     # but on every reboot afterwards the snippet is already on disk and a boot-started reactor
     # RACES the agent's reconnect -> net.configure -> vip.env. The agent usually won, which is why
-    # this looked like an agent-absence bug when a stranger's node finally lost the race ([V3b.16]:
+    # this looked like an agent-absence bug when a stranger's node finally lost the race (in the field:
     # the VIP claimed on the DRBD NIC, under a second DHCP identity, mDNS dead, probe blind).
     #
     # THERE IS NO DEADLOCK TO DESIGN AROUND, which is what makes it nearly free: bring-up gates on
     # QUORATE, not Primary (host.go), so the agent never waits for a promotion; and quorum does not
-    # need the reactor either, because the agent attaches DRBD itself (storage.node, [V3b.33](d)).
+    # need the reactor either, because the agent attaches DRBD itself (storage.node).
     # So promotion may safely wait for the agent, and does.
     #
     # THE COST, stated rather than buried: a permanently absent agent -- /opt/briard wiped, the unit
     # masked, an incompatible binary after an upgrade -- is now a TOTAL outage rather than a
-    # degraded-but-serving node. Accepted: [V3b.16] is the field evidence for what
+    # degraded-but-serving node. Accepted: that field incident is the evidence for what
     # degraded-but-serving actually looked like, and a node that plainly does not serve is more
     # honest and more repairable than one that is up in a way nobody can see or fix.
     #
     # It also makes bring-up the one place that arms the promoter, so an agent SIGKILLed inside a
-    # maintenance bracket -- whose resume existed only on the dead process's stack ([V3b.15]) --
+    # maintenance bracket -- whose resume existed only on the dead process's stack --
     # re-arms it by restarting. And it makes the agent-less state inert, so the deadman's reboot
     # cycle stops churning DRBD and the household's DHCP server on every pass.
     systemd.services.drbd-reactor = {
@@ -841,7 +841,7 @@ in
         # ordering above sequences behind its own stop. Neither can proceed: 90s TimeoutStopSec,
         # then SIGKILL.
         #
-        # MEASURED, from the guest's console during `briard rescue` ([B.85]): the shutdown began
+        # MEASURED, from the guest's console during `briard rescue`: the shutdown began
         # 1s after os.poweroff, deadlocked at +11.5s, and finished at +101s. It was read as "the
         # guest agent ignores os.poweroff" because the host has no console on its guest and the
         # two 90s constants -- this TimeoutStopSec and the host's shutdownGrace -- expired
@@ -850,7 +850,7 @@ in
         # Removing the drop-in first is drbd-reactor's own sanctioned defusal: it is what
         # `reactor.pause` does (guestagent.go, verbReactorPause), and it is race-free because the
         # promoter only (re)writes the file in Promoter::new -- i.e. on the next START -- so
-        # nothing re-arms it while we are stopping. The deadlock is [B.28]; the defusal is guarded
+        # nothing re-arms it while we are stopping. That deadlock first showed as a managed-upgrade flake; the defusal is guarded
         # on the shipped artifact by nixosTest/guest-rescue.nix (no unit may hold the shutdown).
         #
         # ON ExecStop RATHER THAN IN THE VERB, and that is the point: this stop happens on paths
@@ -916,7 +916,7 @@ in
       ];
     };
 
-    # ── THE PROMOTER CHAIN IS NOT DEFINED HERE ANY MORE ([B.160]) ────────────────────────────
+    # ── THE PROMOTER CHAIN IS NOT DEFINED HERE ANY MORE ──────────────────────────────────────
     #
     # Every unit the pushed binaries are started by -- briard-node-storage, the five chain
     # members, the VIP's renewal pair, the hold that hands the resource on, and the lone node's
@@ -939,9 +939,9 @@ in
     # (`config.briard.stagedImages`), which no pushed binary knows.
 
     # Podman belongs to the guest OS, not to any service: it is the runtime a service will be
-    # installed INTO, by the renderer, at runtime ([V3b.3](f)). There is no declared container
+    # installed INTO, by the renderer, at runtime. There is no declared container
     # here and there is no `virtualisation.oci-containers` — a workload is not a build-time fact
-    # about this image any more ([V3b.3](e2)).
+    # about this image any more.
     virtualisation.podman.enable = true;
 
     # Pre-stage image tarballs into local podman storage at boot: images that must already be
@@ -978,7 +978,7 @@ in
     networking.firewall.enable = false;
 
     # dhcpcd runs on every interface by default, and this guest has interfaces that must never
-    # ask a stranger's router for anything. Measured on the machine that produced V3.19: a node
+    # ask a stranger's router for anything. Measured on the first bare-metal install: a node
     # put TWO extra DHCP clients on the household's router, one of them on the DRBD replication
     # link -- a private point-to-point path between anchors that has no business holding a LAN
     # address, and whose address the agent sets explicitly (net.configure) when a pairing happens.
@@ -991,7 +991,7 @@ in
     # lease becomes the VIP"). It does become the VIP, but it cannot be leased at BOOT:
     #   - a boot-time client leases it on the SECONDARY too, so the "VIP" would be a per-node
     #     address sitting on a node that is not serving; and
-    #   - the service NIC's MAC is flock-scoped (V3.19b), so both nodes would be asking one
+    #   - the service NIC's MAC is flock-scoped, so both nodes would be asking one
     #     router for one lease from two machines at once.
     # The lease is drawn at PROMOTION instead, by briard-vip, which is the one moment exactly one
     # node holds this identity. A single-interface dhcpcd there runs as its own instance, which
@@ -1008,8 +1008,7 @@ in
     # failure anywhere. Every address here is hand-placed on the NIC that owns its traffic
     # (the agent's net.configure, briard-vip's lease, the witness link), so weak-host ARP adds
     # nothing and only the cross-NIC ambiguity is removed. The VIP takeover's gratuitous ARP
-    # is explicit (vipArping crafts its own frames) and unaffected by either setting. The
-    # measured chain: farm docs/V3.md [B.101].
+    # is explicit (vipArping crafts its own frames) and unaffected by either setting.
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.arp_ignore" = 1;
       "net.ipv4.conf.default.arp_ignore" = 1;

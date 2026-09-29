@@ -1,4 +1,4 @@
-// `briard doctor` -- the report card as a runtime verb ([V3c.3]).
+// `briard doctor` -- the report card as a runtime verb.
 //
 // Two halves, and the split is the point. The host half (agent/reportcard, AssessLive) reads what
 // this machine can see by itself, touching no socket, the way `alerts` and `logs` do, because the

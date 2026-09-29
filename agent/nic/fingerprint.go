@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// THE LAN FINGERPRINT, and what it is FOR ([B.150](e)).
+// THE LAN FINGERPRINT, and what it is FOR.
 //
 // When the device the guest's L2 hangs off disappears, the agent has to decide how eagerly to
 // rebuild on another one -- and that is not a networking question, it is a question about where
@@ -92,7 +92,7 @@ func defaultGateway(dev string) string { return parseDefaultGateway(readText(pro
 
 // parseDefaultGateway pulls dev's default next hop out of /proc/net/route's text. Pure, so the
 // one detail that cannot be inferred by reading it -- the LITTLE-ENDIAN hex the address column is
-// rendered in -- is unit-tested rather than trusted ([B.153]).
+// rendered in -- is unit-tested rather than trusted.
 func parseDefaultGateway(text, dev string) string {
 	for _, f := range procTable(text) { // Iface Destination Gateway ...
 		if len(f) < 3 || f[0] != dev || f[1] != "00000000" {
@@ -136,15 +136,15 @@ func neighbourMAC(ctx context.Context, dev, ip string) string {
 
 // procARP is the kernel's IPv4 neighbour table as text.
 //
-// ⚠️ IPv4-ONLY, and legacy. It is the right file while addressing is v4 (DESIGN §4.3 says it
-// stays); the day it is not, this reader is the first thing that moves ([B.153]).
+// ⚠️ IPv4-ONLY, and legacy. It is the right file while addressing is v4 (by design it
+// stays); the day it is not, this reader is the first thing that moves.
 const procARP = "/proc/net/arp"
 
 // arpTableMAC reads a RESOLVED entry for ip on dev out of /proc/net/arp.
 func arpTableMAC(dev, ip string) string { return parseARPMAC(readText(procARP), dev, ip) }
 
 // parseARPMAC pulls a resolved link address for ip on dev out of /proc/net/arp's text. Pure, so
-// the detail that cannot be inferred by reading it is unit-tested rather than trusted ([B.153]):
+// the detail that cannot be inferred by reading it is unit-tested rather than trusted:
 // the flags column carries ATF_COM (0x2) once an address actually replied, and an unanswered probe
 // leaves the row PRESENT but incomplete -- so the flag is the evidence, never the row.
 func parseARPMAC(text, dev, ip string) string {

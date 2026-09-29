@@ -1,5 +1,5 @@
 # The CHAIN MEMBER contract: what a unit in drbd-reactor's promoter start-list may and may not do
-# to the promotion ([V3b.5](c)).
+# to the promotion.
 #
 # The rules, one assertion each. A is the front door -- a real member, and the one that actually
 # fails in the field -- driven by SIGKILL, `systemctl restart` and `daemon-reload`, never by

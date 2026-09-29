@@ -9,7 +9,7 @@ import (
 // The host<->guest control protocol -- its verb set and the handshake that advertises it --
 // lives in agent/guestfirmware, not here. Two reasons, both standing: the guest IMAGE's inputs
 // hash covers whole directories, so anything in shared/ that the guest links republishes a
-// 400 MB guest chain for every unrelated edit ([B.139]); and nothing on that channel leaves the
+// 400 MB guest chain for every unrelated edit; and nothing on that channel leaves the
 // house, so this file's audited allowlist is not the register it belongs in.
 
 // EnrollRequest asks an overlay provider to admit this node to the tenant network.
@@ -62,13 +62,13 @@ type NodeStatus struct {
 	// tenant to the node's identity is the cloud's job, so the controller keys storage on its own
 	// tenant, not this self-asserted value. Empty on a node that hasn't registered.
 	Tenant string `json:"tenant,omitempty"`
-	// System is the guest RELEASE this node runs (`vm.<date>.<inputs>`, [B.86h]): the OS moves
+	// System is the guest RELEASE this node runs (`vm.<date>.<inputs>`): the OS moves
 	// only by swapping the image, so the host is the authority and reports the release whose
 	// image its guest booted. Ground truth for the OS rollout -- the controller confirms the
 	// node reached the target release. Empty on a witness, or a node with no record.
 	System string `json:"system,omitempty"`
 	// GuestBundle is the guest bundle the guest RUNS -- the host release id its pushed binaries
-	// came from, "" while it runs the image's firmware ([B.86j]). Widening the closed allowlist by
+	// came from, "" while it runs the image's firmware. Widening the closed allowlist by
 	// one field is a deliberate act, so here is the argument: the cloud's agent rollout converges
 	// on a node only when BOTH halves run the release -- without this a stuck guest (a pushed
 	// binary that reverted, a firmware without the push verbs) would read as converged the moment
@@ -81,7 +81,7 @@ type NodeStatus struct {
 	// WHY A FIELD AT ALL: the cloud must be able to confirm a service rollout. It used to read an
 	// `Image` OCI ref, which was the BAKED SLOT's notion of identity -- a runtime-installed
 	// service's identity is its MANIFEST, and its upgrade is a service-install directive carrying
-	// a new one ([V3b.3](b)/(e1), which deleted the slot and the field with it). With nothing else
+	// a new one (the change that deleted the slot deleted the field with it). With nothing else
 	// on the wire, a node was held to ONE runtime service by an explicit refusal in
 	// applyServiceInstall, because a node running two and describing one would have the cloud
 	// confirm a rollout against whichever came first and a crash-loop in the other go entirely
@@ -95,13 +95,13 @@ type NodeStatus struct {
 	//
 	// WHAT IT DELIBERATELY DOES NOT CARRY: the manifest's Version string (a human label the
 	// cloud can look up from the identity it already has), per-service health (a service's own
-	// endpoint is not probed from here -- see Healthy, and [B.48] for the fix), and the image
+	// endpoint is not probed from here -- see Healthy, and the routing table for the fix), and the image
 	// refs (derivable from the manifest, and one OCI ref per service is exactly the shape this
 	// replaced).
 	//
 	// Empty on a witness and on the shipped zero-service node, which is the state `install.sh`
 	// leaves behind. A node that has PROMOTED reports what the volume says it runs, not merely
-	// what it was itself told to install ([V3b.3](e1), adoptVolumeServices).
+	// what it was itself told to install (adoptVolumeServices).
 	Services []ServiceStatus `json:"services,omitempty"`
 	// AgentVersion is the release id of the host-agent binary now running. It makes a
 	// host-agent self-update observable through the seam the same way Services does for what the
@@ -156,7 +156,7 @@ type ServiceStatus struct {
 	// its own /healthz on a zero-service node. A home degraded to zero services and every signal
 	// said fine. Healthy is not wrong about its own subject; it is pointed at a different one.
 	//
-	// [V3b.3](f) makes this load-bearing rather than merely nice. Converge-at-promotion takes the
+	// Converge-at-promotion makes this load-bearing rather than merely nice. It takes the
 	// service units OUT of the promoter chain, so that a crashed container alerts instead of
 	// demoting the node -- which also means drbd-reactor no longer notices one at all. This field
 	// is then the ONLY thing that does.
@@ -167,21 +167,21 @@ type ServiceStatus struct {
 	//
 	// WHAT IT DELIBERATELY IS NOT: a health probe. It answers "is the unit up", not "is the
 	// application well" -- a service that is running but broken stays invisible here, because the
-	// front door does not route to it. That is [B.48]'s, and this does not pretend to it.
+	// front door does not route to it. That is the routing table's, and this does not pretend to it.
 	//
 	// EMPTY IS A REAL ANSWER and must not be read as "stopped": a Secondary is not supposed to be
 	// running anything (the services run on whoever holds the volume), and a node whose control
 	// channel hiccuped this cycle knows nothing. Reporting either as stopped would make an
 	// ordinary standby indistinguishable from a broken primary.
 	State string `json:"state,omitempty"`
-	// Health is the service's SERVICE HEALTH ([B.167]): whether the app works, as the guest answers
+	// Health is the service's SERVICE HEALTH: whether the app works, as the guest answers
 	// it — the service's own health endpoint, resolved through the node's routing table, or a
 	// curated app's own check — reported as StateHealthy, StateUnhealthy or StateStarting. Empty
 	// means the question does not apply or could not be asked — a Secondary (which runs nothing),
 	// a service that is not running (State already says so), a cycle whose control channel
 	// hiccuped, or an app that told us nothing (our login to it failing).
 	//
-	// STARTING was added with [B.167c] (owner, 2026-09-27): it means still booting and nothing
+	// STARTING means still booting and nothing
 	// else, and without it a restarting service reads as unhealthy for the minute it takes — a
 	// false alarm on a field whose value is that someone acts on it. It carries nothing about the
 	// household beyond what healthy/unhealthy already did.
@@ -193,11 +193,11 @@ type ServiceStatus struct {
 	// door, which answers for the NODE. So "the unit is up" was the only thing anyone could see,
 	// and a service that starts and then fails to serve was invisible to every signal we have.
 	//
-	// It became askable at all with the routing table ([B.48]): before it, the address of a
+	// It became askable at all with the routing table: before it, the address of a
 	// service was something each caller assembled for itself, and a health field would have been
 	// a claim about a URL rather than about the thing the household reaches.
 	//
-	// IT REPORTS AND NEVER GATES, exactly like State and for the same reason: [V3b.3](f) takes
+	// IT REPORTS AND NEVER GATES, exactly like State and for the same reason: converge-at-promotion takes
 	// service failures out of the promoter's reach on purpose, because a code fault is
 	// deterministic and failing over to a peer running the identical closure only flaps. This is
 	// what makes such a failure VISIBLE without making it actionable by the wrong machinery.
@@ -310,14 +310,14 @@ const (
 // two that change what a node runs: a whole-OS upgrade, and a service install.
 //
 // There is no payload `upgrade` kind. It named an OCI image ref and re-pinned the build-time
-// payload slot, which is deleted ([V3b.3](e1)); a runtime-installed service is identified by its
+// payload slot, which is deleted; a runtime-installed service is identified by its
 // MANIFEST, so moving one to a new version is a service-install directive carrying the catalog
 // name whose published manifest changed.
 const (
 	DirectiveNoop          = "noop"           // acknowledge only -- proves the round-trip
 	DirectiveLog           = "log"            // agent logs Payload -- push a marker/instruction to a node
 	DirectiveUpgradeSystem = "upgrade-system" // Payload = a VM RELEASE id (`vm.<date>.<inputs>`) on the
-	//                              release channel ([B.86h]). The node fetches and verifies that
+	//                              release channel. The node fetches and verifies that
 	//                              release's image, swaps it under a fresh OS disk, proves the boot
 	//                              against the signed manifest, health-gates, and swaps back on
 	//                              failure. The OS moves only by image; nothing is switched in band.
@@ -325,7 +325,7 @@ const (
 	//                        Key it holds and writes both to the DRBD volume, where the TLS
 	//                        terminator hot-reloads it (renewal, cloud-scheduled).
 	DirectiveCertRequest = "cert-request" // Payload = the DNS name; the node generates a keypair +
-	//                        CSR (the private key stays home — [[cloud-issues-certs-not-node]]) and
+	//                        CSR (the private key stays home) and
 	//                        uploads the CSR on its next report (ReportRequest.CSR). The cloud signs
 	//                        it (DNS-01) and returns the cert via DirectiveCert.
 	DirectiveAgentUpdate = "agent-update" // Payload = a JSON AgentUpdate; the node fetches the signed
@@ -372,7 +372,7 @@ const (
 	//                        anything.
 	DirectiveServiceMembers = "service-members" // Payload = a SERVICE NAME. Outcome.Detail is a
 	//                        JSON array of quadlet.SnapshotEntry: one service's ring, oldest
-	//                        first, as the picker shows it ([B.143]). Read-only — it changes
+	//                        first, as the picker shows it. Read-only — it changes
 	//                        nothing and is safe to re-send.
 	//
 	//                        JSON IN Detail, deliberately, and it is the narrow choice rather than
@@ -381,10 +381,10 @@ const (
 	//                        is how they drift. Both readers want structure: the CLI prints a
 	//                        table, the dashboard renders a list.
 	DirectiveServiceRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
-	//                        ([B.143]), exactly as the listing the picker read returned it. The
+	//                        exactly as the listing the picker read returned it. The
 	//                        node puts that service back to the member: its data, and — when the
 	//                        member's pinned manifest differs from the running one — its CODE with
-	//                        it, which is the DESIGN §8 {code identity + data} rollback reached
+	//                        it, which is the designed {code identity + data} rollback reached
 	//                        deliberately rather than through a failed upgrade.
 	//
 	//                        A PATH AND NOT A TITLE, deliberately, and it is service-install's
@@ -403,7 +403,7 @@ const (
 	//                        DISK is not touched, so identity, replica and service pin all survive —
 	//                        the same node returns with a factory code half.
 	//
-	//                        THE ONE DIRECTIVE THAT IS NEVER A REFLEX (B.10). Every other recovery
+	//                        THE ONE DIRECTIVE THAT IS NEVER A REFLEX. Every other recovery
 	//                        rung fires on its own; this waits for a human — or, later, a cloud that
 	//                        has read the logs and decided. It is drastic, its result is uncertain,
 	//                        and the rebuilt guest must re-pull its OCI images over the WAN at
@@ -413,10 +413,10 @@ const (
 	DirectiveDashboard = "dashboard" // Payload = a JSON {name, username, language} describing the OS account the
 	//                                  CLI ran under (all optional). The node mints a one-time code, hands
 	//                                  it to the guest with that account (shared/dashboard), and reports
-	//                                  the URL to open as the outcome Detail ([V3b.31b]). Local-door only
+	//                                  the URL to open as the outcome Detail. Local-door only
 	//                                  in practice: the code is for the person at the machine.
 	DirectiveCasaClaim = "casa-claim" // Payload = an email address. The node claims `<flock>.briard.casa`
-	//                                   for it ([V3c.4]): mints its casa key if it has none, opens the
+	//                                   for it: mints its casa key if it has none, opens the
 	//                                   claim at the cloud, and from then on polls it, writes its own
 	//                                   address and keeps a certificate renewed. Local-only: the household
 	//                                   asks from its dashboard (the guest admin port) or the CLI; the
@@ -429,14 +429,14 @@ const (
 	//                       ; a stub injects it in the test. Blank-join only — re-homing
 	//                        an already-seeded island is cloud-composed.
 	//
-	//                        ⚠️ A LONE NODE HAS NO RESOURCE TO ADJUST ([B.145]): a home with one
+	//                        ⚠️ A LONE NODE HAS NO RESOURCE TO ADJUST: a home with one
 	//                        diskful member runs no DRBD, so the serving anchor's side of its FIRST
 	//                        pairing is a CONVERSION -- the host records the mesh and reboots the
 	//                        guest, and bring-up creates the metadata on the LV the layout reserved
 	//                        for it, declares this copy UpToDate before any peer connects, and the
-	//                        joiner syncs from it. One reboot, never a migration ([B.145d]).
+	//                        joiner syncs from it. One reboot, never a migration.
 	DirectiveUnpair = "unpair" // Payload = a JSON MeshSpec: the mesh that REMAINS after a member left
-	//                        ([B.145d]), sent to a surviving anchor (Join=false, always). With two or
+	//                        sent to a surviving anchor (Join=false, always). With two or
 	//                        more diskful members left the survivor adjusts in place, as pair does;
 	//                        with one -- itself -- the flock has ended and the node goes back to
 	//                        running its volume without DRBD: the host records the mesh, asserts the
@@ -464,18 +464,18 @@ const (
 	DirectiveSync = "sync" // Payload empty. Flush the node's replicated data volume (dirty page
 	//                        cache -> both disks), so a handover issued moments later unmounts a
 	//                        volume that owes almost nothing -- the pre-copy half of the eviction
-	//                        discipline ([B.100a]). The sequencer sends it to the node it is about
+	//                        discipline. The sequencer sends it to the node it is about
 	//                        to evict BEFORE its settle window, so the flush's own replication
 	//                        burst lands while the fleet is still under observation rather than
 	//                        inside the demote path. Node-local and idempotent; a node with
 	//                        nothing mounted (a Secondary, a witness) reports done("skipped"),
 	//                        which is an answer, not a failure.
 
-	// LOCAL-ONLY KINDS ([B.142a]). These are refused when they arrive on the cloud's
+	// LOCAL-ONLY KINDS. These are refused when they arrive on the cloud's
 	// down-channel; the allowlist that does it is localOnlyKinds in agent/host. They sit in this
 	// same block because the taxonomy is one taxonomy -- what differs is which door may carry
 	// them, and that is a property of the call site, never of anything on the Directive struct.
-	DirectiveDoctor = "doctor" // Payload empty. The agent's half of `briard doctor` ([V3c.3]):
+	DirectiveDoctor = "doctor" // Payload empty. The agent's half of `briard doctor`:
 	//                        the node judged live from the agent's own view -- the network it
 	//                        built, the guest channel, role vs DRBD, the address vs the role, the
 	//                        data disk, the volume's space and the cert. Outcome Detail = a JSON
@@ -497,7 +497,7 @@ const (
 
 // CertBundle is a renewed cert the controller pushes down (JSON-encoded into a DirectiveCert's
 // Payload). Cert-only: the node generated the keypair and holds the private key, so
-// only the signed certificate crosses the wire ([[cloud-issues-certs-not-node]] — the key never
+// only the signed certificate crosses the wire (the key never
 // leaves home). The cloud/controller schedules + issues (it holds the DNS token + does DNS-01);
 // the node pairs this cert with its stashed key and applies both to the replicated volume.
 type CertBundle struct {
@@ -506,12 +506,12 @@ type CertBundle struct {
 }
 
 // AgentUpdate is the payload of a DirectiveAgentUpdate: the host-agent release the cloud asks a
-// node to converge to. It names a VERSION and nothing else ([B.86c]): the node resolves it
+// node to converge to. It names a VERSION and nothing else: the node resolves it
 // through the signed channel manifest — `stable`, `latest`, or an exact id, floored at stable —
 // so the cloud can no longer name an arbitrary URL, and everything that ever runs on a node is a
 // published signed release (canary builds included). The node verifies against its release
 // keyring and stages+arms the Type=notify trial only on a valid signature; a bad pin or a bad
-// signature is refused and the running binary kept ([[cloud-issues-certs-not-node]]'s sibling
+// signature is refused and the running binary kept (the certificate rule's sibling
 // principle: the node validates, never trusts the transport). Version is echoed in
 // NodeStatus.AgentVersion once it commits, so the cloud can tell a canary converged before it
 // offers the fleet.
@@ -546,8 +546,8 @@ type MeshSpec struct {
 
 // MeshWitness carries the host-side cloud-witness forwarder wiring for a managed pairing.
 // Non-nil only when the mesh's diskless voter is the forwarded cloud witness, reached through
-// each anchor's OWN host witness-forwarder over a private guest↔host link ([[cloud-witness-v3-1d]],
-// [[logic-on-host-by-default]]). The recipient anchor uses it to (a) render the explicit-connection
+// each anchor's OWN host witness-forwarder over a private guest↔host link
+// (logic lives on the host by default). The recipient anchor uses it to (a) render the explicit-connection
 // .res (LocalAddr → drbd.Peer.WitnessLocal; the diskless peer's mesh Address is the host forwarder
 // the guest's DRBD dials), (b) address its guest witness NIC (Dev/CIDR = eth3), and (c) start its
 // host witness-forwarder (tunnelling that link to Target over mTLS with the host-held anchor cert).

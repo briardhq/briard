@@ -12,7 +12,7 @@ import (
 
 // smtpSink is a throwaway in-process SMTP server that captures one message's envelope recipient
 // and DATA body, speaking just enough of the protocol for net/smtp's SendMail. Hermetic -- proves
-// the real net/smtp path + the envelope recipient without a live relay ([[verification-assertions-must-fail]]:
+// the real net/smtp path + the envelope recipient without a live relay (so it can fail:
 // assert the address that actually went on the wire, not just "no error").
 type smtpSink struct {
 	ln   net.Listener

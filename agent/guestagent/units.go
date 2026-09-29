@@ -14,13 +14,13 @@ import (
 	"briard.io/shared/chain"
 )
 
-// THE UNITS THE PUSHED AGENT OWNS ([B.160]).
+// THE UNITS THE PUSHED AGENT OWNS.
 //
-// Since [B.86j] the guest image bakes exactly one binary -- briard-guest-firmware, the push
+// The guest image bakes exactly one binary -- briard-guest-firmware, the push
 // protocol -- and every other briard binary rides the HOST bundle. The units that start them were
 // left behind in the image, and a unit is mostly an ExecStart plus the environment that binary
 // needs, so the two moved on different cadences: the binary on the host's, the unit on the
-// image's. Measured, [B.159](c): a pushed agent asked its older image for a unit that image did
+// image's. Measured: a pushed agent asked its older image for a unit that image did
 // not define, and the node crash-looped 53 times with the household's app gone.
 //
 // So the agent writes them itself, at every start, and the defect class stops being
@@ -35,7 +35,7 @@ import (
 // promoter units into this directory, and the agent reaches into it to manage a drop-in and to
 // remove a generated target (reactorDropIn, guestagent.go).
 //
-// ⚠️ WHAT DOES NOT MOVE, and the line is AGENTS §5's frozen-by-necessity one drawn inside the
+// ⚠️ WHAT DOES NOT MOVE, and the line is the frozen-by-necessity one drawn inside the
 // guest: a unit that starts the thing writing it cannot be written by that thing. briard-guest-
 // agent.service and briard-deadman.service supervise the agent's own arrival, so they stay baked
 // (guest-image/disk-image.nix), as do the upstream DRBD units and briard-stage, whose content is
@@ -74,8 +74,7 @@ func toolsBin() string {
 	return defaultToolsBin
 }
 
-// holdSecs is how long a node refuses promotion after one of its chain members gave up
-// ([V3b.5](c)).
+// holdSecs is how long a node refuses promotion after one of its chain members gave up.
 //
 // 300s is a judgement, not a measurement, and the trade is legible: a fault that TRAVELS with
 // the replicated volume (a bad routes table, a corrupt cert, a name that collides LAN-wide) is
@@ -103,7 +102,7 @@ func holdSecs() string {
 // word -- PATH only reaches what the command itself then shells out to.
 func tool(name string) string { return filepath.Join(toolsBin(), name) }
 
-// WHAT HANDS THE RESOURCE ON WHEN A CHAIN MEMBER GIVES UP ([V3b.5](c)), and it has to be a STATE
+// WHAT HANDS THE RESOURCE ON WHEN A CHAIN MEMBER GIVES UP, and it has to be a STATE
 // hook rather than a dependency, which is the whole finding.
 //
 // `Requires=` is JOB-level: systemd consults it when a stop or restart job is enqueued on the
@@ -126,7 +125,7 @@ func tool(name string) string { return filepath.Join(toolsBin(), name) }
 // "not me, for now" has to go on BEFORE the demote, not after it. briard-promotion-hold does
 // both in that order and carries the same FailureAction=reboot for a demote DRBD refuses.
 //
-// THE BUDGET IS UNIFORM ACROSS THE CHAIN ([B.125](b)): five starts in five minutes, after which
+// THE BUDGET IS UNIFORM ACROSS THE CHAIN: five starts in five minutes, after which
 // the member gives up and the resource moves. A judgement rather than a measurement, and it
 // matters more than the shape suggests -- with no StartLimit at all systemd's 5-in-10s default
 // applies, and at RestartSec=2 that IS reachable, so a door would hand the resource on after
@@ -151,7 +150,7 @@ const (
 // chainEdges is what makes the members an ordered chain on a node with no promoter, and what
 // makes them stop with it: PartOf the target, and Requires=/After= the PREVIOUS member. It is
 // the same shape drbd-reactor writes onto its own target's members, so a lone node and a flock
-// run ONE chain and the members cannot tell which target started them ([B.145c]).
+// run ONE chain and the members cannot tell which target started them.
 func chainEdges(i int, members []string) string {
 	s := "PartOf=" + chain.Target + "\n"
 	if i > 0 {
@@ -178,7 +177,7 @@ func reversed(in []string) []string {
 //
 // ⚠️ THE ExecStart PATH DOES NOT EXIST YET when this runs, and that is correct rather than
 // sloppy. The committed binary is laid down by guestfirmware.BinCommit, which runs AFTER the
-// control port opens ([B.148] says why it cannot run earlier), while rendering runs BEFORE it --
+// control port opens (BinCommit's doc says why it cannot run earlier), while rendering runs BEFORE it --
 // so the unit names a path the commit creates moments later, exactly as the baked unit did. What
 // IS checked is the tool profile, because that is the image's half and the one an old image lacks.
 func units() map[string]string {
@@ -187,14 +186,14 @@ func units() map[string]string {
 	members := chain.Members()
 	u := map[string]string{}
 
-	// NODE STORAGE -- every tier this node holds, and the DRBD resource on top of them
-	// ([V3b.33](d)). NOT a promoter chain member and NOT started at boot: the HOST starts it,
+	// NODE STORAGE -- every tier this node holds, and the DRBD resource on top of them.
+	// NOT a promoter chain member and NOT started at boot: the HOST starts it,
 	// once per bring-up, after writing /run/briard/node-storage.json.
 	//
 	// No [Install] section, which is the old `wantedBy = [ ]` and the same statement: storage
 	// bring-up provably cannot run before the host has dressed the guest, which is fine (the
 	// host is always present at guest start -- `-no-reboot`, and the agent is the guest's sole
-	// supervisor) and turns something accidental into something stated. Under [B.160] it is
+	// supervisor) and turns something accidental into something stated. With the agent writing the unit it is
 	// true twice over: the unit does not exist at all until the agent that execs it is here.
 	//
 	// It runs on EVERY node, witness included: a diskless node builds no tier and still needs
@@ -206,7 +205,7 @@ func units() map[string]string {
 	// the attach never re-tried. Every step it takes is idempotent by construction (a returning
 	// node activates its VG and stops), so re-running is the cheaper guarantee.
 	//
-	// ⚠️ THE COMMITTED PATH DIRECTLY ([B.86j], [B.138]), never through the pivot's picker: the
+	// ⚠️ THE COMMITTED PATH DIRECTLY, never through the pivot's picker: the
 	// picker's trial flag is keyed by the binary's NAME, so a unit that reached the agent
 	// through it would arm a trial every time storage came up.
 	u[nodeStorageUnit] = `[Unit]
@@ -219,7 +218,7 @@ Environment=PATH=` + tools + `
 ExecStart=` + agent + ` --node-storage
 `
 
-	// THE HAND-OVER, AND THE REFUSAL TO TAKE IT STRAIGHT BACK ([V3b.5](c)). One unit owns the
+	// THE HAND-OVER, AND THE REFUSAL TO TAKE IT STRAIGHT BACK. One unit owns the
 	// whole sequence because the ORDER is the design: mask BEFORE demoting.
 	//
 	// Measured on a lone node: drbd-reactor re-promotes about 2s after a demote completes. So a
@@ -228,7 +227,7 @@ ExecStart=` + agent + ` --node-storage
 	// drbd-promote@ never runs, DRBD's role never moves, and there is no second mount/unmount
 	// cycle to pay for.
 	//
-	// EACH STEP IS AN IMAGE-SIDE TOOL taking this agent's chain list as arguments ([B.160]).
+	// EACH STEP IS AN IMAGE-SIDE TOOL taking this agent's chain list as arguments.
 	// The topology dispatch, the mask, the shim and the unmount are the image's -- they name
 	// store paths and they do not change with a release. What the agent supplies is the one
 	// thing only it knows: WHICH units the chain is made of, and in which order to stop them.
@@ -280,7 +279,7 @@ ExecStopPost=-` + tool("briard-hold-restart") + " " + chain.Target + `
 ExecStopPost=-` + tool("journalctl") + ` --sync
 `
 
-	// 1. PRIMARY STORAGE -- format on first use, mount the replicated volume ([V3b.33](d)). The
+	// 1. PRIMARY STORAGE -- format on first use, mount the replicated volume. The
 	// FILESYSTEM half: node storage did the block work on every node, and this runs only where
 	// the volume is actually mounted, which is the one node that promoted.
 	//
@@ -301,7 +300,7 @@ ExecStart=` + agent + ` --primary-storage
 ExecStop=` + agent + ` --primary-storage-stop
 `
 
-	// 2. SERVICES -- CONVERGE-AT-PROMOTION ([V3b.3](f)). Once the volume is mounted, read every
+	// 2. SERVICES -- CONVERGE-AT-PROMOTION. Once the volume is mounted, read every
 	// manifest under its `.services/`, render, warm and start them. This node makes itself match
 	// the VOLUME, so what a node was told -- or whether it was even up when the install ran --
 	// stops deciding what the household gets after a failover.
@@ -334,11 +333,11 @@ ExecStop=` + agent + ` --converge-stop
 	// (new) home. BOTH the address and the device are agent-determined: net.configure writes
 	// VIP_ADDR + VIP_DEV to vip.env, and this unit reads that file and NOTHING ELSE.
 	//
-	// THE FILE IS REQUIRED, not optional, and there is no baked device or address behind it
-	// ([V3b.16a]). It can only be missing if something started this unit that the agent did not
+	// THE FILE IS REQUIRED, not optional, and there is no baked device or address behind it.
+	// It can only be missing if something started this unit that the agent did not
 	// configure -- which the promoter gate makes impossible, since drbd-reactor itself is
 	// agent-started. So "no VIP configuration" is an error rather than a guess, and the one
-	// guess it used to make claimed the service address on the replication NIC ([V3b.16]).
+	// guess it used to make claimed the service address on the replication NIC.
 	//
 	// Wants= THE RENEWAL TIMER, which is the `wantedBy` the timer used to carry, said from this
 	// side because a runtime unit has no `systemctl enable` to act on an [Install] section. Same
@@ -361,7 +360,7 @@ ExecStop=` + tool("briard-vip-down") + `
 
 	// 3b. Ten-minute lease renewal, for as long as this node holds the VIP.
 	//
-	// NOT A CHAIN MEMBER, deliberately and for [V3b.5c]'s reason: a renewal that fails must
+	// NOT A CHAIN MEMBER, deliberately, and for the same reason the hold exists: a renewal that fails must
 	// never be able to demote a serving node. Nothing Requires it, its failure propagates
 	// nowhere, and the real consequence of a renewal going wrong is a NAK, which dhcpcd's own
 	// hook handles as an address change rather than as a unit failure.
@@ -392,7 +391,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 `
 
 	// 4. THE FRONT DOOR -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
-	// household's mDNS names ([B.152]).
+	// household's mDNS names.
 	//
 	// Cert/key live on the DRBD volume so they replicate and survive failover; the proxy
 	// hot-reloads them, so a renewal is gap-free. ⚠️ A MISSING CERT IS NOT A FAILURE: :443
@@ -403,7 +402,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// does not restate. Ordered AFTER briard-services, which is what makes the table exist before
 	// the door reads it.
 	//
-	// THROUGH THE PIVOT ([B.86j], [B.138]): the picker runs the copy the host pushed, and nothing
+	// THROUGH THE PIVOT: the picker runs the copy the host pushed, and nothing
 	// else -- the image bakes no door. READY means "listening", which is what a trial agent reads
 	// as its verdict on the pushed copy.
 	//
@@ -413,7 +412,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// PATH nixpkgs hands every unit; a runtime unit gets no such gift, and a picker that cannot
 	// consume its own single-use flag would let a crashing candidate re-trial forever.
 	//
-	// A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE ([V3b.5](c)). Without RestartMode=direct the
+	// A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE. Without RestartMode=direct the
 	// auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data volume
 	// and demotes the node on ONE crash, measured, with a peer taking the resource about half the
 	// time. `direct` restarts through activating instead of failed, so dependents are not
@@ -434,10 +433,10 @@ RestartSec=2
 TimeoutStartSec=10
 `
 
-	// 5. THE HOUSEHOLD DASHBOARD ([V3b.31b]): loopback only, behind the door, which forwards
+	// 5. THE HOUSEHOLD DASHBOARD: loopback only, behind the door, which forwards
 	// every name it does not route here. A chain member for the reason the door is one -- its
 	// device registry lives on the volume, and only the primary has it -- under the same
-	// [V3b.5](c) settings. It reads the routing table converge wrote and Home Assistant's
+	// hold settings. It reads the routing table converge wrote and Home Assistant's
 	// control token, both on /run; it writes only under /var/lib/briard/dashboard.
 	u[dashboardUnit] = `[Unit]
 Description=Briard household dashboard (behind the front door)
@@ -453,7 +452,7 @@ RestartSec=2
 TimeoutStartSec=10
 `
 
-	// THE LONE NODE'S TARGET ([B.145c]): the promoter chain with no promoter. A home with one
+	// THE LONE NODE'S TARGET: the promoter chain with no promoter. A home with one
 	// diskful member runs no DRBD, so nothing generates drbd-services@r0.target for it; this
 	// static target carries the IDENTICAL member list in the identical order, with the same
 	// Wants/After the reactor writes onto its target -- so a lone node and a flock run one
@@ -473,7 +472,7 @@ After=` + strings.Join(members, " ") + `
 //
 // WHERE IT RUNS: before the control port opens, and before anything else the agent's start does
 // (cmd/briard-guest-agent's runGuest). The host's gate is the PORT, not READY -- the lesson
-// [B.148] paid for -- so anything rendered after the port is a unit the first bring-up verb can
+// the staged-vs-committed window paid for -- so anything rendered after the port is a unit the first bring-up verb can
 // ask for and not find, which is the very crash this item exists to remove.
 //
 // A FAILURE HERE IS FATAL TO THE START, on purpose. The only realistic cause is an image with no
@@ -481,10 +480,10 @@ After=` + strings.Join(members, " ") + `
 // what makes that safe: a trial agent that exits takes the whole staged set down with it (the
 // picker restores the committed binaries, guestfirmware.BinStartup), so the node keeps running
 // the release it already had instead of promoting into units it cannot support. Stopping the host
-// from OFFERING that upgrade at all is [B.159](e)'s floor, which this does not replace.
+// from OFFERING that upgrade at all is the upgrade floor's job, which this does not replace.
 func WriteUnits(ctx context.Context, x Executor) error {
 	if tools := toolsBin(); !isDir(tools) {
-		return fmt.Errorf("guest units: no tool profile at %s -- this image predates [B.160] and cannot run this agent", tools)
+		return fmt.Errorf("guest units: no tool profile at %s -- this image predates the tool profile and cannot run this agent", tools)
 	}
 	dir := unitDir()
 	want := units()
@@ -501,7 +500,7 @@ func WriteUnits(ctx context.Context, x Executor) error {
 		// to /dev/null. So the renderer and the mask are two writers of one path, and the rule
 		// has to be that the mask wins -- otherwise an agent restart would silently un-refuse a
 		// node that had been told to stay out, which on the reboot path is a node reclaiming the
-		// house before anyone has verified its new generation ([B.145c], handover -keep-masked).
+		// house before anyone has verified its new generation (handover -keep-masked).
 		//
 		// Lstat, not Stat: a mask points at /dev/null, which exists, so following the link would
 		// make every mask look like an ordinary file. Our own renders are always regular files,
@@ -528,7 +527,7 @@ func WriteUnits(ctx context.Context, x Executor) error {
 //
 // THE CASE IS A DOWNGRADE INSIDE ONE BOOT, and it is a path the product actually takes: a
 // refused release is reverted by pushing the previous bundle and restarting the agent's unit
-// (guestfirmware, [B.138]). /run is tmpfs, so a reboot would clear this by itself -- but a
+// (guestfirmware). /run is tmpfs, so a reboot would clear this by itself -- but a
 // revert is not a reboot, and what it would otherwise leave behind is the newer agent's units
 // pointing at the older agent's binary. That is this item's own defect with the ages swapped,
 // and it would be the harder direction to read, because the unit would look freshly written.
@@ -569,7 +568,7 @@ func sweep(dir string, want map[string]string) error {
 
 // MaskRendered makes one of the units above unstartable, and UnmaskRendered puts it back.
 //
-// THEY EXIST BECAUSE THE RENDERER OWNS THE PATH A MASK WANTS ([B.160]). `systemctl mask
+// THEY EXIST BECAUSE THE RENDERER OWNS THE PATH A MASK WANTS. `systemctl mask
 // --runtime` refuses outright when a real file is already there -- measured on install-macvtap:
 // "Failed to mask unit: File '/run/systemd/system/briard-chain.target' already exists", which
 // broke `handover -keep-masked` on every lone node. So the file is removed first, and systemd is

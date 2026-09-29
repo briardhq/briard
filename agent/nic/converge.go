@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// The host's side of the guest's L2, built by the AGENT ([B.150](d)).
+// The host's side of the guest's L2, built by the AGENT.
 //
 // It used to be a shell script the installer generated -- `net-up.sh`, with this host's NIC,
 // device names, addresses and gateway baked into a heredoc, run once inline and again at every
@@ -37,7 +37,7 @@ import (
 // because setting it on every tick would be a netlink write per device per 10 seconds forever.
 const ifAllmulti = 0x200
 
-// THE ARGV AND THE ONE PATH, RENDERED PURELY ([B.153], the shape agent/platform/route.go already
+// THE ARGV AND THE ONE PATH, RENDERED PURELY (the shape agent/platform/route.go already
 // uses). Each of these carries a detail that cannot be inferred by reading the call site --
 // `type macvtap mode bridge`, `mode tap`, `allmulticast on`, the procfs knob's exact path -- and
 // the rationale for each lives at the caller, where the decision is. Pure so a unit test pins
@@ -61,13 +61,13 @@ func allmulticastOnArgs(dev string) []string {
 }
 
 // disableIPv6Path names the procfs knob that stops a device autoconfiguring. See ensureMacvtap for
-// why the host must not autoconfigure on a device carrying the GUEST's MAC ([B.106]).
+// why the host must not autoconfigure on a device carrying the GUEST's MAC.
 func disableIPv6Path(dev string) string {
 	return "/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6"
 }
 
 // Spec is the host-side L2 for one guest: which parent, and which devices on it. It is DERIVED
-// from the selected device rather than configured ([B.150](c)) -- if the parent is a bridge the
+// from the selected device rather than configured -- if the parent is a bridge the
 // user owns, the guest gets one port on it and makes its own service identity inside; otherwise
 // the guest gets macvtap children and a private link.
 type Spec struct {
@@ -75,18 +75,17 @@ type Spec struct {
 	Parent string
 	// Bridge is whether Parent is a bridge. It is the substrate fork, and it is a QUESTION ABOUT
 	// THE DEVICE rather than a mode someone selects: we never create a bridge, we only join one
-	// that is already there ([B.150](c)).
+	// that is already there.
 	Bridge bool
 	// SystemTap is the guest's eth1 -- its node IP, and where DRBD binds. Built on every
 	// substrate: a macvtap child of Parent, or a plain tap enslaved to it.
 	SystemTap string
 	// ServiceTap is the guest's eth2, where the VIP lives. EMPTY on a bridge, where the guest
-	// makes its own service identity as a macvlan child inside ([V3b.26c]) -- Windows admits one
+	// makes its own service identity as a macvlan child inside -- Windows admits one
 	// tap per qemu process, and this substrate is that shape's Linux clone.
 	ServiceTap string
 	// PrivTap is the guest's eth3, the private host<->guest link. EMPTY on a bridge, where host
-	// and guest already share one L2 and the link would be a second tap Windows cannot give us
-	// ([V3b.26a]).
+	// and guest already share one L2 and the link would be a second tap Windows cannot give us.
 	PrivTap string
 	// Addrs are the addresses this host puts on its own side, in CIDR form, keyed by device.
 	// Under macvtap: the link's host end and this node's system-subnet /32, both on PrivTap.
@@ -114,7 +113,7 @@ func (s Spec) built() bool {
 // Everything here brings a device UP only on the pass that CREATES it. A device that exists and is
 // administratively down is left alone, and that is a rule rather than an oversight:
 //
-//   - The drift this loop exists for is [B.150](c)'s -- NetworkManager flushing the ADDRESS we put
+//   - The drift this loop exists for is NetworkManager flushing the ADDRESS we put
 //     on a device it manages, when a connection reactivates. That is a value being reconciled away
 //     underneath us. An `ip link set X down` is not drift; it is an act, by an operator or a test.
 //   - A REAL partition is carrier-down, not admin-down, and an admin-up device with no carrier is
@@ -144,7 +143,7 @@ func Converge(ctx context.Context, s Spec) error {
 	}
 	if s.Bridge {
 		// ONE PORT ON A BRIDGE WE DID NOT MAKE. Nothing is enslaved, nothing is moved, and the
-		// host's own LAN identity is never touched -- which is the whole of [B.150](c): the
+		// host's own LAN identity is never touched -- which is the whole point: the
 		// sequence that took a NIC away from NetworkManager, moved the address and the default
 		// route onto a bridge of ours, and armed a watchdog to undo it if we cut the operator's
 		// own SSH session, does not exist any more. The user owns the bridge; we add a port.
@@ -184,7 +183,7 @@ func Converge(ctx context.Context, s Spec) error {
 }
 
 // Rebuild converges s after DELETING the guest's NIC devices, so they are recreated on s.Parent
-// whatever they were hanging off before. It is the re-parent's half of [B.150](e).
+// whatever they were hanging off before. It is the re-parent's half of recovering from a moved LAN.
 //
 // The delete is the whole difference from Converge, and it is not optional: a macvtap cannot be
 // re-parented, and Converge is check-first -- a child that still EXISTS (a parent renamed rather
@@ -197,7 +196,7 @@ func Converge(ctx context.Context, s Spec) error {
 func Rebuild(ctx context.Context, s Spec) error {
 	if s.Bridge {
 		// Nothing to rebuild: the port is a plain tap on a bridge the USER owns, and a bridge
-		// that went away is theirs to restore ([B.150](c)).
+		// that went away is theirs to restore.
 		return Converge(ctx, s)
 	}
 	for _, t := range []string{s.SystemTap, s.ServiceTap} {
@@ -210,11 +209,11 @@ func Rebuild(ctx context.Context, s Spec) error {
 	return Converge(ctx, s)
 }
 
-// Remove undoes Converge ([V3c.2], `briard uninstall`): every device s names is deleted, and every
+// Remove undoes Converge (`briard uninstall`): every device s names is deleted, and every
 // address s puts on a device it did NOT create -- the user's bridge -- is taken back off it.
 //
 // Deleting a device is what removes everything else we hung on it: its addresses, the VIP route
-// and the permanent neighbour entry over the private tap, and [B.106]'s per-device IPv6 knob. The
+// and the permanent neighbour entry over the private tap, and the per-device IPv6 knob. The
 // bridge is the one device we touch and must leave standing, so its address is the one thing
 // removed by hand. Absent devices and addresses are already removed; it carries on past a failure
 // and returns the first, so one stuck device does not leave the rest behind.
@@ -261,7 +260,7 @@ func Converged(s Spec) bool {
 			return false
 		}
 		// The two flags on a macvtap child that are not kernel defaults. BOTH are checked, and
-		// the IPv6 one is the whole of [B.106]'s repair path: a device that already exists is
+		// the IPv6 one is the whole of the repair path: a device that already exists is
 		// never re-created, so if this is not the question the tick asks, a host installed before
 		// the fix keeps autoconfiguring on the guest's MAC forever -- and every reachability
 		// check still passes, which is why it went unnoticed the first time.
@@ -298,7 +297,7 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 	// whose winner DAD picks and whose loser silently drops it, and the host's avahi joins mDNS
 	// on the guest's segment, where the name is the guest's to publish. Ubuntu ships
 	// net.ipv6.conf.default.accept_ra=1 and every new device inherits the "default" values, so
-	// that is what happens unless we say otherwise ([B.106]). On a fresh device this runs before
+	// that is what happens unless we say otherwise. On a fresh device this runs before
 	// it is up, so no advertisement can be accepted at all; on a device that already exists the
 	// write FLUSHES what it already picked up, which is how an upgraded install gets repaired.
 	//
@@ -394,7 +393,7 @@ func IsBridge(dev string) bool { return dev != "" && exists("/sys/class/net/"+de
 // at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
 // the tick does not chase a knob the machine does not have.
 //
-// It reads with os.ReadFile rather than through readText ([B.153]) because here the ERROR is the
+// It reads with os.ReadFile rather than through readText because here the ERROR is the
 // answer: "no such file" means satisfied, while readText flattens an unreadable file and an empty
 // one to the same "".
 func ipv6Disabled(dev string) bool {
@@ -416,7 +415,7 @@ func up(dev string) bool {
 func flags(dev string) int64 { return parseIfFlags(readText("/sys/class/net/" + dev + "/flags")) }
 
 // parseIfFlags decodes that bitmap. Pure, so the `0x` hex the kernel renders it in is unit-tested
-// rather than trusted ([B.153]). An unreadable or unparseable value is 0 -- no flags set, which
+// rather than trusted. An unreadable or unparseable value is 0 -- no flags set, which
 // sends Converged to false and makes the tick try to fix the device rather than assume it is fine.
 func parseIfFlags(text string) int64 {
 	n, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(text), "0x"), 16, 64)
@@ -436,7 +435,7 @@ func master(dev string) string {
 }
 
 // parseMaster takes the bridge name out of the `master` symlink's target. Pure, so the one detail
-// that cannot be inferred by reading it is unit-tested rather than trusted ([B.153]).
+// that cannot be inferred by reading it is unit-tested rather than trusted.
 //
 // ⚠️ filepath.Base, NOT a prefix trim. The target's depth depends on where the port's real sysfs
 // node lives: a virtual device is one level from its bridge (`../br0`), a physical NIC several

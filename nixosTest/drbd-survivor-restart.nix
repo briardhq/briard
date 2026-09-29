@@ -65,7 +65,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node ([V3b.33](d)), which is why one call covers both.
+    # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     for m in disk_nodes:
@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
     print(f"### primary={primary.name} survivor={survivor.name}")
 
     ### ACT 1 — the control: the primary crashes, the survivor keeps quorum and promotes.
-    # THE CRASH MUST FIND AN UPTODATE REPLICA ([B.145a]). The product's seed path syncs a joiner for
+    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
     # cannot promote. "Replicated" is the claim under test, so assert the disk state before
     # removing the only UpToDate copy.
@@ -107,7 +107,7 @@ pkgs.testers.runNixOSTest {
         # The SAME storage bring-up as the first time, which is the point: it activates the VG,
         # opens the volume if it is encrypted, and then meets its own metadata -- create-md
         # WITHOUT --force refuses, so the replica is attached rather than re-seeded. If this
-        # attaches, the replica survived ([V3b.33](d) made that one unit's job).
+        # attaches, the replica survived (the storage seam made that one unit's job).
         m.succeed("briard-test-storage")
         m.succeed("systemctl start drbd-reactor.service")
 

@@ -1,4 +1,4 @@
-// The agent's half of `briard doctor` ([V3c.3]): the node judged live, from the agent's own view.
+// The agent's half of `briard doctor`: the node judged live, from the agent's own view.
 //
 // The report card gates the install and nothing re-ran it afterwards, so a node a month later
 // had only its history (`briard alerts`, `briard logs`) to answer "what is wrong NOW". The CLI
@@ -201,7 +201,7 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		}
 	}
 
-	// THE ADDRESS AGAINST THE ROLE ([V3.17]): a probe alone cannot tell a handover from a fault,
+	// THE ADDRESS AGAINST THE ROLE: a probe alone cannot tell a handover from a fault,
 	// so what is expected depends on whether this node serves.
 	switch {
 	case serving && f.Probe == "":

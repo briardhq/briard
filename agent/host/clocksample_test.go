@@ -13,7 +13,7 @@ import (
 	"briard.io/shared/model"
 )
 
-// The clock sample's fixtures ([B.143], [B.167]). `night` is any moment; the sampler has no window.
+// The clock sample's fixtures. `night` is any moment; the sampler has no window.
 var night = time.Date(2026, 9, 23, 3, 12, 0, 0, time.Local)
 
 func clockFixture(t *testing.T) (Config, *fakeStatus, *[]takenMember, *clockSampler) {
@@ -27,7 +27,7 @@ func clockFixture(t *testing.T) (Config, *fakeStatus, *[]takenMember, *clockSamp
 	return cfg, f, took, newClockSampler()
 }
 
-// TestClockSampleTakesOneAnInterval is the history's floor ([B.167]): a service nobody restarts is
+// TestClockSampleTakesOneAnInterval is the history's floor: a service nobody restarts is
 // still compared with an hour ago -- and only once an hour, because the observe loop asks on every
 // cycle and a sampler that took one each time would snapshot a household every few seconds.
 func TestClockSampleTakesOneAnInterval(t *testing.T) {
@@ -111,7 +111,7 @@ func metaOf(t *testing.T, raw string) quadlet.SnapshotMeta {
 }
 
 // TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill: it is the ONE member taken against a
-// running service, and the picker and [B.32] are entitled to know that before trusting it. A Home
+// running service, and the picker and the snapshot-integrity supervisor are entitled to know that before trusting it. A Home
 // Assistant that is down, too old for the view, or whose lock broke all land here.
 func TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
@@ -138,7 +138,7 @@ func TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T)
 	}
 }
 
-// TestClockSampleIsQuiescedWhenTheServiceHeldStill ([B.143]): the whole point of asking. Home
+// TestClockSampleIsQuiescedWhenTheServiceHeldStill: the whole point of asking. Home
 // Assistant offers the mechanism its own backups use, and a member taken across it is
 // application-consistent rather than something HA has to recover from.
 func TestClockSampleIsQuiescedWhenTheServiceHeldStill(t *testing.T) {
@@ -154,7 +154,7 @@ func TestClockSampleIsQuiescedWhenTheServiceHeldStill(t *testing.T) {
 }
 
 // TestTheHostNeverClaimsTheServiceHeldStill is the rule that keeps the class honest across the
-// channel ([B.143]): the host renders `crash` and the GUEST upgrades it, because only the guest
+// channel: the host renders `crash` and the GUEST upgrades it, because only the guest
 // watched the service hold. A host that rendered `quiesced` hopefully would make every failure
 // between here and the snapshot into a member that lies.
 func TestTheHostNeverClaimsTheServiceHeldStill(t *testing.T) {

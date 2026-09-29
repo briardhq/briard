@@ -9,7 +9,7 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// THE DATA VOLUME'S LUKS HEADER, KEPT BESIDE THE VOLUME ([V3b.33](c)).
+// THE DATA VOLUME'S LUKS HEADER, KEPT BESIDE THE VOLUME.
 //
 // ~16 MB whose loss is the loss of everything on the volume, and it sits BELOW DRBD, so unlike
 // the data it does not replicate: losing it costs one node and a resync on a flock, and costs a

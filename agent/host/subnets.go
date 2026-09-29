@@ -22,7 +22,7 @@ import (
 // can actually see (agent/subnet), rather than being constants somebody picked.
 //
 // THE DRAW IS PART OF CONVERGENCE, not part of the install. It has the same three reasons the rest
-// of the network does ([B.150]): it is a decision made from what this host can see, what a host can
+// of the network does: it is a decision made from what this host can see, what a host can
 // see changes, and a decision frozen into a script at install time is one no release can reach. It
 // also wants a LAN to look at -- the flock draw ARP-probes its candidate on the parent device -- so
 // it belongs after a usable device has been selected, which is a moment only the agent has.
@@ -124,7 +124,7 @@ func (cfg Config) numberThisNode(ctx context.Context, dev string, logf func(stri
 // node back to the drawn value in silence -- the exact failure the record exists to prevent,
 // arriving by the escape hatch instead of by the draw.
 //
-// Durable (tmp + fsync + rename, AGENTS §5) because its only copy is this file and a power cut
+// Durable (tmp + fsync + rename) because its only copy is this file and a power cut
 // between the draw and the guest's first boot must not lose it. 0644 rather than 0600: these
 // addresses are on the wire the moment the guest comes up, so there is nothing here to keep from
 // a reader, and a rig asserting about the node's addresses reads this file.
@@ -158,7 +158,7 @@ func (cfg Config) recordSubnets(d subnet.Draw, logf func(string, ...any)) {
 //
 // Index 0, because a fresh install is a single-node flock. A node that later JOINS one renumbers
 // into the adopter's subnet, and that address arrives in the pairing's mesh spec rather than from
-// here (DESIGN §1.2).
+// here.
 //
 // Only empty fields are filled, for the reason numberThisNode's guard exists: a config that states
 // an address is a decision, not a gap.

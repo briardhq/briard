@@ -66,7 +66,7 @@ func main() {
 			fatal("write %s: %v", name, err)
 		}
 	}
-	// The service units, in start order. NOT a promoter chain: since [V3b.3](f) the chain is
+	// The service units, in start order. NOT a promoter chain: since converge-at-promotion the chain is
 	// static (data -> services -> vip) and these are not members of it -- briard-services starts
 	// them, which is what keeps a crashed container from demoting the node.
 	write("units", r.Units)

@@ -61,7 +61,7 @@ func dial(t *testing.T, x Executor) *Conn {
 	return c
 }
 
-// THE FIRMWARE SERVES THE PROTOCOL AND NOTHING ELSE ([B.139]). A guest running it has not been
+// THE FIRMWARE SERVES THE PROTOCOL AND NOTHING ELSE. A guest running it has not been
 // dressed, so a verb belonging to the pushed agent is refused with what is actually wrong -- and
 // the handshake says the same thing in advance, which is what makes the host dress it rather
 // than drive it.

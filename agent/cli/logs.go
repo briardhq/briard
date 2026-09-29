@@ -51,7 +51,7 @@ const (
 
 	// THE AGENT'S OWN default for the guest's serial console, copied here for the same reason the
 	// unit names above are copied, and pinned the same way: a test asserts this literal equals what
-	// ConfigFromEnv answers with GUEST_SERIAL unset. Since [B.157] config.env carries the key only
+	// ConfigFromEnv answers with GUEST_SERIAL unset. config.env carries the key only
 	// when an operator named one, so this is the path on an ORDINARY node -- not a guess about one.
 	defaultConsole = "/var/log/briard-guest-console.log"
 
@@ -279,11 +279,11 @@ func (s *logSources) readGuest(ctx context.Context, filter string) surface {
 // ⚠️ TWO HOPS, AND BOTH ARE THE NODE'S OWN WORD. systemd is asked where the config file is
 // (BRIARD_CONFIG on the unit), and the config file is asked where the console is (GUEST_SERIAL).
 // Asking systemd for GUEST_SERIAL directly is what this used to do, and it stopped being true the
-// moment [B.150](a) moved the node's values off the frozen unit and into a file the agent can
+// moment the agent took ownership of the network and moved the node's values off the frozen unit and into a file the agent can
 // rewrite: `systemctl show` reports what the UNIT declares, so the lookup found nothing and this
 // verb told every installed node it captured no console while the capture sat on disk. It survived
-// because the only test stubbed unitProps with a GUEST_SERIAL it wrote itself
-// ([[verification-assertions-must-fail]]); install-macvtap now runs the verb on a real install.
+// because the only test stubbed unitProps with a GUEST_SERIAL it wrote itself,
+// so it could not fail; install-macvtap now runs the verb on a real install.
 //
 // Returns (path, note, err). A non-empty note replaces the surface's header when the path was
 // guessed rather than read from the node, so the reader can tell one from the other.
@@ -306,7 +306,7 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 			}
 		}
 		// ⚠️ ABSENT IS NOT OFF. config.env carries GUEST_SERIAL only when an operator named one
-		// ([B.157]) -- an ordinary node has no line, and the AGENT defaults it, so a reader that
+		// -- an ordinary node has no line, and the AGENT defaults it -- so a reader that
 		// treated the missing key as "capture is off" would contradict the file sitting on disk.
 		// That is the bug the rig caught. Only an explicitly EMPTY entry means off.
 		path, named := configValue(conf, "GUEST_SERIAL")
@@ -505,7 +505,7 @@ func filterLines(lines []string, filter string) []string {
 // four rules, and the duplication is not left to trust: a test in this package feeds an awkward
 // fixture to both implementations and asserts they agree. Keep it that way if either changes.
 //
-// ⚠️ IT REPORTS THREE STATES, NOT TWO, because the agent's own reader does ([B.157]'s `declared`):
+// ⚠️ IT REPORTS THREE STATES, NOT TWO, because the agent's own reader does (its `declared`):
 // a key that is ABSENT takes the shipped default, a key set to EMPTY is a decision to switch the
 // thing off, and those must not collapse into one answer. Collapsing them is exactly the bug that
 // reached the runner: config.env stopped carrying GUEST_SERIAL (the agent defaults it), and a

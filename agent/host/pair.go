@@ -26,7 +26,7 @@ type guestMesher interface {
 	BringUp(ctx context.Context, spec guestagent.BringUpSpec) error
 }
 
-// guestRebooter is the one act a topology transition needs from the host ([B.145d]): stop the
+// guestRebooter is the one act a topology transition needs from the host: stop the
 // guest cleanly and bring it back up, so the bring-up re-reads the recorded membership and
 // node-storage runs the spec × disk table. Both transitions -- a lone node's first pairing, and
 // a flock ending -- are declarative and cost exactly this. *osUpgrade satisfies it (RebootGuest);
@@ -94,10 +94,10 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 		if err := g.ConfigureNet(ctx, guestagent.NetConfig{
 			Dev: spec.SystemDev, CIDR: spec.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
 			// privDev(), not WitnessDev: under the bridge substrate there is no third NIC and naming
-			// one fails the call ([V3b.26c] -- see the helper). Same reason as bring-up's call site.
+			// one fails the call (see the helper). Same reason as bring-up's call site.
 			PrivDev: cfg.privDev(), PrivHostIP: cfg.hostNodeIP(),
 			// And the service identity, because THIS is the renumbering call: an adoption is where
-			// the joiner takes the adopter's flock (DESIGN §1.2), so it is where a guest-made eth2
+			// the joiner takes the adopter's flock, so it is where a guest-made eth2
 			// would otherwise keep presenting its old flock's MAC on the LAN.
 			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
 		}); err != nil {
@@ -138,7 +138,7 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 		return cfg.cacheMesh(spec, logf)
 	}
 
-	// A LONE NODE JOINING ITS FIRST PEER CONVERTS ([B.145d]): it runs no DRBD to adjust. The
+	// A LONE NODE JOINING ITS FIRST PEER CONVERTS: it runs no DRBD to adjust. The
 	// transition is declarative and costs one guest reboot -- record the membership, reboot, and
 	// bring-up runs the spec × disk table (node-storage's convert row: create-md on the metadata
 	// LV the layout reserved, this copy UpToDate before any peer connects, no mkfs). Recorded
@@ -167,12 +167,12 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 	return cfg.cacheMesh(spec, logf)
 }
 
-// ApplyUnpair handles a DirectiveUnpair ([B.145d]): a member left, and this surviving anchor
+// ApplyUnpair handles a DirectiveUnpair: a member left, and this surviving anchor
 // reconciles to the mesh that remains. Two shapes, by what remains:
 //   - two or more diskful members: still a flock; the running resource is adjusted in place,
 //     exactly as the primary's side of a pairing is (drbdadm adjust drops the connection);
 //   - one, this node: the flock has ended. The node goes back to running its volume without DRBD
-//     ([B.145]) -- record the mesh, assert the one-shot convert-disable intent, reboot the guest;
+//     -- record the mesh, assert the one-shot convert-disable intent, reboot the guest;
 //     node-storage's disable row wipes the metadata and the chain comes up from its target.
 //
 // THE PRECONDITION IS THE WHOLE SAFETY: this node must be serving and UpToDate, or the removal
@@ -277,7 +277,7 @@ func (cfg Config) clearConvertIntent() error {
 // meshTarget renders a MeshSpec into this node's DRBD resource and returns its own index in the
 // peer list. Split out of reconcileMesh because the RESTORE path needs the identical derivation:
 // a cached spec has to become the same .res the pairing produced, and a second rendering of the
-// same fact is a second thing that can drift (AGENTS §5).
+// same fact is a second thing that can drift.
 func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 	target := drbd.Resource{Name: spec.Resource, Device: spec.Device}
 	self := -1
@@ -307,12 +307,12 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 // failed halfway must not leave a mesh the next bring-up would converge to. Same rule and the same
 // reason as cacheService writing only past the health gate.
 //
-// A WRITE FAILURE FAILS THE PAIRING (owner, 2026-08-22). This was a warning first, on the reasoning
+// A WRITE FAILURE FAILS THE PAIRING. This was a warning first, on the reasoning
 // that the guest had already applied the mesh so reporting failure would be a lie. That reads the
 // directive's promise too narrowly: **a pairing that is not persisted is not applied.** The guest's
 // copy lives until the next bring-up rewrites it from cfg.Resource, so an uncached pairing is not a
 // meshed node -- it is a node that will silently un-mesh itself on its next reboot, which is the
-// defect [V3b.16b] exists to end rather than a smaller version of it to tolerate.
+// defect the host-held mesh cache exists to end rather than a smaller version of it to tolerate.
 //
 // So the outcome is FAILED, and it is honest: the cloud's own Pair is idempotent at the mechanism
 // layer, so a re-enqueue re-applies to the same target mesh and re-tries this write. A retry that
@@ -322,7 +322,7 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 // would be worse than either outcome; the node is meshed and serving while the directive says it did
 // not take, and the error says exactly that so nobody reads it as "nothing happened".
 //
-// An empty MeshCache is the documented "off" convention (AGENTS §5) rather than a failure, and it is
+// An empty MeshCache is the documented "off" convention rather than a failure, and it is
 // unreachable from ConfigFromEnv -- env() falls back to the default even for an explicitly empty
 // MESH_CACHE, so in production this is always configured. It exists for tests that drive the pairing
 // path without a filesystem.
@@ -383,7 +383,7 @@ func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Reso
 // never even built: Run gates it on `len(cfg.Resource.Peers) - 1 > 0`, which is exactly the thing
 // that is wrong here. So the state is silent locally, and silence is the whole problem.
 //
-// It replaced RescueGuest's paired-node refusal ([V3b.16b]) rather than being added beside it. That
+// It replaced RescueGuest's paired-node refusal rather than being added beside it. That
 // refusal blocked one destructive verb; this is the same safety property checked where the defect
 // actually is -- at every bring-up, whether or not a human reaches for rescue.
 //
@@ -424,7 +424,7 @@ func (cfg Config) warnIfMeshForgotten(ctx context.Context, r statusReader, n not
 // other half of the rule the mesh needed: nothing RE-CREATED it. applyPair was the only caller of
 // StartForwarder, and the cloud sends a pair directive on demand rather than on registration -- so a
 // HOST reboot ended the hop permanently and the restored `.res` named a witness address nothing was
-// listening on ([V3b.16b]). A GUEST reboot was never affected: the guest's eth3 is baked
+// listening on. A GUEST reboot was never affected: the guest's eth3 is baked
 // (disk-image.nix), so its side of the private link comes back on its own.
 //
 // BEFORE WaitQuorate, which is why this is a step in bring-up rather than a call after it. With the
@@ -433,10 +433,10 @@ func (cfg Config) warnIfMeshForgotten(ctx context.Context, r statusReader, n not
 // after bring-up returns is one started after WaitQuorate has already burned the whole
 // BringUpBudget waiting for the quorum this hop was going to supply.
 //
-// LOUD BUT NEVER FATAL, and that trade is deliberately the opposite of [V3b.16a]'s. A node that
+// LOUD BUT NEVER FATAL, and that trade is deliberately the opposite of the promoter gate's. A node that
 // cannot start its forwarder can still serve on 2/3 with its peer, and failing bring-up would take
 // down a node that works -- with the promoter gated, it would not serve at all. Nor is the failure
-// silent, which is what [V3b.16a] actually refused to accept: DRBD reports the witness connection
+// silent, which is what the promoter gate actually refused to accept: DRBD reports the witness connection
 // down, so it lands in NodeStatus's connected count and the redundancy alerter fires on the channel
 // that already exists.
 //

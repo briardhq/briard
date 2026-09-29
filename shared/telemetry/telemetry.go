@@ -24,7 +24,7 @@ type NodeResources struct {
 	AgentFDs   int   `json:"agent_fds,omitempty"`    // host agent open file descriptors
 
 	// Payloads is one entry per service the node runs, in the node's own service order. It
-	// replaces the Payload* scalars ([V3b.3](b)): a node holds a SET of services, and the three
+	// replaces the Payload* scalars: a node holds a SET of services, and the three
 	// numbers are per-service facts, so summing them would be a different measurement wearing the
 	// same field name -- a crash-loop in one of N dilutes into a small climb in the total, which
 	// is exactly the signal NRestarts exists to make loud. Empty on a witness and on the shipped
@@ -50,7 +50,7 @@ type NodeResources struct {
 	KernelErrors []string `json:"kernel_errors,omitempty"` // recent guest kernel warning+ lines
 
 	// DMTargets is every device-mapper table line the guest holds, as `<name>: <table>`. It is
-	// the input to the storage-seam invariant ([V3b.33](b)): the data LV must be exactly one
+	// the input to the storage-seam invariant: the data LV must be exactly one
 	// `linear` segment, and nothing else may have appeared under it. A VG of linear LVs is free
 	// precisely because it IS dm-linear -- the moment something turns it striped, cached or thin,
 	// or inserts a layer nobody decided on, the seam stops being free and a `pvmove` conversion

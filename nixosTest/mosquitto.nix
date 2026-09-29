@@ -1,5 +1,5 @@
 # The broker as a catalogued service: it installs the shipped way, runs on Briard's config rather
-# than its image's, and keeps what it was told to keep ([V3b.4]).
+# than its image's, and keeps what it was told to keep.
 #
 # WHAT THIS EXISTS TO CATCH, and none of it is visible to a test that only asks "is it up".
 # mosquitto's own image ships with persistence OFF and its management API on every interface, so
@@ -8,12 +8,12 @@
 #
 #   1. the config is IN EFFECT (not merely rendered) -- the API answers on the guest's loopback;
 #   2. the API is NOT on the LAN -- asserted from ANOTHER MACHINE, which is the only place the
-#      claim can be made honestly ([[verification-assertions-must-fail]]: observe from outside);
+#      claim can be made honestly (observe from outside);
 #   3. MQTT itself IS on the LAN -- from that same off-box client, because a broker only nobody
 #      can reach would pass (1) and (2) perfectly;
 #   4. a retained message SURVIVES a restart of the container, and lands in the file on the
 #      REPLICATED subvolume -- which is what makes the broker a service with data at all, and
-#      what the failover half of [V3b.4] then carries across a node;
+#      what the failover half of the services-pair rig then carries across a node;
 #   5. the broker is FINDABLE -- it answers a `_mqtt._tcp` browse from that same off-box client,
 #      under the flock's name and on the port MQTT actually listens on, and the browse result is
 #      then connected to. An image that advertises nothing is invisible to every appliance in the
@@ -42,7 +42,7 @@ let
       # avahi-browse as well: this node is also where the broker's own announcement is OBSERVED,
       # and observing it from the machine that publishes it would prove nothing.
       environment.systemPackages = [ pkgs.mosquitto pkgs.avahi ];
-      # ⚠️ AND THE DAEMON THOSE TOOLS TALK TO, which this node runs for ITSELF ([B.152]).
+      # ⚠️ AND THE DAEMON THOSE TOOLS TALK TO, which this node runs for ITSELF.
       # `avahi-resolve` and `avahi-browse` are D-Bus clients: with no local daemon they fail with
       # "Failed to create client object: Daemon not running" -- which reads as a name that did not
       # resolve while proving nothing about the LAN. The household's other machine is a machine
@@ -69,7 +69,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service", timeout=600)
         # Named BEFORE the reactor promotes, which is the order a real node runs in: the agent mints
         # the flock name at bring-up and the door publishes it on promotion. Naming afterwards still
-        # reaches the wire -- the door re-reads the name on its tick ([B.152]) -- but it would be
+        # reaches the wire -- the door re-reads the name on its tick -- but it would be
         # testing a path a real node does not take.
         name_the_flock(m)
         m.succeed("modprobe drbd")
@@ -98,7 +98,7 @@ pkgs.testers.runNixOSTest {
     # own config would leave 9883 open to every interface, and no config at all would leave the
     # broker with no management listener for the health floor to probe.
     #
-    # ⚠️ REACHED AT THE POD'S ADDRESS, NOT THE GUEST'S LOOPBACK ([B.48](a)). The broker runs on a
+    # ⚠️ REACHED AT THE POD'S ADDRESS, NOT THE GUEST'S LOOPBACK. The broker runs on a
     # PRIVATE network now, so 127.0.0.1 in here is the guest's namespace and the broker is not in
     # it. The address comes from the routing table -- the same place the product's own health probe
     # resolves it -- so this test cannot pass against an address nothing else uses.
@@ -154,7 +154,7 @@ pkgs.testers.runNixOSTest {
     # mosquitto writes it on a clean stop, so by here it exists and holds what was published.
     primary.succeed(f"test -s {dataroot}/broker/mosquitto.db")
 
-    # THE CRASH, which is the household's actual failure mode and a claim [V3b.3](f) rests on:
+    # THE CRASH, which is the household's actual failure mode and a claim converge-at-promotion rests on:
     # service units are NOT promoter chain members, so nothing outside the unit brings a dead
     # container back -- its own `Restart=always` is the whole recovery. A SIGKILL is the honest
     # test of that, and the retained message is already on disk from the clean stop above, so what
@@ -165,16 +165,16 @@ pkgs.testers.runNixOSTest {
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the broker did not recover its state after a crash: {got!r}"
 
-    # The node did NOT demote for it: a crashed service alerts, it never fails the household over
-    # ([V3b.3](f)). The primary is still primary and the front door still answers.
+    # The node did NOT demote for it: a crashed service alerts, it never fails the household over.
+    # The primary is still primary and the front door still answers.
     assert role(primary) == "Primary", "a crashed container demoted the node"
     primary.succeed(f"curl -fsS -o /dev/null http://{VIP}/healthz")
 
-    # (5) AND THE HOUSEHOLD'S OTHER DEVICES CAN FIND IT ([V3b.30](a)). The broker is the one
+    # (5) AND THE HOUSEHOLD'S OTHER DEVICES CAN FIND IT. The broker is the one
     # catalogued service whose clients are appliances rather than people: Tasmota- and
     # ESPHome-class firmware browses `_mqtt._tcp` and never types a name. mosquitto's own image
     # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes from
-    # the FRONT DOOR ([B.152]), off the very table it routes on -- one map, so a record that points
+    # the FRONT DOOR, off the very table it routes on -- one map, so a record that points
     # somewhere the door does not route is not expressible.
     #
     # FROM THE OTHER MACHINE AGAIN, because that is the only place the claim means anything: a
@@ -189,7 +189,7 @@ pkgs.testers.runNixOSTest {
     assert ann["port"] == 1883, f"the node announces port {ann['port']}, not MQTT's"
 
     # (5a) THE SRV TARGET RESOLVES ON THE LAN. Also the first assertion anywhere to resolve a
-    # [B.48] per-service name over mDNS at all: every earlier one reached those names with
+    # per-service name over mDNS at all: every earlier one reached those names with
     # `curl -H 'Host: …'`, which never touches a resolver, so a name that resolved nowhere would
     # have passed all of them.
     other.wait_until_succeeds(f"avahi-resolve -n {host} | grep -q {VIP}", timeout=120)

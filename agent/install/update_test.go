@@ -21,7 +21,7 @@ func man(chain, platform, version string) Manifest {
 	return Manifest{Chain: chain, Platform: platform, Version: version, Artifacts: []Entry{{Name: "briard-agent"}}}
 }
 
-// The comparison rules of [B.86a], one row each, including the ones that must REFUSE.
+// The comparison rules of the update verb, one row each, including the ones that must REFUSE.
 func TestDecide(t *testing.T) {
 	host := func(v string) *Manifest { m := man(ChainBriard, PlatformLinux, v); return &m }
 	hostFloor := func(v, floor string) *Manifest {
@@ -55,7 +55,7 @@ func TestDecide(t *testing.T) {
 		{"exact whose manifest names another version is refused", next, *host(cur), host(old), stable, false, ErrManifest},
 		{"a crossed chain is refused, not compared", TargetStable, *host(next), func() *Manifest { m := man(ChainVM, "", "vm.20260901.x"); return &m }(), nil, false, ErrWrongChain},
 		{"a non-numeric date field is refused", TargetStable, *host("v3.dirty"), host(cur), nil, false, ErrManifest},
-		// THE UPGRADE FLOOR ([B.159](e)). The floor is a fact about (installed, offered), not
+		// THE UPGRADE FLOOR. The floor is a fact about (installed, offered), not
 		// about the target word, so all three targets are floored -- the release cannot complete
 		// the upgrade whichever word asked for it. A fresh install has no past to be too old for.
 		{"the floor refuses an older installed release on stable", TargetStable, *hostFloor(next, cur), host(old), nil, false, ErrTooOldToUpgrade},
@@ -242,7 +242,7 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 }
 
 // A tampered agent artifact is refused after the manifest verified: nothing staged, nothing
-// armed. [[verification-assertions-must-fail]]
+// armed.
 func TestUpdateRefusesATamperedAgent(t *testing.T) {
 	c := goodChannel(t)
 	c.bodies[releasePath("briard-agent")] = []byte("not the signed bytes")
@@ -321,7 +321,7 @@ func assertBundleNotStaged(t *testing.T, l selfupdate.Layout) {
 	}
 }
 
-// The whole bundle ([B.86b]): with no installed manifest every artifact is fetched; the
+// The whole bundle: with no installed manifest every artifact is fetched; the
 // net-wrap stages beside the agent, the qemu tarball is verified, expanded and extracted into
 // qemu-<version>/ and qemu.next links to it (relative), the manifest rides along, and the
 // result line names what was staged.
@@ -510,7 +510,7 @@ func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
 	}
 }
 
-// min_briard ([B.86d]): the vm chain's one-directional compatibility promise, ordered on the
+// min_briard: the vm chain's one-directional compatibility promise, ordered on the
 // date like everything else; a host id with no date cannot satisfy any requirement.
 func TestBriardSatisfies(t *testing.T) {
 	for _, tc := range []struct {
@@ -569,7 +569,7 @@ func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 	}
 }
 
-// The pairing fields ([B.86i]): a host manifest names its guest release, a guest manifest its
+// The pairing fields: a host manifest names its guest release, a guest manifest its
 // inputs hash, and neither is accepted on the other chain -- a guest manifest naming a guest, or a
 // host manifest carrying an inputs hash, would be a lie the reader has no way to catch.
 func TestWriteManifestPairingFields(t *testing.T) {
@@ -603,7 +603,7 @@ func TestWriteManifestPairingFields(t *testing.T) {
 	}
 }
 
-// [B.159](a) install.sh is an ORDINARY ARTIFACT of the host chain's linux arm, hashed and
+// install.sh is an ORDINARY ARTIFACT of the host chain's linux arm, hashed and
 // mode-recorded like every other file in the directory.
 //
 // This looks tautological -- WriteManifest walks the directory, so of course it is included --
@@ -643,7 +643,7 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 	}
 }
 
-// THE KIND IS A STRING THE JOURNAL AND A HUMAN BOTH READ ([B.159](i)), so its VALUE is pinned
+// THE KIND IS A STRING THE JOURNAL AND A HUMAN BOTH READ, so its VALUE is pinned
 // here and not only its identifier. Every Go call site names the constant, which means a changed
 // value compiles, passes every table above, and breaks exactly two things this suite cannot see:
 // `briard directive <kind>` typed by hand at a node, and the fleet tests that wait on
@@ -657,7 +657,7 @@ func TestUpdateVMDirectiveKindIsWhatTheJournalSays(t *testing.T) {
 }
 
 // THE FLOOR IS A FACT ABOUT THE TREE, so the binary that writes a manifest is the one that
-// answers it ([B.159](e)) -- there is no flag and nothing for a publish to remember. Host chain
+// answers it -- there is no flag and nothing for a publish to remember. Host chain
 // only: the guest image is replaced whole and has no past of its own to be too old for.
 //
 // ⚠️ The floor is EMPTY in this tree, which is the normal state and also why this test sets it:
@@ -702,7 +702,7 @@ func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
 	}
 }
 
-// THE REFUSAL IS A PRODUCT SURFACE, not just an error value ([B.159](e)). A node that cannot be
+// THE REFUSAL IS A PRODUCT SURFACE, not just an error value. A node that cannot be
 // upgraded any further has exactly one remedy under the alpha's reinstall-only policy, and the
 // refusal is where its owner finds that out -- so the words are asserted, not just the sentinel.
 // Both ids appear because "too old" is meaningless without the pair: what is installed, and what
@@ -722,7 +722,7 @@ func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
 	}
 }
 
-// THE NO-OP LINE IS A PRODUCT SURFACE, AND [B.159](f) MOVED WHICH BRANCH PRINTS IT. Before the
+// THE NO-OP LINE IS A PRODUCT SURFACE, AND THE STABLE DEFAULT MOVED WHICH BRANCH PRINTS IT. Before the
 // default became `stable`, a bare `briard update` resolved `latest` and an up-to-date node
 // read "already at <id>"; the stable branch had its own wording and nobody met it, because
 // nothing reached it by default. The moment the default moved, two host-agent rigs went red on
@@ -751,14 +751,14 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 	}
 }
 
-// THE FLOOR THIS TREE ACTUALLY DECLARES ([B.159](e), raised 2026-09-20). Pinned as a literal so
+// THE FLOOR THIS TREE ACTUALLY DECLARES. Pinned as a literal so
 // that raising or clearing it is a deliberate edit with a failing test beside it, never a drift:
 // the value decides whether every installed node below it is told to reinstall, which is the
 // loudest thing this product says to an owner.
 //
-// WHY THIS VALUE. Gate 3 measured what an upgrade from the pre-[B.160] `stable` does: the guest
+// WHY THIS VALUE. Gate 3 measured what an upgrade from an older `stable` does: the guest
 // image predates the tool profile, so the pushed agent is refused and the OLD guest agent stays;
-// the new host then sends it a node-storage request carrying `metaLV` ([B.145a], after that
+// the new host then sends it a node-storage request carrying `metaLV` (added after that
 // stable), whose decoder refuses the unknown field -- and the host agent crash-loops, 42 restarts
 // with the household's apps unreachable. A floor turns that into one refusal that names the
 // remedy, with the node still serving its old release. Comparison is on the DATE, so every
