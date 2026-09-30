@@ -31,8 +31,9 @@
 // # The lists are APPEND-ONLY, and that is a contract
 //
 // A name, once chosen, is written into pet state and -- after a claim -- into the cloud, which
-// never reissues a released name. So a word may be ADDED to these lists and may never be removed
-// or reordered: removing one orphans every install that already chose it, and reordering one
+// holds it for that household until its certificate has long lapsed, and a household that comes
+// back claims it again by the same word. So a word may be ADDED to these lists and may never be
+// removed or reordered: removing one orphans every install that already chose it, and reordering one
 // changes nothing about validity but makes the freeze impossible to check. TestListsAreAppendOnly
 // asserts exactly that against a frozen checksum.
 //

@@ -29,11 +29,11 @@ func digest(list []string) string {
 
 // TestListsAreAppendOnly is the whole contract in one assertion.
 //
-// A flock name is written into pet state at install and, after a claim, into the cloud -- which
-// never reissues a released name. So the lists can only ever grow. Remove a word
-// and every household that already drew it fails Valid at its next claim: the cloud stops
-// recognising a name that is published on their LAN, printed in their installer output, and
-// (once there is an account) is their domain. Reorder a word and nothing breaks today, but the
+// A flock name is written into pet state at install and, after a claim, into the cloud, which
+// holds it for that household until its certificate has long lapsed. So the lists can only ever
+// grow. Remove a word and every household that already drew it fails Valid at its next claim:
+// the cloud stops recognising a name that is published on their LAN, printed in their installer
+// output, and (once claimed) is their domain. Reorder a word and nothing breaks today, but the
 // freeze becomes uncheckable, which is how it would break tomorrow.
 //
 // This is why the lists are VENDORED rather than imported from petname upstream, whose own
