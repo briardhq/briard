@@ -1590,6 +1590,10 @@ func resourceLog(r *telemetry.NodeResources) string {
 	// actionable sentence the moment a node runs more than one thing.
 	line := fmt.Sprintf(" agentRSS=%dk agentFDs=%d vol=%dk snaps=%d load1=%.2f kerr=%d",
 		r.AgentRSSKB, r.AgentFDs, r.VolumeUsedKB, r.SnapshotCount, r.Load1, len(r.KernelErrors))
+	// The guest's memory: available/total, anon, zram parked/cost, cumulative swap-ins, and the
+	// last minute's memory stall (some/full).
+	line += fmt.Sprintf(" mem=%d/%dk anon=%dk zram=%d/%dk swpin=%d psi=%.2f/%.2f",
+		r.MemAvailableKB, r.MemTotalKB, r.AnonKB, r.ZramOrigKB, r.ZramUsedKB, r.PswpIn, r.MemPSISome60, r.MemPSIFull60)
 	for _, p := range r.Payloads {
 		line += fmt.Sprintf(" %s[rss=%dk fds=%d restarts=%d]", p.Name, p.RSSKB, p.FDs, p.Restarts)
 	}

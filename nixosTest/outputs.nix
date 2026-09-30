@@ -478,6 +478,10 @@ in
       # corrupt .storage, broken custom integrations, a corrupt recorder) and records what each
       # candidate health signal says, so the history's health signal is chosen from evidence.
       hass-health-probe = import ./hass-health-probe.nix { inherit pkgs guestModule; fixture = hassFixture; };
+      # — **A MEASUREMENT**. Home Assistant in a 1 GB guest with zram: a timeline of available
+      # memory, anon, what zram holds and costs, swap-ins and memory pressure, through install,
+      # start and ten idle minutes. Asserts only that the guest is 1 GB and zram is really swap.
+      hass-lowmem = import ./hass-lowmem.nix { inherit pkgs guestModule; fixture = hassFixture; };
       # — **A STOPWATCH, NOT AN ASSERTION**. Measures how long a COLD converge holds the
       # promotion when its pull is throttled to a crawl: converge-at-promotion put a fetch on the promotion
       # path and every chain rule we have was measured with an INSTANT failure. It runs its full

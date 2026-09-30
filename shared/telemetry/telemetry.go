@@ -41,6 +41,24 @@ type NodeResources struct {
 	LogSizeKB     int64   `json:"log_size_kb,omitempty"`     // systemd journal on-disk size
 	PodmanStoreKB int64   `json:"podman_store_kb,omitempty"` // container/code store size
 
+	// The guest's memory as its kernel accounts it -- the inputs for sizing the guest, each read
+	// for a reason the others cannot stand in for. MemAvailable counts reclaimable page cache as
+	// available and knows nothing of swap. Anon is what only swap can reclaim. The zram pair is
+	// what is parked there (uncompressed) and what parking it costs in RAM; neither appears in
+	// /proc/meminfo, and SwapUsed would overstate the cost by the compression ratio. PswpIn/Out are
+	// cumulative, and a climbing PswpIn is parked memory coming BACK -- a working set that does not
+	// fit, which zram's own fill level barely shows. The PSI pair is the share of the last minute
+	// tasks spent stalled on memory, the cost of all of the above in the one unit users feel.
+	MemTotalKB     int64   `json:"mem_total_kb,omitempty"`
+	MemAvailableKB int64   `json:"mem_available_kb,omitempty"`
+	AnonKB         int64   `json:"anon_kb,omitempty"`
+	ZramOrigKB     int64   `json:"zram_orig_kb,omitempty"` // uncompressed size of what is parked in zram
+	ZramUsedKB     int64   `json:"zram_used_kb,omitempty"` // RAM the zram pool holds (mem_used_total)
+	PswpIn         uint64  `json:"pswpin,omitempty"`       // pages swapped in since boot
+	PswpOut        uint64  `json:"pswpout,omitempty"`      // pages swapped out since boot
+	MemPSISome60   float64 `json:"mem_psi_some60,omitempty"`
+	MemPSIFull60   float64 `json:"mem_psi_full60,omitempty"`
+
 	// ServiceResources.Restarts + KernelErrors are guest-internal soak signals
 	// (no-silent-restarts / no-bad-kernel-log) that ride the host↔guest channel because the L2
 	// guest is reachable only over it -- not machinectl/journalctl, which hit the L1 container and

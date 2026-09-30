@@ -27,6 +27,25 @@ func TestParseCgroupAnonKB(t *testing.T) {
 	}
 }
 
+// Each memory parser reads 0 from junk rather than a wrong number: a guest with no zram device,
+// or a kernel without PSI, must report "unread", never a plausible-looking value.
+func TestMemoryParsersReadZeroFromJunk(t *testing.T) {
+	for _, junk := range []string{"", "garbage\n", "MemTotal:\n", "1 2\n"} {
+		if a, b, c := parseMeminfo([]byte(junk)); a|b|c != 0 {
+			t.Errorf("parseMeminfo(%q) = %d %d %d, want zeros", junk, a, b, c)
+		}
+		if a, b := parseZramMMStat([]byte(junk)); a|b != 0 {
+			t.Errorf("parseZramMMStat(%q) = %d %d, want zeros", junk, a, b)
+		}
+		if a, b := parseVmstatSwap([]byte(junk)); a|b != 0 {
+			t.Errorf("parseVmstatSwap(%q) = %d %d, want zeros", junk, a, b)
+		}
+		if a, b := parsePSI60([]byte(junk)); a != 0 || b != 0 {
+			t.Errorf("parsePSI60(%q) = %v %v, want zeros", junk, a, b)
+		}
+	}
+}
+
 func TestParseLoad1(t *testing.T) {
 	if got := parseLoad1([]byte("0.42 0.31 0.20 1/234 5678\n")); got != 0.42 {
 		t.Errorf("parseLoad1 = %v, want 0.42", got)
@@ -94,6 +113,14 @@ func TestResourcesVerbGathers(t *testing.T) {
 		case strings.HasPrefix(cmd, "journalctl -k"):
 			// --show-cursor appends a trailing "-- cursor: <c>" marker (stripped by the guest).
 			return []byte("kernel: booting\nkernel: BTRFS error (device drbd1): bad tree block\n-- cursor: s=abc123\n"), nil
+		case cmd == "cat /proc/meminfo":
+			return []byte("MemTotal:        1000000 kB\nMemFree:          50000 kB\nMemAvailable:     300000 kB\nAnonPages:        600000 kB\n"), nil
+		case cmd == "cat /sys/block/zram0/mm_stat":
+			return []byte("  314572800  104857600  110100480        0  110100480     1234        0        0        0\n"), nil
+		case cmd == "cat /proc/vmstat":
+			return []byte("nr_free_pages 12500\npswpin 42\npswpout 76800\npswpin_extra 9\n"), nil
+		case cmd == "cat /proc/pressure/memory":
+			return []byte("some avg10=1.00 avg60=2.50 avg300=0.80 total=123\nfull avg10=0.10 avg60=0.40 avg300=0.05 total=45\n"), nil
 		default:
 			return nil, nil
 		}
@@ -133,6 +160,20 @@ func TestResourcesVerbGathers(t *testing.T) {
 	}
 	if len(r.KernelErrors) != 2 { // both non-empty guest kernel lines reported (oracle scans them)
 		t.Errorf("KernelErrors = %v, want 2 lines", r.KernelErrors)
+	}
+	if r.MemTotalKB != 1000000 || r.MemAvailableKB != 300000 || r.AnonKB != 600000 {
+		t.Errorf("meminfo = total %d avail %d anon %d, want 1000000/300000/600000", r.MemTotalKB, r.MemAvailableKB, r.AnonKB)
+	}
+	// mm_stat is in BYTES: 300 MB parked, holding 105 MB of RAM (mem_used_total, field 2 --
+	// not compr_data_size, field 1, which leaves out the allocator's own overhead).
+	if r.ZramOrigKB != 307200 || r.ZramUsedKB != 107520 {
+		t.Errorf("zram = orig %d used %d, want 307200/107520", r.ZramOrigKB, r.ZramUsedKB)
+	}
+	if r.PswpIn != 42 || r.PswpOut != 76800 { // exact names: pswpin_extra must not overwrite pswpin
+		t.Errorf("swap = in %d out %d, want 42/76800", r.PswpIn, r.PswpOut)
+	}
+	if r.MemPSISome60 != 2.50 || r.MemPSIFull60 != 0.40 {
+		t.Errorf("psi = some %v full %v, want avg60 2.50/0.40", r.MemPSISome60, r.MemPSIFull60)
 	}
 	// The verb fills appliance fields only; the host adds the agent footprint separately.
 	if r.AgentRSSKB != 0 || r.AgentFDs != 0 {

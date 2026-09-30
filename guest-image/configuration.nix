@@ -1014,7 +1014,19 @@ in
       "net.ipv4.conf.default.arp_ignore" = 1;
       "net.ipv4.conf.all.arp_announce" = 2;
       "net.ipv4.conf.default.arp_announce" = 2;
+      # Swap here is zram (below), where bringing a page back is a decompression, not a disk read:
+      # 100 tells reclaim that parking an anonymous page costs the same as dropping a cache page,
+      # instead of the disk-swap default of 60 that protects anonymous memory at the cache's expense.
+      "vm.swappiness" = 100;
     };
+
+    # Compressed swap in RAM. The guest's memory is fixed at boot with nothing above it but the OOM
+    # killer; zram turns memory a service touched once and never again into a fraction of its size,
+    # so a burst lands there instead of on the killer. Page cache is never swapped, so what sits in
+    # zram is anonymous memory only -- demand the guest's size has to cover -- which is why its usage
+    # rides the resources verb. zstd and a cap of half the RAM (uncompressed) are the module's
+    # defaults.
+    zramSwap.enable = true;
 
   }
   ];

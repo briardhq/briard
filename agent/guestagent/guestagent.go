@@ -2136,6 +2136,20 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 			r.SnapshotCount = countLines(out)
 		}
 	}
+	// Memory: four kernel files, each best-effort like the rest. No zram device (a guest built
+	// without it) leaves the zram pair zero, which reads as "nothing parked" -- true either way.
+	if out, err := x.Run(ctx, "cat", "/proc/meminfo"); err == nil {
+		r.MemTotalKB, r.MemAvailableKB, r.AnonKB = parseMeminfo(out)
+	}
+	if out, err := x.Run(ctx, "cat", "/sys/block/zram0/mm_stat"); err == nil {
+		r.ZramOrigKB, r.ZramUsedKB = parseZramMMStat(out)
+	}
+	if out, err := x.Run(ctx, "cat", "/proc/vmstat"); err == nil {
+		r.PswpIn, r.PswpOut = parseVmstatSwap(out)
+	}
+	if out, err := x.Run(ctx, "cat", "/proc/pressure/memory"); err == nil {
+		r.MemPSISome60, r.MemPSIFull60 = parsePSI60(out)
+	}
 	// -x: stay on one filesystem, so the number is the surface itself, not whatever is
 	// mounted beneath it.
 	if out, err := x.Run(ctx, "du", "-skx", journalDir); err == nil {
@@ -2320,6 +2334,74 @@ func parseDfUsedKB(df []byte) int64 {
 		return n
 	}
 	return 0
+}
+
+// parseMeminfo takes MemTotal, MemAvailable and AnonPages (all kB) from /proc/meminfo. A missing
+// line leaves its value 0.
+func parseMeminfo(b []byte) (total, avail, anon int64) {
+	for _, l := range nonEmptyLines(b) {
+		f := strings.Fields(l)
+		if len(f) < 2 {
+			continue
+		}
+		n, _ := strconv.ParseInt(f[1], 10, 64)
+		switch f[0] {
+		case "MemTotal:":
+			total = n
+		case "MemAvailable:":
+			avail = n
+		case "AnonPages:":
+			anon = n
+		}
+	}
+	return total, avail, anon
+}
+
+// parseZramMMStat takes orig_data_size and mem_used_total (fields 0 and 2, in BYTES) from a zram
+// device's mm_stat and returns them in kB. 0, 0 if the shape is unexpected.
+func parseZramMMStat(b []byte) (origKB, usedKB int64) {
+	f := strings.Fields(string(b))
+	if len(f) < 3 {
+		return 0, 0
+	}
+	o, _ := strconv.ParseInt(f[0], 10, 64)
+	u, _ := strconv.ParseInt(f[2], 10, 64)
+	return o / 1024, u / 1024
+}
+
+// parseVmstatSwap takes the cumulative pswpin/pswpout page counters from /proc/vmstat.
+func parseVmstatSwap(b []byte) (in, out uint64) {
+	for _, l := range nonEmptyLines(b) {
+		f := strings.Fields(l)
+		if len(f) != 2 {
+			continue
+		}
+		switch f[0] {
+		case "pswpin":
+			in = parseUint([]byte(f[1]))
+		case "pswpout":
+			out = parseUint([]byte(f[1]))
+		}
+	}
+	return in, out
+}
+
+// parsePSI60 takes avg60 from the `some` and `full` lines of /proc/pressure/memory.
+func parsePSI60(b []byte) (some, full float64) {
+	for _, l := range nonEmptyLines(b) {
+		f := strings.Fields(l)
+		if len(f) < 3 || !strings.HasPrefix(f[2], "avg60=") {
+			continue
+		}
+		v, _ := strconv.ParseFloat(strings.TrimPrefix(f[2], "avg60="), 64)
+		switch f[0] {
+		case "some":
+			some = v
+		case "full":
+			full = v
+		}
+	}
+	return some, full
 }
 
 // parseDuKB takes the size (first field, KB under `du -sk`) from du's summary line. 0 on junk.
