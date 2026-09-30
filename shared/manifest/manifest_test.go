@@ -93,6 +93,7 @@ func TestValidateRejects(t *testing.T) {
 		{"service name with dots", func(m *Manifest) { m.Name = ".." }},
 		{"uppercase service name", func(m *Manifest) { m.Name = "HomeAssistant" }},
 		{"no containers", func(m *Manifest) { m.Containers = nil }},
+		{"negative minimum memory", func(m *Manifest) { m.MinMemoryMB = -1 }},
 		{"container name not a slug", func(m *Manifest) { m.Containers[0].Name = "../escape" }},
 		{"tagged image", func(m *Manifest) { m.Containers[0].Image = "ghcr.io/foo/bar:latest" }},
 		{"bare image", func(m *Manifest) { m.Containers[0].Image = "redis" }},

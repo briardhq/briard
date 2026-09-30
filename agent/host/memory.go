@@ -17,8 +17,8 @@ import (
 // common case it is OOM-killed, and "the common case" cannot be measured before the household has
 // installed anything.
 //
-// GROWTH LASTS UNTIL THE NEXT LAUNCH, AND NO LONGER. Every launch boots at the configured size
-// (cfg.MemoryMB) and grows again if it needs to. A DIMM cannot reliably be taken back from a
+// GROWTH LASTS UNTIL THE NEXT LAUNCH, AND NO LONGER. Every launch boots at its boot size
+// (bootMemoryMB) and grows again if it needs to. A DIMM cannot reliably be taken back from a
 // running guest, so a relaunch is the one moment memory returns to the host -- and making every
 // relaunch that moment is what keeps a rare leak, or a one-off burst, from being carried into
 // every boot after it. What it costs is a guest that genuinely needs more re-growing after a
@@ -56,6 +56,52 @@ func growGuestMemory(ctx context.Context, hostMB int, size func(context.Context)
 		return cur, fmt.Errorf("grow the guest's memory past %d MB: %w", cur, err)
 	}
 	return cur + platform.MemoryStepMB, nil
+}
+
+// guestSystemMB is the guest's own share, before any service: the OS, the agent, the kernel's
+// reservations. Measured, not guessed: a guest with no service boots with ~380 MB of its 964 MB
+// MemTotal not available.
+const guestSystemMB = 384
+
+// memoryNeeded is what the guest must hold for its services from their first second -- the
+// system's share plus every installed service's declared minimum, with `except` left out and
+// extraMB added (an install replacing or adding one service). Growth covers whatever a service
+// needs beyond its minimum; this covers what it needs before growth can react.
+func (cfg Config) memoryNeeded(except string, extraMB int) int {
+	n := guestSystemMB + extraMB
+	for _, s := range cfg.Services {
+		if s.Name != except {
+			n += s.MinMemoryMB
+		}
+	}
+	return n
+}
+
+// bootMemoryMB is the size every launch boots at: the configured size, or more when the installed
+// services' minimums say so.
+func (cfg Config) bootMemoryMB() int { return max(cfg.MemoryMB, cfg.memoryNeeded("", 0)) }
+
+// growGuestMemoryTo grows the running guest one step at a time until it holds at least needMB.
+// A target above the ceiling is refused up front (errMemoryCeiling) rather than half-reached.
+func growGuestMemoryTo(ctx context.Context, needMB, hostMB int, size func(context.Context) (int, error), add func(context.Context) error) error {
+	if needMB > guestMemoryCeilingMB(hostMB) {
+		if cur, err := size(ctx); err == nil && cur >= needMB {
+			return nil // it already holds it (it booted there)
+		}
+		return errMemoryCeiling
+	}
+	for {
+		cur, err := size(ctx)
+		if err != nil {
+			return fmt.Errorf("read the guest's memory size: %w", err)
+		}
+		if cur >= needMB {
+			return nil
+		}
+		if _, err := growGuestMemory(ctx, hostMB, size, add); err != nil {
+			return err
+		}
+	}
 }
 
 // When the guest grows. Two conditions, each a number the resources verb already reports, each

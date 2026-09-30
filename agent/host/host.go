@@ -838,15 +838,15 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 // GuestSpec describes this node's guest VM. It is derived from cfg (and the host's RAM, for the
 // ceiling it may grow to), so any launch can rebuild it identically — which is what the reboot
 // path needs: it relaunches the same guest with the boot selector armed, and arming the selector
-// must be the *only* difference between the two launches. A guest that grew boots back at
-// cfg.MemoryMB (memory.go).
+// must be the *only* difference between the two launches. A guest that grew boots back at its
+// boot size (memory.go).
 func (cfg Config) guestSpec() platform.QEMUSpec {
 	return platform.QEMUSpec{
 		Binary:        cfg.QEMUBinary,
 		DataDir:       cfg.QEMUDataDir,
 		Accel:         cfg.Accel,
 		CPUModel:      cfg.CPUModel,
-		MemoryMB:      cfg.MemoryMB,
+		MemoryMB:      cfg.bootMemoryMB(),
 		MaxMemoryMB:   guestMemoryCeilingMB(reportcard.MemTotalMB()),
 		Cores:         cfg.Cores,
 		DiskImage:     cfg.GuestDisk,

@@ -124,6 +124,9 @@ type ServiceSpec struct {
 	// a value that cannot change without an install would be a file read per node per cycle for
 	// nothing.
 	Manifest string
+	// MinMemoryMB is the manifest's declared minimum (shared/manifest.Manifest.MinMemoryMB): what
+	// the guest must hold for this service from its first second, before growth can react.
+	MinMemoryMB int
 }
 
 // ServingUnit is the systemd unit that answers "is this service up?", and therefore the one to

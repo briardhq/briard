@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,9 @@ import (
 	"briard.io/agent/guest"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
+	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
+	"briard.io/agent/reportcard"
 	"briard.io/agent/selfupdate"
 	"briard.io/agent/services"
 	"briard.io/shared/api"
@@ -276,6 +279,22 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		} else if free < m.InstalledSize+storageHeadroom {
 			return failed(fmt.Sprintf("not enough space on the node: %s needs %s installed and the image store has %s free of %s (keeping %s for the system)",
 				m.Name, gb(m.InstalledSize), gb(free), gb(total), gb(storageHeadroom)))
+		}
+	}
+	// THE MEMORY GATE, beside it: the guest must hold the system's share plus every service's
+	// declared minimum -- this one's included -- before the new service first starts, because a
+	// service's first start is its busiest moment and growth reacts in minutes. So the running
+	// guest is grown to that now, and the install refused only when the host cannot give it that
+	// much at all. A guest whose size cannot be read installs unmeasured, like the image store.
+	if need := cfg.memoryNeeded(m.Name, m.MinMemoryMB); need > cfg.MemoryMB {
+		vm := platform.Adopt(cfg.guestSpec())
+		host := reportcard.MemTotalMB()
+		switch err := growGuestMemoryTo(ctx, need, host, vm.MemoryMB, vm.AddMemory); {
+		case errors.Is(err, errMemoryCeiling):
+			return failed(fmt.Sprintf("not enough memory on the node: %s needs the guest to hold %d MB and this host can give it at most %d MB (keeping %d MB for itself)",
+				m.Name, need, guestMemoryCeilingMB(host), hostMemoryReserveMB))
+		case err != nil:
+			logf("service install %s: cannot size the guest's memory (%v); installing unmeasured", d.Payload, err)
 		}
 	}
 	// No address: this render supplies unit names and image digests, and converge re-renders with
@@ -722,7 +741,8 @@ func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
 		Unit:    quadlet.ContainerName(m.Name, primary.Name) + ".service",
 		// The identity of the bytes as read, not of a re-marshalling of them -- Parse returns it
 		// here for free, which is why the report reads it from the spec.
-		Manifest: string(id),
+		Manifest:    string(id),
+		MinMemoryMB: m.MinMemoryMB,
 	}, rendered, nil
 }
 

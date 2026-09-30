@@ -104,6 +104,12 @@ type Manifest struct {
 	// (no bar, no gate).
 	Size          int64 `json:"size,omitempty"`
 	InstalledSize int64 `json:"installedSize,omitempty"`
+	// MinMemoryMB is the memory the service needs to run, in MB: its settled footprint with room
+	// for its own startup, not its worst case. The node boots its guest with at least the system's
+	// share plus every installed service's minimum, and grows the guest to it before installing
+	// one more -- anything above it is found at runtime, by growth. Zero means the entry does not
+	// say (the service counts for nothing until it needs more).
+	MinMemoryMB int `json:"minMemoryMB,omitempty"`
 	// Network is the pod's networking mode: "host" or "private". SILENCE MEANS PRIVATE, which is
 	// property 2 in the small: omission yields the LESS capable shape, so a manifest that says
 	// nothing about networking gets a pod that can reach nothing but itself and whatever the node
@@ -244,6 +250,9 @@ func (m Manifest) Validate() error {
 	}
 	if len(m.Containers) == 0 {
 		return fmt.Errorf("%w: service %q declares no containers", ErrInvalid, m.Name)
+	}
+	if m.MinMemoryMB < 0 {
+		return fmt.Errorf("%w: service %q has a negative minMemoryMB", ErrInvalid, m.Name)
 	}
 	if m.Size < 0 || m.InstalledSize < 0 {
 		return fmt.Errorf("%w: service %q has a negative size", ErrInvalid, m.Name)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
 )
 
@@ -148,5 +149,71 @@ func TestMemoryGrowerNeedsAnUnbrokenWindow(t *testing.T) {
 		if got := feed(m, t0.Add(4*time.Minute+10*time.Second), 4*time.Minute, memSample(200, 0)); got != nil {
 			t.Errorf("after a %+v sample the window did not restart: fired at %v", gap, got)
 		}
+	}
+}
+
+func withServices(mb int, mins ...int) Config {
+	cfg := Config{MemoryMB: mb}
+	for i, m := range mins {
+		cfg.Services = append(cfg.Services, model.ServiceSpec{Name: fmt.Sprintf("s%d", i), MinMemoryMB: m})
+	}
+	return cfg
+}
+
+// The boot size is the configured size, or more when the installed services' minimums (plus the
+// system's share) say so -- and the next launch boots there, never at a size grown since.
+func TestBootMemoryMB(t *testing.T) {
+	for _, c := range []struct {
+		cfg  Config
+		want int
+	}{
+		{withServices(1024), 1024},           // nothing installed: the configured size
+		{withServices(1024, 512), 1024},      // Home Assistant fits: 384 + 512 < 1024
+		{withServices(1024, 512, 32), 1024},  // ...and so does a broker beside it
+		{withServices(1024, 512, 400), 1296}, // minimums past the configured size win
+		{withServices(2048, 512, 400), 2048}, // a configured size above them stands
+		{withServices(1024, 0, 0), 1024},     // services that declare nothing count for nothing
+	} {
+		if got := c.cfg.bootMemoryMB(); got != c.want {
+			t.Errorf("bootMemoryMB(%+v) = %d, want %d", c.cfg.Services, got, c.want)
+		}
+		if got := c.cfg.guestSpec().MemoryMB; got != c.want {
+			t.Errorf("guestSpec boots at %d, want %d", got, c.want)
+		}
+	}
+}
+
+// An install counts the service it installs once: an upgrade replaces its own old minimum rather
+// than adding to it.
+func TestMemoryNeededCountsTheInstalledServiceOnce(t *testing.T) {
+	cfg := withServices(1024, 512, 32) // s0, s1
+	if got := cfg.memoryNeeded("s0", 700); got != 384+32+700 {
+		t.Errorf("upgrading s0 to a 700 MB minimum needs %d, want %d", got, 384+32+700)
+	}
+	if got := cfg.memoryNeeded("new", 256); got != 384+512+32+256 {
+		t.Errorf("adding a third needs %d, want %d", got, 384+512+32+256)
+	}
+}
+
+func TestGrowGuestMemoryTo(t *testing.T) {
+	// Short by more than one step: grown step by step until it holds the target.
+	vm := &fakeVM{mb: 1024}
+	if err := growGuestMemoryTo(context.Background(), 1900, 8192, vm.size, vm.add); err != nil || vm.mb != 2048 || vm.adds != 2 {
+		t.Errorf("err = %v, size = %d, adds = %d; want 2048 after 2 adds", err, vm.mb, vm.adds)
+	}
+	// Already there: nothing is added.
+	vm = &fakeVM{mb: 2048}
+	if err := growGuestMemoryTo(context.Background(), 1900, 8192, vm.size, vm.add); err != nil || vm.adds != 0 {
+		t.Errorf("err = %v, adds = %d; want nothing added", err, vm.adds)
+	}
+	// A target past the ceiling is refused up front -- not half-reached.
+	vm = &fakeVM{mb: 1024}
+	if err := growGuestMemoryTo(context.Background(), 3000, 4096, vm.size, vm.add); !errors.Is(err, errMemoryCeiling) || vm.adds != 0 {
+		t.Errorf("err = %v, adds = %d; want errMemoryCeiling with nothing added", err, vm.adds)
+	}
+	// ...unless the guest already holds it (it booted there, above what the host could grow it to).
+	vm = &fakeVM{mb: 3072}
+	if err := growGuestMemoryTo(context.Background(), 3000, 4096, vm.size, vm.add); err != nil {
+		t.Errorf("a guest already holding the target was refused: %v", err)
 	}
 }

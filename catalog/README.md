@@ -49,6 +49,17 @@ jq '[.layers[].size] | add' manifest.json                     # size
 for l in $(jq -r '.layers[].digest' manifest.json); do gzip -dc "${l#sha256:}"; done | wc -c   # installedSize (gzip layers)
 ```
 
+## What an entry needs to run: `minMemoryMB`
+
+The guest starts small and grows while it runs, so an entry does not declare its worst case — only
+what it needs from its **first second**, before growth can react: its settled footprint with room
+for its own startup. A node boots its guest with at least the system's share plus every installed
+entry's `minMemoryMB`, and grows the running guest to that before installing one more (refusing
+only when the host cannot give that much at all). Anything a service needs beyond its minimum is
+found at runtime, by growth. Measure a new entry from its anonymous memory settled after startup
+(the cgroup's `anon` in `memory.stat`) — not from `docker stats`, which counts page cache too.
+Omitted, the entry counts for nothing until it needs more.
+
 ## What is not in a manifest
 
 The schema deliberately cannot express host binds, privileges, host networking or a command line —
