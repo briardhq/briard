@@ -149,14 +149,18 @@ pkgs.testers.runNixOSTest {
 
     # THE HOST'S FOOTPRINT, for DELTA 6's residue check -- the same scan as
     # install-macvtap's, taken before the refused install below because that one leaves empty dirs.
+    # Addresses and routes are IPv4 only: briard never configures IPv6 on the host (it only turns
+    # it OFF on its own devices, which the link scan covers), and the kernel adds br0's link-local
+    # address and its local route a second or two after the link comes up -- so a baseline taken
+    # inside that window saw a "residue" that was the kernel finishing its own work.
     def footprint():
         return set(host.succeed(
             "for d in /opt /var/lib /var/lib/systemd/timers /var/log /usr/local/bin /run "
             "/run/systemd/system /run/systemd/transient; do find $d -mindepth 1 -maxdepth 1 2>/dev/null || true; done; "
             "find /run/systemd/system -mindepth 2 -maxdepth 2 2>/dev/null || true; "
             "ip -o link show | awk -F': ' '{print \"link \" $2}' | cut -d@ -f1; "
-            "ip -o addr show | awk '{print \"addr \" $2 \" \" $4}'; "
-            "ip route show table all | awk '{r=$1\" \"$2; for (i=2; i<NF; i++) "
+            "ip -4 -o addr show | awk '{print \"addr \" $2 \" \" $4}'; "
+            "ip -4 route show table all | awk '{r=$1\" \"$2; for (i=2; i<NF; i++) "
             "if ($i==\"dev\" || $i==\"table\") r=r\" \"$(i+1); print \"route \" r}'; "
             "systemctl list-units --all --plain --no-legend 'briard*' | awk '{print \"unit \" $1}'"
         ).splitlines())
