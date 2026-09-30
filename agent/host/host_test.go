@@ -286,7 +286,7 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	if len(cfg.Resource.Peers) != 1 || cfg.Resource.Peers[0].Name != "n1" {
 		t.Errorf("single self-peer expected, got %+v", cfg.Resource.Peers)
 	}
-	if cfg.MemoryMB != 2048 || cfg.QEMUBinary != "qemu-system-x86_64" {
+	if cfg.MemoryMB != 1024 || cfg.QEMUBinary != "qemu-system-x86_64" {
 		t.Errorf("VM defaults wrong: mem=%d bin=%q", cfg.MemoryMB, cfg.QEMUBinary)
 	}
 }

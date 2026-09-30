@@ -156,8 +156,10 @@ func ConfigFromEnv() Config {
 		// `max` = every feature the accelerator can give the guest, which under KVM is the
 		// host's own CPU. The escape hatch (BRIARD_CPU=qemu64 at the installer, CPU= here) is
 		// for a host where the passthrough itself is the suspect -- one env line beats a release.
-		CPUModel:   env("CPU", "max"),
-		MemoryMB:   atoi(os.Getenv("MEMORY_MB"), 2048),
+		CPUModel: env("CPU", "max"),
+		// The size the guest boots at. It starts small and grows while it runs (memory.go), so
+		// this is a floor, not a guess at what the household will install.
+		MemoryMB:   atoi(os.Getenv("MEMORY_MB"), 1024),
 		Cores:      atoi(os.Getenv("CORES"), 2),
 		GuestDisk:  os.Getenv("GUEST_DISK"),
 		GuestImage: os.Getenv("GUEST_IMAGE"),
