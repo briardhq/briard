@@ -528,3 +528,21 @@ func TestQEMUArgsDebugConsoleIsNullBacked(t *testing.T) {
 		t.Errorf("a launch must never wire the debug console to a socket\ngot: %s", got)
 	}
 }
+
+// Room to grow is address space and slots, one slot per step; no room renders the plain size.
+func TestMemoryArg(t *testing.T) {
+	for _, c := range []struct {
+		mem, max int
+		want     string
+	}{
+		{1024, 0, "1024"},
+		{1024, 1024, "1024"},                                             // no room: nothing to reserve
+		{1024, 3072, "1024,slots=4,maxmem=3072M"},                        // 2 GB = four 512 MB steps
+		{1024, 3000, "1024,slots=4,maxmem=3000M"},                        // a partial step still needs a slot
+		{1024, 1024 + 300*MemoryStepMB, "1024,slots=256,maxmem=154624M"}, // capped at QEMU's limit
+	} {
+		if got := memoryArg(QEMUSpec{MemoryMB: c.mem, MaxMemoryMB: c.max}); got != c.want {
+			t.Errorf("memoryArg(%d, %d) = %q, want %q", c.mem, c.max, got, c.want)
+		}
+	}
+}

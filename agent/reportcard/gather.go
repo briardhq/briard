@@ -35,7 +35,7 @@ func Gather(ctx context.Context) HostFacts {
 		// directory at boot), which is the question the install actually needs answered -- `systemctl`
 		// on PATH says only that a package is installed.
 		SystemdBooted: exists("/run/systemd/system"),
-		MemTotalMB:    memTotalMB(),
+		MemTotalMB:    MemTotalMB(),
 		PrimaryNICBus: primaryNICBus(sel.Dev),
 		DiskFreeMB:    diskFreeMB(installRoot()),
 		HostCIDR:      hostCIDR(sel.Dev),
@@ -305,7 +305,9 @@ func unameRelease() string {
 	return ""
 }
 
-func memTotalMB() int {
+// MemTotalMB is the machine's installed RAM (MemTotal), in MB; 0 when it cannot be read. The host
+// agent sizes its guest's growth ceiling from the same number the report card grades.
+func MemTotalMB() int {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return 0

@@ -341,6 +341,74 @@ func (g *Guest) Reset(ctx context.Context) error {
 	return err
 }
 
+// AddMemory grows the running VM by one DIMM of MemoryStepMB: a RAM backend, then the DIMM that
+// plugs it in. The guest's kernel sees an ACPI memory-hotplug event and onlines the memory itself,
+// so nothing is asked of the guest OS. It is the ONE way the VM grows, on every accelerator: QEMU's
+// virtio-mem is built for Linux hosts only, and DIMM hotplug was measured working under both KVM
+// and WHPX.
+//
+// THE ID COMES FROM THE VM, NOT FROM A COUNTER. The agent can restart while the guest keeps
+// running, and a counter would restart at zero and collide with a DIMM the previous agent added --
+// so the next free id is read off the backends QEMU already holds. A backend whose DIMM failed to
+// plug is deleted before returning, and if even that fails it still holds its id, so the next
+// attempt skips it rather than colliding.
+//
+// It needs a launch with room to grow (QEMUSpec.MaxMemoryMB); on one without, QEMU refuses the
+// DIMM and this returns that refusal.
+func (g *Guest) AddMemory(ctx context.Context) error {
+	if g == nil {
+		return fmt.Errorf("platform: no guest to add memory to")
+	}
+	q, err := dialQMP(ctx, g.QMPSock)
+	if err != nil {
+		return err
+	}
+	defer q.close()
+	raw, err := q.execute("query-memdev", nil)
+	if err != nil {
+		return err
+	}
+	n, err := nextMemoryID(raw)
+	if err != nil {
+		return err
+	}
+	mem, dimm := fmt.Sprintf("%s%d", memBackendPrefix, n), fmt.Sprintf("briard-dimm%d", n)
+	if _, err := q.execute("object-add", map[string]any{
+		"qom-type": "memory-backend-ram", "id": mem, "size": int64(MemoryStepMB) << 20,
+	}); err != nil {
+		return fmt.Errorf("platform: add memory: %w", err)
+	}
+	if _, err := q.execute("device_add", map[string]any{"driver": "pc-dimm", "id": dimm, "memdev": mem}); err != nil {
+		_, _ = q.execute("object-del", map[string]any{"id": mem})
+		return fmt.Errorf("platform: add memory: %w", err)
+	}
+	return nil
+}
+
+// memBackendPrefix names the RAM backends AddMemory creates, so its ids never meet QEMU's own
+// (the boot RAM is a backend too, named by the machine).
+const memBackendPrefix = "briard-mem"
+
+// nextMemoryID reads query-memdev's reply and returns the smallest n for which
+// briard-mem<n> does not exist yet.
+func nextMemoryID(raw json.RawMessage) (int, error) {
+	var devs []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &devs); err != nil {
+		return 0, fmt.Errorf("platform: query-memdev: %w", err)
+	}
+	taken := map[string]bool{}
+	for _, d := range devs {
+		taken[d.ID] = true
+	}
+	n := 0
+	for taken[fmt.Sprintf("%s%d", memBackendPrefix, n)] {
+		n++
+	}
+	return n, nil
+}
+
 // DebugConsoleName is the debug console's socket; DebugConsolePath puts it BESIDE the monitor
 // that arms it, rather than anywhere a second setting could name.
 //

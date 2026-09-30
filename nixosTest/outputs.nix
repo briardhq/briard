@@ -212,6 +212,7 @@ let
     install -Dm0755 ${../scripts/briard-net-wrap.sh} $out/bin/briard-net-wrap
   '';
   agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; };
+  agentMemoryGrow = import ./agent-memory-grow.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # the host grows a guest that runs short
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # host restarts a wedged guest
   agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # init restarts a wedged AGENT
@@ -410,6 +411,7 @@ in
     # QEMU over the virtio-serial channel. Needs nested KVM.
     integration = {
       agent-bringup = agentBringup;
+      agent-memory-grow = agentMemoryGrow; # a guest short of memory is grown a DIMM by its host, and keeps it
       agent-readopt = agentReadopt; # an agent restart re-adopts the running guest
       agent-deadman = agentDeadman; # a lone node holds (never self-outages) when its agent dies
       # The mirror of agent-deadman: there the host goes silent and the guest reboots itself;

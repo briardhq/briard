@@ -835,17 +835,18 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	}
 }
 
-// GuestSpec describes this node's guest VM. It is derived from cfg alone, so any launch can
-// rebuild it identically — which is what the reboot path needs: it relaunches the
-// same guest with the boot selector armed, and arming the selector must be the *only*
-// difference between the two launches.
+// GuestSpec describes this node's guest VM. It is derived from cfg and the node's own records
+// (the size the guest has grown to, memory.go), so any launch can rebuild it identically — which
+// is what the reboot path needs: it relaunches the same guest with the boot selector armed, and
+// arming the selector must be the *only* difference between the two launches.
 func (cfg Config) guestSpec() platform.QEMUSpec {
 	return platform.QEMUSpec{
 		Binary:        cfg.QEMUBinary,
 		DataDir:       cfg.QEMUDataDir,
 		Accel:         cfg.Accel,
 		CPUModel:      cfg.CPUModel,
-		MemoryMB:      cfg.MemoryMB,
+		MemoryMB:      cfg.guestMemoryMB(),
+		MaxMemoryMB:   guestMemoryCeilingMB(reportcard.MemTotalMB()),
 		Cores:         cfg.Cores,
 		DiskImage:     cfg.GuestDisk,
 		BaseImage:     cfg.GuestImage,
@@ -1245,6 +1246,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	ng := newClockSampler()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
+	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
+	mg := &memoryGrower{}
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1326,6 +1329,22 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		res := cfg.resources(ctx, r)
 		cfg.writeTelemetry(res, logf) // a handoff, never a write: see telemetryWriter
+		if mg.decide(time.Now(), res) {
+			cfg.beat.Beat()
+			gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			size, err := cfg.growGuestMemory(gctx, reportcard.MemTotalMB(), platform.Adopt(cfg.guestSpec()).AddMemory, logf)
+			cancel()
+			switch {
+			case errors.Is(err, errMemoryCeiling):
+				logf("memory: the guest needs more memory and is at its ceiling (%d MB): available %d MB, pressure %.1f%%",
+					size, res.MemAvailableKB>>10, res.MemPSISome60)
+			case err != nil:
+				logf("memory: %v", err)
+			default:
+				logf("memory: grew the guest to %d MB: available was %d MB of %d, pressure %.1f%%",
+					size, res.MemAvailableKB>>10, res.MemTotalKB>>10, res.MemPSISome60)
+			}
+		}
 		// The deliberate wedge point, off unless a test arms it. It sits HERE, where the
 		// un-ctx'd write used to be, so what agent-watchdog.nix measures is a stall at the same
 		// place in the same loop. See wedgeForTest.

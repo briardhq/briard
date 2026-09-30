@@ -323,3 +323,61 @@ func TestDebugConsolePathIsBesideTheMonitor(t *testing.T) {
 		t.Errorf("console directory = %q, want the monitor's %q", got, want)
 	}
 }
+
+// Growth is two commands on one connection, in order: the backend, then the DIMM that plugs it
+// in -- after asking QEMU which ids it already holds.
+func TestAddMemoryPlugsABackendThenADimm(t *testing.T) {
+	path, got := fakeQMP(t, map[string][]string{
+		"query-memdev": {`{"return":[{"id":"pc.ram","size":1073741824}]}`},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := (&Guest{QMPSock: path}).AddMemory(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := "qmp_capabilities query-memdev object-add device_add"
+	if s := strings.Join(*got, " "); s != want {
+		t.Errorf("commands = %q, want %q", s, want)
+	}
+}
+
+// A DIMM QEMU refuses (no slots left, a launch without room to grow) must not strand its backend:
+// the backend is deleted, and the refusal is returned rather than swallowed.
+func TestAddMemoryRollsBackTheBackendWhenTheDimmIsRefused(t *testing.T) {
+	path, got := fakeQMP(t, map[string][]string{
+		"query-memdev": {`{"return":[]}`},
+		"device_add":   {`{"error":{"class":"GenericError","desc":"no slot found"}}`},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := (&Guest{QMPSock: path}).AddMemory(ctx)
+	if err == nil || !strings.Contains(err.Error(), "no slot found") {
+		t.Fatalf("err = %v, want QEMU's refusal", err)
+	}
+	want := "qmp_capabilities query-memdev object-add device_add object-del"
+	if s := strings.Join(*got, " "); s != want {
+		t.Errorf("commands = %q, want %q", s, want)
+	}
+}
+
+// The id is the smallest one QEMU does not already hold -- including a backend left behind by a
+// failed rollback -- and never collides with QEMU's own boot RAM.
+func TestNextMemoryIDSkipsWhatTheVMAlreadyHolds(t *testing.T) {
+	for _, c := range []struct {
+		reply string
+		want  int
+	}{
+		{`[]`, 0},
+		{`[{"id":"pc.ram"}]`, 0},
+		{`[{"id":"pc.ram"},{"id":"briard-mem0"},{"id":"briard-mem1"}]`, 2},
+		{`[{"id":"briard-mem1"}]`, 0}, // a hole is reused
+	} {
+		n, err := nextMemoryID(json.RawMessage(c.reply))
+		if err != nil || n != c.want {
+			t.Errorf("nextMemoryID(%s) = %d, %v; want %d", c.reply, n, err, c.want)
+		}
+	}
+	if _, err := nextMemoryID(json.RawMessage(`{"not":"a list"}`)); err == nil {
+		t.Error("a reply that is not a list must be an error, not id 0")
+	}
+}

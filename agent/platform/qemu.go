@@ -34,10 +34,14 @@ type QEMUSpec struct {
 	// query-cpu-model-expansion), but `host` HARD-FAILS without KVM ("CPU model 'host' requires
 	// KVM") and Accel is a fallback LIST -- kvm:tcg. A bare `host` would turn every no-virt host
 	// from slow-but-booting into not-booting, which is exactly the case the tcg fallback exists for.
-	CPUModel  string
-	MemoryMB  int
-	Cores     int
-	DiskImage string // guest OS disk; empty in kernel/initrd boots
+	CPUModel string
+	MemoryMB int
+	// MaxMemoryMB is how far the running VM may grow by AddMemory. Above MemoryMB, the launch
+	// reserves the address space and the DIMM slots for it -- address space only: QEMU backs a
+	// DIMM with memory when it is added, never before. At or below MemoryMB the VM cannot grow.
+	MaxMemoryMB int
+	Cores       int
+	DiskImage   string // guest OS disk; empty in kernel/initrd boots
 	// BaseImage is the read-only image DiskImage is an overlay ON -- what an OS update
 	// swaps. It is what lets RebuildOverlay lay the overlay down on a node that has none yet
 	// rather than only rebuild one it can read the backing out of; empty leaves that
@@ -137,6 +141,25 @@ const (
 	svcFD = 4
 )
 
+// MemoryStepMB is the size of one DIMM, the unit the VM grows by. Half a gigabyte is small
+// enough that a step is not a jump for a 1 GB guest and large enough that a household's growth is
+// a handful of steps, not dozens of slots.
+const MemoryStepMB = 512
+
+// maxDIMMSlots is QEMU's ceiling on memory-hotplug slots (ACPI_MAX_RAM_SLOTS); asking for more
+// refuses the launch.
+const maxDIMMSlots = 256
+
+// memoryArg renders -m: the boot size alone, or the boot size plus the slots and the address
+// space to grow into, one slot per step up to MaxMemoryMB.
+func memoryArg(s QEMUSpec) string {
+	if s.MaxMemoryMB <= s.MemoryMB {
+		return strconv.Itoa(s.MemoryMB)
+	}
+	slots := min((s.MaxMemoryMB-s.MemoryMB+MemoryStepMB-1)/MemoryStepMB, maxDIMMSlots)
+	return fmt.Sprintf("%d,slots=%d,maxmem=%dM", s.MemoryMB, slots, s.MaxMemoryMB)
+}
+
 // qemuArgs renders the QEMU argv (excluding the binary). Pure; unit-tested.
 func qemuArgs(s QEMUSpec) []string {
 	args := []string{"-machine", "accel=" + s.Accel}
@@ -144,7 +167,7 @@ func qemuArgs(s QEMUSpec) []string {
 		args = append(args, "-cpu", s.CPUModel)
 	}
 	args = append(args,
-		"-m", strconv.Itoa(s.MemoryMB),
+		"-m", memoryArg(s),
 		"-smp", strconv.Itoa(s.Cores),
 		// EVERY RESTART GOES THROUGH THE SUPERVISOR. `-no-reboot` makes QEMU exit on a guest
 		// reset rather than quietly starting the machine again inside the same process, so a
