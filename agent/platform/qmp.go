@@ -385,6 +385,27 @@ func (g *Guest) AddMemory(ctx context.Context) error {
 	return nil
 }
 
+// MemoryMB is the running VM's memory as QEMU holds it: the boot memory plus every DIMM plugged
+// since. It is the VM's answer, not a record, so it is right after an agent restart and resets
+// with each launch exactly as the VM does.
+func (g *Guest) MemoryMB(ctx context.Context) (int, error) {
+	if g == nil {
+		return 0, fmt.Errorf("platform: no guest to size")
+	}
+	raw, err := qmpExecute(ctx, g.QMPSock, "query-memory-size-summary", nil)
+	if err != nil {
+		return 0, err
+	}
+	var s struct {
+		Base    int64 `json:"base-memory"`
+		Plugged int64 `json:"plugged-memory"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil || s.Base == 0 {
+		return 0, fmt.Errorf("platform: query-memory-size-summary: %q", raw)
+	}
+	return int((s.Base + s.Plugged) >> 20), nil
+}
+
 // memBackendPrefix names the RAM backends AddMemory creates, so its ids never meet QEMU's own
 // (the boot RAM is a backend too, named by the machine).
 const memBackendPrefix = "briard-mem"

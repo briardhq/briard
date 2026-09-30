@@ -4,9 +4,10 @@
 # to grow (-m 1024,slots=…,maxmem=…). The test then makes the guest short of memory the one way
 # that cannot be argued with -- incompressible data in a tmpfs, which is neither page cache nor
 # anything zram can shrink -- and does nothing else. What must follow is the agent's own decision:
-# MemAvailable below the floor for the level window, one DIMM hot-added over QMP, the new size
-# recorded for the next launch, and the guest's kernel counting the memory (its MemTotal, as the
-# resources verb reports it in the host's status line).
+# MemAvailable below the floor for the level window, one DIMM hot-added over QMP, and the guest's
+# kernel counting the memory (its MemTotal, as the resources verb reports it in the host's status
+# line). Growth lasts until the next launch, which boots back at 1 GB -- by construction, since
+# the launch reads the configured size alone; the unit tests hold that line.
 { pkgs, guestDisk, agent, netWrap, dressBase }:
 let
   # Typed into the guest's root shell (the debug console), one line at a time. It leaves ~150 MB
@@ -82,7 +83,6 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"test -n \"$({last_mem})\" && test \"$({last_mem} | cut -d/ -f2)\" -gt 0", timeout=60)
     avail0, total0 = mem_mb()
     print(f"before: available {avail0} MB of {total0} MB")
-    host.fail("test -e /var/lib/briard/guest-memory")  # never grown: no record
 
     host.succeed("(printf '\\n'; sleep 2; cat ${hog}; sleep 40; printf '\\035') | briard-agent debug shell > /tmp/hog.out 2>&1")
     hog_out = host.succeed("cat /tmp/hog.out")
@@ -91,11 +91,9 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"test \"$({last_mem} | cut -d/ -f1)\" -lt {256 << 10}", timeout=60)
     print(f"short: available {mem_mb()[0]} MB")
 
-    # The agent's own decision, after the level window: one step, logged, recorded.
+    # The agent's own decision, after the level window: one step, logged -- its size read off the VM.
     host.wait_until_succeeds("journalctl -u briard-agent -o cat | grep -q 'memory: grew the guest to 1536 MB'", timeout=600)
     print(host.succeed("journalctl -u briard-agent -o cat | grep 'memory: '"))
-    rec = host.succeed("cat /var/lib/briard/guest-memory").strip()
-    assert rec == "1536", f"the record says {rec!r}, want 1536 -- the next launch would boot smaller"
 
     # ...and the guest's kernel counts it: MemTotal up by (nearly exactly) one step.
     host.wait_until_succeeds(f"test \"$({last_mem} | cut -d/ -f2)\" -ge {(total0 + 500) << 10}", timeout=60)

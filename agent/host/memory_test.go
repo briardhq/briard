@@ -4,38 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"testing"
 	"time"
 
 	"briard.io/shared/telemetry"
-	"testing"
 )
-
-func memoryCfg(t *testing.T, mb int) Config {
-	t.Helper()
-	return Config{MemoryMB: mb, AssignmentCache: filepath.Join(t.TempDir(), "assignment.json")}
-}
-
-// The boot size is what the guest has grown to, and never below the configured floor: a record
-// smaller than the floor (the floor was raised since) or unreadable reads as the floor.
-func TestGuestMemoryMBReadsTheRecordAboveTheFloor(t *testing.T) {
-	cfg := memoryCfg(t, 1024)
-	if got := cfg.guestMemoryMB(); got != 1024 {
-		t.Fatalf("no record: %d, want the floor 1024", got)
-	}
-	for _, c := range []struct {
-		record string
-		want   int
-	}{{"2048\n", 2048}, {"512\n", 1024}, {"junk", 1024}} {
-		if err := os.WriteFile(cfg.guestMemoryPath(), []byte(c.record), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if got := cfg.guestMemoryMB(); got != c.want {
-			t.Errorf("record %q: %d, want %d", c.record, got, c.want)
-		}
-	}
-}
 
 func TestGuestMemoryCeiling(t *testing.T) {
 	for _, c := range []struct{ host, want int }{
@@ -50,44 +23,66 @@ func TestGuestMemoryCeiling(t *testing.T) {
 	}
 }
 
-// A step is added, THEN recorded, and the next launch boots at the recorded size.
-func TestGrowGuestMemoryAddsThenRecords(t *testing.T) {
-	cfg := memoryCfg(t, 1024)
-	adds := 0
-	add := func(context.Context) error { adds++; return nil }
-	for _, want := range []int{1536, 2048} {
-		got, err := cfg.growGuestMemory(context.Background(), 8192, add, t.Logf)
+// fakeVM is a running guest's memory as QMP would report it.
+type fakeVM struct {
+	mb, adds int
+	sizeErr  error
+	addErr   error
+}
+
+func (v *fakeVM) size(context.Context) (int, error) { return v.mb, v.sizeErr }
+func (v *fakeVM) add(context.Context) error {
+	if v.addErr != nil {
+		return v.addErr
+	}
+	v.adds++
+	v.mb += 512
+	return nil
+}
+
+// Growth starts from what the VM says it has -- not from the configured size -- so a guest that
+// grew before an agent restart keeps growing from where it is.
+func TestGrowGuestMemoryGrowsFromTheVMsOwnSize(t *testing.T) {
+	vm := &fakeVM{mb: 1536}
+	for _, want := range []int{2048, 2560} {
+		got, err := growGuestMemory(context.Background(), 8192, vm.size, vm.add)
 		if err != nil || got != want {
 			t.Fatalf("grow = %d, %v; want %d", got, err, want)
 		}
-		if spec := cfg.guestMemoryMB(); spec != want {
-			t.Errorf("after growing to %d the next launch boots at %d", want, spec)
-		}
 	}
-	if adds != 2 {
-		t.Errorf("adds = %d, want 2", adds)
+	if vm.adds != 2 {
+		t.Errorf("adds = %d, want 2", vm.adds)
 	}
 }
 
-// Refused by QEMU: nothing is recorded, so the record never claims memory the guest does not have.
-func TestGrowGuestMemoryRecordsNothingWhenTheAddFails(t *testing.T) {
-	cfg := memoryCfg(t, 1024)
-	_, err := cfg.growGuestMemory(context.Background(), 8192, func(context.Context) error { return errors.New("no slot") }, t.Logf)
-	if err == nil {
-		t.Fatal("a refused add must be an error")
+// Every launch boots at the configured size, however far the last one grew: a relaunch is when
+// memory goes back to the host.
+func TestEveryLaunchBootsAtTheConfiguredSize(t *testing.T) {
+	cfg := Config{MemoryMB: 1024}
+	vm := &fakeVM{mb: 1024}
+	if _, err := growGuestMemory(context.Background(), 8192, vm.size, vm.add); err != nil {
+		t.Fatal(err)
 	}
-	if got := cfg.guestMemoryMB(); got != 1024 {
-		t.Errorf("after a refused add the guest boots at %d, want 1024", got)
+	if got := cfg.guestSpec().MemoryMB; got != 1024 {
+		t.Errorf("the next launch boots at %d MB, want the configured 1024", got)
 	}
 }
 
-// At the ceiling nothing is asked of QEMU at all.
-func TestGrowGuestMemoryStopsAtTheCeiling(t *testing.T) {
-	cfg := memoryCfg(t, 1536)
-	called := false
-	_, err := cfg.growGuestMemory(context.Background(), 3584, func(context.Context) error { called = true; return nil }, t.Logf)
-	if !errors.Is(err, errMemoryCeiling) || called {
-		t.Errorf("err = %v, add called = %v; want errMemoryCeiling and no add (1536 + 512 > 3584 - 2048)", err, called)
+func TestGrowGuestMemoryFailures(t *testing.T) {
+	// Refused by QEMU: the error says so, and the size reported is the one the guest still has.
+	vm := &fakeVM{mb: 1024, addErr: errors.New("no slot")}
+	if got, err := growGuestMemory(context.Background(), 8192, vm.size, vm.add); err == nil || got != 1024 {
+		t.Errorf("refused add = %d, %v; want 1024 and an error", got, err)
+	}
+	// A size QEMU would not tell: nothing is added blind.
+	vm = &fakeVM{mb: 1024, sizeErr: errors.New("qmp down")}
+	if _, err := growGuestMemory(context.Background(), 8192, vm.size, vm.add); err == nil || vm.adds != 0 {
+		t.Errorf("err = %v, adds = %d; want an error and no add", err, vm.adds)
+	}
+	// At the ceiling nothing is asked of QEMU at all.
+	vm = &fakeVM{mb: 1536}
+	if _, err := growGuestMemory(context.Background(), 3584, vm.size, vm.add); !errors.Is(err, errMemoryCeiling) || vm.adds != 0 {
+		t.Errorf("err = %v, adds = %d; want errMemoryCeiling and no add (1536 + 512 > 3584 - 2048)", err, vm.adds)
 	}
 }
 

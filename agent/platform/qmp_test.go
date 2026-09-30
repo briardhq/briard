@@ -381,3 +381,20 @@ func TestNextMemoryIDSkipsWhatTheVMAlreadyHolds(t *testing.T) {
 		t.Error("a reply that is not a list must be an error, not id 0")
 	}
 }
+
+// The size is the boot memory plus what was plugged since, in MB; a reply without a boot size is
+// an error, never a size of zero.
+func TestMemoryMBSumsBootAndPlugged(t *testing.T) {
+	path, _ := fakeQMP(t, map[string][]string{
+		"query-memory-size-summary": {`{"return":{"base-memory":1073741824,"plugged-memory":536870912}}`},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if got, err := (&Guest{QMPSock: path}).MemoryMB(ctx); err != nil || got != 1536 {
+		t.Errorf("MemoryMB = %d, %v; want 1536", got, err)
+	}
+	path, _ = fakeQMP(t, map[string][]string{"query-memory-size-summary": {`{"return":{}}`}})
+	if _, err := (&Guest{QMPSock: path}).MemoryMB(ctx); err == nil {
+		t.Error("a reply with no boot memory must be an error")
+	}
+}
