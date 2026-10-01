@@ -42,6 +42,28 @@ let
     done | sort -t= -k2 -rn | head -2 | tr '\n' ' '
     echo
   '';
+
+  # WHERE THE MEMORY IS, at one moment: the kernel's own accounting, then the same memory seen
+  # three ways -- per process (PSS, so a shared library is split among its users instead of being
+  # counted whole by each), per systemd unit (the cgroup's anon and file), and per tmpfs -- then
+  # the largest slab caches. Printed, never judged: it exists to find a trimming candidate.
+  breakdown = pkgs.writeShellScript "mem-breakdown" ''
+    echo "-- meminfo (MB)"
+    awk '/^(MemTotal|MemFree|MemAvailable|Buffers|Cached|Shmem|AnonPages|Mapped|Slab|SReclaimable|SUnreclaim|KernelStack|PageTables|Percpu|VmallocUsed|SwapTotal|SwapFree|Unevictable|Mlocked):/{printf "  %-14s %6d\n", $1, $2/1024}' /proc/meminfo
+    echo "-- processes by PSS (MB, top 15)"
+    for d in /proc/[0-9]*; do
+      p=$(awk '/^Pss:/{print $2}' "$d/smaps_rollup" 2>/dev/null) || continue
+      [ -n "$p" ] && printf '%8d %s\n' "$p" "$(tr '\0' ' ' < "$d/cmdline" | cut -c1-90)"
+    done | sort -rn | head -15 | awk '{kb=$1; $1=""; printf "  %6.1f %s\n", kb/1024, $0}'
+    echo "-- systemd units by anon + file (MB, top 15)"
+    for f in /sys/fs/cgroup/*.slice/*/memory.stat /sys/fs/cgroup/init.scope/memory.stat; do
+      awk -v u="$(basename "$(dirname "$f")")" '/^anon /{a=$2} /^file /{c=$2} /^kernel /{k=$2} END{printf "%10d  %-44s anon=%-6.1f file=%-6.1f kernel=%.1f\n", a+c+k, u, a/1048576, c/1048576, k/1048576}' "$f"
+    done | sort -rn | head -15 | cut -c11-
+    echo "-- tmpfs (MB used)"
+    df -m -t tmpfs -t devtmpfs --output=used,target | tail -n +2 | sort -rn | head -8 | sed 's/^/  /'
+    echo "-- slab caches (MB, top 10)"
+    awk 'NR>2{printf "%10.1f %s\n", $3*$4/1048576, $1}' /proc/slabinfo | sort -rn | head -10 | sed 's/^/  /'
+  '';
 in
 pkgs.testers.runNixOSTest {
   name = "hass-lowmem";
@@ -82,6 +104,11 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     s("volume-up")
+    # The system's own share, before any service: as it stands, then with the clean page cache
+    # dropped -- the difference is cache the kernel would give back anyway; what stays is the cost.
+    print("BREAKDOWN volume-up\n" + node1.succeed("${breakdown}"))
+    node1.succeed("sync && echo 3 > /proc/sys/vm/drop_caches")
+    print("BREAKDOWN volume-up, caches dropped\n" + node1.succeed("${breakdown}"))
 
     install_fixture(node1)
     t_install = time.monotonic()
@@ -95,6 +122,7 @@ pkgs.testers.runNixOSTest {
         time.sleep(30)
         s(f"idle+{(i + 1) * 30}s")
 
+    print("BREAKDOWN ha-idle\n" + node1.succeed("${breakdown}"))
     ooms = node1.succeed("journalctl -k --no-pager | grep -c 'Out of memory' || true").strip()
     serving = node1.succeed("curl -fsS -o /dev/null -w '%{http_code}' http://192.168.1.100:8123/manifest.json || true").strip()
     print(f"RESULT oom_kills={ooms} ha_manifest_http={serving}")
