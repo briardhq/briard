@@ -170,12 +170,18 @@ pkgs.testers.runNixOSTest {
     # because the far end is an autologin getty that never hangs up on its own.
     host.fail("test -e /run/briard/qmp/console.sock")  # a launch must leave the guest closed
     host.succeed(
-        "(printf '\\n'; sleep 2; printf 'id\\n'; sleep 5; printf '\\035') "
+        "(printf '\\n'; sleep 2; printf 'id\\n'; sleep 2; "
+        "printf 'journalctl -b -u systemd-journald -o cat --no-pager | grep -i \"system journal\"\\n'; sleep 5; printf '\\035') "
         "| briard-agent debug shell > /tmp/debug-shell.out 2>&1"
     )
     shell_out = host.succeed("cat /tmp/debug-shell.out")
     print(shell_out)
     assert "uid=0(root)" in shell_out, f"no root shell on ttyS1:\n{shell_out}"
+    # The guest's journal is bounded: journald states the limit it APPLIED when it opened the
+    # persistent journal on the state disk ("System Journal (...) is 8.0M, max 128M, ..." -- a
+    # whole number prints with no decimal, as the default's "max 4G" does). The typed command
+    # never contains the figure, so only journald's own line can satisfy this.
+    assert "max 128M," in shell_out, f"the guest's persistent journal is not capped at 128 MB:\n{shell_out}"
     # Closed again on the way out, and the socket is the evidence: nothing else records the
     # state, so if this file survives the verb, a node stays open after a support call.
     host.fail("test -e /run/briard/qmp/console.sock")

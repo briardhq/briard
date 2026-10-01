@@ -170,7 +170,22 @@ let
       ];
       # Forward the journal to ttyS0 so the captured serial log shows systemd +
       # drbd-reactor activity during an upgrade.
-      services.journald.extraConfig = "ForwardToConsole=yes\nMaxLevelConsole=info";
+      #
+      # AND BOUND IT, by size and by age, whichever comes first. The journal lives on the state
+      # disk (above), so it outlives every relaunch -- the point, for forensics -- and each boot
+      # appends a full boot's worth; journald's default cap (10 % of the filesystem, up to 4 GB)
+      # would let a node that reboots often fill the disk its container images share with boot
+      # logs nobody reads. 128 MB keeps the last stretch of a busy node; seven days is the window
+      # a support question is ever about. journald deletes whole archived FILES, never entries,
+      # so MaxFileSec starts a new file daily -- without it a quiet node can sit in one file for
+      # a month and "seven days" means "seven days plus however long that file has been open".
+      services.journald.extraConfig = ''
+        ForwardToConsole=yes
+        MaxLevelConsole=info
+        SystemMaxUse=128M
+        MaxRetentionSec=7day
+        MaxFileSec=1day
+      '';
 
       # THE DEBUG CONSOLE: ttyS1, and it is connected to nothing until someone opens it.
       #
