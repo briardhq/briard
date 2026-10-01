@@ -1249,6 +1249,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	ca := &clockAlerter{read: reportcard.NTPSynced}
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
 	mg := &memoryGrower{}
+	ma := &memoryAlerter{} // ...and when that growth is worth telling the household about
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1334,8 +1335,14 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			cfg.beat.Beat()
 			gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			vm := platform.Adopt(cfg.guestSpec())
-			size, err := growGuestMemory(gctx, reportcard.MemTotalMB(), vm.MemoryMB, vm.AddMemory)
+			hostMB := reportcard.MemTotalMB()
+			size, err := growGuestMemory(gctx, hostMB, vm.MemoryMB, vm.AddMemory)
 			cancel()
+			if err == nil || errors.Is(err, errMemoryCeiling) {
+				if a, ok := ma.observe(cfg.Node, size, cfg.bootMemoryMB(), guestMemoryCeilingMB(hostMB), err != nil); ok {
+					fireAlert(ctx, n, logf, a)
+				}
+			}
 			switch {
 			case errors.Is(err, errMemoryCeiling):
 				logf("memory: the guest needs more memory and is at its ceiling (%d MB): available %d MB, pressure %.1f%%",

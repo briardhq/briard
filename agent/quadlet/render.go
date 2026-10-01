@@ -74,6 +74,12 @@ func PullTimeout(size int64) time.Duration {
 	return PullAllowance + time.Duration(size*8/PullBitrate)*time.Second
 }
 
+// MemoryLimitFactor is how far past its declared minimum a service may grow before its own
+// container is OOM-killed and restarted: relaxed enough for a real service's swings (a database
+// migration, a backup, a heavy integration starting), tight enough that one leak cannot take the
+// guest's growth up to the host's ceiling. See the [Service] lines in Render.
+const MemoryLimitFactor = 4
+
 // Rendered is one service's quadlet source plus the promoter chain that drives it.
 type Rendered struct {
 	// Files maps a filename under Dir to its content.
@@ -270,6 +276,22 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// instead of latching to `failed` and giving up on a transient cause. The loop stays
 		// VISIBLE either way: NRestarts climbs, and the resource telemetry reads it per service.
 		lines = append(lines, "", "[Service]", "Restart=always", "RestartSec=5")
+		// A LEAK STAYS IN ITS OWN SERVICE. The guest grows when it runs short, so a service that
+		// leaks would otherwise be fed DIMM after DIMM up to the host's ceiling and squeeze
+		// everything beside it on the way. The limit is relaxed on purpose -- MemoryLimitFactor
+		// times what the service declares it needs, room for its real swings -- and hard: past
+		// it, the kernel's OOM killer acts inside this unit only, and Restart= above brings the
+		// service back fresh, which is the cure for a leak. Swap is capped too, at the declared
+		// minimum, because zram is shared by the whole guest and a memory limit does not count
+		// it. A service that declares no minimum has no limit: an unmeasured entry must not be
+		// guessed into a cage. The container's processes are accounted under this unit's cgroup,
+		// so this is per container -- per service while every service is one container; a
+		// service of several would need the limit on a shared slice instead.
+		if m.MinMemoryMB > 0 {
+			lines = append(lines,
+				fmt.Sprintf("MemoryMax=%dM", MemoryLimitFactor*m.MinMemoryMB),
+				fmt.Sprintf("MemorySwapMax=%dM", m.MinMemoryMB))
+		}
 		// THE RING'S GENERIC HOOK: a member of this service's data, taken while the
 		// container is stopped, at the one boundary visible from outside it. Every catalogued
 		// service gets this; Home Assistant adds its own internal restarts through the inbound

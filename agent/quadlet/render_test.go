@@ -578,3 +578,22 @@ func TestThePodOutlivesItsContainers(t *testing.T) {
 		}
 	}
 }
+
+// A service that declares a minimum is capped at MemoryLimitFactor times it in RAM and at the
+// minimum in swap, inside its own unit; one that declares nothing is not capped at all -- an
+// unmeasured entry must not be guessed into a cage.
+func TestContainerMemoryLimitFollowsTheDeclaredMinimum(t *testing.T) {
+	m := ha()
+	m.MinMemoryMB = 512
+	c := mustRender(t, m).Files["briard-home-assistant-ha.container"]
+	svc := c[strings.Index(c, "\n[Service]\n"):]
+	for _, want := range []string{"\nMemoryMax=2048M\n", "\nMemorySwapMax=512M\n"} {
+		if !strings.Contains(svc, want) {
+			t.Errorf("[Service] lacks %q:\n%s", strings.TrimSpace(want), svc)
+		}
+	}
+	c = mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
+	if strings.Contains(c, "MemoryMax=") || strings.Contains(c, "MemorySwapMax=") {
+		t.Errorf("a service with no declared minimum was capped:\n%s", c)
+	}
+}

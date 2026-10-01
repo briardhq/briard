@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"briard.io/agent/platform"
+	"briard.io/shared/notify"
 	"briard.io/shared/telemetry"
 )
 
@@ -163,4 +164,40 @@ func (m *memoryGrower) decide(now time.Time, r *telemetry.NodeResources) bool {
 	m.lastGrow = now
 	m.lowSince, m.pressureSince = time.Time{}, time.Time{}
 	return true
+}
+
+// memoryAlertFactor is how far past its boot size the guest grows before the household hears
+// about it. Growth itself is routine and silent -- a DIMM per window is the mechanism working --
+// but two and a half times the boot size is not a service settling in: it is a leak, or a service
+// that outgrew what it declares.
+const memoryAlertFactor = 2.5
+
+// memoryAlerter says it ONCE PER LAUNCH, at memoryAlertFactor or at the ceiling, whichever comes
+// first: once because the condition persists until a relaunch hands the memory back, and the
+// relaunch is also what re-arms it -- the first size it sees below the threshold afterwards.
+type memoryAlerter struct{ said bool }
+
+// observe is fed the guest's size after each growth decision (atCeiling when the guest needed a
+// step and the host had none left), and returns the alert to send, if this is the moment for one.
+func (a *memoryAlerter) observe(node string, sizeMB, bootMB, ceilingMB int, atCeiling bool) (notify.Alert, bool) {
+	threshold := int(float64(bootMB) * memoryAlertFactor)
+	if !atCeiling && sizeMB < threshold {
+		a.said = false
+		return notify.Alert{}, false
+	}
+	if a.said {
+		return notify.Alert{}, false
+	}
+	a.said = true
+	if atCeiling {
+		return notify.Alert{Level: notify.Warning, Title: "Briard: out of memory to give",
+			Body: fmt.Sprintf("node %s's guest has grown to %d MB, the most this host can give it (%d MB of RAM are kept for the host itself), "+
+				"and it still needs more. Its services will start failing or being restarted for lack of memory. "+
+				"Restarting the guest returns what it grew; if this comes back, one of its services needs more memory than this machine has.",
+				node, sizeMB, hostMemoryReserveMB)}, true
+	}
+	return notify.Alert{Level: notify.Warning, Title: "Briard: memory growing unusually",
+		Body: fmt.Sprintf("node %s's guest has grown to %d MB, %.1f times the %d MB it started with. "+
+			"A service is probably leaking, or needs more than it declares. The guest can keep growing to %d MB; "+
+			"restarting it returns the memory.", node, sizeMB, float64(sizeMB)/float64(bootMB), bootMB, ceilingMB)}, true
 }

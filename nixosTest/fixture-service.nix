@@ -48,6 +48,9 @@
   # PUBLISHED PORTS, meaningful only on a private pod: a host-networked one already holds the
   # guest's ports, and the manifest schema refuses the combination.
   ports ? [ ],
+  # THE DECLARED MINIMUM MEMORY (manifest minMemoryMB), and with it the service's container memory
+  # limit. Zero, the default, declares none -- the shape of every fixture before it existed.
+  minMemoryMB ? 0,
   # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
   # pinned upstream image instead, which is what lets a REAL service be catalogued rather than only
   # the fixture (the baked slot was how HA reached a guest before).
@@ -115,6 +118,9 @@ let
   # Published ports, omitted entirely when empty so a host-networked fixture renders the manifest it
   # always did -- the schema refuses `ports` alongside host networking.
   portsJSON = ps: if ps == [ ] then "" else '',"ports":${builtins.toJSON ps}'';
+  # The declared minimum memory, omitted when zero so every existing fixture keeps its exact bytes
+  # (and with them its identity) -- only a harness that asks for a limit gets one.
+  minMemJSON = if minMemoryMB == 0 then "" else '',"minMemoryMB":${toString minMemoryMB}'';
   variantImages = lib.mapAttrs (
     label: v:
     imageOf {
@@ -150,7 +156,7 @@ let
     ref="${p.image.repo}@$digest"
     printf '%s' "$ref" > $out/${p.dir}/ref
     cat > $out/${p.dir}/manifest.json <<EOF
-    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]}
+    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}}
     EOF
     # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
     # strip the indentation rather than shipping it into the content hash.
