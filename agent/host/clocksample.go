@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/model"
+	"briard.io/shared/notify"
 )
 
 // THE CLOCK SAMPLE: a ring member taken by the CLOCK rather than by an event,
@@ -155,4 +158,88 @@ func (cfg Config) newestMember(ctx context.Context, g memberTaker, service strin
 		}
 	}
 	return newest, !newest.IsZero()
+}
+
+// THE NIGHTLY RECORDER CHECK, 05:30 local: after the guest-update window (03:00 plus up to two
+// hours) and Home Assistant's own 04:12 purge, so it reads the database after both have
+// finished with it. The guest does the work (agent/hass/dbcheck.go says what and why); this
+// schedules it and tells the household when it found damage.
+//
+// IN THE OBSERVE LOOP, LIKE THE CLOCK SAMPLE, and synchronous on purpose: the guest serves one
+// verb at a time, so a check running beside the loop would stall every status read behind it.
+// It is leased for its budget instead, as any long operation here is.
+//
+// ONCE A NIGHT WHATEVER HAPPENS: a failure is logged and waits a day. An agent that is down at
+// 05:30 still runs it within the window; one down for the whole window skips that night.
+const (
+	dbCheckAt     = 5*60 + 30 // minutes after local midnight
+	dbCheckWindow = 60        // minutes after dbCheckAt a late agent may still start it
+	dbCheckBudget = 30 * time.Minute
+)
+
+// recorderChecker is the slice of the guest the check costs.
+type recorderChecker interface {
+	HassDBCheck(ctx context.Context) (hass.DBReport, error)
+}
+
+// dbChecker remembers the local date it last checked, in the household's zone.
+type dbChecker struct {
+	loc  *time.Location
+	done string
+}
+
+func newDBChecker() *dbChecker {
+	loc := time.Local
+	if tz := localTimezone("/"); tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	return &dbChecker{loc: loc}
+}
+
+// checkRecorder runs tonight's check if it is due: this node serves, it runs Home Assistant, and
+// the local time is inside tonight's window.
+func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChecker, services []model.ServiceSpec, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+	if !serving || !slices.ContainsFunc(services, func(s model.ServiceSpec) bool { return s.Name == hass.Name }) {
+		return
+	}
+	local := now.In(d.loc)
+	day := local.Format(time.DateOnly)
+	mins := local.Hour()*60 + local.Minute()
+	if d.done == day || mins < dbCheckAt || mins >= dbCheckAt+dbCheckWindow {
+		return
+	}
+	d.done = day
+	bctx, cancel := cfg.beat.budget(ctx, dbCheckBudget)
+	defer cancel()
+	rep, err := g.HassDBCheck(bctx)
+	if err != nil {
+		logf("hass-db: the nightly check failed: %v", err)
+		return
+	}
+	logf("hass-db: verdict=%q checked=%s restored_from=%v %s", rep.Verdict, rep.Checked, rep.RestoredFrom, rep.Why)
+	if rep.Verdict == hass.VerdictCorrupt {
+		fireAlert(ctx, n, logf, recorderAlert(cfg.Node, rep, d.loc))
+	}
+}
+
+// recorderAlert is what the household is told when the check found damage, repaired or not. A
+// History row alone is not enough: nothing else would make anyone look.
+func recorderAlert(node string, rep hass.DBReport, loc *time.Location) notify.Alert {
+	if rep.RestoredFrom.IsZero() {
+		return notify.Alert{
+			Level: notify.Warning,
+			Title: "Briard: Home Assistant's history is damaged",
+			Body: fmt.Sprintf("Home Assistant's history database on node %s is damaged and briard could not repair it (%s). "+
+				"Home Assistant will start an empty history when it next reads the damaged part.", node, rep.Why),
+		}
+	}
+	return notify.Alert{
+		Level: notify.Warning,
+		Title: "Briard: Home Assistant's history was repaired",
+		Body: fmt.Sprintf("Home Assistant's history database on node %s was damaged. Briard put back the last good copy, from %s; "+
+			"history recorded after that is lost. Undoing \"Restored corrupted database\" in the app's History puts the damaged copy back.",
+			node, rep.RestoredFrom.In(loc).Format("Mon 2 Jan, 15:04")),
+	}
 }

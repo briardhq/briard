@@ -462,11 +462,16 @@ const (
 	// TriggerHassRestoreBefore is taken at Home Assistant's first restart of one of its OWN backup
 	// restores, while its marker is present. It is not a start.
 	TriggerHassRestoreBefore Trigger = "hass-restore-before"
+	// TriggerHassDBRestoreBefore precedes briard putting back Home Assistant's recorder database
+	// alone, after the nightly check found the newest copy damaged (agent/hass/dbcheck.go). It
+	// holds the damaged database, so undoing its event puts that back.
+	TriggerHassDBRestoreBefore Trigger = "hass-db-restore-before"
 )
 
 // Before reports whether a member was taken just before an operation, with the app stopped.
 func (t Trigger) Before() bool {
-	return t == TriggerAppUpdateBefore || t == TriggerAppUndoBefore || t == TriggerHassRestoreBefore
+	return t == TriggerAppUpdateBefore || t == TriggerAppUndoBefore || t == TriggerHassRestoreBefore ||
+		t == TriggerHassDBRestoreBefore
 }
 
 // SnapshotMemberService reads the service out of a member's name, and reports whether the name is
@@ -490,7 +495,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore} {
+	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore, TriggerHassDBRestoreBefore} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {
@@ -533,6 +538,12 @@ func SnapshotMember(service string, trigger Trigger, at time.Time) string {
 // and removes the member if it cannot, so "every member has a sidecar" is an invariant the
 // history may rely on rather than a hope.
 func SnapshotSidecar(member string) string { return member + ".json" }
+
+// AppSidecar is where a member's APP keeps its own state about it, beside the history's sidecar
+// and never read by the history. Its existence alone holds the member, for at most RetainApp
+// (RetentionPrune); what it says is the app's business (Home Assistant's recorder check,
+// agent/hass/dbcheck.go). It ends in .json, so a listing of the ring skips it like the other.
+func AppSidecar(member string) string { return member + ".app.json" }
 
 // A Consistency says what a member's bytes ARE, which is not the question its trigger answers.
 //
@@ -724,4 +735,7 @@ func agentBin() string { return guestfirmware.BinDir() + "/briard-guest-agent" }
 type SnapshotEntry struct {
 	Member string       `json:"member"`
 	Meta   SnapshotMeta `json:"meta"`
+	// App says the member has an app sidecar (AppSidecar), which holds it. Read off the ring by
+	// existence; the contents are the app's.
+	App bool `json:"app,omitempty"`
 }

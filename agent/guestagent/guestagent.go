@@ -300,6 +300,14 @@ const (
 	// no-payload event on Home Assistant's bus. It cannot name an event, carry data, or reach any
 	// other service -- all three would have to be on the wire for that, and none of them is.
 	verbHassNudge = "service.home-assistant.nudge"
+
+	// service.home-assistant.dbcheck is the nightly recorder check: read the newest quiesced
+	// member's database with `quick_check`, and on damage put back the newest held copy that
+	// checks clean (agent/hass/dbcheck.go). The host schedules it and tells the household; the
+	// work is here because only the guest mounts the volume, and the stop, the before-sample and
+	// the start around a restore have to happen in one process. NO REQUEST BODY: the manifest,
+	// and so the image and the data path, come off the volume.
+	verbHassDBCheck = "service.home-assistant.dbcheck"
 	// dashboard.handoff writes the one-time code + OS account the host minted for the household
 	// dashboard, 0600 on tmpfs (shared/dashboard) -- the whole of its bootstrap auth.
 	verbDashboardHandoff = "dashboard.handoff"
@@ -375,7 +383,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbMosquittoProbe, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -1195,6 +1203,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return hass.Readiness(ctx, x, req.Port)
+		case verbHassDBCheck:
+			return hassDBCheck(ctx, x, run)
 		case verbHassNudge:
 			// NO REQUEST BODY, and the PORT comes off the VOLUME rather than the wire -- the
 			// opposite choice from service.home-assistant.readiness, for the same reason the probe
@@ -2657,6 +2667,13 @@ func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, err
 	var out []hass.Entry
 	err := g.c.Call(ctx, verbHassReadiness, hassReadinessRequest{Port: port}, &out)
 	return out, err
+}
+
+// HassDBCheck runs the nightly recorder check (verbHassDBCheck) and answers what it found and did.
+func (g *Client) HassDBCheck(ctx context.Context) (hass.DBReport, error) {
+	var rep hass.DBReport
+	err := g.c.Call(ctx, verbHassDBCheck, nil, &rep)
+	return rep, err
 }
 
 // HassNudge tells a RUNNING Home Assistant to reconsider what briard has offered it.

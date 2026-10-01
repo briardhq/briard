@@ -487,6 +487,8 @@ type guestReader interface {
 	// Tonight's ring member (nightly.go): the observe loop is the cadence, so it is also
 	// what carries the one call a night that takes one.
 	memberTaker
+	// ...and the nightly recorder check, on the same cadence (clocksample.go).
+	recorderChecker
 	SystemPath(ctx context.Context) (string, error)
 	Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error)
 }
@@ -1245,6 +1247,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// this process has no record -- so an agent restart inside the window costs one listing
 	// rather than a second member every cycle for an hour.
 	ng := newClockSampler()
+	// Which night the recorder was last checked (clocksample.go), for the same reason.
+	dc := newDBChecker()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
@@ -1322,6 +1326,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
 		cfg.consider(ctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
+		// THE RECORDER CHECK, once a night on the node that holds the volume; leased for its own
+		// budget, and a time comparison on every other cycle.
+		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant

@@ -51,6 +51,9 @@ const (
 	// before that start. Only the healthy → unhealthy transition registers: the recovery is an
 	// app-undo or the household's own fix, which are rows of their own.
 	ReasonUnhealthy ReasonKind = "unhealthy"
+	// ReasonDBRestore is briard putting back Home Assistant's recorder database alone, from a
+	// member that passed its integrity check, on its hass-db-restore-before sample.
+	ReasonDBRestore ReasonKind = "hass-db-restore"
 	// ReasonQuiet is a restore point where nothing was found: the backstop for every change the
 	// detectors do not see (QuietPoint). It never shares its record.
 	ReasonQuiet ReasonKind = "quiet"
@@ -103,6 +106,9 @@ const (
 	// RetainLastUpdate keeps the most recent update undoable for longer: "the update broke my
 	// house" is discovered days later rather than minutes.
 	RetainLastUpdate = 14 * 24 * time.Hour
+	// RetainApp is the longest an app sidecar holds a member, so an app's bug cannot hold the ring
+	// forever.
+	RetainApp = 7 * 24 * time.Hour
 )
 
 // Quiet time fills the gaps: a stretch with nothing found gets a restore point at its
@@ -203,7 +209,7 @@ func QuietPoint(members []SnapshotEntry, member string) (SnapshotEntry, bool) {
 // useful ones.
 //
 // A member is kept if it is the restore point of an event under RetainEvents old, of the latest
-// app-update for RetainLastUpdate, the NEWEST member, a start still PENDING evaluation, the newest
+// app-update for RetainLastUpdate, held by an app sidecar for RetainApp, the NEWEST member, a start still PENDING evaluation, the newest
 // EVALUATED member (what that evaluation compares with, so pruning waits for it), or S₀, the start
 // of a quiet stretch that has no quiet point yet (QuietPoint needs it). Everything else is a
 // sample that anchors nothing, and the next one has replaced it.
@@ -232,10 +238,12 @@ func RetentionPrune(members []SnapshotEntry, now time.Time) []string {
 	var prune []string
 	for i, m := range all {
 		ev := m.Meta.Event
+		at, _ := SnapshotMemberTime(m.Member)
 		switch {
 		case i == len(all)-1, i == s0, i == evaluated, m.Meta.Pending:
 		case ev != nil && now.Sub(ev.At) <= RetainEvents:
 		case i == lastUpdate && now.Sub(ev.At) <= RetainLastUpdate:
+		case m.App && now.Sub(at) <= RetainApp:
 		default:
 			prune = append(prune, m.Member)
 		}

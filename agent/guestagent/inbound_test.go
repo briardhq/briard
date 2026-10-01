@@ -315,8 +315,8 @@ func TestAStartReplacesTheStartStillPending(t *testing.T) {
 	if got := deleted(f); !slices.Equal(got, []string{pending}) {
 		t.Errorf("deleted %v, want exactly the pending start", got)
 	}
-	if !f.ran("rm", "-f", quadlet.SnapshotSidecar(quadlet.SnapshotsDir+pending)) {
-		t.Error("the replaced start's sidecar was left behind")
+	if p := quadlet.SnapshotsDir + pending; !f.ran("rm", "-f", quadlet.SnapshotSidecar(p), quadlet.AppSidecar(p)) {
+		t.Error("the replaced start's sidecars were left behind")
 	}
 }
 
@@ -674,8 +674,8 @@ func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
 	// A member and its sidecar go together: the take path refuses to leave a member without one,
 	// so the delete path must not create that state either.
 	for _, name := range gone {
-		if !f.ran("rm", "-f", quadlet.SnapshotsDir+name+".json") {
-			t.Errorf("%s was pruned but its sidecar was left behind", name)
+		if p := quadlet.SnapshotsDir + name; !f.ran("rm", "-f", quadlet.SnapshotSidecar(p), quadlet.AppSidecar(p)) {
+			t.Errorf("%s was pruned but its sidecars were left behind", name)
 		}
 	}
 }

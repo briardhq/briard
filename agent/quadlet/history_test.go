@@ -337,3 +337,42 @@ func TestUnhealthyOffersTheLastHealthyState(t *testing.T) {
 		t.Error("a healthy app still offers the banner")
 	}
 }
+
+// TestRetentionHonoursTheAppsHoldForAWeek: an app sidecar keeps a member the history would
+// replace, and stops keeping it after RetainApp, so an app's bug cannot hold the ring forever.
+func TestRetentionHonoursTheAppsHoldForAWeek(t *testing.T) {
+	quiet := anchor(TriggerClock, 9*day, ReasonQuiet, 0, "")
+	held := sample(TriggerClock, 6*day)
+	held.App = true
+	expired := sample(TriggerClock, 8*day)
+	expired.App = true
+	plain := sample(TriggerClock, 5*day)
+	newest := sample(TriggerClock, time.Hour)
+	got := pruned(t, quiet, expired, held, plain, newest)
+	if got[held.Member] {
+		t.Errorf("a member its app holds was pruned inside RetainApp")
+	}
+	if !got[expired.Member] {
+		t.Errorf("an app's hold outlived RetainApp")
+	}
+	if !got[plain.Member] {
+		t.Errorf("a plain sample survived; the hold must be the only thing keeping its neighbour")
+	}
+}
+
+// TestTheRecorderRestoreSampleIsABeforeSample: nothing is compared against it, which is what
+// keeps a restore from registering as a change, and its name reads back.
+func TestTheRecorderRestoreSampleIsABeforeSample(t *testing.T) {
+	if !TriggerHassDBRestoreBefore.Before() {
+		t.Fatal("hass-db-restore-before is not a *-before sample")
+	}
+	at := retentionNow
+	svc, tr, got, ok := ParseSnapshotMember(SnapshotMember("home-assistant", TriggerHassDBRestoreBefore, at))
+	if !ok || svc != "home-assistant" || tr != TriggerHassDBRestoreBefore || !got.Equal(at) {
+		t.Fatalf("parsed %q %q %v %t", svc, tr, got, ok)
+	}
+	// The older trigger whose name it contains still parses as itself.
+	if _, tr, _, _ := ParseSnapshotMember(SnapshotMember("home-assistant", TriggerHassRestoreBefore, at)); tr != TriggerHassRestoreBefore {
+		t.Fatalf("hass-restore-before parsed as %q", tr)
+	}
+}

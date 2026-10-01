@@ -19,6 +19,7 @@ import (
 	"briard.io/agent/cloud"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestfirmware"
+	"briard.io/agent/hass"
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
@@ -106,9 +107,11 @@ type fakeStatus struct {
 	took       *[]takenMember
 	snapErr    error
 	noRing     bool
-	noQuiesce  bool  // advertises the ring but not the quiesced take
-	held       bool  // the service held still across a quiesced take
-	quiesceErr error // the quiesced take failed outright
+	noQuiesce  bool          // advertises the ring but not the quiesced take
+	held       bool          // the service held still across a quiesced take
+	quiesceErr error         // the quiesced take failed outright
+	dbReport   hass.DBReport // what the nightly recorder check answers
+	dbChecks   *int          // how many times it was asked, when the test counts
 }
 
 // takenMember is one call to Snapshot: where the member went, and the sidecar that went with it.
@@ -121,7 +124,15 @@ type takenMember struct{ member, sidecar, asked string }
 func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.SnapshotEntry, error) {
 	return f.members[service], f.membersErr
 }
-func (f fakeStatus) SupportsMembers() bool        { return !f.noRing }
+func (f fakeStatus) SupportsMembers() bool { return !f.noRing }
+
+// The nightly recorder check, answered from the fixture and counted.
+func (f fakeStatus) HassDBCheck(context.Context) (hass.DBReport, error) {
+	if f.dbChecks != nil {
+		*f.dbChecks++
+	}
+	return f.dbReport, nil
+}
 func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
 
 // The QUIESCED take: `held` is what the fake service reports, and the recorded sidecar

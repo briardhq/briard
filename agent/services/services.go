@@ -313,6 +313,39 @@ func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next str
 	return hass.Sentence(out), resets, nil
 }
 
+// RingMember is one ring member as an app's sampling sees it. The ring's own type lives in
+// agent/quadlet, which imports this package.
+type RingMember struct {
+	Path     string    // the member's subvolume
+	App      string    // its app sidecar (quadlet.AppSidecar), which may not exist
+	At       time.Time // when it was taken
+	Quiesced bool
+}
+
+// Sampled is what an app does with a ring member as it is taken: after the member's sidecar is
+// written and before the prune, so a hold it places counts in that prune. ring is the service's
+// members, the new one among them.
+//
+// THE DEFAULT IS NOTHING. Home Assistant retains a quiesced sample every few hours as a restore
+// candidate for its recorder database (agent/hass/dbcheck.go).
+func Sampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMember, member RingMember) error {
+	if m.Name != hass.Name {
+		return nil
+	}
+	c, ok := hass.ConfigContainer(m)
+	if !ok {
+		return nil
+	}
+	conv := func(r RingMember) hass.Member {
+		return hass.Member{Dir: r.Path + "/" + c.Name, App: r.App, At: r.At, Quiesced: r.Quiesced}
+	}
+	var all []hass.Member
+	for _, r := range ring {
+		all = append(all, conv(r))
+	}
+	return hass.Sampled(ctx, x, all, conv(member))
+}
+
 // Corrupt names what the app has set aside as undecodable under root -- a member, or the live
 // data root -- as paths relative to it, each under its container's directory.
 func Corrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) []string {

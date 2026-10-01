@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/model"
+	"briard.io/shared/notify"
 )
 
 // The clock sample's fixtures. `night` is any moment; the sampler has no window.
@@ -193,5 +195,79 @@ func TestClockSampleRefusesAnOlderGuest(t *testing.T) {
 	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
 	if len(*took) != 0 {
 		t.Errorf("a guest without the ring's verbs was asked for a member: %v", *took)
+	}
+}
+
+// The recorder check's fixtures, in a zone of their own so "05:30 local" is the zone's and not
+// the test machine's.
+var athens, _ = time.LoadLocation("Europe/Athens")
+
+func dbFixture(t *testing.T, rep hass.DBReport) (Config, fakeStatus, *int, *dbChecker, *fakeNotifier) {
+	t.Helper()
+	n := 0
+	cfg := Config{Node: "anchor-1", Services: []model.ServiceSpec{{Name: "home-assistant"}}}
+	return cfg, fakeStatus{dbReport: rep, dbChecks: &n}, &n, &dbChecker{loc: athens}, &fakeNotifier{}
+}
+
+func localAt(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, athens) }
+
+// TestTheRecorderIsCheckedOnceANightAtHalfPastFive: after the update window and Home
+// Assistant's own purge, in the household's zone, once per night however often the loop asks.
+func TestTheRecorderIsCheckedOnceANightAtHalfPastFive(t *testing.T) {
+	cfg, g, n, d, notifier := dbFixture(t, hass.DBReport{Verdict: hass.VerdictClean})
+	ask := func(at time.Time) {
+		cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, at.UTC(), notifier, func(string, ...any) {})
+	}
+	ask(localAt(1, 5, 29))
+	if *n != 0 {
+		t.Fatal("checked before 05:30")
+	}
+	ask(localAt(1, 5, 30))
+	ask(localAt(1, 5, 45))
+	if *n != 1 {
+		t.Fatalf("checked %d times in one night, want once", *n)
+	}
+	ask(localAt(2, 6, 31))
+	if *n != 1 {
+		t.Fatal("checked after the window closed: an agent restart at noon must not check then")
+	}
+	ask(localAt(3, 6, 10))
+	if *n != 2 {
+		t.Fatal("a late agent inside the window did not check")
+	}
+	if len(notifier.alerts) != 0 {
+		t.Errorf("a clean night alerted: %v", notifier.alerts)
+	}
+}
+
+// TestTheRecorderCheckNeedsTheVolumeAndHomeAssistant: only the serving node holds the ring, and
+// a node without Home Assistant has nothing to check.
+func TestTheRecorderCheckNeedsTheVolumeAndHomeAssistant(t *testing.T) {
+	cfg, g, n, d, notifier := dbFixture(t, hass.DBReport{})
+	cfg.checkRecorder(context.Background(), g, d, cfg.Services, false, localAt(1, 5, 31), notifier, func(string, ...any) {})
+	cfg.checkRecorder(context.Background(), g, d, []model.ServiceSpec{{Name: "mosquitto"}}, true, localAt(1, 5, 31), notifier, func(string, ...any) {})
+	if *n != 0 {
+		t.Fatalf("checked %d times on a node that should not", *n)
+	}
+}
+
+// TestADamagedRecorderReachesTheHousehold: repaired or not, damage is an alert, not only a row.
+func TestADamagedRecorderReachesTheHousehold(t *testing.T) {
+	for _, rep := range []hass.DBReport{
+		{Verdict: hass.VerdictCorrupt, RestoredFrom: localAt(1, 1, 0)},
+		{Verdict: hass.VerdictCorrupt, Why: "no held copy checked clean"},
+	} {
+		cfg, g, _, d, notifier := dbFixture(t, rep)
+		cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, localAt(1, 5, 31), notifier, func(string, ...any) {})
+		if len(notifier.alerts) != 1 || notifier.alerts[0].Level != notify.Warning {
+			t.Fatalf("report %+v: alerts %v, want one warning", rep, notifier.alerts)
+		}
+		body := notifier.alerts[0].Body
+		if !rep.RestoredFrom.IsZero() && !strings.Contains(body, "Thu 1 Oct, 01:00") {
+			t.Errorf("the alert does not say, in local time, what the history went back to: %q", body)
+		}
+		if rep.RestoredFrom.IsZero() && !strings.Contains(body, rep.Why) {
+			t.Errorf("the alert does not say why nothing was repaired: %q", body)
+		}
 	}
 }

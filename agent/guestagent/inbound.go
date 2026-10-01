@@ -213,7 +213,7 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 }
 
 // recordMember is what every take does once its member exists: evaluate it, add any
-// reasons that finds to the member they land on, and prune. One function for the three ways a
+// reasons that finds to the member they land on, let its app hold it, and prune. One function for the three ways a
 // member is taken (a start, the host's data.member, the quiesced clock sample), so the history
 // cannot depend on which door a sample came through.
 //
@@ -229,15 +229,52 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
 	if meta.Pending {
 		replacePending(ctx, x, member, meta)
-		pruneRing(ctx, x, meta.Service, meta.TakenAt)
-		return
-	}
-	if members, err := listMembers(ctx, x, meta.Service); err != nil {
+	} else if members, err := listMembers(ctx, x, meta.Service); err != nil {
 		log.Printf("ring %s: could not read the ring to record %s: %v", meta.Service, path.Base(member), err)
 	} else {
 		settle(ctx, x, members, quadlet.SnapshotEntry{Member: member, Meta: meta}, nil, meta.TakenAt)
 	}
+	sampled(ctx, x, member, meta)
 	pruneRing(ctx, x, meta.Service, meta.TakenAt)
+}
+
+// sampled gives the member's app its say (services.Sampled) before the prune, so a hold it places
+// counts there.
+//
+// NOT FOR THE RECORDER RESTORE'S OWN SAMPLE: it holds the database the check just found damaged,
+// which is no restore candidate.
+func sampled(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
+	if meta.Trigger == quadlet.TriggerHassDBRestoreBefore {
+		return
+	}
+	m, _, err := manifest.Parse([]byte(meta.Manifest))
+	if err != nil {
+		return // a member whose manifest we cannot read tells us nothing about its app
+	}
+	members, err := listMembers(ctx, x, meta.Service)
+	if err != nil {
+		return
+	}
+	ring := func(e quadlet.SnapshotEntry) services.RingMember {
+		at, _ := quadlet.SnapshotMemberTime(e.Member)
+		return services.RingMember{Path: e.Member, App: quadlet.AppSidecar(e.Member), At: at, Quiesced: e.Meta.Consistency == quadlet.Quiesced}
+	}
+	// THE MEMBER AS THE RING HOLDS IT, not as the caller took it: replacing a pending start can
+	// carry a weaker consistency onto it, and the hold may trust only what the sidecar says.
+	var all []services.RingMember
+	var self *services.RingMember
+	for _, e := range members {
+		all = append(all, ring(e))
+		if e.Member == member {
+			self = &all[len(all)-1]
+		}
+	}
+	if self == nil {
+		return
+	}
+	if err := services.Sampled(ctx, x, m, all, *self); err != nil {
+		log.Printf("ring %s: %s's app could not record it: %v", meta.Service, path.Base(member), err)
+	}
 }
 
 // replacePending deletes the starts still pending before a new one. A start with no
@@ -304,7 +341,7 @@ func replacePending(ctx context.Context, x Executor, member string, meta quadlet
 			log.Printf("ring %s: could not replace the pending %s: %v", meta.Service, path.Base(o.Member), err)
 			continue
 		}
-		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(o.Member)); err != nil {
+		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(o.Member), quadlet.AppSidecar(o.Member)); err != nil {
 			log.Printf("ring %s: replaced %s but left its sidecar: %v", meta.Service, path.Base(o.Member), err)
 		}
 		log.Printf("ring %s: %s replaced the pending %s", meta.Service, path.Base(member), path.Base(o.Member))
@@ -771,7 +808,7 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 // so a member that will not delete is logged and stepped over — a ring one member too long is
 // nothing; a service that would not start because a delete failed is an outage.
 //
-// The sidecar goes with its member, and in that order: a member with no sidecar is the state the
+// Both sidecars go with their member, and after it: a member with no sidecar is the state the
 // take path refuses to leave behind, so the delete must not create one either.
 func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
 	members, err := listMembers(ctx, x, service)
@@ -785,7 +822,7 @@ func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
 			log.Printf("ring %s: could not prune %s: %v", service, n, err)
 			continue
 		}
-		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(member)); err != nil {
+		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(member), quadlet.AppSidecar(member)); err != nil {
 			log.Printf("ring %s: pruned %s but left its sidecar: %v", service, n, err)
 		}
 	}
@@ -953,7 +990,8 @@ func listMembers(ctx context.Context, x Executor, service string) ([]quadlet.Sna
 			log.Printf("ring %s: %s has an unreadable sidecar (%v); not offering it", service, n, err)
 			continue
 		}
-		out = append(out, quadlet.SnapshotEntry{Member: member, Meta: meta})
+		_, err = x.ReadFile(quadlet.AppSidecar(member))
+		out = append(out, quadlet.SnapshotEntry{Member: member, Meta: meta, App: err == nil})
 	}
 	return out, nil
 }
