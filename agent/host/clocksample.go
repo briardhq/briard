@@ -166,18 +166,16 @@ func (cfg Config) newestMember(ctx context.Context, g memberTaker, service strin
 // schedules it, asks for the restore a corrupt report names, and tells the household.
 //
 // THE CHECK NEVER BLOCKS THIS LOOP. It reads read-only members and can take minutes, so the
-// guest runs it in the background: this starts it, then asks for the report once a cycle with
-// an ordinary short call until it arrives. The RESTORE runs in line, leased for its budget,
+// guest runs it in the background: this starts it, then asks for the report once a cycle with an
+// ordinary short call, for as long as the guest says it is running. The walk back through the
+// copies has no deadline, because it only reads. The RESTORE runs in line, leased for its budget,
 // because it stops the app and must not overlap any other operation on it.
 //
 // ONCE A NIGHT WHATEVER HAPPENS: a failure is logged and waits a day. An agent that is down at
 // 05:30 still starts it within the window; one down for the whole window skips that night.
 const (
-	dbCheckAt     = 5*60 + 30 // minutes after local midnight
-	dbCheckWindow = 60        // minutes after dbCheckAt a late agent may still start it
-	// dbCheckWait is how long a started check's report is waited for: the guest bounds the check
-	// at 30 minutes, and a report that has not come by then never will.
-	dbCheckWait     = 45 * time.Minute
+	dbCheckAt       = 5*60 + 30 // minutes after local midnight
+	dbCheckWindow   = 60        // minutes after dbCheckAt a late agent may still start it
 	dbRestoreBudget = 10 * time.Minute
 	dbCallTimeout   = 5 * time.Second
 )
@@ -214,7 +212,7 @@ func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChe
 		return
 	}
 	if !d.waiting.IsZero() {
-		cfg.collectRecorder(ctx, g, d, now, n, logf)
+		cfg.collectRecorder(ctx, g, d, n, logf)
 		return
 	}
 	local := now.In(d.loc)
@@ -232,31 +230,24 @@ func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChe
 		return
 	}
 	if !started {
-		// The guest is already busy with one, e.g. started before this agent restarted: its report
-		// is as good as tonight's.
-		logf("hass-db: a check is already running in the guest; collecting that one")
+		// The guest is still running one, or holds a finished one's report nobody collected (this
+		// agent restarted): that report is as good as tonight's, and may name a restore.
+		logf("hass-db: the guest has a check running or a report waiting; collecting that one")
 	}
 	d.waiting = now
 }
 
 // collectRecorder asks for a started check's report, and acts on it once it has come.
-func (cfg Config) collectRecorder(ctx context.Context, g recorderChecker, d *dbChecker, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+func (cfg Config) collectRecorder(ctx context.Context, g recorderChecker, d *dbChecker, n notify.Notifier, logf func(string, ...any)) {
 	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
 	s, err := g.HassDBCheckResult(sctx)
 	cancel()
-	late := now.Sub(d.waiting) > dbCheckWait
 	switch {
-	case err != nil && !late:
+	case err != nil, s.Report == nil && s.Running:
 		return // asked again next cycle
-	case err != nil:
-		logf("hass-db: gave up on tonight's check: %v", err)
-		d.waiting = time.Time{}
-		return
-	case s.Report == nil && s.Running && !late:
-		return
 	case s.Report == nil:
-		// Running past its own bound, or gone without a report: the guest agent restarted.
-		logf("hass-db: tonight's check left no report (running=%t)", s.Running)
+		// Not running and no report: the guest agent restarted and lost it.
+		logf("hass-db: tonight's check left no report")
 		d.waiting = time.Time{}
 		return
 	}

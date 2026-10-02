@@ -34,23 +34,22 @@ var dbChecks struct {
 	report *hass.DBReport // the finished check's report, until the host collects it
 }
 
-// dbCheckBudget bounds a background check: quick_check on every candidate of a large database.
-const dbCheckBudget = 30 * time.Minute
-
 // startDBCheck starts the nightly check in the background and reports whether it did. It does
-// not when a check or a restore is already running.
+// not when a check or a restore is running, or when a finished check's report has not been
+// collected: that report may name a restore, and a new check must not replace it unread.
+//
+// NO DEADLINE ON THE CHECK. It only reads, and it walks back through as many copies as it takes
+// to find a clean one; each read is bounded on its own (agent/hass's checkTimeout).
 func startDBCheck(x Executor) bool {
 	dbChecks.Lock()
 	defer dbChecks.Unlock()
-	if dbChecks.busy {
+	if dbChecks.busy || dbChecks.report != nil {
 		return false
 	}
-	dbChecks.busy, dbChecks.report = true, nil
+	dbChecks.busy = true
 	go func() {
 		// NOT THE REQUEST'S CONTEXT: that ends with the reply, and this outlives it.
-		ctx, cancel := context.WithTimeout(context.Background(), dbCheckBudget)
-		defer cancel()
-		rep := hassDBCheck(ctx, x)
+		rep := hassDBCheck(context.Background(), x)
 		dbChecks.Lock()
 		dbChecks.busy, dbChecks.report = false, &rep
 		dbChecks.Unlock()
@@ -157,23 +156,27 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 	if err := hass.Restorable(ctx, x, c.Image, live, *from); err != nil {
 		return fmt.Errorf("not restoring: %w", err)
 	}
-	return restoreRecorder(ctx, x, run, m, raw, *from, live)
+	return restoreRecorder(ctx, x, run, m, raw, *from, c)
 }
 
 // restoreRecorder puts the recorder database back from one member: stop Home Assistant, take the
-// hass-db-restore-before sample carrying the event, copy the database, start it again.
+// hass-db-restore-before sample carrying the event, build the restored data in a staged copy,
+// swap it in, start it again.
 //
 // THE SAMPLE IS THE UNDO, and it exists before anything is touched: undoing the event puts the
 // damaged database back. Nothing is compared against a *-before sample, so the restore registers
 // no change of its own.
 //
+// NOTHING LIVE IS EDITED. The staged copy is a writable snapshot of the undo point -- exactly the
+// bytes Home Assistant stopped on -- and the database is put into it there. Only then is it
+// exchanged with the live subvolume, in one rename(2) (RENAME_EXCHANGE): either the live data is
+// the restored copy or it is what it was. So every failure, before or at the swap, deletes the
+// staged copy and starts Home Assistant on its own data: nothing changed, and nothing is left
+// stopped. The replaced subvolume is deleted after the start.
+//
 // ONLY THE UNITS THAT WERE RUNNING are stopped and started. Container units, never the pod: a pod
 // stop unmounts the shared volume under every other service (quadlet.Rendered.ContainerUnits).
-//
-// A failure before the live database is touched starts Home Assistant again on what it had. A
-// failure after leaves it stopped: starting it on a half-restored directory would be silent
-// damage, and a stopped app with an undo point is recoverable.
-func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, live string) error {
+func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, c manifest.Container) error {
 	rendered, err := quadlet.Render(m, "")
 	if err != nil {
 		return fmt.Errorf("render the running manifest: %w", err)
@@ -212,18 +215,46 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	if err != nil {
 		return errors.Join(err, start())
 	}
-	member := quadlet.SnapshotMember(hass.Name, quadlet.TriggerHassDBRestoreBefore, at)
-	if err := takeSnapshot(ctx, x, run, quadlet.DataRoot(hass.Name), member, string(sidecar)); err != nil {
+	undo := quadlet.SnapshotMember(hass.Name, quadlet.TriggerHassDBRestoreBefore, at)
+	root := quadlet.DataRoot(hass.Name)
+	if err := takeSnapshot(ctx, x, run, root, undo, string(sidecar)); err != nil {
 		return errors.Join(fmt.Errorf("take the undo point (nothing was changed): %w", err), start())
 	}
-	recordMember(ctx, x, member, meta)
-	touched, err := hass.RestoreDB(ctx, x, from.Dir, live)
-	switch {
-	case err != nil && touched:
-		return fmt.Errorf("put the database back (Home Assistant is left stopped; undoing the event restores the damaged one): %w", err)
-	case err != nil:
-		return errors.Join(fmt.Errorf("copy the database (nothing was changed): %w", err), start())
+	recordMember(ctx, x, undo, meta)
+
+	// A staging name beside the live subvolume, on the same btrfs so the exchange is a rename. A
+	// leftover is a restore that died before or after its swap; either way it is ours to clear.
+	staged := root + ".dbrestore"
+	drop := func() {
+		if _, err := x.Run(ctx, "btrfs", "subvolume", "show", staged); err == nil {
+			if err := run("btrfs", "subvolume", "delete", staged); err != nil {
+				log.Printf("hass-db: could not delete %s: %v", staged, err)
+			}
+		}
+	}
+	unchanged := func(what string, err error) error {
+		drop()
+		return errors.Join(fmt.Errorf("%s (nothing was changed): %w", what, err), start())
+	}
+	drop()
+	if err := run("btrfs", "subvolume", "snapshot", undo, staged); err != nil {
+		return unchanged("stage a copy of the data", err)
+	}
+	if err := hass.RestoreDB(ctx, x, from.Dir, staged+"/"+c.Name); err != nil {
+		return unchanged("put the database into the staged copy", err)
+	}
+	if err := run("sync", "-f", staged); err != nil {
+		return unchanged("flush the staged copy", err)
+	}
+	if err := run("mv", "--exchange", staged, root); err != nil {
+		return unchanged("swap the staged copy in", err)
+	}
+	// Swapped: the live subvolume is the restored one, and `staged` now holds what it replaced.
+	if err := run("sync", "-f", root); err != nil {
+		log.Printf("hass-db: the swap is done but could not be flushed: %v", err)
 	}
 	log.Printf("hass-db: restored the recorder database from %s", path.Base(from.Path))
-	return start()
+	err = start()
+	drop()
+	return err
 }

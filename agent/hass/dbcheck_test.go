@@ -287,54 +287,104 @@ func TestACheckingLeftByACrashIsCleared(t *testing.T) {
 }
 
 // TestRestoreDBReplacesTheWalBeforeTheDatabase: a stale -wal beside a different database is
-// replayed into it, so the live one goes before the copy lands, and the copy's own comes with it.
+// replayed into it, so the copy's -wal goes before the database lands, and the member's own
+// comes with it. The recorder's renames of the damaged database go; another store's stay.
 func TestRestoreDBReplacesTheWalBeforeTheDatabase(t *testing.T) {
 	f := newDBFake()
 	from := ringAt("a", time.Hour).Dir
+	into := "/var/lib/briard/home-assistant.dbrestore/config"
 	f.files[from+"/"+dbName] = "clean"
 	f.files[from+"/"+dbName+"-wal"] = "frames"
-	f.files[liveDir+"/"+dbName] = "damaged"
-	f.files[liveDir+"/"+dbName+"-wal"] = "stale"
-	f.files[liveDir+"/"+dbName+"-shm"] = "shm"
-	f.files[liveDir+"/"+dbName+".corrupt.2026-10-01T04:12:00"] = "set aside"
-	f.files[liveDir+"/.storage/core.config_entries.corrupt.2026-10-01T04:12:00"] = "not ours"
-	touched, err := RestoreDB(context.Background(), f, from, liveDir)
-	if err != nil || !touched {
-		t.Fatalf("touched=%t err=%v", touched, err)
+	f.files[into+"/"+dbName] = "damaged"
+	f.files[into+"/"+dbName+"-wal"] = "stale"
+	f.files[into+"/"+dbName+"-shm"] = "shm"
+	f.files[into+"/"+dbName+".corrupt.2026-10-01T04:12:00"] = "set aside"
+	f.files[into+"/.storage/core.config_entries.corrupt.2026-10-01T04:12:00"] = "not ours"
+	if err := RestoreDB(context.Background(), f, from, into); err != nil {
+		t.Fatal(err)
 	}
-	if f.files[liveDir+"/"+dbName] != "clean" || f.files[liveDir+"/"+dbName+"-wal"] != "frames" {
-		t.Fatalf("live = %q / %q", f.files[liveDir+"/"+dbName], f.files[liveDir+"/"+dbName+"-wal"])
+	if f.files[into+"/"+dbName] != "clean" || f.files[into+"/"+dbName+"-wal"] != "frames" {
+		t.Fatalf("restored = %q / %q", f.files[into+"/"+dbName], f.files[into+"/"+dbName+"-wal"])
 	}
 	for _, gone := range []string{"-shm", ".corrupt.2026-10-01T04:12:00"} {
-		if _, ok := f.files[liveDir+"/"+dbName+gone]; ok {
+		if _, ok := f.files[into+"/"+dbName+gone]; ok {
 			t.Errorf("%s survived the restore", dbName+gone)
 		}
 	}
-	rmWal, mvDB := -1, -1
+	if _, ok := f.files[into+"/.storage/core.config_entries.corrupt.2026-10-01T04:12:00"]; !ok {
+		t.Error("another store's rename was removed; only the recorder's go")
+	}
+	rmWal, cpDB := -1, -1
 	for i, r := range f.runs {
-		if r[0] == "rm" && slices.Contains(r, liveDir+"/"+dbName+"-wal") {
+		if r[0] == "rm" && slices.Contains(r, into+"/"+dbName+"-wal") {
 			rmWal = i
 		}
-		if r[0] == "mv" && r[len(r)-1] == liveDir+"/"+dbName {
-			mvDB = i
+		if r[0] == "cp" && r[len(r)-1] == into+"/"+dbName {
+			cpDB = i
 		}
 	}
-	if rmWal < 0 || mvDB < 0 || rmWal > mvDB {
-		t.Fatalf("the live -wal was not removed before the database landed: %v", f.runs)
+	if rmWal < 0 || cpDB < 0 || rmWal > cpDB {
+		t.Fatalf("the stale -wal was not removed before the database landed: %v", f.runs)
 	}
 }
 
-// TestRestoreDBThatCannotCopyTouchesNothing: the copies come first, so a failed one leaves the
-// live database as it was and the app may be started again.
-func TestRestoreDBThatCannotCopyTouchesNothing(t *testing.T) {
-	f := newDBFake()
-	f.files[liveDir+"/"+dbName] = "damaged"
-	touched, err := RestoreDB(context.Background(), f, ringAt("a", time.Hour).Dir, liveDir)
-	if err == nil || touched {
-		t.Fatalf("touched=%t err=%v, want an untouched failure", touched, err)
+// TestRestoreDBWithNoSourceFails: a copy that cannot be read is an error, which the caller turns
+// into "nothing changed".
+func TestRestoreDBWithNoSourceFails(t *testing.T) {
+	if err := RestoreDB(context.Background(), newDBFake(), ringAt("a", time.Hour).Dir, "/x/config"); err == nil {
+		t.Fatal("restored from a database that is not there")
 	}
-	if f.files[liveDir+"/"+dbName] != "damaged" {
-		t.Fatal("the live database moved on a failed copy")
+}
+
+// TestTheSearchPrefersAFreshCopyOverAnOlderHold: the holds guarantee a candidate, not the best
+// one. An hour-old sample nobody held, checking clean, loses less history than an eight-hour-old
+// hold -- and a damaged unheld sample on the way is stepped over and not left held.
+func TestTheSearchPrefersAFreshCopyOverAnOlderHold(t *testing.T) {
+	f := newDBFake()
+	floor, held, fresh, bad, newest := ringAt("a", 30*time.Hour), ringAt("b", 9*time.Hour), ringAt("c", 2*time.Hour), ringAt("d", 90*time.Minute), ringAt("e", time.Hour)
+	crash := ringAt("f", 100*time.Minute)
+	crash.Quiesced = false
+	hold(t, f, floor, DBClean)
+	hold(t, f, held, DBRetained)
+	f.answers[newest.Dir] = answerCorrupt
+	f.answers[bad.Dir] = answerCorrupt
+	f.answers[fresh.Dir] = answerClean
+	f.answers[held.Dir] = answerClean
+	f.answers[liveDir] = `{"schema": 48}`
+	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{floor, held, fresh, crash, bad, newest})
+	if rep.Candidate != fresh.Path {
+		t.Fatalf("candidate %q, want the fresh unheld copy %s", rep.Candidate, fresh.Path)
+	}
+	if f.state(fresh) != DBClean {
+		t.Errorf("the chosen copy is not held clean for the restore: %q", f.state(fresh))
+	}
+	if f.state(bad) != "" || f.state(crash) != "" {
+		t.Errorf("a stepped-over copy was left held: bad %q crash %q", f.state(bad), f.state(crash))
+	}
+	for _, r := range f.runs {
+		if r[0] == "podman" && slices.Contains(r, crash.Dir+":/db:ro") {
+			t.Error("a crash-consistent copy was read as a candidate")
+		}
+	}
+}
+
+// TestTheSearchStopsAtTheFloor: nothing older than the newest clean copy is worth reading.
+func TestTheSearchStopsAtTheFloor(t *testing.T) {
+	f := newDBFake()
+	older, floor, newest := ringAt("a", 50*time.Hour), ringAt("b", 30*time.Hour), ringAt("c", time.Hour)
+	hold(t, f, floor, DBClean)
+	f.answers[newest.Dir] = answerCorrupt
+	f.answers[floor.Dir] = `{"check": "ok", "schema": 48}`
+	f.answers[older.Dir] = answerClean
+	f.answers[liveDir] = `{"schema": 48}`
+	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{older, floor, newest})
+	if rep.Candidate != floor.Path {
+		t.Fatalf("candidate %q, want the floor", rep.Candidate)
+	}
+	for _, r := range f.runs {
+		if r[0] == "podman" && slices.Contains(r, older.Dir+":/db:ro") {
+			t.Error("read a copy older than the floor")
+		}
 	}
 }
 

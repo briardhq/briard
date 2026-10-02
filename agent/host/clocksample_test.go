@@ -319,3 +319,22 @@ func TestADamagedRecorderReachesTheHousehold(t *testing.T) {
 		})
 	}
 }
+
+// TestALongCheckIsWaitedFor: the walk back through the copies has no deadline, so the host keeps
+// asking for as long as the guest says it is running, past the window and past midnight, and
+// starts no second check meanwhile.
+func TestALongCheckIsWaitedFor(t *testing.T) {
+	cfg, g, db, d, n := dbFixture(t)
+	askRecorder(cfg, g, d, n, localAt(1, 5, 30))
+	for h := 1; h <= 26; h++ {
+		askRecorder(cfg, g, d, n, localAt(1, 5, 30).Add(time.Duration(h)*time.Hour))
+	}
+	if db.starts != 1 || d.waiting.IsZero() {
+		t.Fatalf("starts=%d waiting=%v: a long check was abandoned or doubled", db.starts, d.waiting)
+	}
+	db.finish(hass.DBReport{Verdict: hass.VerdictCorrupt, Candidate: "/m", CandidateAt: localAt(1, 1, 0)})
+	askRecorder(cfg, g, d, n, localAt(2, 8, 0))
+	if len(db.restored) != 1 {
+		t.Fatalf("the late report was not acted on: %v", db.restored)
+	}
+}

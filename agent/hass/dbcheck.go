@@ -262,8 +262,18 @@ func Restorable(ctx context.Context, x Executor, image, live string, m Member) e
 	return nil
 }
 
-// search is the newest held member in ring that checks clean and whose schema is not newer than
-// the live database's, as its index, or the reason there is none.
+// search walks back from the damaged member for a copy to restore from: every QUIESCED member
+// in ring (the members older than the damaged one) newer than the clean floor, newest first, then
+// the floor itself, stopping at the first that checks clean and whose schema is not newer than
+// the live database's. Its index, or the reason there is none.
+//
+// HELD OR NOT. The holds guarantee a candidate exists, never that it is the best one: an hour-old
+// sample that checks clean loses less history than an eight-hour-old hold. A member read here
+// without a record is held `checking` for the read, so a prune cannot take it mid-read, and
+// released unless it is chosen.
+//
+// NO DEADLINE ON THE WALK: it runs in the background and only reads. Each read has its own bound
+// (checkTimeout).
 //
 // ANY READ THAT FAILS ENDS THE SEARCH: an older member that would check clean is still a guess
 // about one that could not be read, and a restore on a guess loses history the household had.
@@ -275,30 +285,49 @@ func search(ctx context.Context, x Executor, image, live string, ring []Member) 
 	if err != nil {
 		return -1, "the live database's schema could not be read: " + err.Error()
 	}
-	for i := len(ring) - 1; i >= 0; i-- {
+	floor := -1
+	for i, m := range ring {
+		if r, ok := Record(x, m.App); ok && r.State == DBClean {
+			floor = i
+		}
+	}
+	for i := len(ring) - 1; i >= 0 && i >= floor; i-- {
 		m := ring[i]
-		r, ok := Record(x, m.App)
-		if !ok {
+		if !m.Quiesced {
 			continue
+		}
+		r, held := Record(x, m.App)
+		if !held {
+			if err := SetRecord(ctx, x, m.App, &DBRecord{State: DBChecking}); err != nil {
+				log.Printf("hass-db: could not hold %s for a read; stepping over it: %v", path.Base(m.Path), err)
+				continue
+			}
 		}
 		verdict, schema, err := Check(ctx, x, image, m.Dir, r.State != DBClean)
-		if err != nil {
-			return -1, fmt.Sprintf("%s could not be checked: %v", path.Dir(m.Dir), err)
-		}
-		if verdict == VerdictCorrupt {
-			release(ctx, x, m)
+		switch {
+		case err != nil:
+			if !held {
+				release(ctx, x, m)
+			}
+			return -1, fmt.Sprintf("%s could not be checked: %v", path.Base(m.Path), err)
+		case verdict == VerdictCorrupt:
+			release(ctx, x, m) // a damaged copy is no candidate, held or not
 			continue
-		}
-		if schema < 0 {
-			return -1, fmt.Sprintf("%s checked clean but its schema version could not be read", path.Dir(m.Dir))
-		}
-		if schema > liveSchema {
-			log.Printf("hass-db: %s has schema %d, newer than the live %d; not restoring from it", path.Dir(m.Dir), schema, liveSchema)
+		case schema < 0:
+			if !held {
+				release(ctx, x, m)
+			}
+			return -1, fmt.Sprintf("%s checked clean but its schema version could not be read", path.Base(m.Path))
+		case schema > liveSchema:
+			if !held {
+				release(ctx, x, m)
+			}
+			log.Printf("hass-db: %s has schema %d, newer than the live %d; not restoring from it", path.Base(m.Path), schema, liveSchema)
 			continue
 		}
 		return i, ""
 	}
-	return -1, "no held copy checked clean"
+	return -1, "no copy checked clean"
 }
 
 // markClean records ring[i] clean, THEN releases every older hold. A crash between the two only
@@ -351,6 +380,11 @@ except sqlite3.OperationalError as e:
 print(json.dumps(out))
 `
 
+// checkTimeout bounds ONE read: a quick_check of a large database is minutes, and a read that
+// takes longer than this is stuck rather than slow. The walk over many reads has no bound of its
+// own (search).
+const checkTimeout = 30 * time.Minute
+
 // Check reads the recorder database in dir: whether it is damaged (full only; otherwise the
 // verdict is clean) and its schema version, or -1 when that could not be read. An error means no
 // answer at all, never damage.
@@ -362,6 +396,8 @@ func Check(ctx context.Context, x Executor, image, dir string, full bool) (verdi
 	if full {
 		mode = "full"
 	}
+	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	defer cancel()
 	out, err := x.Run(ctx, "podman", "run", "--rm", "--pull=never", "--network=none",
 		"--entrypoint", "python3", "-v", dir+":/db:ro", image, "-c", checkScript, mode)
 	if err != nil {
@@ -398,53 +434,41 @@ func lastLine(out []byte) string {
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-// RestoreDB puts the recorder database from one config directory into the live one. The caller
-// has stopped Home Assistant. It reports whether the live directory was touched: a failure before
-// that leaves everything as it was, so the app may be started again.
+// RestoreDB puts the recorder database from one config directory into another: into, which is a
+// STAGED COPY of the live config directory, never the live one. The caller swaps the copy in
+// once this has succeeded, so a failure anywhere here changes nothing Home Assistant can see.
 //
-// COPIES FIRST, then the destructive steps. The live -wal goes BEFORE the database is replaced:
-// a stale -wal beside a different database is replayed into it. The `*.corrupt.*` renames the
-// recorder made of the damaged database go too; the before-sample holds them.
-func RestoreDB(ctx context.Context, x Executor, from, live string) (touched bool, err error) {
+// The copy's -wal and -shm go before the database lands: a stale -wal beside a different database
+// is replayed into it. The `*.corrupt.*` renames the recorder made of the damaged database go too;
+// the undo point holds them.
+func RestoreDB(ctx context.Context, x Executor, from, into string) error {
 	run := func(name string, args ...string) error {
 		if out, err := x.Run(ctx, name, args...); err != nil {
 			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
-	db, staged := live+"/"+dbName, live+"/"+dbName+".restoring"
-	wal, stagedWal := db+"-wal", staged+"-wal"
-	_ = run("rm", "-f", staged, stagedWal)
-	if err := run("cp", "-a", "--reflink=auto", from+"/"+dbName, staged); err != nil {
-		return false, err
+	db := into + "/" + dbName
+	if err := run("rm", "-f", db+"-wal", db+"-shm"); err != nil {
+		return err
+	}
+	if err := run("cp", "-a", "--reflink=auto", from+"/"+dbName, db); err != nil {
+		return err
 	}
 	// Only a -wal with frames in it: an empty one is what Home Assistant creates anyway.
-	withWal := run("test", "-s", from+"/"+dbName+"-wal") == nil
-	if withWal {
-		if err := run("cp", "-a", "--reflink=auto", from+"/"+dbName+"-wal", stagedWal); err != nil {
-			_ = run("rm", "-f", staged, stagedWal)
-			return false, err
+	if run("test", "-s", from+"/"+dbName+"-wal") == nil {
+		if err := run("cp", "-a", "--reflink=auto", from+"/"+dbName+"-wal", db+"-wal"); err != nil {
+			return err
 		}
 	}
-	if err := run("rm", "-f", wal, db+"-shm"); err != nil {
-		return true, err
-	}
-	if err := run("mv", "-f", staged, db); err != nil {
-		return true, err
-	}
-	if withWal {
-		if err := run("mv", "-f", stagedWal, wal); err != nil {
-			return true, err
-		}
-	}
-	for _, rel := range Corrupt(ctx, x, live) {
+	for _, rel := range Corrupt(ctx, x, into) {
 		if strings.HasPrefix(rel, dbName) {
-			if err := run("rm", "-f", live+"/"+rel); err != nil {
-				return true, err
+			if err := run("rm", "-f", into+"/"+rel); err != nil {
+				return err
 			}
 		}
 	}
-	return true, run("sync", "-f", db)
+	return nil
 }
 
 // ConfigContainer is the container whose data directory is Home Assistant's config directory:

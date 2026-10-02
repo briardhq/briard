@@ -30,8 +30,56 @@ func dbRig(answers map[string]string, members ...string) *fakeExec {
 		b, _ := json.Marshal(meta)
 		f.files[p] = string(b)
 	}
+	// SUBVOLUMES: a snapshot copies the files under its source, --exchange swaps two trees, a
+	// delete drops one -- enough to see what the live subvolume holds after a restore.
+	subvols := map[string]bool{quadlet.DataRoot("home-assistant"): true}
+	under := func(root string) []string {
+		var out []string
+		for p := range f.files {
+			if strings.HasPrefix(p, root+"/") {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
 	inner := f.runFn
 	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "btrfs" && len(args) > 2 {
+			switch args[1] {
+			case "show":
+				if subvols[args[2]] {
+					return nil, nil
+				}
+			case "snapshot":
+				src, dst := args[len(args)-2], args[len(args)-1]
+				for _, p := range under(src) {
+					f.files[dst+strings.TrimPrefix(p, src)] = f.files[p]
+				}
+				subvols[dst] = true
+			case "delete":
+				for _, p := range under(args[2]) {
+					delete(f.files, p)
+				}
+				delete(subvols, args[2])
+			}
+		}
+		if name == "mv" && args[0] == "--exchange" {
+			a, b := args[1], args[2]
+			fa, fb := under(a), under(b)
+			moved := map[string]string{}
+			for _, p := range fa {
+				moved[b+strings.TrimPrefix(p, a)] = f.files[p]
+				delete(f.files, p)
+			}
+			for _, p := range fb {
+				moved[a+strings.TrimPrefix(p, b)] = f.files[p]
+				delete(f.files, p)
+			}
+			for p, v := range moved {
+				f.files[p] = v
+			}
+			return nil, nil
+		}
 		switch name {
 		case "podman":
 			for i, a := range args {
@@ -117,9 +165,9 @@ func TestAQuiescedTakeIsHeldForTheRecorder(t *testing.T) {
 }
 
 // TestTheNightlyCheckRestoresFromAHeldCleanCopy is check then restore, end to end in the guest: the
-// damaged newest member is found, the held clean one is put back, and around it Home Assistant is
-// stopped, an undo point carrying the event is taken BEFORE the live database moves, and the app
-// is started again.
+// damaged newest member is found, the held clean one is put back through a staged copy swapped
+// in whole, and around it Home Assistant is stopped, an undo point carrying the event is taken
+// BEFORE anything is staged, and the app is started again.
 func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -153,23 +201,30 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	if f.files[live+"/home-assistant_v2.db"] != "clean history" {
 		t.Fatalf("live database = %q", f.files[live+"/home-assistant_v2.db"])
 	}
-	// The order: stop, the undo point, the database, start.
-	step := func(match func([]string) bool) int {
-		for i, r := range f.runs {
-			if match(r) {
-				return i
-			}
-		}
-		return -1
-	}
-	stop := step(func(r []string) bool { return r[0] == "systemctl" && r[1] == "stop" })
-	undo := step(func(r []string) bool {
+	// The order: stop, the undo point, the staged copy, the swap, start, and only then the delete
+	// of what the swap replaced. Nothing live is edited in place.
+	staged := quadlet.DataRoot("home-assistant") + ".dbrestore"
+	stop := step(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "stop" })
+	undo := step(f, func(r []string) bool {
 		return r[0] == "btrfs" && r[2] == "snapshot" && strings.Contains(r[len(r)-1], string(quadlet.TriggerHassDBRestoreBefore))
 	})
-	moved := step(func(r []string) bool { return r[0] == "mv" && r[len(r)-1] == live+"/home-assistant_v2.db" })
-	start := step(func(r []string) bool { return r[0] == "systemctl" && r[1] == "start" })
-	if stop < 0 || undo < stop || moved < undo || start < moved {
-		t.Fatalf("stop %d, undo %d, database %d, start %d: %v", stop, undo, moved, start, f.runs)
+	stage := step(f, func(r []string) bool { return r[0] == "btrfs" && r[2] == "snapshot" && r[len(r)-1] == staged })
+	swap := step(f, func(r []string) bool { return r[0] == "mv" && r[1] == "--exchange" })
+	start := step(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "start" })
+	gone := step(f, func(r []string) bool { return r[0] == "btrfs" && len(r) > 3 && r[2] == "delete" && r[3] == staged })
+	if stop < 0 || undo < stop || stage < undo || swap < stage || start < swap {
+		t.Fatalf("stop %d, undo %d, stage %d, swap %d, start %d: %v", stop, undo, stage, swap, start, f.runs)
+	}
+	for i, r := range f.runs {
+		if i < swap && (r[0] == "rm" || r[0] == "cp") && strings.HasPrefix(r[len(r)-1], live) {
+			t.Fatalf("the live data was edited in place before the swap: %v", r)
+		}
+	}
+	if lastDelete := lastStep(f, func(r []string) bool { return r[0] == "btrfs" && len(r) > 3 && r[2] == "delete" && r[3] == staged }); gone < 0 || lastDelete < start {
+		t.Errorf("what the swap replaced was not deleted after the start: %v", f.runs)
+	}
+	if _, ok := f.files[staged+"/app/home-assistant_v2.db"]; ok {
+		t.Error("the replaced subvolume is still there")
 	}
 	members, _ := listMembers(ctx, f, "home-assistant")
 	var ev *quadlet.Event
@@ -269,5 +324,75 @@ func TestTheRestoreAsksTheGateAgain(t *testing.T) {
 		if r[0] == "systemctl" {
 			t.Fatalf("a refused restore touched a unit: %v", r)
 		}
+	}
+}
+
+// step is the index of the first run matching, or -1; lastStep the last.
+func step(f *fakeExec, match func([]string) bool) int {
+	for i, r := range f.runs {
+		if len(r) > 2 && match(r) {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastStep(f *fakeExec, match func([]string) bool) int {
+	for i := len(f.runs) - 1; i >= 0; i-- {
+		if len(f.runs[i]) > 2 && match(f.runs[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestAFailedRestoreChangesNothingAndRestarts: whatever fails while the restored data is being
+// built, the live subvolume is never swapped, the staged copy is dropped, and Home Assistant is
+// started again on its own data. There is no "left stopped".
+func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(name string, args []string) bool
+	}{
+		{"the database cannot be copied", func(name string, args []string) bool { return name == "cp" }},
+		{"the staged copy cannot be flushed", func(name string, args []string) bool {
+			return name == "sync" && strings.HasSuffix(args[len(args)-1], ".dbrestore")
+		}},
+		{"the swap is refused", func(name string, args []string) bool { return name == "mv" && args[0] == "--exchange" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-20*time.Hour)), quadlet.SnapshotsDir)
+			live := quadlet.DataPath("home-assistant", "app")
+			f := dbRig(map[string]string{
+				quadlet.SnapshotsDir + good + "/app": `{"check": "ok", "schema": 48}`,
+				live:                                 `{"schema": 48}`,
+			}, good)
+			f.files[quadlet.AppSidecar(quadlet.SnapshotsDir+good)] = `{"hass-db":{"state":"clean"}}`
+			f.files[quadlet.SnapshotsDir+good+"/app/home-assistant_v2.db"] = "clean history"
+			f.files[live+"/home-assistant_v2.db"] = "damaged history"
+			inner := f.runFn
+			f.runFn = func(name string, args []string) ([]byte, error) {
+				if tc.fail(name, args) {
+					return nil, errors.New("injected")
+				}
+				return inner(name, args)
+			}
+			err := hassDBRestore(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }, quadlet.SnapshotsDir+good)
+			if err == nil || !strings.Contains(err.Error(), "nothing was changed") {
+				t.Fatalf("err = %v, want a failure that changed nothing", err)
+			}
+			if f.files[live+"/home-assistant_v2.db"] != "damaged history" {
+				t.Fatalf("the live database moved: %q", f.files[live+"/home-assistant_v2.db"])
+			}
+			stopped := step(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "stop" })
+			started := lastStep(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "start" })
+			if stopped < 0 || started < stopped {
+				t.Fatalf("Home Assistant was not started again after the stop: %v", f.runs)
+			}
+			if _, ok := f.files[quadlet.DataRoot("home-assistant")+".dbrestore/app/home-assistant_v2.db"]; ok {
+				t.Error("the staged copy was left behind")
+			}
+		})
 	}
 }
