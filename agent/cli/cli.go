@@ -130,6 +130,17 @@ var commands = []command{
 		run: runDashboard, probe: []string{"-h"},
 	},
 	{
+		name: "config", args: "set vip <address>[/prefix]|dhcp", group: groupRepair,
+		synopsis: "change a setting of this machine's briard, and apply it",
+		detail: "One setting today: vip, the address your home reaches Briard at. Give a free address on\n" +
+			"this machine's network, outside your router's DHCP range (the prefix defaults to the\n" +
+			"network's), or `dhcp` to let the router assign one. It is checked the way the installer\n" +
+			"checks it, recorded where the installer recorded it, and applied by restarting the VM\n" +
+			"your apps run in -- they are away for about a minute. A machine paired with another\n" +
+			"refuses: the address belongs to both.",
+		run: runConfig, probe: []string{"-h"},
+	},
+	{
 		name: "version", group: groupRepair,
 		synopsis: "which briard this is, and which VM it runs your apps in",
 		detail: "Works with the agent down. `briard doctor` prints the same two lines at the top of its\n" +
@@ -484,6 +495,37 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	// Deliberately not "n2 is now serving": this machine cannot see who took over, and a CLI that
 	// claimed it would be inventing the one fact the operator came for.
 	fmt.Fprint(stdout, "handed over — check which machine took it (`drbdadm role r0` on each)\n")
+	return 0
+}
+
+// runConfig is `briard config set <key> <value>`. The agent judges the value; this only carries it.
+func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("briard config", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 3 || fs.Arg(0) != "set" {
+		fmt.Fprint(stderr, "usage: briard config set vip <address>[/prefix]|dhcp\n")
+		return 2
+	}
+	payload, err := json.Marshal(api.ConfigSetting{Key: fs.Arg(1), Value: fs.Arg(2)})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "setting %s to %s (the VM restarts to apply it)\n", fs.Arg(1), fs.Arg(2))
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveConfigSet, Payload: string(payload)})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "not changed: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprintln(stdout, o.Detail)
 	return 0
 }
 

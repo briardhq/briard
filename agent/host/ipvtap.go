@@ -38,9 +38,11 @@ import (
 // does not release (guest-image/configuration.nix, briard-vip-down).
 const vipUnit = "briard-vip.service"
 
-// vipStopper is the one write the copier makes into the guest (guestagent.Client.ServiceStop).
+// vipStopper is the two writes the copier makes into the guest when it refuses: stop the VIP's
+// client, then forget the address the flock remembered for it (guestagent.Client).
 type vipStopper interface {
 	ServiceStop(ctx context.Context, unit string) error
+	ForgetVIP(ctx context.Context) error
 }
 
 // ipvtapCopier is the copy's state across ticks: only the refusal, which is sticky. Machinery on
@@ -71,7 +73,14 @@ func (c *ipvtapCopier) refusal() (detail, fix string) {
 		prefix = "24"
 	}
 	return fmt.Sprintf("your router gave Briard %s, the address of the machine it runs on: on Wi-Fi the two share one hardware address and are told apart only by DHCP client ID, which your router ignores or this machine's own DHCP client does not send", c.refusedAddr),
-		fmt.Sprintf("pick a free address outside your router's DHCP range, run `sudo briard uninstall -yes` (your data is kept) and re-run the installer with BRIARD_VIP_ADDR=<address>/%s", prefix)
+		fmt.Sprintf("pick a free address outside your router's DHCP range and run `sudo briard config set vip <address>/%s`", prefix)
+}
+
+// clear drops a refusal: the household has named an address (config.go's `config set vip`).
+func (c *ipvtapCopier) clear() {
+	if c != nil {
+		c.refusedAddr, c.refusedCIDR = "", ""
+	}
 }
 
 // tick is one pass of the copy. It changes nothing on any substrate but ipvtap.
@@ -121,6 +130,11 @@ func (c *ipvtapCopier) refuse(ctx context.Context, r guest.VIPReader, n notify.N
 		sctx, cancel := context.WithTimeout(ctx, vipVerbTimeout)
 		if err := s.ServiceStop(sctx, vipUnit); err != nil {
 			logf("network: could not stop the guest's address client: %v", err)
+		}
+		// ...and forget it, AFTER the stop so no lease event writes it back: a refused address
+		// left remembered is claimed optimistically at the next promotion, and refused again.
+		if err := s.ForgetVIP(sctx); err != nil {
+			logf("network: could not forget the refused address on the volume: %v", err)
 		}
 		cancel()
 	}

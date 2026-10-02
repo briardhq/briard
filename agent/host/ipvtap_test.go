@@ -12,7 +12,7 @@ import (
 	"briard.io/agent/reportcard"
 )
 
-// fakeVIPGuest answers net.vip and records the stops the copier asks for.
+// fakeVIPGuest answers net.vip and records the writes the copier asks for, in order.
 type fakeVIPGuest struct {
 	cidr  string
 	err   error
@@ -22,6 +22,10 @@ type fakeVIPGuest struct {
 func (g *fakeVIPGuest) VIP(context.Context, string) (string, error) { return g.cidr, g.err }
 func (g *fakeVIPGuest) ServiceStop(_ context.Context, unit string) error {
 	g.stops = append(g.stops, unit)
+	return nil
+}
+func (g *fakeVIPGuest) ForgetVIP(context.Context) error {
+	g.stops = append(g.stops, "forget")
 	return nil
 }
 
@@ -118,11 +122,11 @@ func TestIPvtapCopierRefusesTheHostsAddressAsVIP(t *testing.T) {
 	if got := r.last()["briard0"]; got != nil {
 		t.Errorf("held the host's own address as the VIP: %v", got)
 	}
-	if !r.c.refused() || !slices.Equal(g.stops, []string{"briard-vip.service"}) {
-		t.Fatalf("refused=%v stops=%v, want refused and the VIP unit stopped", r.c.refused(), g.stops)
+	if !r.c.refused() || !slices.Equal(g.stops, []string{"briard-vip.service", "forget"}) {
+		t.Fatalf("refused=%v stops=%v, want refused, the VIP unit stopped, then its address forgotten", r.c.refused(), g.stops)
 	}
 	said := strings.Join(r.lines, "\n")
-	for _, want := range []string{"network: refused: ", "told apart only by DHCP client ID", "192.168.7.50", "BRIARD_VIP_ADDR=<address>/24"} {
+	for _, want := range []string{"network: refused: ", "told apart only by DHCP client ID", "192.168.7.50", "briard config set vip <address>/24"} {
 		if !strings.Contains(said, want) {
 			t.Errorf("the refusal does not say %q:\n%s", want, said)
 		}
@@ -130,17 +134,17 @@ func TestIPvtapCopierRefusesTheHostsAddressAsVIP(t *testing.T) {
 	// Seen again (the guest restarted and its client ran again): stopped again, not said again.
 	n := len(r.lines)
 	r.tick(g)
-	if len(g.stops) != 2 || len(r.lines) != n {
+	if len(g.stops) != 4 || len(r.lines) != n {
 		t.Errorf("second sighting: stops=%v, new lines=%q", g.stops, r.lines[n:])
 	}
-	// Sticky: a later, different address is not held either -- the remedy is a reinstall.
+	// Sticky: a later, different address is not held either -- the remedy is the household naming one.
 	r.tick(&fakeVIPGuest{cidr: "192.168.7.120/24"})
 	if got := r.last()["briard0"]; got != nil {
 		t.Errorf("a refused node held a VIP: %v", got)
 	}
 	detail, fix := r.c.refusal()
 	cs := judgeDoctor(doctorFacts{Refused: detail, RefusedFix: fix, Cluster: servingLone().Cluster})
-	if c := checkNamed(t, cs, "address"); c.Status != reportcard.Refuse || !strings.Contains(c.Fix, "BRIARD_VIP_ADDR") {
+	if c := checkNamed(t, cs, "address"); c.Status != reportcard.Refuse || !strings.Contains(c.Fix, "config set vip") {
 		t.Errorf("the doctor's address check = %+v, want the refusal and its remedy", c)
 	}
 }

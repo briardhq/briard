@@ -198,6 +198,33 @@ func TestFsSyncFlushesTheMountedVolume(t *testing.T) {
 	}
 }
 
+// Forgetting the remembered address deletes it and syncs the volume, only where it is mounted --
+// elsewhere the path is the empty mountpoint, and a "done" would be a claim about nothing.
+func TestForgetVIPDeletesTheRememberedAddress(t *testing.T) {
+	mounted := func(at string) *fakeExec {
+		return &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+			if name == "stat" {
+				return []byte(at + "\n"), nil
+			}
+			return nil, nil
+		}}
+	}
+	f := mounted(dataMountRoot)
+	if err := dial(t, f).ForgetVIP(context.Background()); err != nil {
+		t.Fatalf("ForgetVIP: %v", err)
+	}
+	if !ran(f, "rm", "-f", dataMountRoot+"/.vip-address") || !ran(f, "sync", "-f", dataMountRoot) {
+		t.Fatalf("want rm + sync of the volume; runs=%v", f.runs)
+	}
+	f = mounted("/")
+	if err := dial(t, f).ForgetVIP(context.Background()); err == nil {
+		t.Fatal("forgetting on a node that does not mount the volume must fail")
+	}
+	if ran(f, "rm", "-f", dataMountRoot+"/.vip-address") {
+		t.Fatal("deleted under an empty mountpoint")
+	}
+}
+
 func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if name == "stat" {

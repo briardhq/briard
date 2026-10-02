@@ -417,6 +417,12 @@ type Config struct {
 	// substrate. Written by the observe loop only.
 	ipvtap *ipvtapCopier
 
+	// vip is VIPAddr as it stands NOW: `briard config set vip` changes it at runtime (configset.go),
+	// and every bring-up after that must carry the new value. A pointer for net's reason -- Config
+	// is copied into the Manager, into observe, into bringUp -- and read through vipAddr(). nil
+	// (every unit test) reads VIPAddr itself.
+	vip *string
+
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
 	// const and nothing sets this but tests, which would otherwise spend a real minute per
@@ -507,6 +513,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// covered. nil outside systemd. Set on the local cfg, which is the copy every call below takes.
 	cfg.beat = newBeat(logf)
 	cfg.ipvtap = newIPvtapCopier()
+	vip := cfg.VIPAddr
+	cfg.vip = &vip
 	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). FIRST,
 	// because everything below is keyed to it: the DRBD `on <name>`, the VM's UUID, the service
 	// MAC, the cloud's key for this node and the name the household types. A node that cannot write
@@ -1127,9 +1135,9 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	// anything uses to reach it, and DRBD binds there -- OR a VIP device is, which is
 	// what the agent-less harnesses send (then ConfigureNet records VIP_DEV/VIP_ADDR and skips
 	// addressing).
-	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.VIPAddr != "") {
+	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.vipAddr() != "") {
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
-			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
+			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.vipAddr(),
 			PrivDev: cfg.privDev(), PrivCIDR: cfg.WitnessCIDR, PrivHostIP: cfg.hostNodeIP(),
 			PodSubnet:   cfg.PodSubnet,
 			PrivHostMAC: cfg.privHostMAC(bringup, logf),
@@ -1538,6 +1546,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveDebugDisarm: true,
 	api.DirectiveDoctor:      true,
 	api.DirectiveCasaClaim:   true, // the household claims its own name; the cloud never does
+	api.DirectiveConfigSet:   true, // ...and changes its own address
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1557,6 +1566,15 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveDoctor {
 		return cfg.applyDoctor(ctx, d, r)
+	}
+	if d.Kind == api.DirectiveConfigSet {
+		// Applied the way pair applies a membership: record it, then the one act only the
+		// upgrader owns -- a guest restart, whose bring-up carries the new value.
+		rb, ok := up.(guestRebooter)
+		if !ok {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no guest to restart on this node"}
+		}
+		return cfg.applyConfigSet(ctx, d, r, rb, logf)
 	}
 	if d.Kind == api.DirectiveCasaClaim {
 		if cs == nil {

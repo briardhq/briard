@@ -38,7 +38,7 @@ func Gather(ctx context.Context) HostFacts {
 		MemTotalMB:    MemTotalMB(),
 		PrimaryNICBus: primaryNICBus(sel.Dev),
 		DiskFreeMB:    diskFreeMB(installRoot()),
-		HostCIDR:      hostCIDR(sel.Dev),
+		HostCIDR:      HostCIDR(sel.Dev),
 		// The address the install is about to hand the guest. install.sh already computes it
 		// (BRIARD_VIP_ADDR, CIDR form) and passes it here the same way it passes NET_MODE -- the card
 		// cannot judge an address it is not told about, and this is the last gate before a VM
@@ -168,10 +168,10 @@ func hostHasLease(dev string) bool {
 	return false
 }
 
-// hostCIDR returns dev's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
+// HostCIDR returns dev's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
 // is on, which is what the VIP has to be inside. "" when unreadable or the NIC has no IPv4, which
 // the VIP check reads as "unknown" and stays quiet about rather than refusing over.
-func hostCIDR(dev string) string {
+func HostCIDR(dev string) string {
 	if dev == "" {
 		return ""
 	}

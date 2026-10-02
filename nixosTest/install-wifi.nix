@@ -17,7 +17,7 @@
 # With `refuse`, as install-wifi-refuse, the host's dhcpcd sends no client-id (NixOS's default),
 # so the router hands the guest the HOST's address. That proves the refusal end to end -- the
 # installer ends on the agent's words, nothing is copied, the host keeps its LAN, the doctor says
-# why -- and then the remedy those words name: uninstall, reinstall with BRIARD_VIP_ADDR, serve.
+# why -- and then the remedy those words name: `briard config set vip`, and the named address serves.
 #
 # The household (router, access point, a client) lives in a network namespace inside the one VM,
 # holding the second radio: hwsim radios share one medium, so a second VM would hear nothing.
@@ -68,7 +68,7 @@ pkgs.testers.runNixOSTest {
     {
       virtualisation.memorySize = 6144; # clears the report card's 4 GB floor + the nested guest
       virtualisation.cores = 4;
-      virtualisation.diskSize = if refuse then 16384 else 12288; # the refuse test installs twice, over kept data
+      virtualisation.diskSize = 12288;
       virtualisation.qemu.options = [ "-cpu" "host" ]; # vmx -> nested KVM in L1
       virtualisation.vlans = [ ]; # no wired LAN at all: the station is the only way out
       # Two radios on one simulated medium: wlan0 is the host's station, wlan1 the household's
@@ -143,9 +143,9 @@ pkgs.testers.runNixOSTest {
     print("control: a second MAC dies at the access point; the station's MAC carries an ipvlan child")
 
     # --- THE INSTALL: one command, no BRIARD_NIC, no BRIARD_VIP_ADDR -- the VIP is DHCP's ---
-    def install(env=""):
+    def install():
         code, out = host.execute(
-            f"{env} BRIARD_ARTIFACTS=${staging} BRIARD_UNIT_DIR=/run/systemd/system "
+            "BRIARD_ARTIFACTS=${staging} BRIARD_UNIT_DIR=/run/systemd/system "
             "sh ${installScript} 2>&1"
         )
         print(out)
@@ -170,7 +170,7 @@ pkgs.testers.runNixOSTest {
 
     # --- THE REFUSAL: this host's dhcpcd sends no client-id, so the router matched the guest to
     # the host's own lease by the station's MAC and handed it the host's address. ---
-    assert code != 0 and "cannot serve your home" in out and "BRIARD_VIP_ADDR=<address>/24" in out, \
+    assert code != 0 and "cannot serve your home" in out and "briard config set vip <address>/24" in out, \
         f"the installer did not end on the agent's refusal (exit {code})"
     assert host_ip in out, "the refusal does not name the address it refused"
     # Nothing was copied -- the host's address on a child would cut the host off its own LAN --
@@ -181,17 +181,22 @@ pkgs.testers.runNixOSTest {
     # The guest's address client was stopped, and the doctor says why and what to do.
     code, doc = host.execute("/usr/local/bin/briard doctor 2>&1")
     print(doc)
-    assert code != 0 and "client ID" in doc and "BRIARD_VIP_ADDR" in doc, "the doctor does not carry the refusal"
+    assert code != 0 and "client ID" in doc and "config set vip" in doc, "the doctor does not carry the refusal"
     print("refused, said so at install, kept the host on its LAN")
 
-    # --- THE REMEDY, as the refusal words it: uninstall (the data is kept) and re-run the
-    # installer with an address outside the router's DHCP range. ---
-    host.succeed("/usr/local/bin/briard uninstall -yes")
-    code, out = install("BRIARD_VIP_ADDR=192.168.7.50/24")
-    assert code == 0, f"the reinstall with a named address exited {code}"
+    # --- THE REMEDY, as the refusal words it: name an address outside the router's DHCP range.
+    # An address the install's own gate refuses is refused here too, and changes nothing. ---
+    code, said = host.execute("/usr/local/bin/briard config set vip 10.9.9.9/24 2>&1")
+    print(said)
+    assert code != 0 and "not on this machine's LAN" in said, "an off-LAN address was accepted"
+    host.fail("grep -q VIP_ADDR /opt/briard/config.env")
+    said = host.succeed("/usr/local/bin/briard config set vip 192.168.7.50 2>&1")
+    print(said)
+    assert "vip is now 192.168.7.50/24" in said, "the bare address did not take the LAN's prefix"
     host.succeed("grep -qx 'VIP_ADDR=192.168.7.50/24' /opt/briard/config.env")
-    host.succeed("ip -n briard-hold -4 addr show dev briard0 | grep -qw 192.168.7.50/32")
+    # The guest restarts, promotes and claims it; the next tick copies it. Reach is the proof.
     host.wait_until_succeeds("ip netns exec lan curl -fsS --max-time 5 http://192.168.7.50/healthz", timeout=180)
+    host.succeed("ip -n briard-hold -4 addr show dev briard0 | grep -qw 192.168.7.50/32")
     host.succeed(f"ip netns exec lan ping -c1 -W2 {host_ip}")
     host.succeed("curl -fsS --max-time 5 http://192.168.7.50/healthz")
     print("the named address serves the household over the access point")

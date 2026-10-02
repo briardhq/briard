@@ -85,6 +85,16 @@ const verbNetConfigure = "net.configure"
 // recorded but failed to apply must not be reportable as live.
 const verbNetVIP = "net.vip"
 
+// verbNetVIPForget deletes the flock's remembered DHCP address (`.vip-address` at the volume's
+// root) on the node that mounts the volume. The host asks for it when it refuses the address the
+// guest was handed: briard-vip-up claims a remembered address optimistically at the next
+// promotion, so a refused one left there would be claimed -- and refused -- again.
+const verbNetVIPForget = "net.vip.forget"
+
+// vipAddrFile is the image's `vipAddrFile` (guest-image/configuration.nix), restated as
+// dataMountRoot is.
+const vipAddrFile = dataMountRoot + "/.vip-address"
+
 // verbNetMDNSName records the flock's human-visible name, which the front door publishes as
 // `briard-<name>.local` pointing at the VIP.
 //
@@ -396,7 +406,7 @@ const dataMountRoot = "/var/lib/briard"
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
+	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
@@ -1553,6 +1563,19 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return "synced", nil
+		case verbNetVIPForget:
+			// Only where the volume is mounted, read as fs.sync reads it: anywhere else the path
+			// is the empty mountpoint, and "forgotten" would be a claim about a file nobody saw.
+			out, err := x.Run(ctx, "stat", "-c", "%m", dataMountRoot)
+			if err != nil || strings.TrimSpace(string(out)) != dataMountRoot {
+				return nil, fmt.Errorf("the data volume is not mounted here, so its remembered address cannot be forgotten")
+			}
+			// Synced, for the reason it was written synced: the next promotion may follow a
+			// power cut, and a deletion lost to the page cache brings the address back.
+			if err := run("rm", "-f", vipAddrFile); err != nil {
+				return nil, err
+			}
+			return nil, run("sync", "-f", dataMountRoot)
 		case verbReactorPause:
 			// Pause the promoter by stopping the drbd-reactor daemon: stop-services-on-exit
 			// defaults false, so the promoted services + DRBD Primary stay up while it is
@@ -3090,6 +3113,11 @@ func (g *Client) ReactorActive(ctx context.Context) (bool, error) {
 	var active bool
 	err := g.c.Call(ctx, verbReactorActive, struct{}{}, &active)
 	return active, err
+}
+
+// ForgetVIP deletes the flock's remembered DHCP address from the volume (net.vip.forget).
+func (g *Client) ForgetVIP(ctx context.Context) error {
+	return g.c.Call(ctx, verbNetVIPForget, struct{}{}, nil)
 }
 
 // FsSync flushes the replicated data volume's dirty pages — the pre-copy that bounds an

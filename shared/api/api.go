@@ -482,6 +482,13 @@ const (
 	//                        list of agent/reportcard.Check. Local-only because the answer is for
 	//                        the person at the machine; what the cloud may learn about a node is
 	//                        NodeStatus, and this must never become a second, wider path upward.
+	DirectiveConfigSet = "config-set" // Payload = a JSON ConfigSetting. Change one of this node's
+	//                        settings and apply it: written durably where the installer wrote it
+	//                        (config.env), then the guest restarts, so the next bring-up carries it.
+	//                        One key today, `vip`: an address in CIDR form, or "dhcp". Validated as
+	//                        the install validates it, and refused on a node with peers, because the
+	//                        address belongs to the whole flock. Local-only: the household's address
+	//                        is the household's to change.
 	DirectiveDebugArm = "debug-arm" // Payload empty. Swap the guest's second serial port from its
 	//                        null backend to a unix socket, so the getty that has been sitting on
 	//                        that port since boot becomes reachable. Outcome Detail = the socket's
@@ -494,6 +501,12 @@ const (
 	//                        armed is the same monitor call -- which is what lets a caller run it
 	//                        from an unconditional cleanup path.
 )
+
+// ConfigSetting is a DirectiveConfigSet's payload: one setting and its new value.
+type ConfigSetting struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
 
 // CertBundle is a renewed cert the controller pushes down (JSON-encoded into a DirectiveCert's
 // Payload). Cert-only: the node generated the keypair and holds the private key, so

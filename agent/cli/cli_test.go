@@ -294,6 +294,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"app":       groupEveryday,
 		"handover":  groupEveryday,
 		"open":      groupEveryday,
+		"config":    groupRepair,
 		"rescue":    groupRepair,
 		"update":    groupRepair,
 		"uninstall": groupRepair,

@@ -92,7 +92,7 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 	// there). Skipped when the sender didn't provide one (e.g. the address is already configured).
 	if spec.SystemDev != "" {
 		if err := g.ConfigureNet(ctx, guestagent.NetConfig{
-			Dev: spec.SystemDev, CIDR: spec.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.VIPAddr,
+			Dev: spec.SystemDev, CIDR: spec.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.vipAddr(),
 			// privDev(), not WitnessDev: under the bridge substrate there is no third NIC and naming
 			// one fails the call (see the helper). Same reason as bring-up's call site.
 			PrivDev: cfg.privDev(), PrivHostIP: cfg.hostNodeIP(),

@@ -315,6 +315,13 @@ func Assess(f HostFacts) Report {
 //     into a refusal.
 //
 // The empty case used to return nil -- silence. Silence is what the original defect sounded like.
+//
+// VIPCheck is the same gate for a running node changing its address (`briard config set vip`), so
+// the install and the change refuse the same addresses for the same reasons.
+func VIPCheck(hostCIDR, vip string, answered bool) []Check {
+	return vipCheck(HostFacts{HostCIDR: hostCIDR, VIPAddr: vip, VIPAnswered: answered})
+}
+
 func vipCheck(f HostFacts) []Check {
 	if f.VIPAddr == "" {
 		return dhcpCheck(f)
