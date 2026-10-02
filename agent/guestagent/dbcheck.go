@@ -254,7 +254,9 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 		return unchanged("take the undo point", err)
 	}
 	recordMember(ctx, x, undo, meta)
-	if err := run("mv", "--exchange", staged, root); err != nil {
+	// --no-target-directory: root is a directory, and without it mv would exchange with
+	// root/<staged> rather than with root (measured on L0 run 36984359024).
+	if err := run("mv", "--exchange", "--no-target-directory", staged, root); err != nil {
 		if derr := run("btrfs", "subvolume", "delete", undo); derr == nil {
 			_ = run("rm", "-f", quadlet.SnapshotSidecar(undo), quadlet.AppSidecar(undo))
 		} else {

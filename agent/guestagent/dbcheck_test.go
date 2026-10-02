@@ -64,7 +64,7 @@ func dbRig(answers map[string]string, members ...string) *fakeExec {
 			}
 		}
 		if name == "mv" && args[0] == "--exchange" {
-			a, b := args[1], args[2]
+			a, b := args[len(args)-2], args[len(args)-1]
 			fa, fb := under(a), under(b)
 			moved := map[string]string{}
 			for _, p := range fa {
@@ -210,6 +210,10 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	})
 	stage := step(f, func(r []string) bool { return r[0] == "btrfs" && r[2] == "snapshot" && r[len(r)-1] == staged })
 	swap := step(f, func(r []string) bool { return r[0] == "mv" && r[1] == "--exchange" })
+	// Without --no-target-directory, mv exchanges the copy with a path INSIDE the live directory.
+	if swap >= 0 && !slices.Contains(f.runs[swap], "--no-target-directory") {
+		t.Errorf("the swap names the live subvolume as a target directory: %v", f.runs[swap])
+	}
 	start := step(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "start" })
 	gone := step(f, func(r []string) bool { return r[0] == "btrfs" && len(r) > 3 && r[2] == "delete" && r[3] == staged })
 	if stop < 0 || stage < stop || undo < stage || swap < undo || start < swap {
