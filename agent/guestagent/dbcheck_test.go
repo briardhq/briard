@@ -423,3 +423,36 @@ func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
 		})
 	}
 }
+
+// TestTheUndoPointClaimsQuiescedOnlyOnACleanStop: a stop that returned is not a stop that
+// flushed. The clean-stop marker the unit's ExecStopPost writes is the evidence, as for every
+// other member.
+func TestTheUndoPointClaimsQuiescedOnlyOnACleanStop(t *testing.T) {
+	for _, clean := range []bool{true, false} {
+		ctx := context.Background()
+		good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-20*time.Hour)), quadlet.SnapshotsDir)
+		live := quadlet.DataPath("home-assistant", "app")
+		f := dbRig(map[string]string{
+			quadlet.SnapshotsDir + good + "/app": `{"check": "ok", "schema": 48}`,
+			live:                                 `{"schema": 48}`,
+		}, good)
+		f.files[quadlet.AppSidecar(quadlet.SnapshotsDir+good)] = `{"hass-db":{"state":"clean"}}`
+		f.files[quadlet.SnapshotsDir+good+"/app/home-assistant_v2.db"] = "clean history"
+		if clean {
+			f.files[cleanStopPath("home-assistant")] = "success\n"
+		}
+		if err := hassDBRestore(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }, quadlet.SnapshotsDir+good); err != nil {
+			t.Fatal(err)
+		}
+		want := quadlet.Crash
+		if clean {
+			want = quadlet.Quiesced
+		}
+		members, _ := listMembers(ctx, f, "home-assistant")
+		for _, m := range members {
+			if m.Meta.Trigger == quadlet.TriggerHassDBRestoreBefore && m.Meta.Consistency != want {
+				t.Errorf("clean stop=%t: the undo point says %q, want %q", clean, m.Meta.Consistency, want)
+			}
+		}
+	}
+}

@@ -233,10 +233,13 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 		return unchanged("flush the staged copy", err)
 	}
 
-	// QUIESCED ONLY IF WE STOPPED IT: an app that was not running may have died rather than
-	// stopped, and the weaker claim is the true one then.
+	// QUIESCED ONLY ON THE CLEAN-STOP MARKER, the evidence every other member reads: the unit's
+	// own ExecStopPost writes it when systemd says the stop succeeded. A stop that returned is
+	// not that -- Home Assistant stopped while still booting exited non-zero, and nothing then says
+	// it flushed (measured on L0 run 36984359024) -- and an app that was not running may have died. Read,
+	// not consumed: the start below is what spends it.
 	cons := quadlet.Crash
-	if len(active) > 0 {
+	if _, err := x.ReadFile(cleanStopPath(hass.Name)); err == nil && len(active) > 0 {
 		cons = quadlet.Quiesced
 	}
 	at := time.Now().UTC()
