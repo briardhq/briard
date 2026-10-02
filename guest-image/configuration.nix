@@ -351,8 +351,12 @@ let
   #     the old baked-address failure restored by its replacement, and a house whose router is briefly down
   #     at boot would have hit it. A VIP is the flock's address or it is nothing; a self-assigned
   #     one is worse than none because it looks like success.
-  #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + this NIC's
-  #     address, which dhcpcd encodes as hex because the value is colon-separated. One flock then
+  #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + the FLOCK MAC,
+  #     VIP_MAC from the agent (the NIC's own address where a harness sets none), which dhcpcd
+  #     encodes as hex because the value is colon-separated. Not read off the NIC, because on a
+  #     wireless parent the NIC carries the station's MAC (ipvtap) and the lease would be the
+  #     host's own: chaddr is the station's there, and only the client-id tells the two apart.
+  #     One flock then
   #     presents ONE identity, which is what makes a lease survive a failover -- and what stops
   #     dhcpcd's own shipped `duid` (a per-host DUID that, in the man page's words, "should not be
   #     copied to other hosts") from giving two nodes of one flock different leases if a nixpkgs
@@ -366,8 +370,7 @@ let
   #     single lease. Found by a real router the first time anything looked at what we actually
   #     transmit. Never ask for a default when you can state the value.
   #   -h briard-<xxxxxx> is the FLOCK's name (option 12), taken from the low three bytes of the
-  #     service NIC's own MAC -- which IS the flock id's derivative, read as ground truth off the
-  #     interface rather than plumbed through as a second copy. It gives a household's router a
+  #     same flock MAC -- the flock id's derivative. It gives a household's router a
   #     recognisable client-list entry, and it makes a user-created static reservation survive
   #     failover, because name, MAC and client-id are all flock-scoped.
   #   --lastleaseextend keeps the address when no server answers, giving it up only to a host
@@ -376,12 +379,16 @@ let
   #     still refuses to do is squat an address somebody actively wants.
   #   -r asks for the address we already claimed, so the replicated store wins over this node's
   #     own lease file instead of the two quietly drifting apart.
+  #   -J sets the BROADCAST flag, so the server broadcasts its OFFER and ACK. On a wireless parent
+  #     a unicast reply goes to the station's MAC for an address the host has not yet copied onto
+  #     the guest's child (ipvtap demuxes on configured addresses only), and no lease would ever
+  #     be obtained. Harmless everywhere else, so it is not substrate-scoped.
   dhcpcdRun = pkgs.writeShellScript "briard-vip-dhcpcd" ''
     set -eu
     dev="$1"; want="$2"; shift 2
-    mac="$(cat /sys/class/net/"$dev"/address)"
+    mac="''${VIP_MAC:-$(cat /sys/class/net/"$dev"/address)}"
     hex="''${mac//:/}"
-    set -- -f ${dhcpcdConf} -c ${vipHook} -L \
+    set -- -f ${dhcpcdConf} -c ${vipHook} -L -J \
       -G -C resolv.conf -I "01:$mac" -h "briard-''${hex: -6}" --lastleaseextend "$@"
     if [ -n "$want" ]; then
       set -- "$@" -r "''${want%%/*}"

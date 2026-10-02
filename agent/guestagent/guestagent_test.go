@@ -492,6 +492,19 @@ func TestConfigureNetWritesVIPDev(t *testing.T) {
 	}
 }
 
+// The flock MAC rides beside the device as VIP_MAC: the VIP's DHCP identity is the flock's even
+// where the NIC's own MAC is not (on a wireless parent it is the station's).
+func TestConfigureNetWritesVIPMAC(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "eth2", VIPMAC: "52:54:00:ab:cd:ef"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\nSYSTEM_DEV=eth1\nVIP_MAC=52:54:00:ab:cd:ef\n" {
+		t.Errorf("%s = %q, want VIP_MAC after SYSTEM_DEV", vipEnvPath, got)
+	}
+}
+
 // A WITNESS claims no VIP, so it gets no file at all -- SYSTEM_DEV must not create one on its own.
 // briard-vip.service takes vip.env as a REQUIRED EnvironmentFile, so a file written for a node
 // whose promoter must never run is a unit that has quietly become startable.

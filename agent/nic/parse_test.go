@@ -164,4 +164,50 @@ func TestIPArgv(t *testing.T) {
 	if w := "/proc/sys/net/ipv6/conf/sys-n1/disable_ipv6"; disableIPv6Path("sys-n1") != w {
 		t.Errorf("disableIPv6Path = %q, want %q", disableIPv6Path("sys-n1"), w)
 	}
+	// ipvtap: `mode l2`, or the guest is no L2 citizen (no ARP, no DHCP, no mDNS); `bridge`, or
+	// its two children cannot reach each other. Created in the host's namespace, like the probe's,
+	// so the probe still builds the very thing the install builds -- the move comes after.
+	want = []string{"link", "add", "link", "wlan0", "name", "sys-n1", "type", "ipvtap", "mode", "l2", "bridge"}
+	if got := ipvtapAddArgs("sys-n1", "wlan0"); !slices.Equal(got, want) {
+		t.Errorf("ipvtapAddArgs = %q, want %q", got, want)
+	}
+}
+
+// The holding namespace is read through `ip -n … -o link show`, whose lines name a child's
+// parent by an index in ANOTHER namespace. The flags are where ALLMULTI is visible.
+func TestParseLinks(t *testing.T) {
+	text := "1: lo: <LOOPBACK> mtu 65536 qdisc noop state DOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n" +
+		"7: briard0@if3: <BROADCAST,MULTICAST,ALLMULTI,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT\\    link/ether 02:00:00:00:00:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n" +
+		"8: briard-drbd0@if3: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN\n"
+	got := parseLinks(text)
+	if !slices.Contains(got["briard0"], "ALLMULTI") || !slices.Contains(got["briard0"], "UP") {
+		t.Errorf("briard0 flags = %q", got["briard0"])
+	}
+	if f, ok := got["briard-drbd0"]; !ok || slices.Contains(f, "ALLMULTI") {
+		t.Errorf("briard-drbd0 = %q (present %v), want present without ALLMULTI", f, ok)
+	}
+	if got["briard0@if3"] != nil {
+		t.Error("the @ifN suffix must be cut off the name")
+	}
+	if got["nope"] != nil {
+		t.Error("an absent device must read as nil, which is how the callers ask")
+	}
+}
+
+// Hold compares what a child holds against what it should, so parseInet must find every address
+// and nothing else.
+func TestParseInet(t *testing.T) {
+	text := "7: briard0    inet 192.168.7.120/32 scope global briard0\\       valid_lft forever preferred_lft forever\n" +
+		"7: briard0    inet 192.168.7.121/32 scope global briard0\\       valid_lft forever preferred_lft forever\n" +
+		"8: briard-drbd0    inet 10.40.3.1/32 scope global briard-drbd0\\       valid_lft forever preferred_lft forever\n"
+	got := parseInet(text)
+	if want := []string{"192.168.7.120/32", "192.168.7.121/32"}; !slices.Equal(got["briard0"], want) {
+		t.Errorf("briard0 = %q, want %q", got["briard0"], want)
+	}
+	if want := []string{"10.40.3.1/32"}; !slices.Equal(got["briard-drbd0"], want) {
+		t.Errorf("briard-drbd0 = %q, want %q", got["briard-drbd0"], want)
+	}
+	if got := parseInet(""); len(got) != 0 {
+		t.Errorf("parseInet of nothing = %q", got)
+	}
 }

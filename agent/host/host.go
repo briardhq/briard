@@ -412,6 +412,11 @@ type Config struct {
 	// parent that is no longer there. One goroutine writes it (the observe loop); nothing races.
 	net *nic.Spec
 
+	// ipvtap copies the guest's addresses onto its children when net is ipvtap (ipvtap.go), and
+	// holds a refusal the doctor reads. Machinery like beat; nil-safe, and inert on any other
+	// substrate. Written by the observe loop only.
+	ipvtap *ipvtapCopier
+
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
 	// const and nothing sets this but tests, which would otherwise spend a real minute per
@@ -501,6 +506,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// The watchdog keep-alive, built before anything that could block so every operation below is
 	// covered. nil outside systemd. Set on the local cfg, which is the copy every call below takes.
 	cfg.beat = newBeat(logf)
+	cfg.ipvtap = newIPvtapCopier()
 	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). FIRST,
 	// because everything below is keyed to it: the DRBD `on <name>`, the VM's UUID, the service
 	// MAC, the cloud's key for this node and the name the household types. A node that cannot write
@@ -842,7 +848,30 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 // path needs: it relaunches the same guest with the boot selector armed, and arming the selector
 // must be the *only* difference between the two launches. A guest that grew boots back at its
 // boot size (memory.go).
+//
+// ON A WIRELESS PARENT both tapped NICs carry the PARENT's MAC, the one an access point carries for
+// the station, and launch as ipvtap. Read off cfg.net, the live substrate, rather than off the
+// config, so a re-parent between Wi-Fi and wire relaunches the guest the new substrate needs.
 func (cfg Config) guestSpec() platform.QEMUSpec {
+	s := cfg.baseGuestSpec()
+	if cfg.net != nil && cfg.net.Ipvtap {
+		mac := parentMAC(cfg.net.Parent)
+		s.NetMode, s.SystemMAC, s.ServiceMAC = platform.NetIpvtap, mac, mac
+	}
+	return s
+}
+
+// parentMAC reads dev's MAC. "" when unreadable, which leaves qemu its default -- a guest that
+// cannot reach the LAN, where a wrong guess would be one that reaches it as somebody else.
+func parentMAC(dev string) string {
+	b, err := os.ReadFile("/sys/class/net/" + dev + "/address")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func (cfg Config) baseGuestSpec() platform.QEMUSpec {
 	return platform.QEMUSpec{
 		Binary:        cfg.QEMUBinary,
 		DataDir:       cfg.QEMUDataDir,
@@ -1307,7 +1336,13 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// that is not currently serving is an address this guest does not hold. A route may only
 		// follow ground truth.
 		cfg.beat.Beat()
-		vr.reconcile(ctx, r, logf)
+		// On a wireless parent the guest's addresses are copied onto its ipvtap children first
+		// (ipvtap.go). A VIP it refused is never routed either: it is the host's own address.
+		cfg.ipvtap.tick(ctx, cfg, r, n, logf)
+		cfg.beat.Beat()
+		if !cfg.ipvtap.refused() {
+			vr.reconcile(ctx, r, logf)
+		}
 		cfg.beat.Beat()
 		cs.tick(ctx, r, logf) // the household's name -- claim poll, address, certificate, the page's view
 		if errors.Is(err, guestfirmware.ErrChannelDown) {

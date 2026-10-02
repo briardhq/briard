@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -194,6 +195,40 @@ func TestLaunchExecMacvtap(t *testing.T) {
 	// The witness MAC must not appear as a triple word (it is not a macvtap).
 	if strings.Contains(strings.Join(head, " "), "briard-wit") {
 		t.Errorf("witness NIC must not be in the macvtap triples:\n%v", head)
+	}
+}
+
+// NetIpvtap is macvtap's launch with two differences, both forced by the children: they live in
+// nic.HoldNS, so a triple names `<ns>/<dev>`; and their MAC is the parent's and cannot be pinned,
+// so a triple's MAC is empty while qemu's mac= still carries the parent's MAC to the guest.
+func TestLaunchExecIpvtap(t *testing.T) {
+	const parent = "52:54:00:77:77:77"
+	s := QEMUSpec{
+		Binary: "qemu-system-x86_64", Accel: "tcg", ControlSock: "/s",
+		NetMode: NetIpvtap, NetWrapBin: "/opt/briard/bin/briard-net-wrap",
+		SystemTap: "briard-sys", SystemMAC: parent,
+		ServiceTap: "briard-svc", ServiceMAC: parent,
+		WitnessTap: "briard-wit", WitnessMAC: "52:54:00:de:ad:be",
+	}
+	got := launchExec(s)
+	wantHead := []string{
+		"/opt/briard/bin/briard-net-wrap",
+		"briard-hold/briard-sys", "", "3",
+		"briard-hold/briard-svc", "", "4",
+		"--",
+	}
+	if len(got) < len(wantHead) || !slices.Equal(got[:len(wantHead)], wantHead) {
+		t.Errorf("wrapper head mismatch:\n got %q\nwant %q", got[:min(len(got), len(wantHead))], wantHead)
+	}
+	args := strings.Join(qemuArgs(s), " ")
+	for _, want := range []string{
+		"tap,id=net1,fd=3", "virtio-net-pci,netdev=net1,mac=" + parent,
+		"tap,id=net2,fd=4", "virtio-net-pci,netdev=net2,mac=" + parent,
+		"tap,id=net3,ifname=briard-wit,script=no,downscript=no", // the private link is a plain tap
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("ipvtap qemuArgs missing %q\ngot: %s", want, args)
+		}
 	}
 }
 

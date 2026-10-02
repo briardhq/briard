@@ -85,13 +85,6 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 			f.NIC = nic.Selection{Dev: "tun0", Probed: true, Candidates: []string{"eth0", "tun0"},
 				Err: errors.New("a macvtap could not be created on it (argument \"tun0\" is wrong: Device does not support macvlan)")}
 		}, "network", "BRIARD_NIC=eth0"},
-		// The selected NIC is a wireless station. The probe PASSES there -- the kernel makes the
-		// macvtap without complaint and the frames die at the access point -- so this refuses
-		// separately from it, saying Wi-Fi is coming rather than leaving the household a node
-		// nobody can reach.
-		{"wifi only", func(f *HostFacts) {
-			f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
-		}, "network", "coming soon"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
 	}
 	for _, tc := range cases {
@@ -132,6 +125,20 @@ func TestAssessWarnsStillAdmit(t *testing.T) {
 		}
 		if !r.Admit() {
 			t.Error("a host without an mDNS resolver warns but is still admitted")
+		}
+	})
+	// A wireless station is the ipvtap substrate: everything but failover. Yellow, with the reason
+	// derived, and admitted.
+	t.Run("wifi only", func(t *testing.T) {
+		f := capable()
+		f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
+		r := Assess(f)
+		c := find(t, r, "network")
+		if c.Status != Warn || !strings.Contains(c.Fix, "cannot take a peer until it is wired") {
+			t.Fatalf("wireless = %+v, want warn with the reason", c)
+		}
+		if !r.Admit() {
+			t.Error("a wireless station warns but is admitted")
 		}
 	})
 	t.Run("below recommended disk", func(t *testing.T) {

@@ -38,6 +38,10 @@ const netTick = 10 * time.Second
 // hot path's whole question: an agent that finds its devices there has nothing to build, whether
 // they were built by its own previous life or by a rig that owns the substrate itself. Callers
 // have already established that the config names devices at all.
+//
+// An ipvtap node never reads as present here: its children live in nic.HoldNS, out of this
+// namespace's sight, so a wireless node always takes the converging path in awaitNetwork. That
+// path is check-first, so it changes nothing when the children are already there.
 func (cfg Config) linksPresent() bool {
 	for _, d := range []string{cfg.SystemTap, cfg.ServiceTap, cfg.WitnessTap} {
 		if d != "" && !nic.Up(d) {
@@ -48,9 +52,10 @@ func (cfg Config) linksPresent() bool {
 }
 
 // netSpec derives the host side of the guest's L2 from the selected device. It is DERIVED and not
-// configured: the substrate is the answer to "is the parent a bridge", not a mode
-// somebody typed, because the thing that decides it is the machine rather than the operator.
-func (cfg Config) netSpec(dev string, bridge bool) nic.Spec {
+// configured: the substrate is the answer to "is the parent a bridge, or a wireless station", not
+// a mode somebody typed, because the thing that decides it is the machine rather than the
+// operator. A wireless station is macvtap's spec with ipvtap children (nic/ipvtap.go).
+func (cfg Config) netSpec(dev string, bridge, wireless bool) nic.Spec {
 	// ⚠️ NARROWED FIRST, and here rather than at the caller so the two cannot disagree. The spec
 	// must describe the node the substrate actually makes: on a bridge there is no service tap,
 	// no private link, and the host's system-subnet address is a /24 on the bridge. Reading the
@@ -58,7 +63,7 @@ func (cfg Config) netSpec(dev string, bridge bool) nic.Spec {
 	// claims no on-link route and black-holes the guest's peers -- and it would do it silently.
 	cfg = cfg.applySubstrate(bridge)
 	s := nic.Spec{
-		Parent: dev, Bridge: bridge,
+		Parent: dev, Bridge: bridge, Ipvtap: wireless && !bridge,
 		SystemTap: cfg.SystemTap, ServiceTap: cfg.ServiceTap, PrivTap: cfg.WitnessTap,
 	}
 	if bridge {
@@ -169,10 +174,10 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 		if err == nil {
 			cfg = numbered
 			if sel.Dev != "" {
-				spec := cfg.netSpec(sel.Dev, sel.Bridge)
+				spec := cfg.netSpec(sel.Dev, sel.Bridge, sel.Wireless)
 				cfg = cfg.applySubstrate(sel.Bridge)
 				cfg.net = &spec
-				logf("network: the guest's L2 is already up on %s (%s)", sel.Dev, substrateName(sel.Bridge))
+				logf("network: the guest's L2 is already up on %s (%s)", sel.Dev, substrateName(spec))
 			} else {
 				logf("network: the guest's L2 is already up; this agent did not build it and will not touch it")
 			}
@@ -191,7 +196,7 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 			// The draw is bounded by its own budget rather than by this tick (subnets.go), so it
 			// is given ctx and not step.
 			if numbered, err = cfg.numberThisNode(ctx, sel.Dev, logf); err == nil {
-				spec = numbered.netSpec(sel.Dev, sel.Bridge)
+				spec = numbered.netSpec(sel.Dev, sel.Bridge, sel.Wireless)
 				err = nic.Converge(step, spec)
 			}
 		}
@@ -202,7 +207,7 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 			}
 			cfg = numbered.applySubstrate(spec.Bridge)
 			cfg.net = &spec
-			logf("network: the guest's L2 hangs off %s (%s)", spec.Parent, substrateName(spec.Bridge))
+			logf("network: the guest's L2 hangs off %s (%s)", spec.Parent, substrateName(spec))
 			return cfg, nil
 		}
 		// One line per DISTINCT problem, not one per tick: a node waiting out a cable is not a
@@ -347,9 +352,12 @@ func (cfg Config) convergeNetwork(ctx context.Context, logf func(string, ...any)
 	logf("network: re-converged the guest's L2 on %s", cfg.net.Parent)
 }
 
-func substrateName(bridge bool) string {
-	if bridge {
+func substrateName(s nic.Spec) string {
+	switch {
+	case s.Bridge:
 		return "a bridge this host did not create -- one port, the guest makes its own service identity"
+	case s.Ipvtap:
+		return "ipvtap children on the station's own MAC, held in " + nic.HoldNS + " -- wireless, so no failover"
 	}
 	return "macvtap children, no bridge and no host-IP move"
 }

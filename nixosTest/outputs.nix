@@ -329,6 +329,22 @@ let
     qemuBundle = qemuBundle.bundle;
   };
 
+  # A WIRELESS station -- the ipvtap substrate, single-anchor -- over real 802.11 framing
+  # (mac80211_hwsim + hostapd + wpa_supplicant), another delta over installMacvtap.
+  installWifi = import ./install-wifi.nix {
+    inherit pkgs guestDisk guestBundle;
+    agent = agentPkg;
+    qemuBundle = qemuBundle.bundle;
+  };
+  # ...and the same station behind a host DHCP client that sends no client-id: the router hands
+  # the guest the host's own address, the agent refuses it, and the named remedy serves.
+  installWifiRefuse = import ./install-wifi.nix {
+    inherit pkgs guestDisk guestBundle;
+    agent = agentPkg;
+    qemuBundle = qemuBundle.bundle;
+    refuse = true;
+  };
+
   # On the DEFAULT macvtap substrate: the whole free-local `curl | sh` install
   # -> green, proven by an OFF-BOX LAN client reaching the service at the VIP, using the bundled
   # qemu (no distro qemu) + a nested guest; plus the cattle/pet reinstall. It carries that
@@ -445,6 +461,8 @@ in
       report-card = reportCard;
       install-macvtap = installMacvtap; # DEFAULT substrate: curl|sh -> green, off-box VIP reach, cattle/pet reinstall
       install-bridge = installBridge; # bridge mode (Windows' shape): NIC enslave + host-IP move
+      install-wifi = installWifi; # a wireless station: ipvtap, single-anchor, over a real access point
+      install-wifi-refuse = installWifiRefuse; # ...whose router hands the guest the host's address: refused, then the remedy
     };
 
     # Debug harnesses — deliberately EXCLUDED from the curated set the nightly runs (the manifest

@@ -492,6 +492,17 @@ if command -v systemctl >/dev/null 2>&1; then
 	if command -v journalctl >/dev/null 2>&1; then
 		waited=0
 		while [ "$waited" -lt 180 ]; do
+			# THE AGENT REFUSING ends the wait, in its own words: a node that cannot serve must
+			# not leave the household waiting out the bound for a sentence that says "still
+			# starting". Today that is a Wi-Fi guest handed the host's own address (DHCP client IDs), and the
+			# remedy is a re-run of this script, so it ends here as a failure.
+			#
+			# ⚠️ ASKED BEFORE HEALTHY, and the order is the point: the guest judges its health
+			# from inside, so it reads healthy on the address it was refused, and the agent logs
+			# that status line AFTER the refusal in the same pass.
+			refused=$(journalctl -u briard-agent --since "$UNITS_STARTED" --no-pager -o cat 2>/dev/null |
+				sed -n 's/^.*network: refused: //p' | head -n1)
+			[ -n "$refused" ] && die "briard is installed but cannot serve your home: $refused"
 			if journalctl -u briard-agent --since "$UNITS_STARTED" --no-pager 2>/dev/null | grep -q 'primary=true.*healthy=true'; then
 				report=$("$PREFIX/agent/briard-agent" open 2>/dev/null) || report=""
 				[ -n "$report" ] && break

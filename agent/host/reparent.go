@@ -289,7 +289,12 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 	// Rebuild BEFORE the restart. The children went away with their parent, so there are no live
 	// fds to protect; and doing it first means the guest comes back into a network that is
 	// already right rather than one being assembled underneath it.
-	spec := cfg.netSpec(dev, nic.IsBridge(dev))
+	//
+	// THE SUBSTRATE IS RE-DERIVED WITH THE PARENT. A move between Wi-Fi and wire changes it
+	// (ipvtap <-> macvtap), and with it the guest's NICs: their MACs and how qemu is handed them.
+	// guestSpec reads both off cfg.net, which this updates, so the restart below launches the
+	// guest the new substrate needs. The tiers above decide when; this is only the what.
+	spec := cfg.netSpec(dev, nic.IsBridge(dev), nic.Wireless(dev))
 	rb, rbCancel := context.WithTimeout(mv, netTick)
 	err := nic.Rebuild(rb, spec)
 	rbCancel()

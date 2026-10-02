@@ -241,15 +241,16 @@ func Assess(f HostFacts) Report {
 	// unusable cases refuse BEFORE anything is written, carrying nic.Selection.Fix -- what was
 	// picked, why, what failed, the override, and the devices to choose from.
 	//
-	// Wireless REFUSES, and is judged separately from the probe: the kernel creates a macvtap on a
-	// wireless station without complaint and the frames die at the access point, so the probe
-	// cannot see it. Wi-Fi comes back as a yellow tier meaning "everything but failover",
-	// which needs ipvtap; until then the honest answer is "coming soon", not a node nobody reaches.
+	// Wireless is YELLOW: the guest rides the station's own MAC over ipvtap and works fully, except
+	// failover -- a failover moves a MAC, and on Wi-Fi the guest has none of its own. So the node
+	// serves alone and cannot take a peer until it is wired. The probe has already built an ipvtap
+	// child on the station, the very thing the install builds.
 	switch {
 	case f.NIC.Err != nil:
 		cs = append(cs, Check{"network", Refuse, nicDetail(f.NIC), f.NIC.Fix()})
 	case f.NIC.Wireless:
-		cs = append(cs, Check{"network", Refuse, fmt.Sprintf("%s is wireless (it holds this machine's default route)", f.NIC.Dev), f.NIC.Fix()})
+		cs = append(cs, Check{"network", Warn, fmt.Sprintf("%s is wireless (it holds this machine's default route)", f.NIC.Dev),
+			"this node cannot take a peer until it is wired: on Wi-Fi it serves your home on its own, with no failover"})
 	default:
 		cs = append(cs, Check{"network", Pass, nicDetail(f.NIC), ""})
 	}
@@ -434,7 +435,9 @@ func Print(w io.Writer, r Report) {
 func Run(ctx context.Context, w io.Writer) bool {
 	f := Gather(ctx)
 	r := Assess(f)
-	if !f.NIC.Bridge {
+	// Not on a wireless station either: its guest rides the station's own MAC (ipvtap), so neither
+	// caveat is about anything that happens there.
+	if !f.NIC.Bridge && !f.NIC.Wireless {
 		r.Checks = append(r.Checks, MacvtapAdvisories(f)...)
 	}
 	Print(w, r)

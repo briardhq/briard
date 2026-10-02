@@ -48,13 +48,17 @@ type storageFreeReader interface {
 
 // doctorFacts is what judgeDoctor judges -- gathered by applyDoctor, fabricated by the tests.
 type doctorFacts struct {
-	Parent    string // the device the guest's L2 hangs off; "" when this agent built no network
-	Bridge    bool   // Parent is a bridge (the substrate fork)
-	ParentUp  bool
-	Diskless  bool // a witness: no volume, no address, no service
-	Peers     int  // other members of the flock; 0 is a lone node
-	DataDisk  string
-	DiskFound bool
+	Parent   string // the device the guest's L2 hangs off; "" when this agent built no network
+	Bridge   bool   // Parent is a bridge (the substrate fork)
+	Ipvtap   bool   // Parent is a wireless station (the fork's third answer)
+	ParentUp bool
+	// Refused/RefusedFix are the copier's refusal of the address the router handed the guest
+	// (ipvtap.go); "" when there is none.
+	Refused, RefusedFix string
+	Diskless            bool // a witness: no volume, no address, no service
+	Peers               int  // other members of the flock; 0 is a lone node
+	DataDisk            string
+	DiskFound           bool
 
 	GuestErr  error // the snapshot could not ask the guest
 	Cluster   model.Cluster
@@ -86,9 +90,10 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 		Now:       time.Now(),
 	}
 	if cfg.net != nil {
-		f.Parent, f.Bridge = cfg.net.Parent, cfg.net.Bridge
+		f.Parent, f.Bridge, f.Ipvtap = cfg.net.Parent, cfg.net.Bridge, cfg.net.Ipvtap
 		f.ParentUp = f.Parent != "" && nic.Up(f.Parent)
 	}
+	f.Refused, f.RefusedFix = cfg.ipvtap.refusal()
 	if f.DataDisk != "" {
 		_, err := os.Stat(f.DataDisk)
 		f.DiskFound = err == nil
@@ -137,8 +142,11 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 
 	if f.Parent != "" {
 		kind := "macvtap"
-		if f.Bridge {
+		switch {
+		case f.Bridge:
 			kind = "bridge"
+		case f.Ipvtap:
+			kind = "ipvtap: wireless, so this node cannot take a peer until it is wired"
 		}
 		if f.ParentUp {
 			add("network", reportcard.Pass, fmt.Sprintf("%s is up (the guest's network hangs off it, %s)", f.Parent, kind), "")
@@ -204,6 +212,10 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 	// THE ADDRESS AGAINST THE ROLE: a probe alone cannot tell a handover from a fault,
 	// so what is expected depends on whether this node serves.
 	switch {
+	case f.Refused != "":
+		// Ahead of the generic "no address" line, which it would otherwise read as: this is WHY
+		// there is none, and the remedy is not the router's free addresses.
+		add("address", reportcard.Refuse, f.Refused, f.RefusedFix)
 	case serving && f.Probe == "":
 		add("address", reportcard.Refuse, "serving, but holding no address, so nothing in your home can reach it",
 			"if your router hands out the address, check it has free addresses; `briard logs` shows the attempt")

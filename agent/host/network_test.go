@@ -25,7 +25,7 @@ func macvtapCfg() Config {
 // The macvtap substrate: two children on the parent, a private link addressed at the host end,
 // and this node's system-subnet /32 on that link rather than on the parent.
 func TestNetSpecMacvtap(t *testing.T) {
-	s := macvtapCfg().netSpec("eth1", false)
+	s := macvtapCfg().netSpec("eth1", false, false)
 	if s.Parent != "eth1" || s.Bridge {
 		t.Fatalf("spec = %+v", s)
 	}
@@ -47,7 +47,7 @@ func TestNetSpecMacvtap(t *testing.T) {
 // identity on top, and the host's address is on the bridge because it is genuinely on
 // that segment -- which is also why the /32 has to become a /24.
 func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
-	s := macvtapCfg().netSpec("br0", true)
+	s := macvtapCfg().netSpec("br0", true, false)
 	if !s.Bridge || s.SystemTap != "briard-drbd0" {
 		t.Fatalf("spec = %+v", s)
 	}

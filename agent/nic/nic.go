@@ -38,7 +38,7 @@ var (
 	ErrNoSuchDevice   = errors.New("no such device")
 )
 
-// probeDev is the throwaway macvtap. A fixed name rather than a random one so a leaked device
+// probeDev is the throwaway child. A fixed name rather than a random one so a leaked device
 // (killed mid-probe) is recognisable and reclaimable, and one that cannot collide with the two
 // the install really creates.
 const probeDev = "briard-probe0"
@@ -52,16 +52,18 @@ type Selection struct {
 	// changes the message and nothing else: a user who named a device does not need to be told
 	// how we would have guessed.
 	Override bool
-	// Bridge is whether Dev is a bridge, which is the SUBSTRATE FORK: a bridge gets
-	// one port and the guest makes its own service identity inside; anything else gets macvtap
-	// children. Asked of the device rather than selected by a knob, because there is one true
-	// answer and the machine holds it.
-	Bridge bool
-	// Wireless is whether Dev is an 802.11 station. Kept separate from the probe on purpose —
-	// the probe SUCCEEDS on wireless (the kernel makes the macvtap happily), and the frames die
-	// later at the AP, which is exactly the class of failure the probe cannot see.
+	// Bridge and Wireless are the SUBSTRATE FORK, three ways: a bridge gets one port and the
+	// guest makes its own service identity inside; a wireless station gets ipvtap children, on
+	// its own MAC, the one an access point carries for it (ipvtap.go); anything else gets
+	// macvtap children. Asked of the device rather than selected by a knob, because there is one
+	// true answer and the machine holds it. A managed station cannot be a bridge member, so the
+	// two never overlap.
+	//
+	// Wired stays macvtap even though ipvtap would carry it: failover moves a MAC, and an ipvtap
+	// child cannot hold one of its own. That is also why a wireless node is yellow, not green.
+	Bridge   bool
 	Wireless bool
-	// Probed is whether the macvtap probe actually ran. False on an unprivileged card run, where
+	// Probed is whether the probe actually ran. False on an unprivileged card run, where
 	// `ip link add` fails for a reason that says nothing about the host.
 	Probed bool
 	// Err is why Dev is unusable: one of the sentinels above, or a wrapped probe failure.
@@ -132,8 +134,8 @@ func Select(override string) Selection {
 // devices its config names, before it asks anything about a parent.
 func Up(dev string) bool { return exists("/sys/class/net/"+dev) && up(dev) }
 
-// Usable reports whether the agent may build on this selection. Wireless is not a fault here: its
-// severity is the report card's call, not the selector's.
+// Usable reports whether the agent may build on this selection. Wireless is not a fault: it is a
+// substrate, and what it costs (no failover) is the report card's to grade.
 func (s Selection) Usable() bool { return s.Dev != "" && s.Err == nil }
 
 // Fix is the remedy line, and it is the whole safety margin: what was picked, why, what failed,
@@ -153,8 +155,6 @@ func (s Selection) Fix() string {
 		fmt.Fprintf(&b, "%s cannot carry the guest's network: %v", s.Dev, s.Err)
 	case s.Err != nil:
 		fmt.Fprintf(&b, "%s was chosen because it holds this machine's default route, but it cannot carry the guest's network: %v", s.Dev, s.Err)
-	case s.Wireless:
-		fmt.Fprintf(&b, "%s is wireless, and Wi-Fi support is coming soon: until then briard needs a wired connection, because the guest gets its own MAC on your network and no household access point carries a second MAC behind one wireless station", s.Dev)
 	default:
 		return ""
 	}
@@ -176,22 +176,27 @@ func exampleDev(candidates []string) string {
 	return "eth0"
 }
 
-// Probe validates dev by creating the very thing the install creates — a macvtap child — and
-// deleting it. It turns a wrong selection into a clean refusal instead of a guest that boots and
-// is unreachable, which is the one failure mode a household cannot diagnose.
+// Probe validates dev by creating the very thing the install creates — a macvtap child, or an
+// ipvtap child on a wireless station — and deleting it. It turns a wrong selection into a clean
+// refusal instead of a guest that boots and is unreachable, which is the one failure mode a
+// household cannot diagnose.
 //
-// It is NOT a wireless test: a macvtap on wlan0 is created without complaint, and the frames die
-// at the access point. What it catches is the device that cannot parent one at all — a full-tunnel
-// tun0 above all, which a laptop on a corporate VPN hands us as its default route.
+// What it catches is the device that cannot parent one at all — a full-tunnel tun0 above all,
+// which a laptop on a corporate VPN hands us as its default route. It cannot see whether an
+// access point carries the result; the substrate is chosen so that it does.
 func Probe(ctx context.Context, dev string) error {
 	// A leaked probe device from a run killed between create and delete would make every later
 	// probe fail with EEXIST -- i.e. would condemn a perfectly good NIC. Clear it first.
 	_, _ = ip(ctx, "link", "del", probeDev)
-	// THE SAME ARGV THE INSTALL USES, from the same builder -- that identity is the whole claim
+	// THE SAME ARGV THE INSTALL USES, from the same builders -- that identity is the whole claim
 	// this probe makes, so it is shared rather than restated.
-	out, err := ip(ctx, macvtapAddArgs(probeDev, dev)...)
+	kind, args := "macvtap", macvtapAddArgs(probeDev, dev)
+	if Wireless(dev) {
+		kind, args = "ipvtap", ipvtapAddArgs(probeDev, dev)
+	}
+	out, err := ip(ctx, args...)
 	if err != nil {
-		return fmt.Errorf("a macvtap could not be created on it (%s)", firstLine(out, err))
+		return fmt.Errorf("a %s could not be created on it (%s)", kind, firstLine(out, err))
 	}
 	_, _ = ip(ctx, "link", "del", probeDev)
 	return nil
@@ -201,7 +206,7 @@ func Probe(ctx context.Context, dev string) error {
 // \"tun0\" is wrong: Device does not support macvlan"), falling back to the exec error when the
 // command said nothing at all.
 func firstLine(out []byte, err error) string {
-	for _, l := range strings.Split(string(out), "\n") {
+	for l := range strings.SplitSeq(string(out), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
 			return strings.TrimPrefix(l, "Error: ")
 		}

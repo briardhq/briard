@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -68,8 +69,9 @@ func disableIPv6Path(dev string) string {
 
 // Spec is the host-side L2 for one guest: which parent, and which devices on it. It is DERIVED
 // from the selected device rather than configured -- if the parent is a bridge the
-// user owns, the guest gets one port on it and makes its own service identity inside; otherwise
-// the guest gets macvtap children and a private link.
+// user owns, the guest gets one port on it and makes its own service identity inside; if it is a
+// wireless station, ipvtap children in HoldNS and a private link; otherwise macvtap children and
+// a private link.
 type Spec struct {
 	// Parent is the device the guest's L2 hangs off -- nic.Choose's answer.
 	Parent string
@@ -77,6 +79,10 @@ type Spec struct {
 	// THE DEVICE rather than a mode someone selects: we never create a bridge, we only join one
 	// that is already there.
 	Bridge bool
+	// Ipvtap is whether Parent is a wireless station, whose one MAC is all the guest may use
+	// (ipvtap.go). The children are ipvtap rather than macvtap and live in HoldNS; the rest of
+	// the spec is macvtap's. Never true together with Bridge: a managed station is no bridge.
+	Ipvtap bool
 	// SystemTap is the guest's eth1 -- its node IP, and where DRBD binds. Built on every
 	// substrate: a macvtap child of Parent, or a plain tap enslaved to it.
 	SystemTap string
@@ -99,9 +105,19 @@ type Addr struct{ CIDR, Dev string }
 // built reports whether every device this spec names already exists. It is the difference between
 // a pass that BUILDS (first convergence, or the one after a reboot) and a pass that merely
 // re-asserts -- and only the first may touch link state.
-func (s Spec) built() bool {
+func (s Spec) built(ctx context.Context) bool {
+	held := map[string][]string{}
+	if s.Ipvtap {
+		held = holdLinks(ctx)
+	}
 	for _, d := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
-		if d != "" && !exists("/sys/class/net/"+d) {
+		switch {
+		case d == "":
+		case s.Ipvtap && d != s.PrivTap:
+			if held[d] == nil {
+				return false
+			}
+		case !exists("/sys/class/net/" + d):
 			return false
 		}
 	}
@@ -135,7 +151,7 @@ func Converge(ctx context.Context, s Spec) error {
 	// everything present there is nothing to build and no reason to touch the host's own NIC.
 	// The tun driver is loaded on the same pass and for the same reason: nothing below can open
 	// /dev/net/tun until it exists, and nothing else on a stock host will have asked for it.
-	if !s.built() {
+	if !s.built(ctx) {
 		loadTun(ctx)
 		if err := ensureUp(ctx, s.Parent); err != nil {
 			return err
@@ -152,6 +168,26 @@ func Converge(ctx context.Context, s Spec) error {
 		}
 		if err := ensureMaster(ctx, s.SystemTap, s.Parent); err != nil {
 			return err
+		}
+	} else if s.Ipvtap {
+		// The guest's two NICs as ipvtap children in HoldNS, on the parent's MAC -- the one MAC
+		// a wireless station can carry (ipvtap.go). The private tap is macvtap's, unchanged.
+		if err := ensureHoldNS(ctx); err != nil {
+			return err
+		}
+		held := holdLinks(ctx)
+		for _, t := range []string{s.SystemTap, s.ServiceTap} {
+			if t == "" {
+				continue
+			}
+			if err := ensureIpvtap(ctx, t, s.Parent, held); err != nil {
+				return err
+			}
+		}
+		if s.PrivTap != "" {
+			if err := ensureTap(ctx, s.PrivTap); err != nil {
+				return err
+			}
 		}
 	} else {
 		// The guest's two NIC macvtaps on the parent, created with the kernel's random MAC; the
@@ -193,17 +229,27 @@ func Converge(ctx context.Context, s Spec) error {
 // ⚠️ THE PRIVATE TAP IS NOT TOUCHED. It has no parent -- it is a point-to-point wire to our own
 // guest -- so a re-parent has nothing to do to it, and recreating it would drop the host's own
 // addresses and the permanent neighbour entry that make the reboot gate and the VIP route work.
+//
+// The children are deleted from BOTH namespaces, whatever s says: a move between Wi-Fi and wire
+// changes the substrate, and the old children are wherever the old substrate put them.
 func Rebuild(ctx context.Context, s Spec) error {
 	if s.Bridge {
 		// Nothing to rebuild: the port is a plain tap on a bridge the USER owns, and a bridge
 		// that went away is theirs to restore.
 		return Converge(ctx, s)
 	}
+	held := holdLinks(ctx)
 	for _, t := range []string{s.SystemTap, s.ServiceTap} {
-		if t != "" && exists("/sys/class/net/"+t) {
+		if t == "" {
+			continue
+		}
+		if exists("/sys/class/net/" + t) {
 			if out, err := ip(ctx, "link", "del", t); err != nil {
 				return fmt.Errorf("nic: removing %s before re-parenting: %s", t, firstLine(out, err))
 			}
+		}
+		if err := delHeld(ctx, t, held); err != nil {
+			return err
 		}
 	}
 	return Converge(ctx, s)
@@ -231,6 +277,12 @@ func Remove(ctx context.Context, s Spec) error {
 			}
 		}
 	}
+	// The ipvtap substrate's namespace, and the children in it with it.
+	if exists("/run/netns/" + HoldNS) {
+		if out, err := ip(ctx, "netns", "del", HoldNS); err != nil {
+			keep(fmt.Errorf("nic: removing %s: %s", HoldNS, firstLine(out, err)))
+		}
+	}
 	for _, a := range s.Addrs {
 		if a.CIDR == "" || !hasAddr(a.Dev, a.CIDR) {
 			continue
@@ -249,8 +301,20 @@ func Converged(s Spec) bool {
 	if s.Parent == "" || !exists("/sys/class/net/"+s.Parent) {
 		return false
 	}
+	var held map[string][]string
+	if s.Ipvtap {
+		held = holdLinks(context.Background())
+	}
 	for _, t := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
 		if t == "" {
+			continue
+		}
+		// The ipvtap children are asked of HoldNS, all in the one `ip` call above. IPv6 is off
+		// namespace-wide from the pass that made it, so ALLMULTI is the flag left to check.
+		if s.Ipvtap && t != s.PrivTap {
+			if !slices.Contains(held[t], "ALLMULTI") {
+				return false
+			}
 			continue
 		}
 		// EXISTENCE, NOT LINK STATE. A device that is administratively down is not drift to be

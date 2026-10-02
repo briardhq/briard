@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"briard.io/agent/guestfirmware"
+	"briard.io/agent/nic"
 	"briard.io/shared/dashboard"
 )
 
@@ -80,12 +81,15 @@ type QEMUSpec struct {
 	// NetBridge (default) = host taps qemu opens by name (`ifname=`, the install.sh bridge-
 	// enslave substrate); NetMacvtap = macvtap chardevs qemu attaches to via an inherited fd
 	// (`fd=N` on /dev/tap<ifindex>), which gives the guest L2 citizenship without a host bridge.
+	// NetIpvtap is NetMacvtap's shape for a wireless parent: the chardevs belong to ipvtap
+	// children in nic.HoldNS, which carry the parent's MAC -- so SystemMAC and ServiceMAC are the
+	// parent's, and nothing pins a MAC on the children.
 	// The witness NIC is ALWAYS a plain tap regardless -- macvtap isolates guest<->host,
 	// Which is exactly the private link the witness-forwarder needs.
 	NetMode string
 	// NetWrapBin is the bundled fd-passing launch wrapper (briard-net-wrap) required by
-	// NetMacvtap: systemd-run starts the guest via PID 1, so the agent cannot hand qemu an
-	// inherited macvtap fd. Empty in NetBridge mode (qemu opens taps by name).
+	// NetMacvtap and NetIpvtap: systemd-run starts the guest via PID 1, so the agent cannot hand
+	// qemu an inherited chardev fd. Empty in NetBridge mode (qemu opens taps by name).
 	NetWrapBin string
 	SerialLog  string // if set, capture the guest serial console (ttyS0) to this file; empty = discard
 	Unit       string // transient systemd unit name for the guest; empty = GuestUnit
@@ -119,7 +123,11 @@ const (
 const (
 	NetBridge  = ""        // default: qemu opens the host tap by name (ifname=), the bridge substrate
 	NetMacvtap = "macvtap" // qemu attaches to /dev/tap<ifindex> via an inherited fd
+	NetIpvtap  = "ipvtap"  // the same, on ipvtap children held in nic.HoldNS (a wireless parent)
 )
+
+// fdPassed reports whether mode's NICs are chardevs the launch wrapper opens on inherited fds.
+func fdPassed(mode string) bool { return mode == NetMacvtap || mode == NetIpvtap }
 
 // The guest's WAN net (eth0, qemu SLIRP). These ARE qemu's defaults; they are written out
 // because the guest configures eth0 statically from the same numbers and runs no DHCP client
@@ -319,7 +327,7 @@ func qemuArgs(s QEMUSpec) []string {
 // fd and qemu attaches to the inherited fd. dev is unused in macvtap mode here (the
 // wrapper resolves the /dev/tap node from it), but naming it keeps the call sites uniform.
 func netdevArg(id, dev, mode string, fd int) string {
-	if mode == NetMacvtap {
+	if fdPassed(mode) {
 		return "tap,id=" + id + ",fd=" + strconv.Itoa(fd)
 	}
 	return "tap,id=" + id + ",ifname=" + dev + ",script=no,downscript=no"
@@ -333,17 +341,27 @@ func netdevArg(id, dev, mode string, fd int) string {
 // fds referenced by the `fd=` netdevs. The witness NIC is never listed here -- it is a plain
 // tap qemu opens by name. Triples are separate argv words (not delimited), so a MAC's colons
 // never need escaping.
+//
+// Under NetIpvtap a triple names `<namespace>/<dev>` (a slash cannot occur in an interface name)
+// and an empty MAC: the children are in nic.HoldNS, and an ipvtap child's MAC is its parent's and
+// cannot be changed, so there is nothing to pin. qemu's mac= still carries it (qemuArgs).
 func launchExec(s QEMUSpec) []string {
 	qemu := append([]string{s.Binary}, qemuArgs(s)...)
-	if s.NetMode != NetMacvtap {
+	if !fdPassed(s.NetMode) {
 		return qemu
+	}
+	triple := func(dev, mac string, fd int) []string {
+		if s.NetMode == NetIpvtap {
+			dev, mac = nic.HoldNS+"/"+dev, ""
+		}
+		return []string{dev, mac, strconv.Itoa(fd)}
 	}
 	exec := []string{s.NetWrapBin}
 	if s.SystemTap != "" {
-		exec = append(exec, s.SystemTap, s.SystemMAC, strconv.Itoa(sysFD))
+		exec = append(exec, triple(s.SystemTap, s.SystemMAC, sysFD)...)
 	}
 	if s.ServiceTap != "" {
-		exec = append(exec, s.ServiceTap, s.ServiceMAC, strconv.Itoa(svcFD))
+		exec = append(exec, triple(s.ServiceTap, s.ServiceMAC, svcFD)...)
 	}
 	exec = append(exec, "--")
 	return append(exec, qemu...)
@@ -450,8 +468,8 @@ func shutdownBin() string {
 // qemu to the agent's ctx would re-couple the lifecycles.
 func Launch(ctx context.Context, s QEMUSpec) (*Guest, error) {
 	unit := s.unit()
-	if s.NetMode == NetMacvtap && s.NetWrapBin == "" {
-		return nil, fmt.Errorf("platform: NetMacvtap requires NetWrapBin (the fd-passing launch wrapper)")
+	if fdPassed(s.NetMode) && s.NetWrapBin == "" {
+		return nil, fmt.Errorf("platform: %s requires NetWrapBin (the fd-passing launch wrapper)", s.NetMode)
 	}
 	args := launchArgs(s)
 	if err := secureQMPDir(s.QMPSock); err != nil {

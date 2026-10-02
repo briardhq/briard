@@ -20,6 +20,11 @@
 # Triples are separate argv words (a MAC's colons never need escaping). The witness NIC is
 # NOT passed here: it stays a plain tap qemu opens by name (macvtap would isolate the
 # private guest<->host link the witness-forwarder answers).
+#
+# A <dev> written <netns>/<dev> is an ipvtap child the agent holds in that namespace (a slash
+# cannot occur in an interface name). Its MAC is its parent's and cannot be changed, so its
+# <mac> is empty and nothing is pinned; its /dev/tap<ifindex> node is opened from here all the
+# same, because the chardev is not namespaced -- only the index is read inside the namespace.
 set -eu
 
 # Run under systemd (the guest unit), whose PATH is minimal -- pin one that finds `ip`/`cat`
@@ -30,15 +35,28 @@ while [ "${1:-}" != "--" ]; do
 	[ "$#" -ge 3 ] || { echo "briard-net-wrap: dangling NIC triple (need dev mac fd)" >&2; exit 2; }
 	dev=$1 mac=$2 fd=$3
 	shift 3
-	# Bounce down->up around the MAC change: the device is fresh (qemu not yet attached), so
-	# the flap is invisible, and some drivers reject a MAC change while up.
-	ip link set "$dev" down
-	[ -n "$mac" ] && ip link set "$dev" address "$mac"
-	ip link set "$dev" up
+	case $dev in
+	*/*)
+		ns=${dev%%/*} dev=${dev#*/}
+		ip -n "$ns" link set "$dev" up
+		# `7: briard0@if3: <...> ...` -- the index is the first field. A missing device makes
+		# idx empty -> `exec N<>/dev/tap` fails -> set -e aborts (fail fast), as below.
+		line=$(ip -n "$ns" -o link show dev "$dev")
+		idx=${line%%:*}
+		;;
+	*)
+		# Bounce down->up around the MAC change: the device is fresh (qemu not yet attached),
+		# so the flap is invisible, and some drivers reject a MAC change while up.
+		ip link set "$dev" down
+		[ -n "$mac" ] && ip link set "$dev" address "$mac"
+		ip link set "$dev" up
+		idx=$(cat "/sys/class/net/${dev}/ifindex")
+		;;
+	esac
 	# The tap chardev minor IS the device ifindex. eval expands $fd into the redirection
 	# operator position (POSIX sh can't take a variable fd number literally). A missing device
-	# makes $(cat ...) empty -> `exec N<>/dev/tap` fails -> set -e aborts (fail fast).
-	eval "exec ${fd}<>/dev/tap$(cat "/sys/class/net/${dev}/ifindex")"
+	# makes idx empty -> `exec N<>/dev/tap` fails -> set -e aborts (fail fast).
+	eval "exec ${fd}<>/dev/tap${idx}"
 done
 shift # drop the -- sentinel
 

@@ -1761,6 +1761,13 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if req.VIPDev != "" && req.Dev != "" {
 				env = append(env, "SYSTEM_DEV="+req.Dev+"\n"...)
 			}
+			// VIP_MAC, the flock MAC, is the VIP's DHCP identity: its client-id and hostname. Read
+			// from here rather than off the NIC, because the NIC's own MAC is not always it -- on a
+			// wireless parent every guest NIC carries the station's MAC (ipvtap), and the lease
+			// must still be the flock's, distinct from the host's.
+			if req.VIPDev != "" && req.VIPMAC != "" {
+				env = append(env, "VIP_MAC="+req.VIPMAC+"\n"...)
+			}
 			if req.VIPAddr != "" {
 				env = append(env, "VIP_ADDR="+req.VIPAddr+"\n"...)
 			}
