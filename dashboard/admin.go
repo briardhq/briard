@@ -177,7 +177,7 @@ func (a *app) installState(name string, routed bool) *installView {
 		delete(a.installs, name)
 		return nil
 	}
-	v := &installView{Running: !st.Done, Failed: st.Failed, Detail: st.Detail, Since: st.Started.Format("15:04")}
+	v := &installView{Running: !st.Done, Failed: st.Failed, Detail: st.Detail, Since: st.Started.In(zone()).Format("15:04")}
 	if v.Running {
 		v.Progress = a.pullProgress(name)
 	}

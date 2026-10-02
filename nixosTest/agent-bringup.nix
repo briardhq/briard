@@ -21,6 +21,9 @@ pkgs.testers.runNixOSTest {
       virtualisation.vlans = [ ]; # no framework eth1 -- we build our own macvtap parent (192.168.1.0/24, the VIP subnet)
       virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM in L1
       environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl ];
+      # The household's zone, which the agent reads off this host and pushes into its guest at
+      # bring-up (sys.timezone). Tokyo: +9 with no DST, so the guest cannot match it by accident.
+      time.timeZone = "Asia/Tokyo";
     };
 
   testScript = ''
@@ -171,7 +174,8 @@ pkgs.testers.runNixOSTest {
     host.fail("test -e /run/briard/qmp/console.sock")  # a launch must leave the guest closed
     host.succeed(
         "(printf '\\n'; sleep 2; printf 'id\\n'; sleep 2; "
-        "printf 'journalctl -b -u systemd-journald -o cat --no-pager | grep -i \"system journal\"\\n'; sleep 5; printf '\\035') "
+        "printf 'journalctl -b -u systemd-journald -o cat --no-pager | grep -i \"system journal\"\\n'; sleep 5; "
+        "printf 'readlink /etc/localtime; date +%%z\\n'; sleep 2; printf '\\035') "
         "| briard-agent debug shell > /tmp/debug-shell.out 2>&1"
     )
     shell_out = host.succeed("cat /tmp/debug-shell.out")
@@ -182,6 +186,12 @@ pkgs.testers.runNixOSTest {
     # whole number prints with no decimal, as the default's "max 4G" does). The typed command
     # never contains the figure, so only journald's own line can satisfy this.
     assert "max 128M," in shell_out, f"the guest's persistent journal is not capped at 128 MB:\n{shell_out}"
+    # THE HOUSEHOLD'S ZONE, pushed by the agent at bring-up: the guest's own link and its own clock
+    # say Tokyo. Neither string is in what was typed, so only the guest can satisfy them -- and the
+    # image sets no zone, so this is also the proof that /etc/localtime can be set at runtime.
+    assert "/etc/zoneinfo/Asia/Tokyo" in shell_out, f"the guest's /etc/localtime is not the host's zone:\n{shell_out}"
+    assert "+0900" in shell_out, f"the guest's clock does not read the host's zone:\n{shell_out}"
+    host.succeed("journalctl -u briard-agent | grep -q 'timezone: the guest runs on Asia/Tokyo'")
     # Closed again on the way out, and the socket is the evidence: nothing else records the
     # state, so if this file survives the verb, a node stays open after a support call.
     host.fail("test -e /run/briard/qmp/console.sock")

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -292,5 +293,52 @@ func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 		if got := strings.Contains(body, "is not working"); got != c.banner {
 			t.Errorf("%s: banner shown = %t, want %t:\n%s", c.health, got, c.banner, body)
 		}
+	}
+}
+
+// TestHistoryShowsTheHouseholdsHours: times on the page are in the zone the guest holds NOW, read
+// from its link at the render, not Go's time.Local -- which this process fixed at its first use,
+// before the host pushed the zone. Tokyo, because it is +9 with no DST, so the hour cannot match
+// UTC or the test machine's zone by accident.
+func TestHistoryShowsTheHouseholdsHours(t *testing.T) {
+	var tokyo string
+	for _, dir := range []string{os.Getenv("TZDIR"), "/etc/zoneinfo", "/usr/share/zoneinfo"} {
+		if p := dir + "/Asia/Tokyo"; dir != "" {
+			if _, err := os.Stat(p); err == nil {
+				tokyo = p
+				break
+			}
+		}
+	}
+	if tokyo == "" {
+		t.Skip("no timezone database on this machine")
+	}
+	raw, err := os.ReadFile(tokyo)
+	must(t, err)
+	loc, err := time.LoadLocationFromTZData("Asia/Tokyo", raw)
+	must(t, err)
+	old := localtime
+	localtime = tokyo
+	defer func() { localtime = old }()
+
+	r := newRig(t)
+	c := r.trust()
+	port := newFakePort()
+	r.app.port = port
+	answerMembers(port)
+	req, _ := http.NewRequest("GET", r.srv.URL+"/history/home-assistant", nil)
+	req.AddCookie(c)
+	got, err := http.DefaultClient.Do(req)
+	must(t, err)
+	body := bodyOf(t, got)
+	update := time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local) // ring()'s update
+	if want := update.In(loc).Format("Mon 2 Jan, 15:04"); !strings.Contains(body, want) {
+		t.Errorf("the update's row does not read %q in Tokyo:\n%s", want, body)
+	}
+
+	// No link at all is UTC, which is what the guest is until the host tells it.
+	localtime = "/nonexistent/localtime"
+	if zone() != time.UTC {
+		t.Errorf("a guest with no zone link renders in %v, want UTC", zone())
 	}
 }

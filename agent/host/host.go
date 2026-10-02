@@ -1088,6 +1088,11 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		// so it must be up before drbd@<res>.target starts.
 		err = client.SetHostname(bringup, cfg.Node)
 	}
+	// The household's timezone, for what the guest renders for people. Every bring-up, because the
+	// guest's overlay forgets it with the boot; it warns rather than fails (pushTimezone).
+	if err == nil {
+		pushTimezone(bringup, client, localTimezone("/"), logf)
+	}
 	// Configure the guest's NICs when either a system NIC is given -- which is
 	// EVERY installed node, lone ones included: eth1 carries this node's node IP, the one address
 	// anything uses to reach it, and DRBD binds there -- OR a VIP device is, which is

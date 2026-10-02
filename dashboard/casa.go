@@ -73,7 +73,7 @@ func (a *app) casaState() *casaView {
 	v := &casaView{}
 	v.State, v.Name, v.Email, v.Reason = h.State, h.Name, h.Email, h.Reason
 	if !h.CertUntil.IsZero() {
-		v.CertUntil = h.CertUntil.Format("2 Jan 2006")
+		v.CertUntil = h.CertUntil.In(zone()).Format("2 Jan 2006")
 	}
 	var skip casaSkip
 	if err := a.readState(casaSkipFile, &skip); err == nil {

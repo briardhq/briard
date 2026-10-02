@@ -697,7 +697,7 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err == nil {
 		for _, d := range reg.Devices {
-			v.Devices = append(v.Devices, deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.Format("2 Jan 2006"), This: d.ID == self.ID})
+			v.Devices = append(v.Devices, deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.In(zone()).Format("2 Jan 2006"), This: d.ID == self.ID})
 		}
 	}
 	if raw, err := os.ReadFile(a.routesPath); err == nil {

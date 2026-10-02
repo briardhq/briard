@@ -116,6 +116,14 @@ const verbNetMDNSPublished = "net.mdnspublished"
 // nothing visible could be renamed without breaking DRBD's self-match.
 const verbSetHostname = "sys.hostname"
 
+// verbSetTimezone hands the guest the household's timezone, an IANA name the host read off its own
+// configuration (agent/host/timezone.go). A NODE-SCOPED FACT the host pushes at every bring-up:
+// the guest's root is a disposable overlay, so /etc/localtime lives exactly as long as the boot
+// it was pushed into. What reads it is whatever the guest renders for people -- the dashboard's
+// History above all -- and the journal's own display. The image sets no zone, which is what
+// leaves /etc/localtime unmanaged and free to set at runtime.
+const verbSetTimezone = "sys.timezone"
+
 // Upgrade/rollback verbs, driven by the host's guest.Manager. Data
 // snapshot/restore cut at the service's btrfs subvolume (per-service scope, not the
 // whole volume). os.system reads the code identity (the closure store path, node-
@@ -388,7 +396,7 @@ const dataMountRoot = "/var/lib/briard"
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
+	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
@@ -788,6 +796,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return guestfirmware.HelloReply(x, guestCapabilities), nil
 		case guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate:
 			return guestfirmware.HandleBin(ctx, x, verb, payload)
+		case verbSetTimezone:
+			var req timezoneRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, setTimezone(ctx, x, run, req.Zone)
 		case verbSetHostname:
 			var req hostnameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {

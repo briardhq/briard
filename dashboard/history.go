@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -110,7 +111,7 @@ func (a *app) showHistory(w http.ResponseWriter, r *http.Request, service string
 	a.mu.Lock()
 	if op, ok := a.restores[service]; ok {
 		v.Op = &restoreOpView{Running: !op.Done, Failed: op.Failed, What: op.What, Detail: op.Detail,
-			Since: op.Started.Format("15:04")}
+			Since: op.Started.In(zone()).Format("15:04")}
 		if op.Done && !op.Failed {
 			delete(a.restores, service) // the list below already shows the undo as its newest row
 		}
@@ -140,15 +141,16 @@ func (a *app) rows(ctx context.Context, service string) ([]rowView, string, erro
 	running := runningVersion(members)
 	offer, unhealthy := quadlet.Unhealthy(members)
 	var out []rowView
-	for _, h := range quadlet.History(members, time.Local) {
+	loc := zone()
+	for _, h := range quadlet.History(members, loc) {
 		v := versionOf(h.Point.Meta.Manifest)
 		back, _ := quadlet.SnapshotMemberTime(h.Point.Member)
 		out = append(out, rowView{
 			Point:     h.Point.Member,
-			When:      h.At.Local().Format("Mon 2 Jan, 15:04"),
+			When:      h.At.In(loc).Format("Mon 2 Jan, 15:04"),
 			What:      h.What,
 			Note:      h.Point.Meta.Consistency.Note(),
-			Back:      back.Local().Format("Mon 2 Jan 2006, 15:04:05"),
+			Back:      back.In(loc).Format("Mon 2 Jan 2006, 15:04:05"),
 			Version:   v,
 			MovesCode: v != "" && running != "" && v != running,
 			Caption:   h.Caption,
@@ -272,4 +274,23 @@ func historyService(path string) string {
 		return ""
 	}
 	return name
+}
+
+// localtime is the guest's zone link, which the host sets at every bring-up (sys.timezone).
+var localtime = "/etc/localtime"
+
+// zone is the household's timezone as the guest holds it NOW, read at each render. Not time.Local:
+// Go fixes that at its first use, and this process starts before the host has pushed the zone, so
+// the page would show the History in UTC for the rest of the boot. No link, or one that does not
+// parse, is UTC, which is what the guest is until it is told.
+func zone() *time.Location {
+	b, err := os.ReadFile(localtime)
+	if err != nil {
+		return time.UTC
+	}
+	loc, err := time.LoadLocationFromTZData("Local", b)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
