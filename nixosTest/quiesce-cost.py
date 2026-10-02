@@ -150,6 +150,23 @@ def sample():
             "hold_ms": int(m.group(4)), "start": t0, "end": t1}
 
 
+def wal_bytes(member):
+    """The -wal a member carries beside its database: frames the recorder had not yet folded in."""
+    try:
+        return os.path.getsize(f"{RING}{member}/app/home-assistant_v2.db-wal")
+    except FileNotFoundError:
+        return 0
+
+
+def recorder_check():
+    """The nightly recorder check, timed: one quick_check of the newest quiesced member, which on
+    a clean database is the whole of its cost."""
+    t0 = time.time()
+    out = subprocess.run(["briard-guest-agent", "--dbcheck"], capture_output=True, text=True, check=True)
+    rep = json.loads(out.stdout.strip().splitlines()[-1])
+    return {"seconds": round(time.time() - t0, 1), "verdict": rep.get("verdict", ""), "why": rep.get("why", "")}
+
+
 def pct(xs, p):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))] if xs else None
@@ -165,6 +182,7 @@ def measure(entities, rate, samples, gap, limits):
         if prev:
             churn.append(exclusive_bytes(prev) / (time.time() - prev_at))
         s = sample()
+        s["wal_bytes"] = wal_bytes(s["member"])
         runs.append(s)
         prev, prev_at = s["member"], s["end"]
         log(f"rate {rate}: sample {k + 1}/{samples} held={s['held']} "
@@ -192,6 +210,10 @@ def measure(entities, rate, samples, gap, limits):
         "probe_ms": {"during_n": len(during), "during_p95": round(1000 * pct(during, 95)) if during else None,
                      "outside_n": len(outside), "outside_p95": round(1000 * pct(outside, 95)) if outside else None},
         "mb_per_hour": round(statistics.median(churn) * 3600 / 1e6, 1) if churn else None,
+        # Logged, not judged: how often a held sample carries frames the recorder check does not read
+        # (it opens the main file alone), and how many.
+        "wal_nonempty": sum(1 for r in runs if r["held"] and r["wal_bytes"] > 0),
+        "wal_max_bytes": max(r["wal_bytes"] for r in runs),
     }
     failures = []
     if res["pause_ms_p95"] > limits["pause_ms"]:
@@ -225,6 +247,8 @@ def main():
     verdict = {"seeded": seeded, "db_bytes": os.path.getsize(DB), "limits": limits, "rates": []}
     for rate in [int(r) for r in a.rates.split(",")]:
         verdict["rates"].append(measure(a.entities, rate, a.samples, a.gap, limits))
+    verdict["check"] = recorder_check()  # logged, not judged: L0 is contended
+    verdict["db_bytes_after"] = os.path.getsize(DB)
     verdict["pass"] = not any(r["failures"] for r in verdict["rates"])
     print(json.dumps(verdict))
 

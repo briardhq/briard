@@ -12,6 +12,10 @@
 #   - whether an automation notices: a probe automation is timed inside and outside samples;
 #   - the space an hourly member pins, extrapolated from the churn between two samples.
 #
+# And, logged rather than judged, two numbers the recorder check (agent/hass/dbcheck.go) depends
+# on: how often a held sample still carries a non-empty -wal (the check reads the main file
+# alone, so those frames wait a night), and how long its quick_check takes on this database.
+#
 # The history is SYNTHETIC: entities with thousands of states each, written through the REST API
 # so the recorder writes them as it would any state, then a writer that keeps going at each rate.
 # The work is quiesce-cost.py, which prints a JSON verdict; this file stands Home Assistant up,
@@ -131,8 +135,11 @@ pkgs.testers.runNixOSTest {
             f"{r['pause_ms_p95']:>6} ms   {p['during_p95']}/{p['outside_p95']} ms ({p['during_n']}/{p['outside_n']})   "
             f"{r['mb_per_hour']}"
         )
+        print(f"      held samples with a non-empty -wal: {r['wal_nonempty']}/{r['samples']} (largest {r['wal_max_bytes']} bytes)")
         for f in r["failures"]:
             print(f"  FAIL at {r['rate']}/s: {f}")
+    c = verdict["check"]
+    print(f"the nightly recorder check on a {verdict['db_bytes_after'] / 1e6:.0f} MB database took {c['seconds']}s: {c['verdict'] or c['why']}")
     assert verdict["pass"], "the hourly sample costs more than the limits allow (see the table above)"
   '';
 }
