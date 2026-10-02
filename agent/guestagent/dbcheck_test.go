@@ -116,7 +116,7 @@ func TestAQuiescedTakeIsHeldForTheRecorder(t *testing.T) {
 	}
 }
 
-// TestTheNightlyCheckRestoresFromAHeldCleanCopy is the restore end to end in the guest: the
+// TestTheNightlyCheckRestoresFromAHeldCleanCopy is check then restore, end to end in the guest: the
 // damaged newest member is found, the held clean one is put back, and around it Home Assistant is
 // stopped, an undo point carrying the event is taken BEFORE the live database moves, and the app
 // is started again.
@@ -135,12 +135,20 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	f.files[quadlet.SnapshotsDir+good+"/app/home-assistant_v2.db"] = "clean history"
 	f.files[live+"/home-assistant_v2.db"] = "damaged history"
 
-	rep, err := hassDBCheck(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err })
-	if err != nil {
-		t.Fatal(err)
+	rep := hassDBCheck(ctx, f)
+	if rep.Verdict != hass.VerdictCorrupt || rep.Candidate != quadlet.SnapshotsDir+good {
+		t.Fatalf("report %+v, want a corrupt verdict naming %s", rep, good)
 	}
-	if rep.Verdict != hass.VerdictCorrupt || rep.RestoredFrom.IsZero() {
-		t.Fatalf("report %+v, want a corrupt verdict and a restore", rep)
+	if f.files[live+"/home-assistant_v2.db"] != "damaged history" {
+		t.Fatal("the check touched the live database; it only reads")
+	}
+	for _, r := range f.runs {
+		if r[0] == "systemctl" {
+			t.Fatalf("the check stopped or started a unit: %v", r)
+		}
+	}
+	if err := hassDBRestore(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }, rep.Candidate); err != nil {
+		t.Fatal(err)
 	}
 	if f.files[live+"/home-assistant_v2.db"] != "clean history" {
 		t.Fatalf("live database = %q", f.files[live+"/home-assistant_v2.db"])
@@ -185,5 +193,81 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 func TestTheDBCheckVerbIsAdvertised(t *testing.T) {
 	if !slices.Contains(guestCapabilities, verbHassDBCheck) {
 		t.Fatal("the guest does not advertise the recorder check")
+	}
+}
+
+// TestTheCheckRunsInTheBackground: the verb answers at once, a second start is refused while one
+// runs, the report is handed over once, and a restore waits for the check to finish.
+func TestTheCheckRunsInTheBackground(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	f := dbRig(nil)
+	inner := f.runFn
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		if name == "ls" {
+			<-release // the check is "reading" until the test lets it go
+		}
+		return inner(name, args)
+	}
+	if !startDBCheck(f) {
+		t.Fatal("the check did not start")
+	}
+	if startDBCheck(f) {
+		t.Fatal("a second check started beside the first")
+	}
+	if s := dbCheckResult(); !s.Running || s.Report != nil {
+		t.Fatalf("state %+v, want running with no report", s)
+	}
+	if err := hassDBRestore(ctx, f, func(string, ...string) error { return nil }, "/x"); err == nil {
+		t.Fatal("a restore ran beside a check")
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	var s hass.DBCheckState
+	for s = dbCheckResult(); s.Report == nil && time.Now().Before(deadline); s = dbCheckResult() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.Running || s.Report == nil {
+		t.Fatalf("state %+v, want a finished report", s)
+	}
+	if again := dbCheckResult(); again.Report != nil {
+		t.Fatal("the report was handed over twice")
+	}
+}
+
+// TestTheRestoreReadsItsMemberBackFromTheRing: a name that is not a member of the ring is refused
+// before anything stops.
+func TestTheRestoreReadsItsMemberBackFromTheRing(t *testing.T) {
+	ctx := context.Background()
+	f := dbRig(nil)
+	err := hassDBRestore(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }, quadlet.SnapshotsDir+"home-assistant-clock-20260101T000000Z")
+	if err == nil {
+		t.Fatal("restored from a member the ring does not hold")
+	}
+	for _, r := range f.runs {
+		if r[0] == "systemctl" {
+			t.Fatalf("a refused restore touched a unit: %v", r)
+		}
+	}
+}
+
+// TestTheRestoreAsksTheGateAgain: Home Assistant went back a version between the check and the
+// restore, so the copy the check named is now newer than the live database and nothing stops.
+func TestTheRestoreAsksTheGateAgain(t *testing.T) {
+	ctx := context.Background()
+	good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-20*time.Hour)), quadlet.SnapshotsDir)
+	f := dbRig(map[string]string{
+		quadlet.SnapshotsDir + good + "/app":      `{"check": "ok", "schema": 48}`,
+		quadlet.DataPath("home-assistant", "app"): `{"schema": 47}`,
+	}, good)
+	f.files[quadlet.AppSidecar(quadlet.SnapshotsDir+good)] = `{"hass-db":{"state":"clean"}}`
+	err := hassDBRestore(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }, quadlet.SnapshotsDir+good)
+	if err == nil || !strings.Contains(err.Error(), "newer") {
+		t.Fatalf("err = %v, want the schema gate's refusal", err)
+	}
+	for _, r := range f.runs {
+		if r[0] == "systemctl" {
+			t.Fatalf("a refused restore touched a unit: %v", r)
+		}
 	}
 }

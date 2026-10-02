@@ -32,7 +32,12 @@ import (
 // THE RESTORE IS GATED ON TWO POSITIVE READS (a destructive act needs a positive confirmation):
 // the copy checked clean, and its schema version is not newer than the live database's. The
 // recorder migrates any older schema forward on start, one version at a time, and refuses only a
-// newer one. Either read failing means no restore.
+// newer one. Either read failing means no restore, and both are read again when the restore runs
+// (Restorable), because the check that named the copy ran earlier.
+//
+// THE CHECK IS A READ, THE RESTORE A WRITE, and they run apart: the check takes minutes on a big
+// database and runs in the background beside everything else, while the restore stops the app
+// and is asked for separately, in line with every other operation on it.
 
 // The app sidecar's key for this state, and the states it holds.
 const (
@@ -60,6 +65,7 @@ const dbName = "home-assistant_v2.db"
 
 // Member is one ring member as the recorder check sees it.
 type Member struct {
+	Path     string    // the member itself, as the ring names it
 	Dir      string    // the config directory inside the member
 	App      string    // the member's app sidecar, which may not exist
 	At       time.Time // when it was taken
@@ -158,20 +164,24 @@ func Sampled(ctx context.Context, x Executor, ring []Member, m Member) error {
 	return SetRecord(ctx, x, m.App, &DBRecord{State: DBRetained})
 }
 
-// DBReport is what one night's check found and did. The host reads it to tell the household.
+// DBReport is what one night's check found. The host reads it, asks for the restore it names,
+// and tells the household.
 type DBReport struct {
 	Checked string `json:"checked,omitempty"` // the member checked
 	Verdict string `json:"verdict,omitempty"` // VerdictClean, VerdictCorrupt, or "" when the check could not run
-	// RestoredFrom is when the member the database came back from was taken; zero when nothing was
-	// restored.
-	RestoredFrom time.Time `json:"restored_from,omitzero"`
-	Why          string    `json:"why,omitempty"` // why there is no verdict, or no restore
+	// Candidate is the member to restore the database from after a corrupt verdict, and
+	// CandidateAt when it was taken; empty when the search found none.
+	Candidate   string    `json:"candidate,omitempty"`
+	CandidateAt time.Time `json:"candidate_at,omitzero"`
+	Why         string    `json:"why,omitempty"` // why there is no verdict, or no candidate
 }
 
 // Nightly is one night's check over ring (oldest first), with live the config directory Home
-// Assistant runs on. On a corrupt finding it searches for a copy to put back and hands it to
-// restore, which owns stopping the app, the before-sample and starting it again.
-func Nightly(ctx context.Context, x Executor, image, live string, ring []Member, restore func(Member) error) DBReport {
+// Assistant runs on. On a corrupt finding it searches for a copy to put back and names it.
+//
+// READ-ONLY ON THE DATA: it writes only app sidecars, so it runs beside everything else the guest
+// does. The restore is a separate step (Restorable, RestoreDB) the host asks for.
+func Nightly(ctx context.Context, x Executor, image, live string, ring []Member) DBReport {
 	sort.Slice(ring, func(i, j int) bool { return ring[i].At.Before(ring[j].At) })
 	// A `checking` left by a crash holds nothing any more.
 	for _, m := range ring {
@@ -189,7 +199,7 @@ func Nightly(ctx context.Context, x Executor, image, live string, ring []Member,
 		return DBReport{Why: "no quiesced member to check"}
 	}
 	m := ring[newest]
-	rep := DBReport{Checked: m.Dir}
+	rep := DBReport{Checked: m.Path}
 	// HELD THROUGH THE CHECK, so a take landing meanwhile cannot prune it from under the read. A
 	// member already held keeps its record.
 	_, held := Record(x, m.App)
@@ -218,13 +228,38 @@ func Nightly(ctx context.Context, x Executor, image, live string, ring []Member,
 		rep.Why = why
 		return rep
 	}
+	// Marked clean, so it stays held until the restore and is the floor after it.
 	markClean(ctx, x, ring, from)
-	if err := restore(ring[from]); err != nil {
-		rep.Why = "the restore failed: " + err.Error()
-		return rep
-	}
-	rep.RestoredFrom = ring[from].At
+	rep.Candidate, rep.CandidateAt = ring[from].Path, ring[from].At
 	return rep
+}
+
+// Restorable is the gate again, at the moment of the restore: m still holds a clean record, and
+// both schema reads are positive with m's not newer than the live one's. The check that named m
+// ran earlier, and Home Assistant may have changed version since. Schema reads only: a member's
+// bytes cannot change, so its clean verdict stands.
+func Restorable(ctx context.Context, x Executor, image, live string, m Member) error {
+	if r, ok := Record(x, m.App); !ok || r.State != DBClean {
+		return fmt.Errorf("%s is not a clean-checked copy", path.Base(m.Path))
+	}
+	_, mine, err := Check(ctx, x, image, m.Dir, false)
+	if err == nil && mine < 0 {
+		err = fmt.Errorf("no schema version")
+	}
+	if err != nil {
+		return fmt.Errorf("%s's schema could not be read: %w", path.Base(m.Path), err)
+	}
+	_, liveSchema, err := Check(ctx, x, image, live, false)
+	if err == nil && liveSchema < 0 {
+		err = fmt.Errorf("no schema version")
+	}
+	if err != nil {
+		return fmt.Errorf("the live database's schema could not be read: %w", err)
+	}
+	if mine > liveSchema {
+		return fmt.Errorf("%s has schema %d, newer than the live %d", path.Base(m.Path), mine, liveSchema)
+	}
+	return nil
 }
 
 // search is the newest held member in ring that checks clean and whose schema is not newer than
@@ -421,4 +456,11 @@ func ConfigContainer(m manifest.Manifest) (manifest.Container, bool) {
 		}
 	}
 	return manifest.Container{}, false
+}
+
+// DBCheckState is what the host reads back of a check running in the background: whether it is
+// still running, and its report once it has finished, handed over once.
+type DBCheckState struct {
+	Running bool      `json:"running"`
+	Report  *DBReport `json:"report,omitempty"`
 }

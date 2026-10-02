@@ -1326,8 +1326,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
 		cfg.consider(ctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
-		// THE RECORDER CHECK, once a night on the node that holds the volume; leased for its own
-		// budget, and a time comparison on every other cycle.
+		// THE RECORDER CHECK, once a night on the node that holds the volume: started in the guest's
+		// background and collected over later cycles, so it never holds this loop (clocksample.go).
 		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)

@@ -107,11 +107,10 @@ type fakeStatus struct {
 	took       *[]takenMember
 	snapErr    error
 	noRing     bool
-	noQuiesce  bool          // advertises the ring but not the quiesced take
-	held       bool          // the service held still across a quiesced take
-	quiesceErr error         // the quiesced take failed outright
-	dbReport   hass.DBReport // what the nightly recorder check answers
-	dbChecks   *int          // how many times it was asked, when the test counts
+	noQuiesce  bool    // advertises the ring but not the quiesced take
+	held       bool    // the service held still across a quiesced take
+	quiesceErr error   // the quiesced take failed outright
+	db         *fakeDB // the guest's recorder check; nil is a guest that has none
 }
 
 // takenMember is one call to Snapshot: where the member went, and the sidecar that went with it.
@@ -126,13 +125,6 @@ func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.Snapsh
 }
 func (f fakeStatus) SupportsMembers() bool { return !f.noRing }
 
-// The nightly recorder check, answered from the fixture and counted.
-func (f fakeStatus) HassDBCheck(context.Context) (hass.DBReport, error) {
-	if f.dbChecks != nil {
-		*f.dbChecks++
-	}
-	return f.dbReport, nil
-}
 func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
 
 // The QUIESCED take: `held` is what the fake service reports, and the recorded sidecar
@@ -1235,3 +1227,42 @@ func TestSnapshot_LoneAnchorThatIsNotPrimaryIsUnhealthy(t *testing.T) {
 		t.Error("a quorate, up-to-date standby beside a capable peer must read healthy")
 	}
 }
+
+// fakeDB is the guest's background recorder check: started, still running or finished with a
+// report it hands over once, and the restores it was asked for.
+type fakeDB struct {
+	starts     int
+	running    bool
+	report     *hass.DBReport
+	restored   []string
+	restoreErr error
+}
+
+func (f fakeStatus) HassDBCheck(context.Context) (bool, error) {
+	if f.db == nil {
+		return false, errors.New("unknown verb")
+	}
+	if f.db.running {
+		return false, nil
+	}
+	f.db.starts++
+	f.db.running = true
+	return true, nil
+}
+
+func (f fakeStatus) HassDBCheckResult(context.Context) (hass.DBCheckState, error) {
+	if f.db == nil {
+		return hass.DBCheckState{}, errors.New("unknown verb")
+	}
+	s := hass.DBCheckState{Running: f.db.running, Report: f.db.report}
+	f.db.report = nil
+	return s, nil
+}
+
+func (f fakeStatus) HassDBRestore(_ context.Context, member string) error {
+	f.db.restored = append(f.db.restored, member)
+	return f.db.restoreErr
+}
+
+// finish ends the fake's running check with a report.
+func (f *fakeDB) finish(rep hass.DBReport) { f.running, f.report = false, &rep }

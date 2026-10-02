@@ -337,7 +337,7 @@ func Sampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMe
 		return nil
 	}
 	conv := func(r RingMember) hass.Member {
-		return hass.Member{Dir: r.Path + "/" + c.Name, App: r.App, At: r.At, Quiesced: r.Quiesced}
+		return hass.Member{Path: r.Path, Dir: r.Path + "/" + c.Name, App: r.App, At: r.At, Quiesced: r.Quiesced}
 	}
 	var all []hass.Member
 	for _, r := range ring {

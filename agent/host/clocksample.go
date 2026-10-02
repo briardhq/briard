@@ -163,29 +163,38 @@ func (cfg Config) newestMember(ctx context.Context, g memberTaker, service strin
 // THE NIGHTLY RECORDER CHECK, 05:30 local: after the guest-update window (03:00 plus up to two
 // hours) and Home Assistant's own 04:12 purge, so it reads the database after both have
 // finished with it. The guest does the work (agent/hass/dbcheck.go says what and why); this
-// schedules it and tells the household when it found damage.
+// schedules it, asks for the restore a corrupt report names, and tells the household.
 //
-// IN THE OBSERVE LOOP, LIKE THE CLOCK SAMPLE, and synchronous on purpose: the guest serves one
-// verb at a time, so a check running beside the loop would stall every status read behind it.
-// It is leased for its budget instead, as any long operation here is.
+// THE CHECK NEVER BLOCKS THIS LOOP. It reads read-only members and can take minutes, so the
+// guest runs it in the background: this starts it, then asks for the report once a cycle with
+// an ordinary short call until it arrives. The RESTORE runs in line, leased for its budget,
+// because it stops the app and must not overlap any other operation on it.
 //
 // ONCE A NIGHT WHATEVER HAPPENS: a failure is logged and waits a day. An agent that is down at
-// 05:30 still runs it within the window; one down for the whole window skips that night.
+// 05:30 still starts it within the window; one down for the whole window skips that night.
 const (
 	dbCheckAt     = 5*60 + 30 // minutes after local midnight
 	dbCheckWindow = 60        // minutes after dbCheckAt a late agent may still start it
-	dbCheckBudget = 30 * time.Minute
+	// dbCheckWait is how long a started check's report is waited for: the guest bounds the check
+	// at 30 minutes, and a report that has not come by then never will.
+	dbCheckWait     = 45 * time.Minute
+	dbRestoreBudget = 10 * time.Minute
+	dbCallTimeout   = 5 * time.Second
 )
 
 // recorderChecker is the slice of the guest the check costs.
 type recorderChecker interface {
-	HassDBCheck(ctx context.Context) (hass.DBReport, error)
+	HassDBCheck(ctx context.Context) (bool, error)
+	HassDBCheckResult(ctx context.Context) (hass.DBCheckState, error)
+	HassDBRestore(ctx context.Context, member string) error
 }
 
-// dbChecker remembers the local date it last checked, in the household's zone.
+// dbChecker remembers the local date it last started a check, in the household's zone, and
+// since when it has been waiting for one's report.
 type dbChecker struct {
-	loc  *time.Location
-	done string
+	loc     *time.Location
+	done    string
+	waiting time.Time // zero when no report is awaited
 }
 
 func newDBChecker() *dbChecker {
@@ -198,10 +207,14 @@ func newDBChecker() *dbChecker {
 	return &dbChecker{loc: loc}
 }
 
-// checkRecorder runs tonight's check if it is due: this node serves, it runs Home Assistant, and
-// the local time is inside tonight's window.
+// checkRecorder collects a check that is running, or starts tonight's if it is due: this node
+// serves, it runs Home Assistant, and the local time is inside tonight's window.
 func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChecker, services []model.ServiceSpec, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
 	if !serving || !slices.ContainsFunc(services, func(s model.ServiceSpec) bool { return s.Name == hass.Name }) {
+		return
+	}
+	if !d.waiting.IsZero() {
+		cfg.collectRecorder(ctx, g, d, now, n, logf)
 		return
 	}
 	local := now.In(d.loc)
@@ -211,28 +224,72 @@ func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChe
 		return
 	}
 	d.done = day
-	bctx, cancel := cfg.beat.budget(ctx, dbCheckBudget)
-	defer cancel()
-	rep, err := g.HassDBCheck(bctx)
+	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
+	started, err := g.HassDBCheck(sctx)
+	cancel()
 	if err != nil {
-		logf("hass-db: the nightly check failed: %v", err)
+		logf("hass-db: could not start the nightly check: %v", err)
 		return
 	}
-	logf("hass-db: verdict=%q checked=%s restored_from=%v %s", rep.Verdict, rep.Checked, rep.RestoredFrom, rep.Why)
-	if rep.Verdict == hass.VerdictCorrupt {
-		fireAlert(ctx, n, logf, recorderAlert(cfg.Node, rep, d.loc))
+	if !started {
+		// The guest is already busy with one, e.g. started before this agent restarted: its report
+		// is as good as tonight's.
+		logf("hass-db: a check is already running in the guest; collecting that one")
 	}
+	d.waiting = now
 }
 
-// recorderAlert is what the household is told when the check found damage, repaired or not. A
-// History row alone is not enough: nothing else would make anyone look.
-func recorderAlert(node string, rep hass.DBReport, loc *time.Location) notify.Alert {
-	if rep.RestoredFrom.IsZero() {
+// collectRecorder asks for a started check's report, and acts on it once it has come.
+func (cfg Config) collectRecorder(ctx context.Context, g recorderChecker, d *dbChecker, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
+	s, err := g.HassDBCheckResult(sctx)
+	cancel()
+	late := now.Sub(d.waiting) > dbCheckWait
+	switch {
+	case err != nil && !late:
+		return // asked again next cycle
+	case err != nil:
+		logf("hass-db: gave up on tonight's check: %v", err)
+		d.waiting = time.Time{}
+		return
+	case s.Report == nil && s.Running && !late:
+		return
+	case s.Report == nil:
+		// Running past its own bound, or gone without a report: the guest agent restarted.
+		logf("hass-db: tonight's check left no report (running=%t)", s.Running)
+		d.waiting = time.Time{}
+		return
+	}
+	d.waiting = time.Time{}
+	rep := *s.Report
+	logf("hass-db: verdict=%q checked=%s candidate=%s %s", rep.Verdict, rep.Checked, rep.Candidate, rep.Why)
+	if rep.Verdict != hass.VerdictCorrupt {
+		return
+	}
+	if rep.Candidate == "" {
+		fireAlert(ctx, n, logf, recorderAlert(cfg.Node, rep.Why, time.Time{}, d.loc))
+		return
+	}
+	bctx, cancel := cfg.beat.budget(ctx, dbRestoreBudget)
+	defer cancel()
+	if err := g.HassDBRestore(bctx, rep.Candidate); err != nil {
+		logf("hass-db: the restore from %s failed: %v", rep.Candidate, err)
+		fireAlert(ctx, n, logf, recorderAlert(cfg.Node, err.Error(), time.Time{}, d.loc))
+		return
+	}
+	fireAlert(ctx, n, logf, recorderAlert(cfg.Node, "", rep.CandidateAt, d.loc))
+}
+
+// recorderAlert is what the household is told when the check found damage: repaired from a copy
+// taken at `from`, or not, and why. A History row alone is not enough: nothing else would make
+// anyone look.
+func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.Alert {
+	if from.IsZero() {
 		return notify.Alert{
 			Level: notify.Warning,
 			Title: "Briard: Home Assistant's history is damaged",
 			Body: fmt.Sprintf("Home Assistant's history database on node %s is damaged and briard could not repair it (%s). "+
-				"Home Assistant will start an empty history when it next reads the damaged part.", node, rep.Why),
+				"Home Assistant will start an empty history when it next reads the damaged part.", node, why),
 		}
 	}
 	return notify.Alert{
@@ -240,6 +297,6 @@ func recorderAlert(node string, rep hass.DBReport, loc *time.Location) notify.Al
 		Title: "Briard: Home Assistant's history was repaired",
 		Body: fmt.Sprintf("Home Assistant's history database on node %s was damaged. Briard put back the last good copy, from %s; "+
 			"history recorded after that is lost. Undoing \"Restored corrupted database\" in the app's History puts the damaged copy back.",
-			node, rep.RestoredFrom.In(loc).Format("Mon 2 Jan, 15:04")),
+			node, from.In(loc).Format("Mon 2 Jan, 15:04")),
 	}
 }

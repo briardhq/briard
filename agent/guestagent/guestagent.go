@@ -301,13 +301,22 @@ const (
 	// other service -- all three would have to be on the wire for that, and none of them is.
 	verbHassNudge = "service.home-assistant.nudge"
 
-	// service.home-assistant.dbcheck is the nightly recorder check: read the newest quiesced
-	// member's database with `quick_check`, and on damage put back the newest held copy that
-	// checks clean (agent/hass/dbcheck.go). The host schedules it and tells the household; the
-	// work is here because only the guest mounts the volume, and the stop, the before-sample and
-	// the start around a restore have to happen in one process. NO REQUEST BODY: the manifest,
-	// and so the image and the data path, come off the volume.
+	// The nightly recorder check (agent/hass/dbcheck.go), three verbs because it is a read and a
+	// write that run differently (dbcheck.go). The host schedules them and tells the household;
+	// the work is here because only the guest mounts the volume. The manifest, and so the image
+	// and the data path, come off the volume.
+	//
+	// service.home-assistant.dbcheck STARTS the check in the background and answers whether it
+	// did: `quick_check` on the newest quiesced member, and on damage a search for a held copy
+	// that checks clean. Read-only on the data. No request body.
 	verbHassDBCheck = "service.home-assistant.dbcheck"
+	// service.home-assistant.dbcheck.result answers whether a check is running, and hands over a
+	// finished one's report once.
+	verbHassDBCheckResult = "service.home-assistant.dbcheck.result"
+	// service.home-assistant.dbrestore puts the recorder database back from the member a report
+	// named: the gate again, stop, undo point, copy, start -- in line, like every operation that
+	// stops an app.
+	verbHassDBRestore = "service.home-assistant.dbrestore"
 	// dashboard.handoff writes the one-time code + OS account the host minted for the household
 	// dashboard, 0600 on tmpfs (shared/dashboard) -- the whole of its bootstrap auth.
 	verbDashboardHandoff = "dashboard.handoff"
@@ -383,7 +392,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbMosquittoProbe, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -1204,7 +1213,15 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			return hass.Readiness(ctx, x, req.Port)
 		case verbHassDBCheck:
-			return hassDBCheck(ctx, x, run)
+			return startDBCheck(x), nil
+		case verbHassDBCheckResult:
+			return dbCheckResult(), nil
+		case verbHassDBRestore:
+			var req dbRestoreRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, hassDBRestore(ctx, x, run, req.Member)
 		case verbHassNudge:
 			// NO REQUEST BODY, and the PORT comes off the VOLUME rather than the wire -- the
 			// opposite choice from service.home-assistant.readiness, for the same reason the probe
@@ -2669,11 +2686,29 @@ func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, err
 	return out, err
 }
 
-// HassDBCheck runs the nightly recorder check (verbHassDBCheck) and answers what it found and did.
-func (g *Client) HassDBCheck(ctx context.Context) (hass.DBReport, error) {
-	var rep hass.DBReport
-	err := g.c.Call(ctx, verbHassDBCheck, nil, &rep)
-	return rep, err
+// HassDBCheck starts the nightly recorder check in the guest's background and answers whether it
+// did; false means a check or a restore is already running there.
+func (g *Client) HassDBCheck(ctx context.Context) (bool, error) {
+	var started bool
+	err := g.c.Call(ctx, verbHassDBCheck, nil, &started)
+	return started, err
+}
+
+// HassDBCheckResult answers whether a check is running, with a finished one's report, once.
+func (g *Client) HassDBCheckResult(ctx context.Context) (hass.DBCheckState, error) {
+	var s hass.DBCheckState
+	err := g.c.Call(ctx, verbHassDBCheckResult, nil, &s)
+	return s, err
+}
+
+// HassDBRestore puts the recorder database back from the member a report named.
+func (g *Client) HassDBRestore(ctx context.Context, member string) error {
+	return g.c.Call(ctx, verbHassDBRestore, dbRestoreRequest{Member: member}, nil)
+}
+
+// dbRestoreRequest names the member to restore from; the guest reads it back from the ring.
+type dbRestoreRequest struct {
+	Member string `json:"member"`
 }
 
 // HassNudge tells a RUNNING Home Assistant to reconsider what briard has offered it.

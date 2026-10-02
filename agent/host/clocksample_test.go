@@ -202,72 +202,120 @@ func TestClockSampleRefusesAnOlderGuest(t *testing.T) {
 // the test machine's.
 var athens, _ = time.LoadLocation("Europe/Athens")
 
-func dbFixture(t *testing.T, rep hass.DBReport) (Config, fakeStatus, *int, *dbChecker, *fakeNotifier) {
+func dbFixture(t *testing.T) (Config, fakeStatus, *fakeDB, *dbChecker, *fakeNotifier) {
 	t.Helper()
-	n := 0
+	db := &fakeDB{}
 	cfg := Config{Node: "anchor-1", Services: []model.ServiceSpec{{Name: "home-assistant"}}}
-	return cfg, fakeStatus{dbReport: rep, dbChecks: &n}, &n, &dbChecker{loc: athens}, &fakeNotifier{}
+	return cfg, fakeStatus{db: db}, db, &dbChecker{loc: athens}, &fakeNotifier{}
 }
 
 func localAt(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, athens) }
 
-// TestTheRecorderIsCheckedOnceANightAtHalfPastFive: after the update window and Home
+func askRecorder(cfg Config, g fakeStatus, d *dbChecker, n *fakeNotifier, at time.Time) {
+	cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, at.UTC(), n, func(string, ...any) {})
+}
+
+// TestTheRecorderCheckStartsOnceANightAtHalfPastFive: after the update window and Home
 // Assistant's own purge, in the household's zone, once per night however often the loop asks.
-func TestTheRecorderIsCheckedOnceANightAtHalfPastFive(t *testing.T) {
-	cfg, g, n, d, notifier := dbFixture(t, hass.DBReport{Verdict: hass.VerdictClean})
-	ask := func(at time.Time) {
-		cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, at.UTC(), notifier, func(string, ...any) {})
+func TestTheRecorderCheckStartsOnceANightAtHalfPastFive(t *testing.T) {
+	cfg, g, db, d, n := dbFixture(t)
+	askRecorder(cfg, g, d, n, localAt(1, 5, 29))
+	if db.starts != 0 {
+		t.Fatal("started before 05:30")
 	}
-	ask(localAt(1, 5, 29))
-	if *n != 0 {
-		t.Fatal("checked before 05:30")
+	askRecorder(cfg, g, d, n, localAt(1, 5, 30))
+	db.finish(hass.DBReport{Verdict: hass.VerdictClean})
+	askRecorder(cfg, g, d, n, localAt(1, 5, 31)) // collects
+	askRecorder(cfg, g, d, n, localAt(1, 5, 45))
+	if db.starts != 1 {
+		t.Fatalf("started %d times in one night, want once", db.starts)
 	}
-	ask(localAt(1, 5, 30))
-	ask(localAt(1, 5, 45))
-	if *n != 1 {
-		t.Fatalf("checked %d times in one night, want once", *n)
+	askRecorder(cfg, g, d, n, localAt(2, 6, 31))
+	if db.starts != 1 {
+		t.Fatal("started after the window closed: an agent restart at noon must not check then")
 	}
-	ask(localAt(2, 6, 31))
-	if *n != 1 {
-		t.Fatal("checked after the window closed: an agent restart at noon must not check then")
+	askRecorder(cfg, g, d, n, localAt(3, 6, 10))
+	if db.starts != 2 {
+		t.Fatal("a late agent inside the window did not start the check")
 	}
-	ask(localAt(3, 6, 10))
-	if *n != 2 {
-		t.Fatal("a late agent inside the window did not check")
+	if len(n.alerts) != 0 || len(db.restored) != 0 {
+		t.Errorf("a clean night alerted or restored: %v %v", n.alerts, db.restored)
 	}
-	if len(notifier.alerts) != 0 {
-		t.Errorf("a clean night alerted: %v", notifier.alerts)
+}
+
+// TestTheRecorderCheckNeverWaitsInTheLoop: starting it and asking for its report are each one
+// short call; a check still running is asked again next cycle, never waited for.
+func TestTheRecorderCheckNeverWaitsInTheLoop(t *testing.T) {
+	cfg, g, db, d, n := dbFixture(t)
+	askRecorder(cfg, g, d, n, localAt(1, 5, 30))
+	for i := 1; i <= 20; i++ {
+		askRecorder(cfg, g, d, n, localAt(1, 5, 30+i))
+	}
+	if !db.running || db.starts != 1 || len(db.restored) != 0 {
+		t.Fatalf("running=%t starts=%d restored=%v", db.running, db.starts, db.restored)
+	}
+	db.finish(hass.DBReport{Verdict: hass.VerdictCorrupt, Candidate: "/m", CandidateAt: localAt(1, 1, 0)})
+	askRecorder(cfg, g, d, n, localAt(1, 5, 51))
+	if len(db.restored) != 1 {
+		t.Fatalf("the report was not acted on once it came: %v", db.restored)
+	}
+}
+
+// TestALostCheckIsGivenUpOn: a check whose report never comes (the guest agent restarted) stops
+// being waited for, and the next night starts afresh.
+func TestALostCheckIsGivenUpOn(t *testing.T) {
+	cfg, g, db, d, n := dbFixture(t)
+	askRecorder(cfg, g, d, n, localAt(1, 5, 30))
+	db.running = false // gone without a report
+	askRecorder(cfg, g, d, n, localAt(1, 5, 31))
+	if !d.waiting.IsZero() {
+		t.Fatal("still waiting for a check the guest no longer runs")
+	}
+	askRecorder(cfg, g, d, n, localAt(2, 5, 30))
+	if db.starts != 2 {
+		t.Fatalf("the next night did not start a check: starts=%d", db.starts)
 	}
 }
 
 // TestTheRecorderCheckNeedsTheVolumeAndHomeAssistant: only the serving node holds the ring, and
 // a node without Home Assistant has nothing to check.
 func TestTheRecorderCheckNeedsTheVolumeAndHomeAssistant(t *testing.T) {
-	cfg, g, n, d, notifier := dbFixture(t, hass.DBReport{})
-	cfg.checkRecorder(context.Background(), g, d, cfg.Services, false, localAt(1, 5, 31), notifier, func(string, ...any) {})
-	cfg.checkRecorder(context.Background(), g, d, []model.ServiceSpec{{Name: "mosquitto"}}, true, localAt(1, 5, 31), notifier, func(string, ...any) {})
-	if *n != 0 {
-		t.Fatalf("checked %d times on a node that should not", *n)
+	cfg, g, db, d, n := dbFixture(t)
+	cfg.checkRecorder(context.Background(), g, d, cfg.Services, false, localAt(1, 5, 31), n, func(string, ...any) {})
+	cfg.checkRecorder(context.Background(), g, d, []model.ServiceSpec{{Name: "mosquitto"}}, true, localAt(1, 5, 31), n, func(string, ...any) {})
+	if db.starts != 0 {
+		t.Fatalf("started %d times on a node that should not", db.starts)
 	}
 }
 
-// TestADamagedRecorderReachesTheHousehold: repaired or not, damage is an alert, not only a row.
+// TestADamagedRecorderReachesTheHousehold: repaired or not, damage is an alert, not only a row,
+// and the restore is asked for exactly the member the report named.
 func TestADamagedRecorderReachesTheHousehold(t *testing.T) {
-	for _, rep := range []hass.DBReport{
-		{Verdict: hass.VerdictCorrupt, RestoredFrom: localAt(1, 1, 0)},
-		{Verdict: hass.VerdictCorrupt, Why: "no held copy checked clean"},
+	for _, tc := range []struct {
+		name       string
+		rep        hass.DBReport
+		restoreErr error
+		want       string // in the alert's body
+	}{
+		{"repaired", hass.DBReport{Verdict: hass.VerdictCorrupt, Candidate: "/m", CandidateAt: localAt(1, 1, 0)}, nil, "Thu 1 Oct, 01:00"},
+		{"no candidate", hass.DBReport{Verdict: hass.VerdictCorrupt, Why: "no held copy checked clean"}, nil, "no held copy checked clean"},
+		{"the restore refused", hass.DBReport{Verdict: hass.VerdictCorrupt, Candidate: "/m", CandidateAt: localAt(1, 1, 0)}, errors.New("not restoring: schema 48 newer than 47"), "schema 48 newer than 47"},
 	} {
-		cfg, g, _, d, notifier := dbFixture(t, rep)
-		cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, localAt(1, 5, 31), notifier, func(string, ...any) {})
-		if len(notifier.alerts) != 1 || notifier.alerts[0].Level != notify.Warning {
-			t.Fatalf("report %+v: alerts %v, want one warning", rep, notifier.alerts)
-		}
-		body := notifier.alerts[0].Body
-		if !rep.RestoredFrom.IsZero() && !strings.Contains(body, "Thu 1 Oct, 01:00") {
-			t.Errorf("the alert does not say, in local time, what the history went back to: %q", body)
-		}
-		if rep.RestoredFrom.IsZero() && !strings.Contains(body, rep.Why) {
-			t.Errorf("the alert does not say why nothing was repaired: %q", body)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, g, db, d, n := dbFixture(t)
+			db.restoreErr = tc.restoreErr
+			askRecorder(cfg, g, d, n, localAt(1, 5, 30))
+			db.finish(tc.rep)
+			askRecorder(cfg, g, d, n, localAt(1, 5, 31))
+			if tc.rep.Candidate != "" && (len(db.restored) != 1 || db.restored[0] != tc.rep.Candidate) {
+				t.Fatalf("restored %v, want the report's candidate", db.restored)
+			}
+			if len(n.alerts) != 1 || n.alerts[0].Level != notify.Warning {
+				t.Fatalf("alerts %v, want one warning", n.alerts)
+			}
+			if !strings.Contains(n.alerts[0].Body, tc.want) {
+				t.Errorf("alert body %q does not say %q", n.alerts[0].Body, tc.want)
+			}
+		})
 	}
 }

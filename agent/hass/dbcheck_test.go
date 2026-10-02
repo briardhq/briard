@@ -101,7 +101,7 @@ var dbNow = time.Date(2026, 10, 1, 5, 30, 0, 0, time.UTC)
 // ringAt is a quiesced member taken `ago` before dbNow.
 func ringAt(name string, ago time.Duration) Member {
 	p := "/var/lib/briard/.snapshots/home-assistant-clock-" + name
-	return Member{Dir: p + "/config", App: p + ".app.json", At: dbNow.Add(-ago), Quiesced: true}
+	return Member{Path: p, Dir: p + "/config", App: p + ".app.json", At: dbNow.Add(-ago), Quiesced: true}
 }
 
 func hold(t *testing.T, f *dbFake, m Member, state string) {
@@ -169,10 +169,7 @@ func TestACleanNightReleasesEveryOlderHold(t *testing.T) {
 	hold(t, f, a, DBClean)
 	hold(t, f, b, DBRetained)
 	f.answers[c.Dir] = answerClean
-	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{a, b, c}, func(Member) error {
-		t.Fatal("a clean night restored something")
-		return nil
-	})
+	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{a, b, c})
 	if rep.Verdict != VerdictClean || f.state(c) != DBClean || f.state(a) != "" || f.state(b) != "" {
 		t.Fatalf("report %+v, states %q %q %q", rep, f.state(a), f.state(b), f.state(c))
 	}
@@ -185,8 +182,8 @@ func TestTheNewestQuiescedMemberIsTheOneChecked(t *testing.T) {
 	q, crash := ringAt("a", 2*time.Hour), ringAt("b", time.Hour)
 	crash.Quiesced = false
 	f.answers[q.Dir] = answerClean
-	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{q, crash}, nil)
-	if rep.Checked != q.Dir {
+	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{q, crash})
+	if rep.Checked != q.Path {
 		t.Fatalf("checked %q, want the newest quiesced %q", rep.Checked, q.Dir)
 	}
 }
@@ -204,15 +201,11 @@ func TestACorruptNightRestoresTheNewestCleanHeldCopy(t *testing.T) {
 	f.answers[mid.Dir] = answerClean
 	f.answers[floor.Dir] = answerClean
 	f.answers[liveDir] = `{"schema": 48}`
-	var got []Member
-	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{floor, mid, bad, newest}, func(m Member) error {
-		got = append(got, m)
-		return nil
-	})
-	if len(got) != 1 || got[0] != mid {
-		t.Fatalf("restored %v, want the newest clean hold %s", got, mid.Dir)
+	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{floor, mid, bad, newest})
+	if rep.Candidate != mid.Path || !rep.CandidateAt.Equal(mid.At) {
+		t.Fatalf("candidate %q at %v, want the newest clean hold %s", rep.Candidate, rep.CandidateAt, mid.Path)
 	}
-	if rep.Verdict != VerdictCorrupt || !rep.RestoredFrom.Equal(mid.At) {
+	if rep.Verdict != VerdictCorrupt {
 		t.Fatalf("report %+v", rep)
 	}
 	if f.state(newest) != "" || f.state(bad) != "" {
@@ -231,7 +224,7 @@ func TestNoRestoreWithoutBothPositiveReads(t *testing.T) {
 		name     string
 		live     string // "" = the live read fails
 		mid      string // "" = the candidate's read fails
-		restored bool
+		restored bool   // a candidate is named
 	}{
 		{"the live schema cannot be read", "", answerClean, false},
 		{"the candidate cannot be read", `{"schema": 48}`, "", false},
@@ -252,19 +245,15 @@ func TestNoRestoreWithoutBothPositiveReads(t *testing.T) {
 			if tc.mid != "" {
 				f.answers[mid.Dir] = tc.mid
 			}
-			var got []Member
-			rep := Nightly(context.Background(), f, testImage, liveDir, []Member{floor, mid, newest}, func(m Member) error {
-				got = append(got, m)
-				return nil
-			})
-			if (len(got) == 1) != tc.restored {
-				t.Fatalf("restored %v (report %+v), want restored=%t", got, rep, tc.restored)
+			rep := Nightly(context.Background(), f, testImage, liveDir, []Member{floor, mid, newest})
+			if (rep.Candidate != "") != tc.restored {
+				t.Fatalf("report %+v, want a candidate=%t", rep, tc.restored)
 			}
 			if !tc.restored && rep.Why == "" {
-				t.Errorf("no restore and no reason: %+v", rep)
+				t.Errorf("no candidate and no reason: %+v", rep)
 			}
-			if tc.name == "the live schema is older than the candidate's" && got[0] != floor {
-				t.Errorf("restored %s, want the floor whose schema is not newer", got[0].Dir)
+			if tc.name == "the live schema is older than the candidate's" && rep.Candidate != floor.Path {
+				t.Errorf("candidate %s, want the floor whose schema is not newer", rep.Candidate)
 			}
 		})
 	}
@@ -275,10 +264,7 @@ func TestNoRestoreWithoutBothPositiveReads(t *testing.T) {
 func TestACheckThatCannotRunIsNoVerdict(t *testing.T) {
 	f := newDBFake()
 	m := ringAt("a", time.Hour)
-	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{m}, func(Member) error {
-		t.Fatal("restored on no verdict")
-		return nil
-	})
+	rep := Nightly(context.Background(), f, testImage, liveDir, []Member{m})
 	if rep.Verdict != "" || rep.Why == "" {
 		t.Fatalf("report %+v, want no verdict with a reason", rep)
 	}
@@ -294,7 +280,7 @@ func TestACheckingLeftByACrashIsCleared(t *testing.T) {
 	hold(t, f, stale, DBChecking)
 	stale.Quiesced = false // so the night checks the other one
 	f.answers[newest.Dir] = answerClean
-	Nightly(context.Background(), f, testImage, liveDir, []Member{stale, newest}, nil)
+	Nightly(context.Background(), f, testImage, liveDir, []Member{stale, newest})
 	if f.state(stale) != "" {
 		t.Fatalf("a stale checking survived the night: %q", f.state(stale))
 	}
@@ -349,5 +335,37 @@ func TestRestoreDBThatCannotCopyTouchesNothing(t *testing.T) {
 	}
 	if f.files[liveDir+"/"+dbName] != "damaged" {
 		t.Fatal("the live database moved on a failed copy")
+	}
+}
+
+// TestRestorableReadsTheGateAgain: the check that named a copy ran earlier, and Home Assistant may
+// have moved since, so the restore asks both schema questions again and needs a clean record.
+func TestRestorableReadsTheGateAgain(t *testing.T) {
+	ctx := context.Background()
+	m := ringAt("a", time.Hour)
+	for _, tc := range []struct {
+		name   string
+		record string
+		mine   string
+		live   string
+		ok     bool
+	}{
+		{"both positive", DBClean, `{"schema": 48}`, `{"schema": 48}`, true},
+		{"not checked clean", DBRetained, `{"schema": 48}`, `{"schema": 48}`, false},
+		{"Home Assistant went back a version", DBClean, `{"schema": 48}`, `{"schema": 47}`, false},
+		{"the live read fails", DBClean, `{"schema": 48}`, "", false},
+		{"the copy's schema is unreadable", DBClean, `{"schema_error": "no such table"}`, `{"schema": 48}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDBFake()
+			hold(t, f, m, tc.record)
+			f.answers[m.Dir] = tc.mine
+			if tc.live != "" {
+				f.answers[liveDir] = tc.live
+			}
+			if err := Restorable(ctx, f, testImage, liveDir, m); (err == nil) != tc.ok {
+				t.Fatalf("Restorable = %v, want ok=%t", err, tc.ok)
+			}
+		})
 	}
 }
