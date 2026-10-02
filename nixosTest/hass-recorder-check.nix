@@ -9,7 +9,8 @@
 # with RENAME_EXCHANGE on a real btrfs subvolume, and that Home Assistant comes back on the copy.
 #
 # THE SCENARIOS, in order on one Home Assistant:
-#   1. A fresh install's first check is clean, which is the floor every later search stops at.
+#   1. The first check, of a clock sample on a fresh install, is clean: the floor every later
+#      search stops at.
 #   2. History is written, and a clock sample taken minutes later holds it -- a sample NOBODY
 #      HOLDS, since the last hold is minutes old. The floor predates the history. A household edit
 #      (scripts.yaml) follows, so the next sample's evaluation puts a "changed" event on the fresh
@@ -127,10 +128,16 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test -f ${db}", timeout=60)
 
     # ---- 1. THE FLOOR: a fresh install's first check is clean ----
+    # The rig provisions by hand, without the clean-stop marker the product's provision writes, so
+    # its first start sample is crash-consistent and the check would have nothing to read. A clock
+    # sample is quiesced whenever Home Assistant holds still, and it needs the briard integration's
+    # quiesce view, which comes up after the API does (hass-payload records the trap).
+    node1.wait_until_succeeds(f"{helper} ready", timeout=120)
+    node1.succeed("briard-guest-agent --clock=${fixture.name}")
     # This is also the first of the measurements: the check opens a REAL read-only member
     # with immutable=1, through podman, with Home Assistant's own sqlite. A verdict at all is that.
     rep = dbcheck()
-    assert rep["verdict"] == "clean", f"the first check of a fresh install is not clean: {rep}"
+    assert rep.get("verdict") == "clean", f"the first check of a fresh install is not clean: {rep}"
     floor = rep["checked"].rsplit("/", 1)[-1]
     assert app_state(floor) == "clean", f"the checked member {floor} is not held clean"
 
@@ -139,9 +146,6 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"{helper} set sensor.b31_named before-damage")
     wait_row("sensor.b31_named", "before-damage")
     named = row("${db}", 0, "sensor.b31_named", "before-damage")
-    # The clock sample needs the briard integration's quiesce view, which comes up after the API
-    # does (hass-payload records the trap).
-    node1.wait_until_succeeds(f"{helper} ready", timeout=120)
     node1.succeed("briard-guest-agent --clock=${fixture.name}")
     fresh = members("clock")[-1]
     meta = json.loads(node1.succeed(f"cat ${ring}/{fresh}.json"))
@@ -178,7 +182,7 @@ pkgs.testers.runNixOSTest {
 
     # ---- 4. THE CHECK finds it, and names the fresh unheld copy over the held floor ----
     rep = dbcheck()
-    assert rep["verdict"] == "corrupt", f"the check missed the damage: {rep}"
+    assert rep.get("verdict") == "corrupt", f"the check missed the damage: {rep}"
     assert rep.get("candidate", "").endswith("/" + fresh), (
         f"the search named {rep.get('candidate')!r}, want the newest clean copy {fresh} (the floor is {floor})"
     )
