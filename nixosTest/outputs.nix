@@ -402,6 +402,9 @@ in
       hass-failover = hassFailover;
       hass-upgrade = hassUpgrade; # real recorder schema migration through the upgrade
       hass-upgrade-rollback = hassUpgradeRollback; # real regression trips the gate → {code+data} rollback
+      # Latent damage in the recorder database found before Home Assistant finds it, and the
+      # newest copy that checks clean swapped back in; an unchecked copy resets on the full read.
+      hass-recorder-check = import ./hass-recorder-check.nix { inherit pkgs guestModule; fixture = hassFixture; };
       hass-backup = hassBackup; # off-site encrypted .storage backup + restore
       # The storage seam under all of them: arming a node is a pvmove and disarming it is the
       # same move back, neither of which HA notices.

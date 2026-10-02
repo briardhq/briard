@@ -159,20 +159,22 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 	return restoreRecorder(ctx, x, run, m, raw, *from, c)
 }
 
-// restoreRecorder puts the recorder database back from one member: stop Home Assistant, take the
-// hass-db-restore-before sample carrying the event, build the restored data in a staged copy,
-// swap it in, start it again.
+// restoreRecorder puts the recorder database back from one member: stop Home Assistant, build the
+// restored data in a staged copy, take the hass-db-restore-before sample carrying the event, swap
+// the copy in, start it again.
 //
-// THE SAMPLE IS THE UNDO, and it exists before anything is touched: undoing the event puts the
-// damaged database back. Nothing is compared against a *-before sample, so the restore registers
-// no change of its own.
+// NOTHING LIVE IS EDITED. The staged copy is a writable snapshot of the live subvolume, taken
+// with Home Assistant stopped, and the database is put into it there. Only then is it exchanged
+// with the live subvolume, in one rename(2) (RENAME_EXCHANGE): either the live data is the
+// restored copy or it is what it was. So every failure deletes the staged copy and starts Home
+// Assistant on its own data: nothing changed, and nothing is left stopped. The replaced subvolume
+// is deleted after the start.
 //
-// NOTHING LIVE IS EDITED. The staged copy is a writable snapshot of the undo point -- exactly the
-// bytes Home Assistant stopped on -- and the database is put into it there. Only then is it
-// exchanged with the live subvolume, in one rename(2) (RENAME_EXCHANGE): either the live data is
-// the restored copy or it is what it was. So every failure, before or at the swap, deletes the
-// staged copy and starts Home Assistant on its own data: nothing changed, and nothing is left
-// stopped. The replaced subvolume is deleted after the start.
+// THE SAMPLE IS THE UNDO, taken once the copy is ready and before the swap: undoing the event
+// puts the damaged database back. Taken any earlier, a failure while staging would leave a
+// History row saying the database was restored when it was not; a swap that fails after it
+// removes it for the same reason. Nothing is compared against a *-before sample, so the restore
+// registers no change of its own.
 //
 // ONLY THE UNITS THAT WERE RUNNING are stopped and started. Container units, never the pod: a pod
 // stop unmounts the shared volume under every other service (quadlet.Rendered.ContainerUnits).
@@ -199,6 +201,38 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 			return errors.Join(fmt.Errorf("stop %s (nothing was changed): %w", active[i], err), start())
 		}
 	}
+
+	// A staging name beside the live subvolume, on the same btrfs so the exchange is a rename. A
+	// leftover SUBVOLUME is a restore that died before or after its swap, and is ours to clear.
+	// Anything else there is not ours, and it is in the way: `btrfs subvolume snapshot` into an
+	// existing directory nests the copy inside it rather than failing.
+	root := quadlet.DataRoot(hass.Name)
+	staged := root + ".dbrestore"
+	drop := func() {
+		if _, err := x.Run(ctx, "btrfs", "subvolume", "show", staged); err == nil {
+			if err := run("btrfs", "subvolume", "delete", staged); err != nil {
+				log.Printf("hass-db: could not delete %s: %v", staged, err)
+			}
+		}
+	}
+	unchanged := func(what string, err error) error {
+		drop()
+		return errors.Join(fmt.Errorf("%s (nothing was changed): %w", what, err), start())
+	}
+	drop()
+	if _, err := x.Run(ctx, "test", "-e", staged); err == nil {
+		return unchanged("stage a copy of the data", fmt.Errorf("%s is in the way and is not a subvolume", staged))
+	}
+	if err := run("btrfs", "subvolume", "snapshot", root, staged); err != nil {
+		return unchanged("stage a copy of the data", err)
+	}
+	if err := hass.RestoreDB(ctx, x, from.Dir, staged+"/"+c.Name); err != nil {
+		return unchanged("put the database into the staged copy", err)
+	}
+	if err := run("sync", "-f", staged); err != nil {
+		return unchanged("flush the staged copy", err)
+	}
+
 	// QUIESCED ONLY IF WE STOPPED IT: an app that was not running may have died rather than
 	// stopped, and the weaker claim is the true one then.
 	cons := quadlet.Crash
@@ -213,40 +247,19 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	}
 	sidecar, err := json.Marshal(meta)
 	if err != nil {
-		return errors.Join(err, start())
+		return unchanged("render the undo point", err)
 	}
 	undo := quadlet.SnapshotMember(hass.Name, quadlet.TriggerHassDBRestoreBefore, at)
-	root := quadlet.DataRoot(hass.Name)
 	if err := takeSnapshot(ctx, x, run, root, undo, string(sidecar)); err != nil {
-		return errors.Join(fmt.Errorf("take the undo point (nothing was changed): %w", err), start())
+		return unchanged("take the undo point", err)
 	}
 	recordMember(ctx, x, undo, meta)
-
-	// A staging name beside the live subvolume, on the same btrfs so the exchange is a rename. A
-	// leftover is a restore that died before or after its swap; either way it is ours to clear.
-	staged := root + ".dbrestore"
-	drop := func() {
-		if _, err := x.Run(ctx, "btrfs", "subvolume", "show", staged); err == nil {
-			if err := run("btrfs", "subvolume", "delete", staged); err != nil {
-				log.Printf("hass-db: could not delete %s: %v", staged, err)
-			}
-		}
-	}
-	unchanged := func(what string, err error) error {
-		drop()
-		return errors.Join(fmt.Errorf("%s (nothing was changed): %w", what, err), start())
-	}
-	drop()
-	if err := run("btrfs", "subvolume", "snapshot", undo, staged); err != nil {
-		return unchanged("stage a copy of the data", err)
-	}
-	if err := hass.RestoreDB(ctx, x, from.Dir, staged+"/"+c.Name); err != nil {
-		return unchanged("put the database into the staged copy", err)
-	}
-	if err := run("sync", "-f", staged); err != nil {
-		return unchanged("flush the staged copy", err)
-	}
 	if err := run("mv", "--exchange", staged, root); err != nil {
+		if derr := run("btrfs", "subvolume", "delete", undo); derr == nil {
+			_ = run("rm", "-f", quadlet.SnapshotSidecar(undo), quadlet.AppSidecar(undo))
+		} else {
+			log.Printf("hass-db: the swap failed and its undo point could not be removed: %v", derr)
+		}
 		return unchanged("swap the staged copy in", err)
 	}
 	// Swapped: the live subvolume is the restored one, and `staged` now holds what it replaced.
@@ -257,4 +270,20 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	err = start()
 	drop()
 	return err
+}
+
+// CheckRecorder and RestoreRecorder are the recorder check's two halves FOR A GUEST WITH NO HOST,
+// the same accommodation TakeClockMember makes: the rigs that run Home Assistant are agent-less,
+// and this is how they drive the product's own check and restore against a real one. The check
+// runs in line here; its background runner is the verb's. Nothing in the product invokes them.
+func CheckRecorder(ctx context.Context, x Executor) hass.DBReport { return hassDBCheck(ctx, x) }
+
+func RestoreRecorder(ctx context.Context, x Executor, member string) error {
+	run := func(name string, args ...string) error {
+		if out, err := x.Run(ctx, name, args...); err != nil {
+			return fmt.Errorf("%s %v: %w: %s", name, args, err, out)
+		}
+		return nil
+	}
+	return hassDBRestore(ctx, x, run, member)
 }

@@ -201,7 +201,7 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	if f.files[live+"/home-assistant_v2.db"] != "clean history" {
 		t.Fatalf("live database = %q", f.files[live+"/home-assistant_v2.db"])
 	}
-	// The order: stop, the undo point, the staged copy, the swap, start, and only then the delete
+	// The order: stop, the staged copy, the undo point, the swap, start, and only then the delete
 	// of what the swap replaced. Nothing live is edited in place.
 	staged := quadlet.DataRoot("home-assistant") + ".dbrestore"
 	stop := step(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "stop" })
@@ -212,7 +212,7 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	swap := step(f, func(r []string) bool { return r[0] == "mv" && r[1] == "--exchange" })
 	start := step(f, func(r []string) bool { return r[0] == "systemctl" && r[1] == "start" })
 	gone := step(f, func(r []string) bool { return r[0] == "btrfs" && len(r) > 3 && r[2] == "delete" && r[3] == staged })
-	if stop < 0 || undo < stop || stage < undo || swap < stage || start < swap {
+	if stop < 0 || stage < stop || undo < stage || swap < undo || start < swap {
 		t.Fatalf("stop %d, undo %d, stage %d, swap %d, start %d: %v", stop, undo, stage, swap, start, f.runs)
 	}
 	for i, r := range f.runs {
@@ -351,14 +351,20 @@ func lastStep(f *fakeExec, match func([]string) bool) int {
 // started again on its own data. There is no "left stopped".
 func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		fail func(name string, args []string) bool
+		name  string
+		fail  func(name string, args []string) bool
+		setup func(f *fakeExec) // what is on the node before the restore
 	}{
-		{"the database cannot be copied", func(name string, args []string) bool { return name == "cp" }},
+		{"the database cannot be copied", func(name string, args []string) bool { return name == "cp" }, nil},
 		{"the staged copy cannot be flushed", func(name string, args []string) bool {
 			return name == "sync" && strings.HasSuffix(args[len(args)-1], ".dbrestore")
-		}},
-		{"the swap is refused", func(name string, args []string) bool { return name == "mv" && args[0] == "--exchange" }},
+		}, nil},
+		{"the swap is refused", func(name string, args []string) bool { return name == "mv" && args[0] == "--exchange" }, nil},
+		// Not ours: a snapshot into it would nest the copy inside it rather than fail.
+		{"something that is not a subvolume is at the staging path", func(string, []string) bool { return false },
+			func(f *fakeExec) {
+				f.files[quadlet.DataRoot("home-assistant")+".dbrestore"] = "a directory somebody left"
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -371,6 +377,9 @@ func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
 			f.files[quadlet.AppSidecar(quadlet.SnapshotsDir+good)] = `{"hass-db":{"state":"clean"}}`
 			f.files[quadlet.SnapshotsDir+good+"/app/home-assistant_v2.db"] = "clean history"
 			f.files[live+"/home-assistant_v2.db"] = "damaged history"
+			if tc.setup != nil {
+				tc.setup(f)
+			}
 			inner := f.runFn
 			f.runFn = func(name string, args []string) ([]byte, error) {
 				if tc.fail(name, args) {
@@ -392,6 +401,20 @@ func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
 			}
 			if _, ok := f.files[quadlet.DataRoot("home-assistant")+".dbrestore/app/home-assistant_v2.db"]; ok {
 				t.Error("the staged copy was left behind")
+			}
+			// NO ROW FOR A RESTORE THAT DID NOT HAPPEN: the undo point carries the event, so a failed
+			// restore must not leave one.
+			members, _ := listMembers(ctx, f, "home-assistant")
+			for _, m := range members {
+				if m.Meta.Trigger == quadlet.TriggerHassDBRestoreBefore {
+					t.Errorf("a failed restore left its undo point, whose History row says it happened: %s", m.Member)
+				}
+			}
+			for _, r := range f.runs {
+				if r[0] == "btrfs" && len(r) > 3 && r[2] == "snapshot" && strings.Contains(r[len(r)-1], string(quadlet.TriggerHassDBRestoreBefore)) &&
+					!slices.Contains(deleted(f), strings.TrimPrefix(r[len(r)-1], quadlet.SnapshotsDir)) {
+					t.Errorf("the undo point subvolume %s was taken and never deleted", r[len(r)-1])
+				}
 			}
 		})
 	}

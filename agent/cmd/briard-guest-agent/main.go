@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -130,6 +131,8 @@ func runInternal(args []string) {
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test: check what a staged copy can check without the port, then exit 0")
 	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre")
 	clock := fs.String("clock", "", "take this service's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host")
+	dbCheck := fs.Bool("dbcheck", false, "run Home Assistant's recorder check in line and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
+	dbRestore := fs.String("dbrestore", "", "restore Home Assistant's recorder database from this ring member -- an internal flag a harness invokes; the product drives this verb from the host")
 	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
@@ -208,6 +211,26 @@ func runInternal(args []string) {
 			log.Fatalf("clock %s: %v", *clock, err)
 		}
 		log.Printf("clock %s: %s", *clock, detail)
+		return
+	}
+
+	if *dbCheck || *dbRestore != "" {
+		// FOR A GUEST WITH NO HOST, like --clock above: the product reaches these through the
+		// host's verbs, and the agent-less rigs that run a real Home Assistant through here. The
+		// report goes to stdout as JSON, for the harness to read; the log goes to stderr.
+		x := guestfirmware.NewOSExecutor()
+		if *dbRestore != "" {
+			if err := guestagent.RestoreRecorder(ctx, x, *dbRestore); err != nil {
+				log.Fatalf("dbrestore: %v", err)
+			}
+			log.Printf("dbrestore: restored from %s", *dbRestore)
+			return
+		}
+		b, err := json.Marshal(guestagent.CheckRecorder(ctx, x))
+		if err != nil {
+			log.Fatalf("dbcheck: %v", err)
+		}
+		fmt.Println(string(b))
 		return
 	}
 
