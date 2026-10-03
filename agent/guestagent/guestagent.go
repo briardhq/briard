@@ -770,6 +770,12 @@ type resourcesRequest struct {
 	// and names nothing itself (logic lives on the host by default).
 	Services []resourceService `json:"services,omitempty"`
 	DataDir  string            `json:"data_dir,omitempty"` // the DRBD data volume mount
+	// Soak adds the reads that only the soak's oracle consumes and that cost real I/O: the two
+	// du walks and the snapshot listing. A shipped node never sets it, because this verb runs
+	// every tick on the one-call-at-a-time channel under the host's 5s deadline: a du over a
+	// freshly pulled multi-GB container store can outlast that, the deadline closes the
+	// channel, and the verb queued behind the read fails with it.
+	Soak bool `json:"soak,omitempty"`
 }
 
 // resourceService is one service to measure: its name, and its serving unit.
@@ -2203,8 +2209,10 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 		}
 		// -s: snapshots only (the pre-upgrade RO subvolumes an upgrade accumulates), so this
 		// tracks snapshot growth, not the live subvolume set.
-		if out, err := x.Run(ctx, "btrfs", "subvolume", "list", "-s", req.DataDir); err == nil {
-			r.SnapshotCount = countLines(out)
+		if req.Soak {
+			if out, err := x.Run(ctx, "btrfs", "subvolume", "list", "-s", req.DataDir); err == nil {
+				r.SnapshotCount = countLines(out)
+			}
 		}
 	}
 	// Memory: four kernel files, each best-effort like the rest. No zram device (a guest built
@@ -2223,11 +2231,13 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 	}
 	// -x: stay on one filesystem, so the number is the surface itself, not whatever is
 	// mounted beneath it.
-	if out, err := x.Run(ctx, "du", "-skx", journalDir); err == nil {
-		r.LogSizeKB = parseDuKB(out)
-	}
-	if out, err := x.Run(ctx, "du", "-skx", containerStore); err == nil {
-		r.PodmanStoreKB = parseDuKB(out)
+	if req.Soak {
+		if out, err := x.Run(ctx, "du", "-skx", journalDir); err == nil {
+			r.LogSizeKB = parseDuKB(out)
+		}
+		if out, err := x.Run(ctx, "du", "-skx", containerStore); err == nil {
+			r.PodmanStoreKB = parseDuKB(out)
+		}
 	}
 	// The guest kernel log (no-bad-kernel-log): where the guest-internal DRBD/btrfs/OOM signals
 	// land, unreachable from the L1 container (which shares the host kernel). Report only lines
@@ -2912,11 +2922,12 @@ func (g *Client) SupportsServiceList() bool { return g.Supports(verbServiceList)
 // Resources reads the appliance's resource telemetry -- per-service RSS/fds/restarts, load, and
 // the disk sub-series -- for the soak's trend oracle. services pairs each service's name with the
 // unit whose footprint is its own, and dataDir is the DRBD volume; both empty on a witness and on
-// a zero-service node, which still get every node-scoped series. Best-effort on the guest, so a
-// partial read comes back as a struct with the unread fields zero, not an error.
-func (g *Client) Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error) {
+// a zero-service node, which still get every node-scoped series. soak adds the soak-only reads
+// (resourcesRequest.Soak). Best-effort on the guest, so a partial read comes back as a struct
+// with the unread fields zero, not an error.
+func (g *Client) Resources(ctx context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error) {
 	var r telemetry.NodeResources
-	req := resourcesRequest{DataDir: dataDir}
+	req := resourcesRequest{DataDir: dataDir, Soak: soak}
 	// Sorted, so a run's forensics read in the same order every cycle -- map order would shuffle
 	// the series between samples for no reason.
 	names := make([]string, 0, len(services))

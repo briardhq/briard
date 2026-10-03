@@ -126,7 +126,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 		}
 	}}
 	g := dial(t, x)
-	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "/var/lib/briard/data")
+	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "/var/lib/briard/data", true)
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
@@ -181,6 +181,34 @@ func TestResourcesVerbGathers(t *testing.T) {
 	}
 }
 
+// Without the soak bit the verb never walks a tree: no du, no snapshot listing. The volume's df
+// and the cheap kernel files still come back, because the product reads those.
+func TestResourcesVerbWithoutSoakRunsNoWalks(t *testing.T) {
+	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		cmd := strings.Join(append([]string{name}, args...), " ")
+		switch {
+		case name == "du" || strings.HasPrefix(cmd, "btrfs subvolume list"):
+			t.Errorf("a shipped node ran %q -- soak-only I/O on the control channel's deadline", cmd)
+			return nil, nil
+		case strings.HasPrefix(cmd, "df -kP"):
+			return []byte("Filesystem 1024-blocks Used Available Capacity Mounted\n" +
+				"/dev/drbd1 100 4200 60 40% /d\n"), nil
+		case cmd == "cat /proc/meminfo":
+			return []byte("MemTotal:        1000000 kB\nMemAvailable:     300000 kB\n"), nil
+		default:
+			return nil, nil
+		}
+	}}
+	g := dial(t, x)
+	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "/var/lib/briard/data", false)
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if r.VolumeUsedKB != 4200 || r.MemTotalKB != 1000000 {
+		t.Errorf("the product's reads went dark with the soak's: vol=%d memTotal=%d", r.VolumeUsedKB, r.MemTotalKB)
+	}
+}
+
 // A stopped service (MainPID=0) skips the /proc read rather than reading /proc/0, and the
 // rest of the telemetry still comes back -- best-effort, never fatal.
 func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
@@ -199,7 +227,7 @@ func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
 		}
 	}}
 	g := dial(t, x)
-	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "")
+	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "", false)
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
@@ -268,7 +296,7 @@ func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
 	r, err := g.Resources(context.Background(), map[string]string{
 		"home-assistant": "briard-home-assistant-app.service",
 		"mosquitto":      "briard-mosquitto-broker.service",
-	}, "")
+	}, "", false)
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
@@ -292,7 +320,7 @@ func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
 // flatten a trend that nobody is actually watching.
 func TestResourcesVerbSkipsAServiceWithNoUnit(t *testing.T) {
 	g := dial(t, &fakeExec{})
-	r, err := g.Resources(context.Background(), map[string]string{"ha": ""}, "")
+	r, err := g.Resources(context.Background(), map[string]string{"ha": ""}, "", false)
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}

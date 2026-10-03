@@ -501,7 +501,7 @@ type guestReader interface {
 	// ...and the nightly recorder check, on the same cadence (clocksample.go).
 	recorderChecker
 	SystemPath(ctx context.Context) (string, error)
-	Resources(ctx context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error)
+	Resources(ctx context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error)
 }
 
 // Run boots the guest, drives bring-up to quorate primary (a witness just comes
@@ -1726,8 +1726,10 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 		units[spec.Name] = spec.ServingUnit()
 		dataDir = spec.DataDir // any service's data dir names the same volume; df/btrfs measure it
 	}
+	// The soak-only reads ride only where a soak collects them: TelemetryPath is set by the lab
+	// and by nothing that ships, and a shipped node has no consumer for their I/O.
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	if app, err := r.Resources(rctx, units, dataDir); err == nil {
+	if app, err := r.Resources(rctx, units, dataDir, cfg.TelemetryPath != ""); err == nil {
 		res = app // appliance fields; agent fields (zero here) filled below
 	}
 	cancel()

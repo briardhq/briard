@@ -95,12 +95,28 @@ type recordingReader struct {
 	called      bool
 	gotServices map[string]string
 	gotDataDir  string
+	gotSoak     bool
 }
 
-func (r *recordingReader) Resources(_ context.Context, services map[string]string, dataDir string) (telemetry.NodeResources, error) {
+func (r *recordingReader) Resources(_ context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error) {
 	r.called = true
-	r.gotServices, r.gotDataDir = services, dataDir
+	r.gotServices, r.gotDataDir, r.gotSoak = services, dataDir, soak
 	return r.res, r.resErr
+}
+
+// The soak-only reads are asked for exactly when a soak collects them: a telemetry path set
+// (the lab), and never on the shipped config, which sets none.
+func TestResourcesAsksForSoakReadsOnlyUnderASoak(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{{"", false}, {"/var/lib/briard-fleet/telemetry.json", true}} {
+		r := &recordingReader{}
+		Config{TelemetryPath: tc.path}.resources(context.Background(), r)
+		if r.gotSoak != tc.want {
+			t.Errorf("TelemetryPath=%q: soak=%v, want %v", tc.path, r.gotSoak, tc.want)
+		}
+	}
 }
 
 // The probe must ask about the unit that actually serves. A service's units come from the quadlet
