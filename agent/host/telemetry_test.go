@@ -2,8 +2,10 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -132,6 +134,60 @@ func TestWriteTelemetryDropLatchClearsOnRecovery(t *testing.T) {
 
 	if len(logs) != 2 || !strings.Contains(logs[0], "not keeping up") || !strings.Contains(logs[1], "caught up") {
 		t.Errorf("logs = %v, want exactly one drop notice then one recovery notice", logs)
+	}
+}
+
+// Kernel lines are a stream, so they accumulate across samples until the reader consumes the
+// file by renaming it away -- a reader sampling once a minute must see every tick's lines, not
+// the last one's. After the consume, only lines logged since are carried.
+func TestWriteTelemetryKernelLinesAccumulateUntilConsumed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.json")
+	cfg := Config{TelemetryPath: path}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg.telemetry = cfg.newTelemetryWriter(ctx, func(string, ...any) {})
+
+	// write sends one sample tagged by rss and waits until the file holds it.
+	write := func(rss int64, lines ...string) []string {
+		t.Helper()
+		cfg.writeTelemetry(&telemetry.NodeResources{AgentRSSKB: rss, KernelErrors: lines}, func(string, ...any) {})
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			var got telemetry.NodeResources
+			if b, err := os.ReadFile(path); err == nil && json.Unmarshal(b, &got) == nil && got.AgentRSSKB == rss {
+				return got.KernelErrors
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("sample %d never appeared", rss)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	write(1, "BTRFS error A")
+	write(2) // a quiet tick must not erase A
+	if got := write(3, "drbd error B"); !slices.Equal(got, []string{"BTRFS error A", "drbd error B"}) {
+		t.Errorf("before the consume: %q, want both ticks' lines", got)
+	}
+	if err := os.Rename(path, path+".read"); err != nil { // the reader consumes
+		t.Fatal(err)
+	}
+	if got := write(4, "oom-kill C"); !slices.Equal(got, []string{"oom-kill C"}) {
+		t.Errorf("after the consume: %q, want only the new line", got)
+	}
+}
+
+// A sample dropped because the writer is busy keeps its kernel lines for the next one that gets
+// through: the guest will not return them again.
+func TestWriteTelemetryDroppedSampleKeepsItsKernelLines(t *testing.T) {
+	cfg := Config{TelemetryPath: "/dev/null", telemetry: &telemetryWriter{ch: make(chan *telemetry.NodeResources, 1)}}
+	logf := func(string, ...any) {}
+	cfg.writeTelemetry(&telemetry.NodeResources{KernelErrors: []string{"A"}}, logf) // buffered
+	cfg.writeTelemetry(&telemetry.NodeResources{KernelErrors: []string{"B"}}, logf) // dropped
+	<-cfg.telemetry.ch
+	cfg.writeTelemetry(&telemetry.NodeResources{KernelErrors: []string{"C"}}, logf)
+	if got := (<-cfg.telemetry.ch).KernelErrors; !slices.Equal(got, []string{"B", "C"}) {
+		t.Errorf("kernel lines = %q, want the dropped sample's B carried ahead of C", got)
 	}
 }
 

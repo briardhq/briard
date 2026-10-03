@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -1750,13 +1751,25 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 // the channel, it is what the file already meant. writeTelemetryFile publishes the newest
 // sample by atomic rename and keeps no history, so a sample the writer never got to is
 // indistinguishable from one it overwrote a cycle later.
+//
+// Except the kernel lines. Those are not a level but a stream: the guest returns only the lines
+// logged since its previous read, so a sample that is overwritten or dropped takes its lines with
+// it, and a reader sampling once a minute would see only the last tick's. They therefore ACCUMULATE
+// until the reader consumes the file -- it renames it away, and the absence is the
+// acknowledgement. Lines in a dropped sample are held by the sender for the next one.
 type telemetryWriter struct {
 	ch chan *telemetry.NodeResources
-	// dropped edge-triggers the log below. Touched ONLY by the sender (observe is the sole
-	// caller of writeTelemetry, and there is one observe at a time), never by the goroutine, so
-	// it needs no lock.
+	// dropped edge-triggers the log below, and held keeps the kernel lines of samples that were
+	// dropped. Both are touched ONLY by the sender (observe is the sole caller of writeTelemetry,
+	// and there is one observe at a time), never by the goroutine, so they need no lock.
 	dropped bool
+	held    []string
 }
+
+// maxUnreadKernelLines bounds the kernel lines the file carries while nobody consumes it. The
+// newest are kept: a reader that is gone needs no history, and one that comes back after a storm
+// still sees the storm.
+const maxUnreadKernelLines = 1000
 
 // newTelemetryWriter starts that goroutine, or returns nil when no path is configured -- the
 // shipped state, since install.sh sets no TELEMETRY_PATH. writeTelemetry is nil-safe, so a
@@ -1772,11 +1785,18 @@ func (cfg Config) newTelemetryWriter(ctx context.Context, logf func(string, ...a
 	}
 	w := &telemetryWriter{ch: make(chan *telemetry.NodeResources, 1)}
 	go func() {
+		var unread []string // kernel lines written to the file and not yet consumed
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case res := <-w.ch:
+				// Only a file positively absent was consumed; any other Stat answer keeps the lines.
+				if _, err := os.Stat(cfg.TelemetryPath); errors.Is(err, fs.ErrNotExist) {
+					unread = nil
+				}
+				unread = lastLines(append(unread, res.KernelErrors...), maxUnreadKernelLines)
+				res.KernelErrors = unread
 				cfg.writeTelemetryFile(res, logf)
 			}
 		}
@@ -1786,13 +1806,18 @@ func (cfg Config) newTelemetryWriter(ctx context.Context, logf func(string, ...a
 
 // WriteTelemetry hands this cycle's resource sample to the writer goroutine, and never waits.
 // Nil-safe: no TelemetryPath (or a Config that never started a writer) means telemetry is off.
+// The writer gets its own copy, carrying any kernel lines held from dropped samples: the caller
+// keeps reading res, and the writer rewrites the copy's kernel lines.
 func (cfg Config) writeTelemetry(res *telemetry.NodeResources, logf func(string, ...any)) {
 	w := cfg.telemetry
 	if w == nil {
 		return
 	}
+	out := *res
+	out.KernelErrors = lastLines(append(w.held[:len(w.held):len(w.held)], res.KernelErrors...), maxUnreadKernelLines)
 	select {
-	case w.ch <- res:
+	case w.ch <- &out:
+		w.held = nil
 		if w.dropped {
 			logf("telemetry writer caught up; sampling again")
 			w.dropped = false
@@ -1801,6 +1826,7 @@ func (cfg Config) writeTelemetry(res *telemetry.NodeResources, logf func(string,
 		// The writer is still inside the previous write: a slow or hung TELEMETRY_PATH. Drop
 		// this sample and carry on -- the loop this instruments must never wait on it. Edge-
 		// triggered, so a path that never comes back says so once instead of every cycle.
+		w.held = out.KernelErrors
 		if !w.dropped {
 			logf("telemetry write is not keeping up (%s); dropping samples until it does", cfg.TelemetryPath)
 			w.dropped = true
@@ -1808,11 +1834,19 @@ func (cfg Config) writeTelemetry(res *telemetry.NodeResources, logf func(string,
 	}
 }
 
+// lastLines keeps the newest n of lines.
+func lastLines(lines []string, n int) []string {
+	if len(lines) > n {
+		return lines[len(lines)-n:]
+	}
+	return lines
+}
+
 // WriteTelemetryFile publishes one resource sample to the out-of-band collector file the soak
 // reads L0-side -- the internal host→lab channel that replaces putting telemetry on the cloud
 // report. Latest-wins via atomic write-rename (a reader never sees a torn sample); no history is
-// kept (the soak samples at rest each cycle). Best-effort: a write miss just logs.
-// Restart-robustness is irrelevant (scratch file).
+// kept beyond the unconsumed kernel lines (see telemetryWriter). Best-effort: a write miss just
+// logs. Restart-robustness is irrelevant (scratch file).
 //
 // Runs on the writer goroutine, never on the observe loop -- see telemetryWriter for why the
 // distinction is the whole point of this file existing at all.
