@@ -246,10 +246,12 @@ func TestQEMUArgsQMPSocket(t *testing.T) {
 	}
 }
 
-// QMP addresses block devices by id, so the root drive must carry one.
+// QMP addresses block devices by id, so the root drive must carry one -- and it is READ-ONLY:
+// the guest writes only to its state disk, so a write to the image is a fault to surface in
+// the guest, never bytes landing in a file the host did not size.
 func TestQEMUArgsRootDriveID(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/var/lib/briard/guest.qcow2"}), " ")
-	if !strings.Contains(got, "file=/var/lib/briard/guest.qcow2,if=none,discard=unmap,id="+RootDriveID) || !strings.Contains(got, "virtio-blk-pci,drive="+RootDriveID+",bootindex=0") {
+	if !strings.Contains(got, "file=/var/lib/briard/guest.qcow2,if=none,readonly=on,id="+RootDriveID) || !strings.Contains(got, "virtio-blk-pci,drive="+RootDriveID+",bootindex=0") {
 		t.Errorf("root drive missing id=%s:\n%s", RootDriveID, got)
 	}
 }

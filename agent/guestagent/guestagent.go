@@ -128,7 +128,7 @@ const verbSetHostname = "sys.hostname"
 
 // verbSetTimezone hands the guest the household's timezone, an IANA name the host read off its own
 // configuration (agent/host/timezone.go). A NODE-SCOPED FACT the host pushes at every bring-up:
-// the guest's root is a disposable overlay, so /etc/localtime lives exactly as long as the boot
+// the guest's /etc is a tmpfs-backed overlay, so /etc/localtime lives exactly as long as the boot
 // it was pushed into. What reads it is whatever the guest renders for people -- the dashboard's
 // History above all -- and the journal's own display. The image sets no zone, which is what
 // leaves /etc/localtime unmanaged and free to set at runtime.
@@ -2042,7 +2042,7 @@ const podSubnetPath = "/run/briard/pod.subnet"
 // The mesh cache (agent/host's cacheMesh) is what earned this move: the host durably owns the mesh
 // it writes now, so the guest's copy can have the one lifetime everything else here has.
 //
-// With this there is nothing node-scoped left on the guest's overlay, so a rebooted guest cannot
+// With this there is nothing node-scoped left on the guest's disks, so a rebooted guest cannot
 // act on configuration nobody has just restated -- the promoter is gated and every
 // input is re-pushed at bring-up.
 //

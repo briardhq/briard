@@ -240,7 +240,7 @@ func (l Layout) PruneGuestTrees() ([]string, error) {
 }
 
 // THE PERMANENT REVERT. The guest's own pivot falls back only until
-// its next launch (a fresh overlay knows nothing), so the host remembers two things beside the
+// its next launch (a fresh scratch knows nothing), so the host remembers two things beside the
 // committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, a link like the
 // others, so its tree survives pruning) and which release it REFUSED (`guest.reverted`, an id).
 // A refused release is never pushed again; the good tree is, on every launch, until a new host

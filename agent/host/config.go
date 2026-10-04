@@ -161,7 +161,6 @@ func ConfigFromEnv() Config {
 		// this is a floor, not a guess at what the household will install.
 		MemoryMB:   atoi(os.Getenv("MEMORY_MB"), 1024),
 		Cores:      atoi(os.Getenv("CORES"), 2),
-		GuestDisk:  os.Getenv("GUEST_DISK"),
 		GuestImage: os.Getenv("GUEST_IMAGE"),
 		DataDisk:   os.Getenv("DATA_DISK"),
 		StateDisk:  os.Getenv("STATE_DISK"),

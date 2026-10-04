@@ -18,8 +18,8 @@ import (
 // rides the HOST bundle: the committed tree at <base>/guest ->
 // guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}. The image bakes
 // ONE binary, briard-guest-firmware -- the push protocol alone, which is what receives the first
-// push; the guest AGENT has no baked copy either. The guest's overlay is disposable, so every
-// launch starts as firmware with no door and no agent at all; the host compares the bundle the
+// push; the guest AGENT has no baked copy either. The guest's scratch is emptied at every boot, so
+// every launch starts as firmware with no door and no agent at all; the host compares the bundle the
 // guest reports in its handshake with the tree it holds and pushes when they differ -- at
 // bring-up (BEFORE rejoin, so nothing can promote an undressed node), after a host commit, after
 // any guest relaunch. A convergence
@@ -47,7 +47,7 @@ import (
 // and because the port opens only after the verdict, there is no handshake in between.
 //
 // THE REVERT IS PERMANENT, and the host is what makes it so (owner, 2026-09-07). The guest's own
-// fallback only lasts until its next launch -- a fresh overlay knows nothing, so the next boot
+// fallback only lasts until its next launch -- a fresh scratch knows nothing, so the next boot
 // would trial the same bad bundle again. So the host keeps two facts beside the committed tree:
 // `guest.good`, a link to the last tree a dress was JUDGED to have taken (the guest came back
 // reporting it), and `guest.reverted`, the release id of a tree the guest refused -- at the

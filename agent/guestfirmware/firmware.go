@@ -98,8 +98,8 @@ type Hello struct {
 	// Bundle is the guest bundle this agent RUNS: the host release id whose
 	// pushed binaries it was started from, or "" when it runs the firmware baked into the
 	// image. The host compares it with the bundle it holds and dresses the guest when they
-	// differ -- at bring-up, after a host commit, after any guest restart (the overlay is
-	// disposable, so every boot starts as firmware).
+	// differ -- at bring-up, after a host commit, after any guest restart (the scratch is
+	// emptied at boot, so every boot starts as firmware).
 	Bundle string `json:"bundle,omitempty"`
 }
 

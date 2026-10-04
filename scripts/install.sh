@@ -286,9 +286,10 @@ ln -sfn "$PREFIX/agent/briard-agent" /usr/local/bin/briard 2>/dev/null ||
 [ -n "$NET_WRAP" ] || die "the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC"
 
 # ---- 5. where this node's disks GO -- the agent makes them --------------------------
-# THREE PATHS AND NO mkfs. The agent creates each of these at its first start, before it launches
+# TWO PATHS AND NO mkfs. The agent creates each of these at its first start, before it launches
 # anything that would attach one (agent/host/disks.go, agent/platform/alloc.go) -- thick for the
-# data volume, sparse for the state disk, a qcow2 overlay on the image for the guest's OS disk.
+# data volume, sparse for the state disk. The guest's OS disk is the image itself, attached
+# read-only.
 #
 # So what is left here is the LAYOUT: which path each one takes on this host, which is this
 # script's decision because it is the one that knows where it put the image and the state dir.
@@ -302,7 +303,6 @@ ln -sfn "$PREFIX/agent/briard-agent" /usr/local/bin/briard 2>/dev/null ||
 # subshell here; it is O_EXCL there, which is the same idea the kernel answers directly.
 DATA="$STATE/data.img"
 STATE_DISK="$STATE/state.img"
-OVERLAY="$PREFIX/guest.qcow2"   # cattle: rebuilt on the image at every launch, not just at install
 
 # ---- 6. the node's own files: the agent's scripts, its config, its units ------------
 # SIX FILES, and only ONE of them is generated. The three scripts and the three units are shipped
@@ -361,7 +361,6 @@ QEMU=$PREFIX/qemu/bin/qemu-system-x86_64
 QEMU_DATADIR=$PREFIX/qemu/share/qemu
 NET_WRAP_BIN=$NET_WRAP
 GUEST_IMAGE=$PREFIX/guest-image/nixos.qcow2
-GUEST_DISK=$OVERLAY
 DATA_DISK=$DATA
 STATE_DISK=$STATE_DISK
 EOF
@@ -402,7 +401,7 @@ done
 # Every artifact above has been copied out, so what is left here is a second copy of the largest
 # thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- 1.2 GB,
 # measured on briard-test, which is 13% of a 9.5 GiB disk, held by nothing, on the same filesystem
-# as the thin guest overlay that must grow to hold every service image the household installs.
+# as the state disk that must grow to hold every service image the household installs.
 #
 # ONLY OURS. $STAGING_OURS is empty on the BRIARD_ARTIFACTS path, whose staging dir belongs to
 # the caller (a Nix store path, in the install rigs) and must survive us.

@@ -79,8 +79,8 @@ func main() {
 		CPUModel:    env("CPU", "max"), // the agent's default (config.go) -- tests run what prod runs
 		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
 		Cores:       atoi(os.Getenv("CORES"), 2),
-		DiskImage:   os.Getenv("GUEST_DISK"), // writable overlay, prepared by the testScript
-		DataDisk:    os.Getenv("DATA_DISK"),  // raw backing for the DRBD volume -> guest /dev/vdb
+		DiskImage:   os.Getenv("GUEST_IMAGE"), // the guest image, attached read-only
+		DataDisk:    os.Getenv("DATA_DISK"),   // raw backing for the DRBD volume -> guest /dev/vdb
 		ControlSock: sock,
 		ServiceTap:  os.Getenv("SERVICE_TAP"), // host tap -> guest eth1 (the VIP NIC)
 		// SERVICE_MAC pins the guest NIC's MAC. Empty is fine on bridge (qemu's default MAC is

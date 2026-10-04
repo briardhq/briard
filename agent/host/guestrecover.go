@@ -577,11 +577,10 @@ func (u *osUpgrade) fire(ctx context.Context, n notify.Notifier, al notify.Alert
 	fireAlert(ctx, n, u.logf, al)
 }
 
-// RescueGuest is a RESTART: stop the guest and bring it up again, which lays a fresh
-// OS disk on the image (bringUp rebuilds the overlay at every launch) and pushes everything the
-// guest is dressed with. The data disk and the state disk are not touched. It used to be the
-// one rung that discarded state a restart kept; with the OS disk disposable by construction
-// there is nothing left for it to discard, and the verb survives as the name of the gesture.
+// RescueGuest is a RESTART: stop the guest and bring it up again on its read-only image, its
+// scratch emptied at boot and everything it is dressed with pushed afresh. The data disk and the
+// state disk's persistent half are not touched: with the OS disk unwritable by construction there
+// is nothing for it to discard, and the verb survives as the name of the gesture.
 func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 	qspec := u.cfg.guestSpec()
 	if platform.Running(ctx, qspec) {

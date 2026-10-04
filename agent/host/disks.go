@@ -18,14 +18,11 @@ const stateDiskSize = 8 << 30 // 8 GiB
 // provisionDisks makes this node's pet volumes exist, once, before the guest is launched.
 //
 // ⚠️ IT PROVISIONS ONLY WHAT IT WAS TOLD ABOUT, and that predicate is doing real work rather than
-// being defensive. An empty path is how five agent-* rigs say "this node has no state disk, no data
-// disk" -- they run an agent against a guest that has neither -- so a path invented here would hand
-// qemu a `-drive` for a file nobody made. Same rule as everywhere else in the install layout: the installer
+// being defensive. An empty path is how a harness says "this node has no such disk", so a
+// path invented here would hand qemu a `-drive` for a file nobody made. Same rule as everywhere else in the install layout: the installer
 // decides the LAYOUT and writes the paths down; the agent makes what those paths name.
 //
-// The overlay is not here. It is rebuilt on the image at every fresh launch anyway
-// (platform.RebuildOverlay), which also lays the first one down -- so the guest's OS
-// disk needs nothing from this function.
+// The guest's OS disk is not here: it is the release's image, attached read-only.
 func (cfg Config) provisionDisks(logf func(string, ...any)) error {
 	if cfg.DataDisk != "" {
 		size, err := parseSize(cfg.DataSize)

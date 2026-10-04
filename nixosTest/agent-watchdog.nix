@@ -97,7 +97,7 @@ pkgs.testers.runNixOSTest {
         environment = {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
-          GUEST_DISK = "/tmp/guest.qcow2";
+          GUEST_IMAGE = "/tmp/guest.qcow2";
           # Where the host keeps its guest bundle tree, the way install.sh sets it.
           UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
@@ -154,7 +154,7 @@ pkgs.testers.runNixOSTest {
         "ip link add link parent name svc0 type macvtap mode bridge && ip link set svc0 up && "
         "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
-    host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
+    host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # === 1) READY MEANS THE AGENT, NOT THE NODE ===

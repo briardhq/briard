@@ -90,7 +90,7 @@ var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to
 // tested against a value that never varies, and a test that cannot fail is not a test.
 // Nothing at runtime writes it -- the only writer
 // besides this line is TestWriteManifestCarriesTheTreesFloor, which restores it.
-var MinUpgradeFrom = "v3.20260920.ec4d22a"
+var MinUpgradeFrom = "v3.20261004.5ee3525"
 
 // Decision is what Decide concluded: whether to install, and the one line saying why either way.
 type Decision struct {

@@ -17,7 +17,7 @@ pkgs.testers.runNixOSTest {
     {
       virtualisation.memorySize = 4096; # room for L1 + the nested 2G guest
       virtualisation.cores = 4;
-      virtualisation.diskSize = 10240; # the overlay + data disk live here
+      virtualisation.diskSize = 10240; # the data + state disks live here
       virtualisation.vlans = [ ]; # no framework eth1 -- we build our own macvtap parent (192.168.1.0/24, the VIP subnet)
       virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM in L1
       environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl ];
@@ -52,8 +52,8 @@ pkgs.testers.runNixOSTest {
         "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
-    # Writable overlay of the read-only store qcow2 + a blank DRBD backing disk.
-    host.succeed("qemu-img create -f qcow2 -b ${guestDisk}/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
+    # The shipped image, which the agent attaches read-only, + a blank DRBD backing disk.
+    host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Run the product agent (host mode = plain `run`): boots the guest, drives the
@@ -74,7 +74,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
-        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
+        "--setenv=GUEST_IMAGE=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest --setenv=GUEST_SERIAL=/tmp/guest-console.log "
         # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
         # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV/SYSTEM_CIDR are

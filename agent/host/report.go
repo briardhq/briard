@@ -77,7 +77,7 @@ func (cr *certRequester) keyFor(name string) string {
 type upgrader interface {
 	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // the guest chain's release, image already staged
 	WriteCert(ctx context.Context, cert, key string) error                               //: apply a renewed cert to the vol
-	// RescueGuest rebuilds the guest from the verified image under its overlay -- the one
+	// RescueGuest restarts the guest on its verified, read-only image -- the one
 	// recovery rung that is never a reflex. It is on this interface rather than beside it because
 	// it performs the same VM+channel+Manager swap the upgrade legs do, and a second owner of that
 	// swap would be a second way to do it.
@@ -130,12 +130,12 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 			return failed("no guest on this node")
 		}
 		// The bound is the bring-up budget plus room for the stop, and it is generous on purpose:
-		// past the rebuild the old overlay is GONE, so a context that expires mid-bring-up leaves
-		// a node needing another rescue rather than one that reverted. There is nothing to revert
-		// to -- that is the nature of this rung, and the reason it is never automatic.
+		// past the stop the guest is down, so a context that expires mid-bring-up leaves a node
+		// needing another rescue rather than one that reverted. There is nothing to revert to --
+		// that is the nature of this rung, and the reason it is never automatic.
 		rctx, cancel := wd.budget(ctx, upgradeBudget)
 		defer cancel()
-		logf("directive kind=rescue: rebuilding the guest from its backing image")
+		logf("directive kind=rescue: restarting the guest on its image")
 		if err := up.RescueGuest(rctx); err != nil {
 			logf("directive rescue failed: %v", err)
 			return failed(err.Error())

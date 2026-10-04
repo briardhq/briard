@@ -27,9 +27,8 @@ type QEMUSpec struct {
 	// path, and the guest kernel cannot apply Spectre/SSBD mitigations at all because the
 	// spec-ctrl/ibpb/stibp bits are not advertised. Passing the host's real CPU through costs
 	// nothing here: the usual reason not to is live migration or a RAM-bearing savevm, and this
-	// product does NEITHER -- a guest never moves hosts, and every snapshot it takes is
-	// disk-only (snapshot.go, and QMP blockdev-snapshot-internal-sync). An HA failover is a
-	// fresh boot on the other node, which re-reads CPUID.
+	// product does NEITHER -- a guest never moves hosts and is never snapshotted. An HA failover is
+	// a fresh boot on the other node, which re-reads CPUID.
 	//
 	// `max`, not `host`: under KVM the two expand to an identical feature set (verified by
 	// query-cpu-model-expansion), but `host` HARD-FAILS without KVM ("CPU model 'host' requires
@@ -42,17 +41,15 @@ type QEMUSpec struct {
 	// DIMM with memory when it is added, never before. At or below MemoryMB the VM cannot grow.
 	MaxMemoryMB int
 	Cores       int
-	DiskImage   string // guest OS disk; empty in kernel/initrd boots
-	// BaseImage is the read-only image DiskImage is an overlay ON -- what an OS update
-	// swaps. It is what lets RebuildOverlay lay the overlay down on a node that has none yet
-	// rather than only rebuild one it can read the backing out of; empty leaves that
-	// bootstrap to whoever made the disk.
-	BaseImage string
+	// DiskImage is the guest OS image, attached READ-ONLY: the guest writes nothing to it, and a
+	// write it tried would fail inside the guest rather than land in a file the host never sized.
+	// What an OS update swaps. Empty in kernel/initrd boots.
+	DiskImage string
 	DataDisk  string // backing block device for the DRBD volume -> guest /dev/vdb
-	// StateDisk is the node-local STATE disk: the one place the guest keeps what the
-	// host cannot push and a restart must not cost -- podman's storage, the journal, the deadman's
-	// backoff. Attached with a fixed serial so the guest finds it by id whatever the bus order.
-	// Empty = none (rigs that predate it; the guest's mounts are nofail).
+	// StateDisk is the node-local STATE disk: every byte the guest writes -- what a restart must
+	// not cost (podman's storage, the journal, the deadman's backoff) and the per-boot scratch
+	// that /var and /tmp live on. Attached with a fixed serial so the guest finds it by id whatever the bus order.
+	// Empty = none, and the shipped image then fails its boot: it has nowhere else to write.
 	StateDisk string
 	// MachineUUID is the VM's DMI product UUID, from which systemd derives the guest's
 	// machine-id when the OS disk carries none (a disposable OS must still be the same
@@ -244,11 +241,7 @@ func qemuArgs(s QEMUSpec) []string {
 	// whatever else is ever attached. The drive ids are what QMP addresses (the snapshot work on
 	// RootDriveID); a serial is what the guest finds a disk by (/dev/disk/by-id/virtio-<serial>).
 	if s.DiskImage != "" {
-		// discard=unmap on the overlay and the state disk: a guest TRIM punches the range out of
-		// the host file (qcow2 cluster or sparse-raw hole), so deleting in the guest gives space
-		// back to the host. Without it a sparse disk only ever grows toward its ceiling, however
-		// little the guest keeps (the guest runs fstrim weekly).
-		args = append(args, "-drive", "file="+s.DiskImage+",if=none,discard=unmap,id="+RootDriveID,
+		args = append(args, "-drive", "file="+s.DiskImage+",if=none,readonly=on,id="+RootDriveID,
 			"-device", "virtio-blk-pci,drive="+RootDriveID+",bootindex=0")
 	}
 	if s.DataDisk != "" {
@@ -256,6 +249,9 @@ func qemuArgs(s QEMUSpec) []string {
 			"-device", "virtio-blk-pci,drive="+DataDriveID)
 	}
 	if s.StateDisk != "" {
+		// discard=unmap: a guest TRIM punches the range out of the sparse host file, so deleting in
+		// the guest gives space back to the host. Without it a sparse disk only ever grows toward its
+		// ceiling, however little the guest keeps (the guest runs fstrim weekly).
 		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,discard=unmap,id="+StateDriveID,
 			"-device", "virtio-blk-pci,drive="+StateDriveID+",serial="+StateDiskSerial)
 	}

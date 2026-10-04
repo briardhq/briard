@@ -12,8 +12,7 @@
 //
 // Everything else here is deliberately OS-neutral and stays that way: the argv renderers
 // (qemuArgs, launchArgs, routeReplaceArgs), the unit-state policy (what a reading MEANS and how
-// long to wait for a name), the QMP protocol, snapshot.go and overlay.go -- the last two because
-// qemu-img is the same program everywhere. So is the AF_UNIX control transport: Go supports unix
+// long to wait for a name), the QMP protocol. So is the AF_UNIX control transport: Go supports unix
 // sockets on Windows, so whether QEMU's own unix chardevs work there is a question about QEMU,
 // not about this package.
 //

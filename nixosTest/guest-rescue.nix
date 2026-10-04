@@ -1,31 +1,25 @@
-# The rescue ladder's last rung: REBUILD THE GUEST FROM THE IMAGE UNDER IT, AND KEEP THE DATA.
+# The rescue ladder's last rung: RESTART THE GUEST ON ITS IMAGE, AND KEEP THE DATA.
 #
-# `briard rescue` discards the guest's OS-disk overlay and lays down a fresh one on the signed
-# backing image it was installed from. The claim it makes -- and the only reason the verb is safe
-# to offer -- is that the CODE half is disposable while the DATA half is not: the replicated volume
-# is a separate disk, untouched, so what comes back is the same node with a factory guest rather
-# than a new node.
+# `briard rescue` stops the guest and boots it again on the signed image it was installed from,
+# which the host attaches READ-ONLY. The claim it makes -- and the only reason the verb is safe to
+# offer -- is that the CODE half cannot carry anything forward while the DATA half is not touched:
+# the image is never written, the guest's scratch is emptied at every boot, and the replicated
+# volume is a separate disk, so what comes back is the same node with a factory guest rather than
+# a new node.
 #
-# THE DIVISION OF LABOUR MATTERS HERE, because the obvious in-VM assertions are all wrong.
-# Whether the overlay's CONTENTS were really discarded is proven in platform/overlay_test.go
-# against real qemu-img, by planting a snapshot and showing the rebuilt overlay no longer carries
-# it. Two proxies for that were tried in this file and both lie: SIZE, because the rebuilt guest
-# boots and dirties its overlay before the verb even returns; and INODE, which looks exact and is
-# not -- rm + create at the same path reuses the inode number, and an early version of this test
-# failed on exactly that, reporting a rescue that had in fact worked.
-#
-# What only a real node can show is the INTEGRATION: a blank guest coming up against a populated
+# What only a real node can show is the INTEGRATION: a fresh guest coming up against a populated
 # data disk. So this asserts:
 #
 #   1. a DIFFERENT QEMU is serving afterwards -- the VM went down and came back
 #   2. the data disk is the SAME file, same size, DRBD metadata intact
-#   3. the rebuilt guest converges and serves again
-#   4. it is still an overlay on the same image, so it can be rescued a second time
+#   3. the restarted guest converges and serves again
+#   4. the image is attached read-only, and its bytes are what the install laid down -- nothing
+#      any boot did reached it
 #   5. without -yes the verb refuses and the guest is left running
 #
 # (1) and (5) are what stop this passing vacuously: a rescue that quietly did nothing satisfies
-# (2), (3) and (4) perfectly -- data intact, node serving, disk still an overlay -- which is
-# exactly what a no-op looks like from the outside.
+# (2), (3) and (4) perfectly -- data intact, node serving, image untouched -- which is exactly what
+# a no-op looks like from the outside.
 #
 # WHAT IT DOES NOT PROVE, said here rather than left to be assumed: that bring-up ADOPTED the
 # existing replica rather than re-seeding it in place. A re-seed rewrites metadata in the same
@@ -68,19 +62,11 @@ pkgs.testers.runNixOSTest {
         "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
-    # THE OVERLAY IS THE POINT: the guest disk must be a qcow2 overlay on the shipped image, the
-    # shape install.sh lays down. A standalone copy would make `rescue` refuse (correctly), so a
-    # test built on one would prove nothing about the path users have.
-    #
-    # --force-share on every `qemu-img info` here for the same reason the product needs it: QEMU
-    # holds a write lock on a running guest's disk and qemu-img declines a locked image without it.
-    # This test hit that on its own final assertion after the fix had landed in the product, which
-    # is a small piece of evidence that the fix was addressing something real rather than a quirk
-    # of one environment.
-    # A WRITABLE copy of the image, because an OS upgrade swaps the file the overlay backs onto and
-    # the store is read-only; install.sh lays the image down as a copy too.
+    # A copy of the image in a WRITABLE directory, because an OS upgrade swaps the file by rename
+    # and the store is read-only; install.sh lays the image down as a copy too. The file itself is
+    # never written: its hash, taken here, is assertion (4).
     host.succeed("cp ${guestDisk}/nixos.qcow2 /tmp/nixos.qcow2 && chmod 0644 /tmp/nixos.qcow2")
-    host.succeed("qemu-img create -f qcow2 -b /tmp/nixos.qcow2 -F qcow2 /tmp/guest.qcow2")
+    image_sum = host.succeed("sha256sum /tmp/nixos.qcow2").split()[0]
     host.succeed("truncate -s 512M /tmp/data.img")
     # The state disk: empty, sparse; the guest formats it on its first boot and the
     # rescue below must NOT format it again -- that is the whole claim of the disk.
@@ -88,8 +74,6 @@ pkgs.testers.runNixOSTest {
     # The release keyring the agent verifies guest releases against is read at agent
     # START, so it is minted before the launch and used by the channel section below.
     host.succeed("${stub}/bin/briard-selfupdate-stub keygen /root/release.key /root/keyring.pem")
-    backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
-    assert "nixos.qcow2" in backing, f"the guest disk is not an overlay on the image; rescue would refuse:\n{backing}"
 
     # The host holds a guest bundle tree, as install.sh lays on every install: the image
     # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
@@ -106,7 +90,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
-        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
+        "--setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         # The vm chain: the channel this rig serves, the keyring it mints, the record.
         "--setenv=CHANNEL_URL=http://127.0.0.1:8099 --setenv=UPDATE_KEYRING=/root/keyring.pem --setenv=GUEST_RELEASE_CACHE=/tmp/guest-release.json "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=ADMIN_SOCK=/run/briard/admin.sock "
@@ -135,19 +119,9 @@ pkgs.testers.runNixOSTest {
 
     # === What to look at before the rescue. ===
     #
-    # THE OS DISK'S REPLACEMENT IS NOT ASSERTED HERE, and that is a deliberate division rather than
-    # a gap. It is proven in platform/overlay_test.go against real qemu-img, by planting a snapshot
-    # in the overlay and showing the rebuilt one no longer carries it -- a content check, which is
-    # what "replaced" actually means. Two in-VM proxies for it were tried and both are wrong:
-    # SIZE, because the rebuilt guest boots and dirties its overlay before the verb even returns;
-    # and INODE, which looked exact and is not -- rm + create at the same path reuses the inode
-    # number on a busy filesystem, and this test failed on precisely that, reporting a rescue that
-    # had in fact worked. What this test is FOR is the integration the unit test cannot reach: a
-    # blank guest coming up against a populated data disk.
-    #
     # The QEMU PID stands in for "the VM really went down and came back", which is the part of the
     # sequence this harness can see honestly.
-    qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0]
 
     # The DATA disk carries the opposite assertion: it must be the SAME file afterwards, same size,
     # still holding DRBD's metadata.
@@ -185,7 +159,7 @@ pkgs.testers.runNixOSTest {
     # operator's memory, and asserting it here means a change that drops it fails a test rather
     # than a node.
     host.fail("${agent}/bin/briard-agent rescue -sock /run/briard/admin.sock")
-    assert qemu_before == host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0], \
+    assert qemu_before == host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0], \
         "an unconfirmed rescue took the guest down anyway"
 
     # WHERE THE SHUTDOWN STARTS IN THE CONSOLE, marked before it happens. The chardev APPENDS
@@ -277,12 +251,10 @@ pkgs.testers.runNixOSTest {
     print("clean stop: the agent route took it, and no unit held the guest's shutdown")
 
     # (1) THE VM REALLY WENT DOWN AND CAME BACK. A different QEMU is serving, so the sequence ran
-    # rather than short-circuiting -- the honest in-VM half of "it was rebuilt". The other half,
-    # that the overlay's CONTENTS were discarded, is proven in platform/overlay_test.go where it
-    # can be checked properly (see the note above on why size and inode both lie here).
-    qemu_after = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    # rather than short-circuiting.
+    qemu_after = host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0]
     assert qemu_after != qemu_before, \
-        f"same QEMU pid {qemu_after} -- the guest was never taken down, so nothing was rebuilt"
+        f"same QEMU pid {qemu_after} -- the guest was never taken down, so nothing was restarted"
     print(f"guest replaced: pid {qemu_before} -> {qemu_after}")
 
     # (2) THE DATA DISK WAS NOT. Same file, same size, metadata still there. This is the claim the
@@ -304,16 +276,18 @@ pkgs.testers.runNixOSTest {
         "the data volume has a different LUKS UUID -- the rescue reformatted the replicated volume"
     print("data disk untouched: same file, same size, same volume")
 
-    # (3) And it is a node again: the rebuilt guest came up on the existing replica and the front
+    # (3) And it is a node again: the restarted guest came up on the existing replica and the front
     # door answers.
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
 
-    # (4) Still an overlay on the same image, so the node can be rescued again -- a rebuild that
-    # produced a standalone disk would work once and then refuse forever.
-    again = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
-    assert "nixos.qcow2" in again, f"the rebuilt disk is not an overlay on the image:\n{again}"
+    # (4) THE IMAGE IS READ-ONLY, AND NOTHING REACHED IT. Two boots and a clean stop later, its
+    # bytes are the ones the install laid down, and the running QEMU holds it readonly=on -- the
+    # second can fail on its own (an attach without it), the first on anything that ever wrote it.
+    host.succeed("pgrep -af qemu-system-x86_64 | grep -q 'file=/tmp/nixos.qcow2,if=none,readonly=on'")
+    assert image_sum == host.succeed("sha256sum /tmp/nixos.qcow2").split()[0], \
+        "the guest image changed under a running guest -- something wrote the OS disk"
 
-    print("the guest was rebuilt from its backing image, kept its data disk, and re-converged")
+    print("the guest restarted on its untouched image, kept its data disk, and re-converged")
 
     # (5) THE STATE DISK SURVIVED, and the guest is the same machine. The disk carried a
     # filesystem before the rescue (the guest formatted it on its first boot), and its ext4 UUID,
@@ -328,7 +302,7 @@ pkgs.testers.runNixOSTest {
 
     # === (6) THE OS MOVES BY IMAGE. The vm chain's release is a whole image; the
     #        agent fetches and verifies it, stages it beside the one in use, stops the guest,
-    #        swaps the file, rebuilds the overlay, boots, proves the booted closure is the one the
+    #        swaps the file, boots it, proves the booted closure is the one the
     #        signed manifest names, health-gates, and drops the old image. Then the failable
     #        control: a release whose manifest names a closure its image does NOT boot is put
     #        back -- same file swapped the other way -- and the node is serving what it served.
@@ -345,21 +319,20 @@ pkgs.testers.runNixOSTest {
     sign_and_point(GV2, ("latest",))
     host.succeed("systemd-run --unit=guest-channel --collect ${stub}/bin/briard-selfupdate-stub serve 127.0.0.1:8099 /srv")
     host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/vm/latest/manifest.json -o /dev/null", timeout=30)
-    qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0]
     state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
 
     out = host.succeed("${agent}/bin/briard-agent update -vm -sock /run/briard/admin.sock -to latest").strip()
     assert f"now running {GV2}" in out, f"briard update -vm said: {out!r}"
     host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: booted {GV2}, health-gating'")
     host.succeed(f"journalctl -u briard-agent | grep -q 'image-upgrade: {GV2} committed'")
-    # The guest runs the NEXT image's closure (the manifest named it; the boot proved it), on a
-    # fresh overlay over the swapped file, the previous image dropped after the gate.
+    # The guest runs the NEXT image's closure (the manifest named it; the boot proved it), from the
+    # swapped file, still read-only, the previous image dropped after the gate.
     host.succeed(f"grep -q '\"version\":\"{GV2}\"' /tmp/guest-release.json")
     host.succeed("grep -q '\"system\":\"${nextSystem}\"' /tmp/guest-release.json")
     host.fail("test -e /tmp/nixos.qcow2.prev"); host.fail("test -e /tmp/nixos.qcow2.next")
-    backing = host.succeed("qemu-img info --output=json --force-share /tmp/guest.qcow2")
-    assert "/tmp/nixos.qcow2" in backing, f"the overlay is not on the swapped image:\n{backing}"
-    assert host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0] != qemu_before, "the guest was never restarted"
+    host.succeed("pgrep -af qemu-system-x86_64 | grep -q 'file=/tmp/nixos.qcow2,if=none,readonly=on'")
+    assert host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0] != qemu_before, "the guest was never restarted"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     assert state_uuid == host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), \
         "the state disk was reformatted across the image upgrade"

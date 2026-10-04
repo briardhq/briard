@@ -125,8 +125,8 @@ const (
 	doorTrialTimeout  = 60 * time.Second
 )
 
-// The two directories, overridable for tests and for a rig that dresses a stub. BinDir is on
-// the guest's DISPOSABLE overlay root: a pushed binary does not survive a boot, which is the
+// The two directories, overridable for tests and for a rig that dresses a stub. BinDir is in
+// the guest's DISPOSABLE scratch, emptied at every boot: a pushed binary does not survive a boot, which is the
 // design -- every boot starts as firmware and the host re-dresses it. ⚠️ NOT under
 // /var/lib/briard: in the guest that path is the REPLICATED DATA VOLUME, mounted only while the
 // node holds the house -- binaries put there before promotion vanish under the mount, and

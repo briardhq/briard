@@ -397,19 +397,16 @@ const (
 	//                        be fetched is told while its service is still running. An INSTALL is
 	//                        allowed to stop things, because the household asked for a change; a
 	//                        restore that cannot finish must cost nothing.
-	DirectiveRescue = "rescue" // Payload = "" — rebuild this node's guest from the verified image
-	//                        under its OS-disk overlay: stop the VM, discard the overlay, lay down
-	//                        a fresh one on the same backing file, bring it up. The REPLICATED DATA
-	//                        DISK is not touched, so identity, replica and service pin all survive —
+	DirectiveRescue = "rescue" // Payload = "" — restart this node's guest on its verified,
+	//                        read-only image: stop the VM and bring it up again, its scratch emptied
+	//                        at boot and every binary pushed afresh. The REPLICATED DATA DISK and
+	//                        the state disk are not touched, so identity, replica and service pin all survive —
 	//                        the same node returns with a factory code half.
 	//
 	//                        THE ONE DIRECTIVE THAT IS NEVER A REFLEX. Every other recovery
 	//                        rung fires on its own; this waits for a human — or, later, a cloud that
-	//                        has read the logs and decided. It is drastic, its result is uncertain,
-	//                        and the rebuilt guest must re-pull its OCI images over the WAN at
-	//                        exactly the moment something is already wrong. Refused outright on a
-	//                        disk with no backing image: that is not an overlay, it is the only copy
-	//                        of itself.
+	//                        has read the logs and decided. It stops the household's service, and
+	//                        its result is uncertain when the cause is unknown.
 	DirectiveDashboard = "dashboard" // Payload = a JSON {name, username, language} describing the OS account the
 	//                                  CLI ran under (all optional). The node mints a one-time code, hands
 	//                                  it to the guest with that account (shared/dashboard), and reports

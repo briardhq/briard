@@ -298,23 +298,22 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 //
 // install.sh writes paths to files it CREATED OR STAGED -- the qemu tree it extracted, the disks it
 // allocated -- because those are facts about this host. The agent must not invent them, and the
-// reason is concrete: an empty value is how every agent-* rig says "I have no state disk, no
-// backing image, no -L directory". Default them and the agent hands qemu `-drive file=...` for a
-// file that is not there, and the guest never boots -- on five rigs at once, none of which would
-// have caught it before a nixosTest ran.
+// reason is concrete: an empty value is how a harness says "I have no such disk, no -L
+// directory". Default them and the agent hands qemu `-drive file=...` for a file that is not
+// there, and the guest never boots.
 //
 // The taps and device names are the OTHER rule (they default, through `declared`), which is why
 // both are asserted and neither is left to be inferred from the other.
 func TestConfigFromEnv_TheInstallsOwnPathsAreNeverInvented(t *testing.T) {
 	for _, k := range []string{
-		"QEMU_DATADIR", "GUEST_DISK", "GUEST_IMAGE", "DATA_DISK", "STATE_DISK", "NET_WRAP_BIN",
+		"QEMU_DATADIR", "GUEST_IMAGE", "DATA_DISK", "STATE_DISK", "NET_WRAP_BIN",
 	} {
 		os.Unsetenv(k)
 		t.Cleanup(func() { os.Unsetenv(k) })
 	}
 	c := ConfigFromEnv()
 	for _, g := range []struct{ name, got string }{
-		{"QEMUDataDir", c.QEMUDataDir}, {"GuestDisk", c.GuestDisk}, {"GuestImage", c.GuestImage},
+		{"QEMUDataDir", c.QEMUDataDir}, {"GuestImage", c.GuestImage},
 		{"DataDisk", c.DataDisk}, {"StateDisk", c.StateDisk}, {"NetWrapBin", c.NetWrapBin},
 	} {
 		if g.got != "" {

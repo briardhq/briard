@@ -670,7 +670,7 @@ pkgs.testers.runNixOSTest {
     # a Windows host has to make too.
     computed = {
         "QEMU", "QEMU_DATADIR", "NET_WRAP_BIN",                     # staged here
-        "GUEST_IMAGE", "GUEST_DISK", "DATA_DISK", "STATE_DISK",     # created here
+        "GUEST_IMAGE", "DATA_DISK", "STATE_DISK",                   # created here
     }
     copied = {"CHANNEL_URL", "UPDATE_KEYRING"}  # exactly what channelEnv carried
     assert set(keys) == computed | copied, (
@@ -952,7 +952,8 @@ pkgs.testers.runNixOSTest {
 
     # FHS: pet volume under /var/lib, cattle under /opt (the cattle/pet split assertion d builds on).
     host.succeed("test -f /var/lib/briard/data.img")   # pet
-    host.succeed("test -f /opt/briard/guest.qcow2")     # cattle overlay
+    host.succeed("test -f /opt/briard/guest-image/nixos.qcow2")  # cattle: the image, attached read-only
+    host.fail("test -e /opt/briard/guest.qcow2")                 # and no OS-disk overlay beside it
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")
     print(host.succeed("journalctl -u briard-agent | tail -20"))
 
@@ -1018,7 +1019,7 @@ pkgs.testers.runNixOSTest {
 
     # The honest cattle-reset gesture: stop briard (the agent AND its detached guest unit -- the
     # guest runs as a sibling transient service, so stopping the agent alone leaves
-    # qemu holding the overlay AND the macvtap chardev), then remove ONLY /opt/briard.
+    # qemu holding the image AND the macvtap chardev), then remove ONLY /opt/briard.
     host.succeed("systemctl stop briard-agent.service briard-guest.service")
     host.succeed("rm -rf /opt/briard")
     host.fail("test -e /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle really gone
@@ -1042,7 +1043,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("echo 0 > /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
     host.wait_until_succeeds("ip -6 addr show dev briard0 | grep -q inet6", timeout=30)
 
-    # Reinstall: the SAME one command. It re-lays /opt from staging, recreates a FRESH guest overlay
+    # Reinstall: the SAME one command. It re-lays /opt from staging, the image with it
     # (cattle), and does NOT recreate the pet data.img. Convergence is idempotent, so the agent
     # adopts the macvtaps that are already up rather than re-creating them.
     host.succeed(
@@ -1144,7 +1145,7 @@ pkgs.testers.runNixOSTest {
     def restart_node():
         """POWER-CUT the node and bring it back: a fresh guest boot, so promotion runs again and
         briard-vip re-resolves the service address from scratch. The guest is a SIBLING transient
-        unit, so stopping the agent alone would leave qemu holding the overlay.
+        unit, so stopping the agent alone would leave qemu holding the image.
 
         The SIGKILL is load-bearing, not a shortcut. What this sets up is the
         unplanned-failover case, and the entire argument for storing the address is that an
@@ -1319,7 +1320,7 @@ pkgs.testers.runNixOSTest {
     ]
     assert not stray, f"the unit froze configuration the agent must be able to rewrite: {stray}"
     # That the agent READS the file needs no assertion of its own: with the unit carrying no
-    # values, every green thing this test has already proven -- the guest booted off GUEST_DISK,
+    # values, every green thing this test has already proven -- the guest booted off GUEST_IMAGE,
     # the state disk attached by serial, the VIP answering on the LAN -- came from config.env or
     # from nowhere.
 
@@ -1582,12 +1583,9 @@ pkgs.testers.runNixOSTest {
         assert console_count(f"briard-bin-exec: {name}: pushed") >= 1, f"{name} never ran a pushed copy"
     print("the door and the dashboard ran only pushed copies -- the image bakes the firmware alone")
 
-    # A GUEST RELAUNCH LANDS ON FIRMWARE AND IS DRESSED AGAIN: the overlay is disposable, so nothing
-    # pushed survives it. STOPPED, not restarted: the host's recovery relaunches a stopped guest
-    # through its own bring-up, which rebuilds the overlay -- a `systemctl restart` of
-    # the unit reboots qemu on the SAME overlay, so the pushed binaries persist, the picker runs
-    # them, and the host rightly pushes nothing (measured: the first cut of this step waited 600 s
-    # for a dress the product had no reason to do).
+    # A GUEST RELAUNCH LANDS ON FIRMWARE AND IS DRESSED AGAIN: the guest's scratch is emptied at
+    # every boot, so nothing pushed survives it. STOPPED: the host's recovery relaunches a stopped
+    # guest through its own bring-up, which dresses it.
     before = dressed_count(V)
     # CONVERGED is already in the journal from the install, so a bare grep for it proves nothing
     # about THIS promotion, or it cannot fail: count past what is there --

@@ -397,12 +397,12 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 // back — belongs to whatever can see every node (the cloud, or a lab script driving both). This
 // verb evicts the node it runs on and says what happened, which is exactly what a node can know:
 // `drbd-reactorctl evict` says "not me", never "you". Run it on the peer to come back.
-// runRescue rebuilds this node's guest from the verified image under its OS-disk overlay.
+// runRescue restarts this node's guest on its verified, read-only image.
 //
 // IT REQUIRES -yes, and that is the only place in this CLI that does. Every other verb here is
 // reversible or health-gated: an OS upgrade rolls back, a service install restores its data, a
-// handover can be handed back. This one discards the guest's OS disk, and nothing brings back what
-// was on it. A confirmation flag is the cheapest possible guard against the one invocation nobody
+// handover can be handed back. This one stops the household's service on a node whose fault
+// nobody has diagnosed, and empties the guest's scratch. A confirmation flag is the cheapest possible guard against the one invocation nobody
 // meant to type, and it costs an operator who did mean it four characters.
 //
 // It does NOT prompt interactively. The situations this verb exists for include a node being

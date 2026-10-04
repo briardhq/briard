@@ -130,8 +130,7 @@ type Config struct {
 	CPUModel    string // qemu `-cpu`; "" = qemu's default (qemu64, x86-64-v1). See platform.QEMUSpec.
 	MemoryMB    int
 	Cores       int
-	GuestDisk   string
-	GuestImage  string // the image the guest disk is an overlay on: what an OS update swaps; "" -> none
+	GuestImage  string // the guest OS image, attached read-only: what an OS update swaps; "" -> none
 	DataDisk    string
 	StateDisk   string // the node-local state disk; "" -> none
 	// DataSize is how big the data volume is made when this node has none yet, in whole GiB
@@ -889,8 +888,7 @@ func (cfg Config) baseGuestSpec() platform.QEMUSpec {
 		MemoryMB:      cfg.bootMemoryMB(),
 		MaxMemoryMB:   guestMemoryCeilingMB(reportcard.MemTotalMB()),
 		Cores:         cfg.Cores,
-		DiskImage:     cfg.GuestDisk,
-		BaseImage:     cfg.GuestImage,
+		DiskImage:     cfg.GuestImage,
 		DataDisk:      cfg.DataDisk,
 		StateDisk:     cfg.StateDisk,
 		MachineUUID:   deriveUUID(cfg.Node),
@@ -1012,12 +1010,6 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		logf("re-adopting running guest (%s)", platform.GuestUnit)
 		g = platform.Adopt(qspec)
 	} else {
-		// A FRESH OS DISK AT EVERY LAUNCH: the overlay is discarded and rebuilt on the
-		// image before the guest boots, which is where the guest's disposability comes from. What a
-		// restart must not cost lives on the state disk; everything else the host pushes again.
-		if _, err := qspec.RebuildOverlay(bringup); err != nil {
-			return nil, nil, fmt.Errorf("host: fresh guest disk: %w", err)
-		}
 		var err error
 		if g, err = platform.Launch(bringup, qspec); err != nil {
 			return nil, nil, fmt.Errorf("host: launch guest: %w", err)
@@ -1111,7 +1103,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		}
 	}
 	// DRESS THE GUEST before any real verb, on both paths: a fresh boot starts as
-	// firmware (the overlay is disposable), and an adopt after a host commit is where the new
+	// firmware (its scratch is emptied at boot), and an adopt after a host commit is where the new
 	// bundle meets a guest still running the old one. A push restarts the guest agent, so the
 	// channel is re-established here and the rest of bring-up talks to the dressed guest.
 	if err == nil {
@@ -1127,7 +1119,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		err = client.SetHostname(bringup, cfg.Node)
 	}
 	// The household's timezone, for what the guest renders for people. Every bring-up, because the
-	// guest's overlay forgets it with the boot; it warns rather than fails (pushTimezone).
+	// guest's /etc forgets it with the boot; it warns rather than fails (pushTimezone).
 	if err == nil {
 		pushTimezone(bringup, client, localTimezone("/"), logf)
 	}

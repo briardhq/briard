@@ -155,7 +155,7 @@ const guestImageArtifact = "nixos.qcow2.zst"
 // directory has changed except that the temp dir is gone.
 func (cfg Config) stageGuestImage(ctx context.Context, f *install.Fetcher, rel install.Manifest, logf func(string, ...any)) error {
 	if cfg.GuestImage == "" {
-		return errors.New("no GUEST_IMAGE configured: this node's launch does not name the image its overlay is built on")
+		return errors.New("no GUEST_IMAGE configured: this node's launch does not name the image it boots")
 	}
 	var art *install.Entry
 	for i := range rel.Artifacts {

@@ -756,26 +756,26 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 // the value decides whether every installed node below it is told to reinstall, which is the
 // loudest thing this product says to an owner.
 //
-// WHY THIS VALUE. Gate 3 measured what an upgrade from an older `stable` does: the guest
-// image predates the tool profile, so the pushed agent is refused and the OLD guest agent stays;
-// the new host then sends it a node-storage request carrying `metaLV` (added after that
-// stable), whose decoder refuses the unknown field -- and the host agent crash-loops, 42 restarts
-// with the household's apps unreachable. A floor turns that into one refusal that names the
-// remedy, with the node still serving its old release. Comparison is on the DATE, so every
-// release from 20260920 on can upgrade among themselves; everything older must reinstall.
+// WHY THIS VALUE. The host attaches the guest image read-only, and an image built before the guest
+// mounted its own root read-only cannot boot that way: its root is mounted read-write, which a
+// read-only drive refuses. A node whose agent updated ahead of its image would come apart at the
+// guest's next launch. A floor turns that into one refusal that names the remedy, with the node
+// still serving its old release. Comparison is on the DATE, so every release from 20261004 on
+// can upgrade among themselves; everything older must reinstall.
 func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
-	const want = "v3.20260920.ec4d22a"
+	const want = "v3.20261004.5ee3525"
 	if MinUpgradeFrom != want {
 		t.Fatalf("MinUpgradeFrom = %q, want %q -- if this was deliberate, change the test and say why in the commit", MinUpgradeFrom, want)
 	}
-	// And it does what it says: a node on the pre-B.160 stable is refused, one from that day on is not.
-	me := man(ChainBriard, PlatformLinux, "v3.20260921.aaaaaaa")
+	// And it does what it says: a node on the stable that predates the read-only image is refused,
+	// one from that day on is not.
+	me := man(ChainBriard, PlatformLinux, "v3.20261005.aaaaaaa")
 	me.MinUpgradeFrom = MinUpgradeFrom
-	old := man(ChainBriard, PlatformLinux, "v3.20260910.64a7834")
+	old := man(ChainBriard, PlatformLinux, "v3.20260930.00acca9")
 	if _, err := Decide(TargetStable, me, &old, nil); !errors.Is(err, ErrTooOldToUpgrade) {
-		t.Errorf("the pre-B.160 stable is not refused: %v", err)
+		t.Errorf("the stable before the read-only image is not refused: %v", err)
 	}
-	ok := man(ChainBriard, PlatformLinux, "v3.20260920.ec4d22a")
+	ok := man(ChainBriard, PlatformLinux, "v3.20261004.5ee3525")
 	if _, err := Decide(TargetStable, me, &ok, nil); err != nil {
 		t.Errorf("a release at the floor's own date was refused: %v", err)
 	}

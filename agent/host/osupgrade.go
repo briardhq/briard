@@ -234,10 +234,10 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 
 // IMAGE-LEVEL OS UPGRADE. The guest chain's release is an IMAGE, and moving the node
 // to it is the reboot method with the file swap where the snapshot used to be: stop cleanly,
-// rename the image the overlay is built on (the old one kept beside it), rebuild the overlay
-// on the new one, bring the guest up, prove the booted closure is the one the release's
-// signed manifest names, health-gate, then drop the old image or put it back. No generation,
-// no boot selector, no in-guest step: the guest is an appliance and the host holds the file.
+// rename the image the guest boots (the old one kept beside it), bring the guest up on the new
+// one, prove the booted closure is the one the release's signed manifest names, health-gate,
+// then drop the old image or put it back. No generation, no boot selector, no in-guest step:
+// the guest is an appliance and the host holds the file.
 //
 // It coexists with the closure path (Upgrade / RebootUpgrade) until the closure path is
 // retired together with the lab and cloud demos that still drive closures; a node with a
@@ -274,14 +274,7 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	mustServe := cl.Serving()
 	backing := u.cfg.GuestImage
 	if backing == "" {
-		return true, errors.New("image-upgrade: no GUEST_IMAGE configured; this node's launch does not name the image its overlay is built on")
-	}
-	// The overlay must really be built on that file: a rename under an overlay that backs onto
-	// something else would leave the guest on the wrong image and the swap a lie.
-	if got, err := qspec.BackingFile(ctx); err != nil {
-		return true, fmt.Errorf("image-upgrade: read the guest disk's backing image: %w", err)
-	} else if got != backing {
-		return true, fmt.Errorf("image-upgrade: %s is an overlay on %q, not on GUEST_IMAGE %s", qspec.DiskImage, got, backing)
+		return true, errors.New("image-upgrade: no GUEST_IMAGE configured; this node's launch does not name the image it boots")
 	}
 	if _, err := os.Stat(nextImage(backing)); err != nil {
 		return true, fmt.Errorf("image-upgrade: no staged image at %s: %w", nextImage(backing), err)
@@ -312,13 +305,10 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	if e := os.Rename(nextImage(backing), backing); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("place the new image: %w", e))
 	}
-	// The swap is flushed before an overlay is built on it: otherwise a power cut can
-	// bring back the old names under an overlay made for the new image.
+	// The swap is flushed before the guest boots it, so the image a power cut leaves in place is
+	// the one that booted.
 	if e := atomicfile.SyncDir(filepath.Dir(backing)); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("flush the image swap: %w", e))
-	}
-	if _, e := qspec.RebuildOverlay(ctx); e != nil {
-		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("fresh overlay on %s: %w", rel.Version, e))
 	}
 	g, client, e := u.cfg.bringUp(ctx, qspec, u.logf)
 	if e != nil {
@@ -359,9 +349,9 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 }
 
 // restoreImage puts the previous image back and boots it: the image path's restore(). Where
-// the swap had not happened yet (the previous image is not set aside) it only rebuilds the
-// overlay, which is still on the image in use. The rejected image is removed -- the channel
-// still has it, and a release that failed its gate is not something to keep a copy of.
+// the swap had not happened yet (the previous image is not set aside) it only boots the image
+// still in use. The rejected image is removed -- the channel still has it, and a release that
+// failed its gate is not something to keep a copy of.
 func (u *osUpgrade) restoreImage(ctx context.Context, qspec platform.QEMUSpec, backing, prev string, cause error) (bool, error) {
 	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget+3*shutdownGrace)
 	defer cancel()
@@ -392,9 +382,6 @@ func (u *osUpgrade) restoreImage(ctx context.Context, qspec platform.QEMUSpec, b
 	_ = os.Remove(nextImage(backing))
 	if e := atomicfile.SyncDir(filepath.Dir(backing)); e != nil { // same reason as the forward swap
 		return false, fmt.Errorf("rollback FAILED to flush the image swap, guest left stopped: %w", errors.Join(append(errs, e)...))
-	}
-	if _, e := qspec.RebuildOverlay(rb); e != nil {
-		return false, fmt.Errorf("rollback FAILED to rebuild the overlay on %s: %w", backing, errors.Join(append(errs, e)...))
 	}
 	g, client, e := u.cfg.bringUp(rb, qspec, u.logf)
 	if e != nil {
