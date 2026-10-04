@@ -152,7 +152,21 @@ func (f *fakeInstaller) ServiceInstalled(_ context.Context, name string) (string
 	return f.prior[name], nil
 }
 func (f *fakeInstaller) SupportsServiceInstalled() bool { return !f.oldGuest }
-func (f *fakeInstaller) SupportsSnapshotMember() bool   { return !f.oldGuest && !f.noMember }
+func (f *fakeInstaller) ServiceList(context.Context) ([]string, error) {
+	names := make([]string, 0, len(f.prior))
+	for n := range f.prior {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+func (f *fakeInstaller) SupportsServiceList() bool { return !f.oldGuest }
+func (f *fakeInstaller) RemoveImage(_ context.Context, ref string) (bool, error) {
+	f.steps = append(f.steps, "rmi:"+ref)
+	return false, nil
+}
+func (f *fakeInstaller) SupportsImageRemove() bool    { return !f.oldGuest }
+func (f *fakeInstaller) SupportsSnapshotMember() bool { return !f.oldGuest && !f.noMember }
 func (f *fakeInstaller) ServiceStop(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "stop:"+unit)
 	return nil

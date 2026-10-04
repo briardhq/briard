@@ -1783,6 +1783,31 @@ func TestStorageGrowRefusesADiskThatNeverGrew(t *testing.T) {
 	}
 }
 
+// image.remove deletes what is there and treats what is not as already gone: the host asks after
+// a service moved off an image, and an image something else already removed is the same outcome.
+func TestImageRemoveDeletesWhatIsThereOnly(t *testing.T) {
+	const ref = "ghcr.io/home-assistant/home-assistant@sha256:aa"
+	present := &fakeExec{runFn: func(name string, args []string) ([]byte, error) { return nil, nil }}
+	if _, err := dispatch(present)(context.Background(), verbImageRemove, []byte(`{"ref":"`+ref+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !present.ranArgv("podman", "rmi", ref) {
+		t.Errorf("a resident image was not removed: %v", present.runs)
+	}
+	absent := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "image" {
+			return nil, errors.New("exit 1") // podman image exists: not here
+		}
+		return nil, nil
+	}}
+	if _, err := dispatch(absent)(context.Background(), verbImageRemove, []byte(`{"ref":"`+ref+`"}`)); err != nil {
+		t.Errorf("removing an absent image = %v; want nil", err)
+	}
+	if absent.ranArgv("podman", "rmi", ref) {
+		t.Error("rmi ran for an image that is not here")
+	}
+}
+
 // loneStorage is a node that runs no DRBD.
 func loneStorage() nodestorage.Spec {
 	s := demoStorage(true)
@@ -2068,5 +2093,30 @@ func TestDashboardCasaIsWrittenThenMovedIn(t *testing.T) {
 	}
 	if _, err := dispatch(x)(context.Background(), verbDashboardCasa, []byte(`not json`)); err == nil {
 		t.Error("a malformed view was accepted")
+	}
+}
+
+// An image the OS image itself carries is KEPT: it is loaded again at every boot, and on a node
+// with no registry it is the only copy a later install of that version can use.
+func TestImageRemoveKeepsAnImageTheOSCarries(t *testing.T) {
+	const ref = "localhost/briard-dummy@sha256:aa"
+	x := &fakeExec{
+		files: map[string]string{stagedImagesPath: "1111\n2222\n"},
+		runFn: func(name string, args []string) ([]byte, error) {
+			if len(args) > 1 && args[0] == "image" && args[1] == "inspect" {
+				return []byte("2222\n"), nil
+			}
+			return nil, nil
+		},
+	}
+	out, err := dispatch(x)(context.Background(), verbImageRemove, []byte(`{"ref":"`+ref+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := out.(imageRemoveReply); !ok || !r.Kept {
+		t.Errorf("reply = %+v, want kept", out)
+	}
+	if x.ranArgv("podman", "rmi", ref) {
+		t.Error("a staged image was removed")
 	}
 }

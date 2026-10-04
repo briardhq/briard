@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -259,6 +260,10 @@ const (
 	// leaves the household exactly as it was. Same operation, opposite blast radius, which is why
 	// it is a separate verb rather than a flag on the other one.
 	verbImageEnsure = "image.ensure"
+	// image.remove deletes one image ref from podman's store: what the host asks once a service has
+	// moved off it and nothing on the volume pins it any more. An image that is not here is already
+	// gone, not an error; one a container still uses is refused by podman, and the host only logs it.
+	verbImageRemove = "image.remove"
 	// verbDataMembers lists one service's ring: every member and the sidecar beside it, oldest
 	// first. It is what the picker reads, and it is a verb rather than a directory the
 	// host could stat because only the guest has the volume mounted.
@@ -413,7 +418,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
+	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -1219,6 +1224,29 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return listMembers(ctx, x, req.Service)
+		case verbImageRemove:
+			var req serviceWarmRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Ref == "" {
+				return nil, fmt.Errorf("image.remove: need an image ref")
+			}
+			if _, err := x.Run(ctx, "podman", "image", "exists", req.Ref); err != nil {
+				return nil, nil
+			}
+			// An image this OS carries (briard-stage, configuration.nix) is kept: it comes back at
+			// every boot, and on a node with no registry it is the only copy there is.
+			if staged, err := x.ReadFile(stagedImagesPath); err == nil {
+				if id, err := x.Run(ctx, "podman", "image", "inspect", "--format", "{{.Id}}", req.Ref); err == nil &&
+					slices.Contains(strings.Fields(string(staged)), strings.TrimSpace(string(id))) {
+					return imageRemoveReply{Kept: true}, nil
+				}
+			}
+			if out, err := x.Run(ctx, "podman", "rmi", req.Ref); err != nil {
+				return nil, fmt.Errorf("image.remove %s: %w: %s", req.Ref, err, strings.TrimSpace(string(out)))
+			}
+			return nil, nil
 		case verbImageEnsure:
 			var req serviceWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -3379,6 +3407,26 @@ func (g *Client) EnsureImage(ctx context.Context, ref string) error {
 
 // SupportsImageEnsure reports whether this guest can be asked for an image by ref alone.
 func (g *Client) SupportsImageEnsure() bool { return g.Supports(verbImageEnsure) }
+
+// RemoveImage deletes one image ref from the guest's store; an absent one is not an error. kept
+// says the guest declined because its own OS image carries it (stagedImagesPath).
+func (g *Client) RemoveImage(ctx context.Context, ref string) (kept bool, err error) {
+	var r imageRemoveReply
+	err = g.c.Call(ctx, verbImageRemove, serviceWarmRequest{Ref: ref}, &r)
+	return r.Kept, err
+}
+
+// imageRemoveReply says whether image.remove kept a baked image rather than removing it.
+type imageRemoveReply struct {
+	Kept bool `json:"kept,omitempty"`
+}
+
+// stagedImagesPath lists, one per line, the IDs of the images briard-stage loaded from this OS
+// image at boot (configuration.nix): the images image.remove keeps.
+const stagedImagesPath = "/run/briard/staged-images"
+
+// SupportsImageRemove reports whether this guest can delete an image by ref.
+func (g *Client) SupportsImageRemove() bool { return g.Supports(verbImageRemove) }
 
 // Members lists one service's ring, oldest first: every member with the sidecar beside it. A
 // member whose sidecar cannot be read is omitted rather than offered.

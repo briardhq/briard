@@ -122,6 +122,12 @@ type serviceInstaller interface {
 	SupportsMembers() bool
 	EnsureImage(ctx context.Context, ref string) error
 	SupportsImageEnsure() bool
+	// The volume's services and RemoveImage: what dropSuperseded needs to delete an image the
+	// service moved off once nothing on the volume pins it.
+	ServiceList(ctx context.Context) ([]string, error)
+	SupportsServiceList() bool
+	RemoveImage(ctx context.Context, ref string) (kept bool, err error)
+	SupportsImageRemove() bool
 	// Restore materialises a member over the live subvolume, MINUS the markers a household's own
 	// backup restore leaves in it -- the guest's data.replace. RestoreWithoutSweep is
 	// the frozen old verb, for the revert's one case where no rollback is worse than a stale
@@ -595,6 +601,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		logf("service install %s: Home Assistant was told to reconsider what the node offers", m.Name)
 	}
 	logf("service install %s: healthy, serving", m.Name)
+	// COMMITTED: no gate is left that could revert it, so the image the prior version ran on is
+	// no longer anyone's rollback target. Without this every upgrade leaves one behind for good.
+	cfg.dropSuperseded(ctx, g, priorRaw, logf)
 	// WHERE TO REACH IT, carried back as the outcome Detail. The node holds both halves and the
 	// operator holds neither: the port is the manifest's (never typed by a human) and the name is
 	// the one the guest publishes over mDNS. Without it the verb reports success and leaves the
@@ -1198,7 +1207,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	}
 
 	dataDir := quadlet.DataRoot(service)
-	running, _, _, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
+	running, _, runningRaw, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
 
 	// (2) THE STOP. Container units only -- the pod would unmount the shared volume under every
 	// other service (quiesce's own comment carries the trace).
@@ -1264,6 +1273,9 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	}
 	back := target.Meta.TakenAt.Local().Format("Mon 2 Jan 2006, 15:04:05")
 	logf("service restore %s: back to %s, %s", service, back, moved)
+	// The code moved too, so the image it ran on is superseded the same way an upgrade's is; the
+	// undo point names it, and putting it back re-pulls (step 1 above).
+	cfg.dropSuperseded(ctx, g, runningRaw, logf)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone,
 		Detail: fmt.Sprintf("undone back to %s, %s", back, moved)}
 }
@@ -1311,4 +1323,84 @@ func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d
 		return failed(err.Error())
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(body)}
+}
+
+// imageRemover is the slice of the guest dropSuperseded needs. Narrow interface for DI, not a seam.
+type imageRemover interface {
+	volumeReader
+	RemoveImage(ctx context.Context, ref string) (kept bool, err error)
+	SupportsImageRemove() bool
+}
+
+// dropSuperseded deletes from the guest the images the manifest `was` pinned that no service on
+// the volume pins any more -- called once a change of version has COMMITTED, when the old image is
+// no longer a rollback target. The space it frees is the "temporary" line of the state disk's
+// accounting: an upgrade holds two images only until it commits, never for good.
+//
+// A DESTRUCTIVE ACT, GATED ON A POSITIVE ANSWER: every manifest on the volume must be read before
+// anything goes, and a read that fails removes nothing -- "I could not tell whether it is used"
+// must never take the branch "it is not". Everything here is best-effort past that: a removal that
+// fails (podman refuses an image a container still uses) is logged and the next one tried, and the
+// service, already committed, is untouched either way.
+func (cfg Config) dropSuperseded(ctx context.Context, g imageRemover, was string, logf func(string, ...any)) {
+	old := imageRefs(was)
+	if len(old) == 0 || !g.SupportsImageRemove() || !g.SupportsServiceList() {
+		return
+	}
+	names, err := g.ServiceList(ctx)
+	if err != nil {
+		logf("superseded images: could not list the volume's services (%v); removing nothing", err)
+		return
+	}
+	pinned := map[string]bool{}
+	for _, name := range names {
+		raw, err := g.ServiceInstalled(ctx, name)
+		if err != nil || raw == "" {
+			logf("superseded images: could not read %s's manifest (%v); removing nothing", name, err)
+			return
+		}
+		refs := imageRefs(raw)
+		if refs == nil {
+			logf("superseded images: %s's manifest does not render; removing nothing", name)
+			return
+		}
+		for _, ref := range refs {
+			pinned[ref] = true
+		}
+	}
+	for _, ref := range old {
+		if pinned[ref] {
+			continue
+		}
+		kept, err := g.RemoveImage(ctx, ref)
+		switch {
+		case err != nil:
+			logf("superseded images: could not remove %s: %v", ref, err)
+		case kept:
+			logf("superseded images: kept %s (the guest's own image carries it)", ref)
+		default:
+			logf("superseded images: removed %s", ref)
+		}
+	}
+}
+
+// imageRefs is the image refs a manifest's units pin, or nil when it does not parse or render.
+func imageRefs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	m, _, err := manifest.Parse([]byte(raw))
+	if err != nil {
+		return nil
+	}
+	r, err := quadlet.Render(m, "")
+	if err != nil {
+		return nil
+	}
+	refs := make([]string, 0, len(r.ImageRefs))
+	for _, ref := range r.ImageRefs {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs
 }

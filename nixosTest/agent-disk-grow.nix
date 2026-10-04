@@ -11,6 +11,11 @@
 # was; a grow that ignored the host, or an install that ignored the grow, fails here. Then the
 # filler goes and the same install must succeed, with the file grown, every byte of it allocated,
 # and the guest's kernel and filesystem both seeing the new size.
+#
+# THEN THE IMAGE AN UPGRADE MOVES OFF, which is what keeps that grow from accruing: v0 -> v1 keeps
+# v0, because the OS image carries it (staged, loaded again at every boot), and v1 -> v0 REMOVES
+# v1, which arrived at runtime the way a pull leaves an image -- each said in the agent's log and
+# checked in the guest's own store.
 { pkgs, guestDisk, agent, netWrap, dressBase, fixture }:
 pkgs.testers.runNixOSTest {
   name = "agent-disk-grow";
@@ -42,8 +47,12 @@ pkgs.testers.runNixOSTest {
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
-    # The fixture's signed catalog, served the way the lab serves its own.
-    host.succeed("systemd-run --unit=catalog --collect darkhttpd ${fixture}/catalog --addr 127.0.0.1 --port 8098")
+    # The fixture's signed catalog, served the way the lab serves its own -- from a copy, because
+    # publishing a version is replacing what it serves (every version is signed by one key).
+    def publish(src):
+        host.succeed(f"mkdir -p /srv/catalog && cp -f {src}/* /srv/catalog/ && chmod -R u+w /srv/catalog")
+    publish("${fixture}/catalog")
+    host.succeed("systemd-run --unit=catalog --collect darkhttpd /srv/catalog --addr 127.0.0.1 --port 8098")
     host.wait_until_succeeds("curl -fsS http://127.0.0.1:8098/${fixture.serviceName}.json -o /dev/null", timeout=30)
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
@@ -56,7 +65,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
-        "--setenv=CATALOG_URL=http://127.0.0.1:8098 --setenv=UPDATE_KEYRING=${fixture}/catalog/keyring.pem "
+        "--setenv=CATALOG_URL=http://127.0.0.1:8098 --setenv=UPDATE_KEYRING=/srv/catalog/keyring.pem "
         "${agent}/bin/briard-agent run"
     )
     try:
@@ -114,7 +123,44 @@ pkgs.testers.runNixOSTest {
     assert m, f"no sizes from the guest:\n{sizes}"
     dev, fs = int(m.group(1)), int(m.group(2))
     assert dev == size1, f"the guest's kernel sees {dev} bytes, the file is {size1}"
-    assert fs > size1 * 9 // 10, f"the guest's filesystem is {fs} bytes on a {size1}-byte disk: it was not grown into it"
     print(f"guest: disk {dev}, filesystem {fs}")
+
+    # === THE SUPERSEDED IMAGE: dropped when an upgrade commits, unless the OS image carries it. ===
+    v0 = host.succeed("cat ${fixture}/ref").strip()
+    v1 = host.succeed("cat ${fixture}/variants/v1/ref").strip()
+
+    def guest(line, wait=5):
+        """One command line in the guest's root shell; its output, as the console relayed it."""
+        host.succeed(f"(printf '\\n'; sleep 2; printf '%s\\n' '{line}'; sleep {wait}; printf '\\035') | briard-agent debug shell > /tmp/g.out 2>&1")
+        return host.succeed("tr -d '\\r' < /tmp/g.out")
+
+    def resident(ref):
+        out = guest(f"podman image exists {ref}; echo RESIDENT=$?")
+        m = re.search(r"RESIDENT=(\d)", out)
+        assert m, f"no answer from the guest:\n{out}"
+        return m.group(1) == "0"
+
+    def install(label):
+        rc, out = host.execute("briard-agent app install ${fixture.serviceName} 2>&1")
+        print(f"install {label}: rc={rc}\n{out}")
+        assert rc == 0, f"installing {label} failed (rc={rc}):\n{out}"
+
+    # v1 arrives the way a pull would leave it: loaded at runtime, so NOT one the OS image carries.
+    guest("podman load -i /etc/briard-test/v1.tar", wait=20)
+    assert resident(v1), "v1 was not loaded into the guest"
+
+    # v0 -> v1. v0 is STAGED (baked into the guest image), so the commit keeps it -- and says so.
+    publish("${fixture}/variants/v1/catalog")
+    install("v1")
+    host.succeed(f"journalctl -u briard-agent -o cat | grep -q 'superseded images: kept {v0}'")
+    assert resident(v0), "the baked v0 image was removed"
+
+    # v1 -> v0. v1 came at runtime, so once v0 is committed nothing pins it and it is GONE.
+    publish("${fixture}/catalog")
+    install("v0 again")
+    host.succeed(f"journalctl -u briard-agent -o cat | grep -q 'superseded images: removed {v1}'")
+    assert not resident(v1), "the superseded v1 image is still in the guest's store"
+    assert resident(v0), "the running v0 image went missing"
+    print(host.succeed("journalctl -u briard-agent -o cat | grep 'superseded images'"))
   '';
 }

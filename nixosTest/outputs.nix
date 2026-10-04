@@ -213,10 +213,14 @@ let
   '';
   agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; };
   agentMemoryGrow = import ./agent-memory-grow.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # the host grows a guest that runs short
-  # The disk's sibling: an install that needs more than a fresh state disk holds grows it first.
-  # The fixture DECLARES sizes no 1 GiB disk fits; its image is staged into the guest, so the
-  # install pulls nothing and the sizes are what the host reads.
-  growFixture = import ./fixture-service.nix { inherit pkgs; size = 500000000; installedSize = 2000000000; };
+  # The disk's sibling: an install that needs more than a fresh state disk holds grows it first,
+  # and an upgrade that commits drops the image it moved off. The fixture DECLARES sizes no 1 GiB
+  # disk fits; v0's image is STAGED (baked: kept when superseded), v1's ships in the image as a
+  # plain file the rig loads at runtime (removable) -- nothing pulls, the sizes are what the host reads.
+  growFixture = import ./fixture-service.nix {
+    inherit pkgs; size = 500000000; installedSize = 2000000000;
+    variants.v1 = { version = "1.0.0"; };
+  };
   agentDiskGrow = import ./agent-disk-grow.nix {
     inherit pkgs netWrap dressBase;
     agent = agentPkg;
@@ -224,6 +228,7 @@ let
     guestDisk = import ../guest-image/disk-image.nix {
       inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
       stageImages = [ growFixture.image ];
+      commonModules = [ { environment.etc."briard-test/v1.tar".source = growFixture.variants.v1.image; } ];
     };
   };
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # restart transparent to guest

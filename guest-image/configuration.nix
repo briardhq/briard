@@ -956,6 +956,11 @@ in
     # `Pull=never` against a digest, so its image has to be here before it is installed.
     # Idempotent, runs on EVERY node (a standby is where a cold pull would hurt), and independent
     # of what is installed.
+    #
+    # THE IDS IT LOADED are written to /run/briard/staged-images, and image.remove keeps any image
+    # named there: an image this OS carries is loaded again at every boot, so removing it frees
+    # nothing for long -- and on a node with no registry it is the only copy a later install of
+    # that version can use.
     systemd.services.briard-stage = lib.mkIf (config.briard.stagedImages != [ ]) {
       description = "Pre-stage service images into local podman storage";
       wantedBy = [ "multi-user.target" ];
@@ -965,7 +970,14 @@ in
         RemainAfterExit = true;
         ExecStart = pkgs.writeShellScript "briard-stage" ''
           set -eu
-          ${lib.concatMapStringsSep "\n" (img: "podman load -i ${img}") config.briard.stagedImages}
+          mkdir -p /run/briard
+          : > /run/briard/staged-images.tmp
+          for img in ${lib.concatStringsSep " " config.briard.stagedImages}; do
+            for name in $(podman load -i "$img" | sed -n 's/^Loaded image[^:]*: //p' | tr ',' ' '); do
+              podman image inspect --format '{{.Id}}' "$name" >> /run/briard/staged-images.tmp
+            done
+          done
+          mv /run/briard/staged-images.tmp /run/briard/staged-images
         '';
       };
     };
