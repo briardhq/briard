@@ -249,10 +249,10 @@ func qemuArgs(s QEMUSpec) []string {
 			"-device", "virtio-blk-pci,drive="+DataDriveID)
 	}
 	if s.StateDisk != "" {
-		// discard=unmap: a guest TRIM punches the range out of the sparse host file, so deleting in
-		// the guest gives space back to the host. Without it a sparse disk only ever grows toward its
-		// ceiling, however little the guest keeps (the guest runs fstrim weekly).
-		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,discard=unmap,id="+StateDriveID,
+		// NO discard: the state disk is THICK, its bytes paid for when it was made or grown, and a
+		// guest TRIM passed through would punch holes in it and turn it sparse again -- charging the
+		// host at write time, which is the failure the thick disk exists to remove.
+		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,id="+StateDriveID,
 			"-device", "virtio-blk-pci,drive="+StateDriveID+",serial="+StateDiskSerial)
 	}
 	if s.MachineUUID != "" {

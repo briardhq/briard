@@ -51,6 +51,12 @@
   # THE DECLARED MINIMUM MEMORY (manifest minMemoryMB), and with it the service's container memory
   # limit. Zero, the default, declares none -- the shape of every fixture before it existed.
   minMemoryMB ? 0,
+  # THE DECLARED SIZES (manifest size / installedSize, bytes): what the download stages and what
+  # the image store holds once pulled -- what the host grows the guest's disk for and gates the
+  # install on. Declared, not measured from the tarball: a harness sizes the NUMBERS, which is
+  # what the host reads. Zero, the default, declares none.
+  size ? 0,
+  installedSize ? 0,
   # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
   # pinned upstream image instead, which is what lets a REAL service be catalogued rather than only
   # the fixture (the baked slot was how HA reached a guest before).
@@ -121,6 +127,7 @@ let
   # The declared minimum memory, omitted when zero so every existing fixture keeps its exact bytes
   # (and with them its identity) -- only a harness that asks for a limit gets one.
   minMemJSON = if minMemoryMB == 0 then "" else '',"minMemoryMB":${toString minMemoryMB}'';
+  sizeJSON = if installedSize == 0 then "" else '',"size":${toString size},"installedSize":${toString installedSize}'';
   variantImages = lib.mapAttrs (
     label: v:
     imageOf {
@@ -156,7 +163,7 @@ let
     ref="${p.image.repo}@$digest"
     printf '%s' "$ref" > $out/${p.dir}/ref
     cat > $out/${p.dir}/manifest.json <<EOF
-    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}}
+    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}${sizeJSON}}
     EOF
     # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
     # strip the indentation rather than shipping it into the content hash.

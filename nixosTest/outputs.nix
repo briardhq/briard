@@ -213,6 +213,19 @@ let
   '';
   agentBringup = import ./agent-bringup.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; };
   agentMemoryGrow = import ./agent-memory-grow.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # the host grows a guest that runs short
+  # The disk's sibling: an install that needs more than a fresh state disk holds grows it first.
+  # The fixture DECLARES sizes no 1 GiB disk fits; its image is staged into the guest, so the
+  # install pulls nothing and the sizes are what the host reads.
+  growFixture = import ./fixture-service.nix { inherit pkgs; size = 500000000; installedSize = 2000000000; };
+  agentDiskGrow = import ./agent-disk-grow.nix {
+    inherit pkgs netWrap dressBase;
+    agent = agentPkg;
+    fixture = growFixture;
+    guestDisk = import ../guest-image/disk-image.nix {
+      inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
+      stageImages = [ growFixture.image ];
+    };
+  };
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # host restarts a wedged guest
   agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # init restarts a wedged AGENT
@@ -432,6 +445,7 @@ in
     integration = {
       agent-bringup = agentBringup;
       agent-memory-grow = agentMemoryGrow; # a guest short of memory is grown a DIMM by its host, and keeps it
+      agent-disk-grow = agentDiskGrow; # an install the state disk cannot hold grows it first, or is refused when the host cannot pay
       agent-readopt = agentReadopt; # an agent restart re-adopts the running guest
       agent-deadman = agentDeadman; # a lone node holds (never self-outages) when its agent dies
       # The mirror of agent-deadman: there the host goes silent and the guest reboots itself;

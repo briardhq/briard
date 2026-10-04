@@ -60,41 +60,56 @@ func TestAllocateThickNeverOverwrites(t *testing.T) {
 	}
 }
 
-// Sparse is the right answer for the state disk and the wrong one above, so it is asserted as
-// explicitly: the file is the full size and costs almost nothing on disk.
-func TestAllocateSparseCostsNothingYet(t *testing.T) {
+// Growing is the one change a disk that exists may undergo, and it carries both properties above:
+// the new range is RESERVED (blocks, not a size), and what was already in the file is untouched.
+func TestExtendThickReservesTheNewRangeAndKeepsTheOld(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.img")
-	const size = 8 << 30 // the shipped ceiling, which is the point: it must not cost 8 GiB
-	if err := AllocateSparse(path, size); err != nil {
-		t.Fatalf("AllocateSparse: %v", err)
+	const before, after = 4 << 20, 12 << 20
+	if err := AllocateThick(path, before); err != nil {
+		t.Fatal(err)
 	}
-	fi, err := os.Stat(path)
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Size() != size {
-		t.Errorf("size = %d, want %d", fi.Size(), size)
+	body := []byte("formatted, with the guest's storage in it")
+	if _, err := f.WriteAt(body, 0); err != nil {
+		t.Fatal(err)
 	}
-	if blocks := allocatedBytes(t, path); blocks > 1<<20 {
-		t.Errorf("%d bytes are allocated for an empty state disk -- it is not sparse, and the "+
-			"report card's free-space floor would be charged for a ceiling", blocks)
+	f.Close()
+	if err := ExtendThick(path, after); err != nil {
+		t.Fatalf("ExtendThick: %v", err)
+	}
+	if fi, _ := os.Stat(path); fi.Size() != after {
+		t.Errorf("size = %d, want %d", fi.Size(), after)
+	}
+	if got := allocatedBytes(t, path); got < after {
+		t.Errorf("only %d of %d bytes are allocated -- the grown range is sparse, so the host was "+
+			"not charged for it and the guest can still meet ENOSPC underneath it", got, after)
+	}
+	got := make([]byte, len(body))
+	r, _ := os.Open(path)
+	defer r.Close()
+	if _, err := r.ReadAt(got, 0); err != nil || string(got) != string(body) {
+		t.Errorf("the disk's existing contents changed: %q", got)
 	}
 }
 
-// A state disk that exists is the one a reinstall deliberately kept: podman's storage, the journal,
-// the deadman's backoff. Recreating it would cost every service image on the node.
-func TestAllocateSparseNeverOverwrites(t *testing.T) {
+// A grow never shrinks and never creates: a smaller target is a no-op, and a missing disk is an
+// error rather than a fresh file.
+func TestExtendThickNeverShrinksOrCreates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.img")
-	body := []byte("formatted, with the guest's storage in it")
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	if err := ExtendThick(path, 1<<20); err == nil {
+		t.Error("ExtendThick created a disk that did not exist")
+	}
+	if err := AllocateThick(path, 8<<20); err != nil {
 		t.Fatal(err)
 	}
-	if err := AllocateSparse(path, 8<<30); err != nil {
-		t.Fatalf("AllocateSparse over an existing disk: %v", err)
+	if err := ExtendThick(path, 4<<20); err != nil {
+		t.Fatalf("ExtendThick to a smaller size: %v", err)
 	}
-	if fi, _ := os.Stat(path); fi.Size() != int64(len(body)) {
-		t.Errorf("the existing state disk was resized to %d, want its original %d -- it should have "+
-			"been left alone", fi.Size(), len(body))
+	if fi, _ := os.Stat(path); fi.Size() != 8<<20 {
+		t.Errorf("size = %d after a smaller target, want the original %d", fi.Size(), 8<<20)
 	}
 }
 

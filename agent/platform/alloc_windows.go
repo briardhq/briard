@@ -5,7 +5,8 @@ import (
 	"os"
 )
 
-// allocate reserves size bytes for f. THE WINDOWS ARM, and deliberately the slow one.
+// allocate reserves the bytes of f from `from` up to `size`. THE WINDOWS ARM, and deliberately
+// the slow one.
 //
 // Windows can reserve without writing (SetFileValidData after SetEndOfFile), but only for a process
 // holding SE_MANAGE_VOLUME_NAME -- and the bytes it exposes are whatever was previously on the
@@ -14,8 +15,11 @@ import (
 //
 // So this writes the zeros. It is slower and it is correct, which is the same answer the Linux arm
 // falls back to on a filesystem without fallocate.
-func allocate(f *os.File, size int64) error {
-	if _, err := io.CopyN(f, zeroReader{}, size); err != nil {
+func allocate(f *os.File, from, size int64) error {
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := io.CopyN(f, zeroReader{}, size-from); err != nil {
 		return err
 	}
 	return f.Sync()
@@ -29,3 +33,6 @@ func (zeroReader) Read(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// setNoCOW is the Windows arm of SetNoCOW: NTFS does not copy on write, so there is nothing to set.
+func setNoCOW(string) error { return nil }

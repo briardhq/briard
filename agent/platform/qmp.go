@@ -406,6 +406,20 @@ func (g *Guest) MemoryMB(ctx context.Context) (int, error) {
 	return int((s.Base + s.Plugged) >> 20), nil
 }
 
+// ResizeStateDisk tells the running VM its state disk is now size bytes. The FILE must already be
+// that large (ExtendThick, before this): QEMU only changes the size the guest is shown, and the
+// guest's kernel picks it up as a capacity change on the virtio disk. Like a DIMM, it lasts as
+// long as the file does -- the next launch opens the grown file -- so nothing has to remember it.
+func (g *Guest) ResizeStateDisk(ctx context.Context, size int64) error {
+	if g == nil {
+		return fmt.Errorf("platform: no guest to resize a disk on")
+	}
+	if _, err := qmpExecute(ctx, g.QMPSock, "block_resize", map[string]any{"device": StateDriveID, "size": size}); err != nil {
+		return fmt.Errorf("platform: resize the state disk to %d bytes: %w", size, err)
+	}
+	return nil
+}
+
 // memBackendPrefix names the RAM backends AddMemory creates, so its ids never meet QEMU's own
 // (the boot RAM is a backend too, named by the machine).
 const memBackendPrefix = "briard-mem"

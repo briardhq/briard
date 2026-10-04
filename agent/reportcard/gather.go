@@ -305,6 +305,10 @@ func unameRelease() string {
 	return ""
 }
 
+// DiskFreeMB is the free space on the filesystem holding path, in MB; 0 when it cannot be read.
+// The host agent checks the same number before it grows the guest's state disk.
+func DiskFreeMB(path string) int { return diskFreeMB(path) }
+
 // MemTotalMB is the machine's installed RAM (MemTotal), in MB; 0 when it cannot be read. The host
 // agent sizes its guest's growth ceiling from the same number the report card grades.
 func MemTotalMB() int {

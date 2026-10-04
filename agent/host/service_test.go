@@ -1619,6 +1619,11 @@ func (f *fakeInstaller) StorageFree(context.Context) (int64, int64, error) {
 	return f.free, f.free + 4<<30, f.freeErr
 }
 func (f *fakeInstaller) SupportsStorageFree() bool { return !f.oldGuest }
+func (f *fakeInstaller) StorageGrow(_ context.Context, size int64) error {
+	f.steps = append(f.steps, fmt.Sprintf("storage.grow %d", size))
+	return nil
+}
+func (f *fakeInstaller) SupportsStorageGrow() bool { return !f.oldGuest }
 func (f *fakeInstaller) ServicePulling(_ context.Context, service string, size, installed int64) error {
 	f.steps = append(f.steps, fmt.Sprintf("pulling %s %d/%d", service, size, installed))
 	return nil
@@ -1648,9 +1653,16 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 			t.Fatalf("a refused install still ran %q: %v", forbidden, f.steps)
 		}
 	}
-	// 2.5 GB installed + 1 GiB headroom fits in 4 GB: installs, and the bar's record brackets
-	// the warm.
+	// The DOWNLOAD counts too: it stages its compressed layers on the same disk until the whole
+	// pull completes, so 2.5 GB installed + 1 GiB headroom is not enough in 4 GB once the 0.6 GB
+	// being downloaded sits beside it.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4000e6}
+	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "600 MB more while it downloads") {
+		t.Fatalf("outcome without room for the download = %+v; want a refusal that names it", o)
+	}
+	// 2.5 GB installed + 0.6 GB downloading + 1 GiB headroom fits in 4.5 GB: installs, and the
+	// bar's record brackets the warm.
+	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4500e6}
 	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome with room = %+v", o)
 	}

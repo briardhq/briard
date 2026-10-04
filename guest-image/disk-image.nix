@@ -192,10 +192,6 @@ let
           chmod 1777 "$s/scratch/tmp"
         '';
       };
-      # A weekly fstrim: the state disk is attached discard=unmap, so what the
-      # guest deletes is given back to the host file only once something TRIMs it. Weekly is the
-      # usual cadence; podman's churn is bursty and a sweep bounds the footprint at a week's peak.
-      services.fstrim.enable = true;
       # The BUILD this image is, readable on the console. It is the version the
       # image was built with: for the product image that is `guest-build.<inputs hash>` -- a
       # function of the image's inputs, never of the commit, so an unchanged image is the same
@@ -358,6 +354,8 @@ let
           pkgs.btrfs-progs # btrfs for data.snapshot/restore, mkfs.btrfs for the one-time format
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
           pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry
+          pkgs.util-linux # blockdev, for storage.grow: the state disk's size as the kernel sees it
+          pkgs.e2fsprogs # resize2fs, for storage.grow: the state disk's filesystem grown online
           # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
           # differently-wrapped copy of the runtime (configuration.nix explains).
           config.virtualisation.podman.package # podman, for the renderer + service.* verbs

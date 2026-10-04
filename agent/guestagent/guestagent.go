@@ -235,6 +235,10 @@ const (
 	// storage.free reports the image store's filesystem (free, total bytes): what the host's
 	// free-space gate reads before a pull starts. The guest measures; the host refuses.
 	verbStorageFree = "storage.free"
+	// storage.grow takes the state disk's filesystem out to the size the host just grew the disk
+	// to (a thick file extended, then QEMU's block_resize): it waits for the kernel to see the new
+	// size, then resize2fs, online. The host decided and paid; the guest only fills the space.
+	verbStorageGrow = "storage.grow"
 	// service.list NAMES the services the volume carries. It is what makes a converged node able
 	// to say what it runs: converge-at-promotion renders from the volume, so a survivor that never
 	// installed anything runs services the HOST was never told about -- and the host reports from
@@ -411,7 +415,7 @@ var guestCapabilities = []string{
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
-	verbServicePulling, verbStorageFree,
+	verbServicePulling, verbStorageFree, verbStorageGrow,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
@@ -1426,6 +1430,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("%s: df said %q", verbStorageFree, lines[len(lines)-1])
 			}
 			return storageFreeReply{Free: free, Total: total, Path: storageRoot}, nil
+		case verbStorageGrow:
+			var req storageGrowRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, growStateDisk(ctx, x, req.Size)
 		case verbServiceInstalled:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2866,6 +2876,53 @@ type storageFreeReply struct {
 	Path  string `json:"path"`
 }
 
+type storageGrowRequest struct {
+	Size int64 `json:"size"`
+}
+
+// stateDiskDev is the state disk as the guest finds it: by the serial the host attaches it with.
+const stateDiskDev = "/dev/disk/by-id/virtio-briard-state"
+
+// stateGrowWait bounds how long the kernel may take to report the size the host resized the disk
+// to -- a virtio capacity change is an interrupt away, so this is generous.
+const stateGrowWait = 10 * time.Second
+
+// growStateDisk waits until the state disk is at least size bytes as the kernel sees it, then grows
+// its ext4 filesystem to fill it. Online: ext4 grows while mounted, and the disk is in use the
+// whole time. Waiting on the SIZE rather than sleeping is what makes the order certain -- a
+// resize2fs that ran before the kernel saw the new capacity would find nothing to do and say so.
+func growStateDisk(ctx context.Context, x Executor, size int64) error {
+	if size <= 0 {
+		return fmt.Errorf("%s: need a size", verbStorageGrow)
+	}
+	deadline := time.Now().Add(stateGrowWait)
+	for {
+		out, err := x.Run(ctx, "blockdev", "--getsize64", stateDiskDev)
+		if err != nil {
+			return fmt.Errorf("%s: %w: %s", verbStorageGrow, err, strings.TrimSpace(string(out)))
+		}
+		have, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		if err != nil {
+			return fmt.Errorf("%s: blockdev said %q", verbStorageGrow, strings.TrimSpace(string(out)))
+		}
+		if have >= size {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s: the state disk is still %d bytes, not %d, after %s", verbStorageGrow, have, size, stateGrowWait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if out, err := x.Run(ctx, "resize2fs", stateDiskDev); err != nil {
+		return fmt.Errorf("%s: resize2fs: %w: %s", verbStorageGrow, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // ServicePulling records a service install's pull for the dashboard -- the manifest's sizes,
 // written before the first byte moves.
 func (g *Client) ServicePulling(ctx context.Context, service string, size, installed int64) error {
@@ -2892,6 +2949,14 @@ func (g *Client) StorageFree(ctx context.Context) (free, total int64, err error)
 
 // SupportsStorageFree reports whether the guest can measure its image store.
 func (g *Client) SupportsStorageFree() bool { return g.Supports(verbStorageFree) }
+
+// StorageGrow has the guest fill its state disk, which the host has just grown to size bytes.
+func (g *Client) StorageGrow(ctx context.Context, size int64) error {
+	return g.c.Call(ctx, verbStorageGrow, storageGrowRequest{Size: size}, nil)
+}
+
+// SupportsStorageGrow reports whether the guest can fill a grown state disk.
+func (g *Client) SupportsStorageGrow() bool { return g.Supports(verbStorageGrow) }
 
 func (g *Client) ServiceInstalled(ctx context.Context, name string) (string, error) {
 	var s string

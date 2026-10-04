@@ -1735,6 +1735,54 @@ func TestStorageFreeReadsDf(t *testing.T) {
 	}
 }
 
+// storage.grow waits for the kernel to see the size the host resized the disk to, and only then
+// runs resize2fs: run first, it would find nothing to grow and the host's grow would be a no-op.
+func TestStorageGrowWaitsForTheSizeThenResizes(t *testing.T) {
+	polls := 0
+	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		switch name {
+		case "blockdev":
+			polls++
+			if polls < 3 {
+				return []byte("1073741824\n"), nil // the kernel has not seen the new capacity yet
+			}
+			return []byte("5368709120\n"), nil
+		case "resize2fs":
+			if polls < 3 {
+				t.Errorf("resize2fs ran at poll %d, before the kernel saw the new size", polls)
+			}
+			if !reflect.DeepEqual(args, []string{stateDiskDev}) {
+				t.Errorf("resize2fs %v", args)
+			}
+			return nil, nil
+		}
+		t.Errorf("ran %s %v", name, args)
+		return nil, nil
+	}}
+	if _, err := dispatch(x)(context.Background(), verbStorageGrow, []byte(`{"size":5368709120}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !x.ranArgv("resize2fs", stateDiskDev) {
+		t.Error("resize2fs never ran")
+	}
+}
+
+// A disk that never reaches the size is an error naming both numbers, and the filesystem is not
+// touched: growing it to a size the device does not have is not a thing to attempt.
+func TestStorageGrowRefusesADiskThatNeverGrew(t *testing.T) {
+	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name == "resize2fs" {
+			t.Error("resize2fs ran on a disk that never reached the size")
+		}
+		return []byte("1073741824\n"), nil
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := dispatch(x)(ctx, verbStorageGrow, []byte(`{"size":5368709120}`)); err == nil {
+		t.Error("a disk stuck at 1 GiB grew to 5 GiB without an error")
+	}
+}
+
 // loneStorage is a node that runs no DRBD.
 func loneStorage() nodestorage.Spec {
 	s := demoStorage(true)

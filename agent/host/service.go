@@ -66,6 +66,9 @@ type serviceInstaller interface {
 	// before a pull starts. An older guest that cannot measure gets no gate, not a refusal.
 	StorageFree(ctx context.Context) (free, total int64, err error)
 	SupportsStorageFree() bool
+	// StorageGrow fills a state disk the host just grew (growStateDisk).
+	StorageGrow(ctx context.Context, size int64) error
+	SupportsStorageGrow() bool
 	// ServicePulling / ServicePulled bracket the pull for the dashboard's bar: the manifest's
 	// sizes on the guest's tmpfs before the first byte, gone once the image is present. An older
 	// guest shows the install with no bar.
@@ -268,17 +271,32 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		ctx, cancel = cfg.beat.budget(parent, b)
 	}
 	// THE FREE-SPACE GATE, before the first byte moves: the manifest says what the
-	// image store will hold once pulled, the guest says what its store's filesystem has free,
-	// and a pull that could only end in a full disk is refused here with both numbers -- rather
-	// than at 90 % of the download with a unit that failed for a reason nobody can read. The
-	// margin is the headroom the guest OS itself needs to keep working next to the image.
+	// image store will hold once pulled and what the pull stages beside it on the way (the
+	// compressed layers, freed only when the whole pull completes), the guest says what its
+	// state disk has free, and a pull that could only end in a full disk is refused here with
+	// both numbers -- rather than at 90 % of the download with a unit that failed for a reason
+	// nobody can read. The margin is the headroom the guest OS itself needs next to the image.
+	//
+	// THE DISK GROWS FIRST: the state disk is thick and starts small, so an install is where the
+	// host pays for what the service brings (growStateDisk). A host that cannot pay refuses the
+	// install here, with the running services untouched; a grow that fails for another reason is
+	// logged, and the gate below says whether the space is there anyway.
 	if m.InstalledSize > 0 && g.SupportsStorageFree() {
+		need := m.InstalledSize + m.Size + storageHeadroom
+		if cfg.StateDisk != "" && g.SupportsStorageGrow() {
+			vm := platform.Adopt(cfg.guestSpec())
+			if err := cfg.growStateDisk(ctx, g, vm.ResizeStateDisk, need, logf); errors.Is(err, errHostDiskFull) {
+				return failed(fmt.Sprintf("cannot install %s: %v", m.Name, err))
+			} else if err != nil {
+				logf("service install %s: growing the guest's disk: %v", d.Payload, err)
+			}
+		}
 		free, total, err := g.StorageFree(ctx)
 		if err != nil {
 			logf("service install %s: cannot measure the image store (%v); installing unmeasured", d.Payload, err)
-		} else if free < m.InstalledSize+storageHeadroom {
-			return failed(fmt.Sprintf("not enough space on the node: %s needs %s installed and the image store has %s free of %s (keeping %s for the system)",
-				m.Name, gb(m.InstalledSize), gb(free), gb(total), gb(storageHeadroom)))
+		} else if free < need {
+			return failed(fmt.Sprintf("not enough space on the node: %s needs %s installed and %s more while it downloads, and the image store has %s free of %s (keeping %s for the system)",
+				m.Name, gb(m.InstalledSize), gb(m.Size), gb(free), gb(total), gb(storageHeadroom)))
 		}
 	}
 	// THE MEMORY GATE, beside it: the guest must hold the system's share plus every service's

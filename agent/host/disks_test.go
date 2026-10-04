@@ -1,15 +1,20 @@
 package host
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"briard.io/agent/platform"
 )
 
-// ⚠️ THE RULE THAT KEEPS FIVE RIGS ALIVE, and the one this session got wrong once already: the
-// agent makes what it was TOLD about and nothing else. agent-bringup, agent-deadman, agent-readopt,
-// agent-recover and agent-watchdog all run an agent whose guest has no state disk -- they say so by
-// naming no path -- and a path invented here would hand qemu a `-drive` for a file nobody made.
+// ⚠️ THE AGENT MAKES WHAT IT WAS TOLD ABOUT and nothing else: a harness that names no path for a
+// disk is saying it has none, and a path invented here would hand qemu a `-drive` for a file
+// nobody made.
 func TestProvisionDisksMakesOnlyWhatItWasToldAbout(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{DataDisk: filepath.Join(dir, "data.img"), DataSize: "1G"} // no StateDisk
@@ -30,7 +35,7 @@ func TestProvisionDisksMakesOnlyWhatItWasToldAbout(t *testing.T) {
 		}
 		t.Errorf("provisioning made %v, want only the data volume it was given a path for", names)
 	}
-	// And told about neither: nothing at all, which is every agent-* rig.
+	// And told about neither: nothing at all.
 	empty := t.TempDir()
 	if err := (Config{}).provisionDisks(func(string, ...any) {}); err != nil {
 		t.Fatalf("provisionDisks with no paths: %v", err)
@@ -77,5 +82,95 @@ func TestParseSize(t *testing.T) {
 		if !c.ok && err == nil {
 			t.Errorf("parseSize(%q) = (%d, nil), want a refusal", c.in, got)
 		}
+	}
+}
+
+// The grow decision, exhaustively over its four inputs: no grow when the guest already has the
+// space, whole GiB padded for what ext4 keeps when it does, and a refusal -- never a partial grow --
+// when the host cannot pay and keep its own reserve. An unreadable host (0) is not a refusal: the
+// allocation itself is the check then.
+func TestStateDiskGrowth(t *testing.T) {
+	const gib = int64(1) << 30
+	for _, c := range []struct {
+		name                          string
+		guestFree, need, file, hostFr int64
+		want                          int64
+		full                          bool
+	}{
+		{"already has it", 5 * gib, 4 * gib, 6 * gib, 100 * gib, 0, false},
+		{"exactly has it", 4 * gib, 4 * gib, 6 * gib, 100 * gib, 0, false},
+		{"short by a little: one GiB", 3*gib + gib/2, 4 * gib, 2 * gib, 100 * gib, 3 * gib, false},
+		{"short by a GiB: padded past it", 3 * gib, 4 * gib, 2 * gib, 100 * gib, 4 * gib, false},
+		{"first Home Assistant install on a fresh disk", gib / 2, 2490e6 + 622e6 + gib, gib, 100 * gib, 5 * gib, false},
+		{"host cannot keep its reserve", gib / 2, 4 * gib, gib, 5 * gib, 0, true},
+		{"host free unreadable: the allocation decides", gib / 2, 4 * gib, gib, 0, 5 * gib, false},
+	} {
+		got, err := stateDiskGrowth(c.guestFree, c.need, c.file, c.hostFr)
+		if c.full != errors.Is(err, errHostDiskFull) {
+			t.Errorf("%s: err = %v, want host-full=%v", c.name, err, c.full)
+		}
+		if got != c.want {
+			t.Errorf("%s: size = %d GiB+%d, want %d GiB+%d", c.name, got/gib, got%gib, c.want/gib, c.want%gib)
+		}
+	}
+}
+
+type fakeGrower struct {
+	free  int64
+	steps []string
+}
+
+func (f *fakeGrower) StorageFree(context.Context) (int64, int64, error) {
+	f.steps = append(f.steps, "free")
+	return f.free, 0, nil
+}
+func (f *fakeGrower) StorageGrow(_ context.Context, size int64) error {
+	f.steps = append(f.steps, fmt.Sprintf("guest grow %d", size))
+	return nil
+}
+
+// The order is the whole mechanism: the FILE grows (thick) before QEMU is told, and QEMU before the
+// guest fills it -- a guest resizing into a disk the VM has not grown finds nothing, and a VM grown
+// past its file would hand the guest bytes nobody paid for.
+func TestGrowStateDiskGrowsFileThenVMThenGuest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.img")
+	if err := platform.AllocateThick(path, 4<<20); err != nil {
+		t.Fatal(err)
+	}
+	g := &fakeGrower{free: 0}
+	resize := func(_ context.Context, size int64) error {
+		fi, _ := os.Stat(path)
+		if fi.Size() != size {
+			t.Errorf("QEMU was told %d before the file reached it (file is %d)", size, fi.Size())
+		}
+		g.steps = append(g.steps, fmt.Sprintf("vm resize %d", size))
+		return nil
+	}
+	cfg := Config{StateDisk: path}
+	if err := cfg.growStateDisk(context.Background(), g, resize, 1<<20, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	want := int64(4<<20) + stateDiskStep
+	if got := strings.Join(g.steps, ", "); got != fmt.Sprintf("free, vm resize %d, guest grow %d", want, want) {
+		t.Errorf("steps = %s", got)
+	}
+	// And a guest that already has the space costs nothing: no resize, no grow.
+	g = &fakeGrower{free: 2 << 20}
+	if err := cfg.growStateDisk(context.Background(), g, resize, 1<<20, t.Logf); err != nil || len(g.steps) != 1 {
+		t.Errorf("a guest with room was grown anyway: %v %v", g.steps, err)
+	}
+}
+
+// The state disk is made at its initial size, through AllocateThick (whose own test asserts the
+// blocks): the host pays for an empty node's journal and scratch up front, and for each service
+// when it arrives (growStateDisk) -- never at write time.
+func TestProvisionDisksMakesTheStateDiskThick(t *testing.T) {
+	cfg := Config{StateDisk: filepath.Join(t.TempDir(), "state.img")}
+	if err := cfg.provisionDisks(func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(cfg.StateDisk)
+	if err != nil || fi.Size() != stateDiskInitial {
+		t.Fatalf("the state disk is %v (%v), want %d bytes", fi, err, stateDiskInitial)
 	}
 }
