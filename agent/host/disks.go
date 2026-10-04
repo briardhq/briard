@@ -16,7 +16,7 @@ import (
 // dressed binaries, ~30 MB) and the deadman's backoff, with room to spare. Everything a service
 // brings is charged when it arrives: an install grows the disk first (growStateDisk), so the host
 // pays at the operation that needs the space and never underneath a running guest.
-const stateDiskInitial = 1 << 30 // 1 GiB
+const stateDiskInitial = reportcard.StateDiskInitialMB << 20 // the report card's line, so its floor and this agree
 
 // stateDiskStep is what a grow rounds up to: whole GiB, so a node's disk sizes stay readable and
 // small installs do not each cost a resize.
@@ -25,7 +25,7 @@ const stateDiskStep = 1 << 30
 // hostDiskReserve is what a grow leaves free on the HOST's filesystem. The host's own OS keeps
 // writing -- its logs, its updates, the next release staged beside the running one -- and a guest
 // disk that took the last of it would move the failure out of the guest and into the machine.
-const hostDiskReserve = 2 << 30
+const hostDiskReserve = reportcard.HostDiskReserveMB << 20 // the report card's line, likewise
 
 // errHostDiskFull is a grow the host cannot pay for: the operation that needed it is refused, and
 // the running service is untouched.

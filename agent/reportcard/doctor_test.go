@@ -11,7 +11,7 @@ func TestAssessLive(t *testing.T) {
 		want  Status
 	}{
 		{"plenty of disk", LiveFacts{DiskFreeMB: 40 * 1024, NTPSynced: "yes"}, "disk", Pass},
-		{"low disk", LiveFacts{DiskFreeMB: 5 * 1024, NTPSynced: "yes"}, "disk", Warn},
+		{"low disk", LiveFacts{DiskFreeMB: 4 * 1024, NTPSynced: "yes"}, "disk", Warn}, // under the 4.5 GB an update needs
 		{"full disk", LiveFacts{DiskFreeMB: 1024, NTPSynced: "yes"}, "disk", Refuse},
 		// Could not measure is said, never passed.
 		{"unmeasured disk", LiveFacts{NTPSynced: "yes"}, "disk", Warn},

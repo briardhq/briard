@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 
 	"briard.io/agent/nic"
@@ -66,6 +67,11 @@ type HostFacts struct {
 	// DiskFreeMB is free space on the filesystem the install lands on. 0 means "could not read",
 	// which the disk check treats as unknown (and stays quiet) rather than as an empty disk.
 	DiskFreeMB int
+	// KeptDataDisk / KeptStateDisk: the pet volumes a previous install left at their paths, which a
+	// reinstall keeps. Their lines are already paid, so the floor does not charge for them again --
+	// a reinstall is how an alpha node moves across an upgrade floor, and it must not be refused
+	// for space its own disks already hold.
+	KeptDataDisk, KeptStateDisk bool
 	// HostCIDR is the SELECTED NIC's own IPv4 address in CIDR form ("192.168.9.100/24") --
 	// i.e. the LAN this node is actually on. "" means it could not be read, which the VIP check
 	// treats as unknown rather than as a fault.
@@ -105,18 +111,46 @@ const (
 	memRecommendedMB = 7680 // 7.5 GiB: an 8 GB host, after firmware reservation
 )
 
-// Disk. The floor is what an install physically needs on day one: the guest image (2.6 GB) + the
-// qemu bundle + the THICK-allocated 4 GB data volume + the guest's own first writes -- call it
-// 8 GB, below which the install cannot complete and should refuse rather than half-land. The
-// recommendation is what the node needs to keep working: the guest's state disk (8 GiB sparse)
-// fills up as services and their upgrades land (Home Assistant's image is 2.49 GB unpacked, and an
-// upgrade holds two), and every pull first stages its compressed layers in scratch on that same disk
-// (622 MB for Home Assistant), so a host with less than 25 GB free will eventually meet ENOSPC
-// underneath a running guest. Warn, never refuse: plenty of nodes will never install a second service.
+// Disk: ARITHMETIC OVER WHAT A NODE HOLDS, every line paid for when it is made. Nothing the guest
+// writes charges the host later: its OS image is read-only and its state disk thick, grown by an
+// install before the pull (agent/host growStateDisk), so these lines are the whole of it.
+//
+// The FLOOR is an empty node that can keep itself up to date -- below it the install refuses
+// rather than half-land. The RECOMMENDATION adds one Home Assistant, the first workload. Warn,
+// never refuse, below it: a node with no service is a working node.
 const (
-	diskFloorMB       = 8 * 1024
-	diskRecommendedMB = 25 * 1024
+	// The guest image TWICE: the one running and the next one an OS update stages beside it until
+	// the swap. ~0.9 GB measured (briard 865e5d2); the line leaves it room to grow.
+	diskImageLineMB = 2 * 1024
+	// The qemu bundle and the agent (~0.1 GB), twice for the same reason: an update stages beside.
+	diskBundleLineMB = 512
+	// The data volume, THICK, at DATA_SIZE's default (agent/host config). A larger DATA_SIZE is
+	// refused by its own allocation if the host cannot back it.
+	diskDataLineMB = 4 * 1024
+	// StateDiskInitialMB is the state disk an empty node starts with, THICK: the journal (128 MB
+	// cap), the boot's scratch and room to spare. The agent makes it at exactly this size.
+	StateDiskInitialMB = 1024
+	// HostDiskReserveMB is what the host keeps for ITSELF -- its logs, its own updates. The agent
+	// refuses any grow of the state disk that would leave less.
+	HostDiskReserveMB = 2 * 1024
+	// One Home Assistant: grown into the state disk at install (2.49 GB installed + 0.62 GB
+	// downloading + the 1 GiB the guest keeps free, padded as the grow pads it: 5 GiB), plus the
+	// image an upgrade holds beside the old one until it commits (2.5 GB).
+	diskHomeAssistantLineMB = 5*1024 + 2560
 )
+
+// diskFloor is the floor for THIS host: every line, less the pet volumes a previous install left
+// in place (a reinstall keeps them, and they are paid for). 9.5 GB on a fresh host.
+func diskFloor(f HostFacts) int {
+	mb := diskImageLineMB + diskBundleLineMB + HostDiskReserveMB
+	if !f.KeptDataDisk {
+		mb += diskDataLineMB
+	}
+	if !f.KeptStateDisk {
+		mb += StateDiskInitialMB
+	}
+	return mb
+}
 
 // Report is the full verdict. Admit is false if any check Refused.
 type Report struct {
@@ -217,21 +251,31 @@ func Assess(f HostFacts) Report {
 			"add RAM to at least 4 GB (often a cheap SO-DIMM); below this a node can't run the guest reliably"})
 	}
 
-	// Disk -- the install writes a 2.6 GB guest image and thick-allocates the data volume, so an
-	// out-of-space host must be refused BEFORE any of that lands, not discovered halfway through.
-	// A 0 reading means the statfs failed; say nothing rather than refuse a host over a fact we
-	// could not read.
+	// Disk -- the install reserves every line above up front (the data volume and the guest's
+	// disk thick), so an out-of-space host must be refused BEFORE any of that lands, not discovered
+	// halfway through. A 0 reading means the statfs failed; say nothing rather than refuse a host
+	// over a fact we could not read.
+	floor := diskFloor(f)
+	recommended := floor + diskHomeAssistantLineMB
 	switch {
 	case f.DiskFreeMB == 0:
 		// unknown -- no check
-	case f.DiskFreeMB >= diskRecommendedMB:
-		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%d GB free", f.DiskFreeMB/1024), ""})
-	case f.DiskFreeMB >= diskFloorMB:
-		cs = append(cs, Check{"disk", Warn, fmt.Sprintf("%d GB free (below the %d GB recommended)", f.DiskFreeMB/1024, diskRecommendedMB/1024),
-			"enough to install; the guest disk grows as services and their updates land, so free some space before adding much"})
+	case f.DiskFreeMB >= recommended:
+		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%s free", gbOf(f.DiskFreeMB)), ""})
+	case f.DiskFreeMB >= floor:
+		cs = append(cs, Check{"disk", Warn, fmt.Sprintf("%s free (below the %s recommended)", gbOf(f.DiskFreeMB), gbOf(recommended)),
+			fmt.Sprintf("enough for the node itself; a Home Assistant and its updates need about %s more, which an install asks this computer for when it happens", gbOf(diskHomeAssistantLineMB))})
 	default:
-		cs = append(cs, Check{"disk", Refuse, fmt.Sprintf("%d GB free (below the %d GB floor)", f.DiskFreeMB/1024, diskFloorMB/1024),
-			fmt.Sprintf("free at least %d GB: the install writes a 2.6 GB guest image and reserves a 4 GB data volume up front", diskFloorMB/1024)})
+		reserved := "the guest image and room for its next update"
+		if !f.KeptDataDisk {
+			reserved += ", a " + gbOf(diskDataLineMB) + " data volume"
+		}
+		if !f.KeptStateDisk {
+			reserved += ", a " + gbOf(StateDiskInitialMB) + " guest disk"
+		}
+		cs = append(cs, Check{"disk", Refuse, fmt.Sprintf("%s free (below the %s floor)", gbOf(f.DiskFreeMB), gbOf(floor)),
+			fmt.Sprintf("free at least %s: %s are reserved up front, and %s is kept for this computer itself",
+				gbOf(floor), reserved, gbOf(HostDiskReserveMB))})
 	}
 
 	// THE NIC THE GUEST'S L2 WILL HANG OFF -- judged as the one device the install
@@ -450,4 +494,10 @@ func Run(ctx context.Context, w io.Writer) bool {
 	}
 	Print(w, r)
 	return r.Admit()
+}
+
+// gbOf renders MB as the GB a person reads on the card: one decimal, dropped when whole.
+func gbOf(mb int) string {
+	s := strconv.FormatFloat(float64(mb)/1024, 'f', 1, 64)
+	return strings.TrimSuffix(s, ".0") + " GB"
 }

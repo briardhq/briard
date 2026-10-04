@@ -276,34 +276,8 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		cancel()
 		ctx, cancel = cfg.beat.budget(parent, b)
 	}
-	// THE FREE-SPACE GATE, before the first byte moves: the manifest says what the
-	// image store will hold once pulled and what the pull stages beside it on the way (the
-	// compressed layers, freed only when the whole pull completes), the guest says what its
-	// state disk has free, and a pull that could only end in a full disk is refused here with
-	// both numbers -- rather than at 90 % of the download with a unit that failed for a reason
-	// nobody can read. The margin is the headroom the guest OS itself needs next to the image.
-	//
-	// THE DISK GROWS FIRST: the state disk is thick and starts small, so an install is where the
-	// host pays for what the service brings (growStateDisk). A host that cannot pay refuses the
-	// install here, with the running services untouched; a grow that fails for another reason is
-	// logged, and the gate below says whether the space is there anyway.
-	if m.InstalledSize > 0 && g.SupportsStorageFree() {
-		need := m.InstalledSize + m.Size + storageHeadroom
-		if cfg.StateDisk != "" && g.SupportsStorageGrow() {
-			vm := platform.Adopt(cfg.guestSpec())
-			if err := cfg.growStateDisk(ctx, g, vm.ResizeStateDisk, need, logf); errors.Is(err, errHostDiskFull) {
-				return failed(fmt.Sprintf("cannot install %s: %v", m.Name, err))
-			} else if err != nil {
-				logf("service install %s: growing the guest's disk: %v", d.Payload, err)
-			}
-		}
-		free, total, err := g.StorageFree(ctx)
-		if err != nil {
-			logf("service install %s: cannot measure the image store (%v); installing unmeasured", d.Payload, err)
-		} else if free < need {
-			return failed(fmt.Sprintf("not enough space on the node: %s needs %s installed and %s more while it downloads, and the image store has %s free of %s (keeping %s for the system)",
-				m.Name, gb(m.InstalledSize), gb(m.Size), gb(free), gb(total), gb(storageHeadroom)))
-		}
+	if refusal := cfg.roomForPull(ctx, g, m, logf); refusal != "" {
+		return failed(refusal)
 	}
 	// THE MEMORY GATE, beside it: the guest must hold the system's share plus every service's
 	// declared minimum -- this one's included -- before the new service first starts, because a
@@ -1198,8 +1172,19 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("the member's pinned manifest does not render: %v", err))
 	}
 
+	running, _, runningRaw, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
+
 	// (1) THE IMAGES, BEFORE ANYTHING IS TOUCHED. Not through converge's warm, whose failure is
 	// required to take the VIP down -- here a failure must cost nothing at all.
+	//
+	// ROOM FIRST, when the member runs on an image the running version does not: that image was
+	// removed when the version it belonged to was superseded, so this restore pulls it, and a pull
+	// is paid for before it starts (roomForPull). A data-only undo pulls nothing and grows nothing.
+	if pullsAnew(rendered.ImageRefs, imageRefs(runningRaw)) {
+		if refusal := cfg.roomForPull(ctx, g, pm, logf); refusal != "" {
+			return failed(refusal + "; nothing was changed")
+		}
+	}
 	for _, ref := range rendered.ImageRefs {
 		if err := g.EnsureImage(ctx, ref); err != nil {
 			return failed(fmt.Sprintf("%s is not available on this node and could not be fetched (%v); nothing was changed", ref, err))
@@ -1207,7 +1192,6 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	}
 
 	dataDir := quadlet.DataRoot(service)
-	running, _, runningRaw, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
 
 	// (2) THE STOP. Container units only -- the pod would unmount the shared volume under every
 	// other service (quiesce's own comment carries the trace).
@@ -1403,4 +1387,55 @@ func imageRefs(raw string) []string {
 	}
 	sort.Strings(refs)
 	return refs
+}
+
+// roomForPull makes room on the guest's state disk for pulling m, and says why not when it cannot:
+// "" means go ahead (including when the guest cannot measure its store -- then nothing is gated).
+//
+// THE FREE-SPACE GATE, before the first byte moves: the manifest says what the image store will
+// hold once pulled and what the pull stages beside it on the way (the compressed layers, freed
+// only when the whole pull completes), the guest says what its state disk has free, and a pull
+// that could only end in a full disk is refused here with both numbers -- rather than at 90 % of
+// the download with a unit that failed for a reason nobody can read. The margin is the headroom
+// the guest OS itself needs next to the image.
+//
+// THE DISK GROWS FIRST: the state disk is thick and starts small, so a pull is where the host
+// pays for what the service brings (growStateDisk). A host that cannot pay refuses here, with the
+// running services untouched; a grow that fails for another reason is logged, and the gate says
+// whether the space is there anyway. ONE implementation for every pull a household asks for -- an
+// install and a History restore that changes version -- so the two cannot disagree about room.
+func (cfg Config) roomForPull(ctx context.Context, g serviceInstaller, m manifest.Manifest, logf func(string, ...any)) string {
+	if m.InstalledSize == 0 || !g.SupportsStorageFree() {
+		return ""
+	}
+	need := m.InstalledSize + m.Size + storageHeadroom
+	if cfg.StateDisk != "" && g.SupportsStorageGrow() {
+		vm := platform.Adopt(cfg.guestSpec())
+		if err := cfg.growStateDisk(ctx, g, vm.ResizeStateDisk, need, logf); errors.Is(err, errHostDiskFull) {
+			return fmt.Sprintf("cannot fetch %s: %v", m.Name, err)
+		} else if err != nil {
+			logf("%s: growing the guest's disk: %v", m.Name, err)
+		}
+	}
+	free, total, err := g.StorageFree(ctx)
+	if err != nil {
+		logf("%s: cannot measure the image store (%v); going ahead unmeasured", m.Name, err)
+		return ""
+	}
+	if free < need {
+		return fmt.Sprintf("not enough space on the node: %s needs %s installed and %s more while it downloads, and the image store has %s free of %s (keeping %s for the system)",
+			m.Name, gb(m.InstalledSize), gb(m.Size), gb(free), gb(total), gb(storageHeadroom))
+	}
+	return ""
+}
+
+// pullsAnew reports whether the member's image refs include one the running version does not
+// pin -- the case where a restore has to fetch an image rather than reuse the one it runs on.
+func pullsAnew(member map[string]string, running []string) bool {
+	for _, ref := range member {
+		if !slices.Contains(running, ref) {
+			return true
+		}
+	}
+	return false
 }

@@ -18,10 +18,13 @@ type LiveFacts struct {
 	NTPSynced string
 }
 
-// Live disk thresholds, lower than the install's: the guest's thin root disk grows into this
-// space, so a host that fills up stops the guest underneath a running home. Below the install
-// floor is worth a warning; under 2 GB the next image update will not fit.
+// Live disk thresholds, lower than the install's: a running node's pet volumes are already paid
+// for, so what it still needs is room for an update (the next guest image staged beside the
+// running one, the bundles likewise) and the host's own reserve -- the same lines the install
+// floor is made of (diskFloor), less the two volumes. Under 2 GB the next image update will not fit.
 const liveDiskFailMB = 2 * 1024
+
+var liveFloor = diskFloor(HostFacts{KeptDataDisk: true, KeptStateDisk: true})
 
 // AssessLive judges an installed host's own facts. Pure, like Assess.
 func AssessLive(f LiveFacts) []Check {
@@ -31,12 +34,12 @@ func AssessLive(f LiveFacts) []Check {
 		cs = append(cs, Check{"disk", Warn, "could not measure free space on this machine", ""})
 	case f.DiskFreeMB < liveDiskFailMB:
 		cs = append(cs, Check{"disk", Refuse, fmt.Sprintf("%d MB free on this machine", f.DiskFreeMB),
-			"free some space: the guest's disk grows into it, and a full disk stops the guest"})
-	case f.DiskFreeMB < diskFloorMB:
-		cs = append(cs, Check{"disk", Warn, fmt.Sprintf("%d GB free on this machine (under %d GB)", f.DiskFreeMB/1024, diskFloorMB/1024),
-			"free some space before installing more apps or updates"})
+			"free some space: this computer's own system needs it, and every update and new app is refused without room"})
+	case f.DiskFreeMB < liveFloor:
+		cs = append(cs, Check{"disk", Warn, fmt.Sprintf("%s free on this machine (under %s)", gbOf(f.DiskFreeMB), gbOf(liveFloor)),
+			"an update needs room for the next guest image beside the running one; free some space before updating or adding apps"})
 	default:
-		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%d GB free on this machine", f.DiskFreeMB/1024), ""})
+		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%s free on this machine", gbOf(f.DiskFreeMB)), ""})
 	}
 	// THE CLOCK. A wrong clock turns a valid cert into a refusal and misdates every
 	// alert and backup, and an RTC-less board boots with whatever time it last saved.

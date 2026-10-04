@@ -2029,3 +2029,50 @@ func TestRestoreRecordsTheUndoAsAnEvent(t *testing.T) {
 		t.Errorf("the undo reads %q", evs[0].Reasons[0].What)
 	}
 }
+
+// A RESTORE THAT MOVES THE CODE PULLS, and a pull is paid for before it starts: the member's image
+// was removed when its version was superseded, so a store without room for it refuses -- before
+// anything is stopped, fetched or touched -- with the same numbers an install gives.
+func TestRestoreThatPullsMakesRoomFirst(t *testing.T) {
+	old := testManifest()
+	old.Version = "2026.5.0"
+	old.Containers[0].Image = "ghcr.io/x/ha@sha256:" + strings.Repeat("5", 64)
+	old.Size, old.InstalledSize = 600e6, 2500e6
+	cfg, f, member := ringWith(t, old, nil)
+	f.free = 1000e6
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not enough space") || !strings.Contains(o.Detail, "nothing was changed") {
+		t.Fatalf("outcome = %+v, want a refusal naming the space and saying nothing changed", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	for _, forbidden := range []string{"ensure:", "stop:", "restore:", "provision", "snapshot:"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("a restore with no room for its image still did %q: %v", forbidden, f.steps)
+		}
+	}
+	// With room, it goes ahead.
+	cfg, f, member = ringWith(t, old, nil)
+	f.free = 5000e6
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("outcome with room = %+v", o)
+	}
+}
+
+// A DATA-ONLY UNDO PULLS NOTHING, so it measures nothing and grows nothing -- even with a store
+// that could not hold its image again: the image it needs is the one already running.
+func TestDataOnlyRestoreAsksForNoRoom(t *testing.T) {
+	_, raw := priorManifest(t)
+	same, _, err := manifest.Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	same.Size, same.InstalledSize = 600e6, 2500e6 // sized, so only the image comparison keeps it ungated
+	cfg, f, member := ringWith(t, same, nil)
+	f.free = 1
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("a data-only restore = %+v; want done", o)
+	}
+	if strings.Contains(strings.Join(f.steps, ","), "storage.free") {
+		t.Errorf("a data-only restore measured the store as if it pulled: %v", f.steps)
+	}
+}

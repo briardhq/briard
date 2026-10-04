@@ -38,6 +38,8 @@ func Gather(ctx context.Context) HostFacts {
 		MemTotalMB:    MemTotalMB(),
 		PrimaryNICBus: primaryNICBus(sel.Dev),
 		DiskFreeMB:    diskFreeMB(installRoot()),
+		KeptDataDisk:  exists(petDir + "/data.img"),
+		KeptStateDisk: exists(petDir + "/state.img"),
 		HostCIDR:      HostCIDR(sel.Dev),
 		// The address the install is about to hand the guest. install.sh already computes it
 		// (BRIARD_VIP_ADDR, CIDR form) and passes it here the same way it passes NET_MODE -- the card
@@ -199,6 +201,9 @@ func HostCIDR(dev string) string {
 // The prefix is a CONSTANT, not a knob: the qemu bundle bakes it into its own ELF
 // interpreter, so an install anywhere else produces a qemu that cannot execute. This used to read
 // BRIARD_PREFIX, which nothing set and which could not have worked if anything had.
+// petDir is where install.sh puts the node's pet volumes (STATE in install.sh).
+const petDir = "/var/lib/briard"
+
 func installRoot() string {
 	p := "/opt/briard"
 	for p != "/" && p != "." {
