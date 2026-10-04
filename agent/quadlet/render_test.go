@@ -175,10 +175,10 @@ func TestImagePullIsBounded(t *testing.T) {
 		t.Fatalf("allowance %s / bitrate %d: a tighter bound expires layers on ordinary links", PullAllowance, PullBitrate)
 	}
 	// THE BOUND AND THE SWEEP SHIP TOGETHER, which is why they are asserted together. A pull
-	// stages through /var/tmp and only moves into the graph root on completion, so a unit that can
-	// be killed by a timeout and has no private tmp abandons the whole partial image every time it
-	// expires — turning the line above into a slow ENOSPC on a disk sized for one service plus its
-	// upgrade. Adding the timeout without this is worse than having neither.
+	// downloads its compressed layers into /var/tmp and deletes them only on completion, so a unit
+	// that can be killed by a timeout and has no private tmp abandons its partial download every
+	// time it expires — turning the line above into a slow ENOSPC on the guest's OS disk. Adding
+	// the timeout without this is worse than having neither.
 	if !strings.Contains(img, "PrivateTmp=true") {
 		t.Fatalf("the pre-warm unit has a timeout but no private tmp — every expiry would abandon "+
 			"its partial image in /var/tmp:\n%s", img)

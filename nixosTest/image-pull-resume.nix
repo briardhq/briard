@@ -414,8 +414,8 @@ pkgs.testers.runNixOSTest {
     # === ACT 6: DOES PrivateTmp=true SWEEP THE LEAK? ===
     # Act 5 found the time bomb: every INTERRUPTED pull abandons its scratch directory in
     # /var/tmp, and the 45-minute bound is a machine for producing interrupted pulls. On the
-    # 16 GiB root a Home Assistant image leaks ~2.7 GB per expiry, against the ~11 GB free that
-    # disk-image.nix sized for one service plus its upgrade.
+    # guest's OS disk a Home Assistant pull leaks up to its whole compressed download (622 MB) per
+    # expiry, and podman never comes back for it.
     #
     # PrivateTmp=true is the candidate because it needs no cleanup code: systemd gives the unit
     # its own /tmp and /var/tmp and removes them when the unit stops, however it stops.
@@ -480,7 +480,7 @@ pkgs.testers.runNixOSTest {
     if grew6 < 1024:
         print("  ⚠️ AND THE BYTES NEVER APPEARED ON THE HOST'S /var/tmp: the private scratch is")
         print("     not disk-backed where act 5's was. Check the df/findmnt lines above before")
-        print("     shipping this — a tmpfs here turns a 2.7 GB image into 2.7 GB of RAM.")
+        print("     shipping this — a tmpfs here turns a 622 MB download into 622 MB of RAM.")
     print(node1.succeed("ls -la /var/tmp || true"))
     print("=" * 78)
   '';

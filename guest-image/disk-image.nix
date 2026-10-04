@@ -453,24 +453,18 @@ let
     copyChannel = false;
     format = "qcow2";
     partitionTableType = "legacy";
-    # NOT "auto". Auto sizes the disk to the closure plus a small margin, which left ~1.9 GB
-    # free -- less than ONE Home Assistant. A service's image is pulled at RUNTIME into
-    # /var/lib/containers on this root (images are cattle, warmed on every node; only service
-    # DATA lives on the replicated volume), so `briard app install home-assistant` filled
-    # the disk and died with ENOSPC 2 GB into the pull. The tests never saw it because they BAKE
-    # the service image into the image at build time, where "auto" grows to fit it -- so the
-    # tested disk has room for exactly the image the test bakes and the shipped one has room for
-    # nothing.
+    # NOT "auto". Auto sizes the disk to the closure plus a small margin, leaving no room for
+    # anything the guest writes at runtime. The tests would never see that, because they BAKE the
+    # service image into the image at build time, where "auto" grows to fit it -- so the tested
+    # disk has room for exactly the image the test bakes and the shipped one has room for nothing.
     #
-    # THE SIZE POLICY (measured 2026-08-06 on a real install, not guessed). A node running Home
-    # Assistant uses 5.1 GB of this disk: 2.4 GB OS closure + 2.7 GB for the service image in
-    # podman storage + ~25 MB logs. The number that matters is not that, though — it is what an
-    # UPGRADE needs on top, because self-undoing updates are the product:
-    #   +2.7 GB   a service image upgrade holds the new image beside the old one
-    #   +0.5-1.5  an OS upgrade stages a second system generation (incremental; the store shares)
-    # So 8 GiB (5.1 used, 2.9 free) installs fine and then cannot upgrade the thing it installed —
-    # the failure would land exactly where a rollback is supposed to save you. 16 GiB leaves ~11 GB
-    # free: both upgrades at once, with room for a second service.
+    # WHAT THIS DISK HOLDS: the OS closure, plus what a running guest writes outside the state
+    # disk (above) and the replicated volume -- chiefly a pull's scratch: every service pull
+    # downloads its COMPRESSED layers into /var/tmp before they are unpacked into podman's
+    # storage, which is on the state disk, and deletes them only when the pull completes (Home
+    # Assistant: 622 MB here beside 2.49 GB unpacked there). Service images and the
+    # upgrade-beside-it live on the state disk, not here; 16 GiB is headroom well beyond what this
+    # disk is measured to need, and sizing it from measurement is an open question.
     #
     # It is HEADROOM, NOT FOOTPRINT: qcow2 is sparse, so the published artifact and the download
     # are unchanged (2.56 GB actual) and the host allocates only what the guest writes. The host

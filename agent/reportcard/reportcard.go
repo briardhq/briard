@@ -108,10 +108,11 @@ const (
 // Disk. The floor is what an install physically needs on day one: the guest image (2.6 GB) + the
 // qemu bundle + the THICK-allocated 4 GB data volume + the guest's own first writes -- call it
 // 8 GB, below which the install cannot complete and should refuse rather than half-land. The
-// recommendation is what the node needs to keep working: the guest root is a 16 GiB THIN disk that
-// fills up as services and their upgrades land (a service image is ~2.7 GB, and an upgrade holds
-// two), so a host with less than 25 GB free will eventually meet ENOSPC underneath a running
-// guest. Warn, never refuse: plenty of nodes will never install a second service.
+// recommendation is what the node needs to keep working: the guest's state disk (8 GiB sparse)
+// fills up as services and their upgrades land (Home Assistant's image is 2.49 GB unpacked, and an
+// upgrade holds two), and every pull first downloads its compressed layers onto the 16 GiB THIN OS
+// disk (622 MB for Home Assistant), so a host with less than 25 GB free will eventually meet ENOSPC
+// underneath a running guest. Warn, never refuse: plenty of nodes will never install a second service.
 const (
 	diskFloorMB       = 8 * 1024
 	diskRecommendedMB = 25 * 1024

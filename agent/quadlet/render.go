@@ -369,14 +369,16 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// `Copying blob` line spanning the break) — podman's own --retry never ran. A timeout that
 		// fired during one of those would convert a self-healing blip into a full re-download.
 		// PrivateTmp KEEPS THE BOUND FROM BECOMING A DISK LEAK, and without it the timeout above
-		// would be a slow-motion ENOSPC. A pull stages every byte through
-		// /var/tmp/container_images_storage<random>/ and only moves it into the graph root when
-		// the copy COMPLETES — so a pull that is killed leaves the whole partial image behind, and
-		// podman never comes back for it (measured: a successful pull cleans up, an interrupted
-		// one does not; three interrupted pulls left three directories). A 45-minute expiry on a
-		// slow link would abandon ~2.7 GB of Home Assistant each time, against the ~11 GB the
-		// 16 GiB guest root has spare for a service AND its upgrade (disk-image.nix) — and the
-		// households that hit the timeout are exactly the ones that hit it repeatedly.
+		// would be a slow-motion ENOSPC. A pull downloads every COMPRESSED layer into
+		// /var/tmp/container_images_storage<random>/, unpacks each into the graph root as it
+		// arrives, and deletes the downloads only when the whole pull COMPLETES — so a pull that is
+		// killed leaves its downloaded layers behind, and podman never comes back for them
+		// (measured: a successful pull cleans up, an interrupted one does not; three interrupted
+		// pulls left three directories). A 45-minute expiry on a slow link would abandon up to the
+		// whole download each time — 622 MB of Home Assistant — on the guest's OS disk, where
+		// /var/tmp lives (the graph root is on the state disk) — and the households that hit the
+		// timeout are exactly the ones that hit it repeatedly. A completed pull peaks at both at
+		// once: Home Assistant measured 622 MB in /var/tmp beside 2.28 GB already unpacked.
 		//
 		// systemd gives the unit its own /var/tmp and removes it when the unit stops, HOWEVER it
 		// stops — which an ExecStopPost cleanup would not, since a SIGKILL skips it. Measured
