@@ -74,7 +74,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
-        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
+        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest --setenv=GUEST_SERIAL=/tmp/guest-console.log "
         # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
         # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV/SYSTEM_CIDR are

@@ -110,8 +110,8 @@ const (
 // 8 GB, below which the install cannot complete and should refuse rather than half-land. The
 // recommendation is what the node needs to keep working: the guest's state disk (8 GiB sparse)
 // fills up as services and their upgrades land (Home Assistant's image is 2.49 GB unpacked, and an
-// upgrade holds two), and every pull first downloads its compressed layers onto the 16 GiB THIN OS
-// disk (622 MB for Home Assistant), so a host with less than 25 GB free will eventually meet ENOSPC
+// upgrade holds two), and every pull first stages its compressed layers in scratch on that same disk
+// (622 MB for Home Assistant), so a host with less than 25 GB free will eventually meet ENOSPC
 // underneath a running guest. Warn, never refuse: plenty of nodes will never install a second service.
 const (
 	diskFloorMB       = 8 * 1024

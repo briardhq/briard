@@ -80,7 +80,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         # Where the host keeps its guest bundle tree, the way install.sh sets it.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
-        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img "
+        "--setenv=GUEST_DISK=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         # The guest console, because this test's failure mode is "the guest never answered" and
         # everything else here observes from OUTSIDE the VM. agent-readopt/deadman/watchdog all
         # carry it for the same reason (the console is the window).

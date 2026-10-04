@@ -101,6 +101,7 @@ pkgs.testers.runNixOSTest {
           # Where the host keeps its guest bundle tree, the way install.sh sets it.
           UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
+          STATE_DISK = "/tmp/state.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
           SYSTEM_TAP = "sys0";

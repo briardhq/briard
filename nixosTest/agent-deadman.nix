@@ -56,6 +56,7 @@ pkgs.testers.runNixOSTest {
           # and a host holding no tree could never start it.
           UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
+          STATE_DISK = "/tmp/state.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
           SYSTEM_TAP = "sys0";

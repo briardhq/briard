@@ -60,11 +60,11 @@ let
     "net/mac80211" "net/mac802154" "net/nfc" "net/qrtr" "net/6lowpan" "net/lapb" "net/phonet"
     "net/rfkill" "net/rose" "net/netrom" "net/caif" "net/mpls" "net/openvswitch" "net/vmw_vsock"
     "net/sctp" "net/sunrpc" "net/9p"
-    # filesystems nothing here mounts (ext4, btrfs, overlay, vfat, squashfs, fuse stay)
+    # filesystems nothing here mounts (ext4, btrfs, overlay, erofs, vfat, squashfs, fuse stay; erofs + overlay are /etc, guest-image/disk-image.nix)
     "fs/xfs" "fs/zonefs" "fs/vboxsf" "fs/ufs" "fs/udf" "fs/ubifs" "fs/romfs" "fs/smb" "fs/nfs"
     "fs/nfsd" "fs/ceph" "fs/ocfs2" "fs/gfs2" "fs/afs" "fs/9p" "fs/orangefs" "fs/jfs" "fs/reiserfs"
     "fs/hfs" "fs/hfsplus" "fs/befs" "fs/bfs" "fs/efs" "fs/minix" "fs/sysv" "fs/qnx4" "fs/qnx6"
-    "fs/omfs" "fs/adfs" "fs/affs" "fs/coda" "fs/cramfs" "fs/erofs" "fs/f2fs" "fs/jffs2" "fs/nilfs2"
+    "fs/omfs" "fs/adfs" "fs/affs" "fs/coda" "fs/cramfs" "fs/f2fs" "fs/jffs2" "fs/nilfs2"
     "fs/ntfs3" "fs/exfat" "fs/freevxfs" "fs/hpfs" "fs/lockd" "fs/dlm"
   ];
   pruned = pkgs.runCommand "${kernel.name}-modules-pruned" { nativeBuildInputs = [ pkgs.kmod ]; } ''
@@ -96,8 +96,9 @@ in
   # here fails the image build. The virtio set, and nothing else: this guest has virtio disks,
   # NICs, a console and an RNG, no display, no 9p share, no SATA, no USB.
   # ...plus the root filesystem, named here because mkForce also discards the entry NixOS adds for
-  # it (measured: the first pruned image reached the initrd and could not mount /sysroot).
-  boot.initrd.availableKernelModules = lib.mkForce [ "virtio_net" "virtio_pci" "virtio_mmio" "virtio_blk" "virtio_scsi" "ext4" ];
+  # it (measured: the first pruned image reached the initrd and could not mount /sysroot) --
+  # and the /etc overlay's three, which the etc module adds the same way (disk-image.nix).
+  boot.initrd.availableKernelModules = lib.mkForce [ "virtio_net" "virtio_pci" "virtio_mmio" "virtio_blk" "virtio_scsi" "ext4" "loop" "erofs" "overlay" ];
   boot.initrd.kernelModules = lib.mkForce [ "virtio_balloon" "virtio_console" "virtio_rng" ];
   # Loaded at boot by systemd-modules-load: DRBD (configuration.nix) and loop; NixOS's default
   # `atkbd` (a PS/2 keyboard driver) would now fail to load and fail the unit.

@@ -6,10 +6,11 @@
 # push verbs, os.poweroff), rebuilt only with the image, and the thing that receives the
 # first push. The host dresses the guest with the release's set over the control channel
 # (`bin.stage` / `bin.test` / `bin.activate`, agent/guestfirmware/bin.go) at every bring-up: the
-# overlay the guest boots on is disposable, so every boot starts as firmware and nothing pushed
-# survives a restart. The guest AGENT, the front door and the dashboard have no baked copy at all;
-# before the first dress the doors' units have nothing to exec and say so, and the host dresses
-# before rejoin, so nothing can promote a node that has not been dressed.
+# pushed set lands in the boot's scratch on the state disk, emptied at every boot, so every boot
+# starts as firmware and nothing pushed survives a restart. The guest AGENT, the front door and
+# the dashboard have no baked copy at all; before the first dress the doors' units have nothing
+# to exec and say so, and the host dresses before rejoin, so nothing can promote a node that has
+# not been dressed.
 #
 # This module is the guest-side half of that -- the PICKER, and the files it chooses between. It
 # is the same shape as the host's own pivot (scripts/install.sh briard-exec / briard-commit)
@@ -63,9 +64,9 @@
 # guest image moves when the protocol does and not when the agent does.
 { lib, pkgs, config, ... }:
 let
-  # On the overlay ROOT, disposable by design -- and NOT under /var/lib/briard, which in the guest
-  # is the replicated data volume: mounted only while promoted (files put there before vanish under
-  # the mount) and unmountable while a binary runs from it (agent/guestfirmware/bin.go says how that
+  # In /var, the state disk's per-boot scratch (disk-image.nix) -- and NOT under
+  # /var/lib/briard, which in the guest is the replicated data volume: mounted only while
+  # promoted (files put there before vanish under the mount) and unmountable while a binary runs from it (agent/guestfirmware/bin.go says how that
   # was measured).
   binDir = "/var/lib/briard-bin";
   runDir = "/run/briard-bin"; # tmpfs: the single-use flags

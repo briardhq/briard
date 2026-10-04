@@ -347,7 +347,7 @@ done
 #
 # The line between the first kind and a default is "did this install make the thing the path names".
 # It did make the disks and extract the qemu tree, so those are facts about this host -- and an
-# agent handed no STATE_DISK must not invent one, because every agent-* rig runs exactly that way.
+# agent handed no STATE_DISK must not invent one: the path is a fact about the install, never a guess.
 cat > "$PREFIX/config.env" <<EOF
 # briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
 # '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is

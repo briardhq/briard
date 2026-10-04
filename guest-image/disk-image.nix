@@ -61,6 +61,16 @@ let
   # broken one is a minimal, honest delta (only the service env differs).
   bootModule =
     { config, lib, modulesPath, ... }:
+    let
+      # A directory of the state disk bound into the tree, mounted in the initrd like the disk.
+      stateBind = sub: after: {
+        device = "/briard-state/${sub}";
+        fsType = "none";
+        options = [ "bind" ];
+        depends = [ "/briard-state" ] ++ after;
+        neededForBoot = true;
+      };
+    in
     {
       imports = [ "${modulesPath}/profiles/qemu-guest.nix" ]; # virtio_blk/pci/console in initrd
       networking.hostName = "guest"; # DRBD .res on-block name (matches the driver's NODE)
@@ -83,72 +93,106 @@ let
           terminal_output --append serial
         '';
       };
+      # A READ-ONLY OS: THE GUEST WRITES ONLY WHERE THE HOST HAS PAID FOR IT. Nothing the guest
+      # runs writes to its OS disk. The root is a small tmpfs holding mountpoints, a few
+      # symlinks and /etc's writable layer (machine-id, resolv.conf, localtime, LVM's metadata
+      # backups -- a few KB, measured); the image's own partition is mounted read-only and only
+      # its store is bound in. Every other runtime write lands on the state disk below. The cap
+      # turns a writer nobody planned for into ENOSPC inside the guest, never a slow RAM leak --
+      # tmpfs costs only what is written, so the cap is a ceiling and not a reservation.
       fileSystems."/" = lib.mkForce {
+        device = "none";
+        fsType = "tmpfs";
+        options = [ "mode=0755" "size=16M" ];
+      };
+      # `noload`: a read-only mount must not replay a journal it cannot write back.
+      fileSystems."/nix/.ro-disk" = {
         device = "/dev/disk/by-label/nixos";
         fsType = "ext4";
+        options = [ "ro" "noload" ];
+        neededForBoot = true;
       };
-      # THE STATE DISK. The OS disk is disposable -- the host discards it at will, a
-      # rescue rebuilds it, an OS release swaps it for a new image -- so the guest keeps what a restart
-      # must not cost on a separate node-local disk the host attaches by serial. The list is
-      # CLOSED and short, and adding to it is a design decision: podman's storage (the service
-      # images, content-addressed and digest-pinned by the quadlets -- re-pulling gigabytes after
-      # every restart would be pointless), the journal (the guest's own forensics; the host's
-      # console capture covers the boot, not the day) and the deadman's backoff (which exists
-      # precisely to survive the reboots the deadman itself causes). Everything else the guest
-      # holds is re-derived from the host or the volume at bring-up.
+      fileSystems."/nix/store" = {
+        device = "/nix/.ro-disk/nix/store";
+        fsType = "none";
+        options = [ "bind" "ro" ];
+        depends = [ "/nix/.ro-disk" ];
+      };
+      # /etc is an overlay of the generation's own image with its writable layer on the tmpfs root,
+      # so there is no activation script rewriting it at every boot; users come from userborn.
+      boot.initrd.systemd.enable = true;
+      system.etc.overlay.enable = true;
+      services.userborn.enable = true;
+
+      # THE STATE DISK: every byte the guest writes at runtime, in two classes on one filesystem.
+      # PERSISTENT, a CLOSED and short list where adding to it is a design decision: podman's
+      # storage (the service images, content-addressed and digest-pinned by the quadlets --
+      # re-pulling gigabytes after every restart would be pointless), the journal (the guest's own
+      # forensics; the host's console capture covers the boot, not the day) and the deadman's
+      # backoff (which exists precisely to survive the reboots the deadman itself causes).
+      # SCRATCH, /var and /tmp, emptied at every boot: everything else the guest holds is
+      # re-derived from the host or the volume at bring-up, so nothing in it may outlive the boot
+      # that wrote it -- the dressed binaries, a pull's staged layers, systemd's own state.
       #
       # Formatted by the guest on first boot when it finds no filesystem, so the host needs no
-      # mkfs. `nofail`: a rig that predates the disk boots exactly as before, with the three
-      # paths on the OS disk; a production node always has it (install.sh creates it). The
-      # three paths are BIND-MOUNTED by one unit rather than listed in fstab, because a bind in
-      # fstab whose source is absent is a failed mount unit on every disk-less rig, while a
-      # unit conditioned on the disk being mounted is simply skipped. (A rig that bakes service
-      # images into /var/lib/containers AND attaches a state disk would hide them under the
-      # bind; none does, and the shipped image bakes nothing.)
-      fileSystems."/var/lib/briard-state" = {
+      # mkfs. Every guest has one: install.sh creates it and every rig that boots this image passes
+      # STATE_DISK, so a missing disk fails the boot rather than finding somewhere else to write.
+      fileSystems."/briard-state" = {
         device = "/dev/disk/by-id/virtio-briard-state";
         fsType = "ext4";
         autoFormat = true;
-        # 5s: on a node without the disk (a rig that predates it) this is what local-fs.target
-        # waits before the mount gives up and the layout unit below is skipped.
-        options = [ "nofail" "x-systemd.device-timeout=5s" ];
+        neededForBoot = true;
       };
-      systemd.services.briard-state-layout = {
-        description = "Briard: put the guest's persistent paths on its state disk";
-        wantedBy = [ "local-fs.target" ];
-        after = [ "var-lib-briard\\x2dstate.mount" ];
-        requires = [ "var-lib-briard\\x2dstate.mount" ];
-        # Before the journal is flushed to /var/log/journal and before anything that uses
-        # podman or the deadman's state can start.
-        before = [ "local-fs.target" "systemd-journal-flush.service" "shutdown.target" ];
-        conflicts = [ "shutdown.target" ];
-        unitConfig = {
-          ConditionPathIsMountPoint = "/var/lib/briard-state";
-          # An EARLY-BOOT unit, and this line is load-bearing: a service with default
-          # dependencies is After=sysinit.target, sysinit is After=local-fs.target, and this
-          # unit is Before=local-fs.target -- an ordering cycle, which systemd breaks by deleting
-          # a job. Measured on the first rig run: the deleted job was systemd-tmpfiles-setup,
-          # avahi's runtime directory was never created, the mDNS chain member failed, the
-          # promotion failed, and the front door never answered. Nothing pointed at this unit.
-          DefaultDependencies = false;
-        };
-        path = [ pkgs.coreutils pkgs.util-linux ];
+      fileSystems."/var" = stateBind "scratch/var" [ ];
+      fileSystems."/tmp" = stateBind "scratch/tmp" [ ];
+      fileSystems."/var/lib/containers" = stateBind "containers" [ "/var" ];
+      fileSystems."/var/log/journal" = stateBind "journal" [ "/var" ];
+      fileSystems."/var/lib/briard-deadman" = stateBind "deadman" [ "/var" ];
+      # THE BOOT WIPE, and it is a destructive act, so it is gated on a POSITIVE answer: the
+      # state disk's device is what is mounted there. A failed mount leaves a directory on the
+      # tmpfs root, the check says no, and the unit fails -- it never removes anything it could
+      # not identify. Removal is BY NAME, of the previous boot's directory renamed aside: a
+      # fresh `scratch` is made empty, never emptied, and a power cut mid-removal leaves only
+      # `scratch.old`, which the next boot removes first.
+      boot.initrd.systemd.extraBin.findmnt = "${pkgs.util-linux}/bin/findmnt";
+      boot.initrd.systemd.extraBin.chattr = "${pkgs.e2fsprogs.bin}/bin/chattr";
+      boot.initrd.systemd.services.briard-state-scratch = {
+        description = "Briard: a fresh scratch directory on the state disk";
+        requiredBy = [ "initrd-fs.target" ];
+        before = [ "initrd-fs.target" "sysroot-var.mount" "sysroot-tmp.mount" ];
+        after = [ "sysroot-briard\\x2dstate.mount" ];
+        requires = [ "sysroot-briard\\x2dstate.mount" ];
+        unitConfig.DefaultDependencies = false;
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
         };
         script = ''
           set -eu
-          for p in containers journal deadman; do
-            mkdir -p "/var/lib/briard-state/$p"
-          done
-          mkdir -p /var/lib/containers /var/log/journal /var/lib/briard-deadman
-          mount --bind /var/lib/briard-state/containers /var/lib/containers
-          mount --bind /var/lib/briard-state/journal /var/log/journal
-          mount --bind /var/lib/briard-state/deadman /var/lib/briard-deadman
+          s=/sysroot/briard-state
+          dev=$(readlink -f /dev/disk/by-id/virtio-briard-state)
+          src=$(findmnt -n -o SOURCE --mountpoint "$s")
+          if [ -z "$dev" ] || [ "$src" != "$dev" ]; then
+            echo "briard-state-scratch: $s is not the state disk (mounted: '$src', disk: '$dev') -- not wiping" >&2
+            exit 1
+          fi
+          # Immutable flags are cleared first: NixOS makes /var/empty `chattr +i`, which `rm`
+          # alone cannot remove -- and a wipe that fails stops every reboot in emergency mode.
+          discard() {
+            [ -e "$1" ] || return 0
+            chattr -R -f -i "$1" || true
+            rm -rf "$1"
+          }
+          discard "$s/scratch.old"
+          if [ -e "$s/scratch" ]; then mv "$s/scratch" "$s/scratch.old"; fi
+          discard "$s/scratch.old"
+          mkdir -p "$s/scratch/var" "$s/scratch/tmp" "$s/containers" "$s/journal" "$s/deadman"
+          chmod 1777 "$s/scratch/tmp"
         '';
       };
-      # A weekly fstrim: the state disk (and the overlay) are attached discard=unmap, so what the
+      # A weekly fstrim: the state disk is attached discard=unmap, so what the
       # guest deletes is given back to the host file only once something TRIMs it. Weekly is the
       # usual cadence; podman's churn is bursty and a sweep bounds the footprint at a week's peak.
       services.fstrim.enable = true;
@@ -453,24 +497,11 @@ let
     copyChannel = false;
     format = "qcow2";
     partitionTableType = "legacy";
-    # NOT "auto". Auto sizes the disk to the closure plus a small margin, leaving no room for
-    # anything the guest writes at runtime. The tests would never see that, because they BAKE the
-    # service image into the image at build time, where "auto" grows to fit it -- so the tested
-    # disk has room for exactly the image the test bakes and the shipped one has room for nothing.
-    #
-    # WHAT THIS DISK HOLDS: the OS closure, plus what a running guest writes outside the state
-    # disk (above) and the replicated volume -- chiefly a pull's scratch: every service pull
-    # downloads its COMPRESSED layers into /var/tmp before they are unpacked into podman's
-    # storage, which is on the state disk, and deletes them only when the pull completes (Home
-    # Assistant: 622 MB here beside 2.49 GB unpacked there). Service images and the
-    # upgrade-beside-it live on the state disk, not here; 16 GiB is headroom well beyond what this
-    # disk is measured to need, and sizing it from measurement is an open question.
-    #
-    # It is HEADROOM, NOT FOOTPRINT: qcow2 is sparse, so the published artifact and the download
-    # are unchanged (2.56 GB actual) and the host allocates only what the guest writes. The host
-    # side of this policy is the report card's free-space gate (a thin disk still has to be backed
-    # by something) and the thick-allocated data volume in install.sh.
-    diskSize = 16384;
+    # "auto": the closure plus make-disk-image's margin, and nothing more, because the guest never
+    # writes this disk -- its partition is mounted read-only and every runtime write lands on the
+    # state disk (bootModule above). A service image a test bakes in (stageImages) is a store
+    # path in the closure, so "auto" grows to fit it, and `podman load` puts it on the state disk.
+    diskSize = "auto";
     label = "nixos";
   };
 in
