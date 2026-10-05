@@ -134,7 +134,14 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	// outright for a few more lines, not the resource.
 	if fresh && spec.Resource.FreshInit {
 		data, _ := spec.Tier(nodestorage.TierData)
-		if err := run("mkfs.btrfs", "-f", data.Mapper()); err != nil {
+		// The layout is written out rather than left to btrfs-progs: its defaults move between
+		// releases (6.19 added block-group-tree), and the image that formats the volume is not the
+		// one that will mount it after the next update. These are the 6.19 defaults, so a node
+		// formatted before the flags were written has the same layout.
+		if err := run("mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096",
+			"--metadata", "dup", "--data", "single", "--csum", "crc32c",
+			"--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree",
+			data.Mapper()); err != nil {
 			return err
 		}
 	}

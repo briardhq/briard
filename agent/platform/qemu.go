@@ -114,6 +114,8 @@ const (
 	// that attaches it second, because the host now has to TELL the guest which device to build
 	// its storage tier on (shared/nodestorage) instead of the guest assuming it.
 	GuestDataDevice = "/dev/vdb"
+	// IOThreadID names the one iothread every disk's I/O runs on (see qemuArgs).
+	IOThreadID = "briard-io"
 )
 
 // Net substrate modes for QEMUSpec.NetMode.
@@ -240,17 +242,25 @@ func qemuArgs(s QEMUSpec) []string {
 	// sees vda/vdb/vdc as it always has -- and bootindex=0 on the root says which one boots
 	// whatever else is ever attached. The drive ids are what QMP addresses (the snapshot work on
 	// RootDriveID); a serial is what the guest finds a disk by (/dev/disk/by-id/virtio-<serial>).
+	//
+	// EVERY DISK ALSO GETS: format= (qemu probes the format of a file that does not name one, which
+	// its own docs call unsafe); cache=none (the guest keeps a page cache of its own, so the host's
+	// is a second copy of the same bytes, paid out of RAM a small board does not have -- guest
+	// flushes are still honoured, so durability does not move); and the one iothread, so block I/O
+	// runs off qemu's main loop. That loop also serves the virtio-serial control channel, the
+	// agent's liveness signal, and a disk busy with a resync must not delay it into a self-fence.
+	args = append(args, "-object", "iothread,id="+IOThreadID)
 	if s.DiskImage != "" {
-		args = append(args, "-drive", "file="+s.DiskImage+",if=none,readonly=on,id="+RootDriveID,
-			"-device", "virtio-blk-pci,drive="+RootDriveID+",bootindex=0")
+		args = append(args, "-drive", "file="+s.DiskImage+",if=none,format=qcow2,cache=none,readonly=on,id="+RootDriveID,
+			"-device", "virtio-blk-pci,drive="+RootDriveID+",iothread="+IOThreadID+",bootindex=0")
 	}
 	if s.DataDisk != "" {
 		// werror=report, like the state drive: the volume is THICK, so a host ENOSPC under it is
 		// reachable only where a copy-on-write host filesystem did not honour the reservation, and
 		// there an I/O error the guest's btrfs and DRBD can see and report beats qemu's default --
 		// a whole-VM pause that nothing inside it can observe or explain.
-		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,werror=report,id="+DataDriveID,
-			"-device", "virtio-blk-pci,drive="+DataDriveID)
+		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,cache=none,werror=report,id="+DataDriveID,
+			"-device", "virtio-blk-pci,drive="+DataDriveID+",iothread="+IOThreadID)
 	}
 	if s.StateDisk != "" {
 		// NO discard: the state disk is THICK, its bytes paid for when it was made or grown, and a
@@ -261,8 +271,8 @@ func qemuArgs(s QEMUSpec) []string {
 		// did not reach) is an I/O error to the one guest writer, not qemu's default of pausing the
 		// whole VM -- the state disk holds a cache, a journal and scratch, none of which is worth the
 		// household's service stopping for.
-		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,werror=report,id="+StateDriveID,
-			"-device", "virtio-blk-pci,drive="+StateDriveID+",serial="+StateDiskSerial)
+		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,cache=none,werror=report,id="+StateDriveID,
+			"-device", "virtio-blk-pci,drive="+StateDriveID+",iothread="+IOThreadID+",serial="+StateDiskSerial)
 	}
 	if s.MachineUUID != "" {
 		args = append(args, "-uuid", s.MachineUUID)

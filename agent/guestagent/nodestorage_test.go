@@ -137,7 +137,7 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 		{"vgcreate", "briardservice", "/dev/mapper/briardservice-crypt"},
 		{"lvcreate", "-l", "61", "-n", "data", "briardservice"},
 		{"lvcreate", "-l", "100%FREE", "-n", "metadata", "briardservice"},
-		{"mkfs.btrfs", "-f", "/dev/mapper/briardservice-data"},
+		{"mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096", "--metadata", "dup", "--data", "single", "--csum", "crc32c", "--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree", "/dev/mapper/briardservice-data"},
 		{"drbdadm", "create-md", "--max-peers=4", "--force", "r0"},
 		{"systemctl", "start", "drbd@r0.target"},
 		{"drbdadm", "new-current-uuid", "--clear-bitmap", "r0/0"},
@@ -504,7 +504,7 @@ func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
 	if err := nodeStorage(context.Background(), f, loneSpec(true)); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("mkfs.btrfs", "-f", "/dev/mapper/briardservice-data") {
+	if !f.ran("mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096", "--metadata", "dup", "--data", "single", "--csum", "crc32c", "--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree", "/dev/mapper/briardservice-data") {
 		t.Errorf("the seed's LV was not formatted; runs = %v", f.runs)
 	}
 	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=alone\n" {

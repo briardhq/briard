@@ -251,7 +251,7 @@ func TestQEMUArgsQMPSocket(t *testing.T) {
 // the guest, never bytes landing in a file the host did not size.
 func TestQEMUArgsRootDriveID(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/var/lib/briard/guest.qcow2"}), " ")
-	if !strings.Contains(got, "file=/var/lib/briard/guest.qcow2,if=none,readonly=on,id="+RootDriveID) || !strings.Contains(got, "virtio-blk-pci,drive="+RootDriveID+",bootindex=0") {
+	if !strings.Contains(got, "file=/var/lib/briard/guest.qcow2,if=none,format=qcow2,cache=none,readonly=on,id="+RootDriveID) || !strings.Contains(got, "virtio-blk-pci,drive="+RootDriveID+",iothread="+IOThreadID+",bootindex=0") {
 		t.Errorf("root drive missing id=%s:\n%s", RootDriveID, got)
 	}
 }
@@ -496,8 +496,8 @@ func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
 	base.StateDisk, base.MachineUUID = "/var/lib/briard/state.img", "0f7c1a2b-3c4d-5e6f-8a9b-0c1d2e3f4a5b"
 	with := strings.Join(qemuArgs(base), " ")
 	for _, want := range []string{
-		"-drive file=/var/lib/briard/state.img,if=none,format=raw,werror=report,id=briard-state",
-		"-device virtio-blk-pci,drive=briard-state,serial=briard-state",
+		"-drive file=/var/lib/briard/state.img,if=none,format=raw,cache=none,werror=report,id=briard-state",
+		"-device virtio-blk-pci,drive=briard-state,iothread=briard-io,serial=briard-state",
 		"-uuid 0f7c1a2b-3c4d-5e6f-8a9b-0c1d2e3f4a5b",
 	} {
 		if !strings.Contains(with, want) {
@@ -511,9 +511,9 @@ func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
 // the root and SeaBIOS booted the blank disk. The guest's vda/vdb/vdc depend on this order.
 func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/r.qcow2", DataDisk: "/d.img", StateDisk: "/s.img"}), " ")
-	root := strings.Index(got, "virtio-blk-pci,drive=briard-root,bootindex=0")
+	root := strings.Index(got, "virtio-blk-pci,drive=briard-root,iothread=briard-io,bootindex=0")
 	data := strings.Index(got, "virtio-blk-pci,drive=briard-data")
-	state := strings.Index(got, "virtio-blk-pci,drive=briard-state,serial=briard-state")
+	state := strings.Index(got, "virtio-blk-pci,drive=briard-state,iothread=briard-io,serial=briard-state")
 	if root < 0 || data < 0 || state < 0 || !(root < data && data < state) {
 		t.Fatalf("disk devices missing or out of order (root %d, data %d, state %d):\n%s", root, data, state, got)
 	}
@@ -522,7 +522,7 @@ func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	}
 	// The two thick disks REPORT a host write error to the guest rather than pausing the VM; the
 	// read-only root never writes.
-	for _, want := range []string{"file=/d.img,if=none,format=raw,werror=report,id=briard-data", "file=/s.img,if=none,format=raw,werror=report,id=briard-state"} {
+	for _, want := range []string{"file=/d.img,if=none,format=raw,cache=none,werror=report,id=briard-data", "file=/s.img,if=none,format=raw,cache=none,werror=report,id=briard-state", "-device virtio-blk-pci,drive=briard-data,iothread=briard-io", "-object iothread,id=briard-io"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)
 		}
