@@ -40,7 +40,7 @@ while [ "${1:-}" != "--" ]; do
 		ns=${dev%%/*} dev=${dev#*/}
 		ip -n "$ns" link set "$dev" up
 		# `7: briard0@if3: <...> ...` -- the index is the first field. A missing device makes
-		# idx empty -> `exec N<>/dev/tap` fails -> set -e aborts (fail fast), as below.
+		# idx empty, which the chardev check below refuses.
 		line=$(ip -n "$ns" -o link show dev "$dev")
 		idx=${line%%:*}
 		;;
@@ -53,9 +53,16 @@ while [ "${1:-}" != "--" ]; do
 		idx=$(cat "/sys/class/net/${dev}/ifindex")
 		;;
 	esac
-	# The tap chardev minor IS the device ifindex. eval expands $fd into the redirection
-	# operator position (POSIX sh can't take a variable fd number literally). A missing device
-	# makes idx empty -> `exec N<>/dev/tap` fails -> set -e aborts (fail fast).
+	# The tap chardev minor IS the device ifindex. `<>` CREATES a missing path as a regular
+	# file, which qemu then rejects with a misleading TUNGETIFF error -- so refuse anything that
+	# is not a character device first: an empty idx, or a /dev without devtmpfs (a container,
+	# whose node the kernel made in the host's /dev instead).
+	[ -c "/dev/tap${idx}" ] || {
+		echo "briard-net-wrap: /dev/tap${idx} for $dev is not a character device (no devtmpfs here -- a container?)" >&2
+		exit 1
+	}
+	# eval expands $fd into the redirection operator position (POSIX sh can't take a variable
+	# fd number literally).
 	eval "exec ${fd}<>/dev/tap${idx}"
 done
 shift # drop the -- sentinel
