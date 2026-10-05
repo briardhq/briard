@@ -226,6 +226,15 @@ let
         MaxRetentionSec=7day
         MaxFileSec=1day
       '';
+      # NO CORE DUMPS: a crash is logged to the journal (process, signal, stack summary) and its
+      # core is discarded, never written -- a core is as large as the process, lands on the state
+      # disk nobody sized for it, and nobody here reads one. Through systemd-coredump rather than
+      # disabling it: `systemd.coredump.enable = false` sets kernel.core_pattern to "core", and the
+      # kernel then writes the core into the crashing process's working directory, wherever that is.
+      systemd.coredump.settings.Coredump = {
+        Storage = "none";
+        ProcessSizeMax = 0;
+      };
 
       # THE DEBUG CONSOLE: ttyS1, and it is connected to nothing until someone opens it.
       #

@@ -162,5 +162,15 @@ pkgs.testers.runNixOSTest {
     assert not resident(v1), "the superseded v1 image is still in the guest's store"
     assert resident(v0), "the running v0 image went missing"
     print(host.succeed("journalctl -u briard-agent -o cat | grep 'superseded images'"))
+
+    # === NO CORE DUMPS: a crash is logged, its core is never written. ===
+    # A process killed by SIGSEGV goes through systemd-coredump, which with Storage=none and
+    # ProcessSizeMax=0 records the crash in the journal and writes nothing -- on its default
+    # (external storage) the core would land in /var/lib/systemd/coredump on the state disk.
+    out = guest("sleep 300 & p=$!; sleep 1; kill -SEGV $p; sleep 3; echo CORES=$(ls /var/lib/systemd/coredump 2>/dev/null | wc -l); journalctl -b -o cat | grep \"(sleep) of user 0\"; echo LOGGED=$(journalctl -b -o cat | grep -c \"(sleep) of user 0\")", wait=10)
+    print(out)
+    assert re.search(r"CORES=0\b", out), f"a core was written:\n{out}"
+    m = re.search(r"LOGGED=(\d+)", out)
+    assert m and int(m.group(1)) > 0, f"the crash was not logged:\n{out}"
   '';
 }

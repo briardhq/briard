@@ -252,7 +252,12 @@ func qemuArgs(s QEMUSpec) []string {
 		// NO discard: the state disk is THICK, its bytes paid for when it was made or grown, and a
 		// guest TRIM passed through would punch holes in it and turn it sparse again -- charging the
 		// host at write time, which is the failure the thick disk exists to remove.
-		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,id="+StateDriveID,
+		//
+		// werror=report: a write the host cannot back (a copy-on-write host filesystem the NOCOW flag
+		// did not reach) is an I/O error to the one guest writer, not qemu's default of pausing the
+		// whole VM -- the state disk holds a cache, a journal and scratch, none of which is worth the
+		// household's service stopping for.
+		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,werror=report,id="+StateDriveID,
 			"-device", "virtio-blk-pci,drive="+StateDriveID+",serial="+StateDiskSerial)
 	}
 	if s.MachineUUID != "" {

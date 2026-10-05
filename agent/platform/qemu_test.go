@@ -496,7 +496,7 @@ func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
 	base.StateDisk, base.MachineUUID = "/var/lib/briard/state.img", "0f7c1a2b-3c4d-5e6f-8a9b-0c1d2e3f4a5b"
 	with := strings.Join(qemuArgs(base), " ")
 	for _, want := range []string{
-		"-drive file=/var/lib/briard/state.img,if=none,format=raw,id=briard-state",
+		"-drive file=/var/lib/briard/state.img,if=none,format=raw,werror=report,id=briard-state",
 		"-device virtio-blk-pci,drive=briard-state,serial=briard-state",
 		"-uuid 0f7c1a2b-3c4d-5e6f-8a9b-0c1d2e3f4a5b",
 	} {
