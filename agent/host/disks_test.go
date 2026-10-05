@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/agent/platform"
+	"briard.io/shared/notify"
 )
 
 // ⚠️ THE AGENT MAKES WHAT IT WAS TOLD ABOUT and nothing else: a harness that names no path for a
@@ -172,5 +174,45 @@ func TestProvisionDisksMakesTheStateDiskThick(t *testing.T) {
 	fi, err := os.Stat(cfg.StateDisk)
 	if err != nil || fi.Size() != stateDiskInitial {
 		t.Fatalf("the state disk is %v (%v), want %d bytes", fi, err, stateDiskInitial)
+	}
+}
+
+// The host-disk alert: once when free space drops under the reserve the grow keeps, silent while
+// it stays low or hovers between the reserve and the clear margin, nothing on an unreadable
+// answer, and one recovered when it is back above the margin. It reads once a minute.
+func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
+	fn := &fakeNotifier{}
+	free, reads := 0, 0
+	a := &diskAlerter{read: func(path string) int {
+		reads++
+		if path != "/var/lib/briard" {
+			t.Errorf("read %q, want the state disk's directory", path)
+		}
+		return free
+	}}
+	t0 := time.Now()
+	at := func(minute int, mb int) {
+		free = mb
+		a.observe(context.Background(), fn, "n1", "/var/lib/briard/state.img", t0.Add(time.Duration(minute)*time.Minute), func(string, ...any) {})
+	}
+	at(0, 10*1024)
+	a.observe(context.Background(), fn, "n1", "/var/lib/briard/state.img", t0.Add(30*time.Second), func(string, ...any) {})
+	if reads != 1 {
+		t.Fatalf("read %d times inside one diskReadEvery, want 1", reads)
+	}
+	at(1, 1500) // under the 2 GB reserve: warn
+	at(2, 1000) // still low: no fatigue
+	at(3, 2200) // above the reserve but under the margin: neither cleared nor re-warned
+	at(4, 0)    // unreadable: nothing
+	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning || !strings.Contains(fn.alerts[0].Body, "n1") || !strings.Contains(fn.alerts[0].Body, "/var/lib/briard") {
+		t.Fatalf("want one warning naming the node and the disk, got %+v", fn.alerts)
+	}
+	at(5, 3*1024) // back above the margin: recovered
+	if len(fn.alerts) != 2 || fn.alerts[1].Level != notify.Recovered {
+		t.Fatalf("want a recovered alert, got %+v", fn.alerts)
+	}
+	at(6, 1500) // a new episode warns again
+	if len(fn.alerts) != 3 || fn.alerts[2].Level != notify.Warning {
+		t.Fatalf("a second episode did not warn: %+v", fn.alerts)
 	}
 }

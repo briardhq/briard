@@ -176,5 +176,15 @@ pkgs.testers.runNixOSTest {
     # === THE DATA VOLUME IS MOUNTED COMPRESSED (zstd:1) ===
     out = guest("echo MNT=$(findmnt -no OPTIONS /var/lib/briard)")
     assert re.search(r"MNT=\S*compress=zstd:1", out), f"the data volume is not mounted compressed:\n{out}"
+
+    # === THE HOUSEHOLD HEARS ABOUT A SHORT HOST DISK BEFORE A REFUSAL DOES IT FOR THEM ===
+    # Under the 2 GB the agent keeps for the host, it warns once (it reads once a minute); back
+    # above the margin, it says so.
+    f, s = host.succeed("stat -f -c '%f %S' /tmp").split()
+    host.succeed(f"fallocate -l {int(f) * int(s) - 1536 * 1024 * 1024} /tmp/filler")
+    host.wait_until_succeeds("journalctl -u briard-agent -o cat | grep -q 'this computer is running out of disk space'", timeout=150)
+    host.succeed("rm /tmp/filler")
+    host.wait_until_succeeds("journalctl -u briard-agent -o cat | grep -q 'disk space is back'", timeout=150)
+    print(host.succeed("journalctl -u briard-agent -o cat | grep -E 'running out of disk space|disk space is back'"))
   '';
 }

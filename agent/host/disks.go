@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"briard.io/agent/platform"
 	"briard.io/agent/reportcard"
+	"briard.io/shared/notify"
 )
 
 // stateDiskInitial is the state disk's size when the agent makes it: THICK, paid for up front, and
@@ -132,4 +134,56 @@ func parseSize(s string) (int64, error) {
 		return 0, fmt.Errorf("%q is not a whole number of GiB (e.g. 4G)", s)
 	}
 	return n << 30, nil
+}
+
+// diskAlerter tells the household when the host disk holding this node's disks runs short --
+// BEFORE an operation is refused for it. Nothing the guest writes reaches the host any more (its
+// OS is read-only and its disks thick), so a full host disk no longer stops the guest; what it
+// stops is the next thing that needs room: an app install or upgrade (growStateDisk keeps
+// hostDiskReserve) and the next update, which stages beside the running one. Without this, the
+// first a household hears of it is that refusal.
+//
+// ONCE per episode: it warns when free space drops under hostDiskReserve, and says it is resolved
+// only once free space is back above diskClearMB -- a margin, so a host hovering at the line does
+// not alert on every read. An unreadable answer (0) changes nothing in either direction.
+type diskAlerter struct {
+	read   func(path string) int // reportcard.DiskFreeMB in production: MB free, 0 if unreadable
+	next   time.Time
+	warned bool
+}
+
+const (
+	diskReadEvery = time.Minute
+	diskClearMB   = reportcard.HostDiskReserveMB + 512
+)
+
+// observe reads the filesystem holding disk (the state disk: where the guest's disk grows).
+func (a *diskAlerter) observe(ctx context.Context, n notify.Notifier, node, disk string, now time.Time, logf func(string, ...any)) {
+	if disk == "" || now.Before(a.next) {
+		return
+	}
+	path := filepath.Dir(disk)
+	a.next = now.Add(diskReadEvery)
+	free := a.read(path)
+	switch {
+	case free == 0:
+		return
+	case !a.warned && free < reportcard.HostDiskReserveMB:
+		a.warned = true
+		fireAlert(ctx, n, logf, notify.Alert{
+			Level: notify.Warning,
+			Title: "Briard: this computer is running out of disk space",
+			Body: fmt.Sprintf("node %s's computer has %s free on the disk holding its data (%s). Briard keeps about %s free "+
+				"for the computer's own system, so installing or updating apps, and the next Briard update, will be "+
+				"refused until there is more room. Your apps keep running. Free some space on that disk.",
+				node, gb(int64(free)<<20), path, fmt.Sprintf("%d GB", reportcard.HostDiskReserveMB/1024)),
+		})
+	case a.warned && free >= diskClearMB:
+		a.warned = false
+		fireAlert(ctx, n, logf, notify.Alert{
+			Level: notify.Recovered,
+			Title: "Briard: disk space is back",
+			Body:  fmt.Sprintf("node %s's computer has %s free again; installs and updates can go ahead.", node, gb(int64(free)<<20)),
+		})
+	}
 }

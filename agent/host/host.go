@@ -1286,6 +1286,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	dc := newDBChecker()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
+	// When the host disk holding this node's disks runs short (disks.go); same reason.
+	da := &diskAlerter{read: reportcard.DiskFreeMB}
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
 	mg := &memoryGrower{}
 	ma := &memoryAlerter{} // ...and when that growth is worth telling the household about
@@ -1427,6 +1429,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		cfg.beat.Beat()
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
+		if cfg.StateDisk != "" {
+			da.observe(ctx, n, cfg.Node, cfg.StateDisk, time.Now(), logf) // one statfs every diskReadEvery
+		}
 		if rep != nil {
 			cfg.beat.Beat()
 			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
