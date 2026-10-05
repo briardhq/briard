@@ -3,6 +3,7 @@ package host
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -159,8 +160,11 @@ func ConfigFromEnv() Config {
 		CPUModel: env("CPU", "max"),
 		// The size the guest boots at. It starts small and grows while it runs (memory.go), so
 		// this is a floor, not a guess at what the household will install.
-		MemoryMB:   atoi(os.Getenv("MEMORY_MB"), 1024),
-		Cores:      atoi(os.Getenv("CORES"), 2),
+		MemoryMB: atoi(os.Getenv("MEMORY_MB"), 1024),
+		// Every core the agent may run on. A vCPU is an ordinary host thread, scheduled fairly against
+		// the agent, qemu's iothread and DRBD's kernel threads, and an idle one costs nothing; a
+		// smaller number would only cap a busy guest, which no household asked for.
+		Cores:      atoi(os.Getenv("CORES"), runtime.NumCPU()),
 		GuestImage: os.Getenv("GUEST_IMAGE"),
 		DataDisk:   os.Getenv("DATA_DISK"),
 		StateDisk:  os.Getenv("STATE_DISK"),

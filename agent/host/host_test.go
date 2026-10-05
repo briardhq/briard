@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -291,6 +292,9 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 	}
 	if cfg.MemoryMB != 1024 || cfg.QEMUBinary != "qemu-system-x86_64" {
 		t.Errorf("VM defaults wrong: mem=%d bin=%q", cfg.MemoryMB, cfg.QEMUBinary)
+	}
+	if cfg.Cores != runtime.NumCPU() {
+		t.Errorf("Cores default = %d, want every core (%d)", cfg.Cores, runtime.NumCPU())
 	}
 }
 
