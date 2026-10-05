@@ -143,7 +143,7 @@ func TestAssessWarnsStillAdmit(t *testing.T) {
 	})
 	t.Run("below recommended disk", func(t *testing.T) {
 		f := capable()
-		f.DiskFreeMB = 12 * 1024 // >= floor, < recommended
+		f.DiskFreeMB = 12 * 1024 // >= what the node uses, < that + a Home Assistant + the advised free space
 		r := Assess(f)
 		if c := find(t, r, "disk"); c.Status != Warn || c.Fix == "" {
 			t.Fatalf("12 GB free = %+v, want warn+fix", c)
@@ -394,18 +394,18 @@ func TestAssessAESlessWarnsButAdmits(t *testing.T) {
 	}
 }
 
-// THE FLOOR IS ITS LINES: image twice + bundles + data volume + the state disk an empty node
-// starts with + what the host keeps for itself = 9.5 GB on a fresh host, and one Home Assistant
-// over it is the recommendation, 17 GB. Asserted at the edges, so a line that moves moves the card
-// visibly -- and the two lines the agent itself enforces are the ones it reads (agent/host disks.go).
-func TestDiskFloorIsTheSumOfItsLines(t *testing.T) {
-	if got := diskFloor(capable()); got != 9728 {
-		t.Fatalf("fresh-host floor %d MB, want 9728 -- if a line moved, say why here", got)
+// THE CARD COUNTS WHAT THE NODE USES: the guest image, the data volume and the guest's disk -- 6 GB
+// on a fresh host, refused below. Nothing temporary is a line: an update's staging comes and goes
+// inside the free space the card advises keeping (2 GB), and a Home Assistant is the 5 GB its disk
+// grows by. Asserted at the edges, so a line that moves moves the card visibly.
+func TestDiskCheckCountsWhatTheNodeUses(t *testing.T) {
+	if got := diskUse(capable()); got != 6144 {
+		t.Fatalf("a fresh install uses %d MB, want 6144 -- if a line moved, say why here", got)
 	}
 	for _, c := range []struct {
 		mb   int
 		want Status
-	}{{9727, Refuse}, {9728, Warn}, {17407, Warn}, {17408, Pass}} {
+	}{{6143, Refuse}, {6144, Warn}, {13311, Warn}, {13312, Pass}} {
 		f := capable()
 		f.DiskFreeMB = c.mb
 		if got := find(t, Assess(f), "disk"); got.Status != c.want {
@@ -413,28 +413,33 @@ func TestDiskFloorIsTheSumOfItsLines(t *testing.T) {
 		}
 	}
 	f := capable()
-	f.DiskFreeMB = 9 * 1024
-	if c := find(t, Assess(f), "disk"); !strings.Contains(c.Detail, "9.5 GB floor") || !strings.Contains(c.Fix, "4 GB data volume") || !strings.Contains(c.Fix, "2 GB is kept for this computer") {
-		t.Errorf("the refusal does not name the floor and its lines: %+v", c)
+	f.DiskFreeMB = 5 * 1024
+	c := find(t, Assess(f), "disk")
+	if !strings.Contains(c.Detail, "uses 6 GB") || !strings.Contains(c.Fix, "free at least 6 GB for the guest image, a 4 GB data volume, a 1 GB guest disk, plus about 2 GB") {
+		t.Errorf("the refusal does not say what the node uses and what to keep free: %+v", c)
+	}
+	f.DiskFreeMB = 8 * 1024
+	if c := find(t, Assess(f), "disk"); !strings.Contains(c.Fix, "Home Assistant adds about 5 GB") || !strings.Contains(c.Fix, "about 2 GB free") {
+		t.Errorf("the warning does not name what an app adds and what to keep free: %+v", c)
 	}
 }
 
 // A REINSTALL KEEPS ITS PET VOLUMES, so it is not charged for them again: the data volume and the
 // state disk are already on this host's disk. Measured on install-macvtap's reinstall: 8.6 GB free
-// with both kept was refused against the fresh-host 9.5 GB -- for space its own disks held.
-func TestDiskFloorCreditsTheVolumesAReinstallKeeps(t *testing.T) {
+// with both kept was refused when the card charged a fresh host's lines -- for space its own disks held.
+func TestDiskCheckCreditsTheVolumesAReinstallKeeps(t *testing.T) {
 	f := capable()
 	f.KeptDataDisk, f.KeptStateDisk = true, true
-	if got := diskFloor(f); got != 9728-4096-1024 {
-		t.Fatalf("floor with both volumes kept = %d MB, want %d", got, 9728-4096-1024)
+	if got := diskUse(f); got != 1024 {
+		t.Fatalf("a reinstall keeping both volumes uses %d MB, want 1024", got)
 	}
 	f.DiskFreeMB = 8806 // 8.6 GB
 	if c := find(t, Assess(f), "disk"); c.Status == Refuse {
 		t.Errorf("a reinstall with 8.6 GB free and its volumes kept was refused: %+v", c)
 	}
-	f.DiskFreeMB = 4 * 1024
+	f.DiskFreeMB = 512
 	c := find(t, Assess(f), "disk")
 	if c.Status != Refuse || strings.Contains(c.Fix, "data volume") || strings.Contains(c.Fix, "guest disk") {
-		t.Errorf("below the reinstall floor = %+v; want a refusal that charges only what is not already there", c)
+		t.Errorf("below what a reinstall uses = %+v; want a refusal that charges only what is not already there", c)
 	}
 }
