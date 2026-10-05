@@ -520,6 +520,13 @@ func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	if strings.Contains(got, "if=virtio") {
 		t.Errorf("a shorthand if=virtio drive survived; it would enumerate after every explicit device:\n%s", got)
 	}
+	// The two thick disks REPORT a host write error to the guest rather than pausing the VM; the
+	// read-only root never writes.
+	for _, want := range []string{"file=/d.img,if=none,format=raw,werror=report,id=briard-data", "file=/s.img,if=none,format=raw,werror=report,id=briard-state"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
 }
 
 // BOTH SERIAL PORTS, ALWAYS, AND ttyS1 SECOND. The guest numbers its ports by -serial position:

@@ -52,8 +52,14 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 	}
 	// MOUNT GUARDED, because this unit may be RETRIED: mounting an already-mounted
 	// path stacks a second mount rather than failing, so the retry has to ask first.
+	//
+	// COMPRESSED (zstd, level 1): the volume is thick and has no resize path, so what fits in it is
+	// what compression buys -- the recorder's SQLite pages above all, the one thing that grows in a
+	// house -- and, sitting above DRBD, it also cuts the bytes a flock replicates. Level 1 because a
+	// Pi is the floor. A mount option, so it applies to what is written from now on and costs no
+	// migration; files marked nodatacow are not compressed (btrfs's rule).
 	if _, err := x.Run(ctx, "mountpoint", "-q", dataMountRoot); err != nil {
-		if err := run("mount", spec.Resource.Device, dataMountRoot); err != nil {
+		if err := run("mount", "-o", "compress=zstd:1", spec.Resource.Device, dataMountRoot); err != nil {
 			return err
 		}
 	}

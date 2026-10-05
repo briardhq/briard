@@ -172,5 +172,9 @@ pkgs.testers.runNixOSTest {
     assert re.search(r"CORES=0\b", out), f"a core was written:\n{out}"
     m = re.search(r"LOGGED=(\d+)", out)
     assert m and int(m.group(1)) > 0, f"the crash was not logged:\n{out}"
+
+    # === THE DATA VOLUME IS MOUNTED COMPRESSED (zstd:1) ===
+    out = guest("echo MNT=$(findmnt -no OPTIONS /var/lib/briard)")
+    assert re.search(r"MNT=\S*compress=zstd:1", out), f"the data volume is not mounted compressed:\n{out}"
   '';
 }

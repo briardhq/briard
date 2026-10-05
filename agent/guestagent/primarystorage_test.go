@@ -55,7 +55,7 @@ func TestPrimaryStorageNeverFormats(t *testing.T) {
 	want := [][]string{
 		{"mkdir", "-p", dataMountRoot},
 		{"mountpoint", "-q", dataMountRoot},
-		{"mount", "/dev/drbd0", dataMountRoot},
+		{"mount", "-o", "compress=zstd:1", "/dev/drbd0", dataMountRoot},
 		{"mkdir", "-p", snapshotsDir()},
 	}
 	for i, w := range want {
@@ -75,7 +75,7 @@ func TestPrimaryStorageMountsTheDeviceTheSpecNames(t *testing.T) {
 	if err := PrimaryStorage(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("mount", "/dev/drbd7", dataMountRoot) {
+	if !f.ran("mount", "-o", "compress=zstd:1", "/dev/drbd7", dataMountRoot) {
 		t.Errorf("runs = %v", f.runs)
 	}
 }

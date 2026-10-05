@@ -245,7 +245,11 @@ func qemuArgs(s QEMUSpec) []string {
 			"-device", "virtio-blk-pci,drive="+RootDriveID+",bootindex=0")
 	}
 	if s.DataDisk != "" {
-		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,id="+DataDriveID,
+		// werror=report, like the state drive: the volume is THICK, so a host ENOSPC under it is
+		// reachable only where a copy-on-write host filesystem did not honour the reservation, and
+		// there an I/O error the guest's btrfs and DRBD can see and report beats qemu's default --
+		// a whole-VM pause that nothing inside it can observe or explain.
+		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,werror=report,id="+DataDriveID,
 			"-device", "virtio-blk-pci,drive="+DataDriveID)
 	}
 	if s.StateDisk != "" {
