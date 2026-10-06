@@ -164,14 +164,18 @@ func (w mdnsWorld) describe() string {
 // had to re-establish an entry group.
 type mdnsResponder struct {
 	ifaces []net.Interface
+	// ask is the one question asked of the LAN, at bring-up: who else answers the bare name.
+	// A field so the test can answer it without a second responder on a real interface.
+	ask func(ctx context.Context, ifaces []net.Interface, name string) string
 
-	mu   sync.Mutex
-	conn *pmdns.Conn
-	cur  mdnsWorld
+	mu    sync.Mutex
+	conn  *pmdns.Conn
+	cur   mdnsWorld
+	other string // another briard's address answering routes.BareFlockHostName; "" when none heard
 }
 
 func newMDNSResponder(ifaces []net.Interface) *mdnsResponder {
-	return &mdnsResponder{ifaces: ifaces}
+	return &mdnsResponder{ifaces: ifaces, ask: askLAN}
 }
 
 // set makes the wire match w, and is a no-op when it already does.
@@ -182,6 +186,13 @@ func newMDNSResponder(ifaces []net.Interface) *mdnsResponder {
 // more importantly, no window in which a rebuild can fail because the port it just released is
 // still held. For the few milliseconds both exist they answer identically for every unchanged
 // name, which is the shadowing case mDNS defines as no conflict at all.
+//
+// THE ONE QUESTION IS ASKED AT BRING-UP, from silence to publishing, and nowhere else. It is the
+// only moment the answer is clean: this node is not yet answering, so whatever replies to the
+// bare name is somebody else. A rebuild keeps the old conn answering until the new one is up, so
+// asking then would hear ourselves. It is a question each bring-up asks, never a decision
+// made once -- a second flock installed later is heard at this node's next bring-up, and until
+// then the bare name is simply ambiguous, which it is allowed to be (routes.BareHostName).
 func (r *mdnsResponder) set(w mdnsWorld) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -190,17 +201,70 @@ func (r *mdnsResponder) set(w mdnsWorld) error {
 	}
 	var next *pmdns.Conn
 	if !w.empty() {
+		if r.conn == nil {
+			r.other = r.otherBriard(w)
+		}
 		c, err := r.open(w)
 		if err != nil {
 			return err
 		}
 		next = c
+	} else {
+		r.other = ""
 	}
 	if r.conn != nil {
 		_ = r.conn.Close()
 	}
 	r.conn, r.cur = next, w
 	return nil
+}
+
+// askTimeout bounds the bring-up question. A responder answers a shared name within tens of
+// milliseconds; a second is the price of hearing nothing, paid once per bring-up, inside the
+// promoter chain's first synchronous pass.
+const askTimeout = time.Second
+
+// otherBriard is the pure half of the question: the answer is a stranger only when it is not
+// this node's own address. The old Primary of THIS flock may still answer the bare name for a
+// moment after a failover, and it answers with the same VIP -- that is a handover, not a
+// second household.
+func (r *mdnsResponder) otherBriard(w mdnsWorld) string {
+	ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
+	defer cancel()
+	heard := r.ask(ctx, r.ifaces, routes.BareFlockHostName)
+	if heard == "" || heard == w.addr {
+		return ""
+	}
+	return heard
+}
+
+// askLAN sends one mDNS question for name on the household NICs and returns the first address
+// that answers, or "" when nothing does before ctx ends. A throwaway conn with no local names:
+// it answers nobody, and is closed as soon as it has heard.
+func askLAN(ctx context.Context, ifaces []net.Interface, name string) string {
+	addr4, err := net.ResolveUDPAddr("udp4", pmdns.DefaultAddressIPv4)
+	if err != nil {
+		return ""
+	}
+	l4, err := net.ListenUDP("udp4", addr4)
+	if err != nil {
+		return ""
+	}
+	opts := []pmdns.ServerOption{}
+	if len(ifaces) > 0 {
+		opts = append(opts, pmdns.WithInterfaces(ifaces...))
+	}
+	conn, err := pmdns.NewServer(ipv4.NewPacketConn(l4), nil, opts...)
+	if err != nil {
+		_ = l4.Close()
+		return ""
+	}
+	defer func() { _ = conn.Close() }()
+	_, addr, err := conn.QueryAddr(ctx, name)
+	if err != nil {
+		return ""
+	}
+	return addr.Unmap().String()
 }
 
 func (r *mdnsResponder) open(w mdnsWorld) (*pmdns.Conn, error) {
@@ -268,6 +332,14 @@ func (r *mdnsResponder) published() []string {
 	return out
 }
 
+// otherHeard is the other briard the bring-up question heard, or "" -- none heard, or not
+// publishing. The host reads it every observe cycle beside published().
+func (r *mdnsResponder) otherHeard() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.other
+}
+
 func (r *mdnsResponder) close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -299,6 +371,11 @@ const (
 	// BARE -- no `briard-` prefix and no `.local`. Absent means this node publishes nothing, which
 	// is the normal answer on a Secondary.
 	mdnsPublishedPath = "/run/briard/mdns.published"
+	// mdnsOtherPath is the address of ANOTHER briard heard answering the bare `briard.local` when
+	// this node came up (net.mdnsother). Absent means none was heard, or this node publishes
+	// nothing. Written beside mdnsPublishedPath, read the same way, for the doctor to say "two
+	// households share this LAN; yours is briard-<flock>.local".
+	mdnsOtherPath = "/run/briard/mdns.other"
 	// mdnsWatch is how long a change takes to reach the wire. Lag, not a race: nothing waits on a
 	// name within a deadline, and an install prints the name from the agent's own knowledge.
 	mdnsWatch = 2 * time.Second
@@ -376,7 +453,10 @@ func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) err
 		if err := resp.set(mdnsWorldFor(mdnsVIP(vipLivePath, vipEnvPath), flock, tbl.current().table)); err != nil {
 			return err
 		}
-		return writePublished(mdnsPublishedPath, flock, resp.published())
+		if err := writePublished(mdnsPublishedPath, flock, resp.published()); err != nil {
+			return err
+		}
+		return writeOther(mdnsOtherPath, resp.otherHeard())
 	}
 	if err := tick(); err != nil {
 		return err
@@ -435,4 +515,19 @@ func (r *mdnsResponder) world() mdnsWorld {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cur
+}
+
+// writeOther records the other briard the bring-up question heard, where net.mdnsother reads
+// it; nothing heard REMOVES the file, for the reason writePublished removes its own.
+func writeOther(path, addr string) error {
+	if addr == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("mdns: clearing %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(addr+"\n"), 0o644); err != nil {
+		return fmt.Errorf("mdns: recording the other briard: %w", err)
+	}
+	return nil
 }

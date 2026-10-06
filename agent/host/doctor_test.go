@@ -130,6 +130,7 @@ func TestDoctorWarnings(t *testing.T) {
 		{"no peer connected", func(f *doctorFacts) { f.Peers = 1; f.Cluster.Connected = 0 }, "replication"},
 		{"copy not up to date", func(f *doctorFacts) { f.Peers = 1; f.Cluster.Connected = 1; f.Cluster.UpToDate = false }, "replication"},
 		{"name not published", func(f *doctorFacts) { f.Published = "" }, "name"},
+		{"another briard answers briard.local", func(f *doctorFacts) { f.Other = "192.168.1.50" }, "name"},
 		{"volume nearly full", func(f *doctorFacts) { f.VolFree = 100 << 20 }, "volume"},
 		{"volume unreadable", func(f *doctorFacts) { f.VolErr = errors.New("no") }, "volume"},
 	}

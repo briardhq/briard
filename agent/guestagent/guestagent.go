@@ -116,6 +116,11 @@ const verbNetMDNSName = "net.mdnsname"
 // failure precisely, in the item that exists to end it.
 const verbNetMDNSPublished = "net.mdnspublished"
 
+// verbNetMDNSOther reads back the address of ANOTHER briard the door heard answering the bare
+// `briard.local` when this node came up -- "" when none was heard or nothing is published. The
+// bare name is shared by design; this is the one fact that lets the doctor say so.
+const verbNetMDNSOther = "net.mdnsother"
+
 // Sys.hostname sets the guest's hostname to this node's name. DRBD matches the
 // running hostname against the `on <name>` stanzas in the .res, so every fleet
 // guest (one baked image, hostname "guest") must be renamed to its node name
@@ -416,7 +421,7 @@ const dataMountRoot = "/var/lib/briard"
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
-	verbNetMDNSName, verbNetMDNSPublished,
+	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
@@ -1900,6 +1905,14 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return "", nil
 			}
 			return strings.TrimSpace(string(out)), nil
+		case verbNetMDNSOther:
+			// Absent is "none heard", the common answer; any other read failure is "" for the
+			// reason verbNetMDNSPublished gives.
+			out, err := x.ReadFile(mdnsOtherPath)
+			if err != nil {
+				return "", nil
+			}
+			return strings.TrimSpace(string(out)), nil
 		default:
 			return nil, fmt.Errorf("guestagent: unknown verb %q", verb)
 		}
@@ -2066,6 +2079,9 @@ const (
 	// Absent means nothing is published -- the normal state of a Secondary, which holds no VIP,
 	// runs no door, and therefore publishes no name.
 	mdnsPublishedPath = "/run/briard/mdns.published"
+	// mdnsOtherPath is where the door records another briard heard answering the bare name at
+	// bring-up. PAIRED with reverse-proxy/mdns.go's const of the same path.
+	mdnsOtherPath = "/run/briard/mdns.other"
 )
 
 // podSubnetPath records the pool this guest allocates private service networks from, written by
@@ -2668,6 +2684,16 @@ func (g *Client) MDNSPublished(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return name, nil
+}
+
+// MDNSOther reports the address of another briard the door heard answering the bare
+// `briard.local` when this node came up, or "" when none was heard. See verbNetMDNSOther.
+func (g *Client) MDNSOther(ctx context.Context) (string, error) {
+	var addr string
+	if err := g.c.Call(ctx, verbNetMDNSOther, struct{}{}, &addr); err != nil {
+		return "", err
+	}
+	return addr, nil
 }
 
 // VIP reports the address dev actually holds, in CIDR form, or "" when it holds none -- this node

@@ -550,6 +550,7 @@ func (m meshReader) ServiceHealthOf(context.Context, string) (services.Health, e
 }
 func (m meshReader) ServiceActive(context.Context, string) (bool, error) { return true, nil }
 func (m meshReader) MDNSPublished(context.Context) (string, error)       { return "", nil }
+func (m meshReader) MDNSOther(context.Context) (string, error)           { return "", nil }
 func (m meshReader) VIP(context.Context, string) (string, error)         { return "", nil }
 
 // A GUEST REPLICATING TO PEERS THE HOST HAS NO RECORD OF IS AN ALERT. Such a node is

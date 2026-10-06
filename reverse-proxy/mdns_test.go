@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -273,5 +276,51 @@ func TestTheCasaNamesAreNotPublishedOnTheLAN(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("the .local names beside the casa ones were dropped: %v missing from %v", want, w.names)
+	}
+}
+
+// The bring-up question has one pure rule: an answer is another household only when it is not
+// this node's own address -- the old Primary of this flock answers the bare name with the same
+// VIP for a moment after a failover, and that is a handover. The wire half (askLAN) is not
+// exercised here, and no two-flock rig is owed: the bare name is allowed to be ambiguous, and
+// this only decides what the doctor is told.
+func TestTheBringUpQuestionHearsOnlyStrangers(t *testing.T) {
+	w := mdnsWorldFor("192.168.1.100", "brave-elf", routes.Table{})
+	for _, tc := range []struct{ heard, want string }{
+		{"", ""},
+		{"192.168.1.100", ""},
+		{"192.168.1.50", "192.168.1.50"},
+	} {
+		r := &mdnsResponder{ask: func(context.Context, []net.Interface, string) string { return tc.heard }}
+		if got := r.otherBriard(w); got != tc.want {
+			t.Errorf("heard %q: other = %q, want %q", tc.heard, got, tc.want)
+		}
+	}
+	// And it asks for the bare name, which is the only one two flocks share.
+	asked := ""
+	r := &mdnsResponder{ask: func(_ context.Context, _ []net.Interface, name string) string { asked = name; return "" }}
+	r.otherBriard(w)
+	if asked != "briard.local" {
+		t.Errorf("asked for %q, want the bare name", asked)
+	}
+}
+
+// The read-back file follows writePublished's rule: absent is "none heard".
+func TestWriteOtherRemovesTheFileWhenNothingWasHeard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mdns.other")
+	if err := writeOther(path, "192.168.1.50"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "192.168.1.50\n" {
+		t.Errorf("recorded %q", got)
+	}
+	if err := writeOther(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the file survived nothing heard: %v", err)
+	}
+	if err := writeOther(path, ""); err != nil {
+		t.Errorf("clearing an absent file errored: %v", err)
 	}
 }

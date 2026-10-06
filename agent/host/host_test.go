@@ -96,6 +96,7 @@ type fakeStatus struct {
 	// silent conflict-rename can make differ from the one we asked for. "" = nothing published.
 	mdns    string
 	mdnsErr error
+	other   string // what net.mdnsother answers: another briard heard at bring-up
 	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
 	// node that promoted into somebody else.s install is the only place that truth exists.
 	volume        map[string]string
@@ -169,6 +170,7 @@ func (f fakeStatus) Cluster(context.Context, string) (model.Cluster, error) {
 }
 
 func (f fakeStatus) MDNSPublished(context.Context) (string, error) { return f.mdns, f.mdnsErr }
+func (f fakeStatus) MDNSOther(context.Context) (string, error)     { return f.other, nil }
 
 func (f fakeStatus) ServiceActive(_ context.Context, unit string) (bool, error) {
 	return f.active[unit], f.activeErr
@@ -597,10 +599,13 @@ func TestSnapshot_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
 	cfg.Resource.Name = "r0"
 
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
-	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf-2"}
+	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf-2", other: "192.168.9.60"}
 	st, _, _, err := cfg.snapshot(context.Background(), r, "/nix/store/sys")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if st.OtherBriard != "192.168.9.60" {
+		t.Errorf("OtherBriard = %q, want the other briard the door heard", st.OtherBriard)
 	}
 	if st.PublishedName != "brave-elf-2" {
 		t.Errorf("PublishedName = %q, want the established brave-elf-2 (configured: %q)",

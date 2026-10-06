@@ -484,6 +484,10 @@ type statusReader interface {
 	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
 	// names across a reboot with nothing telling anyone. "" when this node publishes none.
 	MDNSPublished(ctx context.Context) (string, error)
+	// MDNSOther reads the address of another briard the door heard answering the shared
+	// `briard.local` at bring-up; "" when none. The one fact behind the doctor's two-households
+	// line, and it is read rather than probed from here: the LAN is the guest's to ask.
+	MDNSOther(ctx context.Context) (string, error)
 }
 
 // guestReader is what the observe loop reads each cycle: quorum state, the running system
@@ -1960,6 +1964,9 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 	// closed here. Empty is honest -- "we do not currently know of a published name".
 	if name, merr := r.MDNSPublished(rctx); merr == nil {
 		st.PublishedName = name
+	}
+	if other, merr := r.MDNSOther(rctx); merr == nil {
+		st.OtherBriard = other
 	}
 	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two

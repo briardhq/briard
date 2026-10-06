@@ -2120,3 +2120,20 @@ func TestImageRemoveKeepsAnImageTheOSCarries(t *testing.T) {
 		t.Error("a staged image was removed")
 	}
 }
+
+// MDNSOther reads the door's record of another briard heard at bring-up; absent is "" -- none
+// heard is the common case and must not read as a fault.
+func TestMDNSOtherReadsTheDoorsRecordAndIsEmptyWhenNoneWasHeard(t *testing.T) {
+	g := dial(t, &fakeExec{files: map[string]string{mdnsOtherPath: "192.168.1.50\n"}})
+	got, err := g.MDNSOther(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "192.168.1.50" {
+		t.Errorf("MDNSOther = %q, want the recorded address", got)
+	}
+	g = dial(t, &fakeExec{})
+	if got, err := g.MDNSOther(context.Background()); err != nil || got != "" {
+		t.Errorf("MDNSOther with no record = %q, %v; want empty and no error", got, err)
+	}
+}

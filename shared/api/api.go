@@ -121,6 +121,18 @@ type NodeStatus struct {
 	// and notice a silent avahi conflict-rename, which is otherwise invisible to everyone
 	// including the household whose name changed.
 	PublishedName string `json:"published_name,omitempty"`
+	// OtherBriard is the LAN address of ANOTHER briard installation this node heard answering
+	// the shared `briard.local` when it came up -- the bare name every flock answers beside its
+	// own `briard-<flock>.local`, ambiguous by design when two flocks share a house. Empty when
+	// none was heard, or on a node publishing nothing. Asked once per bring-up, never probed
+	// continuously, so it is a snapshot of who was on at that moment.
+	//
+	// The allowlist argument: the value is a private address on the household's own LAN -- not
+	// the other household's name, not anything that identifies a person -- and it carries the one
+	// fact the doctor needs to say "two households share this LAN; yours is briard-<flock>.local"
+	// and support needs to see before anything else about a name that "sometimes opens the
+	// wrong page". Nothing about it is remotely toggleable; the node sends it or it does not.
+	OtherBriard string `json:"other_briard,omitempty"`
 	// Overlay is this node's remote-reach state. Nil when the node runs no
 	// overlay (standalone / LAN-only, the default) -- the overlay is off the failover
 	// critical path, so it reports as a signal, never a gate.

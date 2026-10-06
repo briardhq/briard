@@ -267,6 +267,7 @@ func (f *fakeInstaller) ServiceHealthOf(_ context.Context, service string) (serv
 // The service-install path has no opinion about names. "" -- this node publishes none -- is the
 // honest answer here; a fixture name could be mistaken for an assertion that one was published.
 func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return "", nil }
+func (f *fakeInstaller) MDNSOther(context.Context) (string, error)     { return "", nil }
 
 // catalogFor stands up a signed one-service catalog and returns a Config wired to it.
 func catalogFor(t *testing.T, m manifest.Manifest) Config {

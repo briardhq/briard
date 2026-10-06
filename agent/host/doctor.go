@@ -68,6 +68,7 @@ type doctorFacts struct {
 	HeldVIP   string // what the VIP device holds, read on a node that is NOT serving
 	FlockName string
 	Published string
+	Other     string // another briard heard answering the shared briard.local at bring-up; "" when none
 
 	VolAsked        bool
 	VolFree, VolTot int64
@@ -104,7 +105,7 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 		return doctorOutcome(d, judgeDoctor(f))
 	}
 	st, cl, probe, err := cfg.snapshot(ctx, r, "")
-	f.GuestErr, f.Cluster, f.Probe, f.Healthy, f.Published = err, cl, probe, st.Healthy, st.PublishedName
+	f.GuestErr, f.Cluster, f.Probe, f.Healthy, f.Published, f.Other = err, cl, probe, st.Healthy, st.PublishedName, st.OtherBriard
 	if err == nil && !cfg.Diskless {
 		if !cl.Serving() && cfg.VIPDev != "" {
 			f.HeldVIP, _ = r.VIP(ctx, cfg.VIPDev)
@@ -236,14 +237,18 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 
 	// THE NAME THE DOOR REPORTS IS THE ONE IT WAS GIVEN: the responder probes nothing and renames
 	// nothing, so Published is either the flock name or empty, and "published as some other name"
-	// is not a state it can be in. Nor does anything here notice a second flock answering the
-	// bare `briard.local`: that is ambiguous by design (routes.BareHostName), and the flock-scoped
-	// name reported below is what tells the two apart.
+	// is not a state it can be in. A second flock answering the bare `briard.local` is a
+	// different fact: that name is ambiguous by design (routes.BareHostName), nothing is wrong
+	// and nothing yields, so it is a warning that says which name is unambiguously this one.
 	if f.FlockName != "" {
 		want := routes.FlockHostName(f.FlockName)
-		if f.Published == "" {
+		switch {
+		case f.Published == "":
 			add("name", reportcard.Warn, want+" is not published", "`briard logs` shows the front door's side")
-		} else {
+		case f.Other != "":
+			add("name", reportcard.Warn, fmt.Sprintf("another briard at %s also answers %s, so that name may open either one", f.Other, routes.BareFlockHostName),
+				"this one is always "+want+"; use that name when it matters which")
+		default:
 			add("name", reportcard.Pass, "published as "+want+" and "+routes.BareFlockHostName, "")
 		}
 	}
