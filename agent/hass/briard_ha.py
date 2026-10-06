@@ -253,10 +253,18 @@ async def _wire_mqtt(hass):
 
     result = await hass.config_entries.flow.async_init("mqtt", context={"source": SOURCE_USER})
     flow_id = result["flow_id"]
+    # FILL THE FORM IT SHOWS, not the one a release described. 2026.9 folded the broker step's
+    # advanced options into a required, collapsed `other_settings` section, whose two answers
+    # without a default are the TLS questions -- for a plaintext broker on localhost, no client
+    # certificate and no verification, which is what the basic form implied before. The releases
+    # before it refuse the key as extra, so the form's own schema says which shape this is and
+    # the version never has to.
+    answer = {"broker": BROKER_HOST, "port": BROKER_PORT}
+    fields = {str(key) for key in getattr(result.get("data_schema"), "schema", {})}
+    if "other_settings" in fields:
+        answer["other_settings"] = {"set_client_cert": False, "set_ca_cert": "off"}
     try:
-        result = await hass.config_entries.flow.async_configure(
-            flow_id, {"broker": BROKER_HOST, "port": BROKER_PORT}
-        )
+        result = await hass.config_entries.flow.async_configure(flow_id, answer)
     except Exception:
         _abort(hass, flow_id)
         raise

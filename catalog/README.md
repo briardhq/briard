@@ -38,7 +38,7 @@ promotion.
 Every entry declares two totals, measured once when the entry is made and signed with the rest:
 `size` is what a node **downloads** (the compressed layers of every container's image, summed)
 and `installedSize` is what the image store **holds** afterwards (the same layers uncompressed —
-two to four times more; Home Assistant is 622 MB down and 2.49 GB on disk). The first is the
+two to four times more; Home Assistant 2026.9.4 is 646 MB down and 2.47 GB on disk). The first is the
 dashboard's progress bar; the second is the free-space check a node runs *before* the first byte
 moves. Two scalars rather than a layer table: the digest already commits to every layer, and
 podman's own store knows each finished layer's size. To measure a new entry:
@@ -46,7 +46,7 @@ podman's own store knows each finished layer's size. To measure a new entry:
 ```sh
 skopeo copy docker://<image@digest> dir:/tmp/img            # then, in /tmp/img:
 jq '[.layers[].size] | add' manifest.json                     # size
-for l in $(jq -r '.layers[].digest' manifest.json); do gzip -dc "${l#sha256:}"; done | wc -c   # installedSize (gzip layers)
+for l in $(jq -r '.layers[].digest' manifest.json); do zstd -dc "${l#sha256:}"; done | wc -c   # installedSize (zstd layers; gzip -dc for a gzip image -- the mediaType says which)
 ```
 
 ## What an entry needs to run: `minMemoryMB`

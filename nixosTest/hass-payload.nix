@@ -332,7 +332,9 @@ pkgs.testers.runNixOSTest {
     # ONE MEMBER PER BOUNDARY. A container start is the unit pre-start's to take (it
     # reads the clean-stop marker), so `run` does not notify on the container's first run; it
     # notifies on every later one. Counted in the unit's journal, where both land: the pre-start
-    # logs `service-starting …: took`, and notify.py prints `briard: <outcome>` on EVERY call.
+    # logs `service-starting …: took`, and notify.py prints `briard: <outcome>` on EVERY call. The
+    # notifier's line is the first thing after the journal's own prefix (`]: briard: `); the
+    # integration logs `[briard_ha] briard: …` too, and a bare `briard: ` would count those.
     # ⚠️ COUNT THE CALL, NOT THE SUCCESS: measured with the skip removed, the first-run notify
     # lands in the pre-start's second and is refused as a name collision, so `briard: took`
     # stays at zero and a count of it passes either way. The pre-start's line is what makes the
@@ -340,7 +342,7 @@ pkgs.testers.runNixOSTest {
     unit_log = "journalctl --no-pager -u briard-home-assistant-app.service"
     pre_took = node1.succeed(f"{unit_log} | grep -c 'service-starting home-assistant: took' || true").strip()
     assert pre_took != "0", "the unit pre-start took no member; the zero below would be vacuous"
-    run_took = node1.succeed(f"{unit_log} | grep -c 'briard: ' || true").strip()
+    run_took = node1.succeed(f"{unit_log} | grep -c '\\]: briard: ' || true").strip()
     assert run_took == "0", f"`run` notified {run_took} time(s) on the container's first run"
     node1.succeed(f"podman exec {ctr} test -e /run/briard-started")
 
@@ -401,7 +403,7 @@ pkgs.testers.runNixOSTest {
         "the service-start boundary, not a container bounce"
     )
     # ...and that restart, the container's second run, is the one `run` notifies for.
-    node1.wait_until_succeeds(f"test \"$({unit_log} | grep -c 'briard: ')\" = 1", timeout=60)
+    node1.wait_until_succeeds(f"test \"$({unit_log} | grep -c '\\]: briard: ')\" = 1", timeout=60)
 
     # ── THROUGH THE FRONT DOOR ───────────────────────────────────────────────────────
     #

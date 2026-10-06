@@ -7,25 +7,25 @@
 # dockerTools.buildImage, applied to a third-party image.
 #
 # Pin provenance (refresh procedure): `stable`/`latest` currently resolve to HA
-# 2026.7.1. The digests below are the *per-arch* image manifests under that
-# release's multi-arch index (sha256:f735…ff3cb); pinning the arch-specific
+# 2026.9.4. The digests below are the *per-arch* image manifests under that
+# release's multi-arch index (sha256:3e67…6b76); pinning the arch-specific
 # manifest (not the index) keeps the pull unambiguous and fully reproducible.
-#   ghcr.io/home-assistant/home-assistant:stable  ->  index sha256:f73512ba…ff3cb
-#     amd64  sha256:21e0d1bae299819d8cf4ef8aa197593205a5fae51c69031c13bfd1eac8c56204
-#     arm64  sha256:480eaf9b62d28f45c30cfb69f37b49573945937294529c2a59a67d5b7406fc5c
+#   ghcr.io/home-assistant/home-assistant:stable  ->  index sha256:3e6710a7…6b76
+#     amd64  sha256:e47c978e1b801466e7f62f612fd552bc3a228e077b31a3f1c22c05cf63d754da
+#     arm64  sha256:35e6df56a9ce632c9b15df869ac73a17af6cdd2cfb99830527ffac9cc5218ba2
 # To bump: resolve the new digest (skopeo inspect / the registry API), swap it in
 # here, and set sha256 to lib.fakeSha256 once so the build prints the real FOD hash.
 { dockerTools, lib, stdenv }:
 
 let
-  version = "2026.7.1";
+  version = "2026.9.4";
 
   # V0 builds the guest for x86_64 only (guest-image/disk-image.nix). arm64 is
   # recorded above for when the Pi target lands (uniform-VM model) — add its
   # sha256 and select on stdenv.hostPlatform then.
   amd64 = {
-    imageDigest = "sha256:21e0d1bae299819d8cf4ef8aa197593205a5fae51c69031c13bfd1eac8c56204";
-    sha256 = "sha256-MbYqE3XBieKDCquv+VpyIAGJZUhvzZ6cTF/GG+hxlRA=";
+    imageDigest = "sha256:e47c978e1b801466e7f62f612fd552bc3a228e077b31a3f1c22c05cf63d754da";
+    sha256 = "sha256-45ES3e7FHFli+U2/ChyJc6HJBvWJiCaIQXBIwU0XKfU=";
   };
 in
 assert lib.assertMsg stdenv.hostPlatform.isx86_64

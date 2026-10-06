@@ -35,7 +35,6 @@ import argparse
 import asyncio
 import sys
 
-from homeassistant import runner
 from homeassistant.auth.const import GROUP_ID_ADMIN
 from homeassistant.auth.models import TOKEN_TYPE_SYSTEM
 from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
@@ -96,7 +95,12 @@ def main():
         token = f.read().strip()
     if len(token) < MIN_TOKEN_LEN:
         raise SystemExit(f"{token_file}: not a briard token")
-    asyncio.set_event_loop_policy(runner.HassEventLoopPolicy(False))
+    # A PLAIN asyncio.run, on purpose. HA's own script runner dresses its loop differently per
+    # release (an event-loop policy through 2026.8, a loop_factory from 2026.9 once Python retired
+    # policies), and borrowing either form ties this file to one side of that line -- the
+    # AttributeError on 2026.9 was exactly that. The mint needs nothing the dressing adds (an
+    # executor name, an exception handler, a faster clock), so the stock loop is the one form
+    # every release accepts.
     # run_command reads exactly two attributes off the namespace — verified against both ends of
     # the range we span — so this is the whole of its input.
     asyncio.run(ha_auth.run_command(argparse.Namespace(config=config_dir, func=minter(token))))
