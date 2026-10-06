@@ -15,7 +15,7 @@ import (
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
 // the manifest cannot list itself, nor its signature. Nothing else is excluded, because a
 // release directory holds exactly what its manifest names -- INSTALL.SH INCLUDED, since
-// it is an ordinary artifact of briard/<version>/linux that `promote` byte-copies to
+// it is an ordinary artifact of briard/<version>/linux-amd64 that `promote` byte-copies to
 // the channel root. Excluding it would re-open the gap this closed: the root copy
 // is served unsigned, because the one-liner fetches it before anything exists that could verify
 // a signature, and this manifest hashing it is the only thing that ties those bytes to a release.
@@ -26,8 +26,8 @@ var notArtifacts = map[string]bool{
 
 // WriteManifest describes every artifact in dir and writes dir/manifest.json — the exact bytes
 // the release then signs and FetchVerified later reads. chain names the release line the
-// directory belongs to (ChainBriard, ChainVM), platform the arm within it ("" for a chain
-// without that level) and version the release id; all go INSIDE the signed bytes, so a manifest
+// directory belongs to (ChainBriard, ChainVM), platform the arm within it (every
+// chain has one) and version the release id; all go INSIDE the signed bytes, so a manifest
 // served from a pointer path can say which release it is and where its artifacts live.
 //
 // ⚠️ THIS EXISTS SO THERE IS ONE IMPLEMENTATION OF THE FORMAT. It used to be a printf loop in
@@ -50,7 +50,7 @@ func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs 
 	if !validSegment(chain) {
 		return fmt.Errorf("install: bad chain name %q", chain)
 	}
-	if platform != "" && !validSegment(platform) {
+	if !validSegment(platform) {
 		return fmt.Errorf("install: bad platform name %q", platform)
 	}
 	// A version id that spells a pointer would make `<chain>/stable/` a release directory and a

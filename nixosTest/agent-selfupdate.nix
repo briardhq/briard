@@ -132,7 +132,7 @@ let
         rm -f "$RUN/update-target"
     fi
     tmp=$(mktemp -d "$BASE/.update.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
-    url="$CHANNEL/briard/$target/linux/briard-agent"
+    url="$CHANNEL/briard/$target/linux-amd64/briard-agent"
     if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tmp/briard-agent"
     elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp/briard-agent" "$url"
     else report "need curl or wget to fetch $url"; exit 1; fi || { report "could not fetch a bootstrap agent from $url"; exit 1; }
@@ -288,7 +288,7 @@ pkgs.testers.runNixOSTest {
     #        directory, stages it beside its manifest and ARMS — and does not restart anything.
     #        Then the forcing backstop: a young arm is left alone, an old one is forced. ===
     V4 = "v3.20990906.aaaaaaa"
-    machine.succeed("mkdir -p /etc/briard /srv/briard/latest/linux /srv/briard/stable/linux")
+    machine.succeed("mkdir -p /etc/briard /srv/briard/latest/linux-amd64 /srv/briard/stable/linux-amd64")
     machine.succeed("${stubExe} keygen /root/release.key /etc/briard/keyring.pem")
     # The rest of the host bundle: a launch shim, and a qemu "bundle" -- a tree with a
     # bin/qemu-system-x86_64 (a stand-in script; the stub candidates never run it) and a
@@ -307,22 +307,22 @@ pkgs.testers.runNixOSTest {
         # artifacts under the versioned directory, a manifest written by the REAL writer, a
         # detached signature, and the pointers as byte-copies carrying the REAL agent as the
         # bootstrap (the one deliberate divergence, explained in the header).
-        d = f"/srv/briard/{version}/linux"
+        d = f"/srv/briard/{version}/linux-amd64"
         machine.succeed(f"mkdir -p {d} && install -m755 {artifact} {d}/briard-agent")
         machine.succeed(f"install -m755 /root/net-wrap {d}/briard-net-wrap && install -m644 /root/{qemu}.tar.zst {d}/qemu-bundle.tar.zst")
-        machine.succeed(f"${realAgent} --stage-manifest {d} --chain briard --platform linux --release {version}")
+        machine.succeed(f"${realAgent} --stage-manifest {d} --chain briard --platform linux-amd64 --release {version}")
         machine.succeed(f"${stubExe} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         for p in pointers:
-            machine.succeed(f"mkdir -p /srv/briard/{p}/linux && cp {d}/manifest.json {d}/manifest.json.sig /srv/briard/{p}/linux/")
-            machine.succeed(f"install -m755 ${realAgent} /srv/briard/{p}/linux/briard-agent")
+            machine.succeed(f"mkdir -p /srv/briard/{p}/linux-amd64 && cp {d}/manifest.json {d}/manifest.json.sig /srv/briard/{p}/linux-amd64/")
+            machine.succeed(f"install -m755 ${realAgent} /srv/briard/{p}/linux-amd64/briard-agent")
 
     publish(V4, "${readyV4}")
     # The node's installed release: an OLDER date, so stable is ahead of it.
     machine.succeed(
-        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux\",\"version\":\"v3.20990101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
+        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux-amd64\",\"version\":\"v3.20990101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
     )
     machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
-    machine.wait_until_succeeds("curl -sf ${channel}/briard/stable/linux/manifest.json -o /dev/null", timeout=30)
+    machine.wait_until_succeeds("curl -sf ${channel}/briard/stable/linux-amd64/manifest.json -o /dev/null", timeout=30)
 
     inv_before = invocation()
     machine.fail("test -e ${targetMsg}")
@@ -331,7 +331,7 @@ pkgs.testers.runNixOSTest {
     assert f"staged {V4} (agent, net-wrap, qemu), armed" in result, f"unexpected result: {result!r}"
     machine.succeed("test -e ${nextBin}")
     machine.succeed("cmp ${nextBin} ${readyV4}")             # the VERSIONED artifact, not the bootstrap
-    machine.succeed(f"cmp ${nextManifest} /srv/briard/{V4}/linux/manifest.json")  # its manifest beside it
+    machine.succeed(f"cmp ${nextManifest} /srv/briard/{V4}/linux-amd64/manifest.json")  # its manifest beside it
     # The rest of the bundle, staged beside them: the shim as a file, qemu as a
     # RELATIVE link to the tree the verb unpacked from the verified tarball.
     machine.succeed("cmp ${nextNetWrap} /root/net-wrap")
@@ -362,7 +362,7 @@ pkgs.testers.runNixOSTest {
     assert invocation() != inv_before, "the forced restart did not happen"
     machine.fail("test -e ${nextBin}")
     machine.fail("test -e ${nextManifest}")
-    machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux/manifest.json")  # committed WITH its manifest
+    machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux-amd64/manifest.json")  # committed WITH its manifest
     assert " v4" in committed(), f"the fetched release did NOT commit, committed={committed()!r}"
     # ...and the bundle committed in the same burst: the shim moved onto its name, the qemu LINK
     # was renamed over (`mv -T`) rather than dropped inside a tree, and no .next survives.
@@ -392,7 +392,7 @@ pkgs.testers.runNixOSTest {
     #        The refusal must actually fire. ===
     V5 = "v3.20990907.bbbbbbb"
     publish(V5, "${readyV4}", pointers=("latest",))
-    machine.succeed(f"install -m755 ${evilCand} /srv/briard/{V5}/linux/briard-agent")  # tamper AFTER signing
+    machine.succeed(f"install -m755 ${evilCand} /srv/briard/{V5}/linux-amd64/briard-agent")  # tamper AFTER signing
     # ⚠️ THE DEFAULT IS `stable`, AND HERE IT IS OBSERVABLE ON THE REAL BINARY:
     # V5 sits at `latest` alone, so the bare verb must not reach it at all. Before the default
     # moved, this very line is what fetched the tampered bytes -- which is why the refusals
@@ -407,7 +407,7 @@ pkgs.testers.runNixOSTest {
     machine.fail("test -e ${updateFlag}")
     assert " v4" in committed(), f"a refused update changed the committed binary, committed={committed()!r}"
     # An UNSIGNED pointer (signature removed) is refused before anything is fetched.
-    machine.succeed("rm /srv/briard/latest/linux/manifest.json.sig")
+    machine.succeed("rm /srv/briard/latest/linux-amd64/manifest.json.sig")
     machine.fail("${realAgent} update -to latest -base /var/lib/briard -run /run/briard")
     machine.fail("test -e ${nextBin}")
     assert " v4" in committed(), f"an unsigned manifest changed the committed binary, committed={committed()!r}"
@@ -431,7 +431,7 @@ pkgs.testers.runNixOSTest {
     # updater, so the line an operator greps for at 2am has to be there and not only on a console.
     machine.wait_until_succeeds("journalctl -u briard-update | grep -q 'older than stable'", timeout=30)
     machine.fail("test -e ${nextBin}")
-    machine.succeed(f"cp /srv/briard/{OLD}/linux/manifest.json /srv/briard/{OLD}/linux/manifest.json.sig /srv/briard/stable/linux/")
+    machine.succeed(f"cp /srv/briard/{OLD}/linux-amd64/manifest.json /srv/briard/{OLD}/linux-amd64/manifest.json.sig /srv/briard/stable/linux-amd64/")
     out = machine.succeed(f"${realAgent} update -to {OLD} -base /var/lib/briard -run /run/briard").strip()
     # DOWNLOAD ONLY WHAT CHANGED: this release ships the same shim and qemu bytes the
     # installed manifest ({V4}'s) pins, so neither is fetched or staged -- the agent alone moves.
@@ -466,7 +466,7 @@ pkgs.testers.runNixOSTest {
     # expensive one, and a retry of this release reuses it by name instead of pulling it again.
     machine.fail("test -e ${nextQemu}")
     machine.succeed(f"test -d /var/lib/briard/qemu-{V9}")
-    machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux/manifest.json")
+    machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux-amd64/manifest.json")
     machine.fail("test -e ${updateFlag}")
     print(f"9a) {V9}'s trial crashed: reverted whole, qemu link still {V4}'s, its staged link discarded")
 
@@ -483,7 +483,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("briard-agent.service")
     machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
     assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "the commit paired this agent with a qemu it did not ship"
-    machine.succeed(f"cmp ${manifest} /srv/briard/{V10}/linux/manifest.json")
+    machine.succeed(f"cmp ${manifest} /srv/briard/{V10}/linux-amd64/manifest.json")
     print(f"9b) {V10} discarded the stale qemu.next and committed on {V4}'s qemu, as its manifest says")
 
     print("the frozen Type=notify pivot commits good updates and reverts broken or lost ones; the frozen unit below the agent fetches, verifies, stages, arms, forces late, and refuses tampered, unsigned or below-floor releases; the host bundle stages and commits as one, fetching only what changed")

@@ -94,7 +94,7 @@ func runInternal(args []string) {
 	fetchUpdate := fs.String("fetch-update", "", "resolve <target> (stable, latest, or a release id) on the channel, stage + arm this node's agent if due, then exit -- the frozen update unit's verb (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING, UPDATE_BASE, UPDATE_RUN_DIR)")
 	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
 	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (briard, vm)")
-	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux, windows; empty for the vm chain)")
+	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux-amd64, windows-amd64 on briard; amd64 on vm)")
 	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
 	stageSystem := fs.String("system", "", "with --stage-manifest --chain vm: the store path of the NixOS toplevel the image boots (Manifest.System)")
 	stageMinBriard := fs.String("min-briard", "", "with --stage-manifest --chain vm: the oldest briard release this VM tolerates (Manifest.MinBriard)")

@@ -26,7 +26,7 @@ import (
 )
 
 func guestMan(version, system, minHost string) install.Manifest {
-	return install.Manifest{Chain: install.ChainVM, Version: version, System: system, MinBriard: minHost,
+	return install.Manifest{Chain: install.ChainVM, Platform: install.PlatformVM, Version: version, System: system, MinBriard: minHost,
 		Artifacts: []install.Entry{{Name: "nixos.qcow2.zst"}}}
 }
 
@@ -126,8 +126,8 @@ func (c *guestChannel) publish(t *testing.T, m install.Manifest, pointers ...str
 		t.Fatal(err)
 	}
 	for _, p := range append([]string{m.Version}, pointers...) {
-		c.bodies["vm/"+p+"/manifest.json"] = mb
-		c.bodies["vm/"+p+"/manifest.json.sig"] = ed25519.Sign(c.priv, mb)
+		c.bodies["vm/"+p+"/"+install.PlatformVM+"/manifest.json"] = mb
+		c.bodies["vm/"+p+"/"+install.PlatformVM+"/manifest.json.sig"] = ed25519.Sign(c.priv, mb)
 	}
 	return mb
 }
@@ -186,7 +186,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	}
 
 	// Tampered after signing: refused by the signature, before any decision.
-	c.bodies["vm/latest/manifest.json"] = []byte(`{"chain":"vm","version":"vm.20260910.nnnnnnn","system":"/nix/store/evil","artifacts":[{"name":"x"}]}`)
+	c.bodies["vm/latest/"+install.PlatformVM+"/manifest.json"] = []byte(`{"chain":"vm","platform":"` + install.PlatformVM + `","version":"vm.20260910.nnnnnnn","system":"/nix/store/evil","artifacts":[{"name":"x"}]}`)
 	up := &fakeUpgrader{}
 	o := cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM}, running, up, nil, t.Logf)
 	if o.State != api.OutcomeFailed || up.imageTarget.Version != "" {
@@ -229,7 +229,7 @@ func withImage(t *testing.T, c *guestChannel, m install.Manifest, contents strin
 	zw.Close()
 	sum := sha256.Sum256(zb.Bytes())
 	m.Artifacts = []install.Entry{{Name: guestImageArtifact, SHA256: hex.EncodeToString(sum[:]), Size: int64(zb.Len())}}
-	c.bodies["vm/"+m.Version+"/"+guestImageArtifact] = zb.Bytes()
+	c.bodies["vm/"+m.Version+"/"+install.PlatformVM+"/"+guestImageArtifact] = zb.Bytes()
 	return m
 }
 
@@ -295,7 +295,7 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 	c, key := newGuestChannel(t)
 	want := withImage(t, c, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "the new image")
 	c.publish(t, want, install.TargetStable)
-	c.bodies["vm/"+want.Version+"/"+guestImageArtifact] = []byte("not the signed bytes")
+	c.bodies["vm/"+want.Version+"/"+install.PlatformVM+"/"+guestImageArtifact] = []byte("not the signed bytes")
 	cfg := guestCfg(t, c, key)
 	cfg.GuestImage = filepath.Join(t.TempDir(), "nixos.qcow2")
 	up := &fakeUpgrader{}

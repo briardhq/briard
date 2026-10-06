@@ -142,7 +142,7 @@ else
 	# forward-compat bricking the channel layout exists to prevent. `briard-agent` is the
 	# one artifact the channel duplicates under its pointers for this fetch.
 	boot="$PREFIX/bootstrap-agent"
-	fetch_url "$CHANNEL/briard/$RELEASE/linux/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/briard/$RELEASE/linux"
+	fetch_url "$CHANNEL/briard/$RELEASE/linux-amd64/briard-agent" "$boot" || die "could not fetch the bootstrap agent from $CHANNEL/briard/$RELEASE/linux-amd64"
 	chmod +x "$boot"
 	# Fail with the REASON. A bootstrap that cannot exec (noexec mount, wrong arch, a dynamically
 	# linked binary whose interpreter this host lacks) is not a verification failure, and reporting

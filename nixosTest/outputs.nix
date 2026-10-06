@@ -248,12 +248,12 @@ let
   # -19 would cost the rig minutes for nothing.
   guestChannel = pkgs.runCommand "briard-test-guest-channel" { nativeBuildInputs = [ pkgs.zstd ]; } ''
     V=${agentVersion}; GV="vm.''${V#*.}"; GV2="vm.20991230.next0000"
-    A="$out/vm/$GV"; B="$out/vm/$GV2"; mkdir -p "$A" "$B"
+    A="$out/vm/$GV/amd64"; B="$out/vm/$GV2/amd64"; mkdir -p "$A" "$B"
     zstd -3 -q ${guestDisk}/nixos.qcow2     -o "$A/nixos.qcow2.zst"
     zstd -3 -q ${nextGuestDisk}/nixos.qcow2 -o "$B/nixos.qcow2.zst"
     chmod 0644 "$A"/*.zst "$B"/*.zst
-    ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain vm --release "$GV"  --system ${guestDisk.system}     --min-briard "$V"
-    ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain vm --release "$GV2" --system ${nextGuestDisk.system} --min-briard "$V"
+    ${agentPkg}/bin/briard-agent --stage-manifest "$A" --chain vm --platform amd64 --release "$GV"  --system ${guestDisk.system}     --min-briard "$V"
+    ${agentPkg}/bin/briard-agent --stage-manifest "$B" --chain vm --platform amd64 --release "$GV2" --system ${nextGuestDisk.system} --min-briard "$V"
   '';
   guestRescue = import ./guest-rescue.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; stub = selfupdateStub; channel = guestChannel; nextSystem = nextGuestDisk.system; }; # rebuild the guest from its image, keep the data; and move it to a new image
 

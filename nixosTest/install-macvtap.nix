@@ -57,7 +57,7 @@ let
     nativeBuildInputs = [ pkgs.zstd pkgs.openssl pkgs.gnutar ];
   } ''
     V=${agent.version}; GV="vm.''${V#*.}"
-    H="$out/briard/$V/linux"; G="$out/vm/$GV"
+    H="$out/briard/$V/linux-amd64"; G="$out/vm/$GV/amd64"
     mkdir -p "$H" "$G"
     install -m0755 ${agent}/bin/briard-agent        "$H/briard-agent"
     install -m0755 ${../scripts/briard-net-wrap.sh} "$H/briard-net-wrap"
@@ -84,10 +84,10 @@ let
     chmod 0644 "$H"/*.zst "$G"/*.zst
     # The production writer, not a re-implementation in Nix -- which would have tested this file
     # against itself and proven nothing about what a release actually publishes.
-    "$H/briard-agent" --stage-manifest "$H" --chain briard --platform linux --release "$V" --vm "$GV"
+    "$H/briard-agent" --stage-manifest "$H" --chain briard --platform linux-amd64 --release "$V" --vm "$GV"
     # The guest manifest names the closure the image boots and the oldest host that tolerates
     # it -- this release's own, as publish-release.sh stamps it.
-    "$H/briard-agent" --stage-manifest "$G" --chain vm                  --release "$GV" \
+    "$H/briard-agent" --stage-manifest "$G" --chain vm --platform amd64 --release "$GV" \
         --system ${guestDisk.system} --min-briard "$V"
   '';
   # ⚠️ THE CHANNEL IS SIGNED AT RUNTIME, NOT HERE, and that is a constraint rather than a
@@ -337,10 +337,10 @@ pkgs.testers.runNixOSTest {
     # bootstrap agent on the briard chain (install.sh curls it from the pointer path).
     V = "${agent.version}"
     GV = "vm." + V.split(".", 1)[1]
-    # The briard chain carries the platform level (this is its linux arm); the vm chain is flat.
+    # Every chain carries the platform level: linux-amd64 on the briard chain, amd64 on the vm chain.
     # Both pointers name this one release: install.sh and `briard update` both follow
     # `stable`, and the shipped update unit is exercised against both below.
-    for chain, ver, arm in (("briard", V + "/linux", "/linux"), ("vm", GV, "")):
+    for chain, ver, arm in (("briard", V + "/linux-amd64", "/linux-amd64"), ("vm", GV + "/amd64", "/amd64")):
         d = f"/srv/{chain}/{ver}"
         host.succeed(f"mkdir -p {d} && ln -sf ${channel}/{chain}/{ver}/* {d}/")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
@@ -348,21 +348,21 @@ pkgs.testers.runNixOSTest {
         for ptr in ("stable", "latest"):
             host.succeed(f"mkdir -p /srv/{chain}/{ptr}{arm} && cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}{arm}/")
     for ptr in ("stable", "latest"):
-        host.succeed(f"ln -sf ${channel}/briard/{V}/linux/briard-agent /srv/briard/{ptr}/linux/briard-agent")
+        host.succeed(f"ln -sf ${channel}/briard/{V}/linux-amd64/briard-agent /srv/briard/{ptr}/linux-amd64/briard-agent")
 
     host.succeed(
         f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
     )
-    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/briard/stable/linux/manifest.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/briard/stable/linux-amd64/manifest.json -o /dev/null", timeout=30)
     # The manifests are SIGNED, the artifacts are COMPRESSED and live under the VERSIONED
     # directories only -- assert the shape before relying on it, so a channel that silently went
     # back to loose plaintext files, or grew a second image under a pointer, cannot pass as green.
-    host.succeed("curl -sf http://127.0.0.1:8099/briard/stable/linux/manifest.json.sig -o /dev/null")
-    host.succeed("curl -sf http://127.0.0.1:8099/briard/stable/linux/briard-agent -o /dev/null")
-    host.succeed("curl -sf http://127.0.0.1:8099/vm/stable/manifest.json.sig -o /dev/null")
-    host.succeed(f"curl -sf http://127.0.0.1:8099/vm/{GV}/nixos.qcow2.zst -o /dev/null")
-    host.fail(f"curl -sf http://127.0.0.1:8099/vm/{GV}/nixos.qcow2 -o /dev/null")
-    host.fail("curl -sf http://127.0.0.1:8099/vm/stable/nixos.qcow2.zst -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/briard/stable/linux-amd64/manifest.json.sig -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/briard/stable/linux-amd64/briard-agent -o /dev/null")
+    host.succeed("curl -sf http://127.0.0.1:8099/vm/stable/amd64/manifest.json.sig -o /dev/null")
+    host.succeed(f"curl -sf http://127.0.0.1:8099/vm/{GV}/amd64/nixos.qcow2.zst -o /dev/null")
+    host.fail(f"curl -sf http://127.0.0.1:8099/vm/{GV}/amd64/nixos.qcow2 -o /dev/null")
+    host.fail("curl -sf http://127.0.0.1:8099/vm/stable/amd64/nixos.qcow2.zst -o /dev/null")
 
     # THE HOST'S FOOTPRINT, for the uninstall's residue check at the end of this file:
     # every place install.sh or the agent can leave something -- files where they put them, units,
@@ -1259,12 +1259,12 @@ pkgs.testers.runNixOSTest {
     # not be the file the signature covered. The channel's copy is the one `--fetch-install`
     # verified against the signed manifest before install.sh ever saw it.
     for u in ("briard-agent.service", "briard-update.service", "briard-update.timer"):
-        host.succeed(f"cmp /run/systemd/system/{u} /srv/briard/{V}/linux/{u}")
+        host.succeed(f"cmp /run/systemd/system/{u} /srv/briard/{V}/linux-amd64/{u}")
     # ...and so were the agent's three frozen scripts. Same claim, and the one that matters most
     # for these: they are what performs a self-update, so "the file on disk is the file that was
     # signed" is the property the whole pivot rests on.
     for s in ("briard-exec", "briard-commit", "briard-update"):
-        host.succeed(f"cmp /opt/briard/agent/{s} /srv/briard/{V}/linux/{s}")
+        host.succeed(f"cmp /opt/briard/agent/{s} /srv/briard/{V}/linux-amd64/{s}")
         host.succeed(f"test -x /opt/briard/agent/{s}")
     print("the units and the agent's scripts are byte-identical to the signed channel's")
 
@@ -1417,7 +1417,7 @@ pkgs.testers.runNixOSTest {
     # Driving it through `briard update` instead would consume that message and quietly test a
     # path that already had a reader.
     host.succeed("systemctl reset-failed briard-update.service && rm -f /run/briard/update-result")
-    host.succeed("mv /srv/briard/stable/linux/briard-agent /root/hidden-agent")
+    host.succeed("mv /srv/briard/stable/linux-amd64/briard-agent /root/hidden-agent")
     host.fail("systemctl start briard-update.service")
     host.succeed("systemctl is-failed briard-update.service")
     host.succeed("test -s /run/briard/update-result")   # the message with no consumer
@@ -1441,7 +1441,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("journalctl -u briard-agent | grep -qF 'The update run said:'")
     host.succeed("journalctl -u briard-agent | grep -q 'could not fetch a bootstrap agent'")
     # Put the channel back and clear the unit, so the steps below meet the node they expect.
-    host.succeed("mv /root/hidden-agent /srv/briard/stable/linux/briard-agent")
+    host.succeed("mv /root/hidden-agent /srv/briard/stable/linux-amd64/briard-agent")
     host.succeed("systemctl reset-failed briard-update.service")
     host.succeed("systemctl start briard-update.service")
     host.fail("systemctl is-failed briard-update.service")
@@ -1465,19 +1465,19 @@ pkgs.testers.runNixOSTest {
     # (the binary's PT_INTERP names the committed prefix), before it commits. The agent bytes are
     # the installed ones: what this proves is the bundle path, not a new agent.
     def publish_pin(version, bundle_dir, guest_dir=None):
-        d = f"/srv/briard/{version}/linux"
-        host.succeed(f"mkdir -p {d} && cp -L /srv/briard/{V}/linux/briard-agent /srv/briard/{V}/linux/briard-net-wrap {d}/")
+        d = f"/srv/briard/{version}/linux-amd64"
+        host.succeed(f"mkdir -p {d} && cp -L /srv/briard/{V}/linux-amd64/briard-agent /srv/briard/{V}/linux-amd64/briard-net-wrap {d}/")
         host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {bundle_dir} . | zstd -q -3 -o {d}/qemu-bundle.tar.zst")
         # The guest bundle rides every host release: the installed one's bytes unless a
         # pin brings its own (the bad-bundle case below).
         if guest_dir:
             host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {guest_dir} . | zstd -q -3 -o {d}/guest-bundle.tar.zst")
         else:
-            host.succeed(f"cp -L /srv/briard/{V}/linux/guest-bundle.tar.zst {d}/")
-        host.succeed(f"chmod 0644 {d}/*.zst && {d}/briard-agent --stage-manifest {d} --chain briard --platform linux --release {version} --vm {GV}")
+            host.succeed(f"cp -L /srv/briard/{V}/linux-amd64/guest-bundle.tar.zst {d}/")
+        host.succeed(f"chmod 0644 {d}/*.zst && {d}/briard-agent --stage-manifest {d} --chain briard --platform linux-amd64 --release {version} --vm {GV}")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     V2 = "v3.20991230.b86b0000"
-    host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/briard/{V}/linux/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
+    host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/briard/{V}/linux-amd64/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
     host.succeed("echo b86b > /root/bundle2/PROVENANCE.b86b")
     publish_pin(V2, "/root/bundle2")
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V2}").strip()
@@ -1768,9 +1768,9 @@ pkgs.testers.runNixOSTest {
     # refusal names the remedy -- the support window closing on a node must never be silent.
     # And the check can fail: the same command with an unknown pin fails too.
     GNEW = "vm.20991231.b86d0000"
-    d = f"/srv/vm/{GNEW}"
+    d = f"/srv/vm/{GNEW}/amd64"
     host.succeed(f"mkdir -p {d} && echo not-an-image > {d}/nixos.qcow2.zst")  # a real file (the writer skips links); never fetched, the refusal comes first
-    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain vm --release {GNEW} --system ${guestDisk.system} --min-briard v3.20991231.zzzzzzz")
+    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain vm --platform amd64 --release {GNEW} --system ${guestDisk.system} --min-briard v3.20991231.zzzzzzz")
     host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     # ⚠️ WAIT FOR THE ADMIN DOOR BEFORE KNOCKING ON IT. The section above ends in a refused
     # bundle push and a relaunch, so the agent can still be re-opening its socket here -- and

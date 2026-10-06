@@ -57,7 +57,7 @@ func TestDecide(t *testing.T) {
 		{"exact below stable is refused", old, *host(old), host(cur), stable, false, ErrBelowFloor},
 		{"exact with no stable to floor against is refused", next, *host(next), host(cur), nil, false, ErrBelowFloor},
 		{"exact whose manifest names another version is refused", next, *host(cur), host(old), stable, false, ErrManifest},
-		{"a crossed chain is refused, not compared", TargetStable, *host(next), func() *Manifest { m := man(ChainVM, "", "vm.20260901.x"); return &m }(), nil, false, ErrWrongChain},
+		{"a crossed chain is refused, not compared", TargetStable, *host(next), func() *Manifest { m := man(ChainVM, PlatformVM, "vm.20260901.x"); return &m }(), nil, false, ErrWrongChain},
 		{"a non-numeric date field is refused", TargetStable, *host("v3.dirty"), host(cur), nil, false, ErrManifest},
 		// THE UPGRADE FLOOR. The floor is a fact about (installed, offered), not
 		// about the target word, so all three targets are floored -- the release cannot complete
@@ -543,7 +543,7 @@ func TestBriardSatisfies(t *testing.T) {
 func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 	stage := t.TempDir()
 	os.WriteFile(filepath.Join(stage, "nixos.qcow2.zst"), []byte("img"), 0o644)
-	if err := WriteManifest(stage, ChainVM, "", "vm.20260906.abc1234", "/nix/store/abc-nixos-system", "v3.20260906.abc1234", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainVM, PlatformVM, "vm.20260906.abc1234", "/nix/store/abc-nixos-system", "v3.20260906.abc1234", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var m Manifest
@@ -559,12 +559,12 @@ func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 		{ChainVM, "/tmp/not-store", ""},   // not a store path
 		{ChainVM, "", "not a segment/"},   // an unusable min_briard
 	} {
-		if err := WriteManifest(stage, bad[0], "", "vm.20260906.abc1234", bad[1], bad[2], "", ""); err == nil {
+		if err := WriteManifest(stage, bad[0], armOf(bad[0]), "vm.20260906.abc1234", bad[1], bad[2], "", ""); err == nil {
 			t.Errorf("WriteManifest(%v) accepted", bad)
 		}
 	}
 	// Omitted when empty, so a host manifest's bytes are unchanged by the fields' existence.
-	if err := WriteManifest(stage, ChainVM, "", "vm.20260906.abc1234", "", "", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainVM, PlatformVM, "vm.20260906.abc1234", "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(filepath.Join(stage, ManifestName))
@@ -589,7 +589,7 @@ func TestWriteManifestPairingFields(t *testing.T) {
 	if err != nil || m.VM != "vm.20260901.def5678" || m.Inputs != "" {
 		t.Fatalf("host manifest read back as %+v (%v)", m, err)
 	}
-	if err := WriteManifest(stage, ChainVM, "", "vm.20260901.def5678", "/nix/store/abc-sys", "v3.20260907.abc1234", "", inputs); err != nil {
+	if err := WriteManifest(stage, ChainVM, PlatformVM, "vm.20260901.def5678", "/nix/store/abc-sys", "v3.20260907.abc1234", "", inputs); err != nil {
 		t.Fatalf("guest manifest carrying its inputs refused: %v", err)
 	}
 	if m, err = ReadManifest(filepath.Join(stage, ManifestName)); err != nil || m.Inputs != inputs || m.VM != "" {
@@ -601,7 +601,7 @@ func TestWriteManifestPairingFields(t *testing.T) {
 		{ChainBriard, "stable", ""},          // a pointer word as the pair
 		{ChainVM, "", "not-a-hash"},          // inputs that are not a sha256
 	} {
-		if err := WriteManifest(stage, bad[0], "", "v3.20260907.abc1234", "", "", bad[1], bad[2]); err == nil {
+		if err := WriteManifest(stage, bad[0], armOf(bad[0]), "v3.20260907.abc1234", "", "", bad[1], bad[2]); err == nil {
 			t.Errorf("WriteManifest(%v) accepted", bad)
 		}
 	}
@@ -701,7 +701,7 @@ func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
 	if got := read(t, ChainBriard, PlatformLinux, "v3.20260921.bbb2222", "", "").MinUpgradeFrom; got != MinUpgradeFrom {
 		t.Errorf("host min_upgrade_from = %q, want the tree's %q", got, MinUpgradeFrom)
 	}
-	if got := read(t, ChainVM, "", "vm.20260921.bbb2222", "/nix/store/x-nixos-system", "").MinUpgradeFrom; got != "" {
+	if got := read(t, ChainVM, PlatformVM, "vm.20260921.bbb2222", "/nix/store/x-nixos-system", "").MinUpgradeFrom; got != "" {
 		t.Errorf("guest min_upgrade_from = %q, want empty — the guest chain declares no floor", got)
 	}
 }
@@ -783,4 +783,13 @@ func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
 	if _, err := Decide(TargetStable, me, &ok, nil); err != nil {
 		t.Errorf("a release at the floor's own date was refused: %v", err)
 	}
+}
+
+// armOf is the platform a chain's manifests carry, so a refusal test fails on the fault it
+// names rather than on a missing platform.
+func armOf(chain string) string {
+	if chain == ChainVM {
+		return PlatformVM
+	}
+	return PlatformLinux
 }

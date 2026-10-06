@@ -311,14 +311,14 @@ pkgs.testers.runNixOSTest {
     GV2 = "vm.20991230.next0000"
     host.succeed("mkdir -p /srv/vm && cp -r ${channel}/vm/. /srv/vm/ && chmod -R u+w /srv/vm")
     def sign_and_point(ver, pointers):
-        d = f"/srv/vm/{ver}"
+        d = f"/srv/vm/{ver}/amd64"
         host.succeed(f"${stub}/bin/briard-selfupdate-stub sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         for p in pointers:
-            host.succeed(f"mkdir -p /srv/vm/{p} && cp {d}/manifest.json {d}/manifest.json.sig /srv/vm/{p}/")
+            host.succeed(f"mkdir -p /srv/vm/{p}/amd64 && cp {d}/manifest.json {d}/manifest.json.sig /srv/vm/{p}/amd64/")
     sign_and_point(GV, ("stable",))
     sign_and_point(GV2, ("latest",))
     host.succeed("systemd-run --unit=guest-channel --collect ${stub}/bin/briard-selfupdate-stub serve 127.0.0.1:8099 /srv")
-    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/vm/latest/manifest.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -sf http://127.0.0.1:8099/vm/latest/amd64/manifest.json -o /dev/null", timeout=30)
     qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0]
     state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
 
@@ -342,8 +342,8 @@ pkgs.testers.runNixOSTest {
     # boot. Same image bytes as GV2, manifest lying about the system -> the boot does not prove
     # the target -> the swap is undone and the node is back on GV2, serving.
     GV3 = "vm.20991231.liar0000"
-    host.succeed(f"mkdir -p /srv/vm/{GV3} && cp /srv/vm/{GV2}/nixos.qcow2.zst /srv/vm/{GV3}/")
-    host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/vm/{GV3} --chain vm --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-briard {V}")
+    host.succeed(f"mkdir -p /srv/vm/{GV3}/amd64 && cp /srv/vm/{GV2}/amd64/nixos.qcow2.zst /srv/vm/{GV3}/amd64/")
+    host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/vm/{GV3}/amd64 --chain vm --platform amd64 --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-briard {V}")
     sign_and_point(GV3, ("latest",))
     host.fail("${agent}/bin/briard-agent update -vm -sock /run/briard/admin.sock -to latest")
     host.succeed(f"journalctl -u briard-agent | grep -q \"not {GV3}'s system\"")

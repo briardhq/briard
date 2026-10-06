@@ -254,10 +254,10 @@ func TestFetchVerifiedRefusesWrongChain(t *testing.T) {
 	c := goodChannel(t)
 	// Serve the briard chain's (signed, chain:"briard") manifest where the vm chain's would be.
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainVM+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainVM+"/"+TargetLatest+"/"+PlatformVM+"/"+n] = c.bodies[pointerPath(n)]
 	}
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainVM, Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainVM, Platform: PlatformVM, Keyring: c.kr}
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
 }
 
@@ -612,43 +612,42 @@ func TestFetchVerifiedAcceptsAnExactVersionTarget(t *testing.T) {
 func TestFetchVerifiedRefusesWrongPlatform(t *testing.T) {
 	c := goodChannel(t)
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainBriard+"/"+TargetLatest+"/windows/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainBriard+"/"+TargetLatest+"/windows-amd64/"+n] = c.bodies[pointerPath(n)]
 	}
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: "windows", Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: "windows-amd64", Keyring: c.kr}
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
-	// And a platform-less fetch of a platformed manifest, likewise (the guest chain's shape
-	// pointed at a host directory).
-	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainBriard+"/"+TargetLatest+"/"+n] = c.bodies[pointerPath(n)]
-	}
+	// And a fetch naming no platform at all is refused before any request: every chain has the
+	// level, so an empty one is a caller's bug, never a flat directory to look in.
 	dest2 := stagedFresh(t)
 	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Keyring: c.kr}
-	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrWrongChain)
+	if err := f2.FetchVerified(context.Background(), TargetLatest, dest2); err == nil || !strings.Contains(err.Error(), "bad platform") {
+		t.Errorf("a platform-less fetch: got %v, want a bad-platform refusal", err)
+	}
 }
 
-// A chain without the platform level (the guest) is served flat: no platform in the path, no
-// platform in the manifest, and the fetcher asked for none.
-func TestFetchVerifiedHandlesAPlatformlessChain(t *testing.T) {
+// The vm chain's platform is the CPU alone: vm/<target>/<cpu>/ for the manifest and
+// vm/<version>/<cpu>/ for the image, the same shape as the briard chain one level down.
+func TestFetchVerifiedHandlesTheVMChain(t *testing.T) {
 	c := goodChannel(t)
 	img := []byte("guest image bytes")
 	gv := "vm.20260905.abc1234"
-	mb, err := json.Marshal(Manifest{Chain: ChainVM, Version: gv, Artifacts: []Entry{
+	mb, err := json.Marshal(Manifest{Chain: ChainVM, Platform: PlatformVM, Version: gv, Artifacts: []Entry{
 		{Name: "nixos.qcow2", SHA256: sha(img), Size: int64(len(img))},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.bodies[ChainVM+"/"+TargetStable+"/"+ManifestName] = mb
-	c.bodies[ChainVM+"/"+TargetStable+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
-	c.bodies[ChainVM+"/"+gv+"/nixos.qcow2"] = img
+	c.bodies[ChainVM+"/"+TargetStable+"/"+PlatformVM+"/"+ManifestName] = mb
+	c.bodies[ChainVM+"/"+TargetStable+"/"+PlatformVM+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
+	c.bodies[ChainVM+"/"+gv+"/"+PlatformVM+"/nixos.qcow2"] = img
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainVM, Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainVM, Platform: PlatformVM, Keyring: c.kr}
 	if err := f.FetchVerified(context.Background(), TargetStable, dest); err != nil {
 		t.Fatalf("guest chain: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
 	if err != nil || !bytes.Equal(got, img) {
-		t.Fatalf("VM image not staged from vm/%s/: %v", gv, err)
+		t.Fatalf("VM image not staged from vm/%s/%s/: %v", gv, PlatformVM, err)
 	}
 }

@@ -75,7 +75,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		logf("directive kind=update-vm refused: no usable release keyring on this node (%v)", err)
 		return failed("no release keyring on this node; a guest release cannot be verified")
 	}
-	f := &install.Fetcher{BaseURL: cfg.ChannelURL, Chain: install.ChainVM, Keyring: kr, Logf: logf}
+	f := &install.Fetcher{BaseURL: cfg.ChannelURL, Chain: install.ChainVM, Platform: install.PlatformVM, Keyring: kr, Logf: logf}
 	rctx, cancel := context.WithTimeout(ctx, 2*time.Minute) // two small signed files, at most three
 	defer cancel()
 	want, raw, err := f.Manifest(rctx, target)

@@ -31,6 +31,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -40,15 +41,16 @@ import (
 )
 
 // THE CHANNEL TREE. The channel root serves one directory per release CHAIN, and under
-// each chain one directory per version plus two POINTERS; the briard chain adds one more level,
-// the PLATFORM, because the briard bundle is built per host OS while the VM image is the same VM
-// on every host:
+// each chain one directory per version plus the POINTERS; under those, every chain has one more
+// level, the PLATFORM. The briard bundle is built per host OS and CPU (`linux-amd64`); the VM
+// image per CPU alone (`amd64`), because it is the same VM on every host OS but runs on the
+// host's CPU:
 //
 //	<root>/briard/<version>/<platform>/ manifest.json(+.sig) and every artifact it names
 //	<root>/briard/stable/<platform>/    a byte-copy of one version's signed manifest (+ briard-agent)
 //	<root>/briard/latest/<platform>/    likewise
-//	<root>/vm/<version>/                manifest.json(+.sig), nixos.qcow2.zst
-//	<root>/vm/{stable,latest}/          manifest.json(+.sig)
+//	<root>/vm/<version>/<cpu>/          manifest.json(+.sig), nixos.qcow2.zst
+//	<root>/vm/{stable,latest}/<cpu>/    manifest.json(+.sig)
 //
 // THE CHAINS ARE NAMED FOR THE UPGRADE UNIT, NOT THE SIDE. `briard` is every briard
 // artifact wherever it lands -- the agent, net-wrap, the qemu bundle, the GUEST bundle,
@@ -77,12 +79,14 @@ import (
 // epoch (`v3.`), which moves forward over time; a series check keyed on it would refuse every
 // update across an epoch boundary, fleet-wide.
 const (
-	ChainBriard = "briard" // briard-agent, briard-net-wrap, qemu-bundle.tar.zst, guest-bundle.tar.zst — per platform
-	ChainVM     = "vm"     // nixos.qcow2.zst — no platform level
+	ChainBriard = "briard" // briard-agent, briard-net-wrap, qemu-bundle.tar.zst, guest-bundle.tar.zst — per OS and CPU
+	ChainVM     = "vm"     // nixos.qcow2.zst — per CPU
 
-	// PlatformLinux is the host platform this binary installs on; the Windows arm
-	// (`windows`) is published beside it with no consumer until v5.
-	PlatformLinux = "linux"
+	// PlatformLinux is the briard arm this binary installs, named for the OS and CPU it was
+	// built for; the Windows arm (`windows-amd64`) is published beside it with no consumer yet.
+	// PlatformVM is the vm arm it boots -- the guest runs on the host's CPU, so the same CPU.
+	PlatformLinux = "linux-" + runtime.GOARCH
+	PlatformVM    = runtime.GOARCH
 
 	// TargetStable, TargetLatest and TargetDev are the three pointer paths every chain serves
 	// (IsPointer). Anything else passed as a target is taken to be an exact version id. `dev` is
@@ -148,7 +152,7 @@ type Entry struct {
 // release it is and where its artifacts live, and an unsigned sidecar could say anything.
 type Manifest struct {
 	Chain     string  `json:"chain"`
-	Platform  string  `json:"platform,omitempty"` // briard chain only; the VM image has no platform
+	Platform  string  `json:"platform,omitempty"` // PlatformLinux on the briard chain, PlatformVM on the vm chain
 	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
 	// The vm chain names the CLOSURE, not just the image: System is the store path of
@@ -183,7 +187,7 @@ type Manifest struct {
 
 // Fetcher downloads and verifies one chain's signed artifact set into a staging directory.
 // BaseURL is the channel ROOT (the chains sit directly under it); Chain names the release line
-// and Platform the arm within it ("" for a chain without the platform level); Keyring is the
+// and Platform the arm within it (every chain has one); Keyring is the
 // release trust root; Client/Logf are optional (nil → a bounded-timeout client / a discard log).
 type Fetcher struct {
 	BaseURL  string
@@ -194,9 +198,9 @@ type Fetcher struct {
 	Logf     func(string, ...any)
 }
 
-// FetchVerified downloads <root>/<chain>/<target>[/<platform>]/manifest.json, verifies it
+// FetchVerified downloads <root>/<chain>/<target>/<platform>/manifest.json, verifies it
 // against the keyring and asserts it belongs to f.Chain and f.Platform, then downloads each
-// listed artifact from <root>/<chain>/<manifest.version>[/<platform>]/ and checks its SHA-256 +
+// listed artifact from <root>/<chain>/<manifest.version>/<platform>/ and checks its SHA-256 +
 // size against the manifest. On full success the staging dir is populated -- the verified
 // manifest bytes beside the artifacts, as manifest.json -- and atomically placed at dest; dest
 // must not already exist. On ANY failure dest is left untouched and no partial staging survives
@@ -212,7 +216,7 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 	if !validSegment(f.Chain) {
 		return fmt.Errorf("install: bad chain name %q", f.Chain)
 	}
-	if f.Platform != "" && !validSegment(f.Platform) {
+	if !validSegment(f.Platform) {
 		return fmt.Errorf("install: bad platform name %q", f.Platform)
 	}
 	if !validSegment(target) {
@@ -275,7 +279,7 @@ func (f *Fetcher) Manifest(ctx context.Context, target string) (Manifest, []byte
 	return f.fetchManifest(ctx, target)
 }
 
-// fetchManifest downloads <root>/<chain>/<target>[/<platform>]/manifest.json and its detached
+// fetchManifest downloads <root>/<chain>/<target>/<platform>/manifest.json and its detached
 // signature, verifies the signature against the keyring, and returns the parsed manifest with
 // the exact bytes that verified — after asserting it is non-empty, names a usable version and
 // belongs to the chain/platform asked for. Nothing else is trusted until this passes; nothing
@@ -288,13 +292,13 @@ func (f *Fetcher) fetchManifest(ctx context.Context, target string) (Manifest, [
 	if !validSegment(f.Chain) {
 		return man, nil, fmt.Errorf("install: bad chain name %q", f.Chain)
 	}
-	if f.Platform != "" && !validSegment(f.Platform) {
+	if !validSegment(f.Platform) {
 		return man, nil, fmt.Errorf("install: bad platform name %q", f.Platform)
 	}
 	if !validSegment(target) {
 		return man, nil, fmt.Errorf("install: bad release target %q", target)
 	}
-	at := path.Join(f.Chain, target, f.Platform) // Join drops an empty platform
+	at := path.Join(f.Chain, target, f.Platform)
 	mBytes, err := f.get(ctx, path.Join(at, ManifestName), maxManifestSize)
 	if err != nil {
 		return man, nil, fmt.Errorf("install: fetch manifest: %w", err)

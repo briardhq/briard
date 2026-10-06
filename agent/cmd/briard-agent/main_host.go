@@ -74,7 +74,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 			os.RemoveAll(tmp)
 		}
 	}()
-	// The briard chain first -- it has a platform level and this binary installs the Linux arm --
+	// The briard chain first -- this binary installs its Linux arm --
 	// and then the vm release ITS MANIFEST NAMES: the VM image is a function of its
 	// inputs and is re-published only when they change, so its id is no longer derivable from the
 	// briard id, and the briard manifest is where the pairing lives. One selector still installs
@@ -90,7 +90,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	if bm.VM == "" {
 		return fmt.Errorf("briard release %s names no vm release -- published before releases carried one; the alpha reinstalls from a current channel", bm.Version)
 	}
-	vf := &install.Fetcher{BaseURL: base, Chain: install.ChainVM, Keyring: kr, Logf: log.Printf}
+	vf := &install.Fetcher{BaseURL: base, Chain: install.ChainVM, Platform: install.PlatformVM, Keyring: kr, Logf: log.Printf}
 	if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, install.ChainVM)); err != nil {
 		return err
 	}
