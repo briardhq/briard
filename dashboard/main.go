@@ -601,7 +601,7 @@ func (a *app) writeState(name string, v any) error {
 type homeAssistant struct {
 	base string // in-guest, e.g. http://127.0.0.1:8123
 	port int
-	host string // the mDNS name the door routes, e.g. briard-brave-elf-home-assistant.local
+	host string // the bare mDNS name the door routes and the page links, e.g. briard-home-assistant.local
 }
 
 // findHomeAssistant reads the table the way the door does. nil means not installed (or not yet
@@ -629,7 +629,9 @@ func (a *app) findHomeAssistant() *homeAssistant {
 			return nil
 		}
 		port, _ := strconv.Atoi(u.Port())
-		return &homeAssistant{base: u.String(), port: port, host: s.Hosts[0]}
+		// The bare alias, which HostNames put in Hosts beside the flock-scoped name: it is what
+		// the household types and every other print site shows, so the link matches them.
+		return &homeAssistant{base: u.String(), port: port, host: routes.BareHostName(s.Name)}
 	}
 	return nil
 }

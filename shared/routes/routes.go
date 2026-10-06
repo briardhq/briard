@@ -50,10 +50,11 @@ type Table struct {
 type Service struct {
 	// Name is the catalog slug, the same one the manifest and the units carry.
 	Name string `json:"name"`
-	// Hosts are the names this service answers to: the mDNS label HostName composes, first —
-	// it is the SRV target announcements point at — and the per-home `<service>.<flock>.briard.casa`
-	// name CasaHostName composes, which resolves only once the household has claimed
-	// its name and is harmless in the table until then.
+	// Hosts are the names this service answers to, in the order HostNames composes them: the
+	// flock-scoped mDNS label HostName composes, first — it is the SRV target announcements
+	// point at — then the bare alias BareHostName composes, and the per-home
+	// `<service>.<flock>.briard.casa` name CasaHostName composes, which resolves only once the
+	// household has claimed its name and is harmless in the table until then.
 	//
 	// MATERIALISED RATHER THAN DERIVED, though both forms are computable from (flock, slug). The
 	// reason is the mDNS publisher: it is a shell script, and if it composed names itself the
@@ -160,8 +161,13 @@ const ListenName = "name"
 // `home-assistant.briard-picked-hornet.local` would publish fine and resolve nowhere — the same
 // trap measured for the flock name itself, one level down.
 //
-// FLOCK-SCOPED rather than bare `home-assistant.local`, which is the name every Home Assistant
-// tutorial uses and the one thing a household might already own. Measured 2026-08-23: two avahi
+// FLOCK-SCOPED, because this is the service's IDENTITY on the LAN: the SRV target every
+// announcement points at, and the name that stays unambiguous when two flocks share a house.
+// The bare alias is BareHostName, and the split is the rule: the flock-scoped name is what the
+// node relies on, the bare name is what it prints.
+//
+// Never bare `home-assistant.local` in either form: that is the name every Home Assistant tutorial
+// uses and the one thing a household might already own. Measured 2026-08-23: two avahi
 // publishers of the same `-a` record BOTH report Established, with no conflict, no rename and no
 // log — the later silently shadows the earlier — and the household most likely to already own
 // that name is the one migrating from an HAOS box. Claiming a name we can only lose silently is
@@ -174,6 +180,38 @@ func HostName(flock, service string) string {
 		return ""
 	}
 	return "briard-" + flock + "-" + service + ".local"
+}
+
+// BareHostName is the service's CONVENIENCE name: `briard-<service>.local`, the one a household
+// types and the one every print site shows (the installer, `briard service install`, the
+// dashboard's links). Every flock answers it beside its flock-scoped name, and nearly every home
+// holds exactly one flock, so nearly every home gets the short name on its only no-account door.
+//
+// AMBIGUOUS BY DESIGN WHEN TWO FLOCKS SHARE A LAN: both answer it, a client gets whichever replies
+// first, and nothing the node does depends on which. The responder probes nothing, so no
+// detection and no yielding exist here, and that is the point — a name that is bare "unless a
+// second install is detected" is a fact that depends on who was powered on at install time. The
+// flock-scoped names still tell the two apart, and they are what the agent relies on.
+//
+// Not a name derived from the flock-scoped one: BareFlockHostName is the same prefix with no
+// service, and the two are kept as literal strings so a reader sees the shape without computing it.
+func BareHostName(service string) string {
+	if service == "" {
+		return ""
+	}
+	return "briard-" + service + ".local"
+}
+
+// HostNames is the ordered Hosts list for a service, and the only place that order is decided:
+// the flock-scoped name first (Hosts[0] is the SRV target and the identity), the bare alias, the
+// casa name. Converge writes it into the table; an empty flock name yields no names at all, so a
+// nameless node routes nothing rather than answering the bare alias for a flock it cannot name.
+func HostNames(flock, service string) []string {
+	h := HostName(flock, service)
+	if h == "" {
+		return nil
+	}
+	return []string{h, BareHostName(service), CasaHostName(flock, service)}
 }
 
 // CasaHostName is the service's name under the household's casa domain:
@@ -389,10 +427,10 @@ func Normalise(host string) string {
 	return strings.TrimSuffix(h, ".")
 }
 
-// FlockHostName is the flock's OWN name — `briard-<flock>.local`, the one a household types to
-// reach this node's dashboard and the SRV target nothing else composes. It lives here for the
-// reason HostName does: every rule for building a name belongs to one function, so a second name
-// form is one change rather than one per language.
+// FlockHostName is the flock's OWN name — `briard-<flock>.local`, the one that tells this flock
+// from any other on the LAN and the one the doctor reports. It lives here for the reason HostName
+// does: every rule for building a name belongs to one function, so a second name form is one
+// change rather than one per language.
 //
 // The publisher composes nothing: it claims the names this package builds, so the door and the
 // agent cannot disagree about what a flock is called.
@@ -405,3 +443,9 @@ func FlockHostName(flock string) string {
 	}
 	return "briard-" + flock + ".local"
 }
+
+// BareFlockHostName is the flock's convenience name, `briard.local`: what the installer prints
+// and the one-time dashboard link carries, answered by every named flock beside FlockHostName. The
+// same alias rule as BareHostName, and the same accepted ambiguity in a two-flock house. The door
+// forwards it to the dashboard the way it forwards every name it does not route.
+const BareFlockHostName = "briard.local"

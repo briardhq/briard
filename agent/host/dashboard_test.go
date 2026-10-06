@@ -33,7 +33,7 @@ func TestDashboardMintsACodeAndReportsTheURL(t *testing.T) {
 	if g.got.Name != "Kostas" || g.got.Username != "kostas" || g.got.Language != "el" {
 		t.Errorf("account not carried: %+v", g.got)
 	}
-	want := "http://briard-brave-elf.local/?code=" + g.got.Code
+	want := "http://briard.local/?code=" + g.got.Code
 	if o.Detail != want {
 		t.Errorf("Detail = %q, want %q", o.Detail, want)
 	}

@@ -32,8 +32,8 @@ func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Dir
 		}
 	}
 	if cfg.FlockName == "" {
-		// Without a name there is no address to print: the dashboard answers at the node's own
-		// mDNS name, and net.mdnsname publishes nothing for an unnamed flock.
+		// Without a name there is no address to print: the door answers the bare `briard.local`
+		// only beside the flock's own name, and net.mdnsname publishes nothing for an unnamed flock.
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine has no name yet, so the Briard page has no address"}
 	}
 	code, err := dashboard.NewCode()
@@ -45,7 +45,7 @@ func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Dir
 	if err := g.DashboardHandoff(ctx, h); err != nil {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf("hand the code to the guest: %v", err)}
 	}
-	url := dashboard.URL(cfg.FlockName, code)
+	url := dashboard.URL(code)
 	logf("dashboard: code handed to the guest (valid %s)", dashboard.TTL)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: url}
 }

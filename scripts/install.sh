@@ -439,29 +439,10 @@ if command -v systemctl >/dev/null 2>&1; then
 		say "starting briard-agent (+ the daily update timer)"
 		systemctl start briard-agent.service briard-update.timer
 	fi
-	# THE NAME IS READ, NOT KNOWN. The agent mints it at its first start and records it
-	# at $STATE/flock-name, so this script has to wait for the agent before it can say what the
-	# household should type. That reordering is the whole cost of the move, and it buys back the
-	# closing message being about a node that EXISTS rather than one about to.
-	#
-	# Bounded, and the bound is generous because the thing being waited on is a first boot on
-	# somebody's spare desktop. Past it the message still goes out, naming the file instead.
-	say "briard is starting (up to 3 minutes)..."
-	FLOCK_NAME=""
-	waited=0
-	while [ "$waited" -lt 180 ]; do
-		[ -s "$STATE/flock-name" ] && FLOCK_NAME="$(cat "$STATE/flock-name")" && break
-		sleep 2
-		waited=$((waited + 2))
-	done
-
-	# THE NAME, AND ONLY THE NAME. The address is deliberately not here any more: under
-	# DHCP there is none to print yet, and offering a second way in made the sentence long to say
-	# a thing that is true of fewer installs than it sounds. The name is the one that stays true
-	# when the address moves, and it is what the front door routes on.
-	#
-	# NOTE what this deliberately does NOT promise: that the router's client list shows this same
-	# name. It does not, and that is a decision rather than an oversight -- DHCP option 12
+	# NO ADDRESS IS PRINTED HERE. Nothing answers yet, so a name or an address at this point is a
+	# promise about a node that is still booting, and the one-time link below carries the name
+	# anyway (`briard.local`, which every install answers). Under DHCP there is no address to
+	# print at all. The router's client list is deliberately not promised either: DHCP option 12
 	# stays `briard-<mac tail>`, derived in-guest from the NIC's own address, because changing a
 	# hostname mid-lease is a change no one can predict a server's reaction to and a rename must
 	# never risk the address.
@@ -469,11 +450,7 @@ if command -v systemctl >/dev/null 2>&1; then
 	# WHAT IS ON THE NODE is not said here either. That sentence reads the node's own state to talk
 	# to a person, which is a thing that changes -- so it is the agent's, printed by the `open`
 	# verb below, which is the same answer a household gets running it a month from now.
-	if [ -z "$FLOCK_NAME" ]; then
-		say "installed. the agent is still starting; it will record this install's name at $STATE/flock-name"
-	else
-		say "installed. briard is starting; it will answer at http://briard-$FLOCK_NAME.local/"
-	fi
+	say "installed. briard is starting (up to 3 minutes)..."
 	# THE LINK IS THE LAST THING THE INSTALLER PRINTS. The dashboard's only door is a
 	# one-time link the agent mints, and the guest has to be up for it -- so wait for
 	# it, bounded, on the agent's OWN word: the status line it logs once the node is primary and

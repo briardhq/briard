@@ -25,6 +25,7 @@ import (
 	"briard.io/agent/reportcard"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
+	"briard.io/shared/routes"
 )
 
 // doctorBudget bounds the whole agent half. The snapshot's own reads are 5 s each; this is the
@@ -233,16 +234,17 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		return cs
 	}
 
+	// THE NAME THE DOOR REPORTS IS THE ONE IT WAS GIVEN: the responder probes nothing and renames
+	// nothing, so Published is either the flock name or empty, and "published as some other name"
+	// is not a state it can be in. Nor does anything here notice a second flock answering the
+	// bare `briard.local`: that is ambiguous by design (routes.BareHostName), and the flock-scoped
+	// name reported below is what tells the two apart.
 	if f.FlockName != "" {
-		want := "briard-" + f.FlockName + ".local"
-		switch f.Published {
-		case "":
-			add("name", reportcard.Warn, want+" is not published", "`briard logs` shows avahi's side")
-		case f.FlockName:
-			add("name", reportcard.Pass, "published as "+want, "")
-		default:
-			add("name", reportcard.Warn, fmt.Sprintf("published as briard-%s.local, not %s: another machine on your network has that name", f.Published, want),
-				"the address always works; find the other machine calling itself "+want)
+		want := routes.FlockHostName(f.FlockName)
+		if f.Published == "" {
+			add("name", reportcard.Warn, want+" is not published", "`briard logs` shows the front door's side")
+		} else {
+			add("name", reportcard.Pass, "published as "+want+" and "+routes.BareFlockHostName, "")
 		}
 	}
 

@@ -588,8 +588,8 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	if s.Name != "dummy" || s.Address != "127.0.0.1" || s.Health != "http://:8080/healthz" {
 		t.Errorf("entry = %+v, want the rendered address and a host-less health endpoint", s)
 	}
-	if len(s.Hosts) != 2 || s.Hosts[0] != "briard-brave-elf-dummy.local" || s.Hosts[1] != "dummy.brave-elf.briard.casa" {
-		t.Errorf("hosts = %v, want the flock-scoped mDNS label first and the casa name beside it", s.Hosts)
+	if len(s.Hosts) != 3 || s.Hosts[0] != "briard-brave-elf-dummy.local" || s.Hosts[1] != "briard-dummy.local" || s.Hosts[2] != "dummy.brave-elf.briard.casa" {
+		t.Errorf("hosts = %v, want the flock-scoped mDNS label first, the bare alias and the casa name beside it", s.Hosts)
 	}
 	// ONE FILE: the mDNS publisher reads these same names out of this same table with jq, so there
 	// is no flattened second copy anyone can read while it is stale.
@@ -699,8 +699,8 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	if len(tbl.Services) != 1 {
 		t.Fatalf("table = %+v, want the service kept through the rename", tbl.Services)
 	}
-	if got := tbl.Services[0].Hosts; len(got) != 2 || got[0] != "briard-picked-hornet-dummy.local" || got[1] != "dummy.picked-hornet.briard.casa" {
-		t.Errorf("hosts = %v, want the new flock name in both forms", got)
+	if got := tbl.Services[0].Hosts; len(got) != 3 || got[0] != "briard-picked-hornet-dummy.local" || got[1] != "briard-dummy.local" || got[2] != "dummy.picked-hornet.briard.casa" {
+		t.Errorf("hosts = %v, want the new flock name in both flock-scoped forms and the alias between", got)
 	}
 	if tbl.Services[0].Address != "127.0.0.1" {
 		t.Errorf("address = %q, want it untouched: a rename changes names and nothing else", tbl.Services[0].Address)
@@ -743,7 +743,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	// It keeps its NAME and its ADDRESS: the name resolves to the VIP where MQTT is listening, and
 	// the address is what the health floor GETs from inside the guest. No route is one of the
 	// three, never all of them.
-	if len(mq.Hosts) != 2 || mq.Hosts[0] != "briard-brave-elf-mosquitto.local" || mq.Hosts[1] != "mosquitto.brave-elf.briard.casa" {
+	if len(mq.Hosts) != 3 || mq.Hosts[0] != "briard-brave-elf-mosquitto.local" || mq.Hosts[1] != "briard-mosquitto.local" || mq.Hosts[2] != "mosquitto.brave-elf.briard.casa" {
 		t.Errorf("broker hosts = %v, want it named", mq.Hosts)
 	}
 	if mq.Address == "" || mq.Health == "" {

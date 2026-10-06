@@ -423,15 +423,19 @@ pkgs.testers.runNixOSTest {
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     # THE INSTALLER ENDS WITH THE LINK: it waited for the agent's own healthy line
-    # and minted once, so its last lines carry a one-time dashboard link at the node's own name
-    # -- not merely the name of the verb that would get one. Redeemed below once the router has
-    # leased the VIP (the name is not resolvable from the client; the door is reached by address
-    # under the name the link carries, as a browser with mDNS would reach it).
+    # and minted once, so its last lines carry a one-time dashboard link at the bare
+    # `briard.local` -- the convenience alias every flock answers beside its own name, and the
+    # one line a household reads -- not merely the name of the verb that would get one.
+    # Redeemed below once the router has leased the VIP (the name is not resolvable from the
+    # client; the door is reached by address under the name the link carries, as a browser
+    # with mDNS would reach it). And it is the ONLY address the installer prints: an earlier
+    # "it will answer at" line named a node that was still booting.
     import re
-    m = re.search(r"http://(briard-[a-z0-9-]+\.local)/\?code=([0-9a-f]{64})", install_out)
+    m = re.search(r"http://(briard\.local)/\?code=([0-9a-f]{64})", install_out)
     assert m, f"the installer printed no one-time link; its closing lines: {install_out.strip().splitlines()[-6:]}"
     install_link_host, install_code = m.group(1), m.group(2)
     assert "sudo briard open" in install_out, "the installer no longer says how to get another link"
+    assert "it will answer at" not in install_out, "the installer promised an address before the node answered"
     # The footprint SEES an install: one entry of every kind it scans, or the residue
     # check at the end would be comparing two scans blind to the thing it is about.
     installed = footprint() - pristine
@@ -741,6 +745,13 @@ pkgs.testers.runNixOSTest {
     # And the whole way through: the name a household types actually serves.
     client.wait_until_succeeds(f"curl -fsS http://briard-{flock_name}.local/healthz", timeout=120)
     print(f"off-box client reached http://briard-{flock_name}.local/ by NAME")
+    # THE BARE ALIAS, beside it: `briard.local` is what the installer printed and what the
+    # household types, answered by the same responder for the same VIP. Read the output, never
+    # $? (avahi-resolve-host-name exits 0 on a timeout).
+    bare = client.succeed("avahi-resolve-host-name -4 briard.local")
+    assert vip in bare, f"briard.local resolved to {bare!r}, not to the leased VIP {vip}"
+    client.succeed("curl -fsS -m 20 http://briard.local/healthz")
+    print("off-box client reached http://briard.local/ by the bare NAME")
 
     # ⚠️ THE PREMISE OF EVERYTHING BELOW: THE GUEST SAYS NOTHING UNSOLICITED.
     #

@@ -46,7 +46,7 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 	}
 	// The service's OWN name on the front door's :80, not the flock name and a port: the
 	// port in this sentence was the shape of a node that could only be reached around its door.
-	if got := Reach(m, "home"); got != "reach it at http://briard-home-something-else.local/" {
+	if got := Reach(m, "home"); got != "reach it at http://briard-something-else.local/" {
 		t.Errorf("Reach = %q", got)
 	}
 }
@@ -127,7 +127,7 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	if strings.Contains(got, "9883") {
 		t.Errorf("the reach line names the pod-internal management port: %q", got)
 	}
-	if !strings.Contains(got, "briard-home-mosquitto.local") {
+	if !strings.Contains(got, "briard-mosquitto.local") {
 		t.Errorf("the reach line does not name the service: %q", got)
 	}
 	// No published name means no address to promise — the same rule the HTTP form follows.

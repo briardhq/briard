@@ -18,6 +18,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"briard.io/shared/routes"
 )
 
 // Dir is the guest-side directory, on tmpfs and node-local like the routing table beside it: a
@@ -58,10 +60,13 @@ func (h Handoff) Expired(now time.Time) bool {
 	return now.After(h.Issued.Add(TTL))
 }
 
-// URL is where the household opens the dashboard with this code: the node's own name at the
-// front door, which forwards every name it does not route to the dashboard.
-func URL(flock, code string) string {
-	return "http://briard-" + flock + ".local/?code=" + code
+// URL is where the household opens the dashboard with this code: the bare `briard.local` at the
+// front door, which forwards every name it does not route to the dashboard. The bare alias
+// rather than the flock-scoped name because this is the one line a household reads and types
+// (routes.BareHostName has the trade: in a two-flock house the link may reach the other flock,
+// which refuses the code, and the flock-scoped name still works).
+func URL(code string) string {
+	return "http://" + routes.BareFlockHostName + "/?code=" + code
 }
 
 // AdminPort is the second virtio-serial port between host and guest: the guest end

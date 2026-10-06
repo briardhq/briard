@@ -428,7 +428,12 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 // in a browser would hand them a dead link for a service that is working perfectly -- and no
 // reverse proxy can front it either, which is why its name resolves but does not serve.
 func Reach(m manifest.Manifest, flock string) string {
-	host := routes.HostName(flock, m.Name)
+	// WHAT IS PRINTED IS THE BARE ALIAS (routes.BareHostName): the short name a household types.
+	// The flock-scoped name gates it, so an unnamed flock still promises no name at all.
+	host := ""
+	if routes.HostName(flock, m.Name) != "" {
+		host = routes.BareHostName(m.Name)
+	}
 	// A service the door does not front is reached at a PUBLISHED PORT, and saying which one is
 	// the whole of its address. mosquitto is the case: the manifest's port is the management
 	// endpoint the liveness floor probes, and what the household points clients at is MQTT.

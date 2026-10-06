@@ -277,8 +277,8 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	}
 	loc, err := url.Parse(resp.Header.Get("Location"))
 	must(t, err)
-	if loc.Scheme != "http" || loc.Host != "briard-brave-elf-home-assistant.local" || loc.Path != "/onboarding.html" {
-		t.Errorf("landed on %s; want http://briard-brave-elf-home-assistant.local/onboarding.html", loc)
+	if loc.Scheme != "http" || loc.Host != "briard-home-assistant.local" || loc.Path != "/onboarding.html" {
+		t.Errorf("landed on %s; want http://briard-home-assistant.local/onboarding.html", loc)
 	}
 	q := loc.Query()
 	if q.Get("auth_callback") != "1" || q.Get("code") != "code-for-the-browser" {
@@ -288,7 +288,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	must(t, err)
 	var state struct{ HassURL, ClientID string }
 	must(t, json.Unmarshal(stateRaw, &state))
-	if state.HassURL != "http://briard-brave-elf-home-assistant.local" || state.ClientID != "http://briard-brave-elf-home-assistant.local/" {
+	if state.HassURL != "http://briard-home-assistant.local" || state.ClientID != "http://briard-home-assistant.local/" {
 		t.Errorf("state = %+v; want hassUrl without and clientId with the trailing slash", state)
 	}
 	// What HA was asked for.
@@ -326,10 +326,10 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	// page resumes with it -- the same callback shape as the first open, no user created.
 	resp = r.do("POST", "/open/home-assistant", c, nil)
 	loc, _ = url.Parse(resp.Header.Get("Location"))
-	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-brave-elf-home-assistant.local" || loc.Path != "/onboarding.html" || loc.Query().Get("code") != "code-for-the-owner" {
+	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-home-assistant.local" || loc.Path != "/onboarding.html" || loc.Query().Get("code") != "code-for-the-owner" {
 		t.Errorf("open after the user step = %d %q; want 303 to the onboarding page with the minted code", resp.StatusCode, loc)
 	}
-	if r.ha.mintClient != "http://briard-brave-elf-home-assistant.local/" || r.ha.mintBearer != "Bearer sys-access" {
+	if r.ha.mintClient != "http://briard-home-assistant.local/" || r.ha.mintBearer != "Bearer sys-access" {
 		t.Errorf("the mint was asked for client %q with %q; want the browser's origin/ and the control channel's bearer", r.ha.mintClient, r.ha.mintBearer)
 	}
 	// Everything done: HA's own auth callback on its front page, with the tokens stored.
@@ -341,14 +341,14 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	resp = r.do("POST", "/open/home-assistant", c, nil)
 	loc, _ = url.Parse(resp.Header.Get("Location"))
 	q = loc.Query()
-	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-brave-elf-home-assistant.local" || loc.Path != "/" ||
+	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-home-assistant.local" || loc.Path != "/" ||
 		q.Get("auth_callback") != "1" || q.Get("code") != "code-for-the-owner" || q.Get("storeToken") != "true" {
 		t.Errorf("open when onboarded = %d %q; want 303 to HA's front page with auth_callback, the minted code and storeToken", resp.StatusCode, loc)
 	}
 	stateRaw, _ = base64.StdEncoding.DecodeString(q.Get("state"))
 	state = struct{ HassURL, ClientID string }{}
 	must(t, json.Unmarshal(stateRaw, &state))
-	if state.HassURL != "http://briard-brave-elf-home-assistant.local" || state.ClientID != "http://briard-brave-elf-home-assistant.local/" {
+	if state.HassURL != "http://briard-home-assistant.local" || state.ClientID != "http://briard-home-assistant.local/" {
 		t.Errorf("later-open state = %+v", state)
 	}
 	// The page offers the button on a set-up HA too: that IS the later open.
@@ -385,7 +385,7 @@ func TestOpenSurfacesARefusedMint(t *testing.T) {
 		return resp, string(body)
 	}
 	resp, body := open()
-	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "no owner") || !strings.Contains(body, "http://briard-brave-elf-home-assistant.local/") {
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "no owner") || !strings.Contains(body, "http://briard-home-assistant.local/") {
 		t.Errorf("open with no owner = %d %q; want 409 naming the missing owner and the address", resp.StatusCode, body)
 	}
 	if resp.Header.Get("Location") != "" {
@@ -395,7 +395,7 @@ func TestOpenSurfacesARefusedMint(t *testing.T) {
 	r.ha.noOwner, r.ha.noMinter = false, true
 	r.ha.mu.Unlock()
 	resp, body = open()
-	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "integration") || !strings.Contains(body, "http://briard-brave-elf-home-assistant.local/") {
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "integration") || !strings.Contains(body, "http://briard-home-assistant.local/") {
 		t.Errorf("open with no minter = %d %q; want 502 naming the integration and the address", resp.StatusCode, body)
 	}
 }
@@ -435,7 +435,7 @@ func TestSchemeFollowsTheDoor(t *testing.T) {
 		t.Fatalf("cookie over https = %+v; want Secure", c)
 	}
 	resp = r.do("POST", "/open/home-assistant", c, map[string]string{"X-Forwarded-Proto": "https"})
-	if got := resp.Header.Get("Location"); !strings.HasPrefix(got, "https://briard-brave-elf-home-assistant.local/onboarding.html?") {
+	if got := resp.Header.Get("Location"); !strings.HasPrefix(got, "https://briard-home-assistant.local/onboarding.html?") {
 		t.Errorf("landed on %q; want the https origin", got)
 	}
 }
@@ -509,7 +509,7 @@ func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 
 	body := r.page(phone)
 	for _, want := range []string{"Firefox on Linux", "Safari on iPhone", `name="id" value="` + laptopID + `"`, `name="id" value="` + phoneID + `"`,
-		"/profile/security", `<a href="http://briard-brave-elf-home-assistant.local/profile/security" target="_blank" rel="noopener">`} {
+		"/profile/security", `<a href="http://briard-home-assistant.local/profile/security" target="_blank" rel="noopener">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the phone's page lacks %q", want)
 		}
@@ -838,8 +838,8 @@ func TestHomeAssistantOpensInANewTab(t *testing.T) {
 	body := r.page(c)
 	for _, want := range []string{
 		`action="/open/home-assistant" target="_blank"`,
-		`<a href="http://briard-brave-elf-home-assistant.local/" target="_blank" rel="noopener">`,
-		`<a href="http://briard-brave-elf-home-assistant.local/config/person" target="_blank" rel="noopener">Settings → People</a>`,
+		`<a href="http://briard-home-assistant.local/" target="_blank" rel="noopener">`,
+		`<a href="http://briard-home-assistant.local/config/person" target="_blank" rel="noopener">Settings → People</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the set-up page lacks %q", want)

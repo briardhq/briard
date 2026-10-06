@@ -16,7 +16,13 @@ package main
 // ⚠️ THE COST, ACCEPTED ON THE OWNER'S CALL: a browsing client learns of a NEW service
 // on its next periodic query rather than instantly, and an uninstalled one leaves a stale PTR
 // until its TTL. Failover needs none of it — both nodes publish byte-identical records, because
-// every name is flock-scoped and points at a VIP whose address does not change when it moves.
+// every name points at a VIP whose address does not change when it moves.
+//
+// ⚠️ NO PROBING ALSO MEANS NO CONFLICT DETECTION, and the bare names rely on that being
+// acceptable: `briard.local` and `briard-<service>.local` are answered by every flock beside its
+// flock-scoped names, so two flocks in one house both answer them and a client gets whichever
+// replies first (routes.BareHostName). The flock-scoped names stay unambiguous, and nothing the
+// node does depends on the bare ones.
 // ⚠️ If an announcer is ever added, `nixosTest/install-macvtap`'s cold-cache assertion needs its
 // announcement-tail wait back: an announcement is the same packet as a response, so a client can
 // be answered by a multicast it never asked for, and the assertion silently becomes a cache read
@@ -59,8 +65,8 @@ type mdnsWorld struct {
 // mdnsWorldFor is the PURE half, split from the responder for the reason agent/subnet splits its
 // reader from its parser: the rule for what belongs on the wire is testable against real tables
 // rather than trusted. Nothing here composes a name — they are read from the table the agent
-// materialised (routes.HostName) or from routes.FlockHostName, so the naming rule stays in one
-// function.
+// materialised (routes.HostNames) or are the flock's own two (routes.FlockHostName,
+// routes.BareFlockHostName), so the naming rule stays in one package.
 //
 // AN EMPTY WORLD IS A REAL STATE, not a failure: a node whose flock has no minted name, or that
 // has converged to nothing, publishes nothing. The door serves HTTP either way.
@@ -83,7 +89,12 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 		seen[n] = true
 		w.names = append(w.names, n)
 	}
-	add(routes.FlockHostName(flock))
+	if own := routes.FlockHostName(flock); own != "" {
+		// The bare alias rides with the flock's own name and never without it: a node that
+		// cannot name its flock answers for no flock, not for "the" one.
+		add(own)
+		add(routes.BareFlockHostName)
+	}
 	for _, s := range t.Services {
 		for _, h := range s.Hosts {
 			add(h)

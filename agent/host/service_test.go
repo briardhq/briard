@@ -826,7 +826,7 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 	}
 	// The SERVICE's own name, on the door's :80. The port that used to be in this
 	// sentence was the address of a service reached around the front door rather than through it.
-	if want := "reach it at http://briard-picked-hornet-home-assistant.local/"; o.Detail != want {
+	if want := "reach it at http://briard-home-assistant.local/"; o.Detail != want {
 		t.Fatalf("Detail = %q, want %q", o.Detail, want)
 	}
 }

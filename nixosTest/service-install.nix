@@ -286,12 +286,16 @@ pkgs.testers.runNixOSTest {
     # the name is composed from the flock name rather than baked at install.
     primary.succeed("mkdir -p /run/briard && printf 'FLOCK_NAME=brave-elf\\n' >/run/briard/mdns.env")
     primary.succeed("briard-guest-agent --converge")
-    host = json.loads(primary.succeed("cat /run/briard/routes.json"))["services"][0]["hosts"][0]
+    hosts = json.loads(primary.succeed("cat /run/briard/routes.json"))["services"][0]["hosts"]
+    host = hosts[0]
     assert host == "briard-brave-elf-fixture.local", f"the node composed {host}"
-    body = primary.succeed(f"curl -fsS -H 'Host: {host}' http://192.168.1.100/healthz")
-    assert "ok" in body and "front door" not in body, (
-        f"the VIP under the service's name answered {body!r}; want the SERVICE's own answer"
-    )
+    assert "briard-fixture.local" in hosts, f"the bare alias is not in the table: {hosts}"
+    # The door routes the flock-scoped name and the bare alias alike to the SERVICE.
+    for name in (host, "briard-fixture.local"):
+        body = primary.succeed(f"curl -fsS -H 'Host: {name}' http://192.168.1.100/healthz")
+        assert "ok" in body and "front door" not in body, (
+            f"the VIP under {name} answered {body!r}; want the SERVICE's own answer"
+        )
     # The bare address is still the node's, and it names what it routes.
     node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "1 service(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"

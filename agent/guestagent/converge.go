@@ -734,10 +734,11 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 			Health: fmt.Sprintf("http://:%d%s", p.Port, p.HealthPath),
 			Ports:  s.m.Ports,
 		}
-		if h := routes.HostName(flock, s.name); h != "" {
-			// The mDNS label first (announcements point at Hosts[0]), the casa name beside
-			// it: the door answers both, the publisher claims only the `.local` one.
-			e.Hosts = []string{h, routes.CasaHostName(flock, s.name)}
+		if hosts := routes.HostNames(flock, s.name); hosts != nil {
+			// The flock-scoped label first (announcements point at Hosts[0]), the bare alias and
+			// the casa name beside it: the door answers all three, the publisher claims the
+			// `.local` ones.
+			e.Hosts = hosts
 			// Only alongside a name, because an announcement's SRV target is that name. The
 			// registry applies the same rule to itself; the ordering here is what makes it true
 			// of the table rather than merely of the caller.
@@ -801,10 +802,7 @@ func renameRoutes(x Executor, flock string) {
 		return
 	}
 	for i := range t.Services {
-		t.Services[i].Hosts = nil
-		if h := routes.HostName(flock, t.Services[i].Name); h != "" {
-			t.Services[i].Hosts = []string{h, routes.CasaHostName(flock, t.Services[i].Name)}
-		}
+		t.Services[i].Hosts = routes.HostNames(flock, t.Services[i].Name)
 	}
 	if err := putRoutes(x, t); err != nil {
 		log.Printf("mdns rename: %v; the routing table still carries the old names", err)

@@ -270,3 +270,44 @@ func TestCasaHostNameIsTheServiceUnderTheFlock(t *testing.T) {
 		t.Fatalf("a nameless service has a casa name: %q", got)
 	}
 }
+
+// The bare names are what a household types and what every print site shows; the flock-scoped
+// names stay the identity. HostNames is the one place the order is decided, and Hosts[0] must
+// remain the flock-scoped name because it is the SRV target announcements point at -- two flocks
+// aiming their broker records at one shared `briard-mosquitto.local` would send a device to
+// whichever flock answered first.
+func TestBareNamesRideBesideTheFlockScopedOnes(t *testing.T) {
+	if got := BareHostName("home-assistant"); got != "briard-home-assistant.local" {
+		t.Errorf("BareHostName = %q", got)
+	}
+	if labels := strings.Split(strings.TrimSuffix(BareHostName("home-assistant"), ".local"), "."); len(labels) != 1 {
+		t.Errorf("the bare name is %d labels before .local; mdns4_minimal resolves one", len(labels))
+	}
+	if BareFlockHostName != "briard.local" {
+		t.Errorf("BareFlockHostName = %q", BareFlockHostName)
+	}
+	want := []string{"briard-brave-elf-home-assistant.local", "briard-home-assistant.local", "home-assistant.brave-elf.briard.casa"}
+	got := HostNames("brave-elf", "home-assistant")
+	if len(got) != len(want) {
+		t.Fatalf("HostNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("HostNames[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// The bare alias never stands alone: a flock with no minted name routes nothing, rather than
+	// answering `briard-home-assistant.local` for a flock it cannot name.
+	if got := HostNames("", "home-assistant"); got != nil {
+		t.Errorf("HostNames with no flock = %v, want none", got)
+	}
+	if got := BareHostName(""); got != "" {
+		t.Errorf("BareHostName with no service = %q, want none", got)
+	}
+	// And the door routes on the alias exactly as it does on the identity.
+	tbl := Table{Services: []Service{{Name: "home-assistant", Hosts: HostNames("brave-elf", "home-assistant"),
+		Address: "127.0.0.1", Routes: []Route{{Listen: ListenName, To: "http://:8123"}}}}}
+	if s, ok := tbl.Lookup("BRIARD-HOME-ASSISTANT.local:80"); !ok || s.Name != "home-assistant" {
+		t.Errorf("the bare alias is not routed: %v %v", s, ok)
+	}
+}

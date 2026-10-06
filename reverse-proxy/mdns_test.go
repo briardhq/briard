@@ -39,6 +39,7 @@ func TestTheWorldIsTheFlockNameEveryServiceNameAndTheDeclaredRecords(t *testing.
 		"briard-brave-elf-home-assistant.local",
 		"briard-brave-elf-mosquitto.local",
 		"briard-brave-elf.local",
+		"briard.local",
 	}
 	if len(w.names) != len(want) {
 		t.Fatalf("published %v, want %v", w.names, want)
@@ -95,8 +96,8 @@ func TestAConvergedToNothingNodeStillAnswersTheFlockName(t *testing.T) {
 	if w.empty() {
 		t.Fatal("a named node with no services published nothing at all")
 	}
-	if len(w.names) != 1 || w.names[0] != "briard-brave-elf.local" {
-		t.Fatalf("published %v, want just the flock's own name", w.names)
+	if len(w.names) != 2 || w.names[0] != "briard-brave-elf.local" || w.names[1] != "briard.local" {
+		t.Fatalf("published %v, want just the flock's own name and the bare alias", w.names)
 	}
 }
 
