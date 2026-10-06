@@ -157,7 +157,7 @@ var commands = []command{
 	{
 		name: "update", args: "[-vm]", group: groupRepair,
 		synopsis: "update briard's own software, or with -vm the VM it runs apps in, from the release channel now",
-		detail: "Both resolve `stable` (-to takes latest or an exact id). Bare, it updates every briard\n" +
+		detail: "Both resolve `stable` (-to takes latest, dev or an exact id). Bare, it updates every briard\n" +
 			"binary this machine runs, inside the VM as well as out: it starts the same update unit the\n" +
 			"nightly timer and the cloud use and prints how it ended: already at the target, staged and\n" +
 			"armed (the agent restarts itself at its next safe point; `systemctl restart briard-agent`\n" +

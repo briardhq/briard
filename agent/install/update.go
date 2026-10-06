@@ -178,8 +178,9 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		if have.Version != want.Version {
 			return Decision{Reason: fmt.Sprintf("installed %s is past stable %s; nothing to do", have.Version, want.Version)}, nil
 		}
-	case TargetLatest:
-		// latest is by construction never older than stable, so no floor to check.
+	case TargetLatest, TargetDev:
+		// latest is by construction never older than stable, so no floor to check. dev is cut
+		// from HEAD and asked for by name, by a test node: it goes wherever dev points, floor or no.
 	default:
 		if want.Version != target {
 			return Decision{}, fmt.Errorf("%w: asked for %s, manifest there names %s", ErrManifest, target, want.Version)
@@ -244,7 +245,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 	have := u.installed(logf)
 	var stable *Manifest
-	if target != TargetStable && target != TargetLatest {
+	if !IsPointer(target) {
 		s, _, err := u.Fetcher.fetchManifest(ctx, TargetStable)
 		if err != nil {
 			return "", fmt.Errorf("%w: cannot pin %s — reading stable failed: %v", ErrBelowFloor, target, err)

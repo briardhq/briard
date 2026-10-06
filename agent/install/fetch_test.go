@@ -545,7 +545,7 @@ func TestWriteManifestRefusesUnusableIds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range [][2]string{
-		{ChainBriard, TargetStable}, {ChainBriard, TargetLatest}, {ChainBriard, ""}, {ChainBriard, "../v3"},
+		{ChainBriard, TargetStable}, {ChainBriard, TargetLatest}, {ChainBriard, TargetDev}, {ChainBriard, ""}, {ChainBriard, "../v3"},
 		{"", testVersion}, {"briard/extra", testVersion}, {".briard", testVersion},
 	} {
 		if err := WriteManifest(stage, tc[0], "", tc[1], "", "", "", ""); err == nil {

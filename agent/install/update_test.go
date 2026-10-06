@@ -47,6 +47,10 @@ func TestDecide(t *testing.T) {
 		{"stable with no installed manifest installs", TargetStable, *host(cur), nil, nil, true, nil},
 		{"latest equal id is a no-op", TargetLatest, *host(cur), host(cur), nil, false, nil},
 		{"latest different id installs, hash included", TargetLatest, *host(sameDay), host(cur), nil, true, nil},
+		// dev is a pointer like latest, not an exact id: it is never floored against stable and
+		// never compared with its own name -- the previous two were what an unknown word got.
+		{"dev different id installs, no floor, no stable needed", TargetDev, *host(old), host(cur), nil, true, nil},
+		{"dev equal id is a no-op", TargetDev, *host(cur), host(cur), nil, false, nil},
 		{"exact newer than stable installs", next, *host(next), host(cur), stable, true, nil},
 		{"exact equal to installed is a no-op", cur, *host(cur), host(cur), stable, false, nil},
 		{"exact older than installed but at stable's date installs (downgrade to the floor)", sameDay, *host(sameDay), host(next), stable, true, nil},

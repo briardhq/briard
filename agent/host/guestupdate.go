@@ -84,7 +84,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return failed(err.Error())
 	}
 	var stable *install.Manifest
-	if target != install.TargetStable && target != install.TargetLatest {
+	if !install.IsPointer(target) {
 		s, _, err := f.Manifest(rctx, install.TargetStable)
 		if err != nil {
 			return failed(fmt.Sprintf("%v: cannot pin %s — reading stable failed: %v", install.ErrBelowFloor, target, err))

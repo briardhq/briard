@@ -56,7 +56,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	run := fs.String("run", envOr("UPDATE_RUN_DIR", selfupdate.DefaultRunDir), "briard: the tmpfs dir the update messages pass through")
 	unit := fs.String("unit", selfupdate.DefaultUpdateUnit, "briard: the update unit to start")
 	sock := fs.String("sock", sockDefault(), "-vm: the agent's admin socket")
-	target := fs.String("to", install.TargetStable, "the release to converge to: stable, latest, or an exact id")
+	target := fs.String("to", install.TargetStable, "the release to converge to: stable, latest, dev, or an exact id")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: briard update [-vm] [options]\n\nOptions:\n")
 		fs.PrintDefaults()

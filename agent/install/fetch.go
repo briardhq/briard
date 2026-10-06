@@ -84,10 +84,13 @@ const (
 	// (`windows`) is published beside it with no consumer until v5.
 	PlatformLinux = "linux"
 
-	// TargetStable and TargetLatest are the two pointer paths every chain serves. Anything else
-	// passed as a target is taken to be an exact version id.
+	// TargetStable, TargetLatest and TargetDev are the three pointer paths every chain serves
+	// (IsPointer). Anything else passed as a target is taken to be an exact version id. `dev` is
+	// the ungated one: whatever the publisher last cut from HEAD, for a test node and nobody
+	// else -- it moves without a gate and its previous release is deleted when it does.
 	TargetStable = "stable"
 	TargetLatest = "latest"
+	TargetDev    = "dev"
 
 	// ManifestName is the signed index served at <root>/<chain>/<target>/manifest.json; its
 	// detached signature is served alongside at manifest.json.sig.
@@ -500,4 +503,12 @@ func (f *Fetcher) Artifact(ctx context.Context, version, dir string, a Entry) er
 		return fmt.Errorf("install: bad release version %q", version)
 	}
 	return f.fetchArtifact(ctx, path.Join(f.Chain, version, f.Platform), dir, a)
+}
+
+// IsPointer says whether a target names a pointer path rather than an exact release id. The one
+// place the three names are enumerated: a version that spells a pointer is refused by the manifest
+// (the tree could not say which it is), and the update path floors only an exact id against
+// stable.
+func IsPointer(target string) bool {
+	return target == TargetStable || target == TargetLatest || target == TargetDev
 }

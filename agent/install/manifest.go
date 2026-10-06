@@ -55,7 +55,7 @@ func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs 
 	}
 	// A version id that spells a pointer would make `<chain>/stable/` a release directory and a
 	// pointer at once; the tree has no way to say which it is.
-	if !validSegment(version) || version == TargetStable || version == TargetLatest {
+	if !validSegment(version) || IsPointer(version) {
 		return fmt.Errorf("install: bad release version %q", version)
 	}
 	if (system != "" || minBriard != "") && chain != ChainVM {
@@ -67,7 +67,7 @@ func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs 
 	if vm != "" && chain != ChainBriard {
 		return fmt.Errorf("install: vm names the briard chain's pair, not %s's", chain)
 	}
-	if vm != "" && (!validSegment(vm) || vm == TargetStable || vm == TargetLatest) {
+	if vm != "" && (!validSegment(vm) || IsPointer(vm)) {
 		return fmt.Errorf("install: bad vm release %q", vm)
 	}
 	if inputs != "" && chain != ChainVM {

@@ -21,9 +21,10 @@
 #                                       (the Windows arm; no consumer yet)
 #     latest/{linux,windows}/           manifest.json(+.sig), briard-agent (linux)
 #     stable/{linux,windows}/           likewise
+#     dev/{linux,windows}/              likewise -- the one ungated pointer (see `dev`)
 #   vm/
 #     <version>/                        manifest.json(+.sig), nixos.qcow2.zst
-#     latest/ stable/                   manifest.json(+.sig)
+#     latest/ stable/ dev/              manifest.json(+.sig)
 #
 # A CHAIN is a release line with its own version series: the briard bundle moves as
 # `v3.<date>.<rev>` on every publish; the guest OS as `vm.<date>.<inputs>` and ONLY WHEN ITS
@@ -93,6 +94,15 @@
 # alone, so a same-date promotion would be invisible to it, and would only LOOK like a
 # release. A same-day fix-up takes the next day's number.
 #
+# `dev` IS THE ONE UNGATED POINTER, and its release is the one that does not outlive its
+# successor. `stable` and `latest` are evidence-driven and stay in the bucket until `gc`'s floor;
+# a dev release is HEAD, published to be run on a test node this hour, and it is worth nothing
+# the moment the next one lands. So `dev` does the whole sequence in one run — stage, sign,
+# publish, point `dev` at it — with no gate anywhere, and then DELETES the previous dev release
+# outright, floor or no floor, unless `stable` or `latest` also names it (then it is theirs to
+# keep) or the new dev pairs with its vm image (unchanged inputs; the image stays, the briard
+# directory goes). Three pointer names, one mechanism, and exactly one of them is cheap.
+#
 # SIGNING AND PUBLISHING ARE SEPARATE SUBCOMMANDS ON PURPOSE. `sign` needs the key and no
 # credential; `publish` needs the credential and no key. Either secret alone is inert — a
 # forged signature has nowhere to be served, and the bucket serves what will not verify —
@@ -117,6 +127,9 @@
 #   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm, and its
 #                         install.sh to the channel root
 #                         (default: whatever briard/latest names; refuses a same-date promotion)
+#   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with NO gate, then
+#                         delete the previous dev release unless stable/latest names it
+#                         (needs the key AND the credential; a HEAD on pushed main, like any id)
 #   gc       [--keep V]…  DELETE versioned dirs no pointer names and nothing pins, older than
 #                         the 30-day floor — whole releases, never files
 #   verify   [VERSION]    fetch stable + latest of every chain and arm from the LIVE channel and
@@ -200,11 +213,11 @@ vm_of() {
 # The id a chain uses for the release named by a briard id.
 chain_id() { case "$1" in vm) vm_of "$2" ;; *) echo "$2" ;; esac; }
 # The vm release the live channel serves for these image inputs, if any: `latest` first
-# (what the last publish paired with), then `stable`. Empty when neither matches or the channel
+# (what the last publish paired with), then `stable`, then `dev`. Empty when neither matches or the channel
 # cannot be read -- in which case `stage` publishes a fresh image, which is always safe.
 live_vm_for_inputs() {
 	local p m
-	for p in latest stable; do
+	for p in latest stable dev; do
 		m=$(curl -fsS "$CHANNEL/vm/$p/manifest.json" 2>/dev/null) || continue
 		if [ "$(echo "$m" | jq -r '.inputs // ""')" = "$1" ]; then
 			echo "$m" | jq -r .version; return 0
@@ -733,6 +746,85 @@ promote)
 	say "promoted $V — now run: ./scripts/publish-release.sh verify"
 	;;
 
+dev)
+	# A DEV RELEASE, END TO END, WITH NO GATE. The header says why it exists; what matters here is
+	# what it shares and what it refuses to share. Staging, signing and publishing are the SAME
+	# steps a real release takes -- this arm calls them rather than re-spelling them, so a dev id is
+	# minted, signed and laid out exactly like one that will be promoted, and `verify <id>` reads it
+	# the same way. What it does not share is any gate and any floor: nothing is tested, and the
+	# previous dev release is deleted on the spot.
+	#
+	# THE ID IS AN ORDINARY ID. Cut from a committed HEAD on pushed main like every other
+	# (release_version's two gates stand), so a dev release can be told from a real one only by
+	# which pointer names it -- and `publish` refusing a version the bucket holds means the same
+	# commit cannot be dev-published twice: the last one is still there, under that id.
+	DIR="${2:-$STAGE_DEFAULT}"
+	need nix; need curl; need jq
+	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
+	[ -n "${RELEASE_SIGN_KEY:-}" ] || die "set RELEASE_SIGN_KEY -- dev signs and publishes in one run"
+	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+	# What a pointer names, read from the BUCKET rather than the edge: this decides a delete, and
+	# the edge may still serve the pointer that was purged a moment ago. Empty when the pointer
+	# does not exist yet.
+	named_by() { aws s3 cp "$bucket/$1/$(sub "$2" "$3")/manifest.json" - --endpoint-url "$endpoint" 2>/dev/null | jq -r "$4 // \"\""; }
+	# The previous dev, both chains, before anything moves.
+	prev=$(named_by briard dev linux .version); prev_vm=$(named_by briard dev linux .vm)
+	[ -z "$prev" ] || say "dev currently names $prev (vm ${prev_vm:-?}); it is retired once the new one is up"
+
+	"$0" stage "$DIR"
+	"$0" sign "$DIR"
+	"$0" publish "$DIR"
+	V=$(cat "$DIR/VERSION") || die "no $DIR/VERSION after stage"
+	GV=$(cat "$DIR/VM") || die "no $DIR/VM after stage"
+	[ "$V" != "$prev" ] || die "dev already names $V (publish should have refused this)"
+
+	for a in $(arms_of briard); do arm=${a#-}
+		move_pointer briard "$V" "$arm" dev "$bucket" "$endpoint"
+		say "briard/$(sub dev "$arm") -> $V"
+	done
+	move_pointer vm "$GV" "" dev "$bucket" "$endpoint"
+	say "vm/dev -> $GV"
+	{
+		for a in $(arms_of briard); do arm=${a#-}
+			for f in $POINTER_FILES; do echo "$CHANNEL/briard/$(sub dev "$arm")/$f"; done
+		done
+		for f in $POINTER_FILES; do echo "$CHANNEL/vm/dev/$f"; done
+	} | purge_edge
+
+	# RETIRE THE PREVIOUS DEV. Whole release directories, the rule `gc` keeps (a partial one is a
+	# manifest whose bytes are gone), and no floor: a dev release's only reader is the test node
+	# that asked for `dev`, and `dev` now names something else. The exceptions are the other
+	# pointers' releases -- `stable`'s and `latest`'s are theirs, not dev's to delete, however they
+	# came to share an id -- and, on the vm chain, the image the NEW dev just paired with.
+	if [ -n "$prev" ]; then
+		keep=""
+		for p in stable latest; do
+			[ "$(named_by briard "$p" linux .version)" != "$prev" ] || keep=$p
+		done
+		if [ -n "$keep" ]; then
+			say "keeping briard/$prev: $keep names it"
+		else
+			say "deleting briard/$prev (the previous dev; nothing else names it)"
+			aws s3 rm "$bucket/briard/$prev/" --recursive --endpoint-url "$endpoint" --no-progress
+		fi
+	fi
+	if [ -n "$prev_vm" ] && [ "$prev_vm" != "$GV" ]; then
+		keep=""
+		for p in stable latest; do
+			[ "$(named_by vm "$p" "" .version)" != "$prev_vm" ] || keep=$p
+		done
+		if [ -n "$keep" ]; then
+			say "keeping vm/$prev_vm: $keep names it"
+		else
+			say "deleting vm/$prev_vm (the previous dev's image; nothing else names it)"
+			aws s3 rm "$bucket/vm/$prev_vm/" --recursive --endpoint-url "$endpoint" --no-progress
+		fi
+	elif [ -n "$prev_vm" ]; then
+		say "keeping vm/$prev_vm: the new dev pairs with it (unchanged image inputs)"
+	fi
+	say "dev -> $V (vm $GV), ungated — install it with BRIARD_RELEASE=dev, or \`briard update -to dev\`"
+	;;
+
 gc)
 	shift
 	need nix; need curl; need jq
@@ -767,7 +859,7 @@ gc)
 		# published and promoted together, so one manifest's pointer and LastModified speak for all.
 		first=$(arms_of "$c" | cut -d' ' -f1); first=${first#-}
 		live=""
-		for p in stable latest; do
+		for p in stable latest dev; do
 			live="$live $(curl -fsS "$CHANNEL/$c/$(sub "$p" "$first")/manifest.json" 2>/dev/null | jq -r .version)"
 		done
 		aws s3 ls "$bucket/$c/" --endpoint-url "$endpoint" | awk '/ PRE /{print $2}' | tr -d / |
@@ -834,7 +926,7 @@ verify)
 	# because the first publish of the tree is the one run where it is expected.
 	for c in $CHAINS; do
 		for a in $(arms_of "$c"); do arm=${a#-}
-			for p in stable latest; do
+			for p in stable latest dev; do
 				rel=$(sub "$p" "$arm"); base="$CHANNEL/$c/$rel"
 				# `stable` may not exist yet on a fresh tree; that is said out loud rather than
 				# failed, because the first publish of the tree is the one run where it is
@@ -843,6 +935,7 @@ verify)
 				# reaching here means the pointers are being checked, and one of them is gone.
 				if ! curl -fsS -o /dev/null "$base/manifest.json" 2>/dev/null; then
 					[ "$p" = stable ] && { say "WARNING: no $c/$rel yet — nothing promoted here"; continue; }
+					[ "$p" = dev ] && { say "(no $c/$rel — no dev release out)"; continue; }
 					die "no manifest at $base"
 				fi
 				verify_manifest_at "$base" "$c" "$arm" ""
@@ -853,7 +946,7 @@ verify)
 	# serves. This is the obligation "briard/stable + vm/stable is the tested pair" now rests on,
 	# since the vm id is no longer derivable from the briard id; a pointer moved by hand on one
 	# chain and not the other fails here, before an installer meets it.
-	for p in stable latest; do
+	for p in stable latest dev; do
 		hg=$(curl -fsS "$CHANNEL/briard/$p/linux/manifest.json" 2>/dev/null | jq -r '.vm // ""') || hg=""
 		gv=$(curl -fsS "$CHANNEL/vm/$p/manifest.json" 2>/dev/null | jq -r .version) || gv=""
 		[ -n "$hg$gv" ] || continue # neither exists yet (a fresh tree's stable): said above
@@ -895,6 +988,6 @@ verify)
 	;;
 
 *)
-	die "usage: publish-release.sh {stage|sign|publish|latest|promote|gc|verify} [ARGS]  (see header)"
+	die "usage: publish-release.sh {stage|sign|publish|latest|promote|dev|gc|verify} [ARGS]  (see header)"
 	;;
 esac

@@ -60,8 +60,9 @@ UNIT_DIR="${BRIARD_UNIT_DIR:-/etc/systemd/system}"
 
 # The signed release channel root, and WHICH release off it: `stable` (what strangers get, a tested
 # pair by construction), `latest` (what was published most recently -- how a release is proven
-# before promotion), or an exact host id. One selector, both chains. The channel's tree is spelled
-# out in scripts/publish-release.sh.
+# before promotion), `dev` (whatever was last cut from HEAD, ungated, for a test node), or an
+# exact host id. One selector, both chains. The channel's tree is spelled out in
+# scripts/publish-release.sh.
 CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
 RELEASE="${BRIARD_RELEASE:-stable}"
 # The release public key: this script's verify root, before anything is on disk to trust.
