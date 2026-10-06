@@ -152,6 +152,11 @@
 # holds (the signed image retired the nix binary cache and its narinfo key with the closure path).
 set -euo pipefail
 
+# Every path below is root-relative (`.#artifacts…`, `scripts/units/…`), so a run from anywhere
+# else fails minutes in, inside a nix eval, with a message about the flake. Say it at once instead.
+[ -f flake.nix ] && [ -f scripts/publish-release.sh ] ||
+	{ echo "publish-release: run from the repo root (no ./flake.nix here)" >&2; exit 1; }
+
 CHANNEL="${BRIARD_CHANNEL_URL:-https://get.briard.io}"
 STAGE_DEFAULT="./.release"
 CHAINS="briard vm"
@@ -763,10 +768,13 @@ dev)
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	[ -n "${RELEASE_SIGN_KEY:-}" ] || die "set RELEASE_SIGN_KEY -- dev signs and publishes in one run"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+	say "dev release: reading what dev names now (quiet for a moment -- awscli through nix), then stage, sign, publish, point"
 	# What a pointer names, read from the BUCKET rather than the edge: this decides a delete, and
 	# the edge may still serve the pointer that was purged a moment ago. Empty when the pointer
-	# does not exist yet.
-	named_by() { aws s3 cp "$bucket/$1/$(sub "$2" "$3")/manifest.json" - --endpoint-url "$endpoint" 2>/dev/null | jq -r "$4 // \"\""; }
+	# does not exist yet -- and a missing pointer is the NORMAL first answer, so the failing
+	# `aws` is swallowed inside the pipeline: under `pipefail` its status would otherwise be the
+	# substitution's, and `set -e` would end the whole run before a line was printed.
+	named_by() { { aws s3 cp "$bucket/$1/$(sub "$2" "$3")/manifest.json" - --endpoint-url "$endpoint" 2>/dev/null || true; } | jq -r "$4 // \"\""; }
 	# The previous dev, both chains, before anything moves.
 	prev=$(named_by briard dev linux .version); prev_vm=$(named_by briard dev linux .vm)
 	[ -z "$prev" ] || say "dev currently names $prev (vm ${prev_vm:-?}); it is retired once the new one is up"
