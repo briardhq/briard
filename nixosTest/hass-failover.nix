@@ -23,7 +23,7 @@ let
     ];
   };
   # Every node is HA-capable (any can be promoted), so all get the memory + disk
-  # HA needs — the 2.4 GB image is `podman load`ed on whichever node holds primary.
+  # HA needs — the 2.4 GB image is resident from its prebuilt store on every node.
   node =
     { ... }:
     {
@@ -56,7 +56,7 @@ pkgs.testers.runNixOSTest {
     start_all()
     for m in machines:
         m.wait_for_unit("multi-user.target")
-        # The 2.4 GB image is loaded on EVERY node before anything promotes -- warm standby is
+        # The 2.4 GB image is resident on EVERY node before anything promotes -- warm standby is
         # what makes an offline failover possible, and it is asserted again below the kill.
         m.wait_for_unit("briard-test-fixture-install.service", timeout=900)
         m.succeed("modprobe drbd")

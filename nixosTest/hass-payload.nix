@@ -81,8 +81,8 @@ pkgs.testers.runNixOSTest {
       # so claim (d) drives the shipping code against the real Home Assistant rather than a curl
       # that resembles it -- the same split service-probe makes in services-pair.nix.
       environment.systemPackages = [ (pkgs.callPackage ./hass-nudge-pkg.nix { }) ];
-      # HA needs real memory + disk headroom: the 2.4 GB image is `podman load`ed
-      # onto the writable root (disk, not RAM), and HA's Python stack wants ~1 GB live.
+      # HA needs real memory + disk headroom: the 2.4 GB image is read from its
+      # prebuilt store (an erofs disk, not RAM), and HA's Python stack wants ~1 GB live.
       # 2048 is MEASURED, not guessed: a guest grows page cache into whatever it is given, so
       # this test sat at 3166 MB resident of 3072 declared and would have sat at 4192 of 4096.
       # At 2048 it is 2143 MB resident and the same 129s.
@@ -97,7 +97,7 @@ pkgs.testers.runNixOSTest {
     ${h.fixtureHelpers}
     node1.start()
     node1.wait_for_unit("multi-user.target")
-    # HA's 2.4 GB image is loaded before anything promotes -- an install must not be the thing
+    # HA's 2.4 GB image is resident before anything promotes -- an install must not be the thing
     # that fetches it, and on the failover path a pull would be fatal.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     node1.succeed("modprobe drbd")

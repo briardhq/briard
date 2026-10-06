@@ -81,8 +81,8 @@ let
       }
     '';
 
-  # A test-only unit that PREWARMS a catalogued fixture: load its image tarball into local podman
-  # storage and lay down the manifest the harness will later install from.
+  # A test-only unit that PREWARMS a catalogued fixture: assert its image is resident in local
+  # podman storage and lay down the manifest the harness will later install from.
   #
   # It used to do far more — run the renderer, copy the units into the quadlet directory and write
   # the promoter chain from the renderer's output. Converge-at-promotion takes all of that away from the
@@ -103,7 +103,9 @@ let
   # reading the product's own volume layout.
   #
   # NO REGISTRY, and that is measured rather than assumed — see fixture-service.nix for the three
-  # facts. The image arrives as a tarball whose digest the manifest already pins.
+  # facts. The image arrives already loaded: each fixture ships the podman store its archive was
+  # loaded into, and mkNode attaches it as a read-only additional image store (what used to be a
+  # `podman load` here, on every node at every boot, at ~8 GB of host writes for the HA image).
   # ONE UNIT, N FIXTURES. A node may carry more than one catalogued service, because the
   # coordination is plural and a harness that can stage only one can only ever prove the singular
   # case — which is exactly how "N services" stayed a fixture-shaped claim.
@@ -140,9 +142,8 @@ let
       printf '10.12.99\n' >/run/briard/pod.subnet
     ''
     + lib.concatMapStrings (fixture: ''
-      # The tarball load is what makes the manifest's digest resolvable locally, which is what
-      # Pull=never requires. Measured: podman records a RepoDigest for a loaded archive.
-      podman load -i ${fixture}/image.tar
+      # The manifest's digest must resolve locally, which is what Pull=never requires. Measured:
+      # podman records a RepoDigest for a loaded archive, and resolves it from an additional store.
       podman image exists "$(cat ${fixture}/ref)"
 
       # The manifest, plus the RENDERER's sidecars (`dataroot`, `subdirs`, `units`, `identity`)
@@ -160,7 +161,6 @@ let
       # version change is. Warming them all up front is also what the product does -- an upgrade
       # must not pull on the promotion path -- so the ordering a test exercises is the real one.
       ${lib.concatMapStrings (label: ''
-        podman load -i ${fixture}/variants/${label}/image.tar
         podman image exists "$(cat ${fixture}/variants/${label}/ref)"
         mkdir -p /run/briard/fixtures/${fixture.serviceName}/variants/${label}
         cp ${fixture}/variants/${label}/manifest.json /run/briard/fixtures/${fixture.serviceName}/variants/${label}/manifest.json
@@ -520,6 +520,34 @@ let
       ];
       systemd.services.briard-test-fixture-install =
         mkIf (allFixtures != [ ]) (fixturesInstall allFixtures config);
+      # EACH FIXTURE'S PREBUILT PODMAN STORE (fixture-service.nix), attached as a read-only disk
+      # and mounted as an additional image store: the images are resident from the first boot
+      # with no load on the node. mkAfter keeps these behind the framework's own drives, so the
+      # data tier stays /dev/vdb; the mount names its disk by serial for the same reason.
+      virtualisation.qemu.drives = lib.mkAfter (
+        lib.imap0 (i: f: {
+          name = "fixture${toString i}";
+          file = "${f}/store.erofs";
+          driveExtraOpts = {
+            readonly = "on";
+            format = "raw";
+          };
+          deviceExtraOpts.serial = "fixture${toString i}";
+        }) allFixtures
+      );
+      virtualisation.fileSystems = lib.listToAttrs (
+        lib.imap0 (
+          i: _:
+          lib.nameValuePair "/var/lib/containers/fixtures/${toString i}" {
+            device = "/dev/disk/by-id/virtio-fixture${toString i}";
+            fsType = "erofs";
+            options = [ "ro" ];
+          }
+        ) allFixtures
+      );
+      virtualisation.containers.storage.settings.storage.options.additionalimagestores = lib.imap0 (
+        i: _: "/var/lib/containers/fixtures/${toString i}"
+      ) allFixtures;
     };
 in
 {

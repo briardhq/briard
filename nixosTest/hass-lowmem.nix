@@ -96,7 +96,7 @@ pkgs.testers.runNixOSTest {
     print("swappiness: " + node1.succeed("sysctl -n vm.swappiness").strip())
     s("booted")
 
-    node1.wait_for_unit("briard-test-fixture-install.service", timeout=1800) # the 2.4 GB image
+    node1.wait_for_unit("briard-test-fixture-install.service", timeout=1800)
     s("image-loaded")
     node1.succeed("modprobe drbd")
     node1.succeed("briard-test-storage --seed")

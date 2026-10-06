@@ -105,7 +105,7 @@ pkgs.testers.runNixOSTest {
     { lib, ... }:
     {
       imports = [ node ];
-      # HA's numbers, measured in hass-payload: the 2.4 GB image is loaded onto the writable root
+      # HA's numbers, measured in hass-payload: the 2.4 GB image is read from its prebuilt store
       # and HA's Python stack wants ~1 GB live.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;

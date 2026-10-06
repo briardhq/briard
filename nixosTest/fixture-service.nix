@@ -18,7 +18,7 @@
 #   3. `skopeo inspect docker-archive:` returns the IDENTICAL digest at BUILD time.
 #
 # (3) is what makes this a derivation rather than a runtime step: the manifest is written here,
-# already pinned, and the tarball is staged into the guest's podman store at boot. `Container.Image`
+# already pinned, and the tarball is loaded into the podman store the node mounts (imageStore below). `Container.Image`
 # in shared/manifest already described this shape — "from upstream, from our mirror, or from a
 # tarball without changing what this service means".
 #
@@ -154,6 +154,69 @@ let
     inherit (v) version;
     env = v.env or { };
   }) variants;
+  # THE PODMAN STORE, PREBUILT. Every version's archive is `podman load`ed ONCE, here, and the
+  # resulting store ships to the node as a read-only disk it mounts as an additional image store.
+  # The load used to run on every node at every boot, and for the 2.4 GB HA archive it cost ~8 GB
+  # of host disk writes and ~100 s per node -- three quarters of a nightly's writes, measured --
+  # for a step that is pure harness: a shipped node pulls by digest (image.ensure) and never loads
+  # an archive. What the node proves is unchanged: the same load records the same RepoDigest, and
+  # `podman image exists <ref>` at boot now asserts that the digest resolves through the store.
+  #
+  # A DISK IMAGE rather than a store directory, because a loaded layer carries its whiteouts as
+  # character devices, which a store path cannot hold. erofs because it is what a read-only
+  # overlay lower is for: device nodes and xattrs (the opaque-directory markers) intact, written
+  # in one stream. The load needs a kernel with overlayfs, so it runs in a build VM -- the same
+  # tool make-disk-image uses -- with a scratch disk for podman's temporary copies: the VM's root
+  # is tmpfs, and a 2.4 GB archive copied twice would otherwise be the VM's memory.
+  imageStore =
+    let
+      vm = pkgs.vmTools.override {
+        rootModules = [
+          "virtio_pci"
+          "virtio_mmio"
+          "virtio_blk"
+          "virtio_balloon"
+          "virtio_rng"
+          "ext4"
+          "virtiofs"
+          "crc32c"
+          "overlay"
+        ];
+      };
+      podman = "podman --root /mnt/storage --runroot /run/podman --storage-driver overlay --cgroup-manager cgroupfs --events-backend none";
+    in
+    vm.runInLinuxVM (
+      pkgs.runCommand "briard-fixture-${name}-store"
+        {
+          nativeBuildInputs = [
+            pkgs.podman
+            pkgs.e2fsprogs
+            pkgs.erofs-utils
+            pkgs.util-linux
+          ];
+          memSize = 2048;
+          preVM = vm.createEmptyImage {
+            size = 16384;
+            fullName = "scratch";
+            destination = "./scratch";
+          };
+        }
+        ''
+          mkfs.ext4 -q /dev/vda
+          mkdir -p /mnt /etc/containers /sys/fs/cgroup
+          mount /dev/vda /mnt
+          mount -t cgroup2 none /sys/fs/cgroup
+          mkdir -p /mnt/storage /mnt/tmp
+          export TMPDIR=/mnt/tmp
+          cp ${policy} /etc/containers/policy.json
+          ${lib.concatMapStrings (p: ''
+            ${podman} load -i ${p.image.tarball}
+          '') published}
+          ${podman} images --digests
+          mkdir -p $out
+          mkfs.erofs --quiet $out/store.erofs /mnt/storage
+        ''
+    );
   # One publishable version's tarball, pinned manifest and staged catalog directory. The digest is
   # computed from the very bytes that get staged (see (3) above), per version.
   emit = p: ''
@@ -202,6 +265,8 @@ pkgs.runCommand "briard-fixture-${name}"
   ''
     mkdir -p $out
     ${lib.concatMapStrings emit published}
+    # The prebuilt store holding every version above, for the node's additional image store.
+    ln -s ${imageStore}/store.erofs $out/store.erofs
 
     # A minimal SIGNED CATALOG beside each version, so a harness can install (and then roll) this
     # the way a user does rather than seeding the node-local cache -- which reproduces what an

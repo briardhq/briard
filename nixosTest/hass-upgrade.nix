@@ -80,7 +80,7 @@ pkgs.testers.runNixOSTest {
     ${h.fixtureHelpers}
     node1.start()
     node1.wait_for_unit("multi-user.target")
-    node1.wait_for_unit("briard-test-fixture-install.service", timeout=1200) # both 2.4 GB images
+    node1.wait_for_unit("briard-test-fixture-install.service", timeout=1200)
     node1.succeed("modprobe drbd")
     node1.succeed("briard-test-storage --seed")
     # Single node: no peer — just make it UpToDate so the promoter has quorum-of-1.

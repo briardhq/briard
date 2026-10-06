@@ -57,7 +57,7 @@ pkgs.testers.runNixOSTest {
     ${h.fixtureHelpers}
     node1.start()
     node1.wait_for_unit("multi-user.target")
-    node1.wait_for_unit("briard-test-fixture-install.service", timeout=900) # the 2.4 GB image
+    node1.wait_for_unit("briard-test-fixture-install.service", timeout=900)
     node1.succeed("modprobe drbd")
     node1.succeed("briard-test-storage --seed")
     node1.succeed("systemctl start drbd-reactor.service")
