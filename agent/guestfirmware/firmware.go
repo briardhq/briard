@@ -300,5 +300,5 @@ func Serve(ctx context.Context, rw io.ReadWriteCloser, x Executor) error {
 			return nil, PowerOff(ctx, x)
 		}
 		return nil, fmt.Errorf("guestfirmware: %s is not a firmware verb -- this guest runs the image's firmware and has not been dressed with a bundle yet", verb)
-	})
+	}, func(verb string) bool { return verb != VerbHello }) // the handshake answers beside a dress; the rest is one at a time
 }

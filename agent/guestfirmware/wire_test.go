@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -28,11 +27,14 @@ func echoDispatch(_ context.Context, verb string, payload json.RawMessage) (any,
 	}
 }
 
+// allActs is the serial shape: every verb takes the act mutex, one at a time in arrival order.
+func allActs(string) bool { return true }
+
 // wirePair wires a host conn to a ServeFrames(echoDispatch) over an in-memory pipe.
 func wirePair(t *testing.T) *Conn {
 	t.Helper()
 	cc, sc := net.Pipe()
-	go ServeFrames(context.Background(), sc, echoDispatch)
+	go ServeFrames(context.Background(), sc, echoDispatch, allActs)
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
 	return c
@@ -100,7 +102,7 @@ func TestWireContextCancelled(t *testing.T) {
 func TestServeEndsOnClose(t *testing.T) {
 	cc, sc := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- ServeFrames(context.Background(), sc, echoDispatch) }()
+	go func() { done <- ServeFrames(context.Background(), sc, echoDispatch, allActs) }()
 	cc.Close()
 	if err := <-done; err != nil {
 		t.Errorf("serve after close = %v, want nil", err)
@@ -158,7 +160,7 @@ func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 		<-ctx.Done() // the cancellation lands while this reply is owed
 		return "pong", nil
 	}
-	go ServeFrames(ctx, sconn, d)
+	go ServeFrames(ctx, sconn, d, allActs)
 
 	go func() {
 		<-handling
@@ -222,36 +224,14 @@ func slowDispatch(release <-chan struct{}) DispatchFunc {
 	}
 }
 
-// serveConcurrently is a guest that dispatches every request in its own goroutine -- the shape
-// the guest's serve loop takes for the read lane -- so a slow verb does not hold an echo.
-func serveConcurrently(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) {
-	var wmu sync.Mutex
-	for {
-		var req request
-		if err := readFrame(rw, &req); err != nil {
-			return
-		}
-		go func(req request) {
-			resp := response{ID: req.ID}
-			if result, err := d(ctx, req.Verb, req.Payload); err != nil {
-				resp.Error = err.Error()
-			} else if b, err := json.Marshal(result); err == nil {
-				resp.Payload = b
-			}
-			wmu.Lock()
-			defer wmu.Unlock()
-			_ = writeFrame(rw, resp)
-		}(req)
-	}
-}
-
 // A SLOW VERB HOLDS NOTHING BUT ITSELF. While one call waits on a long act, another call on the
 // same channel is answered, and the act's own deadline abandons the act alone: the channel stays
-// up, the next call still works, and the act's late reply is dropped when it comes.
+// up, the next call still works, and the act's late reply is dropped when it comes. The guest
+// here runs "slow" in the act lane and "echo" beside it -- the two lanes ServeFrames serves.
 func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	cc, sc := net.Pipe()
 	release := make(chan struct{})
-	go serveConcurrently(context.Background(), sc, slowDispatch(release))
+	go ServeFrames(context.Background(), sc, slowDispatch(release), func(verb string) bool { return verb == "slow" })
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
 
@@ -289,12 +269,12 @@ func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 // the guest serves one verb at a time (ServeFrames, the serial shape): the echo queued behind
 // the slow verb is never answered, so from the echo's point of view nothing arrived since it was
 // sent, and it reports the channel down -- which is what re-dials, and what the recovery ladder
-// hangs off.
+// hangs off. (allActs: the guest puts every verb in the act lane, which is the serial shape.)
 func TestADeadlineWithNoAnswerAtAllIsChannelDown(t *testing.T) {
 	cc, sc := net.Pipe()
 	release := make(chan struct{})
 	defer close(release)
-	go ServeFrames(context.Background(), sc, slowDispatch(release))
+	go ServeFrames(context.Background(), sc, slowDispatch(release), allActs)
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
 

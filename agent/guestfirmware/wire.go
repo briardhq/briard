@@ -232,8 +232,15 @@ func channelDown(ctx context.Context, err error) error {
 	return fmt.Errorf("%w: %w", ErrChannelDown, ctxOr(ctx, err))
 }
 
-// ServeFrames is the guest end: read requests, dispatch to d, write responses, until
-// the connection closes (returns nil on EOF) or ctx is done.
+// ServeFrames is the guest end: read requests, dispatch each to d in its own goroutine, write
+// responses as they complete, until the connection closes (returns nil on EOF) or ctx is done.
+//
+// TWO LANES. A verb for which act reports true takes the one act mutex, so acts run one at a
+// time in the order they arrived -- a pull, a converge, a format, a ring write never interleave.
+// Every other verb runs at once, beside whatever act is in flight: the handshake, a status
+// read, a health probe, the host's push of an alert copy all answer while an install pulls its
+// image, which is what lets the host tell a slow guest from a dead one. The host matches
+// replies by id, so answering out of order is the protocol working, not a fault.
 //
 // ⚠️ CANCELLATION CLOSES THE CONNECTION HERE, AND ONLY BETWEEN REPLIES. The blocking read on a
 // virtio-serial port cannot be interrupted by a context, so something has to close the port out
@@ -244,12 +251,19 @@ func channelDown(ctx context.Context, err error) error {
 // does next. A lost reply reads as EOF, EOF is indistinguishable from a crashed agent, and the
 // host escalated to the ACPI power button on a guest that had done exactly as it was asked.
 //
-// So the close waits for the reply being written, and only for that: after ctx is done the loop
-// above returns before reading another request, so this can hold up the close by one handler and
-// never by two. The caller's own exit deadline remains the backstop for a handler that never
-// returns.
-func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) error {
-	var replying sync.Mutex
+// So the close waits for every reply owed -- each handler holds the connection open for its
+// run, and the close takes it from all of them at once -- and nothing after it: the loop reads
+// no further request once ctx is done, so what the close waits for is bounded by what was in
+// flight. An act keeps running to its end whether the host is listening or not, exactly as it
+// did when the loop could not read the next frame until it finished, and the caller's own exit
+// deadline remains the backstop for a handler that never returns.
+func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc, act func(verb string) bool) error {
+	var (
+		open    sync.RWMutex   // held (read) by every handler for its run; taken (write) to close
+		writing sync.Mutex     // one reply on the stream at a time
+		acting  sync.Mutex     // one act at a time
+		wg      sync.WaitGroup // every handler, so the return waits for them
+	)
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -258,10 +272,11 @@ func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) err
 		case <-done:
 			return
 		}
-		replying.Lock() // let an answer already being written reach the host
-		replying.Unlock()
+		open.Lock() // let every answer owed reach the host
 		rw.Close()
+		open.Unlock()
 	}()
+	defer wg.Wait()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -274,9 +289,15 @@ func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) err
 			}
 			return err
 		}
-		if err := func() error {
-			replying.Lock()
-			defer replying.Unlock()
+		wg.Add(1)
+		go func(req request) {
+			defer wg.Done()
+			open.RLock()
+			defer open.RUnlock()
+			if act(req.Verb) {
+				acting.Lock()
+				defer acting.Unlock()
+			}
 			resp := response{ID: req.ID}
 			if result, herr := d(ctx, req.Verb, req.Payload); herr != nil {
 				resp.Error = herr.Error()
@@ -287,10 +308,11 @@ func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) err
 					resp.Payload = b
 				}
 			}
-			return writeFrame(rw, resp)
-		}(); err != nil {
-			return err
-		}
+			writing.Lock()
+			defer writing.Unlock()
+			// A write that fails is a stream that is gone; the read loop sees the same and ends.
+			_ = writeFrame(rw, resp)
+		}(req)
 	}
 }
 

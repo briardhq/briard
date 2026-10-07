@@ -439,6 +439,38 @@ var guestCapabilities = []string{
 	guestfirmware.VerbHello, guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate,
 }
 
+// besideActs is every verb the serve loop answers WITHOUT the act mutex -- beside whatever act
+// is in flight (guestfirmware.ServeFrames). Two kinds qualify, and a verb absent here is an act
+// by default, which is the safe default for one added later:
+//
+//   - READS: they change nothing, so there is nothing for an act to interleave with. These are
+//     what let the host tell a slow guest from a dead one while an install pulls its image.
+//   - PUSHES of the host's own file -- the alert copy, the pull marker, the dashboard's code,
+//     a renewed cert: each is written whole and renamed into place, nothing reads it mid-flight,
+//     and each must land DURING an act, because an install is exactly when the household
+//     looks. The one HTTP push (the integration nudge) is a single POST.
+//
+// Everything that touches the chain, the store, the volume layout or the ring is an act, one
+// at a time in arrival order. The groups inside that set touch disjoint state, but nothing
+// issues them concurrently -- the host sends one directive at a time -- so one mutex is the
+// whole of the ordering.
+var besideActs = map[string]bool{
+	// reads
+	guestfirmware.VerbHello: true, verbStatus: true, verbServiceActive: true,
+	verbServiceHealth: true, verbServiceHealthOf: true, verbServiceInstalled: true,
+	verbServiceList: true, verbDataMembers: true, verbNetVIP: true, verbNetMDNSPublished: true,
+	verbNetMDNSOther: true, verbResources: true, verbStorageFree: true, verbCertRead: true,
+	verbReactorActive: true, verbOSSystem: true, verbDeadmanEpisode: true,
+	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
+	verbHassDBCheckResult: true,
+	// pushes
+	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true,
+	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
+}
+
+// isAct is ServeFrames' lane predicate: anything not declared to run beside acts is one.
+func isAct(verb string) bool { return !besideActs[verb] }
+
 const (
 	// CurrentSystem resolves to the running system's closure store path (the code identity).
 	currentSystem = "/run/current-system"
@@ -1855,7 +1887,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 
 // Serve runs the guest dispatch loop over conn until it closes or ctx is done.
 func Serve(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
-	return guestfirmware.ServeFrames(ctx, conn, dispatch(x))
+	return guestfirmware.ServeFrames(ctx, conn, dispatch(x), isAct)
 }
 
 // ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every
@@ -1877,7 +1909,7 @@ func ServeStamped(ctx context.Context, conn io.ReadWriteCloser, x Executor) erro
 		touchStamp(ContactStampPath) // the host agent just talked to us — freshen the deadman's stamp
 		return d(ctx, verb, payload)
 	}
-	return guestfirmware.ServeFrames(ctx, conn, hooked)
+	return guestfirmware.ServeFrames(ctx, conn, hooked, isAct)
 }
 
 // touchStamp bumps path's mtime to now (creating it, and its dir, if absent). Best-effort: a

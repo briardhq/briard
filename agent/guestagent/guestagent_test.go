@@ -310,7 +310,7 @@ func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 		}
 		taken <- struct{}{} // the request is read; its reply is written next
 		return guestfirmware.Hello{Capabilities: []string{guestfirmware.VerbHello, verbReactor}}, nil
-	})
+	}, isAct)
 
 	// Session 1 dies with its hello on the wire: the guest answers into a stream nobody
 	// is reading. Driven through a real Client, because which ids a real session picks is
@@ -389,7 +389,7 @@ func TestHandshakeAcceptsAnUnrecognisedGuest(t *testing.T) {
 	host, guest := socketPair(t)
 	go guestfirmware.ServeFrames(context.Background(), guest, func(context.Context, string, json.RawMessage) (any, error) {
 		return guestfirmware.Hello{Capabilities: []string{guestfirmware.VerbHello, "verb.from.the.future"}}, nil
-	})
+	}, isAct)
 	g := NewClient(host)
 	t.Cleanup(func() { g.Close() })
 	if _, err := g.Handshake(context.Background()); err != nil {
