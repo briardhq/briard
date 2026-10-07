@@ -567,6 +567,12 @@ pkgs.testers.runNixOSTest {
     # make none; resolving the open one removes its issue. HA's own websocket is the judge, and the
     # strings HA loaded for the domain prove the planted translation reached it.
     node1.succeed(f"test -f {dataroot}/app/custom_components/briard/translations/en.json")
+    # Briard's mark, served by HA's own brands API from beside the planted stub -- the URL HA's
+    # integration page and Repairs ask for. Compared with the staged copy, byte for byte.
+    node1.succeed(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/brands/integration/briard/icon.png "
+        "| cmp - /run/briard/home-assistant/stub/brand/icon.png"
+    )
     import shlex
     def push_alerts(records):
         node1.succeed(

@@ -189,6 +189,16 @@ var implSource string
 //go:embed component/translations/en.json
 var stubTranslations string
 
+// stubIcon and stubIcon2x are Briard's mark for Home Assistant's integration page and its Repairs
+// issues. Home Assistant serves a custom integration's brand images from beside its package,
+// and nothing else of ours is there to serve them from.
+//
+//go:embed component/brand/icon.png
+var stubIcon string
+
+//go:embed component/brand/icon@2x.png
+var stubIcon2x string
+
 // Executor is the narrow slice of the guest agent's executor this package needs. A
 // local interface for dependency injection, not a seam: it exists so the package can
 // be driven by a fake in tests without importing the guest agent (which imports this).
@@ -447,19 +457,21 @@ func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 	}
 	// The alert copy's directory too: it is a bind source of the container, and one that is
 	// missing at start fails the container. The guest agent fills it when the host pushes.
-	for _, dir := range []string{stubDir, stubDir + "/translations", implDir, dashboard.AlertsDir} {
+	for _, dir := range []string{stubDir, stubDir + "/translations", stubDir + "/brand", implDir, dashboard.AlertsDir} {
 		if out, err := x.Run(ctx, "mkdir", "-p", dir); err != nil {
 			return fmt.Errorf("hass: %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
 		}
 	}
-	if err := write(ctx, x, stubDir+"/__init__.py", stubSource, "0644"); err != nil {
-		return err
-	}
-	if err := write(ctx, x, stubDir+"/manifest.json", stubManifest, "0644"); err != nil {
-		return err
-	}
-	if err := write(ctx, x, stubDir+"/translations/en.json", stubTranslations, "0644"); err != nil {
-		return err
+	for _, f := range [][2]string{
+		{stubDir + "/__init__.py", stubSource},
+		{stubDir + "/manifest.json", stubManifest},
+		{stubDir + "/translations/en.json", stubTranslations},
+		{stubDir + "/brand/icon.png", stubIcon},
+		{stubDir + "/brand/icon@2x.png", stubIcon2x},
+	} {
+		if err := write(ctx, x, f[0], f[1], "0644"); err != nil {
+			return err
+		}
 	}
 	return write(ctx, x, implPath, src, "0644")
 }

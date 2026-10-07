@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"briard.io/shared/manifest"
+	"briard.io/shared/routes"
 )
 
 const image = "ghcr.io/home-assistant/home-assistant@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -382,6 +383,18 @@ func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	// An issue's words are translation keys read from beside the stub, so the stub carries them.
 	if tr := f.files[stubDir+"/translations/en.json"]; !strings.Contains(tr, `"alert"`) || !strings.Contains(tr, "{title}") || !strings.Contains(tr, "{body}") {
 		t.Errorf("the issue translation was not staged with the alert's placeholders: %q", tr)
+	}
+	// Briard's mark, for the integration page and the Repairs issues: PNGs, as Home Assistant's
+	// brands server reads them from beside the package.
+	for _, p := range []string{stubDir + "/brand/icon.png", stubDir + "/brand/icon@2x.png"} {
+		if !strings.HasPrefix(f.files[p], "\x89PNG") {
+			t.Errorf("%s was not staged as a PNG", p)
+		}
+	}
+	// The integration page's one link (its help button, the manifest's documentation) opens this
+	// home's dashboard, at the same name the installer prints.
+	if want := `"documentation": "http://` + routes.BareFlockHostName + `/"`; !strings.Contains(stubManifest, want) {
+		t.Errorf("the manifest does not link the dashboard; want %s in:\n%s", want, stubManifest)
 	}
 	// The alert copy's directory is a bind source: it must exist before the container starts.
 	if !f.ran("mkdir", "-p", "/run/briard/alerts") {

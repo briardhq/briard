@@ -2,7 +2,7 @@
   "domain": "briard",
   "name": "Briard",
   "version": "1.0.0",
-  "documentation": "https://briard.io",
+  "documentation": "http://briard.local/",
   "codeowners": [],
   "dependencies": ["auth", "http"],
   "iot_class": "local_push"
