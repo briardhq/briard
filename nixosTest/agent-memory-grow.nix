@@ -87,8 +87,9 @@ pkgs.testers.runNixOSTest {
     host.succeed("(printf '\\n'; sleep 2; cat ${hog}; sleep 40; printf '\\035') | briard-agent debug shell > /tmp/hog.out 2>&1")
     hog_out = host.succeed("cat /tmp/hog.out")
     assert re.search(r"HOG=\d+", hog_out), f"the guest was not made short of memory:\n{hog_out}"
-    # Short, by the agent's own reading -- under the 256 MB floor.
-    host.wait_until_succeeds(f"test \"$({last_mem} | cut -d/ -f1)\" -lt {256 << 10}", timeout=60)
+    # Short, by the agent's own reading -- under the 256 MB floor. The agent samples the guest once
+    # a minute (resourcesEvery), so each wait on its reading allows two samples.
+    host.wait_until_succeeds(f"test \"$({last_mem} | cut -d/ -f1)\" -lt {256 << 10}", timeout=120)
     print(f"short: available {mem_mb()[0]} MB")
 
     # The agent's own decision, after the level window: one step, logged -- its size read off the VM.
@@ -96,7 +97,7 @@ pkgs.testers.runNixOSTest {
     print(host.succeed("journalctl -u briard-agent -o cat | grep 'memory: '"))
 
     # ...and the guest's kernel counts it: MemTotal up by (nearly exactly) one step.
-    host.wait_until_succeeds(f"test \"$({last_mem} | cut -d/ -f2)\" -ge {(total0 + 500) << 10}", timeout=60)
+    host.wait_until_succeeds(f"test \"$({last_mem} | cut -d/ -f2)\" -ge {(total0 + 500) << 10}", timeout=120)
     avail1, total1 = mem_mb()
     print(f"after: available {avail1} MB of {total1} MB (was {avail0} of {total0})")
   '';

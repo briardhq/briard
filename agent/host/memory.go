@@ -126,6 +126,9 @@ const (
 	memPressurePct  = 10.0
 	memPressureFor  = time.Minute
 	memGrowCooldown = 5 * time.Minute
+	// resourcesEvery paces the sample on a node where the grower is its only reader: the
+	// pressure window is a minute, so a minute is the finest it can tell apart.
+	resourcesEvery = time.Minute
 )
 
 // memoryGrower holds the decision's clocks across observe cycles. Zero value ready.

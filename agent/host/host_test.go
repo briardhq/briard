@@ -102,7 +102,7 @@ type fakeStatus struct {
 	mdnsAsked *int
 	// asked counts the status reads (Cluster, one per cycle) and the VIP reads, so a test can hold
 	// the loop to one net.vip per cycle across every owner of the address.
-	clusterAsked, vipAsked *int
+	clusterAsked, vipAsked, resAsked *int
 	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
 	// node that promoted into somebody else.s install is the only place that truth exists.
 	volume        map[string]string
@@ -225,6 +225,9 @@ func (f fakeStatus) SystemPath(context.Context) (string, error) {
 }
 
 func (f fakeStatus) Resources(context.Context, map[string]string, string, bool) (telemetry.NodeResources, error) {
+	if f.resAsked != nil {
+		*f.resAsked++
+	}
 	return f.res, f.resErr
 }
 
@@ -1336,4 +1339,38 @@ func (f *fakeDB) finish(rep hass.DBReport) { f.running, f.report = false, &rep }
 // which in the loop is readVIP's answer handed in.
 func snap(cfg Config, r fakeStatus, system string) (api.NodeStatus, model.Cluster, string, error) {
 	return cfg.snapshot(context.Background(), r, r, system)
+}
+
+// The resource sample is read once a minute on a shipped node -- its one reader there is the
+// memory grower, whose clocks run in minutes, and in the guest the read is a dozen processes --
+// and every cycle only where a soak collects it (TelemetryPath, the lab's gate).
+func TestObserveSamplesResourcesOnceAMinuteUnlessASoakCollects(t *testing.T) {
+	for _, c := range []struct {
+		what      string
+		telemetry string
+		perCycle  bool
+	}{
+		{"shipped: once a minute", "", false},
+		{"lab: every cycle", "/var/lib/briard-fleet/telemetry.json", true},
+	} {
+		cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond, TelemetryPath: c.telemetry}
+		cfg.Resource.Name = "r0"
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		var cycles, reads int
+		r := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}, clusterAsked: &cycles, resAsked: &reads}
+		err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {})
+		cancel()
+		if err != nil {
+			t.Fatalf("%s: observe = %v", c.what, err)
+		}
+		if cycles < 2 {
+			t.Fatalf("%s: only %d cycles ran", c.what, cycles)
+		}
+		switch {
+		case c.perCycle && reads != cycles:
+			t.Errorf("%s: sys.resources asked %d times over %d cycles; want one per cycle", c.what, reads, cycles)
+		case !c.perCycle && reads != 1:
+			t.Errorf("%s: sys.resources asked %d times over %d cycles (30 ms); want one", c.what, reads, cycles)
+		}
+	}
 }

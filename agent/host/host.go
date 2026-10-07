@@ -1299,6 +1299,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
 	mg := &memoryGrower{}
 	var memSizeNext time.Time // when to next ask the VM its size, to end a memory alert (below)
+	// The last resource sample and when the next is due (resourcesEvery on a shipped node, below).
+	res := &telemetry.NodeResources{}
+	var resNext time.Time
 	// What the guest did while this agent was away (deadman.episode): asked at the start of the
 	// connection and twice more over the next minute, because the deadman leaves its record on
 	// its own 15 s tick after the first contact -- then never, this connection.
@@ -1403,12 +1406,20 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant
 		// Resource telemetry is a soak leak-instrument, not product-health: it does NOT ride
-		// the report. Measured each cycle and written to the out-of-band collector
-		// file the soak reads L0-side; best-effort, never gates the observe loop.
+		// the report. Measured each cycle where a soak collects it (TelemetryPath, the gate the
+		// lab-only reads already sit behind) and written to the out-of-band collector file the
+		// soak reads L0-side; best-effort, never gates the observe loop. On a shipped node its one
+		// consumer is the memory grower, whose clocks run in minutes, so it is read once a
+		// minute there -- in the guest the read is a dozen processes -- and the status line shows
+		// the last sample.
 		cfg.beat.Beat()
-		res := cfg.resources(ctx, r)
-		cfg.writeTelemetry(res, logf) // a handoff, never a write: see telemetryWriter
-		if mg.decide(time.Now(), res) {
+		fresh := cfg.TelemetryPath != "" || !time.Now().Before(resNext)
+		if fresh {
+			res = cfg.resources(ctx, r)
+			resNext = time.Now().Add(resourcesEvery)
+			cfg.writeTelemetry(res, logf) // a handoff, never a write: see telemetryWriter
+		}
+		if fresh && mg.decide(time.Now(), res) {
 			cfg.beat.Beat()
 			gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			vm := platform.Adopt(cfg.guestSpec())
@@ -1453,7 +1464,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// (never raw) up the cloud seam -- the product-health subset re-added deliberately.
 		// Best-effort like the rest of telemetry: a failed upload keeps the buckets and
 		// Retries next cycle; only a success prunes the completed ones.
-		if agg != nil && rep != nil {
+		if fresh && agg != nil && rep != nil {
 			agg.add(time.Now(), res)
 			cfg.beat.Beat()
 			mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
