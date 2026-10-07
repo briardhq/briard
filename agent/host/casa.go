@@ -76,7 +76,6 @@ type casaClient interface {
 // casaGuest is the slice of the guest binding the runner needs: where the VIP is, the
 // certificate on the volume, and the page's view. *guestagent.Client satisfies it.
 type casaGuest interface {
-	guest.VIPReader
 	WriteCert(ctx context.Context, cert, key string) error
 	ReadCert(ctx context.Context) (string, error)
 	DashboardCasa(ctx context.Context, c dashboard.Casa) error
@@ -197,8 +196,9 @@ func (c *casaRunner) claim(ctx context.Context, d api.Directive, logf func(strin
 
 // tick is the runner's step in the observe loop: poll a pending claim, keep a registered name's
 // address and certificate current, and keep the page told. Every call out is short and
-// ctx-bounded; the one long one (issuance, a real ACME solve) runs off the loop.
-func (c *casaRunner) tick(ctx context.Context, r any, logf func(string, ...any)) {
+// ctx-bounded; the one long one (issuance, a real ACME solve) runs off the loop. vip is the
+// cycle's one answer to net.vip, read by the loop and shared with the address step.
+func (c *casaRunner) tick(ctx context.Context, r any, vip guest.VIPReader, logf func(string, ...any)) {
 	if c == nil {
 		return // a loop built without a runner (tests)
 	}
@@ -211,7 +211,7 @@ func (c *casaRunner) tick(ctx context.Context, r any, logf func(string, ...any))
 		c.poll(ctx, now, logf)
 	}
 	if c.st.Registered && c.key != nil {
-		c.address(ctx, g, now, logf)
+		c.address(ctx, vip, now, logf)
 		c.certificate(ctx, g, now, logf)
 	}
 	c.push(ctx, g, logf)
@@ -245,9 +245,9 @@ func (c *casaRunner) poll(ctx context.Context, now time.Time, logf func(string, 
 // address points the name at the VIP, directly at the Worker, whenever the VIP the guest holds
 // differs from what was last written. Idempotent, so once per session is the floor and a moved
 // address the trigger.
-func (c *casaRunner) address(ctx context.Context, g casaGuest, now time.Time, logf func(string, ...any)) {
+func (c *casaRunner) address(ctx context.Context, vip guest.VIPReader, now time.Time, logf func(string, ...any)) {
 	vctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	cidr, err := g.VIP(vctx, c.cfg.VIPDev)
+	cidr, err := vip.VIP(vctx, c.cfg.VIPDev)
 	cancel()
 	if err != nil || cidr == "" {
 		return // no address to publish yet; the guest says so every tick until there is

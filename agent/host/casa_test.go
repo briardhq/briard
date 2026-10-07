@@ -166,7 +166,7 @@ func (r *casaRig) restart() {
 	r.cs.now = func() time.Time { return r.now }
 }
 
-func (r *casaRig) tick(t *testing.T) { r.cs.tick(context.Background(), r.guest, t.Logf) }
+func (r *casaRig) tick(t *testing.T) { r.cs.tick(context.Background(), r.guest, r.guest, t.Logf) }
 
 func (r *casaRig) claim(t *testing.T, email string) api.DirectiveOutcome {
 	t.Helper()

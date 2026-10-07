@@ -53,7 +53,7 @@ func newCopierRig(ipvtap bool) *copierRig {
 }
 
 func (r *copierRig) tick(g *fakeVIPGuest) {
-	r.c.tick(context.Background(), r.cfg, g, nil, func(f string, a ...any) { r.lines = append(r.lines, fmt.Sprintf(f, a...)) })
+	r.c.tick(context.Background(), r.cfg, g, g, nil, func(f string, a ...any) { r.lines = append(r.lines, fmt.Sprintf(f, a...)) })
 }
 
 func (r *copierRig) last() map[string][]string { return r.held[len(r.held)-1] }

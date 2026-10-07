@@ -1346,27 +1346,33 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		sys := cfg.currentSystem(ctx, r)
 		cfg.beat.Beat()
-		st, cl, probe, err := cfg.snapshot(ctx, r, sys)
+		// THE ADDRESS, ONCE. Four owners want it this cycle -- the health URL below, the host's
+		// route, the ipvtap copier, casa -- and each used to ask the guest itself, four round
+		// trips on a channel that serves one at a time. One read, one answer, handed to all of
+		// them; a dead channel is one failed read they all see the same way.
+		cfg.beat.Beat()
+		vip := cfg.readVIP(ctx, r)
+		st, cl, probe, err := cfg.snapshot(ctx, r, vip, sys)
 		// AHEAD of the channel-down return, and that placement is the load-bearing part. A dead
 		// channel is precisely when the local guest may have stopped serving and a PEER may have
 		// taken the VIP over -- the case where a route left pointing at our own guest replaces a
 		// working LAN path with a black hole. Reconciling here withdraws it; reconciling after the
 		// return would keep it exactly when it is most wrong.
 		//
-		// The address is asked for separately from the snapshot's health resolution, and
+		// The route takes the cycle's raw answer, not the snapshot's health resolution, and
 		// deliberately: that one prefers the CONFIGURED address when there is one, which on a node
 		// that is not currently serving is an address this guest does not hold. A route may only
 		// follow ground truth.
 		cfg.beat.Beat()
 		// On a wireless parent the guest's addresses are copied onto its ipvtap children first
 		// (ipvtap.go). A VIP it refused is never routed either: it is the host's own address.
-		cfg.ipvtap.tick(ctx, cfg, r, n, logf)
+		cfg.ipvtap.tick(ctx, cfg, vip, r, n, logf)
 		cfg.beat.Beat()
 		if !cfg.ipvtap.refused() {
-			vr.reconcile(ctx, r, logf)
+			vr.reconcile(ctx, vip, logf)
 		}
 		cfg.beat.Beat()
-		cs.tick(ctx, r, logf) // the household's name -- claim poll, address, certificate, the page's view
+		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()
 		pushAlerts(ctx, r, n, &alertsPushed, logf) // the page's copy of the alert store, when it moved
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
@@ -1972,7 +1978,7 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // address all along and never printed it, which made "the node reports healthy and nobody can
 // reach it" -- the exact shape of the baked-VIP defect -- undiagnosable from a journal. Under DHCP the address is
 // not in any config file either, so the log is the only place a human can find it.
-func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (api.NodeStatus, model.Cluster, string, error) {
+func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPReader, system string) (api.NodeStatus, model.Cluster, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, System: system, AgentVersion: cfg.Version}
 	// The guest bundle the guest reported in its handshake, named by the RELEASE whose
 	// bundle it is. The tree a guest was dressed from keeps the id of the release that first
@@ -2008,7 +2014,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 	var probe string
 	if cfg.Diskless {
 		st.Healthy = cl.Quorate
-	} else if url := guest.ResolveHealthURL(rctx, r, cfg.Diskless, cfg.VIPDev, cfg.HealthURL); url == "" {
+	} else if url := guest.ResolveHealthURL(rctx, vip, cfg.Diskless, cfg.VIPDev, cfg.HealthURL); url == "" {
 		// No address to probe means two opposite things, and telling them apart is the whole
 		// of this branch:
 		//
@@ -2067,6 +2073,28 @@ func mdnsNames(ctx context.Context, r statusReader, st *api.NodeStatus) {
 	if other, err := r.MDNSOther(ctx); err == nil {
 		st.OtherBriard = other
 	}
+}
+
+// vipAnswer is one cycle's answer to net.vip: what the service NIC holds, in CIDR form, or the
+// error the read ended in. It is a guest.VIPReader so the cycle's owners of the address take it
+// where they took the guest, and it answers the same thing to each of them.
+type vipAnswer struct {
+	cidr string
+	err  error
+}
+
+func (a vipAnswer) VIP(context.Context, string) (string, error) { return a.cidr, a.err }
+
+// readVIP asks the guest for the address once, bounded like every other read in the loop. A node
+// with no service NIC (a witness) has nothing to ask and answers "none, no error".
+func (cfg Config) readVIP(ctx context.Context, r guest.VIPReader) vipAnswer {
+	if cfg.VIPDev == "" {
+		return vipAnswer{}
+	}
+	rctx, cancel := context.WithTimeout(ctx, vipVerbTimeout)
+	defer cancel()
+	cidr, err := r.VIP(rctx, cfg.VIPDev)
+	return vipAnswer{cidr: cidr, err: err}
 }
 
 // hasService reports whether this node runs anything at all. The shipped state is FALSE — a node

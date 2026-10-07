@@ -104,7 +104,7 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 		f.GuestErr = errors.New("this agent holds no guest channel")
 		return doctorOutcome(d, judgeDoctor(f))
 	}
-	st, cl, probe, err := cfg.snapshot(ctx, r, "")
+	st, cl, probe, err := cfg.snapshot(ctx, r, r, "") // on request: the live answer, not a cycle's
 	mdnsNames(ctx, r, &st)
 	f.GuestErr, f.Cluster, f.Probe, f.Healthy, f.Published, f.Other = err, cl, probe, st.Healthy, st.PublishedName, st.OtherBriard
 	if err == nil && !cfg.Diskless {

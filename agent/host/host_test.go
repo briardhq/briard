@@ -100,6 +100,9 @@ type fakeStatus struct {
 	// mdnsAsked counts both mDNS reads: the loop must never make them (nothing it decides depends
 	// on a name), so a test can assert the snapshot left them alone.
 	mdnsAsked *int
+	// asked counts the status reads (Cluster, one per cycle) and the VIP reads, so a test can hold
+	// the loop to one net.vip per cycle across every owner of the address.
+	clusterAsked, vipAsked *int
 	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
 	// node that promoted into somebody else.s install is the only place that truth exists.
 	volume        map[string]string
@@ -169,6 +172,9 @@ func (f fakeStatus) Snapshot(_ context.Context, _, dest, sidecar string) error {
 // reads it, and an empty list is a real reading (a
 // guest too old to report peers) rather than an unset one.
 func (f fakeStatus) Cluster(context.Context, string) (model.Cluster, error) {
+	if f.clusterAsked != nil {
+		*f.clusterAsked++
+	}
 	return model.Cluster{QuorumState: f.qs, Peers: f.peers}, f.err
 }
 
@@ -207,7 +213,12 @@ func (f fakeStatus) ServiceHealthOf(_ context.Context, service string) (services
 	return h, nil
 }
 
-func (f fakeStatus) VIP(context.Context, string) (string, error) { return f.vip, f.vipErr }
+func (f fakeStatus) VIP(context.Context, string) (string, error) {
+	if f.vipAsked != nil {
+		*f.vipAsked++
+	}
+	return f.vip, f.vipErr
+}
 
 func (f fakeStatus) SystemPath(context.Context) (string, error) {
 	return f.system, f.sysErr
@@ -655,7 +666,7 @@ func TestSnapshot_DoesNotAskThePublishedName(t *testing.T) {
 	asked := 0
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
 	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf", mdnsAsked: &asked}
-	if _, _, _, err := cfg.snapshot(context.Background(), r, "/nix/store/sys"); err != nil {
+	if _, _, _, err := snap(cfg, r, "/nix/store/sys"); err != nil {
 		t.Fatal(err)
 	}
 	if asked != 0 {
@@ -672,7 +683,7 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	cfg.Resource.Name = "r0"
 
 	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
-	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: qs}, "/nix/store/sys")
+	st, _, _, _ := snap(cfg, fakeStatus{qs: qs}, "/nix/store/sys")
 	if st.NodeName != "n1" || st.Role != model.RoleDiskless {
 		t.Errorf("identity not preserved: %+v", st)
 	}
@@ -714,6 +725,31 @@ func TestObserveRidesOutVerbError(t *testing.T) {
 	r := fakeStatus{err: errors.New("drbdsetup: no such resource r0")} // verb error, channel fine
 	if err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
 		t.Errorf("observe on a verb error = %v, want nil (keep observing until ctx)", err)
+	}
+}
+
+// The loop asks the guest for its address ONCE per cycle, however many owners want it (the
+// health URL, the host's route, the ipvtap copier, casa): the channel serves one verb at a time,
+// and four round trips for one fact were four turns nothing else could take. Counted against the
+// cluster read, which is exactly one per cycle.
+func TestObserveAsksTheAddressOncePerCycle(t *testing.T) {
+	// WitnessTap arms the host-route owner too; with no node IPs its route spec is refused before
+	// any exec, so its READ runs and nothing touches the network.
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond, VIPDev: "eth0", WitnessTap: "tap0"}
+	cfg.Resource.Name = "r0"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	var cycles, vips int
+	r := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}, vip: "192.168.9.50/24", health: true,
+		clusterAsked: &cycles, vipAsked: &vips}
+	if err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+		t.Fatalf("observe = %v", err)
+	}
+	if cycles == 0 {
+		t.Fatal("the loop never ran a cycle")
+	}
+	if vips != cycles {
+		t.Errorf("net.vip asked %d times over %d cycles; want exactly one per cycle", vips, cycles)
 	}
 }
 
@@ -874,7 +910,7 @@ func (unreachableCloud) ReportMetrics(context.Context, string, []api.MetricAggre
 func TestSnapshot_StatusErrorIsUnhealthy(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor}
 	sentinel := errors.New("channel down")
-	st, _, _, err := cfg.snapshot(context.Background(), fakeStatus{err: sentinel}, "")
+	st, _, _, err := snap(cfg, fakeStatus{err: sentinel}, "")
 	if !errors.Is(err, sentinel) {
 		t.Errorf("snapshot must return the read error (for the reconnect gate), got %v", err)
 	}
@@ -892,7 +928,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://unused.invalid/healthz"}
 
 	// Quorate but the in-guest probe says sick -> unhealthy (health != quorum).
-	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "")
+	st, _, _, _ := snap(cfg, fakeStatus{qs: model.QuorumState{Quorate: true}, health: false}, "")
 	if !st.Quorum.Quorate {
 		t.Fatal("precondition: node is quorate")
 	}
@@ -900,7 +936,7 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 		t.Error("in-guest probe false must read unhealthy despite quorum")
 	}
 	// Non-quorate but the in-guest probe says healthy -> healthy (health != quorum).
-	st, _, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "")
+	st, _, _, _ = snap(cfg, fakeStatus{qs: model.QuorumState{Quorate: false}, health: true}, "")
 	if !st.Healthy {
 		t.Error("in-guest probe true must read healthy")
 	}
@@ -914,7 +950,7 @@ func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
 
-	st, _, _, _ := cfg.snapshot(context.Background(), r, "")
+	st, _, _, _ := snap(cfg, r, "")
 	if want := "http://192.168.9.50/healthz"; probed != want {
 		t.Errorf("probed %q, want the front door at the REPORTED lease %q", probed, want)
 	}
@@ -932,7 +968,7 @@ func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://192.168.9.7/healthz", VIPDev: "eth2"}
 	r := fakeStatus{qs: model.QuorumState{Quorate: true}, health: true, vip: "192.168.9.50/24", probed: &probed}
 
-	if _, _, _, _ = cfg.snapshot(context.Background(), r, ""); probed != "http://192.168.9.7/healthz" {
+	if _, _, _, _ = snap(cfg, r, ""); probed != "http://192.168.9.7/healthz" {
 		t.Errorf("probed %q, want the CONFIGURED address", probed)
 	}
 }
@@ -952,7 +988,7 @@ func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 		health: true, vip: "", probed: &probed,
 	}
 
-	st, _, _, _ := cfg.snapshot(context.Background(), r, "")
+	st, _, _, _ := snap(cfg, r, "")
 	if st.Healthy {
 		t.Error("a quorate primary holding no service address must NOT read healthy")
 	}
@@ -971,7 +1007,7 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	// ...beside the anchor that HOLDS the house: standing by is a job only while someone serves.
 	holder := []model.PeerState{{Name: "n1", Connected: true, Role: "Primary", Diskful: true, UpToDate: true}}
 
-	st, _, probe, _ := cfg.snapshot(context.Background(), fakeStatus{qs: participating, peers: holder, vip: ""}, "")
+	st, _, probe, _ := snap(cfg, fakeStatus{qs: participating, peers: holder, vip: ""}, "")
 	if !st.Healthy {
 		t.Error("a quorate, up-to-date secondary is doing its whole job and must read healthy")
 	}
@@ -984,14 +1020,14 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	// to ask a Secondary); health must not be softer than the gate.
 	syncing := participating
 	syncing.UpToDate = false
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: syncing, peers: holder, vip: ""}, ""); st.Healthy {
+	if st, _, _, _ := snap(cfg, fakeStatus{qs: syncing, peers: holder, vip: ""}, ""); st.Healthy {
 		t.Error("a secondary still syncing must not read healthy")
 	}
 
 	// Non-quorate is the partitioned survivor: participating in nothing.
 	isolated := participating
 	isolated.Quorate = false
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: isolated, peers: holder, vip: ""}, ""); st.Healthy {
+	if st, _, _, _ := snap(cfg, fakeStatus{qs: isolated, peers: holder, vip: ""}, ""); st.Healthy {
 		t.Error("a non-quorate secondary must not read healthy")
 	}
 }
@@ -1011,12 +1047,12 @@ func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	verbErr := errors.New("guestagent: unknown verb \"service.health\"")
 
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ok.URL}
-	st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")
+	st, _, _, _ := snap(cfg, fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")
 	if !st.Healthy {
 		t.Error("verb error must fall back to the host probe (200 -> healthy)")
 	}
 	cfg.HealthURL = sick.URL
-	st, _, _, _ = cfg.snapshot(context.Background(), fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")
+	st, _, _, _ = snap(cfg, fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")
 	if st.Healthy {
 		t.Error("verb error + host probe 500 -> unhealthy")
 	}
@@ -1246,13 +1282,13 @@ func TestSnapshot_LoneAnchorThatIsNotPrimaryIsUnhealthy(t *testing.T) {
 		"peer down":               {{Name: "n2", Connected: false, Role: "Unknown", Diskful: true, UpToDate: true}},
 		"peer still syncing":      {{Name: "n2", Connected: true, Role: "Secondary", Diskful: true, UpToDate: false}},
 	} {
-		if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: demoted, peers: peers, vip: ""}, ""); st.Healthy {
+		if st, _, _, _ := snap(cfg, fakeStatus{qs: demoted, peers: peers, vip: ""}, ""); st.Healthy {
 			t.Errorf("%s: a not-Primary anchor with no peer able to hold the house read healthy", name)
 		}
 	}
 	// The same node beside a peer that can hold the house is an ordinary standby.
 	holder := []model.PeerState{{Name: "n2", Connected: true, Role: "Primary", Diskful: true, UpToDate: true}}
-	if st, _, _, _ := cfg.snapshot(context.Background(), fakeStatus{qs: demoted, peers: holder, vip: ""}, ""); !st.Healthy {
+	if st, _, _, _ := snap(cfg, fakeStatus{qs: demoted, peers: holder, vip: ""}, ""); !st.Healthy {
 		t.Error("a quorate, up-to-date standby beside a capable peer must read healthy")
 	}
 }
@@ -1295,3 +1331,9 @@ func (f fakeStatus) HassDBRestore(_ context.Context, member string) error {
 
 // finish ends the fake's running check with a report.
 func (f *fakeDB) finish(rep hass.DBReport) { f.running, f.report = false, &rep }
+
+// snap is a test's snapshot: the fake answers both the status reads and the cycle's one VIP read,
+// which in the loop is readVIP's answer handed in.
+func snap(cfg Config, r fakeStatus, system string) (api.NodeStatus, model.Cluster, string, error) {
+	return cfg.snapshot(context.Background(), r, r, system)
+}

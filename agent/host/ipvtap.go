@@ -83,8 +83,9 @@ func (c *ipvtapCopier) clear() {
 	}
 }
 
-// tick is one pass of the copy. It changes nothing on any substrate but ipvtap.
-func (c *ipvtapCopier) tick(ctx context.Context, cfg Config, r guest.VIPReader, n notify.Notifier, logf func(string, ...any)) {
+// tick is one pass of the copy. It changes nothing on any substrate but ipvtap. vip is the
+// cycle's one answer to net.vip; r is the guest, for the stop a refusal needs.
+func (c *ipvtapCopier) tick(ctx context.Context, cfg Config, vip guest.VIPReader, r any, n notify.Notifier, logf func(string, ...any)) {
 	if c == nil || cfg.net == nil || !cfg.net.Ipvtap || ctx.Err() != nil {
 		return
 	}
@@ -98,7 +99,7 @@ func (c *ipvtapCopier) tick(ctx context.Context, cfg Config, r guest.VIPReader, 
 	// substrate there is no peer the address could have moved to. The next answer settles it.
 	if svc := cfg.net.ServiceTap; svc != "" && cfg.VIPDev != "" {
 		rctx, cancel := context.WithTimeout(ctx, vipVerbTimeout)
-		cidr, err := r.VIP(rctx, cfg.VIPDev)
+		cidr, err := vip.VIP(rctx, cfg.VIPDev)
 		cancel()
 		if ctx.Err() != nil {
 			return // a shutdown, not a guest that stopped answering (viproute.go says why)
@@ -131,7 +132,7 @@ func (c *ipvtapCopier) tick(ctx context.Context, cfg Config, r guest.VIPReader, 
 
 // refuse stops the guest's VIP client and says why, once. The stop is repeated on every tick that
 // sees the address again (a guest restart runs the client again); the words are not.
-func (c *ipvtapCopier) refuse(ctx context.Context, r guest.VIPReader, n notify.Notifier, addr, cidr string, logf func(string, ...any)) {
+func (c *ipvtapCopier) refuse(ctx context.Context, r any, n notify.Notifier, addr, cidr string, logf func(string, ...any)) {
 	first := !c.refused()
 	c.refusedAddr, c.refusedCIDR = addr, cidr
 	if s, ok := r.(vipStopper); ok {
