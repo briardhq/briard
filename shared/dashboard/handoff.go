@@ -117,11 +117,19 @@ type Casa struct {
 	CertUntil time.Time `json:"certUntil,omitzero"`
 }
 
-// AlertsPath is the dashboard's copy of the host's alert store ([]notify.Record, oldest first):
-// written through `dashboard.alerts` at the first cycle of every connection and whenever the
-// store records something, because the store is the host's and the guest is disposable. The
-// page shows it; it never writes it, and nothing acknowledges an alert from here.
-const AlertsPath = Dir + "/alerts.json"
+// AlertsDir holds the guest's one copy of the host's alert store, for every display on the
+// guest: the dashboard reads it here, and Home Assistant's container gets the directory bound
+// read-only (agent/hass), so Briard's integration can mirror it into Repairs. A directory of its
+// own rather than a file in Dir, because Dir also holds the dashboard's one-time code, which no
+// workload may see -- and a directory rather than a file bind, because the copy is replaced by a
+// rename, which a file bind would never show the container.
+const AlertsDir = "/run/briard/alerts"
+
+// AlertsPath is that copy ([]notify.Record, oldest first): written through `dashboard.alerts` at
+// the first cycle of every connection and whenever the store records something, because the
+// store is the host's and the guest is disposable. Every reader only displays it; nothing
+// acknowledges an alert from here.
+const AlertsPath = AlertsDir + "/alerts.json"
 
 // ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every
 // request the host makes. The deadman reads it to decide when to act; the dashboard reads it to

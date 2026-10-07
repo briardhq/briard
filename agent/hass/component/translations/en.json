@@ -1,0 +1,8 @@
+{
+  "issues": {
+    "alert": {
+      "title": "{title}",
+      "description": "{body}\n\nBriard raised this; it closes on its own when Briard sees the problem is over."
+    }
+  }
+}

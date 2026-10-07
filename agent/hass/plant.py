@@ -100,7 +100,9 @@ def plant_stub(config_dir, src):
     dst = os.path.join(config_dir, "custom_components", DOMAIN)
     os.makedirs(dst, exist_ok=True)
     for name in sorted(os.listdir(src)):
-        if not os.path.isfile(os.path.join(src, name)):
+        if os.path.isdir(os.path.join(src, name)):
+            # translations/: Home Assistant reads an integration's strings from beside its package.
+            shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
             continue
         shutil.copyfile(os.path.join(src, name), os.path.join(dst, name))
 

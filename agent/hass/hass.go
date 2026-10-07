@@ -60,11 +60,14 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
+	"briard.io/shared/routes"
 )
 
 // Name is Home Assistant's catalog slug. Everything in this package is keyed on it:
@@ -135,6 +138,20 @@ const implPath = implDir + "/briard_ha.py"
 // step with the catalog.
 const mqttPortToken = "@MQTT_PORT@"
 
+// alertsPathToken and dashboardURLToken are the integration's two other placeholders: where it
+// reads the alert copy inside the container, and the page its Repairs issues link to. Each value
+// has one definition elsewhere (the bind below, shared/routes), so the integration carries a
+// token rather than a second copy.
+const (
+	alertsPathToken   = "@ALERTS_PATH@"
+	dashboardURLToken = "@DASHBOARD_URL@"
+)
+
+// alertsMount is where the guest's alert copy (shared/dashboard.AlertsDir) appears inside Home
+// Assistant's container: read-only, and a sibling of /briard, never inside it (a bind nested in
+// a read-only bind cannot be created).
+const alertsMount = "/briard-alerts"
+
 // extractCtr is the throwaway container the original `run` is copied out of. Created
 // and removed, never started: `podman cp` reads the image's filesystem without
 // executing anything from it.
@@ -164,6 +181,13 @@ var stubManifest string
 
 //go:embed briard_ha.py
 var implSource string
+
+// stubTranslations is the stub's one string: a Repairs issue's title and description are
+// translation keys, and Home Assistant reads an integration's translations from beside its
+// package -- the stub in /config -- so the alert's own words pass through placeholders.
+//
+//go:embed component/translations/en.json
+var stubTranslations string
 
 // Executor is the narrow slice of the guest agent's executor this package needs. A
 // local interface for dependency injection, not a seam: it exists so the package can
@@ -195,6 +219,9 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	}
 	return []string{
 		wrapperPath + ":" + s6Run + ":ro",
+		// The node's alerts, for the integration to mirror into Repairs (briard_ha.py). The
+		// directory, not the file: the copy is replaced by a rename, which a file bind never shows.
+		dashboard.AlertsDir + ":" + alertsMount + ":ro",
 	}
 }
 
@@ -396,7 +423,7 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 //
 // The broker's port is substituted in, because it arrives from the registry: it belongs to the
 // other service, and a second copy of it here would be a second thing to keep in step with the
-// catalog.
+// catalog. The alert copy's path and the dashboard's address are substituted for the same reason.
 //
 // THE SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that actually bites: a
 // Replace of a token that is not there is a silent no-op, so a check only AFTER it catches a
@@ -404,14 +431,23 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 // integration dialling a port named "@MQTT_PORT@", failing forever and silently, at every Home
 // Assistant start in the fleet.
 func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
-	if !strings.Contains(implSource, mqttPortToken) {
-		return fmt.Errorf("hass: the integration no longer carries %s", mqttPortToken)
+	src := implSource
+	for _, t := range [][2]string{
+		{mqttPortToken, strconv.Itoa(mqttPort)},
+		{alertsPathToken, alertsMount + "/" + filepath.Base(dashboard.AlertsPath)},
+		{dashboardURLToken, "http://" + routes.BareFlockHostName + "/"},
+	} {
+		if !strings.Contains(src, t[0]) {
+			return fmt.Errorf("hass: the integration no longer carries %s", t[0])
+		}
+		src = strings.Replace(src, t[0], t[1], 1)
+		if strings.Contains(src, t[0]) {
+			return fmt.Errorf("hass: the integration carries %s more than once", t[0])
+		}
 	}
-	src := strings.Replace(implSource, mqttPortToken, strconv.Itoa(mqttPort), 1)
-	if strings.Contains(src, mqttPortToken) {
-		return fmt.Errorf("hass: the integration carries %s more than once", mqttPortToken)
-	}
-	for _, dir := range []string{stubDir, implDir} {
+	// The alert copy's directory too: it is a bind source of the container, and one that is
+	// missing at start fails the container. The guest agent fills it when the host pushes.
+	for _, dir := range []string{stubDir, stubDir + "/translations", implDir, dashboard.AlertsDir} {
 		if out, err := x.Run(ctx, "mkdir", "-p", dir); err != nil {
 			return fmt.Errorf("hass: %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
 		}
@@ -420,6 +456,9 @@ func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 		return err
 	}
 	if err := write(ctx, x, stubDir+"/manifest.json", stubManifest, "0644"); err != nil {
+		return err
+	}
+	if err := write(ctx, x, stubDir+"/translations/en.json", stubTranslations, "0644"); err != nil {
 		return err
 	}
 	return write(ctx, x, implPath, src, "0644")

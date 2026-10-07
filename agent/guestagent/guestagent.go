@@ -1352,15 +1352,16 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 		case verbDashboardCasa, verbDashboardAlerts:
 			// Two of the host's facts for the page, written the same way; the payload is parsed
 			// as its own shape, so a malformed one never reaches the page.
+			// The alert copy's directory is readable by more than the page (dashboard.AlertsDir).
 			var v any = &dashboard.Casa{}
-			path := dashboard.CasaPath
+			path, dir, mode := dashboard.CasaPath, dashboard.Dir, "0700"
 			if verb == verbDashboardAlerts {
-				v, path = &[]notify.Record{}, dashboard.AlertsPath
+				v, path, dir, mode = &[]notify.Record{}, dashboard.AlertsPath, dashboard.AlertsDir, "0755"
 			}
 			if err := json.Unmarshal(payload, v); err != nil {
 				return nil, err
 			}
-			if out, err := x.Run(ctx, "mkdir", "-p", "-m", "0700", dashboard.Dir); err != nil {
+			if out, err := x.Run(ctx, "mkdir", "-p", "-m", mode, dir); err != nil {
 				return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
 			}
 			raw, err := json.Marshal(v)

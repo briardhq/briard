@@ -209,16 +209,16 @@ func TestPrepareFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestVolumesAreTheTwoBinds: one read-only mount for the whole directory, plus the shadow over
-// the image's own run script. Both sources are outside /config, so HA's restore wipe — which
-// clears the config directory wholesale — never sees them.
-// ⚠️ ONE BIND NOW, not two: the service directory at /briard is the PRODUCT's general
-// shape and agent/services writes it for every service that has one, so what is left here is the
-// half that is Home Assistant knowledge -- the s6 wrapper over a path only this image has.
-func TestVolumesAreTheImageSpecificBind(t *testing.T) {
+// TestVolumesAreTheImageSpecificBinds: the half of Home Assistant's binds that is Home Assistant
+// knowledge -- the s6 wrapper over a path only this image has, and the node's alert copy for the
+// integration's Repairs mirror. The service directory at /briard is the PRODUCT's general shape
+// and agent/services writes it, so it must not appear here. Every source is outside /config, so
+// HA's restore wipe — which clears the config directory wholesale — never sees them.
+func TestVolumesAreTheImageSpecificBinds(t *testing.T) {
 	got := Volumes(ha(), ha().Containers[0])
 	want := []string{
 		"/run/briard/home-assistant/run:/etc/services.d/home-assistant/run:ro",
+		"/run/briard/alerts:/briard-alerts:ro",
 	}
 	for _, v := range got {
 		if strings.HasSuffix(v, ":"+mountPoint+":ro") {
@@ -374,6 +374,19 @@ func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	if !strings.Contains(src, "BROKER_PORT = 1883") {
 		t.Error("the broker's port did not reach the integration")
 	}
+	// The Repairs mirror's two facts arrive the same way: where the alert copy is inside the
+	// container (the bind Volumes writes) and the dashboard its issues link to.
+	if !strings.Contains(src, `ALERTS_PATH = "/briard-alerts/alerts.json"`) || !strings.Contains(src, `DASHBOARD_URL = "http://briard.local/"`) {
+		t.Error("the alert copy's path or the dashboard's address did not reach the integration")
+	}
+	// An issue's words are translation keys read from beside the stub, so the stub carries them.
+	if tr := f.files[stubDir+"/translations/en.json"]; !strings.Contains(tr, `"alert"`) || !strings.Contains(tr, "{title}") || !strings.Contains(tr, "{body}") {
+		t.Errorf("the issue translation was not staged with the alert's placeholders: %q", tr)
+	}
+	// The alert copy's directory is a bind source: it must exist before the container starts.
+	if !f.ran("mkdir", "-p", "/run/briard/alerts") {
+		t.Errorf("the alert copy's directory was not created; ran: %v", f.runs)
+	}
 	// The stub is what lands in /config, so it has to be staged for the planter to copy — both
 	// files, because a package without its manifest is an integration HA refuses to load.
 	for _, p := range []string{stubDir + "/__init__.py", stubDir + "/manifest.json"} {
@@ -483,6 +496,19 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	for _, line := range strings.Split(wrapperSource, "\n") {
 		if strings.HasPrefix(line, "python3 ") && !strings.HasSuffix(strings.TrimSpace(line), "|| true") {
 			t.Errorf("a wrapper step can fail the service: %q", line)
+		}
+	}
+}
+
+// Every placeholder is required, each on its own: a file that lost any one of them would be
+// installed carrying the token where a value belongs.
+func TestPrepareRefusesAnIntegrationMissingAnyPlaceholder(t *testing.T) {
+	saved := implSource
+	t.Cleanup(func() { implSource = saved })
+	for _, tok := range []string{mqttPortToken, alertsPathToken, dashboardURLToken} {
+		implSource = strings.Replace(saved, tok, "x", 1)
+		if err := writeIntegration(context.Background(), withImage(), 1883); err == nil || !strings.Contains(err.Error(), tok) {
+			t.Errorf("an integration without %s: err = %v, want a refusal naming it", tok, err)
 		}
 	}
 }

@@ -3,7 +3,7 @@ package main
 // THE ALERT LIST: what is wrong on this machine right now, then what happened lately.
 //
 // The page decides nothing. The alerts are the host's -- its store is the one record, and the
-// host pushes a copy here (dashboard.AlertsPath) when the store moves and at the start of every
+// host pushes a copy to the guest (dashboard.AlertsPath) when the store moves and at the start of every
 // connection. Nothing is acknowledged from the page: an alert closes when the host sees its
 // condition end, and an event is history the moment it is written.
 //

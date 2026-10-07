@@ -22,15 +22,20 @@ logged and dropped, never raised at setup.
 """
 
 import asyncio
+from datetime import timedelta
 from http import HTTPStatus
+import json
 import logging
 import socket
+from urllib.parse import quote
 
 from homeassistant.components.auth import create_auth_code
 from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.core import CoreState
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 
 _LOGGER = logging.getLogger(__name__)
@@ -208,7 +213,79 @@ async def async_setup(hass, config):
     # running. The listener is never removed: this integration lives for the lifetime of the
     # process, and `async_setup` has no unload counterpart to remove it in.
     hass.bus.async_listen(EVENT_RECONSIDER, _nudged)
+
+    # The node's open alerts, mirrored into Repairs: at start, then on a slow poll of the copy.
+    async def _mirror(_now=None):
+        try:
+            await _mirror_alerts(hass)
+        except Exception:  # noqa: BLE001 — nothing in here may cost a household its Home Assistant
+            _LOGGER.warning("briard: could not mirror the node's alerts into Repairs", exc_info=True)
+
+    async_at_started(hass, _mirror)
+    async_track_time_interval(hass, _mirror, ALERTS_EVERY)
     return True
+
+# THE NODE'S ALERTS AS REPAIRS ISSUES. The node's host agent keeps the one record of every alert;
+# the guest holds a copy, bound into this container read-only at ALERTS_PATH. Each OPEN alert is
+# one issue, keyed by the alert's key; an alert that resolves deletes its issue; an event never
+# makes one. Nothing here acts: the issues are not fixable, "Learn more" leads to the Briard
+# dashboard, which stays the one place to act, and Ignore hides an issue in Home Assistant only --
+# Briard has no acknowledgement to send it to.
+#
+# Not persistent: Home Assistant drops them at a restart (keeping an Ignore) and this rebuilds
+# them from the copy at start, so an issue can never outlive the copy that justified it.
+#
+# A copy that is absent or unreadable changes nothing, in either direction. Unknown is not "all
+# clear": the copy is missing before the host's first push and on a host too old to push one.
+ALERTS_PATH = "@ALERTS_PATH@"
+DASHBOARD_URL = "@DASHBOARD_URL@"
+ALERTS_EVERY = timedelta(seconds=30)
+
+# Severity is the node's word for loudness; Repairs has no quieter level than a warning.
+_SEVERITY = {
+    "critical": ir.IssueSeverity.CRITICAL,
+    "warning": ir.IssueSeverity.WARNING,
+    "info": ir.IssueSeverity.WARNING,
+}
+
+def _open_alerts():
+    """The copy's open alerts by key -- the latest record per key, where that is an open one --
+    or None when there is no copy to read. Blocking; called in the executor."""
+    try:
+        with open(ALERTS_PATH, encoding="utf-8") as fh:
+            records = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(records, list):
+        return None
+    latest = {}
+    for rec in records:
+        if isinstance(rec, dict) and isinstance(rec.get("key"), str):
+            latest[rec["key"]] = rec
+    return {key: rec for key, rec in latest.items() if rec.get("kind") == "open"}
+
+async def _mirror_alerts(hass):
+    """Make Briard's issues exactly the copy's open alerts."""
+    open_now = await hass.async_add_executor_job(_open_alerts)
+    if open_now is None:
+        return
+    for key, rec in open_now.items():
+        # Create-or-replace; Home Assistant writes and announces only a change.
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            key,
+            is_fixable=False,
+            is_persistent=False,
+            severity=_SEVERITY.get(rec.get("severity"), ir.IssueSeverity.WARNING),
+            learn_more_url=DASHBOARD_URL + "#alert-" + quote(key, safe=":-"),
+            translation_key="alert",
+            translation_placeholders={"title": str(rec.get("title", "")), "body": str(rec.get("body", ""))},
+        )
+    registry = ir.async_get(hass)
+    for domain, issue_id in list(registry.issues):
+        if domain == DOMAIN and issue_id not in open_now:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
 
 def _broker_listening():
     """Is there actually a broker on the node? Blocking; called in the executor."""

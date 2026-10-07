@@ -2185,7 +2185,7 @@ func TestDashboardAlertsIsWrittenThenMovedIn(t *testing.T) {
 		t.Errorf("written %q; want the records", got)
 	}
 	want := [][]string{
-		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
+		{"mkdir", "-p", "-m", "0755", dashboard.AlertsDir},
 		{"mv", "-f", tmp, dashboard.AlertsPath},
 	}
 	if !reflect.DeepEqual(x.runs, want) {

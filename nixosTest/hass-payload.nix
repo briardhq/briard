@@ -59,6 +59,30 @@ let
     sys.exit(0 if found else 1)
   '';
 
+  # The Repairs probe: Briard's issues and the issue strings HA loaded for the domain, as one JSON
+  # object. Repairs has no REST listing, so this speaks HA's websocket, on HA's own aiohttp.
+  repairsProbe = pkgs.writeText "repairs-probe.py" ''
+    import asyncio
+    import json
+    import os
+
+    import aiohttp
+
+    async def main():
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect("http://127.0.0.1:8123/api/websocket") as ws:
+                await ws.receive_json()
+                await ws.send_json({"type": "auth", "access_token": os.environ["TOKEN"]})
+                assert (await ws.receive_json())["type"] == "auth_ok"
+                await ws.send_json({"id": 1, "type": "repairs/list_issues"})
+                issues = (await ws.receive_json())["result"]["issues"]
+                await ws.send_json({"id": 2, "type": "frontend/get_translations", "language": "en", "category": "issues", "integration": ["briard"]})
+                strings = (await ws.receive_json())["result"]["resources"]
+        print(json.dumps({"issues": [i for i in issues if i["domain"] == "briard"], "strings": strings}))
+
+    asyncio.run(main())
+  '';
+
   node = h.mkNode {
     # The broker rides along for ONE claim -- (b), at the bottom of this file: whether
     # HA's own zeroconf stack sees what the guest announces. It needs a real service record on
@@ -536,6 +560,49 @@ pkgs.testers.runNixOSTest {
         "| grep -q '\"briard\"'",
         timeout=300,
     )
+
+    # THE NODE'S ALERTS AS REPAIRS ISSUES. No host agent runs here, so the copy the guest agent
+    # writes for `dashboard.alerts` is written by hand, the same way: beside its name, then moved
+    # in. An open alert becomes one issue keyed by the alert's key; a resolved one and an event
+    # make none; resolving the open one removes its issue. HA's own websocket is the judge, and the
+    # strings HA loaded for the domain prove the planted translation reached it.
+    node1.succeed(f"test -f {dataroot}/app/custom_components/briard/translations/en.json")
+    import shlex
+    def push_alerts(records):
+        node1.succeed(
+            f"echo {shlex.quote(_zj.dumps(records))} > /run/briard/alerts/alerts.json.new "
+            "&& mv -f /run/briard/alerts/alerts.json.new /run/briard/alerts/alerts.json"
+        )
+    def rec(key, kind, sev, title):
+        return {"key": key, "kind": kind, "severity": sev, "title": title, "body": f"body of {title}", "at": "2026-10-07T12:00:00Z"}
+    def repairs():
+        return _zj.loads(node1.succeed(
+            f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe}"
+        ))
+    disk_open = rec("disk", "open", "warning", "Disk space low")
+    push_alerts([
+        disk_open,
+        rec("clock", "open", "warning", "Clock not synchronised"),
+        rec("clock", "resolved", "", "Clock synchronised"),
+        rec("upgrade-rolled-back:os", "event", "info", "Update rolled back"),
+    ])
+    node1.wait_until_succeeds(
+        f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe} | grep -q '\"issue_id\": \"disk\"'",
+        timeout=120,
+    )
+    got = repairs()
+    assert [i["issue_id"] for i in got["issues"]] == ["disk"], f"want exactly the disk issue: {got['issues']}"
+    disk = got["issues"][0]
+    assert disk["severity"] == "warning" and not disk["is_fixable"], disk
+    assert disk["translation_key"] == "alert" and disk["translation_placeholders"]["title"] == "Disk space low", disk
+    assert disk["learn_more_url"] == "http://briard.local/#alert-disk", disk
+    assert got["strings"].get("component.briard.issues.alert.title") == "{title}", f"HA did not load the issue strings: {got['strings']}"
+    push_alerts([disk_open, rec("disk", "resolved", "", "Disk space recovered")])
+    node1.wait_until_succeeds(
+        f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe} | grep -q '\"issues\": \\[\\]'",
+        timeout=120,
+    )
+    print("the node's open alert became a Repairs issue, and its resolution removed it")
 
     # The entry is not asserted to exist "eventually" by polling forever: it is waited for once,
     # then its CONTENTS are read, because an entry naming the wrong broker would satisfy any
