@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"briard.io/agent/quadlet"
@@ -212,6 +213,14 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	return "took " + path.Base(member), nil
 }
 
+// ringMu serialises the ring's in-process writers: the verb handlers (the host's takes, a
+// restore, the recorder's restore), the inbound listener (a container's start) and the start
+// evaluator's ticker all settle, prune or swap the same members, and the serve loop runs verbs
+// beside each other and beside those two goroutines. Taken at the three funnels -- recordMember,
+// evaluatePending, the restore swap -- never inside them. The `--service-starting` ExecStartPre
+// subprocess stays outside it: best-effort by design, it cannot share a lock with this process.
+var ringMu sync.Mutex
+
 // recordMember is what every take does once its member exists: evaluate it, add any
 // reasons that finds to the member they land on, let its app hold it, and prune. One function for the three ways a
 // member is taken (a start, the host's data.member, the quiesced clock sample), so the history
@@ -227,6 +236,8 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 // BEST-EFFORT, like the prune: the caller may be holding a household's service stopped, and a row
 // missing from its history is a smaller loss than a service that would not start.
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
+	ringMu.Lock()
+	defer ringMu.Unlock()
 	if meta.Pending {
 		replacePending(ctx, x, member, meta)
 	} else if members, err := listMembers(ctx, x, meta.Service); err != nil {
@@ -563,6 +574,8 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 // the start would put that file back and the next boot would set it aside again, so the reset is
 // the boot's verdict on the start's data, like health.
 func evaluatePending(ctx context.Context, x Executor, service string, now time.Time) {
+	ringMu.Lock()
+	defer ringMu.Unlock()
 	members, err := listMembers(ctx, x, service)
 	if err != nil {
 		return

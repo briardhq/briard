@@ -1077,6 +1077,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err != nil {
 				return nil, err
 			}
+			ringMu.Lock() // the listener or the evaluator must not prune the member being restored from
+			defer ringMu.Unlock()
 			// Precondition: the host has stopped the service (bind released). Swap the
 			// live rw subvolume for a fresh rw snapshot of the RO restore point.
 			//
