@@ -362,3 +362,20 @@ func TestCasaClaimIsLocalOnly(t *testing.T) {
 		t.Fatal("the dashboard cannot ask for a name")
 	}
 }
+
+// A new channel session is told the view again though nothing changed: the guest may have been
+// restarted under the same runner, and its tmpfs then holds no view. Within a session an
+// unchanged view is not re-sent.
+func TestCasaViewIsPushedAgainEachSession(t *testing.T) {
+	r := newCasaRig(t)
+	r.tick(t)
+	r.tick(t)
+	if len(r.guest.views) != 1 {
+		t.Fatalf("one session pushed %d views, want 1", len(r.guest.views))
+	}
+	r.cs.newSession() // what observe does when the loop re-dials
+	r.tick(t)
+	if len(r.guest.views) != 2 || r.guest.views[1] != r.guest.views[0] {
+		t.Fatalf("after a new session the views are %+v; want the same view pushed again", r.guest.views)
+	}
+}

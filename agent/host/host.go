@@ -1273,6 +1273,7 @@ func connectAndHandshake(ctx context.Context, sock string) (*guestagent.Client, 
 func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alerter *redundancyAlerter, n notify.Notifier, rep cloud.CloudClient, cs *casaRunner, agg *metricsAggregator, tenant string, local <-chan localRequest, pending *[]api.DirectiveOutcome, logf func(string, ...any)) error {
 	t := time.NewTicker(cfg.StatusEvery)
 	defer t.Stop()
+	cs.newSession()            // a new channel may be a new guest: the page's casa view is pushed again
 	cr := &certRequester{}     // node-side CSR handshake state, lives for the observe loop
 	su := cfg.newSelfUpdater() // the flag-watcher + trigger of the update unit below the agent
 	revertAlerted := ""        // the refused guest bundle already alerted on (once per release)

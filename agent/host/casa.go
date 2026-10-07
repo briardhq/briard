@@ -100,7 +100,7 @@ type casaRunner struct {
 	certRead  time.Time // when certUntil was last read back
 	nextRenew time.Time
 	renewing  chan casaIssued // an issuance in flight, off the loop; nil when none
-	pushed    *dashboard.Casa // what the guest was last told, this session
+	pushed    *dashboard.Casa // what the guest was last told, this channel session (newSession)
 }
 
 // casaIssued is what an issuance goroutine hands back.
@@ -398,4 +398,13 @@ func (c *casaRunner) push(ctx context.Context, g casaGuest, logf func(string, ..
 		return
 	}
 	c.pushed = &v
+}
+
+// newSession forgets what the guest was told. Called at the start of every channel session:
+// the runner outlives the guest (an OS upgrade, a recovery or a memory relaunch restarts it
+// under the same agent), and a fresh guest's tmpfs holds no view until it is pushed again.
+func (c *casaRunner) newSession() {
+	if c != nil {
+		c.pushed = nil
+	}
 }
