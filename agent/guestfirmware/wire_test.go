@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -125,7 +126,8 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("err = %v, want DeadlineExceeded", err)
 		}
-		// The deadline closed the channel mid-frame, so it's also ErrChannelDown: a
+		// Nothing answered since the call was sent -- the liveness rule -- so the deadline also
+		// closed the channel and it is ErrChannelDown too: a
 		// bounded op sees its timeout AND the observe loop reconnects.
 		if !errors.Is(err, ErrChannelDown) {
 			t.Errorf("a mid-call deadline must also be ErrChannelDown, got %v", err)
@@ -178,10 +180,10 @@ func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 
 // On a reconnect the still-open virtio-serial stream can carry a stale in-flight reply from the
 // *dropped* session ahead of the handshake reply (QEMU keeps the guest port open across a host
-// re-dial). A resyncing call must skip such stale frames, not fail on the id mismatch --
-// otherwise a reconnect never recovers (the observed agent-bringup freeze/thaw failure). Only
-// the first call after a (re)connect resyncs, which is the handshake (guestagent's Handshake).
-func TestCallResyncsPastStaleFrame(t *testing.T) {
+// re-dial). A reply whose id nothing waits on is dropped, never a failure -- otherwise a
+// reconnect never recovers (the observed agent-bringup freeze/thaw failure). The handshake is
+// where it shows, being the first call after a (re)connect.
+func TestCallDropsAStaleFrame(t *testing.T) {
 	cc, sc := net.Pipe()
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
@@ -197,10 +199,114 @@ func TestCallResyncsPastStaleFrame(t *testing.T) {
 		_ = writeFrame(sc, response{ID: req.ID, Payload: hello})
 	}()
 	var h Hello
-	if err := c.CallResync(context.Background(), VerbHello, nil, &h, true); err != nil {
-		t.Fatalf("a resyncing call must skip a stale frame, got: %v", err)
+	if err := c.Call(context.Background(), VerbHello, nil, &h); err != nil {
+		t.Fatalf("a call must drop a stale frame nothing waits on, got: %v", err)
 	}
 	if h.BootID != "the-real-reply" {
 		t.Errorf("boot_id = %q, want the real reply's: the call matched a frame, but not that one", h.BootID)
+	}
+}
+
+// slowDispatch: "slow" blocks until released; "echo" answers at once. The guest end of a channel
+// that serves reads beside a long act.
+func slowDispatch(release <-chan struct{}) DispatchFunc {
+	return func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+		if verb == "slow" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return "done", nil
+		}
+		return echoDispatch(ctx, verb, payload)
+	}
+}
+
+// serveConcurrently is a guest that dispatches every request in its own goroutine -- the shape
+// the guest's serve loop takes for the read lane -- so a slow verb does not hold an echo.
+func serveConcurrently(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc) {
+	var wmu sync.Mutex
+	for {
+		var req request
+		if err := readFrame(rw, &req); err != nil {
+			return
+		}
+		go func(req request) {
+			resp := response{ID: req.ID}
+			if result, err := d(ctx, req.Verb, req.Payload); err != nil {
+				resp.Error = err.Error()
+			} else if b, err := json.Marshal(result); err == nil {
+				resp.Payload = b
+			}
+			wmu.Lock()
+			defer wmu.Unlock()
+			_ = writeFrame(rw, resp)
+		}(req)
+	}
+}
+
+// A SLOW VERB HOLDS NOTHING BUT ITSELF. While one call waits on a long act, another call on the
+// same channel is answered, and the act's own deadline abandons the act alone: the channel stays
+// up, the next call still works, and the act's late reply is dropped when it comes.
+func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
+	cc, sc := net.Pipe()
+	release := make(chan struct{})
+	go serveConcurrently(context.Background(), sc, slowDispatch(release))
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
+
+	slow := make(chan error, 1)
+	sctx, scancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer scancel()
+	go func() { slow <- c.Call(sctx, "slow", nil, nil) }()
+
+	// Beside it, an echo answers at once.
+	var out string
+	ectx, ecancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer ecancel()
+	if err := c.Call(ectx, "echo", "x", &out); err != nil || out != "xx" {
+		t.Fatalf("echo beside a slow verb = (%q, %v), want it answered", out, err)
+	}
+
+	// The slow call's deadline: its own error, NOT a dead channel -- the echo proved the guest alive.
+	err := <-slow
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow call = %v, want its own DeadlineExceeded", err)
+	}
+	if errors.Is(err, ErrChannelDown) {
+		t.Fatalf("a deadline on one call beside an answering guest must not be ErrChannelDown: %v", err)
+	}
+	// The channel is still up: the late reply arrives and is dropped, the next call works.
+	close(release)
+	if err := c.Call(ectx, "echo", "y", &out); err != nil || out != "yy" {
+		t.Fatalf("echo after the abandoned call = (%q, %v), want the channel still up", out, err)
+	}
+}
+
+// THE LIVENESS RULE, the other way round from TestCallHonorsContextOnStuckGuest: a guest that
+// answered something -- anything -- since the call was sent is alive, so the deadline is the
+// call's own; a guest that answered nothing is not, so the deadline closes the channel. Here
+// the guest serves one verb at a time (ServeFrames, the serial shape): the echo queued behind
+// the slow verb is never answered, so from the echo's point of view nothing arrived since it was
+// sent, and it reports the channel down -- which is what re-dials, and what the recovery ladder
+// hangs off.
+func TestADeadlineWithNoAnswerAtAllIsChannelDown(t *testing.T) {
+	cc, sc := net.Pipe()
+	release := make(chan struct{})
+	defer close(release)
+	go ServeFrames(context.Background(), sc, slowDispatch(release))
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
+
+	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer scancel()
+	go func() { _ = c.Call(sctx, "slow", nil, nil) }()
+	time.Sleep(20 * time.Millisecond) // let the slow request reach the serial server first
+
+	ectx, ecancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer ecancel()
+	err := c.Call(ectx, "echo", "x", nil)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrChannelDown) {
+		t.Fatalf("echo behind a serial guest's slow verb = %v, want DeadlineExceeded AND ErrChannelDown", err)
 	}
 }

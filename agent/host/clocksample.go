@@ -41,7 +41,7 @@ const clockInterval = time.Hour
 
 // clockSampleBudget bounds one service's sample on the observe loop: in the guest it is the hold
 // and release (two HTTP exchanges each, 10 s clients), a btrfs snapshot, the ring's settle and
-// prune. Generous, because a sample that times out costs a channel bounce today; bounded, because
+// prune. Generous, because a sample is an act the guest cannot abandon; bounded, because
 // a loop read with no bound is a loop that can stop.
 const clockSampleBudget = 2 * time.Minute
 

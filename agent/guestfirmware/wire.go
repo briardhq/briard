@@ -19,11 +19,6 @@ import (
 
 const maxFrame = 8 << 20 // 8 MiB cap so a corrupt length prefix can't allocate wildly
 
-// maxResyncSkips bounds how many stale frames Handshake skips to resync a reconnected
-// channel. The protocol is synchronous (<=1 reply ever in flight), so 1 would do;
-// the slack tolerates buffering without letting a genuinely broken stream loop forever.
-const maxResyncSkips = 8
-
 type request struct {
 	ID      uint64          `json:"id"`
 	Verb    string          `json:"verb"`
@@ -71,40 +66,75 @@ func readFrame(r io.Reader, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// Conn is the host end: synchronous, serialized calls over the single stream
-// .
+// Conn is the host end: calls multiplexed over the single stream, matched to their replies
+// by id. Any number may be in flight; the guest answers them in whatever order it serves them.
+//
+// A call's deadline abandons THAT call -- its reply, if it ever comes, is dropped -- and
+// leaves the channel up for everything else, with one exception that is the liveness rule:
+// if nothing at all has arrived from the guest since the call was sent, the guest is not
+// answering anything, and the deadline closes the channel so the host re-dials and, failing
+// that, climbs the recovery ladder. A guest that answered something meanwhile is alive and
+// merely slow on this verb. Against a guest that serves one verb at a time the two cases are
+// the same case, and this is exactly the old behaviour; against one that serves reads beside a
+// long act, a timed-out act costs nothing but itself.
 type Conn struct {
-	mu     sync.Mutex
-	rw     io.ReadWriteCloser
-	nextID uint64
+	rw io.ReadWriteCloser
+	// wmu serialises frames onto the stream: writeFrame is one Write, but two of them must
+	// not interleave.
+	wmu sync.Mutex
+	// mu guards everything below.
+	mu      sync.Mutex
+	nextID  uint64
+	pending map[uint64]chan response
+	// lastReply is when the reader last read a frame -- any frame, any id. The liveness rule
+	// above compares a timed-out call's send time against it.
+	lastReply time.Time
+	// readErr is why the reader stopped; set once, after which every call fails with it.
+	readErr  error
+	readDone chan struct{}
+	readOnce sync.Once
 }
 
 // NewConn wraps a stream in a host-side Conn. Request ids start from the WALL CLOCK, not
 // from 1, because the stream OUTLIVES the process at both ends: QEMU keeps the guest port
 // open across a host re-dial, so an agent killed mid-call leaves its reply sitting in the
-// channel for its successor to read. Handshake resyncs past such a frame BY ID, which
+// channel for its successor to read. A reply whose id nothing is waiting on is dropped, which
 // separates the two sessions only while their ids differ -- and ids that restart at 1
-// collide on the one frame every session has, the reply to its hello. A clock
-// base makes a later session's ids strictly greater than an earlier session's, so a
-// leftover frame is decidably stale rather than coincidentally distinguishable.
+// collide on the one frame every session has, the reply to its hello. A clock base makes a
+// later session's ids strictly greater than an earlier session's, so a leftover frame is
+// decidably stale rather than coincidentally distinguishable.
 func NewConn(rw io.ReadWriteCloser) *Conn {
-	return &Conn{rw: rw, nextID: uint64(time.Now().UnixNano())}
+	return &Conn{rw: rw, nextID: uint64(time.Now().UnixNano()), pending: map[uint64]chan response{}, readDone: make(chan struct{})}
+}
+
+// reader is the one goroutine that reads the stream, started by the first call. Every frame
+// goes to the call waiting on its id, or nowhere: a reply to an abandoned call, or one left by
+// a previous session, is dropped. It ends on the first read error, failing every pending call.
+func (c *Conn) reader() {
+	for {
+		var resp response
+		err := readFrame(c.rw, &resp)
+		c.mu.Lock()
+		if err != nil {
+			c.readErr = err
+			for id, ch := range c.pending {
+				delete(c.pending, id)
+				close(ch)
+			}
+			c.mu.Unlock()
+			close(c.readDone)
+			return
+		}
+		c.lastReply = time.Now()
+		if ch, ok := c.pending[resp.ID]; ok {
+			delete(c.pending, resp.ID)
+			ch <- resp
+		}
+		c.mu.Unlock()
+	}
 }
 
 func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
-	return c.CallResync(ctx, verb, arg, reply, false)
-}
-
-// CallResync is Call with an optional resync: when resync is set, it skips stale
-// reply frames -- ones whose id != our request id, left in the stream by a *previous*,
-// dropped session -- up to maxResyncSkips, until the matching reply arrives. Over
-// virtio-serial QEMU keeps the guest port open across a host reconnect, so a re-dial can
-// find the previous session's in-flight reply ahead of ours; every frame readFrame yields
-// is complete + well-framed (it ReadFulls the declared length), so the stale one is
-// skippable by id -- and NewConn's per-session id base is what keeps those ids apart.
-// Only Handshake -- the first call after a (re)connect -- sets resync; a *mid-session*
-// id mismatch stays a hard desync error (ErrChannelDown -> re-dial).
-func (c *Conn) CallResync(ctx context.Context, verb string, arg, reply any, resync bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -116,49 +146,64 @@ func (c *Conn) CallResync(ctx context.Context, verb string, arg, reply any, resy
 		}
 		payload = b
 	}
+	c.readOnce.Do(func() { go c.reader() })
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.readErr != nil {
+		c.mu.Unlock()
+		return channelDown(ctx, c.readErr)
+	}
 	c.nextID++
 	id := c.nextID
+	ch := make(chan response, 1)
+	c.pending[id] = ch
+	c.mu.Unlock()
+	sent := time.Now()
 
-	// A stuck guest verb must not hang the host forever (the guest serves verbs
-	// synchronously, so a slow one blocks our read indefinitely). Watch ctx and, on
-	// cancel/deadline, close the channel to unblock the pending write/read. The channel
-	// is single-shot after that -- its framing is desynced -- so the caller re-dials.
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.rw.Close()
-		case <-stop:
-		}
-	}()
-
-	if err := writeFrame(c.rw, request{ID: id, Verb: verb, Payload: payload}); err != nil {
+	c.wmu.Lock()
+	err := writeFrame(c.rw, request{ID: id, Verb: verb, Payload: payload})
+	c.wmu.Unlock()
+	if err != nil {
+		c.abandon(id)
+		_ = c.rw.Close() // a stream that will not take a frame is not a channel
 		return channelDown(ctx, err)
 	}
-	for skips := 0; ; skips++ {
-		var resp response
-		if err := readFrame(c.rw, &resp); err != nil {
-			return channelDown(ctx, err)
+
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			c.mu.Lock()
+			rerr := c.readErr
+			c.mu.Unlock()
+			return channelDown(ctx, rerr)
 		}
-		if resp.ID == id {
-			if resp.Error != "" {
-				return errors.New(resp.Error)
-			}
-			if reply != nil && len(resp.Payload) > 0 {
-				return json.Unmarshal(resp.Payload, reply)
-			}
-			return nil
+		if resp.Error != "" {
+			return errors.New(resp.Error)
 		}
-		// Reply id doesn't match our request. Without resync (a mid-session call) the
-		// channel is desynced -- single-shot, re-dial. With resync (Handshake),
-		// skip a bounded number of stale frames from the dropped session.
-		if !resync || skips >= maxResyncSkips {
-			return fmt.Errorf("%w: reply id %d != request id %d", ErrChannelDown, resp.ID, id)
+		if reply != nil && len(resp.Payload) > 0 {
+			return json.Unmarshal(resp.Payload, reply)
 		}
+		return nil
+	case <-ctx.Done():
+		c.abandon(id)
+		c.mu.Lock()
+		silent := c.lastReply.Before(sent)
+		c.mu.Unlock()
+		if silent {
+			// The liveness rule: nothing answered since this was sent. Close, so the reader
+			// ends and the host re-dials; the error carries both facts, as it always has.
+			_ = c.rw.Close()
+			return channelDown(ctx, ctx.Err())
+		}
+		return ctx.Err()
 	}
+}
+
+// abandon forgets a call: its reply, if one comes, is dropped by the reader.
+func (c *Conn) abandon(id uint64) {
+	c.mu.Lock()
+	delete(c.pending, id)
+	c.mu.Unlock()
 }
 
 func (c *Conn) Close() error { return c.rw.Close() }
@@ -172,14 +217,15 @@ func ctxOr(ctx context.Context, err error) error {
 	return err
 }
 
-// ErrChannelDown marks a transport-level failure of the control channel: a write/read
-// failed, or a per-call deadline closed it mid-frame. The channel is single-shot after
-// any of these (its framing is desynced), so the host re-dials (host.Run's reconnect
-// loop). A *verb* error -- the guest ran the request and returned an error string
-// -- is NOT this: the round-trip completed, the channel is fine, so callers see the plain
-// error and keep using the connection. A mid-call deadline wraps *both* ErrChannelDown and
-// context.DeadlineExceeded, so a bounded op still detects its timeout while the observe
-// loop still detects the dead channel.
+// ErrChannelDown marks a transport-level failure of the control channel: a write or read
+// failed, or a call's deadline passed with the guest answering nothing at all (Conn's liveness
+// rule). The host re-dials on it (host.Run's reconnect loop). A *verb* error -- the guest ran
+// the request and returned an error string -- is NOT this: the round-trip completed, the
+// channel is fine, so callers see the plain error and keep using the connection. Nor is a
+// deadline on one call while the guest answers others: that is the call's own
+// context.DeadlineExceeded, and the channel stays up. When the liveness rule does close it,
+// the error wraps *both*, so a bounded op still sees its timeout while the observe loop sees
+// the dead channel.
 var ErrChannelDown = errors.New("guestfirmware: control channel down")
 
 func channelDown(ctx context.Context, err error) error {

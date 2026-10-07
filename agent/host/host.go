@@ -805,7 +805,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	go serveAdminPort(ctx, cfg.AdminPortSock, local, logf)
 
 	// Observe with reconnect. The guest agent serves one connection then exits
-	// (systemd restarts it), and a per-call deadline also closes the channel — either way
+	// (systemd restarts it), and a per-call deadline closes the channel when the guest has
+	// answered nothing since the call was sent (the Conn's liveness rule) — either way
 	// observe returns ErrChannelDown, and we re-dial + re-handshake rather than go blind
 	// forever (the older behaviour: one drop and the host never sees the guest again).
 	// A warm guest just re-attaches and observe resumes; a guest that stays unreachable past

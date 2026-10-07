@@ -2544,9 +2544,9 @@ func NewClient(rw io.ReadWriteCloser) *Client { return &Client{c: guestfirmware.
 // the guest agent, so the verb set on the far side changes underneath it.
 func (g *Client) Handshake(ctx context.Context) (guestfirmware.Hello, error) {
 	var h guestfirmware.Hello
-	// Resync=true: on a reconnect, a stale in-flight reply from the dropped session can sit
-	// ahead of ours in the still-open virtio-serial stream -- skip it, don't fail.
-	if err := g.c.CallResync(ctx, guestfirmware.VerbHello, nil, &h, true); err != nil {
+	// On a reconnect a stale reply from the dropped session can sit ahead of ours in the
+	// still-open virtio-serial stream; the Conn drops a reply nothing waits on, so it never fails.
+	if err := g.c.Call(ctx, guestfirmware.VerbHello, nil, &h); err != nil {
 		return h, fmt.Errorf("guestagent: handshake: %w", err)
 	}
 	g.bootID = h.BootID
