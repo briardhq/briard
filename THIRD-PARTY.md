@@ -44,8 +44,6 @@ firmware the guest image bakes, the front door and the dashboard are Go programs
 [`go.mod`](go.mod) / [`go.sum`](go.sum) — permissive licenses, all of them, and each module's
 `LICENSE` file ships in its source:
 
-- [`filippo.io/age`](https://github.com/FiloSottile/age) (BSD-3-Clause) and its dependency
-  `filippo.io/hpke` (BSD-3-Clause) — the encrypted off-site backup.
 - [`github.com/klauspost/compress`](https://github.com/klauspost/compress) (BSD-3-Clause, with
   Apache-2.0 and MIT parts; see its LICENSE) — decompressing the release artifacts.
 - [`github.com/pion/mdns/v2`](https://github.com/pion/mdns) (MIT) and its dependency

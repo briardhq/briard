@@ -161,15 +161,6 @@ let
     fixture = hassPairFixture;
   };
 
-  # Off-site encrypted `.storage` backup — the sacred config sealed client-side
-  # (age) to an off-box target and restored byte-faithfully (the cheap DR half).
-  briardBackup = pkgs.callPackage ./briard-backup-pkg.nix { };
-  hassBackup = import ./hass-backup.nix {
-    inherit pkgs briardBackup;
-    inherit guestModule;
-    fixture = hassFixture;
-  };
-
   # THE SHIPPED ARTIFACT: the bootable disk `install.sh` lays down, running no service. This
   # is what `.#artifacts.guest-disk` publishes and what the agent-driven bring-up tests boot,
   # so the shape a stranger installs is the shape CI exercises.
@@ -439,7 +430,6 @@ in
       # Latent damage in the recorder database found before Home Assistant finds it, and the
       # newest copy that checks clean swapped back in; an unchecked copy resets on the full read.
       hass-recorder-check = import ./hass-recorder-check.nix { inherit pkgs guestModule; fixture = hassFixture; };
-      hass-backup = hassBackup; # off-site encrypted .storage backup + restore
       # The storage seam under all of them: arming a node is a pvmove and disarming it is the
       # same move back, neither of which HA notices.
       luks-convert = luksConvert;
