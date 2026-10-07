@@ -677,6 +677,13 @@ pkgs.testers.runNixOSTest {
     # a callback whose state names any other origin (`limitHassInstance`). The frontend half is
     # source-verified (ha-onboarding.ts `_fetchOnboardingSteps`, `_curStep`) and not driven here.
     import shlex as _sx
+    # The browser is at the name the dashboard LINKS: the bare alias the door routes beside the
+    # flock-scoped name, so that is the origin the code is bound to.
+    host = "briard-home-assistant.local"
+    assert host in next(
+        s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["services"]
+        if s["name"] == "home-assistant"
+    )["hosts"], "the bare alias is not routed"
     origin = f"http://{host}"
     client_id = origin + "/"  # genClientId(): protocol//host + trailing slash
     def door(path, bearer=None, post=None, form=None):
