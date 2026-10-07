@@ -276,9 +276,12 @@ pkgs.testers.runNixOSTest {
     # is the half that used to be missing: the ladder announced trouble and then never mentioned
     # it again either way, so a resolved incident looked exactly like an ignored one.
     host.wait_until_succeeds(
-        "journalctl -u briard-agent | grep -q 'alert \\[recovered\\] Briard: the guest is answering again'",
+        "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the guest is answering again'",
         timeout=120,
     )
+    # ...and that resolve closed the condition: it is no longer among the open alerts.
+    host.fail("${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the guest has stopped answering'")
+
 
     print("host recovered an unresponsive guest by restarting its VM")
     print(host.succeed("journalctl -u briard-agent | tail -40"))

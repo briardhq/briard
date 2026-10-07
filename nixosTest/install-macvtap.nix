@@ -1865,9 +1865,10 @@ pkgs.testers.runNixOSTest {
     # rebuilt before it. Asserting these two the instant the re-parent LINE appears reads them a
     # whole guest boot too early, which is what the first run of this block did.
     host.wait_until_succeeds(
-        "journalctl -u briard-agent | grep -q 'alert \\[warning\\].*different network device'",
+        "/opt/briard/agent/briard-agent alerts | grep -q 'different network device'",
         timeout=600,
     )
+
     # The record now names the new parent, so a LATER re-parent paces itself against this LAN
     # rather than against one that no longer exists.
     host.wait_until_succeeds("grep -q '\"parent\":\"eth9\"' /var/lib/briard/network.json", timeout=600)
