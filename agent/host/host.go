@@ -1317,6 +1317,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// four times larger than it needs to be. A datagram costs nothing; a gap costs detection
 	// latency. See beat.go.
 	for {
+		// How long the observe half of this iteration takes -- loop top to the status line, i.e.
+		// every read the loop does before it acts. Logged on the status line so the soak's journal
+		// carries it and a slow tick shows up without anyone looking for it.
+		tickStart := time.Now()
 		// The host's side of the guest's L2, re-asserted before anything is read over it.
 		// Check-first and silent when nothing moved, which is every cycle on a host
 		// nothing else touches -- but our system-subnet address can sit on a device
@@ -1454,9 +1458,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			}
 			cancel()
 		}
-		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s bundle=%s%s",
+		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s bundle=%s%s tick=%dms",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
-			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res))
+			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res),
+			time.Since(tickStart).Milliseconds())
 		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		cfg.beat.Beat()
 		if slices.Contains(episodeAsks, cycle) {
