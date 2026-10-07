@@ -1476,7 +1476,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		if rep != nil {
 			cfg.beat.Beat()
 			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			csr := cr.pendingCSR // ride a queued CSR up (nil on every ordinary report)
+			mdnsNames(rctx, r, &st) // the report is what carries them; nothing here reads them
+			csr := cr.pendingCSR    // ride a queued CSR up (nil on every ordinary report)
 			directives, err := rep.Report(rctx, api.ReportRequest{Status: st, CSR: csr, Outcomes: *pending})
 			cancel()
 			if err != nil {
@@ -2000,16 +2001,6 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 	// AFTER the cluster read, because the state is only meaningful on the node that holds the
 	// volume -- the services run on whoever is Primary and nowhere else.
 	st.Services = cfg.serviceStatuses(rctx, r, cl.Serving())
-	// The name this node is REALLY publishing, not the one it was configured with. A read error
-	// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
-	// make a silent conflict-rename permanently invisible, which is the whole failure being
-	// closed here. Empty is honest -- "we do not currently know of a published name".
-	if name, merr := r.MDNSPublished(rctx); merr == nil {
-		st.PublishedName = name
-	}
-	if other, merr := r.MDNSOther(rctx); merr == nil {
-		st.OtherBriard = other
-	}
 	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two
 	// answers must stay apart: a witness with nothing to probe is healthy when quorate, a data
@@ -2061,6 +2052,21 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, system string) (
 		st.Healthy = healthy
 	}
 	return st, cl, probe, nil
+}
+
+// mdnsNames adds what the node is publishing to a snapshot -- read when something asks (the
+// controller report, `briard doctor`), not every cycle: nothing the loop decides depends on it.
+// The name this node is REALLY publishing, not the one it was configured with. A read error
+// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
+// make a silent conflict-rename permanently invisible, which is the whole failure being
+// closed here. Empty is honest -- "we do not currently know of a published name".
+func mdnsNames(ctx context.Context, r statusReader, st *api.NodeStatus) {
+	if name, err := r.MDNSPublished(ctx); err == nil {
+		st.PublishedName = name
+	}
+	if other, err := r.MDNSOther(ctx); err == nil {
+		st.OtherBriard = other
+	}
 }
 
 // hasService reports whether this node runs anything at all. The shipped state is FALSE — a node

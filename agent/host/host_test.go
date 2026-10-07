@@ -97,6 +97,9 @@ type fakeStatus struct {
 	mdns    string
 	mdnsErr error
 	other   string // what net.mdnsother answers: another briard heard at bring-up
+	// mdnsAsked counts both mDNS reads: the loop must never make them (nothing it decides depends
+	// on a name), so a test can assert the snapshot left them alone.
+	mdnsAsked *int
 	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
 	// node that promoted into somebody else.s install is the only place that truth exists.
 	volume        map[string]string
@@ -169,8 +172,18 @@ func (f fakeStatus) Cluster(context.Context, string) (model.Cluster, error) {
 	return model.Cluster{QuorumState: f.qs, Peers: f.peers}, f.err
 }
 
-func (f fakeStatus) MDNSPublished(context.Context) (string, error) { return f.mdns, f.mdnsErr }
-func (f fakeStatus) MDNSOther(context.Context) (string, error)     { return f.other, nil }
+func (f fakeStatus) MDNSPublished(context.Context) (string, error) {
+	if f.mdnsAsked != nil {
+		*f.mdnsAsked++
+	}
+	return f.mdns, f.mdnsErr
+}
+func (f fakeStatus) MDNSOther(context.Context) (string, error) {
+	if f.mdnsAsked != nil {
+		*f.mdnsAsked++
+	}
+	return f.other, nil
+}
 
 func (f fakeStatus) ServiceActive(_ context.Context, unit string) (bool, error) {
 	return f.active[unit], f.activeErr
@@ -594,16 +607,11 @@ func TestDeriveMAC(t *testing.T) {
 // (household, journal, cloud) would ever notice. Same doctrine as reading the VIP off the
 // interface instead of trusting vip.env, and for the same reason: what we asked for is not
 // evidence of what is in force.
-func TestSnapshot_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
+func TestMDNSNames_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
 	cfg := Config{Node: "briard-node-3f9a2c", Role: model.RoleAnchor, FlockName: "brave-elf"}
-	cfg.Resource.Name = "r0"
-
-	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
-	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf-2", other: "192.168.9.60"}
-	st, _, _, err := cfg.snapshot(context.Background(), r, "/nix/store/sys")
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := fakeStatus{mdns: "brave-elf-2", other: "192.168.9.60"}
+	st := api.NodeStatus{NodeName: cfg.Node}
+	mdnsNames(context.Background(), r, &st)
 	if st.OtherBriard != "192.168.9.60" {
 		t.Errorf("OtherBriard = %q, want the other briard the door heard", st.OtherBriard)
 	}
@@ -619,26 +627,39 @@ func TestSnapshot_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
 // A node publishing nothing reports nothing, and specifically does NOT fall back to the name it
 // was configured with. Empty means "we do not currently know of a published name", which is the
 // honest answer for a Secondary (the name is bound to the VIP) and for a failed read alike.
-func TestSnapshot_UnknownPublishedNameIsEmptyNotTheConfiguredOne(t *testing.T) {
+func TestMDNSNames_UnknownPublishedNameIsEmptyNotTheConfiguredOne(t *testing.T) {
 	cfg := Config{Node: "briard-node-3f9a2c", Role: model.RoleAnchor, FlockName: "brave-elf"}
-	cfg.Resource.Name = "r0"
-
-	qs := model.QuorumState{Quorate: true, Connected: 2}
 	for _, c := range []struct {
 		what string
 		r    fakeStatus
 	}{
-		{"a Secondary publishes no name", fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true}},
-		{"the read failed", fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdnsErr: errors.New("channel hiccup")}},
+		{"a Secondary publishes no name", fakeStatus{}},
+		{"the read failed", fakeStatus{mdnsErr: errors.New("channel hiccup")}},
 	} {
-		st, _, _, err := cfg.snapshot(context.Background(), c.r, "/nix/store/sys")
-		if err != nil {
-			t.Fatalf("%s: %v", c.what, err)
-		}
+		st := api.NodeStatus{NodeName: cfg.Node}
+		mdnsNames(context.Background(), c.r, &st)
 		if st.PublishedName != "" {
 			t.Errorf("%s: PublishedName = %q, want empty -- never the configured %q",
 				c.what, st.PublishedName, cfg.FlockName)
 		}
+	}
+}
+
+// The snapshot the loop takes every cycle does NOT ask for the published name: nothing the loop
+// decides depends on it, so it is read when something that carries it asks (the controller
+// report, doctor) -- a cadence is for what the loop acts on; everything else is pulled.
+func TestSnapshot_DoesNotAskThePublishedName(t *testing.T) {
+	cfg := Config{Node: "briard-node-3f9a2c", Role: model.RoleAnchor, FlockName: "brave-elf"}
+	cfg.Resource.Name = "r0"
+
+	asked := 0
+	qs := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
+	r := fakeStatus{qs: qs, vip: "192.168.9.50/24", health: true, mdns: "brave-elf", mdnsAsked: &asked}
+	if _, _, _, err := cfg.snapshot(context.Background(), r, "/nix/store/sys"); err != nil {
+		t.Fatal(err)
+	}
+	if asked != 0 {
+		t.Errorf("the snapshot made %d mDNS reads; the loop must make none", asked)
 	}
 }
 

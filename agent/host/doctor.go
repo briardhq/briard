@@ -105,6 +105,7 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 		return doctorOutcome(d, judgeDoctor(f))
 	}
 	st, cl, probe, err := cfg.snapshot(ctx, r, "")
+	mdnsNames(ctx, r, &st)
 	f.GuestErr, f.Cluster, f.Probe, f.Healthy, f.Published, f.Other = err, cl, probe, st.Healthy, st.PublishedName, st.OtherBriard
 	if err == nil && !cfg.Diskless {
 		if !cl.Serving() && cfg.VIPDev != "" {
