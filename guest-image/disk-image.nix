@@ -360,7 +360,7 @@ let
           pkgs.drbd-reactor # drbd-reactorctl, for reactor.evict — the planned handover
           pkgs.systemd # systemctl, for service.* / reactor.* / os.switch
           pkgs.coreutils # readlink, for os.system
-          pkgs.btrfs-progs # btrfs for data.snapshot/restore, mkfs.btrfs for the one-time format
+          pkgs.btrfs-progs # btrfs for data.member/restore, mkfs.btrfs for the one-time format
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
           pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry
           pkgs.util-linux # blockdev, for storage.grow: the state disk's size as the kernel sees it

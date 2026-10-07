@@ -124,7 +124,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
     node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume
     node1.succeed("mkdir -p /var/lib/briard/.snapshots")
-    # -r read-only, the exact form the guest agent's data.snapshot verb runs.
+    # -r read-only, the exact form the guest agent's data.member verb runs.
     #
     # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since the
     # install path started stopping the service first, this no longer mirrors the product — it is the

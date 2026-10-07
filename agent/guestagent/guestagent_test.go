@@ -22,7 +22,6 @@ import (
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
 	"briard.io/internal/testsock"
-	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/nodestorage"
 	"briard.io/shared/notify"
@@ -252,28 +251,6 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 		if len(r) > 2 && r[1] == "addr" && r[2] == "del" {
 			t.Errorf("deleted a link-local address: %v", r)
 		}
-	}
-}
-
-// ServiceActiveSince reads the unit's ActiveEnterTimestampMonotonic (usec) as the
-// adopt-not-bounce proof for the maintenance contract: unchanged across a pause/resume
-// means the promoter re-adopted the running service. An inactive unit ("") parses to 0.
-func TestServiceActiveSince(t *testing.T) {
-	const unit = "briard-dummy-app.service"
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "systemctl" && reflect.DeepEqual(args, []string{"show", "-p", "ActiveEnterTimestampMonotonic", "--value", unit}) {
-			return []byte("123456789\n"), nil
-		}
-		return nil, nil
-	}}
-	if got, err := dial(t, f).ServiceActiveSince(context.Background(), unit); err != nil || got != 123456789 {
-		t.Errorf("ServiceActiveSince = (%d,%v), want (123456789,nil)", got, err)
-	}
-
-	// Inactive unit: systemctl prints an empty value -> 0 (never entered active).
-	f2 := &fakeExec{runFn: func(string, []string) ([]byte, error) { return []byte("\n"), nil }}
-	if got, err := dial(t, f2).ServiceActiveSince(context.Background(), unit); err != nil || got != 0 {
-		t.Errorf("inactive: got (%d,%v), want (0,nil)", got, err)
 	}
 }
 
@@ -1253,56 +1230,6 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 	}
 }
 
-// TestBackupSaveRestore drives the backup.save + backup.restore verbs end-to-end over
-// the control channel: seal a .storage tree to an encrypted blob, wipe it, restore, and
-// assert the config returns (the guest does the tar/age work locally; only the small
-// verb crosses the pipe).
-func TestBackupSaveRestore(t *testing.T) {
-	g := dial(t, &fakeExec{}) // fake Run for the `sync` flush; backup does real file I/O
-
-	base := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(base, ".storage"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	const sentinel = `{"entries":["briard_canary"]}`
-	if err := os.WriteFile(filepath.Join(base, ".storage/core.config_entries"), []byte(sentinel), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	key, err := backup.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dest := filepath.Join(t.TempDir(), "home.age")
-
-	ctx := context.Background()
-	if err := g.BackupSave(ctx, base, []string{".storage"}, key.Recipient, dest); err != nil {
-		t.Fatalf("BackupSave: %v", err)
-	}
-	blob, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatalf("backup blob not written: %v", err)
-	}
-	if strings.Contains(string(blob), "briard_canary") {
-		t.Fatal("plaintext leaked into the backup blob")
-	}
-
-	// Wipe the config, then restore from the blob.
-	if err := os.RemoveAll(filepath.Join(base, ".storage")); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.BackupRestore(ctx, base, dest, key.Identity); err != nil {
-		t.Fatalf("BackupRestore: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(base, ".storage/core.config_entries"))
-	if err != nil {
-		t.Fatalf("config not restored: %v", err)
-	}
-	if string(got) != sentinel {
-		t.Errorf("restored config = %q, want %q", got, sentinel)
-	}
-}
-
 // Bring-up must put a runtime-installed service's units back BEFORE it starts the
 // promoter. The units live on the guest's tmpfs, so a reboot erases them while the host's
 // manifest cache survives — and drbd-reactor, started at the end of BringUp, would otherwise
@@ -1924,37 +1851,12 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 	}
 }
 
-// TestDataSnapshotStillReplacesForAnUnrolledHost: data.snapshot is FROZEN at its old behaviour,
-// and the reason is host/guest skew in the other direction.
-//
-// The host agent self-updates independently of the guest OS, so a rolled guest may be
-// driven by a host that still names one fixed `<service>-preupgrade` path per service. Teaching
-// this verb the ring's refuse-a-collision rule would break that host's SECOND upgrade -- which is
-// the failure the delete was added to fix in the first place (soak run, 2026-08-28). The ring's
-// take is data.member; this one does not change.
-func TestDataSnapshotStillReplacesForAnUnrolledHost(t *testing.T) {
-	f := &fakeExec{} // `show` succeeds => something is already at the destination
-	g := dial(t, f)
-	if err := g.c.Call(context.Background(), verbDataSnapshot,
-		snapshotRequest{DataDir: "/data/ha", Path: "/data/ha/.snapshots/ha-preupgrade"}, nil); err != nil {
-		t.Fatalf("an unrolled host's second upgrade was refused: %v", err)
-	}
-	want := [][]string{
-		{"btrfs", "subvolume", "show", "/data/ha/.snapshots/ha-preupgrade"},
-		{"btrfs", "subvolume", "delete", "/data/ha/.snapshots/ha-preupgrade"},
-		{"btrfs", "subvolume", "snapshot", "-r", "/data/ha", "/data/ha/.snapshots/ha-preupgrade"},
-	}
-	if !reflect.DeepEqual(f.runs, want) {
-		t.Errorf("runs = %v, want the stale point replaced as it always was: %v", f.runs, want)
-	}
-}
-
-// TestRingTakeIsItsOwnVerb: the ring's take must be reachable ONLY by a name an old guest does not
+// TestRingTakeIsAdvertised: the ring's take is reachable only by a name an old guest does not
 // advertise, because the field it adds is one whose absence would be SILENT -- an older guest
 // would take the call, ignore the field and report success while the volume filled with
 // unlabelled subvolumes. A NAME is the whole instrument here: Supports then refuses this
 // one path and leaves every other working.
-func TestRingTakeIsItsOwnVerb(t *testing.T) {
+func TestRingTakeIsAdvertised(t *testing.T) {
 	var advertised bool
 	for _, c := range guestCapabilities {
 		if c == verbDataMember {
@@ -1963,9 +1865,6 @@ func TestRingTakeIsItsOwnVerb(t *testing.T) {
 	}
 	if !advertised {
 		t.Fatal("data.member is not advertised; a capability-checking host would never use it")
-	}
-	if verbDataMember == verbDataSnapshot {
-		t.Fatal("the ring's take shares a name with the old verb; an old guest would accept it silently")
 	}
 }
 

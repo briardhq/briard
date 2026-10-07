@@ -392,7 +392,7 @@ pkgs.testers.runNixOSTest {
     assert good_tick > 0, f"no pre-upgrade data to preserve (tick={good_tick}) — rollback proof would be vacuous"
     print(f"pre-upgrade good tick = {good_tick}")
 
-    # --- STOP, THEN snapshot the rollback point — applyServiceInstall's quiesce + data.snapshot,
+    # --- STOP, THEN snapshot the rollback point — applyServiceInstall's quiesce + data.member,
     #     in that order since the rollback point started being taken quiesced. A live snapshot is only crash-consistent, and the catalog
     #     cannot promise every service survives one: services-pair.nix measured mosquitto losing
     #     exactly the retained message a rollback would be FOR. The container unit, never the pod

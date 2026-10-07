@@ -7,9 +7,8 @@
 # byte-faithfully, with the sacred config intact and the disposable recorder DB excluded.
 #
 # Harness scope matches hass-upgrade*.nix: single-node lib.nix, the backup CLI drives
-# shared/backup directly (the same code the guest agent's backup.save/backup.restore
-# verbs run in the product — unit-tested in agent/guestagent). Restoring *over* a live
-# `.storage` + rebooting HA onto it needs the service stopped, which in a lib.nix rig
+# shared/backup directly (its only runner -- no agent verb drives it). Restoring *over* a
+# live `.storage` + rebooting HA onto it needs the service stopped, which in a lib.nix rig
 # makes the promoter demote+unmount (the maintenance-bracket hazard, host-orchestrated
 # in the product) — so, as in hass-upgrade-rollback.nix, this restores into a clean tree and
 # asserts byte-fidelity + content, the two things that need REAL HA `.storage`.

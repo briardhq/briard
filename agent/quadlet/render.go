@@ -517,7 +517,7 @@ func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.
 //
 // A SERIES, WHICH IS THE WHOLE OF THE RING. This replaced a single fixed `<service>-preupgrade`
 // name whose doc read "a rollback point is one replaceable fact, not a series" — true while the
-// only member was the one an in-flight upgrade needed, and the reason `data.snapshot` used to
+// only member was the one an in-flight upgrade needed, and the reason the old verb used to
 // DELETE an existing point before taking the new one. Both are retired together: members are
 // distinct by construction now, so nothing is replaced and the verb refuses a collision instead
 // of resolving it.

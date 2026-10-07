@@ -1,7 +1,7 @@
-# The briard-backup CLI: a thin wrapper over shared/backup (the same code the
-# guest agent's backup.save/backup.restore verbs run) so hass-backup.nix can exercise the
-# encrypted .storage backup + restore in a lib.nix rig (which can't run the virtio-serial
-# Manager). Same Go module as the agent, so it shares the module-wide vendorHash
+# The briard-backup CLI: a thin wrapper over shared/backup -- its only runner; no agent verb
+# drives it -- so hass-backup.nix can exercise the encrypted .storage backup + restore in a
+# lib.nix rig (which can't run the virtio-serial Manager). Same Go module as the agent, so it
+# shares the module-wide vendorHash
 # (one definition, vendor-hash.nix).
 { buildGoModule }:
 buildGoModule {

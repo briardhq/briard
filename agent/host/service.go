@@ -106,8 +106,8 @@ type serviceInstaller interface {
 	// the service's data subvolume back to its pre-upgrade point, not only take the service out
 	// of the promoter chain. Fresh installs (no prior data) never call them.
 	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
-	// SupportsSnapshotMember gates the RING: an older guest advertises data.snapshot but
-	// not data.member, and taking the old verb instead would leave an unlabelled member -- the one
+	// SupportsSnapshotMember gates the RING: an older guest does not advertise
+	// data.member, and taking a plain snapshot instead would leave an unlabelled member -- the one
 	// thing the sidecar exists to prevent. Refused loudly, never worked around.
 	SupportsSnapshotMember() bool
 	// The QUIESCED take, for the one member taken while the service still RUNS: the

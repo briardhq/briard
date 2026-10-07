@@ -22,7 +22,7 @@ import (
 // NO SNAPSHOT/RESTORE HERE ANY MORE. They were the {data} half of an OS
 // upgrade that no longer touches services, and the service-install sequence
 // (agent/host/service.go) has owned moving manifest and data back together since the service-warm re-cut —
-// driving the guest agent's data.snapshot/data.restore verbs directly, pinned to the manifest
+// driving the guest agent's data.member/data.restore verbs directly, pinned to the manifest
 // rather than to a system closure.
 type GuestManager interface {
 	Start(ctx context.Context, spec model.ServiceSpec) error
@@ -317,7 +317,7 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 // afterwards but their own tests.
 //
 // Deleted rather than reused, deliberately: the ring's identity is the manifest and its primitive
-// is the guest agent's data.snapshot verb, so keeping a second naming scheme alive here would have
+// is the guest agent's data.member verb, so keeping a second naming scheme alive here would have
 // left the ring picking between two and the next reader inventing a third.
 
 // THE OS UPGRADE USED TO LIVE HERE, and where it went is worth a sentence.

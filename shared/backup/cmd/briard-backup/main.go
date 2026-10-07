@@ -1,8 +1,7 @@
 // Command briard-backup is a thin CLI over shared/backup: seal a home's sacred config
-// to an encrypted blob, restore it, or mint a household keypair. The guest agent's
-// backup.save/backup.restore verbs run the same shared/backup code in the product; this
-// CLI exercises it standalone — for the nixosTest (which can't run the virtio-serial
-// Manager in a lib.nix rig) and as an ops/escrow tool.
+// to an encrypted blob, restore it, or mint a household keypair. It is shared/backup's only
+// runner -- no agent verb drives it -- standalone for the nixosTest (which can't run the
+// virtio-serial Manager in a lib.nix rig) and as an ops/escrow tool.
 //
 // Usage:
 //

@@ -26,7 +26,6 @@ import (
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
-	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -163,7 +162,6 @@ const (
 	verbServiceStop   = "service.stop"   // systemctl stop <unit> (quiesce before snapshot)
 	verbServiceActive = "service.active" // systemctl is-active <unit> -> bool
 	verbServiceHealth = "service.health" // in-guest GET of the service's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
-	verbServiceSince  = "service.since"  // ActiveEnterTimestampMonotonic -> usec (0=inactive); adopt-not-bounce proof
 	// verbServiceHealthOf is SERVICE HEALTH asked BY SERVICE NAME: the guest
 	// resolves the address from its own routing table and answers healthy, unhealthy or unknown
 	// (serviceHealth). A separate verb rather than a field on service.health, so an older guest
@@ -171,9 +169,8 @@ const (
 	// unhealthy -- which on the install gate would revert a perfectly good install. Named for
 	// its three-valued answer: the two-valued `service.healthof` it replaced is gone.
 	verbServiceHealthOf = "service.health.state"
-	verbDataSnapshot    = "data.snapshot" // btrfs subvolume snapshot -r <DataDir> <dest>
 	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
-	// the sidecar beside it. A NEW NAME rather than a field on data.snapshot, and that
+	// the sidecar beside it. A NEW NAME rather than a field on the verb it replaced, and that
 	// is the whole lesson of the floor raise gate 3 refused: an old guest does not advertise this,
 	// so Client.Supports refuses exactly the one path that needs it, while a version floor would
 	// have refused every path on every not-yet-rolled guest fleet-wide.
@@ -233,7 +230,7 @@ const (
 	// thing. So the rule is that meaning moves with the name. A NEW verb is refused by exactly the
 	// one path that needs it (Supports), the instrument service.warm set the precedent for
 	// (no api.go change) -- and the same rule covers a new FIELD whose absence would
-	// be silent, which is why data.member is its own verb rather than a flag on data.snapshot.
+	// be silent, which is why data.member is its own verb rather than a flag on its predecessor.
 	verbServiceInstalled = "service.installed" // read one named service's manifest from the volume, or ""
 	// service.pulling records (or clears) a service install's pull for the dashboard:
 	// the manifest's sizes and the start time, on the dashboard's tmpfs -- written BEFORE the
@@ -412,8 +409,6 @@ const (
 	verbCertWrite     = "cert.write"     // write a renewed cert/key to the DRBD volume
 	verbCertRead      = "cert.read"      // read the cert (never the key) back: `briard doctor`'s expiry check
 	verbResources     = "sys.resources"  // read appliance resource telemetry
-	verbBackupSave    = "backup.save"    // tar+age-encrypt .storage/config to an off-site path
-	verbBackupRestore = "backup.restore" // age-decrypt+extract a backup into the data dir
 	verbFsSync        = "fs.sync"        // flush the data volume's dirty pages (pre-eviction pre-copy)
 )
 
@@ -431,8 +426,8 @@ const dataMountRoot = "/var/lib/briard"
 var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
-	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
-	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
@@ -440,7 +435,6 @@ var guestCapabilities = []string{
 	verbCertWrite, verbCertRead,
 	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts,
 	verbResources,
-	verbBackupSave, verbBackupRestore,
 	verbFsSync,
 	guestfirmware.VerbHello, guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate,
 }
@@ -608,26 +602,6 @@ type mosquittoProbeRequest struct {
 type certWriteRequest struct {
 	Cert string `json:"cert"`
 	Key  string `json:"key"`
-}
-
-// backupSaveRequest seals the home's sacred config to an off-site path (backup.save). Base is the service's data-dir mount (== /config in the container); Includes are
-// paths under it (".storage", "configuration.yaml", …); Recipient is the household's age
-// public key (seal only — the private key never reaches the guest); Dest is where the
-// encrypted blob lands (a mounted off-site target).
-type backupSaveRequest struct {
-	Base      string   `json:"base"`
-	Includes  []string `json:"includes"`
-	Recipient string   `json:"recipient"`
-	Dest      string   `json:"dest"`
-}
-
-// backupRestoreRequest decrypts a backup blob and extracts it into the data dir
-// (backup.restore). Identity is the household's age private key (restore only, a
-// rare recovery op; the blob at rest stays encrypted).
-type backupRestoreRequest struct {
-	Base     string `json:"base"`
-	Src      string `json:"src"`
-	Identity string `json:"identity"`
 }
 
 // reactorRequest names a drbd-reactor promoter snippet to pause/resume.
@@ -989,49 +963,6 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return string(out), nil
-		case verbBackupSave:
-			var req backupSaveRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			// Direct file I/O (not via Executor): the archive/encrypt is Go-level work over
-			// the mounted volume, like the shared/backup unit tests. Bulk never crosses the
-			// control channel — the guest seals + writes the blob locally (data.snapshot idiom).
-			recip, err := backup.ParseRecipient(req.Recipient)
-			if err != nil {
-				return nil, err
-			}
-			if err := os.MkdirAll(filepath.Dir(req.Dest), 0o755); err != nil {
-				return nil, err
-			}
-			f, err := os.Create(req.Dest)
-			if err != nil {
-				return nil, err
-			}
-			if err := backup.Save(req.Base, req.Includes, recip, f); err != nil {
-				f.Close()
-				return nil, err
-			}
-			if err := f.Close(); err != nil {
-				return nil, err
-			}
-			_, err = x.Run(ctx, "sync", "-f", req.Dest) // durability: the blob is the off-site copy
-			return nil, err
-		case verbBackupRestore:
-			var req backupRestoreRequest
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			id, err := backup.ParseIdentity(req.Identity)
-			if err != nil {
-				return nil, err
-			}
-			f, err := os.Open(req.Src)
-			if err != nil {
-				return nil, err
-			}
-			defer f.Close()
-			return nil, backup.Load(f, id, req.Base)
 		case verbServiceStart:
 			req, err := unitReq(payload)
 			if err != nil {
@@ -1085,40 +1016,6 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// the thing being measured -- and collapsing them would revert an install because a
 			// table was written a moment late.
 			return serviceHealth(ctx, x, req.Service)
-		case verbServiceSince:
-			req, err := unitReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			// ActiveEnterTimestampMonotonic (usec since boot) changes ONLY when the unit
-			// re-enters the active state -- i.e. on a (re)start. It is stable across a
-			// promoter pause/resume that merely re-adopts the already-running service, so an
-			// unchanged value is ground truth for "adopt, don't bounce" (the maintenance
-			// contract; reused by the per-snippet disable). `--value` prints the raw usec;
-			// 0 when the unit is inactive (never entered active), which parseUint yields for "".
-			out, err := x.Run(ctx, "systemctl", "show", "-p", "ActiveEnterTimestampMonotonic", "--value", req.Unit)
-			if err != nil {
-				return nil, err
-			}
-			return parseUint(out), nil
-		case verbDataSnapshot:
-			req, err := snapshotReq(payload)
-			if err != nil {
-				return nil, err
-			}
-			// ⚠️ FROZEN AT ITS OLD BEHAVIOUR. The ring's take is data.member below; this
-			// verb keeps replacing a fixed rollback point exactly as it always did, because an
-			// un-rolled HOST may still be driving a rolled guest -- the host agent self-updates
-			// independently of the guest OS -- and that host names one fixed
-			// `<service>-preupgrade` path per service. Teaching this verb to refuse a collision
-			// would break its second upgrade, which is the failure the delete was added to fix
-			// (measured on a soak run, 2026-08-28).
-			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err == nil {
-				if err := run("btrfs", "subvolume", "delete", req.Path); err != nil {
-					return nil, err
-				}
-			}
-			return nil, run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path)
 		case verbDataMember:
 			req, err := snapshotReq(payload)
 			if err != nil {
@@ -1156,7 +1053,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// older guest handed a sweep list on data.restore would put the data back, ignore
 			// the field and report success, leaving a household's own restore to replay. The
 			// host calls data.replace and lets Supports refuse; data.restore stays for the
-			// direction we cannot control, the way data.snapshot did when data.member arrived.
+			// direction we cannot control.
 			//
 			// ⚠️ VERIFY, MATERIALISE, THEN DESTROY -- in that order, and the order IS the fix.
 			// This used to `btrfs subvolume delete <live>` unconditionally and only
@@ -1174,8 +1071,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			// A staging name beside the live one, on the same btrfs so the rename below is a
 			// metadata operation. Cleared first: `btrfs subvolume snapshot` given an existing
-			// directory creates the new snapshot INSIDE it, which is the trap data.snapshot
-			// documents one case up.
+			// directory creates the new snapshot INSIDE it rather than replacing it.
 			staged := req.DataDir + ".restoring"
 			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", staged); err == nil {
 				if err := run("btrfs", "subvolume", "delete", staged); err != nil {
@@ -3139,19 +3035,6 @@ func (g *Client) ReadCert(ctx context.Context) (string, error) {
 	return pem, err
 }
 
-// BackupSave has the guest seal the home's sacred config (base/includes) to an
-// encrypted blob at dest, using the household's age public recipient. The guest
-// does the tar+encrypt locally and writes the blob itself — no bulk over the channel.
-func (g *Client) BackupSave(ctx context.Context, base string, includes []string, recipient, dest string) error {
-	return g.c.Call(ctx, verbBackupSave, backupSaveRequest{Base: base, Includes: includes, Recipient: recipient, Dest: dest}, nil)
-}
-
-// BackupRestore has the guest decrypt the blob at src with the household identity and
-// extract it into base. A recovery op; the caller supplies the private key.
-func (g *Client) BackupRestore(ctx context.Context, base, src, identity string) error {
-	return g.c.Call(ctx, verbBackupRestore, backupRestoreRequest{Base: base, Src: src, Identity: identity}, nil)
-}
-
 // ServiceStop stops the service's unit -- the quiesce step before a snapshot.
 func (g *Client) ServiceStop(ctx context.Context, unit string) error {
 	return g.c.Call(ctx, verbServiceStop, unitRequest{Unit: unit}, nil)
@@ -3192,24 +3075,14 @@ func (g *Client) ServiceHealthOf(ctx context.Context, service string) (services.
 	return h, err
 }
 
-// ServiceActiveSince reports the unit's ActiveEnterTimestampMonotonic (usec since boot),
-// which advances only when the unit (re)enters active -- 0 while inactive. Unchanged across
-// a maintenance pause/resume proves the promoter re-adopted the running service rather than
-// bouncing it (the contract's no-restart check).
-func (g *Client) ServiceActiveSince(ctx context.Context, unit string) (uint64, error) {
-	var usec uint64
-	err := g.c.Call(ctx, verbServiceSince, unitRequest{Unit: unit}, &usec)
-	return usec, err
-}
-
 // Snapshot takes one RING member: a read-only btrfs snapshot of dataDir at dest (a subvolume on
 // the same DRBD volume, so it replicates with it) with sidecar written beside it.
 //
 // The guest refuses a dest that already exists rather than replacing it, and removes the member if
 // the sidecar cannot be written -- so a member either exists with its metadata or does not exist.
 //
-// ⚠️ GATE IT ON SupportsSnapshotMember. An older guest advertises data.snapshot but not this, and
-// calling the old verb instead would silently take an unlabelled member -- the exact outcome the
+// ⚠️ GATE IT ON SupportsSnapshotMember. An older guest does not advertise this, and
+// taking a plain snapshot instead would silently leave an unlabelled member -- the exact outcome the
 // sidecar exists to prevent.
 func (g *Client) Snapshot(ctx context.Context, dataDir, dest, sidecar string) error {
 	return g.c.Call(ctx, verbDataMember, snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar}, nil)

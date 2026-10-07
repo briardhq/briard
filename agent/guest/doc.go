@@ -5,5 +5,5 @@
 //
 // It holds no snapshot or restore of its own: the service
 // {manifest + data} rollback belongs to agent/host/service.go, which drives the
-// guest agent's data.snapshot/data.restore verbs and pins the manifest.
+// guest agent's data.member/data.restore verbs and pins the manifest.
 package guest
