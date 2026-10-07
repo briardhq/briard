@@ -39,6 +39,12 @@ import (
 // is the thing the ring refuses, and the class is how that stays true when the asking fails.
 const clockInterval = time.Hour
 
+// clockSampleBudget bounds one service's sample on the observe loop: in the guest it is the hold
+// and release (two HTTP exchanges each, 10 s clients), a btrfs snapshot, the ring's settle and
+// prune. Generous, because a sample that times out costs a channel bounce today; bounded, because
+// a loop read with no bound is a loop that can stop.
+const clockSampleBudget = 2 * time.Minute
+
 // memberTaker is the slice of the guest a member costs: read the manifest it is pinned to, ask for
 // the member, and — only when this process has forgotten — read back what the ring already holds.
 type memberTaker interface {

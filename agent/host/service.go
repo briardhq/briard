@@ -1296,7 +1296,9 @@ func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d
 	if !g.SupportsMembers() {
 		return failed("this guest is too old to list an app's history; update the guest OS first")
 	}
-	members, err := g.Members(ctx, d.Payload)
+	mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	members, err := g.Members(mctx, d.Payload)
 	if err != nil {
 		return failed(fmt.Sprintf("read %s's history: %v", d.Payload, err))
 	}

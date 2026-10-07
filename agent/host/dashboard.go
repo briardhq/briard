@@ -42,7 +42,9 @@ func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Dir
 	}
 	h.Code = code
 	h.Issued = time.Now()
-	if err := g.DashboardHandoff(ctx, h); err != nil {
+	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := g.DashboardHandoff(hctx, h); err != nil {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf("hand the code to the guest: %v", err)}
 	}
 	url := dashboard.URL(code)

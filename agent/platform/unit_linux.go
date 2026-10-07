@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // This file is the service-manager half of the platform seam: every place the agent reaches for
@@ -23,7 +24,11 @@ func startTransient(ctx context.Context, args []string) ([]byte, error) {
 // (absent reads as "inactive", exit 0), so an error means the QUERY failed -- which is not an
 // answer about the unit and must not be read as one.
 func unitShow(unit, prop string) (string, error) {
-	out, err := exec.Command("systemctl", "show", "-p", prop, "--value", unit).Output()
+	// Bounded here, for every caller: a manager that does not answer is a query that failed, and
+	// no reader of a unit property may wait on it indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "-p", prop, "--value", unit).Output()
 	return strings.TrimSpace(string(out)), err
 }
 

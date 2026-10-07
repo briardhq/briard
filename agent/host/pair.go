@@ -196,7 +196,9 @@ func (cfg Config) applyUnpair(ctx context.Context, g guestMesher, sr statusReade
 		return failed(err.Error())
 	}
 	logf("directive kind=unpair: reconcile %s to the %d-peer mesh that remains", spec.Resource, len(spec.Peers))
-	cl, err := sr.Cluster(ctx, cfg.Resource.Name)
+	rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+	cl, err := sr.Cluster(rctx, cfg.Resource.Name)
+	rcancel()
 	if err != nil {
 		return failed("unpair: read the cluster: " + err.Error())
 	}
@@ -402,7 +404,9 @@ func (cfg Config) warnIfMeshForgotten(ctx context.Context, r statusReader, n not
 		fireAlert(ctx, n, logf, meshRecorded(cfg.Node)) // the host knows a mesh and re-pushes it
 		return
 	}
-	cl, err := r.Cluster(ctx, cfg.Resource.Name)
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cl, err := r.Cluster(rctx, cfg.Resource.Name)
 	if err != nil || len(cl.Peers) == 0 {
 		return
 	}

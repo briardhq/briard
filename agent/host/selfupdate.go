@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"briard.io/agent/selfupdate"
 )
@@ -59,6 +60,10 @@ func (h *hostSelfUpdater) Restart(ctx context.Context) error { return h.restart(
 // -- the same decoupling used for the guest. --collect reaps the transient unit after it
 // exits so a repeated update doesn't leave stale failed units behind.
 func systemdRestart(ctx context.Context, unit string) error {
+	// systemd-run returns once the job is queued, not when the restart ends; a bound is for a
+	// manager that does not answer, which must not hold the observe loop.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "systemd-run", "--collect",
 		"--unit=briard-agent-selfupdate-restart", "systemctl", "restart", unit)
 	if out, err := cmd.CombinedOutput(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The host's side of the guest's L2, built by the AGENT.
@@ -303,7 +304,10 @@ func Converged(s Spec) bool {
 	}
 	var held map[string][]string
 	if s.Ipvtap {
-		held = holdLinks(context.Background())
+		// Bounded: a check that is every cycle's first step may not wait on `ip` indefinitely.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		held = holdLinks(ctx)
+		cancel()
 	}
 	for _, t := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
 		if t == "" {

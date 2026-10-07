@@ -1388,7 +1388,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		if primary := cl.Serving(); primary != wasPrimary {
 			if primary {
 				cfg.beat.Beat()
-				cfg.adoptVolumeServices(ctx, r, logf)
+				actx, acancel := context.WithTimeout(ctx, 10*time.Second) // a list and one manifest per service
+				cfg.adoptVolumeServices(actx, r, logf)
+				acancel()
 				sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				st.Services = cfg.serviceStatuses(sctx, r, true)
 				cancel()
@@ -1398,7 +1400,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// THE CLOCK SAMPLE, once an interval per service, on the node that holds the
 		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
-		cfg.consider(ctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
+		kctx, kcancel := context.WithTimeout(ctx, clockSampleBudget)
+		cfg.consider(kctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
+		kcancel()
 		// THE RECORDER CHECK, once a night on the node that holds the volume: started in the guest's
 		// background and collected over later cycles, so it never holds this loop (clocksample.go).
 		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
