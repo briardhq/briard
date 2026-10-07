@@ -1302,6 +1302,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// connection and twice more over the next minute, because the deadman leaves its record on
 	// its own 15 s tick after the first contact -- then never, this connection.
 	episodeAsks := []int{0, 6, 12}
+	// The alert store generation the guest's copy was last taken at; none yet, this connection.
+	alertsPushed := -1
 	cycle := 0
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
@@ -1360,6 +1362,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		}
 		cfg.beat.Beat()
 		cs.tick(ctx, r, logf) // the household's name -- claim poll, address, certificate, the page's view
+		cfg.beat.Beat()
+		pushAlerts(ctx, r, n, &alertsPushed, logf) // the page's copy of the alert store, when it moved
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}

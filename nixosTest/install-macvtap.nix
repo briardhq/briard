@@ -602,6 +602,14 @@ pkgs.testers.runNixOSTest {
     session = [l.split(":", 1)[1].split(";")[0].strip() for l in redeemed.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     node_page = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
     assert "Set up Home Assistant" in node_page and 'action="/install/home-assistant"' in node_page, node_page
+    # THE ALERT LIST is the host's store, copied across the guest channel (dashboard.alerts) at
+    # the start of the connection. The page shows no alert card until a copy exists, so either of
+    # its two states proves the copy crossed the channel and rendered; neither appears without it.
+    client.wait_until_succeeds(
+        f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/ "
+        "| grep -qE 'Nothing on this machine needs your attention|Needs your attention'",
+        timeout=60,
+    )
     host.succeed("test -S /run/briard-admin.sock")  # qemu serves the host end
     pressed = client.succeed(
         f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {install_link_host}' -H 'Cookie: {session}' "

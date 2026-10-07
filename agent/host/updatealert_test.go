@@ -173,7 +173,7 @@ func TestUpdateAlerterRecordsWithNoNotifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if open := OpenAlerts(recs); len(open) != 1 || open[0].Key != "updates" {
+	if open := notify.OpenNow(recs); len(open) != 1 || open[0].Key != "updates" {
 		t.Fatalf("a nil notifier must still leave the alert in the store, got %+v", recs)
 	}
 }

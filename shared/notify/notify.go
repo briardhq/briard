@@ -51,6 +51,29 @@ type Alert struct {
 	Body     string   `json:"body"`
 }
 
+// Record is one alert as a node's alert store keeps it: the alert, and when it was written. The
+// host writes the store; `briard alerts` and the dashboard's pushed copy read the same shape.
+type Record struct {
+	Alert
+	At time.Time `json:"at"`
+}
+
+// OpenNow is what is wrong right now: the latest record of every key whose latest record is an
+// Open, in the order they opened. Derived from the records, never stored beside them.
+func OpenNow(recs []Record) []Record {
+	latest := map[string]int{}
+	for i, r := range recs {
+		latest[r.Key] = i
+	}
+	var open []Record
+	for i, r := range recs {
+		if latest[r.Key] == i && r.Kind == Open {
+			open = append(open, r)
+		}
+	}
+	return open
+}
+
 // Notifier delivers an Alert out of the home. Implementations: Ntfy (the v1 default,
 // zero-setup push) and Log (no external dependency -- records locally, the standalone
 // fallback). Delivery is best-effort: a failed Notify is logged by the caller, never fatal.

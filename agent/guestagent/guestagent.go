@@ -31,6 +31,7 @@ import (
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
 	"briard.io/shared/nodestorage"
+	"briard.io/shared/notify"
 	"briard.io/shared/telemetry"
 )
 
@@ -360,6 +361,9 @@ const (
 	// dashboard.casa writes the host's view of the household's casa name for the page to render
 	// -- a fact of the host's, pushed on every change and at bring-up, never decided here.
 	verbDashboardCasa = "dashboard.casa"
+	// dashboard.alerts writes the host's alert store for the page to list -- a copy, pushed when
+	// the store records something and at the start of every connection; the store stays the host's.
+	verbDashboardAlerts = "dashboard.alerts"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -434,7 +438,7 @@ var guestCapabilities = []string{
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
-	verbDashboardHandoff, verbDashboardCasa,
+	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts,
 	verbResources,
 	verbBackupSave, verbBackupRestore,
 	verbFsSync,
@@ -1345,25 +1349,31 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
 			}
 			return nil, nil
-		case verbDashboardCasa:
-			var c dashboard.Casa
-			if err := json.Unmarshal(payload, &c); err != nil {
+		case verbDashboardCasa, verbDashboardAlerts:
+			// Two of the host's facts for the page, written the same way; the payload is parsed
+			// as its own shape, so a malformed one never reaches the page.
+			var v any = &dashboard.Casa{}
+			path := dashboard.CasaPath
+			if verb == verbDashboardAlerts {
+				v, path = &[]notify.Record{}, dashboard.AlertsPath
+			}
+			if err := json.Unmarshal(payload, v); err != nil {
 				return nil, err
 			}
 			if out, err := x.Run(ctx, "mkdir", "-p", "-m", "0700", dashboard.Dir); err != nil {
-				return nil, fmt.Errorf("%s: %w: %s", verbDashboardCasa, err, strings.TrimSpace(string(out)))
+				return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
 			}
-			raw, err := json.Marshal(c)
+			raw, err := json.Marshal(v)
 			if err != nil {
 				return nil, err
 			}
 			// Beside its final name and moved in, like the handoff: the page never reads half a state.
-			tmp := dashboard.CasaPath + ".new"
+			tmp := path + ".new"
 			if err := x.WriteFile(tmp, raw); err != nil {
-				return nil, fmt.Errorf("%s: %w", verbDashboardCasa, err)
+				return nil, fmt.Errorf("%s: %w", verb, err)
 			}
-			if out, err := x.Run(ctx, "mv", "-f", tmp, dashboard.CasaPath); err != nil {
-				return nil, fmt.Errorf("%s: %w: %s", verbDashboardCasa, err, strings.TrimSpace(string(out)))
+			if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
+				return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
 			}
 			return nil, nil
 		case verbMosquittoProbe:
@@ -1958,7 +1968,7 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
 // stamp file, NOT in-process state, precisely because the per-connection guest agent crash-loops
 // while the host is down (the reopened virtio-serial port EOFs), which would reset any in-process
 // timer before it could fire.
-const ContactStampPath = "/run/briard/.host-contact"
+const ContactStampPath = dashboard.ContactStampPath
 
 // ServeStamped serves the dispatch loop and bumps the contact stamp on every request (the
 // production runGuest entry). The deadman itself runs in its own process (RunDeadman) — decoupled
@@ -2885,6 +2895,15 @@ func (g *Client) DashboardCasa(ctx context.Context, c dashboard.Casa) error {
 // SupportsDashboardCasa reports whether this guest takes the casa view (an older image does not;
 // the name still works there, the page just cannot show it).
 func (g *Client) SupportsDashboardCasa() bool { return g.Supports(verbDashboardCasa) }
+
+// DashboardAlerts hands the guest a copy of the host's alert store, for the dashboard to list.
+func (g *Client) DashboardAlerts(ctx context.Context, recs []notify.Record) error {
+	return g.c.Call(ctx, verbDashboardAlerts, recs, nil)
+}
+
+// SupportsDashboardAlerts reports whether this guest takes the alert copy (an older one does
+// not; its page simply has no alert list).
+func (g *Client) SupportsDashboardAlerts() bool { return g.Supports(verbDashboardAlerts) }
 
 // MosquittoProbe stores `token` in the broker's own retained state (when one is given) and returns
 // what it holds -- the S1 signal for a service whose work is invisible to a sample. An

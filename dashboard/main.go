@@ -124,12 +124,16 @@ type app struct {
 	// last claim asked from this page, until the host's view moves past it.
 	casaPath  string
 	casaAsked *casaAsk
+	// alertsPath is the host's copy of its alert store (alerts.go); contactPath the guest agent's
+	// stamp of the host's last request, which says whether that copy is still current.
+	alertsPath, contactPath string
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
 		pending: map[string]*pending{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
-		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath}
+		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
+		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath}
 }
 
 const (
@@ -645,7 +649,9 @@ type view struct {
 	// runs or after it failed; Refresh makes the page poll itself while something is moving.
 	Install *installView
 	// Casa is the household's name (casa.go): the first card, until skipped or done.
-	Casa    *casaView
+	Casa *casaView
+	// Alerts is the host's alert list (alerts.go), or the banner that its agent is away.
+	Alerts  *alertsView
 	Refresh bool
 }
 
@@ -724,6 +730,7 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 	}
 	v.Install = a.installState(hass.Name, v.HA != nil)
 	v.Casa = a.casaState()
+	v.Alerts = a.alertsState()
 	// Poll while something is on its way: an install in flight, a Home Assistant that is
 	// routed but not yet RUNNING, or a name claim waiting on its link.
 	v.Refresh = (v.Install != nil && v.Install.Running) || (v.HA != nil && !v.HA.Running) || v.Casa.Refresh()

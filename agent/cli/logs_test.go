@@ -19,7 +19,7 @@ import (
 // open set is the latest record per key -- a resolved disk is not open, an event never is.
 func TestAlertsRendersOpenThenHistory(t *testing.T) {
 	at := func(h int) time.Time { return time.Date(2026, 10, 7, h, 0, 0, 0, time.UTC) }
-	recs := []host.AlertRecord{
+	recs := []notify.Record{
 		{Alert: notify.Alert{Key: "disk", Kind: notify.Open, Severity: notify.Warning, Title: "disk low", Body: "b"}, At: at(1)},
 		{Alert: notify.Alert{Key: "redundancy", Kind: notify.Open, Severity: notify.Critical, Title: "no second copy", Body: "b"}, At: at(2)},
 		{Alert: notify.Alert{Key: "reparent", Kind: notify.Event, Severity: notify.Warning, Title: "moved device", Body: "b"}, At: at(3)},

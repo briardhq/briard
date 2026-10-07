@@ -32,6 +32,11 @@
   ol.history li:is(:hover, :focus-within) form.undo { visibility: visible; }
   ol.history .bad::before { content: "● "; color: var(--bad); }
   .banner { border-left: 4px solid var(--bad); padding: .2rem .8rem; margin: .5rem 0 1rem; }
+  ul.alerts { list-style: none; padding: 0; margin: 0; }
+  ul.alerts li { padding: .35rem 0; }
+  ul.alerts .when { color: var(--muted); margin-right: .4rem; }
+  ul.alerts .critical::before, ul.alerts .warning::before { content: "● "; color: var(--bad); }
+  ul.alerts .resolved::before { content: "✓ "; color: var(--accent); }
 </style>{{end}}
 
 {{define "refused"}}<!doctype html>
@@ -62,6 +67,26 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}{{template "style"}}</head>
 <body><main>
   <h1>Briard</h1>
+  {{with .Alerts}}
+  {{if .Unreachable}}
+  <div class="card">
+    <h2>Briard is not answering</h2>
+    <p class="banner">The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p>
+    <p class="muted">Restarting the machine that runs Briard usually brings it back. <code>sudo briard logs</code> there shows what it said last.</p>
+  </div>
+  {{else if .Open}}
+  <div class="card">
+    <h2>Needs your attention</h2>
+    <ul class="alerts">
+      {{range .Open}}<li id="alert-{{.Key}}"><span class="{{.Severity}}"><strong>{{.Title}}</strong></span><br>{{.Body}} <span class="muted">— since {{.When}}</span></li>{{end}}
+    </ul>
+    {{template "recent" .Recent}}
+  </div>
+  {{else}}
+  <p class="muted">Nothing on this machine needs your attention.</p>
+  {{if .Recent}}{{template "recent" .Recent}}{{end}}
+  {{end}}
+  {{end}}
   {{with .Casa}}
   {{if eq .State "registered"}}
   <div class="card">
@@ -210,3 +235,9 @@
     <p class="muted"><a href="/history/{{.Service}}">Cancel</a></p>
   </div>
 </main></body></html>{{end}}
+
+{{define "recent"}}<details><summary class="muted">Recent alerts</summary>
+    <ul class="alerts">
+      {{range .}}<li><span class="when">{{.When}}</span><span class="{{if .Resolved}}resolved{{else}}{{.Severity}}{{end}}">{{.Title}}</span>{{if .Body}}<br><span class="muted">{{.Body}}</span>{{end}}</li>{{end}}
+    </ul>
+  </details>{{end}}

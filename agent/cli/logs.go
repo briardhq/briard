@@ -142,7 +142,7 @@ func runAlerts(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	return renderAlerts(stdout, stderr, recs, err, *n)
 }
 
-func renderAlerts(stdout, stderr io.Writer, recs []host.AlertRecord, err error, tail int) int {
+func renderAlerts(stdout, stderr io.Writer, recs []notify.Record, err error, tail int) int {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		fmt.Fprint(stdout, "no alerts on this machine: nothing has happened yet.\n")
@@ -151,14 +151,14 @@ func renderAlerts(stdout, stderr io.Writer, recs []host.AlertRecord, err error, 
 		fmt.Fprintf(stderr, "briard: the alert store could not be read (are you root?): %v\n", err)
 		return 1
 	}
-	line := func(r host.AlertRecord) string {
+	line := func(r notify.Record) string {
 		sev := string(r.Severity)
 		if r.Kind == notify.Resolved {
 			sev = "resolved"
 		}
 		return fmt.Sprintf("%s  %-8s %-24s %s — %s", r.At.Local().Format("2006-01-02 15:04"), sev, r.Key, r.Title, r.Body)
 	}
-	open := host.OpenAlerts(recs)
+	open := notify.OpenNow(recs)
 	fmt.Fprintf(stdout, "── open now (%d)\n", len(open))
 	if len(open) == 0 {
 		fmt.Fprint(stdout, "   nothing is wrong right now.\n")

@@ -116,3 +116,14 @@ type Casa struct {
 	// whether the name already serves TLS.
 	CertUntil time.Time `json:"certUntil,omitzero"`
 }
+
+// AlertsPath is the dashboard's copy of the host's alert store ([]notify.Record, oldest first):
+// written through `dashboard.alerts` at the first cycle of every connection and whenever the
+// store records something, because the store is the host's and the guest is disposable. The
+// page shows it; it never writes it, and nothing acknowledges an alert from here.
+const AlertsPath = Dir + "/alerts.json"
+
+// ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every
+// request the host makes. The deadman reads it to decide when to act; the dashboard reads it to
+// say the agent is unreachable instead of showing a copy of the alerts that has stopped moving.
+const ContactStampPath = "/run/briard/.host-contact"

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -23,12 +24,6 @@ const AlertStorePath = stateDir + "/alerts.json"
 // this is many months; the trim never drops a key's latest alert, because that is the record of
 // whether the key is open.
 const alertStoreCap = 200
-
-// AlertRecord is one alert as the store keeps it: the alert, and when the host wrote it.
-type AlertRecord struct {
-	notify.Alert
-	At time.Time `json:"at"`
-}
 
 // alertStore is where every host-side alert goes, and the ONLY place that knows whether a key is
 // open. It is a notify.Notifier so every emitter keeps its one call, and it sits in front of
@@ -48,9 +43,11 @@ type alertStore struct {
 	logf  func(string, ...any)
 
 	mu     sync.Mutex
-	recs   []AlertRecord
+	recs   []notify.Record
 	loaded bool
-	now    func() time.Time
+	// gen counts the records this process has added: what the guest's copy is compared by.
+	gen int
+	now func() time.Time
 }
 
 func newAlertStore(path string, inner notify.Notifier, logf func(string, ...any)) *alertStore {
@@ -82,8 +79,9 @@ func (s *alertStore) Notify(ctx context.Context, a notify.Alert) error {
 			return nil
 		}
 	}
-	rec := AlertRecord{Alert: a, At: s.now()}
+	rec := notify.Record{Alert: a, At: s.now()}
 	s.recs = append(s.recs, rec)
+	s.gen++
 	s.trimLocked()
 	werr := s.writeLocked()
 	s.mu.Unlock()
@@ -103,20 +101,20 @@ func (s *alertStore) Notify(ctx context.Context, a notify.Alert) error {
 
 // latest is the key's most recent record -- what an emitter's "prior state" is, when one needs
 // to ask (most never do: they assert and let Notify decide).
-func (s *alertStore) latest(key string) (AlertRecord, bool) {
+func (s *alertStore) latest(key string) (notify.Record, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.load()
 	return s.latestLocked(key)
 }
 
-func (s *alertStore) latestLocked(key string) (AlertRecord, bool) {
+func (s *alertStore) latestLocked(key string) (notify.Record, bool) {
 	for i := len(s.recs) - 1; i >= 0; i-- {
 		if s.recs[i].Key == key {
 			return s.recs[i], true
 		}
 	}
-	return AlertRecord{}, false
+	return notify.Record{}, false
 }
 
 // load reads the file once per process. An absent file is the shipped state (nothing has ever
@@ -175,30 +173,56 @@ func (s *alertStore) writeLocked() error {
 
 // ReadAlerts is the store as a reader sees it, oldest first. The caller tells an absent file
 // (os.ErrNotExist: nothing has ever happened here) from one it could not read.
-func ReadAlerts(path string) ([]AlertRecord, error) {
+func ReadAlerts(path string) ([]notify.Record, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var recs []AlertRecord
+	var recs []notify.Record
 	if err := json.Unmarshal(b, &recs); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return recs, nil
 }
 
-// OpenAlerts is what is wrong right now: the latest record of every key whose latest record is
-// an Open, in the order they opened. Derived, never stored.
-func OpenAlerts(recs []AlertRecord) []AlertRecord {
-	latest := map[string]int{}
-	for i, r := range recs {
-		latest[r.Key] = i
+// snapshot is the store as it stands, and its generation: a reader that keeps the generation it
+// last saw knows, by comparing, whether anything was recorded since.
+func (s *alertStore) snapshot() ([]notify.Record, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	return slices.Clone(s.recs), s.gen
+}
+
+// alertsGuest is the slice of the guest binding the page's copy needs. *guestagent.Client
+// satisfies it.
+type alertsGuest interface {
+	DashboardAlerts(ctx context.Context, recs []notify.Record) error
+	SupportsDashboardAlerts() bool
+}
+
+// pushAlerts hands the guest a copy of the store when the store recorded something since the
+// copy it last took. *pushed is that generation, -1 at the start of every connection, because
+// the guest is disposable and a fresh one knows nothing until told. A failed push is retried on
+// the next cycle; the copy is only ever for display.
+func pushAlerts(ctx context.Context, r any, n notify.Notifier, pushed *int, logf func(string, ...any)) {
+	s, ok := n.(*alertStore)
+	g, gok := r.(alertsGuest)
+	if !ok || !gok || !g.SupportsDashboardAlerts() {
+		return
 	}
-	var open []AlertRecord
-	for i, r := range recs {
-		if latest[r.Key] == i && r.Kind == notify.Open {
-			open = append(open, r)
-		}
+	recs, gen := s.snapshot()
+	if gen == *pushed {
+		return
 	}
-	return open
+	if recs == nil {
+		recs = []notify.Record{} // "nothing has happened", not "never told"
+	}
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := g.DashboardAlerts(pctx, recs); err != nil {
+		logf("alerts: dashboard copy: %v", err)
+		return
+	}
+	*pushed = gen
 }

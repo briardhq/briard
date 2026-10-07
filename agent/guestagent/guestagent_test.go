@@ -25,6 +25,7 @@ import (
 	"briard.io/shared/backup"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/nodestorage"
+	"briard.io/shared/notify"
 )
 
 // fakeExec records writes/runs and returns canned output; stands in for the guest.
@@ -2167,5 +2168,31 @@ func TestDeadmanEpisodeIsHandedOverOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(deadmanLastEpisodePath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the handed-over episode was not forgotten: %v", err)
+	}
+}
+
+// dashboard.alerts writes the host's alert store for the page, the same way as the casa view:
+// beside its final name and moved in. A payload that is not a list of records is refused before
+// anything is written.
+func TestDashboardAlertsIsWrittenThenMovedIn(t *testing.T) {
+	x := &fakeExec{}
+	raw, _ := json.Marshal([]notify.Record{{Alert: notify.Alert{Key: "disk", Kind: notify.Open, Severity: notify.Warning, Title: "Disk space low"}}})
+	if _, err := dispatch(x)(context.Background(), verbDashboardAlerts, raw); err != nil {
+		t.Fatal(err)
+	}
+	tmp := dashboard.AlertsPath + ".new"
+	if got := x.files[tmp]; !strings.Contains(got, `"key":"disk"`) || !strings.Contains(got, `"title":"Disk space low"`) {
+		t.Errorf("written %q; want the records", got)
+	}
+	want := [][]string{
+		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
+		{"mv", "-f", tmp, dashboard.AlertsPath},
+	}
+	if !reflect.DeepEqual(x.runs, want) {
+		t.Errorf("runs = %v, want %v", x.runs, want)
+	}
+	x = &fakeExec{}
+	if _, err := dispatch(x)(context.Background(), verbDashboardAlerts, []byte(`{"state":"registered"}`)); err == nil || len(x.runs) != 0 {
+		t.Errorf("a casa view sent as alerts was accepted (err %v, runs %v)", err, x.runs)
 	}
 }

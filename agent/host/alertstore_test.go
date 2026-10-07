@@ -70,7 +70,7 @@ func TestAlertStoreTransitions(t *testing.T) {
 			t.Errorf("records are not stamped in order: %v then %v", recs[i-1].At, recs[i].At)
 		}
 	}
-	o := OpenAlerts(recs)
+	o := notify.OpenNow(recs)
 	if len(o) != 1 || o[0].Key != "redundancy" || o[0].Title != "none" {
 		t.Errorf("open alerts = %+v, want only redundancy/none", o)
 	}
@@ -134,7 +134,7 @@ func TestAlertStoreTrimKeepsEveryKeysLatest(t *testing.T) {
 	if recs[0].Key != "old" {
 		t.Errorf("the oldest kept record is %s, want the trimmed-past key's latest", recs[0].Key)
 	}
-	if o := OpenAlerts(recs); len(o) != 1 || o[0].Key != "old" {
+	if o := notify.OpenNow(recs); len(o) != 1 || o[0].Key != "old" {
 		t.Errorf("open alerts after trim = %+v, want old", o)
 	}
 }
@@ -147,5 +147,66 @@ func TestAlertStoreRecordsWithoutDelivery(t *testing.T) {
 	}
 	if recs, _ := ReadAlerts(s.path); len(recs) != 1 {
 		t.Errorf("recorded %d, want 1", len(recs))
+	}
+}
+
+// fakeAlertsGuest records the copies the page was handed.
+type fakeAlertsGuest struct {
+	old    bool // an image without the verb
+	fail   bool
+	copies [][]notify.Record
+}
+
+func (g *fakeAlertsGuest) DashboardAlerts(_ context.Context, recs []notify.Record) error {
+	if g.fail {
+		return fmt.Errorf("channel hiccup")
+	}
+	g.copies = append(g.copies, recs)
+	return nil
+}
+func (g *fakeAlertsGuest) SupportsDashboardAlerts() bool { return !g.old }
+
+// The page's copy: handed over at the start of every connection (even an empty store -- "nothing
+// has happened" is something the page shows), again only when the store records something, and
+// retried after a failed push. A guest without the verb is never asked.
+func TestPushAlertsCopiesTheStoreWhenItMoves(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, nil)
+	g := &fakeAlertsGuest{}
+	pushed := -1 // a fresh connection
+	pushAlerts(ctx, g, s, &pushed, t.Logf)
+	if len(g.copies) != 1 || g.copies[0] == nil || len(g.copies[0]) != 0 {
+		t.Fatalf("first cycle pushed %+v; want one empty, non-nil copy", g.copies)
+	}
+	pushAlerts(ctx, g, s, &pushed, t.Logf)
+	if len(g.copies) != 1 {
+		t.Fatalf("an unchanged store was pushed again (%d copies)", len(g.copies))
+	}
+	_ = s.Notify(ctx, open("disk", "low"))
+	_ = s.Notify(ctx, open("disk", "low")) // dropped by the store: no new copy either
+	g.fail = true
+	pushAlerts(ctx, g, s, &pushed, t.Logf)
+	g.fail = false
+	pushAlerts(ctx, g, s, &pushed, t.Logf)
+	pushAlerts(ctx, g, s, &pushed, t.Logf)
+	if len(g.copies) != 2 || len(g.copies[1]) != 1 || g.copies[1][0].Key != "disk" {
+		t.Fatalf("copies = %+v; want the retried copy holding the one disk alert, once", g.copies)
+	}
+
+	// A new connection (the agent restarted, or the guest was relaunched): the store on disk is
+	// handed over at once, though this process recorded nothing.
+	s2 := newAlertStore(s.path, nil, t.Logf)
+	g2 := &fakeAlertsGuest{}
+	pushed = -1
+	pushAlerts(ctx, g2, s2, &pushed, t.Logf)
+	if len(g2.copies) != 1 || len(g2.copies[0]) != 1 {
+		t.Fatalf("after a restart the copy was %+v; want the store's one record", g2.copies)
+	}
+
+	old := &fakeAlertsGuest{old: true}
+	pushed = -1
+	pushAlerts(ctx, old, s, &pushed, t.Logf)
+	if len(old.copies) != 0 || pushed != -1 {
+		t.Error("a guest without the verb was handed a copy")
 	}
 }
