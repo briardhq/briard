@@ -141,8 +141,8 @@ func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
 	if su.triggered != "" || su.isArmed {
 		t.Error("a refused update staged/armed something -- refuse-and-stay violated")
 	}
-	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning {
-		t.Errorf("a refused self-update must escalate one warning, got %+v", fn.alerts)
+	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Event {
+		t.Errorf("a refused self-update must escalate one event, got %+v", fn.alerts)
 	}
 }
 

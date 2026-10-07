@@ -369,22 +369,25 @@ func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf fun
 		if strings.Contains(where, cfg.WitnessTap) || strings.Contains(where, cfg.SystemTap) {
 			continue
 		}
-		al := notify.Alert{
-			Level: notify.Warning,
-			Title: "Briard: this node's private subnet now collides with the network it is on",
+		fireAlert(ctx, n, logf, notify.Alert{
+			Key:      "subnet",
+			Kind:     notify.Open,
+			Severity: notify.Warning,
+			Title:    "Briard: this node's private subnet now collides with the network it is on",
 			Body: fmt.Sprintf("this node numbers itself from %s, drawn when it was on a different network; "+
 				"%s is now also in use here (%s). The address the household uses is unaffected. "+
 				"This is NOT fixed automatically -- the subnet is shared with this node's peers, so "+
 				"re-drawing it here would break them.", cfg.SystemCIDR, p, where),
-		}
-		logf("%s", notify.LogLine(al))
-		if n != nil {
-			nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_ = n.Notify(nctx, al)
-			cancel()
-		}
+		})
 		return
 	}
+	// Nothing on this network overlaps the subnet: a collision an earlier network had is over.
+	fireAlert(ctx, n, logf, notify.Alert{
+		Key:   "subnet",
+		Kind:  notify.Resolved,
+		Title: "Briard: this node's private subnet no longer collides with its network",
+		Body:  fmt.Sprintf("nothing on the network this node is on now overlaps %s.", cfg.SystemCIDR),
+	})
 }
 
 // alertReparent is sent on EVERY re-parent, unconditionally and whatever the tier.
@@ -394,20 +397,15 @@ func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf fun
 // conversation needs to know. A node that healed itself silently is a node whose next problem
 // starts with nobody knowing this happened.
 func alertReparent(ctx context.Context, n notify.Notifier, logf func(string, ...any), from, to string, rel nic.Relation) {
-	al := notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: this node moved to a different network device",
+	fireAlert(ctx, n, logf, notify.Alert{
+		Key:      "reparent",
+		Kind:     notify.Event,
+		Severity: notify.Warning,
+		Title:    "Briard: this node moved to a different network device",
 		Body: fmt.Sprintf("the guest's network hung off %s, which disappeared; it now hangs off %s (%s). "+
 			"The service was restarted to make the change. If you did not expect this, check the cabling "+
 			"and which network this machine is on.", from, to, rel),
-	}
-	logf("%s", notify.LogLine(al))
-	if n == nil {
-		return
-	}
-	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	_ = n.Notify(nctx, al)
+	})
 }
 
 func exists(path string) bool {

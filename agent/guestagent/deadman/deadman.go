@@ -9,35 +9,34 @@ import (
 	"time"
 )
 
-// The levels a deadman alert carries, matching notify.Level's values (shared/notify) without
-// importing it. That package reaches an ntfy endpoint over HTTP, and this code runs INSIDE the
-// guest, whose binary is its own main (briard-guest-agent) so it links no host subsystem, no ACME and no TLS-serving
-// stack behind it. Two string constants are a smaller cost than that, and the pairing is
-// asserted where the two meet rather than left to a reader (guestagent's Alert wiring).
-//
-// The level is carried at all rather than assumed, because one of the three alerts below is a
-// RECOVERY. Before this the callback took a bare message, so anything reading the trail had to
-// label every deadman alert a warning -- which meant "your house is fine again" arrived looking
-// exactly like "your house is in trouble".
-const (
-	LevelWarning   = "warning"
-	LevelRecovered = "recovered"
-)
-
 // Episode is the persisted backoff state for one degraded stretch. It survives a deadman reboot
 // (stored node-locally, NEVER on the replicated DRBD volume) so the backoff GROWS across reboots
 // instead of resetting to the burst cadence on every boot. Reset to zero the moment the host
-// agent's link returns.
+// agent's link returns -- and at that moment it becomes a LastEpisode, for the host to collect.
 type Episode struct {
 	Attempt    int       `json:"attempt"`
 	LastReboot time.Time `json:"last_reboot"`
+	Since      time.Time `json:"since"` // when the link was first missed; zero while serving
 }
 
-// StateStore persists the Episode across a reboot. FileState is the production impl; tests inject
-// an in-memory one.
+// LastEpisode is a degraded stretch that is over: what the guest did while the host agent was
+// unreachable, kept for the host to collect at its next contact. THE GUEST REPORTS, THE HOST
+// ALERTS: the deadman itself has nobody to tell -- its only channel out of the house is the
+// host agent, which is the thing that was down -- so it records, and the host, once back,
+// turns the record into the owner's alert. Consumed by the host's read (the guest agent's
+// deadman.episode verb), so it is told once.
+type LastEpisode struct {
+	Since   time.Time `json:"since"`
+	Until   time.Time `json:"until"`
+	Reboots int       `json:"reboots"`
+}
+
+// StateStore persists the Episode across a reboot, and the LastEpisode across the gap until the
+// host collects it. FileState is the production impl; tests inject an in-memory one.
 type StateStore interface {
 	Load() Episode
 	Save(Episode) error
+	SaveLast(LastEpisode) error
 }
 
 // Monitor is the guest-side deadman driver. It watches the host-agent link
@@ -59,7 +58,6 @@ type Monitor struct {
 	Now    func() time.Time                      // injectable clock
 	Fabric func(context.Context) (Fabric, error) // read the DRBD cluster view locally
 	Reboot func(context.Context) error           // GRACEFUL reboot (systemctl reboot)
-	Alert  func(level, msg string)               // owner-facing degradation alert; levels below
 	Logf   func(string, ...any)                  // operational log
 	State  StateStore                            // persisted backoff across a reboot
 
@@ -99,12 +97,6 @@ func (m *Monitor) logf(format string, a ...any) {
 	}
 }
 
-func (m *Monitor) alert(level, msg string) {
-	if m.Alert != nil {
-		m.Alert(level, msg)
-	}
-}
-
 func (m *Monitor) sinceContact(now time.Time) time.Duration {
 	if m.LastContact != nil {
 		lc := m.LastContact()
@@ -133,7 +125,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 	if tick == 0 {
 		tick = 15 * time.Second
 	}
-	degraded := ep.Attempt > 0 // a reboot already happened this episode (loaded from disk)
+	degraded := !ep.Since.IsZero() // an episode is in progress (loaded from disk, across a reboot)
 	t := time.NewTicker(tick)
 	defer t.Stop()
 	for {
@@ -182,7 +174,15 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 	}) {
 	case Serve:
 		if degraded {
-			m.alert(LevelRecovered, fmt.Sprintf("briard %s: host-agent link restored — resuming normal operation", m.Node))
+			m.logf("host-agent link restored — resuming normal operation (unreachable since %s, %d reboot(s))",
+				ep.Since.Format(time.RFC3339), ep.Attempt)
+			if m.State != nil {
+				// The record for the host to collect, BEFORE the live episode is reset: a crash
+				// between the two leaves an episode that will be reported, never one that is lost.
+				if err := m.State.SaveLast(LastEpisode{Since: ep.Since, Until: now, Reboots: ep.Attempt}); err != nil {
+					m.logf("deadman: persist the episode for the host failed: %v", err)
+				}
+			}
 			ep = Episode{}
 			if m.State != nil {
 				_ = m.State.Save(ep)
@@ -198,19 +198,26 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 			if ferr != nil {
 				reason = fmt.Sprintf("cluster state unreadable (%v)", ferr)
 			}
-			m.alert(LevelWarning, fmt.Sprintf("briard %s: host agent unreachable — degraded, holding (%s)", m.Node, reason))
+			m.logf("host agent unreachable — degraded, holding (%s)", reason)
 			degraded = true
+			ep.Since = now
+			if m.State != nil {
+				_ = m.State.Save(ep) // so a reboot the host performs meanwhile still ends one episode
+			}
 		}
 	case Reboot:
 		ep.Attempt++
 		ep.LastReboot = now
+		if ep.Since.IsZero() {
+			ep.Since = now
+		}
 		if m.State != nil {
 			if err := m.State.Save(ep); err != nil {
 				m.logf("deadman: persist episode failed: %v", err) // proceed; worst case the backoff resets
 			}
 		}
 		if !degraded {
-			m.alert(LevelWarning, fmt.Sprintf("briard %s: host agent unreachable — rebooting to recover / fail over", m.Node))
+			m.logf("host agent unreachable — rebooting to recover / fail over")
 		}
 		degraded = true
 		m.logf("deadman: rebooting (attempt %d, quorum-safe)", ep.Attempt)
@@ -224,8 +231,23 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 }
 
 // FileState persists the Episode as JSON at Path — a node-local path OUTSIDE the replicated DRBD
-// volume, so it survives a reboot without being shared/overwritten across nodes.
+// volume, so it survives a reboot without being shared/overwritten across nodes — and the
+// LastEpisode beside it (LastPath), where the guest agent collects it for the host.
 type FileState struct{ Path string }
+
+// LastPath is where a finished episode waits for the host: beside the live one.
+func (f FileState) LastPath() string { return dir(f.Path) + "/last-episode.json" }
+
+func (f FileState) SaveLast(last LastEpisode) error {
+	if err := os.MkdirAll(dir(f.Path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(last)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(f.LastPath(), b, 0o644)
+}
 
 func (f FileState) Load() Episode {
 	var ep Episode

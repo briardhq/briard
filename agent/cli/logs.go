@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"briard.io/agent/host"
+	"briard.io/shared/notify"
 )
 
 // `briard alerts` and `briard logs` — the two verbs that READ the node instead of acting on it,
@@ -19,27 +23,29 @@ import (
 // WHY THEY ARE NOT INJECTORS, which is not an implementation shortcut but the requirement:
 // the outage they are most needed for is the host agent being down. A verb routed through the
 // admin socket answers "cannot reach the agent" in exactly the case the operator is trying to
-// investigate. Reading the surfaces directly means these two work on a node where nothing else
-// does.
+// investigate. Reading the node's files directly means these two work on a node where nothing
+// else does.
 //
-// WHY TWO SURFACES. Alerts on a node are written by processes that share no logger:
+// `alerts` reads the node's ALERT STORE (agent/host/alertstore.go): the one record of every
+// alert the host has raised, which is also where "what is wrong right now" is answered -- the
+// latest record per key. Nothing reads a log for an alert.
 //
-//	the host agent  → its journal (briard-agent.service): the redundancy alerter and every
-//	                  failed upgrade / cert renewal / self-update (agent/host/alert.go, report.go)
-//	the guest       → the deadman, which is INSIDE the VM. Its stderr goes to the guest's own
-//	                  journal, out the guest's ttyS0, into a file on the host. Under macvtap the
-//	                  host cannot reach the guest over the network at all, so that file is the
-//	                  only witness to anything in there.
+// `logs` reads the node's TWO LOG SURFACES, written by processes that share no logger:
+//
+//	the host agent  → its journal (briard-agent.service)
+//	the guest       → INSIDE the VM: its stderr goes to the guest's own journal, out the guest's
+//	                  ttyS0, into a file on the host. Under macvtap the host cannot reach the
+//	                  guest over the network at all, so that file is the only witness to
+//	                  anything in there.
 //
 // A reader that tailed one of them would be silent about a whole class of trouble while looking
-// like it had checked. That is why `alerts` reads both and says so per surface, including when a
+// like it had checked. That is why `logs` reads both and says so per surface, including when a
 // surface is unavailable — an empty result from a surface that could not be opened must never
-// render as "nothing wrong".
+// render as "nothing logged".
 //
 // WHAT THEY DELIBERATELY DO NOT DO: push. Surfacing degradation to an owner who is not sitting
 // at a terminal needs a channel that reaches them unprompted; that is a separate piece of work.
-// These verbs are the PULL half — they make "where do I look" answerable, which it previously
-// was not on a free node, where alerts are never delivered anywhere at all.
+// These verbs are the PULL half — they make "where do I look" answerable.
 
 const (
 	// The units that carry the host's own story: the agent (all the logic) and the VM it runs
@@ -59,13 +65,6 @@ const (
 	// agent/host's defaultConfigFile for the same reason the unit names above are copied, and
 	// pinned the same way: a test in this package asserts the two literals are identical.
 	defaultConfigFile = "/opt/briard/config.env"
-
-	// What an alert line begins with, on every surface. It is notify.LogMarker, copied for the
-	// same reason as the unit names above — shared/notify reaches an ntfy endpoint over HTTP, so
-	// importing it here would put net/http in the guest binary. The pairing is not left to trust:
-	// a test in this package asserts the two are identical (tests are not the shipped binary, so
-	// the test may import what the code may not).
-	alertMarker = "alert ["
 )
 
 // A surface is one place log lines land on this node. Read is best-effort by contract: an error
@@ -121,26 +120,17 @@ func defaultSources() *logSources {
 	}
 }
 
-// runAlerts is `briard alerts` — every alert this node has raised, from both surfaces.
+// runAlerts is `briard alerts` — what is wrong right now, then what has happened: the node's
+// alert store, read directly from the file so it answers while the agent is down.
 //
-// It scans a long window by default (30 days) rather than tailing a fixed number of lines,
-// because alerts are RARE and the interesting one is usually old: a node that lost its second
-// anchor three weeks ago has been one failure from an outage ever since, and a tail sized for
-// ordinary log traffic would have scrolled that away. The cost of the long window is a slower
-// journalctl, once, on a command a human runs by hand.
-//
-// EXIT CODE. 0 when at least one surface was read, 1 when none were — deliberately NOT "1 if
-// there are warnings". Deciding whether a warning is still live means pairing it with a later
-// recovery, and this command reads a text trail rather than alert state; a node whose warning
-// was followed by "redundancy restored" is fine, and an exit code that called it broken would be
-// wrong in the direction that trains people to ignore it.
-func runAlerts(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// EXIT CODE. 0 when the store was read (or has never been written: nothing has happened), 1
+// when it could not be — deliberately NOT "1 if something is open". A script that wants that
+// can read the "open now" count; a command people run by hand when worried should not fail at
+// them on top.
+func runAlerts(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard alerts", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	n := fs.Int("n", 20, "show at most this many of the most recent alerts per surface (0 = all)")
-	since := fs.String("since", "30 days ago", "how far back to look (any journalctl --since spec)")
-	console := fs.String("console", "", "read the guest console from this file instead of the node's configured one")
-	only := surfaceFlags(fs)
+	n := fs.Int("n", 20, "show at most this many of the most recent alerts in the history (0 = all)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -148,10 +138,43 @@ func runAlerts(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprint(stderr, "briard alerts: takes no arguments\n")
 		return 2
 	}
-	src := defaultSources()
-	src.consoleFlag = *console
-	surfaces := src.collect(ctx, only(), 0, *since, alertMarker)
-	return render(stdout, stderr, surfaces, *n, "no alerts on this machine")
+	recs, err := host.ReadAlerts(host.AlertStorePath)
+	return renderAlerts(stdout, stderr, recs, err, *n)
+}
+
+func renderAlerts(stdout, stderr io.Writer, recs []host.AlertRecord, err error, tail int) int {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		fmt.Fprint(stdout, "no alerts on this machine: nothing has happened yet.\n")
+		return 0
+	case err != nil:
+		fmt.Fprintf(stderr, "briard: the alert store could not be read (are you root?): %v\n", err)
+		return 1
+	}
+	line := func(r host.AlertRecord) string {
+		sev := string(r.Severity)
+		if r.Kind == notify.Resolved {
+			sev = "resolved"
+		}
+		return fmt.Sprintf("%s  %-8s %-24s %s — %s", r.At.Local().Format("2006-01-02 15:04"), sev, r.Key, r.Title, r.Body)
+	}
+	open := host.OpenAlerts(recs)
+	fmt.Fprintf(stdout, "── open now (%d)\n", len(open))
+	if len(open) == 0 {
+		fmt.Fprint(stdout, "   nothing is wrong right now.\n")
+	}
+	for _, r := range open {
+		fmt.Fprintf(stdout, "   %s\n", line(r))
+	}
+	hist := recs
+	if tail > 0 && len(hist) > tail {
+		hist = hist[len(hist)-tail:]
+	}
+	fmt.Fprintf(stdout, "── history (%d of %d)\n", len(hist), len(recs))
+	for _, r := range hist {
+		fmt.Fprintf(stdout, "   %s\n", line(r))
+	}
+	return 0
 }
 
 // runLogs is `briard logs` — the same two surfaces, unfiltered. The verb that makes a support

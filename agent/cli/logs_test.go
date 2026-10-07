@@ -9,33 +9,59 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	"briard.io/agent/guestagent/deadman"
 	"briard.io/agent/host"
 	"briard.io/shared/notify"
 )
 
-// The three constants copied out of packages this one must not import, asserted against their
-// originals. Each copy exists for a stated reason (the guest binary must not link
-// net/http, which shared/notify pulls in via Ntfy); this test is what makes the copy safe rather
-// than a promise. A TEST may import what the shipped code may not, since it is not in the binary.
-//
-// If this fails, `briard alerts` has silently stopped matching what the emitters write -- which
-// presents to a user as a node with no alerts, the single most dangerous wrong answer this
-// command can give.
-func TestAlertMarkerMatchesEmitters(t *testing.T) {
-	if alertMarker != notify.LogMarker {
-		t.Errorf("cli marker %q != notify.LogMarker %q", alertMarker, notify.LogMarker)
+// `briard alerts` is the alert store, rendered: what is open now first, then the history. The
+// open set is the latest record per key -- a resolved disk is not open, an event never is.
+func TestAlertsRendersOpenThenHistory(t *testing.T) {
+	at := func(h int) time.Time { return time.Date(2026, 10, 7, h, 0, 0, 0, time.UTC) }
+	recs := []host.AlertRecord{
+		{Alert: notify.Alert{Key: "disk", Kind: notify.Open, Severity: notify.Warning, Title: "disk low", Body: "b"}, At: at(1)},
+		{Alert: notify.Alert{Key: "redundancy", Kind: notify.Open, Severity: notify.Critical, Title: "no second copy", Body: "b"}, At: at(2)},
+		{Alert: notify.Alert{Key: "reparent", Kind: notify.Event, Severity: notify.Warning, Title: "moved device", Body: "b"}, At: at(3)},
+		{Alert: notify.Alert{Key: "disk", Kind: notify.Resolved, Title: "disk back", Body: "b"}, At: at(4)},
 	}
-	// The host agent's own line must contain it.
-	line := notify.LogLine(notify.Alert{Level: notify.Warning, Title: "t", Body: "b"})
-	if !strings.Contains(line, alertMarker) {
-		t.Errorf("host alert line %q does not contain the marker %q", line, alertMarker)
+	var out, errOut bytes.Buffer
+	if code := renderAlerts(&out, &errOut, recs, nil, 0); code != 0 {
+		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
 	}
-	// So must the guest deadman's, which formats the shape by hand (guestagent.RunDeadman).
-	guest := fmt.Sprintf("briard-deadman: alert [%s] %s", deadman.LevelWarning, "briard n1: host agent unreachable")
-	if !strings.Contains(guest, alertMarker) {
-		t.Errorf("guest deadman line %q does not contain the marker %q", guest, alertMarker)
+	got := out.String()
+	openPart, hist, _ := strings.Cut(got, "── history")
+	if !strings.Contains(openPart, "open now (1)") || !strings.Contains(openPart, "no second copy") {
+		t.Errorf("open section must hold exactly the one open key:\n%s", got)
+	}
+	for _, notOpen := range []string{"disk low", "moved device", "disk back"} {
+		if strings.Contains(openPart, notOpen) {
+			t.Errorf("%q rendered as open:\n%s", notOpen, got)
+		}
+	}
+	for _, want := range []string{"disk low", "no second copy", "moved device", "disk back", "resolved"} {
+		if !strings.Contains(hist, want) {
+			t.Errorf("history is missing %q:\n%s", want, got)
+		}
+	}
+	// -n tails the history, never the open set.
+	out.Reset()
+	renderAlerts(&out, &errOut, recs, nil, 1)
+	if s := out.String(); !strings.Contains(s, "history (1 of 4)") || !strings.Contains(s, "no second copy") {
+		t.Errorf("-n 1 did not keep the open alert and the last record:\n%s", s)
+	}
+}
+
+// A node where nothing has happened has no store; that is the all-clear, not an error. A store
+// that exists and cannot be read is an error, and never renders as "nothing wrong".
+func TestAlertsTellsAbsentFromUnreadable(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := renderAlerts(&out, &errOut, nil, os.ErrNotExist, 20); code != 0 || !strings.Contains(out.String(), "nothing has happened") {
+		t.Errorf("absent store: exit %d, out %q", code, out.String())
+	}
+	out.Reset()
+	if code := renderAlerts(&out, &errOut, nil, errors.New("permission denied"), 20); code != 1 || strings.Contains(out.String(), "nothing") {
+		t.Errorf("unreadable store: exit %d, out %q, err %q", code, out.String(), errOut.String())
 	}
 }
 
@@ -69,45 +95,18 @@ func fakeSources(t *testing.T, journal string, journalErr error, consoleBody str
 	}
 }
 
-// The core promise: an alert raised INSIDE the guest is reported, not just the host agent's own.
-// The two surfaces share no logger, so a reader that tailed the journal alone would be silent
-// about the deadman -- the very alert this command was built for.
-func TestAlertsReadsBothSurfaces(t *testing.T) {
-	src := fakeSources(t,
-		"2026-08-11T10:00:00+0000 n1 briard-agent[1]: alert [warning] Briard: reduced redundancy — node n1 lost a replica connection\n"+
-			"2026-08-11T10:00:01+0000 n1 briard-agent[1]: observe tick\n",
-		nil,
-		"[   12.3] systemd[1]: Started briard-deadman.\n"+
-			"[  942.1] briard-deadman: alert [warning] briard n1: host agent unreachable — degraded, holding\n")
-	var out, errOut bytes.Buffer
-	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
-	if code := render(&out, &errOut, surfaces, 20, "no alerts on this machine"); code != 0 {
-		t.Fatalf("exit = %d (stderr %q), want 0", code, errOut.String())
-	}
-	got := out.String()
-	if !strings.Contains(got, "reduced redundancy") {
-		t.Errorf("host alert missing from output:\n%s", got)
-	}
-	if !strings.Contains(got, "host agent unreachable") {
-		t.Errorf("GUEST deadman alert missing — the surface this command exists to add:\n%s", got)
-	}
-	if strings.Contains(got, "observe tick") {
-		t.Errorf("non-alert line leaked into `alerts` output:\n%s", got)
-	}
-}
-
-// An unreadable surface must never render as "nothing wrong". This is the failure mode the
+// An unreadable surface must never render as "nothing logged". This is the failure mode the
 // command is most likely to have in the field -- a journal it cannot read (not root) while the
 // guest console is fine, or the reverse -- and the one that would quietly teach a user that
 // their node is healthy.
-func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
+func TestLogsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 	src := fakeSources(t, "", errors.New("exit status 1"), "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
 		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConsole(t)}, nil // no GUEST_SERIAL
 	}
 	var out, errOut bytes.Buffer
-	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
-	code := render(&out, &errOut, surfaces, 20, "no alerts on this machine")
+	surfaces := src.collect(context.Background(), "both", 0, "", "")
+	code := render(&out, &errOut, surfaces, 20, "nothing logged yet")
 	if code != 1 {
 		t.Errorf("exit = %d, want 1 when NO surface could be read", code)
 	}
@@ -120,14 +119,15 @@ func TestAlertsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 }
 
 // One surface up, one down: report what was read, and say plainly that it is not the whole node.
-func TestAlertsQualifiesTheAllClearWhenPartiallyBlind(t *testing.T) {
+func TestLogsQualifiesTheAllClearWhenPartiallyBlind(t *testing.T) {
 	src := fakeSources(t, "", nil, "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
 		return map[string]string{"LoadState": "loaded", "Environment": "BRIARD_CONFIG=" + noConsole(t)}, nil // console not captured
 	}
 	var out, errOut bytes.Buffer
-	surfaces := src.collect(context.Background(), "both", 0, "", alertMarker)
-	if code := render(&out, &errOut, surfaces, 20, "no alerts on this machine"); code != 0 {
+	surfaces := src.collect(context.Background(), "both", 0, "", "")
+	if code := render(&out, &errOut, surfaces, 20, "nothing logged yet"); code != 0 {
+
 		t.Fatalf("exit = %d, want 0 with one surface readable", code)
 	}
 	got := out.String()

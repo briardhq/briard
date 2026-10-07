@@ -88,7 +88,7 @@ func TestSMTPDeliversToRecipient(t *testing.T) {
 
 	n := SMTP(SMTPConfig{Addr: sink.ln.Addr().String(), From: "briard@cloud"}, "owner@home.example")
 	if err := n.Notify(context.Background(), Alert{
-		Level: Warning, Title: "Briard fleet: DEGRADED", Body: "one node down",
+		Kind: Open, Severity: Warning, Title: "Briard fleet: DEGRADED", Body: "one node down",
 	}); err != nil {
 		t.Fatalf("notify: %v", err)
 	}

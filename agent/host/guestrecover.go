@@ -479,7 +479,8 @@ func (u *osUpgrade) resolved(ctx context.Context, n notify.Notifier, r *guestRec
 		return
 	}
 	u.fire(ctx, n, notify.Alert{
-		Level: notify.Recovered,
+		Key:   "guest",
+		Kind:  notify.Resolved,
 		Title: "Briard: the guest is answering again",
 		Body: fmt.Sprintf("node %s: the guest is back and serving as of now. If it stops again "+
 			"the host will keep restarting it, and will say so if it stops recovering.", u.cfg.Node),
@@ -500,8 +501,11 @@ func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRec
 		return
 	}
 	u.fire(ctx, n, notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: the guest has stopped answering",
+		Key:      "guest",
+		Kind:     notify.Open,
+		Severity: notify.Critical,
+		Title:    "Briard: the guest has stopped answering",
+
 		Body: fmt.Sprintf("node %s: %s This node is not serving until it comes back.",
 			u.cfg.Node, situation),
 	})
@@ -613,4 +617,59 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 func (u *osUpgrade) RebootGuest(ctx context.Context) error {
 	_, err := u.rebootGuest(ctx)
 	return err
+}
+
+// episodeReader is the guest's deadman.episode verb, as the observe loop sees it: an optional
+// capability of the reader, because an older guest has none and must not be asked.
+type episodeReader interface {
+	DeadmanEpisode(ctx context.Context) (deadman.LastEpisode, bool, error)
+	SupportsDeadmanEpisode() bool
+}
+
+// collectDeadmanEpisode asks the guest what it did while this agent was away and tells the
+// owner. THE GUEST REPORTS, THE HOST ALERTS: the deadman's only way out of the house is the
+// host agent, the thing that was down, so its record waits for the host, and the host -- the
+// side with the alert store and the endpoint -- raises the alert. An event, not a condition:
+// the stretch is over by the time anyone can speak of it.
+func (cfg Config) collectDeadmanEpisode(ctx context.Context, r guestReader, n notify.Notifier, logf func(string, ...any)) {
+	er, ok := r.(episodeReader)
+	if !ok || !er.SupportsDeadmanEpisode() {
+		return
+	}
+	ectx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ep, found, err := er.DeadmanEpisode(ectx)
+	cancel()
+	if err != nil {
+		logf("deadman: could not collect the guest's episode: %v", err)
+		return
+	}
+	if !found {
+		return
+	}
+	fireAlert(ctx, n, logf, hostUnreachableAlert(cfg.Node, ep))
+}
+
+// hostUnreachableAlert is what the owner is told about a stretch the guest spent without the
+// host agent: how long, and what the guest did about it -- held, or rebooted itself to come
+// back or fail over.
+func hostUnreachableAlert(node string, ep deadman.LastEpisode) notify.Alert {
+	did := "kept serving on its own and waited"
+	switch ep.Reboots {
+	case 1:
+		did = "restarted itself once to recover"
+	default:
+		if ep.Reboots > 1 {
+			did = fmt.Sprintf("restarted itself %d times to recover", ep.Reboots)
+		}
+	}
+	return notify.Alert{
+		Key:      "host-unreachable",
+		Kind:     notify.Event,
+		Severity: notify.Warning,
+		Title:    "Briard: the host agent was unreachable",
+		Body: fmt.Sprintf("node %s's host agent was unreachable from %s to %s (%s). The guest %s. "+
+			"It is back now; if this was not a planned restart of the machine, check why the agent stopped.",
+			node, ep.Since.Local().Format("Mon 2 Jan 15:04"), ep.Until.Local().Format("15:04"),
+			ep.Until.Sub(ep.Since).Round(time.Minute), did),
+	}
 }

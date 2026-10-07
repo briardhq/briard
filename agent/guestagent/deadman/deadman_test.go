@@ -3,18 +3,23 @@ package deadman
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 // memState is an in-memory StateStore for the driver tests.
-type memState struct{ ep Episode }
+type memState struct {
+	ep   Episode
+	last []LastEpisode
+}
 
-func (m *memState) Load() Episode        { return m.ep }
-func (m *memState) Save(e Episode) error { m.ep = e; return nil }
+func (m *memState) Load() Episode                { return m.ep }
+func (m *memState) Save(e Episode) error         { m.ep = e; return nil }
+func (m *memState) SaveLast(l LastEpisode) error { m.last = append(m.last, l); return nil }
 
-// harness wires a Monitor with fakes and records reboots + alerts.
+// harness wires a Monitor with fakes and records reboots + what it said.
 type harness struct {
 	mon       *Monitor
 	now       time.Time
@@ -23,7 +28,8 @@ type harness struct {
 	quorate   bool
 	quorumErr error
 	reboots   int
-	alerts    []string
+	said      []string // the owner-facing transitions: "unreachable" on entry, "restored" on exit
+	state     *memState
 	gate      *Gate
 }
 
@@ -39,10 +45,16 @@ func newHarness() *harness {
 			return Fabric{Peers: h.peers, Connected: h.connected, Quorate: h.quorate}, h.quorumErr
 		},
 		Reboot: func(context.Context) error { h.reboots++; return nil },
-		Alert:  func(level, s string) { h.alerts = append(h.alerts, "["+level+"] "+s) },
-		State:  &memState{},
-		Gate:   h.gate,
+		Logf: func(f string, a ...any) {
+			s := fmt.Sprintf(f, a...)
+			if contains(s, "unreachable") || contains(s, "restored") {
+				h.said = append(h.said, s)
+			}
+		},
+		State: &memState{},
+		Gate:  h.gate,
 	}
+	h.state = h.mon.State.(*memState)
 	return h
 }
 
@@ -61,12 +73,12 @@ func TestMonitorServesWhileLinkAlive(t *testing.T) {
 	h.peers, h.connected = 2, 2
 	h.advance(1 * time.Minute) // < DefaultDeadman
 	ep, degraded := h.tick(Episode{}, false)
-	if h.reboots != 0 || len(h.alerts) != 0 || degraded || ep.Attempt != 0 {
-		t.Errorf("link-alive tick disturbed state: reboots=%d alerts=%v degraded=%v ep=%+v", h.reboots, h.alerts, degraded, ep)
+	if h.reboots != 0 || len(h.said) != 0 || degraded || ep.Attempt != 0 {
+		t.Errorf("link-alive tick disturbed state: reboots=%d said=%v degraded=%v ep=%+v", h.reboots, h.said, degraded, ep)
 	}
 }
 
-// Deadman fires + quorum-safe (2 of 3 remain) → reboot, persisted, one alert on entry.
+// Deadman fires + quorum-safe (2 of 3 remain) → reboot, persisted, said once on entry.
 func TestMonitorRebootsWhenQuorumSafe(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
@@ -76,11 +88,11 @@ func TestMonitorRebootsWhenQuorumSafe(t *testing.T) {
 	if h.reboots != 1 {
 		t.Fatalf("quorum-safe deadman reboots = %d, want 1", h.reboots)
 	}
-	if !degraded || ep.Attempt != 1 || ep.LastReboot != h.now {
+	if !degraded || ep.Attempt != 1 || ep.LastReboot != h.now || ep.Since != h.now {
 		t.Errorf("episode not advanced: degraded=%v ep=%+v", degraded, ep)
 	}
-	if len(h.alerts) != 1 {
-		t.Errorf("want exactly one entry alert, got %v", h.alerts)
+	if len(h.said) != 1 {
+		t.Errorf("want exactly one entry line, got %v", h.said)
 	}
 }
 
@@ -95,11 +107,16 @@ func TestMonitorHoldsWhenQuorumCritical(t *testing.T) {
 	if h.reboots != 0 {
 		t.Fatalf("quorum-critical deadman rebooted (%d) — must never self-outage", h.reboots)
 	}
-	if !degraded || ep.Attempt != 0 {
-		t.Errorf("want degraded-holding with no reboot, got degraded=%v ep=%+v", degraded, ep)
+	if !degraded || ep.Attempt != 0 || ep.Since != h.now {
+		t.Errorf("want degraded-holding with no reboot and the episode's start, got degraded=%v ep=%+v", degraded, ep)
 	}
-	if len(h.alerts) != 1 {
-		t.Errorf("want one hold alert, got %v", h.alerts)
+	if len(h.said) != 1 {
+		t.Errorf("want one hold line, got %v", h.said)
+	}
+	// Holding persists the episode's start: a reboot the host performs meanwhile must still end
+	// ONE episode, dated from here, when the link returns.
+	if h.state.ep.Since != h.now {
+		t.Errorf("hold did not persist the episode start: %+v", h.state.ep)
 	}
 }
 
@@ -176,7 +193,8 @@ func TestMonitorHoldsTheCadenceBetweenReboots(t *testing.T) {
 	}
 }
 
-// Recovery: after being degraded, the host link returning → one recovery alert, episode reset.
+// Recovery: after being degraded, the host link returning → the episode is handed to the host
+// as a LastEpisode (what the guest did, from when to when) and the live one is reset.
 func TestMonitorRecoversOnContact(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
@@ -186,28 +204,52 @@ func TestMonitorRecoversOnContact(t *testing.T) {
 	if !degraded {
 		t.Fatal("expected degraded after a reboot")
 	}
+	since := h.now
 	// The agent reconnects: a fresh contact, and a tick within the deadman window.
 	h.advance(30 * time.Second)
 	h.contactNow()
 	ep, degraded = h.tick(ep, degraded)
-	if degraded || ep.Attempt != 0 {
+	if degraded || ep.Attempt != 0 || !ep.Since.IsZero() {
 		t.Errorf("did not recover on contact: degraded=%v ep=%+v", degraded, ep)
 	}
-	// The last alert is the recovery one -- and it is LEVELLED as one. The level is asserted
-	// separately from the wording because a reader of the local trail (`briard alerts`) sorts by
-	// it: this alert says the house is fine again, and shipping it as a warning would make the
-	// all-clear indistinguishable from the trouble it clears.
-	if len(h.alerts) == 0 || !contains(h.alerts[len(h.alerts)-1], "restored") {
-		t.Errorf("missing recovery alert, alerts=%v", h.alerts)
+	if len(h.said) == 0 || !contains(h.said[len(h.said)-1], "restored") {
+		t.Errorf("missing the restored line, said=%v", h.said)
 	}
-	if last := h.alerts[len(h.alerts)-1]; !contains(last, "["+LevelRecovered+"]") {
-		t.Errorf("recovery alert = %q, want it levelled %s", last, LevelRecovered)
+	// THE RECORD FOR THE HOST. The deadman has nobody to tell (its only way out of the house is
+	// the host agent, the thing that was down), so it leaves the episode for the host to turn
+	// into the owner's alert when it collects it.
+	if len(h.state.last) != 1 {
+		t.Fatalf("recovery left %d episodes for the host, want 1: %+v", len(h.state.last), h.state.last)
 	}
-	// ...and the degradation alerts before it are NOT recovered-level.
-	for _, a := range h.alerts[:len(h.alerts)-1] {
-		if !contains(a, "["+LevelWarning+"]") {
-			t.Errorf("degradation alert = %q, want it levelled %s", a, LevelWarning)
-		}
+	if l := h.state.last[0]; l.Since != since || l.Until != h.now || l.Reboots != 1 {
+		t.Errorf("handed-over episode = %+v, want since=%v until=%v reboots=1", l, since, h.now)
+	}
+	// Serving on is quiet: no second record.
+	h.advance(time.Minute)
+	h.contactNow()
+	h.tick(ep, degraded)
+	if len(h.state.last) != 1 {
+		t.Errorf("a serving tick added an episode: %+v", h.state.last)
+	}
+}
+
+// A held episode (never rebooted) is still an episode: it ends with a record for the host too,
+// and across a deadman restart it is recognised as in progress from its persisted start.
+func TestMonitorHeldEpisodeIsHandedOver(t *testing.T) {
+	h := newHarness()
+	h.contactNow()
+	h.peers, h.connected = 2, 1 // quorum-critical: hold
+	h.advance(DefaultDeadman + time.Minute)
+	ep, degraded := h.tick(Episode{}, false)
+	if !degraded || h.reboots != 0 {
+		t.Fatalf("want a hold, got degraded=%v reboots=%d", degraded, h.reboots)
+	}
+	since := h.now
+	h.advance(10 * time.Minute)
+	h.contactNow()
+	h.tick(ep, degraded)
+	if len(h.state.last) != 1 || h.state.last[0].Reboots != 0 || h.state.last[0].Since != since {
+		t.Errorf("held episode not handed over: %+v", h.state.last)
 	}
 }
 
@@ -239,12 +281,23 @@ func TestFileStateRoundTrip(t *testing.T) {
 	if fs.Load().Attempt != 0 {
 		t.Error("absent file should load a zero episode")
 	}
-	want := Episode{Attempt: 4, LastReboot: time.Unix(1234, 0).UTC()}
+	want := Episode{Attempt: 4, LastReboot: time.Unix(1234, 0).UTC(), Since: time.Unix(1000, 0).UTC()}
 	if err := fs.Save(want); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if got := fs.Load(); got.Attempt != want.Attempt || !got.LastReboot.Equal(want.LastReboot) {
+	if got := fs.Load(); got.Attempt != want.Attempt || !got.LastReboot.Equal(want.LastReboot) || !got.Since.Equal(want.Since) {
 		t.Errorf("round-trip = %+v, want %+v", got, want)
+	}
+	// The finished episode lands beside it, where the guest agent collects it.
+	last := LastEpisode{Since: want.Since, Until: time.Unix(2000, 0).UTC(), Reboots: 4}
+	if err := fs.SaveLast(last); err != nil {
+		t.Fatalf("SaveLast: %v", err)
+	}
+	if fs.LastPath() != filepath.Join(filepath.Dir(fs.Path), "last-episode.json") {
+		t.Errorf("LastPath = %s", fs.LastPath())
+	}
+	if _, err := os.Stat(fs.LastPath()); err != nil {
+		t.Errorf("SaveLast wrote nothing at %s: %v", fs.LastPath(), err)
 	}
 }
 

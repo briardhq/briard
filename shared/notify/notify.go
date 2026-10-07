@@ -17,41 +17,38 @@ import (
 	"time"
 )
 
-// Level classifies an alert (maps to notifier priority/tags).
-type Level string
+// Kind is what an alert does to the state of the thing its Key names. A key is either a
+// CONDITION (something with state: its alerts are Open and Resolved) or an EVENT (something that
+// happens: its alerts are all Event) -- never both, so a reader that keeps the latest alert per
+// key can never mistake an event for the end of a condition.
+type Kind string
 
 const (
-	Warning   Level = "warning"   // a degradation the user should act on
-	Recovered Level = "recovered" // a prior warning cleared
+	Open     Kind = "open"     // starts a condition, or restates it with a different title
+	Resolved Kind = "resolved" // ends a condition
+	Event    Kind = "event"    // happened; changes no state
 )
 
-// Alert is one notification: a level, a short title, and a human-readable body.
+// Severity is how loud an alert is -- on the alert rather than the key, because one key can
+// span two (reduced redundancy is a warning; no second copy is critical). A Resolved has none.
+type Severity string
+
+const (
+	Info     Severity = "info"     // nothing to do; said so the household knows it happened
+	Warning  Severity = "warning"  // degraded or at risk; act soon
+	Critical Severity = "critical" // not serving, or one step from losing data; act now
+)
+
+// Alert is one record about a key: what it did to that key's state, how loud, and the words
+// the owner reads. Key is `<name>[:<instance>]` (`redundancy`, `upgrade-rolled-back:os`);
+// the name is the row every display, test and support conversation refers to -- titles
+// carry node names and get reworded, keys do not.
 type Alert struct {
-	Level Level
-	Title string
-	Body  string
-}
-
-// LogMarker is what `briard alerts` looks for. Every alert on a node writes a line beginning
-// with it, whatever the notifier -- so the local trail is findable by one substring across
-// surfaces that share no logger: the host agent's journal and the guest's serial console.
-//
-// A SUBSTRING rather than a structured record on purpose. The two surfaces are read back as
-// plain text (journalctl output and a file qemu appends the guest's console to), so anything
-// richer would have to survive being interleaved with kernel lines -- and the reader is also a
-// human with grep, who should not need this tool to find an alert.
-const LogMarker = "alert ["
-
-// LogLine renders an alert as the one local-trail line every emitter writes BEFORE attempting
-// delivery. Delivery is the half that can be absent (the free tier configures no notifier at
-// all) or can fail; the trail is the half that is always there, which is what makes
-// `briard alerts` truthful on a node that pushes nothing anywhere.
-//
-// Emitters that hold a plain string rather than an Alert format this shape by hand -- the guest
-// deadman, which must not link this package (see its Alert field). Keep them in step: this
-// function is the shape of record.
-func LogLine(a Alert) string {
-	return fmt.Sprintf("%s%s] %s — %s", LogMarker, a.Level, a.Title, a.Body)
+	Key      string   `json:"key"`
+	Kind     Kind     `json:"kind"`
+	Severity Severity `json:"severity,omitempty"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
 }
 
 // Notifier delivers an Alert out of the home. Implementations: Ntfy (the v1 default,
@@ -81,24 +78,13 @@ func (t teeNotifier) Notify(ctx context.Context, a Alert) error {
 }
 
 // Nop is a Notifier that delivers nowhere -- the default when no external endpoint is
-// configured. The agent still logs every alert locally (the journal trail), so Nop just
-// means "don't also push it out of the home".
+// configured. The node still records every alert in its own store, so Nop just means
+// "don't also push it out of the home".
 func Nop() Notifier { return nopNotifier{} }
 
 type nopNotifier struct{}
 
 func (nopNotifier) Notify(context.Context, Alert) error { return nil }
-
-// Log is a Notifier that records the alert via logf -- an alternative sink (e.g. to route
-// alerts through a specific logger) available to callers that want delivery to be a log.
-func Log(logf func(string, ...any)) Notifier { return logNotifier{logf: logf} }
-
-type logNotifier struct{ logf func(string, ...any) }
-
-func (l logNotifier) Notify(_ context.Context, a Alert) error {
-	l.logf("%s", LogLine(a)) // the same shape the emitters' own trail uses, so `briard alerts` finds both
-	return nil
-}
 
 // Ntfy posts alerts to an ntfy topic URL (e.g. https://ntfy.sh/my-briard-abc123) -- a
 // dead-simple pub/sub that a phone app subscribes to, no account, so it's the ideal "one
@@ -119,13 +105,25 @@ func (n ntfyNotifier) Notify(ctx context.Context, a Alert) error {
 		return err
 	}
 	req.Header.Set("Title", a.Title)
-	switch a.Level {
+	// Severity sets loudness; kind sets the glyph. A resolved is quiet by construction: it
+	// carries no severity, so it takes the default priority and the check mark.
+	switch a.Severity {
+	case Critical:
+		req.Header.Set("Priority", "urgent")
 	case Warning:
 		req.Header.Set("Priority", "high")
-		req.Header.Set("Tags", "warning")
 	default:
 		req.Header.Set("Priority", "default")
+	}
+	switch {
+	case a.Kind == Resolved:
 		req.Header.Set("Tags", "white_check_mark")
+	case a.Severity == Critical:
+		req.Header.Set("Tags", "rotating_light")
+	case a.Severity == Warning:
+		req.Header.Set("Tags", "warning")
+	default:
+		req.Header.Set("Tags", "information_source")
 	}
 	resp, err := n.hc.Do(req)
 	if err != nil {

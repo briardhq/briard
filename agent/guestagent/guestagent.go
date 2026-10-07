@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -241,6 +242,10 @@ const (
 	// storage.free reports the image store's filesystem (free, total bytes): what the host's
 	// free-space gate reads before a pull starts. The guest measures; the host refuses.
 	verbStorageFree = "storage.free"
+	// deadman.episode hands the host the last stretch the guest spent without it (what the
+	// deadman did, from when to when), and forgets it: the guest reports, the host alerts. An
+	// empty reply means nothing happened since the host last asked.
+	verbDeadmanEpisode = "deadman.episode"
 	// storage.grow takes the state disk's filesystem out to the size the host just grew the disk
 	// to (a thick file extended, then QEMU's block_resize): it waits for the kernel to see the new
 	// size, then resize2fs, online. The host decided and paid; the guest only fills the space.
@@ -425,7 +430,7 @@ var guestCapabilities = []string{
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf, verbServiceSince,
 	verbDataSnapshot, verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
-	verbServicePulling, verbStorageFree, verbStorageGrow,
+	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
@@ -1442,6 +1447,28 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
 			}
 			return nil, nil
+		case verbDeadmanEpisode:
+			// Read, then remove: the host records what it is told, so a second read must say
+			// nothing. A missing file is the common answer and not an error.
+			path := deadmanLastEpisodePath
+			b, err := os.ReadFile(path)
+
+			if errors.Is(err, os.ErrNotExist) {
+				return deadmanEpisodeReply{}, nil
+			}
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", verbDeadmanEpisode, err)
+			}
+			var r deadmanEpisodeReply
+			if err := json.Unmarshal(b, &r.Episode); err != nil {
+				_ = os.Remove(path) // unreadable: nothing the host can record; do not serve it forever
+				return nil, fmt.Errorf("%s: %s: %w", verbDeadmanEpisode, path, err)
+			}
+			r.Found = true
+			if err := os.Remove(path); err != nil {
+				return nil, fmt.Errorf("%s: forget %s: %w", verbDeadmanEpisode, path, err)
+			}
+			return r, nil
 		case verbStorageFree:
 			// The image store's filesystem, in bytes, from df -- the one tool that answers the
 			// question the same way on every root filesystem the guest might have.
@@ -1974,6 +2001,10 @@ func StampMtime(path string) time.Time {
 // shared/overwritten across nodes.
 const deadmanStatePath = "/var/lib/briard-deadman/episode.json"
 
+// deadmanLastEpisodePath is where the deadman leaves a finished episode for the host
+// (deadman.episode). A variable so a test can point the verb at a file of its own.
+var deadmanLastEpisodePath = deadman.FileState{Path: deadmanStatePath}.LastPath()
+
 // RunDeadman runs the host-agent deadman as its OWN long-running process — the briard-deadman
 // guest service. It watches the contact stamp ServeStamped bumps and, once the host agent has
 // been silent past T_deadman, reboots the guest — gracefully (so the promoter teardown demotes
@@ -2029,17 +2060,10 @@ func RunDeadman(ctx context.Context) error {
 			}
 			return nil
 		},
-		// The deadman's owner-facing channel, and the ONLY alert on the node that is not written
-		// by the host agent -- so it is also the one most easily missed. It goes to this process's
-		// stderr, which systemd puts in the GUEST's journal, which the guest's ttyS0 console
-		// carries out to the host's /var/log/briard-guest-console.log. Under macvtap that file is
-		// the sole witness to anything inside the VM (install.sh), and it shares no logger with
-		// the host agent -- so `briard alerts` reads both surfaces and cannot merely tail one.
-		//
-		// The "alert [<level>] " prefix is notify.LogLine's shape, hand-written because the guest
-		// binary must not link shared/notify (see deadman.LevelWarning). It is what makes this
-		// line findable amid the kernel and systemd traffic sharing the console.
-		Alert: func(level, msg string) { fmt.Fprintf(os.Stderr, "briard-deadman: alert [%s] %s\n", level, msg) },
+		// The deadman raises no alert of its own: its only way out of the house is the host
+		// agent, the thing that is down when it acts. It logs (this process's stderr, the guest's
+		// journal, the serial console) and leaves the finished episode beside its state file
+		// for the host to collect (the deadman.episode verb) and turn into the owner's alert.
 		Logf:  func(f string, a ...any) { fmt.Fprintf(os.Stderr, "briard-deadman: "+f+"\n", a...) },
 		State: deadman.FileState{Path: deadmanStatePath},
 	}
@@ -3003,6 +3027,25 @@ func (g *Client) StorageFree(ctx context.Context) (free, total int64, err error)
 
 // SupportsStorageFree reports whether the guest can measure its image store.
 func (g *Client) SupportsStorageFree() bool { return g.Supports(verbStorageFree) }
+
+// deadmanEpisodeReply is deadman.episode's answer: Found false when nothing waited.
+type deadmanEpisodeReply struct {
+	Found   bool                `json:"found"`
+	Episode deadman.LastEpisode `json:"episode"`
+}
+
+// DeadmanEpisode collects (and makes the guest forget) the last stretch it spent without the
+// host agent. ok is false when there was none.
+func (g *Client) DeadmanEpisode(ctx context.Context) (deadman.LastEpisode, bool, error) {
+	var r deadmanEpisodeReply
+	if err := g.c.Call(ctx, verbDeadmanEpisode, struct{}{}, &r); err != nil {
+		return deadman.LastEpisode{}, false, err
+	}
+	return r.Episode, r.Found, nil
+}
+
+// SupportsDeadmanEpisode reports whether the guest hands over its deadman episodes.
+func (g *Client) SupportsDeadmanEpisode() bool { return g.Supports(verbDeadmanEpisode) }
 
 // StorageGrow has the guest fill its state disk, which the host has just grown to size bytes.
 func (g *Client) StorageGrow(ctx context.Context, size int64) error {

@@ -172,32 +172,31 @@ func (m *memoryGrower) decide(now time.Time, r *telemetry.NodeResources) bool {
 // that outgrew what it declares.
 const memoryAlertFactor = 2.5
 
-// memoryAlerter says it ONCE PER LAUNCH, at memoryAlertFactor or at the ceiling, whichever comes
-// first: once because the condition persists until a relaunch hands the memory back, and the
-// relaunch is also what re-arms it -- the first size it sees below the threshold afterwards.
-type memoryAlerter struct{ said bool }
-
-// observe is fed the guest's size after each growth decision (atCeiling when the guest needed a
-// step and the host had none left), and returns the alert to send, if this is the moment for one.
-func (a *memoryAlerter) observe(node string, sizeMB, bootMB, ceilingMB int, atCeiling bool) (notify.Alert, bool) {
+// memoryAlert is what the guest's size says about it, asserted after each growth decision
+// (atCeiling when the guest needed a step and the host had none left): unusual at
+// memoryAlertFactor, critical at the ceiling, and fine below the threshold -- which a relaunch
+// brings about by handing the memory back (memoryReturned says so at the relaunch itself). The
+// alert store turns the assertions into one alert per change: growing, then out, then back.
+func memoryAlert(node string, sizeMB, bootMB, ceilingMB int, atCeiling bool) notify.Alert {
 	threshold := int(float64(bootMB) * memoryAlertFactor)
 	if !atCeiling && sizeMB < threshold {
-		a.said = false
-		return notify.Alert{}, false
+		return memoryReturned(node)
 	}
-	if a.said {
-		return notify.Alert{}, false
-	}
-	a.said = true
 	if atCeiling {
-		return notify.Alert{Level: notify.Warning, Title: "Briard: out of memory to give",
+		return notify.Alert{Key: "memory", Kind: notify.Open, Severity: notify.Critical, Title: "Briard: out of memory to give",
 			Body: fmt.Sprintf("node %s's guest has grown to %d MB, the most this host can give it (%d MB of RAM are kept for the host itself), "+
 				"and it still needs more. Its services will start failing or being restarted for lack of memory. "+
 				"Restarting the guest returns what it grew; if this comes back, one of its services needs more memory than this machine has.",
-				node, sizeMB, hostMemoryReserveMB)}, true
+				node, sizeMB, hostMemoryReserveMB)}
 	}
-	return notify.Alert{Level: notify.Warning, Title: "Briard: memory growing unusually",
+	return notify.Alert{Key: "memory", Kind: notify.Open, Severity: notify.Warning, Title: "Briard: memory growing unusually",
 		Body: fmt.Sprintf("node %s's guest has grown to %d MB, %.1f times the %d MB it started with. "+
 			"A service is probably leaking, or needs more than it declares. The guest can keep growing to %d MB; "+
-			"restarting it returns the memory.", node, sizeMB, float64(sizeMB)/float64(bootMB), bootMB, ceilingMB)}, true
+			"restarting it returns the memory.", node, sizeMB, float64(sizeMB)/float64(bootMB), bootMB, ceilingMB)}
+}
+
+// memoryReturned resolves the memory alert: the guest is back at a size that is not unusual.
+func memoryReturned(node string) notify.Alert {
+	return notify.Alert{Key: "memory", Kind: notify.Resolved, Title: "Briard: the guest's memory is back to normal",
+		Body: fmt.Sprintf("node %s's guest is back at an ordinary size.", node)}
 }

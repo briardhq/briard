@@ -22,21 +22,22 @@ const (
 	redundancyAlone                     // no connected peer carries a usable copy: one disk left
 )
 
-// redundancyAlerter fires an edge-triggered alert when a data node loses replica
-// redundancy -- still quorate and serving, but a peer connection dropped, so "one more
-// failure would cause an outage" -- and again (recovered) when all replicas
-// reconnect. It is the agent-side signal derived from the DRBD/quorum state the observe
-// loop already reads. Edge-triggered + primed on the first reading so a steady degrade
-// doesn't spam and startup (post-convergence) doesn't false-positive. Not built on a
-// witness (its view is redundant with the data nodes') nor a single-node cluster (no
-// redundancy to lose).
+// redundancyAlerter says what the replica set is, every reading, and the alert store turns that
+// into the edge-triggered alert the owner sees: open when a data node loses redundancy -- still
+// quorate and serving, but a peer connection dropped, so "one more failure would cause an
+// outage" -- and resolved when all replicas reconnect. It is the agent-side signal derived from
+// the DRBD/quorum state the observe loop already reads. Not built on a witness (its view is
+// redundant with the data nodes') nor a single-node cluster (no redundancy to lose).
+//
+// PRIMED ON THE FIRST READING, ONE WAY: a flock still converging at startup reads reduced for a
+// few seconds, so the first reading may resolve but never open. After that every reading is
+// asserted and the store decides whether it is news.
 type redundancyAlerter struct {
 	n     notify.Notifier
 	node  string
 	peers int // expected connected peers (mesh size - 1)
 	logf  func(string, ...any)
-	last  redundancy
-	armed bool // false until the first definite reading has primed `last`
+	armed bool // false until the first definite reading
 }
 
 func newRedundancyAlerter(n notify.Notifier, node string, peers int, logf func(string, ...any)) *redundancyAlerter {
@@ -65,15 +66,15 @@ func (a *redundancyAlerter) classify(cl model.Cluster) redundancy {
 	}
 }
 
-// observe classifies the current cluster and fires on a change of state. Not
-// quorate (an outage or the minority side of a partition) is out of scope for this
-// warning -- a single node can't distinguish a minority partition from a true outage;
-// that's the controller's fleet view -- so it holds state without firing.
+// observe classifies the current cluster and asserts it. Not quorate (an outage or the
+// minority side of a partition) is out of scope for this alert -- a single node can't
+// distinguish a minority partition from a true outage; that's the controller's fleet view --
+// so it says nothing.
 //
-// It fires on EVERY change between the three states, not only on entering and leaving trouble.
-// The reduced -> alone edge is the one this exists for: a household whose peer anchor drops out
-// while a witness keeps it quorate has lost its second copy, and under a two-state machine that
-// transition looked like more of what had already been reported.
+// Every change between the three states is a change of title under one key, so the store
+// records and pushes each: the reduced -> alone edge is the one this exists for. A household
+// whose peer anchor drops out while a witness keeps it quorate has lost its second copy, and
+// under a two-state machine that transition looked like more of what had already been reported.
 func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster) {
 	if a == nil || a.peers <= 0 {
 		return
@@ -82,14 +83,12 @@ func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster) {
 		return // outage / minority: not this alert
 	}
 	cur := a.classify(cl)
-	if !a.armed { // prime silently on the first definite reading (no startup false-positive)
-		a.last, a.armed = cur, true
-		return
+	if !a.armed {
+		a.armed = true
+		if cur != redundancyFull {
+			return // the first reading may not open: the flock may still be converging
+		}
 	}
-	if cur == a.last {
-		return // no transition
-	}
-	a.last = cur
 	a.fire(ctx, a.alertFor(cur, cl))
 }
 
@@ -103,14 +102,17 @@ func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Al
 	switch cur {
 	case redundancyFull:
 		return notify.Alert{
-			Level: notify.Recovered,
+			Key:   "redundancy",
+			Kind:  notify.Resolved,
 			Title: "Briard: redundancy restored",
 			Body:  fmt.Sprintf("node %s reconnected all replicas (%d/%d connected).", a.node, cl.Connected, a.peers),
 		}
 	case redundancyAlone:
 		return notify.Alert{
-			Level: notify.Warning,
-			Title: "Briard: no second copy",
+			Key:      "redundancy",
+			Kind:     notify.Open,
+			Severity: notify.Critical,
+			Title:    "Briard: no second copy",
 			Body: fmt.Sprintf("node %s is the only node left holding your data (%d/%d peers connected, "+
 				"none of them with a usable copy). It is still serving, but until a peer comes back "+
 				"there is no second copy of your files and nothing to fail over to.",
@@ -122,8 +124,10 @@ func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Al
 			reassurance = " Another node still holds a full copy of your data."
 		}
 		return notify.Alert{
-			Level: notify.Warning,
-			Title: "Briard: reduced redundancy",
+			Key:      "redundancy",
+			Kind:     notify.Open,
+			Severity: notify.Warning,
+			Title:    "Briard: reduced redundancy",
 			Body: fmt.Sprintf("node %s lost a replica connection (%d/%d connected) — still serving, "+
 				"but one more failure would cause an outage.%s", a.node, cl.Connected, a.peers, reassurance),
 		}
@@ -144,13 +148,12 @@ func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
 // both, and the host is the one we can read without a verb.
 //
 // THE GRACE IS THE PRIMING. A host that just booted reads "no" until its first sync, so only an
-// hour of continuous "no" fires. AN UNKNOWN IS NOT AN ALARM: a host with no timedatectl (Windows)
-// or one that did not answer neither starts nor clears the hour.
+// hour of continuous "no" opens the alert. AN UNKNOWN IS NOT AN ALARM: a host with no timedatectl
+// (Windows) or one that did not answer neither starts nor clears the hour.
 type clockAlerter struct {
 	read     func(context.Context) string // reportcard.NTPSynced in production
 	unsynced time.Time                    // start of the current run of "no"; zero otherwise
 	next     time.Time                    // when to read again: timedatectl wakes timedated over D-Bus
-	warned   bool
 }
 
 const (
@@ -168,11 +171,12 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 		if c.unsynced.IsZero() {
 			c.unsynced = now
 		}
-		if !c.warned && now.Sub(c.unsynced) >= clockUnsyncedFor {
-			c.warned = true
+		if now.Sub(c.unsynced) >= clockUnsyncedFor {
 			fireAlert(ctx, n, logf, notify.Alert{
-				Level: notify.Warning,
-				Title: "Briard: clock not synchronised",
+				Key:      "clock",
+				Kind:     notify.Open,
+				Severity: notify.Warning,
+				Title:    "Briard: clock not synchronised",
 				Body: fmt.Sprintf("node %s has not synchronised its clock with a time server for over an hour. "+
 					"Certificates, alerts and backups are dated by this clock; check that the machine can "+
 					"reach the internet and that `timedatectl set-ntp true` is on.", node),
@@ -180,34 +184,33 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 		}
 	case "yes":
 		c.unsynced = time.Time{}
-		if c.warned {
-			c.warned = false
-			fireAlert(ctx, n, logf, notify.Alert{
-				Level: notify.Recovered,
-				Title: "Briard: clock synchronised",
-				Body:  fmt.Sprintf("node %s is synchronised with a time server again.", node),
-			})
-		}
+		fireAlert(ctx, n, logf, notify.Alert{
+			Key:   "clock",
+			Kind:  notify.Resolved,
+			Title: "Briard: clock synchronised",
+			Body:  fmt.Sprintf("node %s is synchronised with a time server again.", node),
+		})
 	}
 }
 
-// FireAlert is how every alert on the host side leaves: the local trail FIRST, then delivery.
-// The order is the point. Delivery is the half that can be absent (the free tier configures no
-// notifier at all) or can simply fail, so writing the trail after it would make the RECORD of
-// an alert conditional on the alert having been delivered -- exactly backwards for the tier
-// that delivers nothing, and what makes `briard alerts` truthful there (notify.LogLine).
+// fireAlert is how every alert on the host side leaves: through the notifier, which in
+// production is the alert store in front of delivery (alertStore). The store writes the record
+// FIRST and only then pushes, so the record of an alert never depends on the alert having been
+// delivered -- the free tier delivers nothing, and its record is the whole of the alerting.
 //
-// A nil notifier is a supported case, not a bug: a witness builds none (it has no redundancy
-// signal to report), and it can still reach here from the recovery ladder, whose subject is the
-// guest rather than the replica set. The trail is then the whole of the delivery.
+// Emitters call this with what they see, every time they look; the store decides whether it is
+// a change. The log line is a log, for a person reading the journal next to everything else
+// the agent said; it is not where an alert is kept.
+//
+// A nil notifier is a supported case in tests and on a witness built without one; production
+// always has the store.
 func fireAlert(ctx context.Context, n notify.Notifier, logf func(string, ...any), al notify.Alert) {
-	logf("%s", notify.LogLine(al)) // local trail, regardless of notifier -- what `briard alerts` reads
 	if n == nil {
 		return
 	}
 	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := n.Notify(nctx, al); err != nil {
-		logf("alert delivery failed (%s): %v", al.Level, err)
+		logf("alert delivery failed (%s %s): %v", al.Key, al.Kind, err)
 	}
 }

@@ -214,13 +214,14 @@ pkgs.testers.runNixOSTest {
     host.fail("journalctl -u briard-agent | grep -q 'restarting an unresponsive guest'")
 
     # It waits out the recovery window (shortened to 60s above), then says what it is
-    # about to do -- on the local trail
-    # `briard alerts` reads (notify.LogMarker), because on the free tier that trail is the only
-    # delivery there is.
+    # about to do -- in the node's alert store, which is where `briard alerts` answers from and,
+    # on the free tier, the only delivery there is. Asserted through the verb, on the OPEN
+    # section: the guest is a condition, and it is open from here until the guest answers.
     host.wait_until_succeeds(
-        "journalctl -u briard-agent | grep -q 'alert \\[warning\\] Briard: the guest has stopped answering'",
+        "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the guest has stopped answering'",
         timeout=300, # the 60s window plus the re-dials, with room to spare
     )
+
     waited = time.monotonic() - froze_at
 
     # THE PATIENCE ASSERTION, AND IT IS TWO-SIDED ON PURPOSE. The property worth proving here is

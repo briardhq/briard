@@ -107,6 +107,14 @@ func (c *ipvtapCopier) tick(ctx context.Context, cfg Config, r guest.VIPReader, 
 			vip := wantVIPRoute(cidr, nil)
 			if vip != "" && slices.Contains(host, vip) {
 				c.refuse(ctx, r, n, vip, cidr, logf)
+			} else if vip != "" {
+				// The guest holds an address of its own: a refusal, if one was open, is over.
+				fireAlert(ctx, n, logf, notify.Alert{
+					Key:   "address",
+					Kind:  notify.Resolved,
+					Title: "Briard: this node has an address on your network",
+					Body:  fmt.Sprintf("Briard is reachable at %s.", vip),
+				})
 			}
 			want[svc] = nil
 			if vip != "" && !c.refused() {
@@ -145,8 +153,11 @@ func (c *ipvtapCopier) refuse(ctx context.Context, r guest.VIPReader, n notify.N
 	// THE LINE install.sh's closing wait ends on, and prints: keep the prefix in step with it.
 	logf("network: refused: %s; %s", detail, fix)
 	fireAlert(ctx, n, logf, notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: this node cannot take an address on your network",
-		Body:  detail + ". Nothing in your home can reach Briard until you " + fix + ".",
+		Key:      "address",
+		Kind:     notify.Open,
+		Severity: notify.Critical,
+		Title:    "Briard: this node cannot take an address on your network",
+
+		Body: detail + ". Nothing in your home can reach Briard until you " + fix + ".",
 	})
 }

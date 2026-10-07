@@ -218,37 +218,34 @@ func TestGrowGuestMemoryTo(t *testing.T) {
 	}
 }
 
-// Growth is silent until it is unusual: one alert at 2.5x the boot size, or at the ceiling,
-// whichever comes first -- once per launch, re-armed by the first size back under the threshold.
-func TestMemoryAlerterSpeaksOncePerLaunch(t *testing.T) {
-	a := &memoryAlerter{}
+// Growth is fine until it is unusual: open at 2.5x the boot size, critical at the ceiling, and
+// resolved below the threshold. The assertions are what the store dedups, so a steady state
+// repeats the same alert and a change (growing -> out of memory -> back) is a new one.
+func TestMemoryAlertAssertsTheSize(t *testing.T) {
 	say := func(size int, ceiling bool) string {
-		al, ok := a.observe("n1", size, 1024, 6144, ceiling)
-		if !ok {
-			return ""
-		}
-		return al.Title
+		al := memoryAlert("n1", size, 1024, 6144, ceiling)
+		return string(al.Kind) + " " + al.Title
 	}
 	for _, size := range []int{1536, 2048} {
-		if got := say(size, false); got != "" {
-			t.Errorf("%d MB of a 1024 MB boot alerted %q; ordinary growth must stay silent", size, got)
+		if got := say(size, false); got != "resolved Briard: the guest's memory is back to normal" {
+			t.Errorf("%d MB of a 1024 MB boot: %q; ordinary growth is the resolved state", size, got)
 		}
 	}
-	if got := say(2560, false); got != "Briard: memory growing unusually" {
+	if got := say(2560, false); got != "open Briard: memory growing unusually" {
 		t.Errorf("2.5x the boot size: %q, want the unusual-growth alert", got)
 	}
-	if got := say(3072, false); got != "" {
-		t.Errorf("a second alert in the same launch: %q", got)
+	if got := say(3072, false); got != "open Briard: memory growing unusually" {
+		t.Errorf("more of the same: %q, want the same assertion (the store drops the repeat)", got)
 	}
-	if got := say(6144, true); got != "" {
-		t.Errorf("the ceiling after the unusual-growth alert, same launch: %q; once per launch", got)
+	if got := say(6144, true); got != "open Briard: out of memory to give" {
+		t.Errorf("the ceiling: %q, want the out-of-memory alert (a change of title: pushed)", got)
 	}
 	// A relaunch hands the memory back; the first growth after it is back under the threshold.
-	if got := say(1536, false); got != "" {
-		t.Errorf("growth after a relaunch alerted: %q", got)
+	if got := say(1536, false); got != "resolved Briard: the guest's memory is back to normal" {
+		t.Errorf("growth after a relaunch: %q, want resolved", got)
 	}
 	// A small host reaches its ceiling before 2.5x: that is the alert, and it names the ceiling.
-	if got := say(2048, true); got != "Briard: out of memory to give" {
+	if got := say(2048, true); got != "open Briard: out of memory to give" {
 		t.Errorf("the ceiling below 2.5x: %q, want the out-of-memory alert", got)
 	}
 }

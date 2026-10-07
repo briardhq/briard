@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/guestagent/deadman"
+	"briard.io/shared/notify"
 )
 
 // noGate is what the host learns when the guest's gate cannot be reached at all -- the zero
@@ -361,5 +363,55 @@ func TestGuestRebootedIsNilSafe(t *testing.T) {
 	u = newOSUpgrade(Config{}, nil, dialBoot(t, "boot-a"), guest.Config{}, func(string, ...any) {})
 	if got, _, _ := u.guestRebooted(nil); got {
 		t.Error("no fresh channel must not read as a reboot")
+	}
+}
+
+// episodeStatus is a guest that hands over deadman episodes: a fakeStatus with the verb.
+type episodeStatus struct {
+	fakeStatus
+	episodes []deadman.LastEpisode // handed over in order, each once
+	asked    int
+}
+
+func (e *episodeStatus) SupportsDeadmanEpisode() bool { return true }
+func (e *episodeStatus) DeadmanEpisode(context.Context) (deadman.LastEpisode, bool, error) {
+	e.asked++
+	if len(e.episodes) == 0 {
+		return deadman.LastEpisode{}, false, nil
+	}
+	ep := e.episodes[0]
+	e.episodes = e.episodes[1:]
+	return ep, true, nil
+}
+
+// THE GUEST REPORTS, THE HOST ALERTS. A stretch the guest spent without the host agent reaches
+// the owner as one event from the host, saying how long and what the guest did; a guest with
+// nothing to hand over, or one too old to have the verb, raises nothing.
+func TestCollectDeadmanEpisodeAlertsOnce(t *testing.T) {
+	ctx := context.Background()
+	cfg := Config{Node: "n1"}
+	fn := &fakeNotifier{}
+	st := testStore(t, fn)
+	since := time.Date(2026, 10, 7, 3, 0, 0, 0, time.UTC)
+	g := &episodeStatus{episodes: []deadman.LastEpisode{{Since: since, Until: since.Add(47 * time.Minute), Reboots: 2}}}
+
+	cfg.collectDeadmanEpisode(ctx, g, st, func(string, ...any) {})
+	cfg.collectDeadmanEpisode(ctx, g, st, func(string, ...any) {}) // nothing left: quiet
+	if g.asked != 2 || len(fn.alerts) != 1 {
+		t.Fatalf("asked %d, alerted %d: %+v", g.asked, len(fn.alerts), fn.alerts)
+	}
+	al := fn.alerts[0]
+	if al.Key != "host-unreachable" || al.Kind != notify.Event || al.Severity != notify.Warning {
+		t.Errorf("alert = %+v, want the host-unreachable warning event", al)
+	}
+	for _, want := range []string{"n1", "47m", "restarted itself 2 times"} {
+		if !strings.Contains(al.Body, want) {
+			t.Errorf("body does not say %q: %q", want, al.Body)
+		}
+	}
+	// A guest without the verb is not asked.
+	cfg.collectDeadmanEpisode(ctx, &fakeStatus{}, st, func(string, ...any) {})
+	if len(fn.alerts) != 1 {
+		t.Errorf("an old guest produced an alert: %+v", fn.alerts)
 	}
 }

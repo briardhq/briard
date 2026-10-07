@@ -255,6 +255,9 @@ func (cfg Config) collectRecorder(ctx context.Context, g recorderChecker, d *dbC
 	rep := *s.Report
 	logf("hass-db: verdict=%q checked=%s candidate=%s %s", rep.Verdict, rep.Checked, rep.Candidate, rep.Why)
 	if rep.Verdict != hass.VerdictCorrupt {
+		// A clean check ends a damage this host could not repair earlier; the store drops the
+		// resolve when nothing is open, which is every other night.
+		fireAlert(ctx, n, logf, recorderIntact(cfg.Node))
 		return
 	}
 	if rep.Candidate == "" {
@@ -269,23 +272,43 @@ func (cfg Config) collectRecorder(ctx context.Context, g recorderChecker, d *dbC
 		return
 	}
 	fireAlert(ctx, n, logf, recorderAlert(cfg.Node, "", rep.CandidateAt, d.loc))
+	fireAlert(ctx, n, logf, recorderIntact(cfg.Node)) // the repair ends an earlier unrepaired damage
+}
+
+// recorderIntact resolves an open "damaged" alert: written by the store only if one is open.
+func recorderIntact(node string) notify.Alert {
+	return notify.Alert{
+		Key:   "recorder-damaged",
+		Kind:  notify.Resolved,
+		Title: "Briard: Home Assistant's history is intact again",
+		Body:  fmt.Sprintf("Home Assistant's history database on node %s passed its check.", node),
+	}
 }
 
 // recorderAlert is what the household is told when the check found damage: repaired from a copy
 // taken at `from`, or not, and why. A History row alone is not enough: nothing else would make
 // anyone look.
+//
+// Two keys, not one: a damage this host could not repair is a CONDITION (it holds until a check
+// passes or a repair lands), while a repair is an EVENT -- it carries the data-loss and undo
+// words, which must not ride on a "resolved" the reader skims past.
 func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.Alert {
 	if from.IsZero() {
 		return notify.Alert{
-			Level: notify.Warning,
-			Title: "Briard: Home Assistant's history is damaged",
+			Key:      "recorder-damaged",
+			Kind:     notify.Open,
+			Severity: notify.Warning,
+			Title:    "Briard: Home Assistant's history is damaged",
 			Body: fmt.Sprintf("Home Assistant's history database on node %s is damaged and briard could not repair it (%s). "+
 				"Home Assistant will start an empty history when it next reads the damaged part.", node, why),
 		}
 	}
 	return notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: Home Assistant's history was repaired",
+		Key:      "recorder-repaired",
+		Kind:     notify.Event,
+		Severity: notify.Info,
+		Title:    "Briard: Home Assistant's history was repaired",
+
 		Body: fmt.Sprintf("Home Assistant's history database on node %s was damaged. Briard put back the last good copy, from %s; "+
 			"history recorded after that is lost. Undoing \"Restored corrupted database\" in the app's History puts the damaged copy back.",
 			node, from.In(loc).Format("Mon 2 Jan, 15:04")),

@@ -263,23 +263,28 @@ func (cfg Config) rememberGuestRelease(raw []byte, logf func(string, ...any)) {
 // worth a second schedule. Failures are the upgrade path's own (escalated there); this only
 // logs the outcome.
 func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localRequest, n notify.Notifier, logf func(string, ...any)) {
+	if cfg.ControllerURL == "" && len(cfg.Resource.Peers) > 1 {
+		fireAlert(ctx, n, logf, notify.Alert{
+			Key:      "os-updates",
+			Kind:     notify.Open,
+			Severity: notify.Info,
+			Title:    "Briard: automatic OS updates are off on this node",
+			Body:     fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update --vm` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
+		})
+		return
+	}
+	// A lone node, or one with an orchestrator: its OS is updated, which ends the alert if an
+	// earlier mesh had switched the automatic path off.
+	fireAlert(ctx, n, logf, notify.Alert{
+		Key:   "os-updates",
+		Kind:  notify.Resolved,
+		Title: "Briard: OS updates are on again on this node",
+		Body:  fmt.Sprintf("%s's OS is updated again, on its own schedule or by its orchestrator.", cfg.Node),
+	})
 	if cfg.ControllerURL != "" {
 		return
 	}
-	if len(cfg.Resource.Peers) > 1 {
-		al := notify.Alert{
-			Level: notify.Warning,
-			Title: "Briard: automatic OS updates are off on this node",
-			Body:  fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update --vm` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
-		}
-		logf("%s", notify.LogLine(al))
-		if n != nil {
-			nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_ = n.Notify(nctx, al)
-			cancel()
-		}
-		return
-	}
+
 	loc := time.Local
 	if tz := localTimezone("/"); tz != "" {
 		if l, err := time.LoadLocation(tz); err == nil {

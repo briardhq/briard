@@ -11,7 +11,7 @@ import (
 )
 
 // Ntfy posts the body as the message and the title/priority/tags as headers (ntfy's HTTP
-// contract), with warning-level mapping to high priority.
+// contract): severity sets the priority, kind sets the glyph, and a resolved is quiet.
 func TestNtfyPostsHeaders(t *testing.T) {
 	var title, priority, tags, body, method string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -23,7 +23,7 @@ func TestNtfyPostsHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := Ntfy(srv.URL).Notify(context.Background(), Alert{Level: Warning, Title: "reduced redundancy", Body: "node n1 lost a replica"})
+	err := Ntfy(srv.URL).Notify(context.Background(), Alert{Key: "redundancy", Kind: Open, Severity: Warning, Title: "reduced redundancy", Body: "node n1 lost a replica"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,23 @@ func TestNtfyPostsHeaders(t *testing.T) {
 		t.Errorf("title/body = %q / %q", title, body)
 	}
 	if priority != "high" || tags != "warning" {
-		t.Errorf("warning must map to priority=high tags=warning, got %q / %q", priority, tags)
+		t.Errorf("a warning must map to priority=high tags=warning, got %q / %q", priority, tags)
+	}
+
+	for _, tc := range []struct {
+		a              Alert
+		priority, tags string
+	}{
+		{Alert{Kind: Open, Severity: Critical}, "urgent", "rotating_light"},
+		{Alert{Kind: Event, Severity: Info}, "default", "information_source"},
+		{Alert{Kind: Resolved}, "default", "white_check_mark"},
+	} {
+		if err := Ntfy(srv.URL).Notify(context.Background(), tc.a); err != nil {
+			t.Fatal(err)
+		}
+		if priority != tc.priority || tags != tc.tags {
+			t.Errorf("%s/%s: priority/tags = %q/%q, want %q/%q", tc.a.Kind, tc.a.Severity, priority, tags, tc.priority, tc.tags)
+		}
 	}
 }
 
@@ -44,28 +60,15 @@ func TestNtfyErrorStatus(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	if err := Ntfy(srv.URL).Notify(context.Background(), Alert{Level: Recovered, Title: "x"}); err == nil {
+	if err := Ntfy(srv.URL).Notify(context.Background(), Alert{Kind: Resolved, Title: "x"}); err == nil {
 		t.Error("expected an error on a 500 from ntfy")
 	}
 }
 
 // Nop delivers nowhere and never errors (the default when no endpoint is configured).
 func TestNopNotifier(t *testing.T) {
-	if err := Nop().Notify(context.Background(), Alert{Level: Warning}); err != nil {
+	if err := Nop().Notify(context.Background(), Alert{Kind: Open, Severity: Warning}); err != nil {
 		t.Errorf("Nop must not error: %v", err)
-	}
-}
-
-// The Log notifier records the alert (an alternative log-based sink).
-func TestLogNotifier(t *testing.T) {
-	var logged string
-	err := Log(func(f string, a ...any) { logged = fmt.Sprintf(f, a...) }).
-		Notify(context.Background(), Alert{Level: Warning, Title: "T", Body: "B"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(logged, "T") || !strings.Contains(logged, "B") || !strings.Contains(logged, "warning") {
-		t.Errorf("log line missing content: %q", logged)
 	}
 }
 
@@ -85,7 +88,7 @@ func (c *captureNotifier) Notify(_ context.Context, a Alert) error {
 func TestTeeFansOutAndJoinsErrors(t *testing.T) {
 	ok1, ok2 := &captureNotifier{}, &captureNotifier{}
 	bad := &captureNotifier{fail: fmt.Errorf("boom")}
-	al := Alert{Level: Warning, Title: "T", Body: "B"}
+	al := Alert{Key: "k", Kind: Open, Severity: Warning, Title: "T", Body: "B"}
 
 	err := Tee(ok1, bad, ok2).Notify(context.Background(), al)
 	if err == nil || !strings.Contains(err.Error(), "boom") {

@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -736,21 +737,23 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// property of the NODE; what happens to run on top of it cannot decide whether the node can
 	// be updated. Service directives stay correctly refused: their own guard still reads spec.Name.
 	mgr := newOSUpgrade(cfg, g, client, guestCfg, logf)
-	// Redundancy alerting: a data node warns when it loses a replica connection
-	// while still serving. Ntfy if a topic URL is configured, else a log-only notifier
-	// (the standalone fallback). A witness / single-node cluster has no redundancy signal.
-	var n notify.Notifier
+	// Every alert this host raises goes through its store (alertstore.go), which records it and
+	// only then pushes it -- to ntfy if a topic URL is configured, else nowhere. A witness has
+	// no redundancy signal to report, but what it does raise is recorded like anyone else's.
+	var push notify.Notifier
+	if cfg.NotifyURL != "" {
+		push = notify.Ntfy(cfg.NotifyURL)
+	}
+	n := newAlertStore(AlertStorePath, push, logf)
+	// Redundancy alerting: a data node warns when it loses a replica connection while still
+	// serving. A witness / single-node cluster has no redundancy signal.
 	var alerter *redundancyAlerter
 	if cfg.Role != model.RoleDiskless {
-		if cfg.NotifyURL != "" {
-			n = notify.Ntfy(cfg.NotifyURL)
-		} else {
-			n = notify.Nop() // no endpoint: the fire() logf is the local trail, don't double-log
-		}
 		if peers := len(cfg.Resource.Peers) - 1; peers > 0 {
 			alerter = newRedundancyAlerter(n, cfg.Node, peers, logf)
 		}
 	}
+
 	// THIS NODE IS ON A DIFFERENT NETWORK THAN IT WAS. The system subnet was drawn
 	// against the collision landscape of the old one, so that check is now stale -- and it is not
 	// ours to fix: the subnet is flock-scoped, and re-drawing it here would break a peer still
@@ -1294,7 +1297,12 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	da := &diskAlerter{read: reportcard.DiskFreeMB}
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
 	mg := &memoryGrower{}
-	ma := &memoryAlerter{} // ...and when that growth is worth telling the household about
+	var memSizeNext time.Time // when to next ask the VM its size, to end a memory alert (below)
+	// What the guest did while this agent was away (deadman.episode): asked at the start of the
+	// connection and twice more over the next minute, because the deadman leaves its record on
+	// its own 15 s tick after the first contact -- then never, this connection.
+	episodeAsks := []int{0, 6, 12}
+	cycle := 0
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
@@ -1393,10 +1401,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			size, err := growGuestMemory(gctx, hostMB, vm.MemoryMB, vm.AddMemory)
 			cancel()
 			if err == nil || errors.Is(err, errMemoryCeiling) {
-				if a, ok := ma.observe(cfg.Node, size, cfg.bootMemoryMB(), guestMemoryCeilingMB(hostMB), err != nil); ok {
-					fireAlert(ctx, n, logf, a)
-				}
+				// ...and whether that growth is worth telling the household about.
+				fireAlert(ctx, n, logf, memoryAlert(cfg.Node, size, cfg.bootMemoryMB(), guestMemoryCeilingMB(hostMB), err != nil))
 			}
+
 			switch {
 			case errors.Is(err, errMemoryCeiling):
 				logf("memory: the guest needs more memory and is at its ceiling (%d MB): available %d MB, pressure %.1f%%",
@@ -1407,7 +1415,21 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				logf("memory: grew the guest to %d MB: available was %d MB of %d, pressure %.1f%%",
 					size, res.MemAvailableKB>>10, res.MemTotalKB>>10, res.MemPSISome60)
 			}
+		} else if now := time.Now(); res.MemTotalKB > 0 && now.After(memSizeNext) {
+			// ...and whether an earlier unusual growth is over. A relaunch returns the memory, and
+			// the VM's own size is the fact (MemoryMB resets with each launch exactly as the VM
+			// does); only the ordinary side is asserted here, because whether a large guest is
+			// "growing" or "out" is known only when it asks for more. On the clock reader's
+			// cadence: a QMP question every cycle would be a cost paid forever for a rare answer.
+			memSizeNext = now.Add(clockReadEvery)
+			qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			size, err := platform.Adopt(cfg.guestSpec()).MemoryMB(qctx)
+			cancel()
+			if err == nil && size < int(float64(cfg.bootMemoryMB())*memoryAlertFactor) {
+				fireAlert(ctx, n, logf, memoryReturned(cfg.Node))
+			}
 		}
+
 		// The deliberate wedge point, off unless a test arms it. It sits HERE, where the
 		// un-ctx'd write used to be, so what agent-watchdog.nix measures is a stall at the same
 		// place in the same loop. See wedgeForTest.
@@ -1432,7 +1454,12 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res))
 		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		cfg.beat.Beat()
+		if slices.Contains(episodeAsks, cycle) {
+			cfg.collectDeadmanEpisode(ctx, r, n, logf)
+		}
+		cycle++
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
+
 		if cfg.StateDisk != "" {
 			da.observe(ctx, n, cfg.Node, cfg.StateDisk, time.Now(), logf) // one statfs every diskReadEvery
 		}
@@ -1652,9 +1679,14 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			}
 			return cfg.applyUnpair(ctx, m, sr, rb, d, logf)
 		}
-		return cfg.applyPair(ctx, m, platformWitness{}, rb, d, logf)
+		out := cfg.applyPair(ctx, m, platformWitness{}, rb, d, logf)
+		if out.State != api.OutcomeFailed {
+			fireAlert(ctx, n, logf, meshRecorded(cfg.Node)) // a pairing records the mesh here (cacheMesh)
+		}
+		return out
 	}
 	return applyDirective(ctx, d, up, n, cr, su, logf, cfg.UpgradeBudget, cfg.beat)
+
 }
 
 // OverlayStatus reads the overlay's health for the status snapshot. Nil when no

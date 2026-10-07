@@ -143,13 +143,12 @@ func parseSize(s string) (int64, error) {
 // hostDiskReserve) and the next update, which stages beside the running one. Without this, the
 // first a household hears of it is that refusal.
 //
-// ONCE per episode: it warns when free space drops under hostDiskReserve, and says it is resolved
-// only once free space is back above diskClearMB -- a margin, so a host hovering at the line does
-// not alert on every read. An unreadable answer (0) changes nothing in either direction.
+// It asserts "low" under hostDiskReserve and "back" only above diskClearMB -- a margin, so a
+// host hovering at the line does not flap; in between it says nothing, and the alert store
+// keeps whichever it last said. An unreadable answer (0) changes nothing in either direction.
 type diskAlerter struct {
-	read   func(path string) int // reportcard.DiskFreeMB in production: MB free, 0 if unreadable
-	next   time.Time
-	warned bool
+	read func(path string) int // reportcard.DiskFreeMB in production: MB free, 0 if unreadable
+	next time.Time
 }
 
 const (
@@ -168,22 +167,24 @@ func (a *diskAlerter) observe(ctx context.Context, n notify.Notifier, node, disk
 	switch {
 	case free == 0:
 		return
-	case !a.warned && free < reportcard.HostDiskReserveMB:
-		a.warned = true
+	case free < reportcard.HostDiskReserveMB:
 		fireAlert(ctx, n, logf, notify.Alert{
-			Level: notify.Warning,
-			Title: "Briard: this computer is running out of disk space",
+			Key:      "disk",
+			Kind:     notify.Open,
+			Severity: notify.Warning,
+			Title:    "Briard: this computer is running out of disk space",
 			Body: fmt.Sprintf("node %s's computer has %s free on the disk holding its data (%s). Briard keeps about %s free "+
 				"for the computer's own system, so installing or updating apps, and the next Briard update, will be "+
 				"refused until there is more room. Your apps keep running. Free some space on that disk.",
 				node, gb(int64(free)<<20), path, fmt.Sprintf("%d GB", reportcard.HostDiskReserveMB/1024)),
 		})
-	case a.warned && free >= diskClearMB:
-		a.warned = false
+	case free >= diskClearMB:
 		fireAlert(ctx, n, logf, notify.Alert{
-			Level: notify.Recovered,
+			Key:   "disk",
+			Kind:  notify.Resolved,
 			Title: "Briard: disk space is back",
-			Body:  fmt.Sprintf("node %s's computer has %s free again; installs and updates can go ahead.", node, gb(int64(free)<<20)),
+
+			Body: fmt.Sprintf("node %s's computer has %s free again; installs and updates can go ahead.", node, gb(int64(free)<<20)),
 		})
 	}
 }

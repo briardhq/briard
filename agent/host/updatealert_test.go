@@ -13,7 +13,8 @@ import (
 	"briard.io/shared/notify"
 )
 
-// newTestUpdateAlerter builds an alerter over a scripted systemd and a temp run dir. The
+// newTestUpdateAlerter builds an alerter over a scripted systemd and a temp run dir, behind
+// an alert store (the alerter asserts every reading; the store is what makes it an edge). The
 // readings are consumed one per observe; running past the end repeats the last, so a test can
 // say "and then it stays that way" without padding the script.
 func newTestUpdateAlerter(t *testing.T, n notify.Notifier, readings ...string) (*updateAlerter, *selfupdate.Layout, *[]string) {
@@ -22,7 +23,9 @@ func newTestUpdateAlerter(t *testing.T, n notify.Notifier, readings ...string) (
 	lay := selfupdate.New(t.TempDir(), run)
 	var trail []string
 	i := 0
-	a := newUpdateAlerter(n, "n1", lay, func(f string, v ...any) { trail = append(trail, fmt.Sprintf(f, v...)) })
+	logf := func(f string, v ...any) { trail = append(trail, fmt.Sprintf(f, v...)) }
+	st := newAlertStore(filepath.Join(t.TempDir(), "alerts.json"), n, logf)
+	a := newUpdateAlerter(st, "n1", lay, logf)
 	a.state = func(string) (string, error) {
 		s := readings[i]
 		if i < len(readings)-1 {
@@ -39,7 +42,7 @@ func newTestUpdateAlerter(t *testing.T, n notify.Notifier, readings ...string) (
 func levels(as []notify.Alert) string {
 	var out []string
 	for _, a := range as {
-		out = append(out, string(a.Level))
+		out = append(out, string(a.Kind))
 	}
 	return strings.Join(out, ",")
 }
@@ -59,12 +62,12 @@ func TestUpdateAlerterEdges(t *testing.T) {
 	a.observe(ctx) // the run failed -> warning
 	a.observe(ctx) // still failing -- must NOT re-fire
 	a.observe(ctx)
-	if got := levels(fn.alerts); got != "warning" {
-		t.Fatalf("expected exactly one warning across a steady failure, got %q (%+v)", got, fn.alerts)
+	if got := levels(fn.alerts); got != "open" {
+		t.Fatalf("expected exactly one open across a steady failure, got %q (%+v)", got, fn.alerts)
 	}
-	a.observe(ctx) // updating again -> recovered
-	if got := levels(fn.alerts); got != "warning,recovered" {
-		t.Fatalf("expected warning then recovered, got %q", got)
+	a.observe(ctx) // updating again -> resolved
+	if got := levels(fn.alerts); got != "open,resolved" {
+		t.Fatalf("expected open then resolved, got %q", got)
 	}
 }
 
@@ -77,7 +80,7 @@ func TestUpdateAlerterFiresOnTheFirstReading(t *testing.T) {
 	fn := &fakeNotifier{}
 	a, _, _ := newTestUpdateAlerter(t, fn, "failed")
 	a.observe(context.Background())
-	if got := levels(fn.alerts); got != "warning" {
+	if got := levels(fn.alerts); got != "open" {
 		t.Fatalf("a first reading of `failed` must warn (no priming), got %q", got)
 	}
 }
@@ -92,14 +95,12 @@ func TestUpdateAlerterHoldsOnQueryError(t *testing.T) {
 	if len(fn.alerts) != 0 {
 		t.Fatalf("a failed query must not fire, got %+v", fn.alerts)
 	}
-	if a.failing {
-		t.Fatal("a failed query must not move the edge state")
-	}
+
 	if len(*trail) == 0 {
 		t.Fatal("a failed query must leave a line in the journal")
 	}
 	a.observe(ctx) // the real reading still gets through
-	if got := levels(fn.alerts); got != "warning" {
+	if got := levels(fn.alerts); got != "open" {
 		t.Fatalf("expected the warning after the query recovered, got %q", got)
 	}
 }
@@ -117,7 +118,7 @@ func TestUpdateAlerterHoldsWhileRunning(t *testing.T) {
 				t.Fatalf("%q has no verdict and must not fire, got %+v", state, fn.alerts)
 			}
 			a.observe(ctx)
-			if got := levels(fn.alerts); got != "warning" {
+			if got := levels(fn.alerts); got != "open" {
 				t.Fatalf("the verdict after %q must still fire, got %q", state, got)
 			}
 		})
@@ -154,7 +155,7 @@ func TestUpdateAlerterWarnsWithoutAResultLine(t *testing.T) {
 		t.Fatal("precondition: no result message")
 	}
 	a.observe(context.Background())
-	if got := levels(fn.alerts); got != "warning" {
+	if got := levels(fn.alerts); got != "open" {
 		t.Fatalf("expected a warning with no result line, got %q", got)
 	}
 	if !strings.Contains(fn.alerts[0].Body, "n1") {
@@ -163,19 +164,17 @@ func TestUpdateAlerterWarnsWithoutAResultLine(t *testing.T) {
 }
 
 // THE FREE TIER IS THE POINT. A node with no notifier configured delivers nowhere, and the
-// local trail is then the whole of the alert -- it must still be written, in the shape
-// `briard alerts` greps for.
-func TestUpdateAlerterWritesTheTrailWithNoNotifier(t *testing.T) {
-	a, _, trail := newTestUpdateAlerter(t, nil, "failed")
+// alert store is then the whole of the alert -- it must still be recorded there, where
+// `briard alerts` reads it.
+func TestUpdateAlerterRecordsWithNoNotifier(t *testing.T) {
+	a, _, _ := newTestUpdateAlerter(t, nil, "failed")
 	a.observe(context.Background())
-	var found bool
-	for _, l := range *trail {
-		if strings.HasPrefix(l, notify.LogMarker) {
-			found = true
-		}
+	recs, err := ReadAlerts(a.n.(*alertStore).path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("a nil notifier must still leave the %q trail, got %q", notify.LogMarker, *trail)
+	if open := OpenAlerts(recs); len(open) != 1 || open[0].Key != "updates" {
+		t.Fatalf("a nil notifier must still leave the alert in the store, got %+v", recs)
 	}
 }
 

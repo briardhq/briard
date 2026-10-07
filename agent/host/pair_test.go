@@ -563,28 +563,22 @@ func (m meshReader) VIP(context.Context, string) (string, error)         { retur
 func TestForgottenMeshAlerts(t *testing.T) {
 	// The host's view: a lone node, which is what an absent/corrupt mesh cache leaves behind.
 	cfg := Config{Node: "anchorA", Resource: drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}}}}
-	var lines []string
-	logf := func(s string, a ...any) { lines = append(lines, fmt.Sprintf(s, a...)) }
+	fn := &fakeNotifier{}
 
-	cfg.warnIfMeshForgotten(context.Background(), meshReader{peers: 2}, notify.Nop(), logf)
+	cfg.warnIfMeshForgotten(context.Background(), meshReader{peers: 2}, fn, func(string, ...any) {})
 
-	var marked string
-	for _, l := range lines {
-		if strings.Contains(l, notify.LogMarker) {
-			marked = l
-		}
+	if len(fn.alerts) != 1 {
+		t.Fatalf("want one alert, so `briard alerts` shows this: %+v", fn.alerts)
 	}
-	if marked == "" {
-		t.Fatalf("no alert-shaped line, so `briard alerts` would never show this: %v", lines)
-	}
-	// The trail must carry the WARNING level and say what happens and when -- an alert nobody can
-	// act on is the same defect as no alert.
-	if !strings.Contains(marked, string(notify.Warning)) {
-		t.Errorf("alert is not a warning: %q", marked)
+	// It is an open condition at warning, and says what happens and when -- an alert nobody
+	// can act on is the same defect as no alert.
+	al := fn.alerts[0]
+	if al.Key != "mesh-record" || al.Kind != notify.Open || al.Severity != notify.Warning {
+		t.Errorf("alert is not the open mesh-record warning: %+v", al)
 	}
 	for _, want := range []string{"restart", "pair this home again"} {
-		if !strings.Contains(marked, want) {
-			t.Errorf("alert does not say %q -- the owner needs the consequence and the remedy: %q", want, marked)
+		if !strings.Contains(al.Body, want) {
+			t.Errorf("alert does not say %q -- the owner needs the consequence and the remedy: %q", want, al.Body)
 		}
 	}
 }
@@ -608,15 +602,17 @@ func TestForgottenMeshStaysQuiet(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Config{Node: "anchorA", Resource: tc.res}
-			var lines []string
-			cfg.warnIfMeshForgotten(context.Background(), tc.r, notify.Nop(),
-				func(s string, a ...any) { lines = append(lines, fmt.Sprintf(s, a...)) })
-			for _, l := range lines {
-				if strings.Contains(l, notify.LogMarker) {
-					t.Errorf("alerted on %s: %q", tc.name, l)
+			fn := &fakeNotifier{}
+			cfg.warnIfMeshForgotten(context.Background(), tc.r, fn, func(string, ...any) {})
+			for _, al := range fn.alerts {
+				// A host that knows its mesh asserts the record is there; the store drops that
+				// when nothing is open, so only an OPEN here is an alert.
+				if al.Kind == notify.Open {
+					t.Errorf("alerted on %s: %+v", tc.name, al)
 				}
 			}
 		})
+
 	}
 }
 

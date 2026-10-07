@@ -1424,22 +1424,25 @@ pkgs.testers.runNixOSTest {
     #
     # ⚠️ THE ASSERTION IS THE ALERT, NOT THE FAILED RUN. `journalctl -u briard-update` was already
     # green further up and proves only that the updater complained to itself. What is new here is
-    # that the AGENT noticed and wrote the household-facing line -- the one shape every alert on a
-    # node takes and the one `briard alerts` greps for, on both surfaces.
+    # that the AGENT noticed and raised the household-facing alert -- recorded in the node's
+    # alert store, which `briard alerts` answers from. Asserted through the verb, on its OPEN
+    # section: "stopped updating" is a condition, open until a run completes.
     #
     # The agent is restarted because the watcher reads the unit at start and then on a slow
     # cadence, and an agent coming up onto a node that is ALREADY failing must report it: that is
     # the no-priming half of the design, and restarting is how this rig reaches it.
     host.succeed("systemctl restart briard-agent.service")
     host.wait_until_succeeds(
-        "journalctl -u briard-agent | grep -qF 'alert [warning] Briard: this node has stopped updating'",
+        "/opt/briard/agent/briard-agent alerts | sed -n '/open now/,/history/p' | grep -qF 'this node has stopped updating'",
         timeout=120,
     )
     # The run's own last line rides along, because that is where the remedy lives: here "could not
     # fetch", on a floored node the refusal that names reinstall in so many words. An alert that
     # says only "something failed" gives the owner nothing to do.
-    host.succeed("journalctl -u briard-agent | grep -qF 'The update run said:'")
-    host.succeed("journalctl -u briard-agent | grep -q 'could not fetch a bootstrap agent'")
+    alerts = host.succeed("/opt/briard/agent/briard-agent alerts")
+    assert "The update run said:" in alerts, f"the alert does not carry the run's own line:\n{alerts}"
+    assert "could not fetch a bootstrap agent" in alerts, f"the alert does not carry the refusal:\n{alerts}"
+
     # Put the channel back and clear the unit, so the steps below meet the node they expect.
     host.succeed("mv /root/hidden-agent /srv/briard/stable/linux-amd64/briard-agent")
     host.succeed("systemctl reset-failed briard-update.service")

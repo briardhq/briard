@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"time"
 
 	"briard.io/agent/install"
@@ -218,33 +219,20 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	}
 }
 
-// escalate pushes an alert when an upgrade fails: upgrades are rare, so this is not fatigue --
+// escalate raises an alert when an upgrade fails: upgrades are rare, so this is not fatigue --
 // and a failure includes a revert that could not finish, which is exactly the case a bound exists
-// to surface instead of hanging silently.
-//
-// IT WRITES THE LOCAL TRAIL FIRST, and that ordering is the point rather than a detail. This
-// function used to do nothing BUT hand the alert to the notifier -- which on the free tier is
-// notify.Nop(), because there is no cloud contact to configure one from. So every failed OS
-// upgrade, service upgrade, cert renewal and agent self-update on a free node produced an alert
-// that reached NOBODY: not the owner, not the journal, not a support bundle. The one place a
-// person looks after "it stopped working" held no record that briard had noticed anything.
-//
-// The redundancy alerter had this line from the start (alert.go); this path simply never grew
-// it, and nothing failed loudly enough to say so -- an alert nobody receives looks exactly like
-// an alert nobody needed to receive.
-//
-// A nil notifier (a witness) still logs: it has no owner to push to, but it has a journal.
-func escalate(ctx context.Context, n notify.Notifier, logf func(string, ...any), subject, kind, target string, cause error) {
-	al := notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: " + kind + " failed",
-		Body:  fmt.Sprintf("%s: %s to %s failed and rolled back — %v", subject, kind, target, cause),
-	}
-	logf("%s", notify.LogLine(al))
-	if n == nil {
-		return
-	}
-	nctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	_ = n.Notify(nctx, al)
+// to surface instead of hanging silently. It goes through the alert store like every alert, so
+// on the free tier -- where there is no endpoint to push to -- the record is still there for
+// the person who looks after "it stopped working".
+func escalate(
+	ctx context.Context, n notify.Notifier, logf func(string, ...any), subject, kind, target string, cause error) {
+	fireAlert(ctx, n, logf, notify.Alert{
+		// An event: the rollback already happened, there is nothing to resolve. The instance
+		// is the kind of upgrade, so a display can tell "the OS keeps failing" from one bad run.
+		Key:      "upgrade-rolled-back:" + strings.ReplaceAll(strings.ToLower(kind), " ", "-"),
+		Kind:     notify.Event,
+		Severity: notify.Info,
+		Title:    "Briard: " + kind + " failed",
+		Body:     fmt.Sprintf("%s: %s to %s failed and rolled back — %v", subject, kind, target, cause),
+	})
 }

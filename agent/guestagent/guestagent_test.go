@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
+	"briard.io/agent/guestagent/deadman"
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
@@ -2135,5 +2136,36 @@ func TestMDNSOtherReadsTheDoorsRecordAndIsEmptyWhenNoneWasHeard(t *testing.T) {
 	g = dial(t, &fakeExec{})
 	if got, err := g.MDNSOther(context.Background()); err != nil || got != "" {
 		t.Errorf("MDNSOther with no record = %q, %v; want empty and no error", got, err)
+	}
+}
+
+// deadman.episode hands over what the deadman left and forgets it: the second read says nothing,
+// so the host records an episode once. An absent file is the ordinary answer, not an error.
+func TestDeadmanEpisodeIsHandedOverOnce(t *testing.T) {
+	deadmanLastEpisodePath = filepath.Join(t.TempDir(), "last-episode.json")
+	call := func() deadmanEpisodeReply {
+		t.Helper()
+		out, err := dispatch(&fakeExec{})(context.Background(), verbDeadmanEpisode, []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.(deadmanEpisodeReply)
+	}
+	if r := call(); r.Found {
+		t.Fatalf("nothing waited, yet found: %+v", r)
+	}
+	last := deadman.LastEpisode{Since: time.Unix(1000, 0).UTC(), Until: time.Unix(4000, 0).UTC(), Reboots: 2}
+	if err := (deadman.FileState{Path: filepath.Join(filepath.Dir(deadmanLastEpisodePath), "episode.json")}).SaveLast(last); err != nil {
+		t.Fatal(err)
+	}
+	r := call()
+	if !r.Found || r.Episode.Reboots != 2 || !r.Episode.Since.Equal(last.Since) || !r.Episode.Until.Equal(last.Until) {
+		t.Fatalf("handed over %+v, want %+v", r, last)
+	}
+	if r := call(); r.Found {
+		t.Fatalf("the episode was handed over twice: %+v", r)
+	}
+	if _, err := os.Stat(deadmanLastEpisodePath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the handed-over episode was not forgotten: %v", err)
 	}
 }

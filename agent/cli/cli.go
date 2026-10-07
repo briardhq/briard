@@ -75,10 +75,10 @@ const (
 var commands = []command{
 	{
 		name: "alerts", group: groupEveryday,
-		synopsis: "what this machine has warned about",
-		detail: "Reads this machine's own log surfaces directly and names any it could not read, so an\n" +
-			"empty result is never a guess. A free install talks to no server of ours, so nothing is\n" +
-			"pushed to you — this is how you ask. Run it when something looks off, or on a timer.",
+		synopsis: "what is wrong right now, and what this machine has warned about",
+		detail: "Reads this machine's own alert record directly, so it answers even when the agent is\n" +
+			"down: what is open now first, then the history. A free install talks to no server of\n" +
+			"ours, so nothing is pushed to you — this is how you ask. Run it when something looks off.",
 		run: runAlerts, probe: []string{"-h"},
 	},
 	{
@@ -276,7 +276,8 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `
   help [command]               this message, or one command's options
 
-`+"`alerts`"+` and `+"`logs`"+` read this machine's logs, `+"`version`"+` its records, and `+"`update`"+` starts a
+`+"`alerts`"+` reads this machine's alert record, `+"`logs`"+` its logs, `+"`version`"+` its records, and `+"`update`"+` starts a
+
 systemd unit; all four work even when the agent is down, and so does the machine's own half of `+"`doctor`"+`. The rest talk to the running briard-agent over its admin
 socket (`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
 

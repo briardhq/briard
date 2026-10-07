@@ -182,6 +182,8 @@ func TestProvisionDisksMakesTheStateDiskThick(t *testing.T) {
 // answer, and one recovered when it is back above the margin. It reads once a minute.
 func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	fn := &fakeNotifier{}
+	st := testStore(t, fn) // the alerter asserts every read; the store is what makes it once
+
 	free, reads := 0, 0
 	a := &diskAlerter{read: func(path string) int {
 		reads++
@@ -193,10 +195,10 @@ func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	t0 := time.Now()
 	at := func(minute int, mb int) {
 		free = mb
-		a.observe(context.Background(), fn, "n1", "/var/lib/briard/state.img", t0.Add(time.Duration(minute)*time.Minute), func(string, ...any) {})
+		a.observe(context.Background(), st, "n1", "/var/lib/briard/state.img", t0.Add(time.Duration(minute)*time.Minute), func(string, ...any) {})
 	}
 	at(0, 10*1024)
-	a.observe(context.Background(), fn, "n1", "/var/lib/briard/state.img", t0.Add(30*time.Second), func(string, ...any) {})
+	a.observe(context.Background(), st, "n1", "/var/lib/briard/state.img", t0.Add(30*time.Second), func(string, ...any) {})
 	if reads != 1 {
 		t.Fatalf("read %d times inside one diskReadEvery, want 1", reads)
 	}
@@ -204,15 +206,15 @@ func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	at(2, 1000) // still low: no fatigue
 	at(3, 2200) // above the reserve but under the margin: neither cleared nor re-warned
 	at(4, 0)    // unreadable: nothing
-	if len(fn.alerts) != 1 || fn.alerts[0].Level != notify.Warning || !strings.Contains(fn.alerts[0].Body, "n1") || !strings.Contains(fn.alerts[0].Body, "/var/lib/briard") {
+	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open || !strings.Contains(fn.alerts[0].Body, "n1") || !strings.Contains(fn.alerts[0].Body, "/var/lib/briard") {
 		t.Fatalf("want one warning naming the node and the disk, got %+v", fn.alerts)
 	}
 	at(5, 3*1024) // back above the margin: recovered
-	if len(fn.alerts) != 2 || fn.alerts[1].Level != notify.Recovered {
+	if len(fn.alerts) != 2 || fn.alerts[1].Kind != notify.Resolved {
 		t.Fatalf("want a recovered alert, got %+v", fn.alerts)
 	}
 	at(6, 1500) // a new episode warns again
-	if len(fn.alerts) != 3 || fn.alerts[2].Level != notify.Warning {
+	if len(fn.alerts) != 3 || fn.alerts[2].Kind != notify.Open {
 		t.Fatalf("a second episode did not warn: %+v", fn.alerts)
 	}
 }

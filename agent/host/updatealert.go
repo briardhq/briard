@@ -31,13 +31,12 @@ import (
 // watches the unit from above rather than teaching the script to alert -- and the frozen side
 // needs no release to make it work.
 type updateAlerter struct {
-	n       notify.Notifier
-	node    string
-	unit    string            // the frozen update unit whose verdict this reads
-	lay     selfupdate.Layout // for the run's own last line (read, never consumed)
-	logf    func(string, ...any)
-	state   func(unit string) (string, error) // overridable in tests
-	failing bool                              // the edge: is this node currently not updating
+	n     notify.Notifier
+	node  string
+	unit  string            // the frozen update unit whose verdict this reads
+	lay   selfupdate.Layout // for the run's own last line (read, never consumed)
+	logf  func(string, ...any)
+	state func(unit string) (string, error) // overridable in tests
 }
 
 // updateCheckEvery is how often the unit's verdict is read. The unit runs once a night, so this
@@ -74,18 +73,14 @@ func (cfg Config) watchUpdates(ctx context.Context, n notify.Notifier, logf func
 	}
 }
 
-// observe reads the unit's ActiveState and fires on a change.
+// observe reads the unit's ActiveState and asserts it; the alert store turns that into the
+// one alert on entry and one on clearing.
 //
-// ⚠️ IT DOES NOT PRIME, and that is the opposite of the redundancy alerter's rule on purpose.
-// Priming exists there to stop a startup reading being reported as a transition. Here the
+// IT DOES NOT PRIME, and that is the opposite of the redundancy alerter's rule on purpose. The
 // startup reading is the case this whole thing was built for: a floored node's agent is the one
 // agent that never gets replaced, so "already failing when I came up" is the steady state, not
-// a false positive, and a primed alerter would be silent about it forever. Starting from
-// not-failing means the first at-rest failing reading fires, which is the intent.
-//
-// The cost is one alert per agent restart while the state holds, which is why the alerter is
-// built once for the life of the process rather than per observe loop: a channel re-dial must
-// not re-announce it.
+// a false positive, and a primed alerter would be silent about it forever. The store is what
+// keeps that first reading from being announced again at every restart while the state holds.
 func (a *updateAlerter) observe(ctx context.Context) {
 	state, err := a.state(a.unit)
 	if err != nil {
@@ -105,10 +100,6 @@ func (a *updateAlerter) observe(ctx context.Context) {
 		// An unfamiliar reading lands here too, and holding is the safe way to be wrong.
 		return
 	}
-	if failing == a.failing {
-		return
-	}
-	a.failing = failing
 	fireAlert(ctx, a.n, a.logf, a.alertFor(failing))
 }
 
@@ -120,7 +111,8 @@ func (a *updateAlerter) observe(ctx context.Context) {
 func (a *updateAlerter) alertFor(failing bool) notify.Alert {
 	if !failing {
 		return notify.Alert{
-			Level: notify.Recovered,
+			Key:   "updates",
+			Kind:  notify.Resolved,
 			Title: "Briard: updates are working again",
 			Body: fmt.Sprintf("node %s completed an update check; it is following its release channel again.",
 				a.node),
@@ -132,10 +124,13 @@ func (a *updateAlerter) alertFor(failing bool) notify.Alert {
 		body += " The update run said: " + last
 	}
 	return notify.Alert{
-		Level: notify.Warning,
-		Title: "Briard: this node has stopped updating",
-		Body:  body,
+		Key:      "updates",
+		Kind:     notify.Open,
+		Severity: notify.Warning,
+		Title:    "Briard: this node has stopped updating",
+		Body:     body,
 	}
+
 }
 
 // lastResult is the update run's own last line, READ WITHOUT CONSUMING IT.

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -211,8 +213,18 @@ func dbFixture(t *testing.T) (Config, fakeStatus, *fakeDB, *dbChecker, *fakeNoti
 
 func localAt(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, athens) }
 
+// recorderStores keeps one alert store per fixture notifier across a test's asks: as in
+// production, a clean check asserts "intact", which the store drops unless a damage is open --
+// so a quiet night delivers nothing.
+var recorderStores = map[*fakeNotifier]*alertStore{}
+
 func askRecorder(cfg Config, g fakeStatus, d *dbChecker, n *fakeNotifier, at time.Time) {
-	cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, at.UTC(), n, func(string, ...any) {})
+	st := recorderStores[n]
+	if st == nil {
+		st = newAlertStore(filepath.Join(os.TempDir(), fmt.Sprintf("briard-alerts-%d.json", time.Now().UnixNano())), n, func(string, ...any) {})
+		recorderStores[n] = st
+	}
+	cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, at.UTC(), st, func(string, ...any) {})
 }
 
 // TestTheRecorderCheckStartsOnceANightAtHalfPastFive: after the update window and Home
@@ -310,8 +322,8 @@ func TestADamagedRecorderReachesTheHousehold(t *testing.T) {
 			if tc.rep.Candidate != "" && (len(db.restored) != 1 || db.restored[0] != tc.rep.Candidate) {
 				t.Fatalf("restored %v, want the report's candidate", db.restored)
 			}
-			if len(n.alerts) != 1 || n.alerts[0].Level != notify.Warning {
-				t.Fatalf("alerts %v, want one warning", n.alerts)
+			if len(n.alerts) != 1 || n.alerts[0].Kind == notify.Resolved {
+				t.Fatalf("alerts %v, want one that is not a resolve", n.alerts)
 			}
 			if !strings.Contains(n.alerts[0].Body, tc.want) {
 				t.Errorf("alert body %q does not say %q", n.alerts[0].Body, tc.want)
