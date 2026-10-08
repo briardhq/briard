@@ -31,6 +31,7 @@ import (
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
+	"briard.io/shared/notify"
 )
 
 // fakeInstaller records the ORDER of everything the install does — the bracket's correctness is
@@ -381,7 +382,7 @@ func testManifest() manifest.Manifest {
 
 func installService(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
-	return cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {})
+	return cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {})
 }
 
 // TestInstallOrdersTheSteps is the core contract, and what it asserts is that there is no
@@ -448,7 +449,7 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -523,7 +524,7 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -574,7 +575,7 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -627,7 +628,7 @@ func TestUpgradeDoesNotConvergeIfDataCannotRestore(t *testing.T) {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "restore the data subvolume") {
 		t.Fatalf("outcome = %+v, want a failure naming the data restore", o)
@@ -651,7 +652,7 @@ func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, func(string, ...any) {})
+		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -697,7 +698,7 @@ func TestInstallRefusesAnUnsignedCatalog(t *testing.T) {
 func TestInstallRefusesNoName(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true}
 	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall}
-	if o := catalogFor(t, testManifest()).applyServiceInstall(context.Background(), f, d, func(string, ...any) {}); o.State != api.OutcomeFailed {
+	if o := catalogFor(t, testManifest()).applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeFailed {
 		t.Fatalf("outcome = %+v, want failed", o)
 	}
 }
@@ -1375,7 +1376,7 @@ func upgradeWith(t *testing.T, f *fakeInstaller) api.DirectiveOutcome {
 	f.prior = mustPrior(t)
 	f.primary, f.active, f.healthy = true, true, true
 	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
-	return cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {})
+	return cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {})
 }
 
 func sample(states ...string) []hass.Entry {
@@ -1549,7 +1550,7 @@ func TestFreshInstallHasNoBaseline(t *testing.T) {
 	cfg.readinessSettle = time.Millisecond
 	f := &fakeInstaller{primary: true, active: true, healthy: true} // no prior => fresh
 	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
-	if o := cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {}); o.State != api.OutcomeDone {
+	if o := cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if f.readinessHit != 0 {
@@ -1597,7 +1598,7 @@ func TestUpgradeOfAnUnknownServiceIsFloorOnly(t *testing.T) {
 		readiness: [][]hass.Entry{sample("loaded"), sample("setup_error")},
 	}
 	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "mosquitto"}
-	if o := cfg.applyServiceInstall(context.Background(), f, d, func(string, ...any) {}); o.State != api.OutcomeDone {
+	if o := cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if f.readinessHit != 0 {
@@ -2126,5 +2127,49 @@ func TestDataOnlyRestoreAsksForNoRoom(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(f.steps, ","), "storage.free") {
 		t.Errorf("a data-only restore measured the store as if it pulled: %v", f.steps)
+	}
+}
+
+// TestARevertedInstallTellsTheOwner: an install or update that rolls back escalates, like every
+// other upgrade that does, because its outcome reaches only whoever is watching the directive.
+// The kind names which it was -- an update has a prior version, a fresh install does not -- and an
+// install that committed tells nobody anything.
+func TestARevertedInstallTellsTheOwner(t *testing.T) {
+	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+	logf := func(string, ...any) {}
+
+	// An update the readiness gate reverts.
+	fn := &fakeNotifier{}
+	cfg := catalogFor(t, testManifest())
+	cfg.readinessSettle = time.Millisecond
+	f := &fakeInstaller{prior: mustPrior(t), primary: true, active: true, healthy: true,
+		readiness: [][]hass.Entry{sample("loaded", "loaded"), sample("setup_error", "setup_error")}}
+	if o := cfg.applyServiceInstall(context.Background(), f, d, fn, logf); o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back", o)
+	}
+	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:service-update" || fn.alerts[0].Kind != notify.Event {
+		t.Fatalf("a reverted update raised %+v, want one service-update event", fn.alerts)
+	}
+
+	// A fresh install the health gate reverts.
+	fn = &fakeNotifier{}
+	f = &fakeInstaller{primary: true, active: true, healthy: false}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if o := catalogFor(t, testManifest()).applyServiceInstall(ctx, f, d, fn, logf); o.State != api.OutcomeRolledBack {
+		t.Fatalf("outcome = %+v, want rolled-back", o)
+	}
+	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:service-install" {
+		t.Fatalf("a reverted install raised %+v, want one service-install event", fn.alerts)
+	}
+
+	// A committed install.
+	fn = &fakeNotifier{}
+	f = &fakeInstaller{primary: true, active: true, healthy: true}
+	if o := catalogFor(t, testManifest()).applyServiceInstall(context.Background(), f, d, fn, logf); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	if len(fn.alerts) != 0 {
+		t.Fatalf("a committed install raised %+v", fn.alerts)
 	}
 }

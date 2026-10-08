@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
 )
@@ -190,6 +191,82 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 			Title: "Briard: clock synchronised",
 			Body:  fmt.Sprintf("node %s is synchronised with a time server again.", node),
 		})
+	}
+}
+
+// serviceAlerter tells the owner when an installed service has stopped working on the node that
+// runs it, and again when it works. Nothing else does: a service is not a promoter-chain member,
+// so a crashed one demotes nothing, and the front door answers for the node, so the node reads
+// healthy while the service behind it is down.
+//
+// DOWN IS "STOPPED" OR "RUNNING AND UNHEALTHY", one condition under one title -- a crash-loop
+// moves between the two every few seconds, and the store records a change of title as news.
+// WORKING IS "RUNNING AND HEALTHY", and nothing short of it resolves. STARTING AND EMPTY SAY
+// NOTHING: a service booting is not down, and empty is "not asked" (a Secondary, a channel
+// hiccup, an app that told us nothing) -- an unknown is not an alarm.
+//
+// THE GRACE IS THE DEBOUNCE, and it is held across the readings that say nothing: a crash-loop
+// reads stopped, then starting, then stopped, and never healthy, so its run of "down" is never
+// broken and it opens. It opens only on a down reading, so a service that blipped once and is now
+// starting through a long migration does not. The deliberate stops -- an install's quiesce,
+// a restore -- are shorter than the grace.
+//
+// A NODE THAT NO LONGER HOLDS THE VOLUME RESOLVES what it opened: the services run on whichever
+// node does, and that node asserts its own.
+type serviceAlerter struct {
+	down map[string]time.Time // per service: start of the current run of "down"
+}
+
+const serviceDownFor = 10 * time.Minute
+
+// observe takes the cycle's report. known is false when the cluster read failed, which says
+// nothing about who holds the volume; serving is whether this node does.
+func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node string, svcs []api.ServiceStatus, known, serving bool, now time.Time, logf func(string, ...any)) {
+	if a.down == nil {
+		a.down = map[string]time.Time{}
+	}
+	for _, s := range svcs {
+		key := "service:" + s.Name
+		switch {
+		case known && !serving:
+			delete(a.down, s.Name)
+			fireAlert(ctx, n, logf, notify.Alert{
+				Key:   key,
+				Kind:  notify.Resolved,
+				Title: "Briard: " + s.Name + " handed over",
+				Body:  fmt.Sprintf("node %s no longer runs %s; the node holding your data does, and says so if it is not working.", node, s.Name),
+			})
+		case s.State == api.StateRunning && s.Health == api.StateHealthy:
+			delete(a.down, s.Name)
+			fireAlert(ctx, n, logf, notify.Alert{
+				Key:   key,
+				Kind:  notify.Resolved,
+				Title: "Briard: " + s.Name + " is working again",
+				Body:  fmt.Sprintf("%s is running and answering on node %s.", s.Name, node),
+			})
+		case s.State == api.StateStopped || s.Health == api.StateUnhealthy:
+			since, ok := a.down[s.Name]
+			if !ok {
+				a.down[s.Name], since = now, now
+			}
+			if now.Sub(since) < serviceDownFor {
+				continue
+			}
+			// No "Briard keeps restarting it": a crashed unit is, but one converge declined to
+			// prepare was never started, and a running one that does not answer is left alone.
+			what := "has not been running"
+			if s.State == api.StateRunning {
+				what = "has been running without answering"
+			}
+			fireAlert(ctx, n, logf, notify.Alert{
+				Key:      key,
+				Kind:     notify.Open,
+				Severity: notify.Critical,
+				Title:    "Briard: " + s.Name + " is not working",
+				Body: fmt.Sprintf("%s %s on node %s for over %d minutes. The rest of the node is unaffected.",
+					s.Name, what, node, int(serviceDownFor/time.Minute)),
+			})
+		}
 	}
 }
 

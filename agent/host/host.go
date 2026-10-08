@@ -1334,6 +1334,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	dc := newDBChecker()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
+	// How long each installed service has been down (alert.go); same reason.
+	sa := &serviceAlerter{}
 	// When the host disk holding this node's disks runs short (disks.go); same reason.
 	da := &diskAlerter{read: reportcard.DiskFreeMB}
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
@@ -1563,6 +1565,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		}
 		cycle++
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
+		// Each installed service, from this cycle's report: no read of its own.
+		sa.observe(ctx, n, cfg.Node, st.Services, known, cl.Serving(), time.Now(), logf)
 
 		if cfg.StateDisk != "" {
 			da.observe(ctx, n, cfg.Node, cfg.StateDisk, time.Now(), logf) // one statfs every diskReadEvery
@@ -1752,7 +1756,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		case api.DirectiveServiceMembers:
 			return cfg.applyServiceMembers(ctx, i, d, logf)
 		}
-		return cfg.applyServiceInstall(ctx, i, d, logf)
+		return cfg.applyServiceInstall(ctx, i, d, n, logf)
 	}
 	if d.Kind == install.DirectiveUpdateVM || d.Kind == api.DirectiveUpgradeSystem {
 		// The guest chain: a release resolved on the channel, then the image swap.

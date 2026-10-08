@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
 )
@@ -281,4 +282,91 @@ func TestClockAlerterUnknownNeverFires(t *testing.T) {
 	if len(fn.alerts) != 0 {
 		t.Fatalf("an unknown clock alerted: %+v", fn.alerts)
 	}
+}
+
+// TestServiceAlerter walks the service condition through the readings a node actually takes, via
+// the real store so its dedup is the one under test: down only past the grace, a crash-loop's
+// starting readings do not break the run, a blip followed by a long start never opens, an unknown
+// says nothing, only running AND healthy resolves, and a node that hands the volume over resolves
+// what it opened -- each service on its own key.
+func TestServiceAlerter(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+	ha := func(state, health string) []api.ServiceStatus {
+		return []api.ServiceStatus{{Name: "home-assistant", State: state, Health: health}}
+	}
+	var (
+		stopped   = ha(api.StateStopped, "")
+		starting  = ha(api.StateRunning, api.StateStarting)
+		unhealthy = ha(api.StateRunning, api.StateUnhealthy)
+		healthy   = ha(api.StateRunning, api.StateHealthy)
+		unknown   = ha("", "")
+	)
+	type reading struct {
+		min            int
+		svcs           []api.ServiceStatus
+		known, serving bool
+	}
+	on := func(min int, svcs []api.ServiceStatus) reading { return reading{min, svcs, true, true} }
+	run := func(t *testing.T, rs ...reading) []notify.Alert {
+		fn := &fakeNotifier{}
+		n, a := testStore(t, fn), &serviceAlerter{}
+		for _, r := range rs {
+			a.observe(ctx, n, "n1", r.svcs, r.known, r.serving, at(r.min), t.Logf)
+		}
+		return fn.alerts
+	}
+	kinds := func(as []notify.Alert) string {
+		var out []string
+		for _, a := range as {
+			out = append(out, string(a.Kind))
+		}
+		return strings.Join(out, ",")
+	}
+
+	for _, c := range []struct {
+		name string
+		rs   []reading
+		want string
+	}{
+		{"down inside the grace", []reading{on(0, stopped), on(9, stopped)}, ""},
+		{"down past the grace", []reading{on(0, stopped), on(10, stopped), on(20, stopped)}, "open"},
+		{"crash-loop", []reading{on(0, stopped), on(4, starting), on(8, stopped), on(9, starting), on(11, stopped)}, "open"},
+		{"blip then a long start", []reading{on(0, stopped), on(1, starting), on(30, starting)}, ""},
+		{"running and unhealthy", []reading{on(0, unhealthy), on(10, unhealthy)}, "open"},
+		{"healthy resets the run", []reading{on(0, stopped), on(5, healthy), on(12, stopped)}, ""},
+		{"unknown says nothing", []reading{on(0, unknown), on(30, unknown)}, ""},
+		{"opens then resolves", []reading{on(0, stopped), on(10, stopped), on(11, healthy), on(12, healthy)}, "open,resolved"},
+		{"unknown neither breaks nor resolves", []reading{on(0, stopped), on(10, stopped), on(11, unknown), on(12, stopped)}, "open"},
+		{"handed over resolves", []reading{on(0, stopped), on(10, stopped), {11, unknown, true, false}}, "open,resolved"},
+		{"a failed read is not a handover", []reading{on(0, stopped), on(10, stopped), {11, unknown, false, false}}, "open"},
+		{"a standby never opens", []reading{{0, unknown, true, false}, {30, unknown, true, false}}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := kinds(run(t, c.rs...)); got != c.want {
+				t.Fatalf("alerts = %q, want %q", got, c.want)
+			}
+		})
+	}
+
+	t.Run("each service on its own key", func(t *testing.T) {
+		two := []api.ServiceStatus{
+			{Name: "home-assistant", State: api.StateStopped},
+			{Name: "mosquitto", State: api.StateRunning, Health: api.StateHealthy},
+		}
+		as := run(t, on(0, two), on(10, two))
+		if len(as) != 1 || as[0].Key != "service:home-assistant" || as[0].Severity != notify.Critical {
+			t.Fatalf("alerts = %+v, want one critical open for home-assistant only", as)
+		}
+		if !strings.Contains(as[0].Body, "has not been running") {
+			t.Errorf("body %q does not say the service is not running", as[0].Body)
+		}
+	})
+	t.Run("a running service says it is not answering", func(t *testing.T) {
+		as := run(t, on(0, unhealthy), on(10, unhealthy))
+		if len(as) != 1 || !strings.Contains(as[0].Body, "without answering") {
+			t.Fatalf("alerts = %+v, want the running-but-not-answering body", as)
+		}
+	})
 }

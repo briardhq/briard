@@ -25,6 +25,7 @@ import (
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
+	"briard.io/shared/notify"
 )
 
 // Runtime service install. The host orchestrates; the guest is dumb hands.
@@ -241,7 +242,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 // empty zero-service chain; for an UPGRADE it is the prior manifest AND its data — the service-level
 // twin of the {code+data} OS rollback. So the path snapshots the data before the switch and, on
 // a tripped gate, restores both the subvolume and the prior manifest, not just the promoter chain.
-func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
@@ -493,8 +494,18 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// From here on every failure is the UNDO, which reads what to undo from the volume: a stage
 	// that failed part-way has either landed its `.json.next` (then it is undone like any other)
 	// or not (then the accepted manifest still stands and the undo is a converge back to it).
+	//
+	// AND THE OWNER IS TOLD, like every other upgrade that rolls back: the outcome reaches only
+	// whoever is watching the directive, and a service update is the one a household meets most.
+	kind := "service install"
+	if prior != nil {
+		kind = "service update"
+	}
 	revert := func(cause error) api.DirectiveOutcome {
-		return cfg.revert(ctx, g, d, m.Name, logf, cause)
+		o := cfg.revert(ctx, g, d, m.Name, logf, cause)
+		// Not ctx: a gate that ran out of budget is the commonest cause, and its alert must still leave.
+		escalate(context.WithoutCancel(ctx), n, logf, m.Name, kind, m.Version, errors.New(o.Detail))
+		return o
 	}
 	if err := g.ServiceStage(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw), snap); err != nil {
 		return revert(fmt.Errorf("stage the install: %w", err))
