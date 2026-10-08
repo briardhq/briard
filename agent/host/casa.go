@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"briard.io/agent/guest"
@@ -88,6 +89,9 @@ type casaRunner struct {
 	dir string // pet state; "" = nowhere to keep a key, so no claim is possible
 	now func() time.Time
 
+	// mu guards st, key and the per-session fields below: tick runs them on the observe loop
+	// and claim runs off it (acts.go), the one directive that writes what tick reads.
+	mu  sync.Mutex
 	st  casaState
 	key ed25519.PrivateKey // nil until minted or loaded
 
@@ -169,7 +173,9 @@ func (c *casaRunner) claim(ctx context.Context, d api.Directive, logf func(strin
 	case c.dir == "":
 		return fail("this node keeps no state, so it cannot hold a name's key")
 	}
+	c.mu.Lock()
 	key, err := c.ensureKey()
+	c.mu.Unlock()
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -179,6 +185,8 @@ func (c *casaRunner) claim(ctx context.Context, d api.Directive, logf func(strin
 	if err != nil {
 		return fail("could not reach the name service: " + err.Error())
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if refused != nil {
 		c.st.Claim, c.st.Last, c.st.Reason = "", casa.ClaimRefused, refused.Reason
 		_ = c.save()
@@ -206,6 +214,8 @@ func (c *casaRunner) tick(ctx context.Context, r any, vip guest.VIPReader, logf 
 	if !ok || c.cl == nil || c.cfg.FlockName == "" {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	now := c.now()
 	if c.st.Claim != "" && !now.Before(c.nextPoll) {
 		c.poll(ctx, now, logf)
@@ -405,6 +415,8 @@ func (c *casaRunner) push(ctx context.Context, g casaGuest, logf func(string, ..
 // under the same agent), and a fresh guest's tmpfs holds no view until it is pushed again.
 func (c *casaRunner) newSession() {
 	if c != nil {
+		c.mu.Lock()
 		c.pushed = nil
+		c.mu.Unlock()
 	}
 }

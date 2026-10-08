@@ -843,6 +843,19 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		recovery.served(time.Since(served))
 		logf("control channel down (%v); reconnecting", err)
 		_ = client.Close()
+		// A RELAUNCHER IN FLIGHT KILLED THIS CHANNEL ON PURPOSE (acts.go): an OS update, a
+		// config change, a pairing, a rescue stop the guest and bring it back. Wait for it,
+		// then adopt what it re-established -- climbing the ladder here would reboot the VM
+		// it is halfway through replacing. Nothing in flight is the other case: a guest that
+		// went away on its own, which is what the ladder is for.
+		if kind, done, ok := cfg.acts.relaunching(); ok {
+			logf("control channel replaced by a %s in flight; waiting for it", kind)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil
+			}
+		}
 		// An OS upgrade that rebooted the guest has already re-established the
 		// channel on its way through, so adopt that one rather than dial. Dialling would not
 		// merely duplicate it: the guest agent serves a single connection at a time, so a

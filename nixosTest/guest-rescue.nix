@@ -176,11 +176,28 @@ pkgs.testers.runNixOSTest {
     state_uuid = host.succeed("dd if=/tmp/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip()
     assert state_uuid and state_uuid != "0" * 32, "the state disk carries no filesystem before the rescue -- the guest never formatted it"
 
+    # THE LOOP KEEPS TICKING THROUGH THE RESCUE. A rescue stops the guest and boots it again --
+    # tens of seconds in which the old channel is dead and the new one not yet up -- and it runs
+    # off the observe loop (agent/host/acts.go), so the status line (every STATUS_EVERY=2s here)
+    # keeps coming between the directive's submit and "re-converged": the guest reads as away,
+    # honestly, and the host's own alerters and the CLI keep working. Run waits for the rescue
+    # instead of climbing the recovery ladder on the channel it is replacing, which is the other
+    # half of the same claim: a rescue that was rebooted mid-way by the ladder would not say
+    # "re-converged" once but fight it. Asserted strictly between the two journal marks.
+    cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
     host.succeed("${agent}/bin/briard-agent rescue -yes -sock /run/briard/admin.sock")
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'rescue: the guest was rebuilt and has re-converged'",
         timeout=900,
     )
+    lines = host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{cursor}'").splitlines()
+    first = next(i for i, l in enumerate(lines) if "directive kind=rescue submitted locally" in l)
+    last = next(i for i, l in enumerate(lines) if "rescue: the guest was rebuilt and has re-converged" in l)
+    ticks = sum(1 for l in lines[first:last] if "status node=" in l)
+    assert ticks >= 3, f"only {ticks} status lines between the rescue's submit and its end ({last - first} lines) -- the rescue held the loop:\n" + "\n".join(lines[first:last + 1])
+    assert not any("guest-recovery:" in l for l in lines[first:last]), "the recovery ladder ran during the rescue:\n" + "\n".join(l for l in lines[first:last] if "guest-recovery:" in l)
+    assert any("control channel replaced by a rescue in flight; waiting for it" in l for l in lines[first:last]), "Run never saw the rescue replace the channel -- the wait path was not exercised"
+    print(f"rescue: {ticks} status lines while it ran")
 
     # === THE CLEAN STOP MUST ACTUALLY BE THE CLEAN ROUTE ===
     # The stop above goes through host.stopCleanly, which asks the guest agent first (`os.poweroff`

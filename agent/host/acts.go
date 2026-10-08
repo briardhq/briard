@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"briard.io/agent/install"
 	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
@@ -16,18 +17,23 @@ import (
 // budget expired, twenty-five minutes later. The control channel now serves reads beside an act
 // (guestfirmware.ServeFrames), so the directives that only talk to the guest leave the loop.
 //
-// Three lanes, by what a directive does to the channel the loop reads:
+// Two lanes off the loop, and the loop keeps only what holds nothing:
 //
-//   - RELAUNCHERS stay on the loop: an OS update, `config set`, a pairing, a rescue stop the
-//     guest and bring it back on a NEW channel, which the loop then adopts (Run). The loop could
-//     not read during one anyway, and running it anywhere else would leave the loop on a channel
-//     that is about to die. So would the instant kinds (noop, log, a cert request's keygen), the
-//     QMP debug arm and the casa claim, which share the loop's own state.
-//   - ACTS run off the loop, ONE AT A TIME: an install, a restore, a handover, the agent update.
-//     A second act while one runs is refused with "busy" -- not queued, because a queue holds a
-//     household's intent for minutes with nothing to tell it, and a refusal is honest at once.
+//   - ACTS run off the loop, ONE AT A TIME: an install, a restore, a handover, the agent update,
+//     and the RELAUNCHERS -- an OS update, `config set`, a pairing, a rescue -- which stop the
+//     guest and bring it back on a NEW channel. A second act while one runs is refused with
+//     "busy" -- not queued, because a queue holds a household's intent for minutes with nothing
+//     to tell it, and a refusal is honest at once.
 //   - PULLS run off the loop whenever asked, beside an act: doctor, an app's history, the
-//     dashboard code. They are what the household reaches for DURING an install.
+//     dashboard code, the casa claim, the debug console. They are what the household reaches
+//     for DURING an install.
+//   - On the loop: noop, log, a cert request's keygen. Instant, and they touch nothing.
+//
+// A relauncher kills the channel the loop reads, on purpose. The loop sees it die, returns to
+// Run, and Run -- which owns what happens when a channel dies -- asks this lane before it does
+// anything: a relauncher in flight means wait for it and adopt the channel it re-established;
+// nothing in flight means the recovery ladder, as ever. Before this the two were kept from
+// fighting over the VM only by running on one goroutine (relaunching, Run).
 //
 // Outcomes come back through one channel the loop drains each cycle, so the bookkeeping a
 // directive ends with -- the cloud's pending outcome, the CLI's answer, adopting what was
@@ -36,7 +42,8 @@ import (
 // it started with and still reports through here.
 type actLane struct {
 	mu      sync.Mutex
-	busy    string // the kind of the act in flight, "" when none
+	busy    string        // the kind of the act in flight, "" when none
+	done    chan struct{} // closed when the act in flight ends; Run waits on it for a relauncher
 	results chan actResult
 }
 
@@ -56,8 +63,17 @@ func newActLane() *actLane {
 }
 
 // offLoopActs are the kinds that run off the loop one at a time; offLoopPulls the kinds that run
-// off the loop whenever asked. Every other kind runs on the loop (the comment above says why).
+// off the loop whenever asked; relaunchers the acts that replace the control channel, which Run
+// waits for instead of recovering. Every other kind runs on the loop (the comment above says why).
 var (
+	relaunchers = map[string]bool{
+		install.DirectiveUpdateVM:  true,
+		api.DirectiveUpgradeSystem: true,
+		api.DirectiveConfigSet:     true,
+		api.DirectivePair:          true,
+		api.DirectiveUnpair:        true,
+		api.DirectiveRescue:        true,
+	}
 	offLoopActs = map[string]bool{
 		api.DirectiveServiceInstall: true,
 		api.DirectiveServicePrewarm: true,
@@ -66,11 +82,20 @@ var (
 		api.DirectiveSync:           true,
 		api.DirectiveCert:           true,
 		api.DirectiveAgentUpdate:    true,
+		install.DirectiveUpdateVM:   true,
+		api.DirectiveUpgradeSystem:  true,
+		api.DirectiveConfigSet:      true,
+		api.DirectivePair:           true,
+		api.DirectiveUnpair:         true,
+		api.DirectiveRescue:         true,
 	}
 	offLoopPulls = map[string]bool{
 		api.DirectiveDoctor:         true,
 		api.DirectiveServiceMembers: true,
 		api.DirectiveDashboard:      true,
+		api.DirectiveCasaClaim:      true,
+		api.DirectiveDebugArm:       true,
+		api.DirectiveDebugDisarm:    true,
 	}
 )
 
@@ -92,14 +117,29 @@ func (a *actLane) claim(kind string) (held string, ok bool) {
 	if a.busy != "" {
 		return a.busy, false
 	}
-	a.busy = kind
+	a.busy, a.done = kind, make(chan struct{})
 	return "", true
 }
 
 func (a *actLane) release() {
 	a.mu.Lock()
 	a.busy = ""
+	close(a.done)
 	a.mu.Unlock()
+}
+
+// relaunching reports whether the act in flight is one that replaces the control channel, and
+// hands back what to wait on until it is over. nil-safe like inFlight.
+func (a *actLane) relaunching() (kind string, done <-chan struct{}, ok bool) {
+	if a == nil {
+		return "", nil, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !relaunchers[a.busy] {
+		return "", nil, false
+	}
+	return a.busy, a.done, true
 }
 
 // run dispatches one directive on its lane. It returns the outcome at once for a kind that runs

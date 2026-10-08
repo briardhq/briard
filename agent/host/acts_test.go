@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/install"
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/model"
@@ -157,6 +158,78 @@ func TestTheSafePointWaitsForAnActOffTheLoop(t *testing.T) {
 	}
 	cancel()
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+// heldUpgrader is an upgrader whose rescue blocks until released -- a relauncher in flight.
+type heldUpgrader struct{ release <-chan struct{} }
+
+func (u heldUpgrader) ImageUpgrade(context.Context, install.Manifest) (bool, error) {
+	return false, nil
+}
+func (u heldUpgrader) WriteCert(context.Context, string, string) error { return nil }
+func (u heldUpgrader) RescueGuest(ctx context.Context) error {
+	select {
+	case <-u.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// A RELAUNCHER LEAVES THE LOOP TOO, and tells Run so. While a rescue is held open: the loop keeps
+// ticking, the lane reports the relaunch in flight with something to wait on, another act is
+// refused busy, and the wait ends when the rescue does. Run's channel-down path reads exactly
+// this to wait instead of climbing the ladder on a channel the rescue is replacing.
+func TestARelauncherOffTheLoopIsWhatRunWaitsFor(t *testing.T) {
+	cfg := armedConfig(t, false)
+	cfg.acts = newActLane()
+	cfg.UpgradeBudget = time.Minute
+	release := make(chan struct{})
+	var handoffs, cycles int32
+	g := actingGuest{fakeStatus: fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}}, release: make(chan struct{}), handoffs: &handoffs, cycles: &cycles}
+	local := make(chan localRequest)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- cfg.observe(ctx, g, heldUpgrader{release: release}, nil, nil, nil, nil, nil, "", local, &[]api.DirectiveOutcome{}, func(string, ...any) {})
+	}()
+
+	rescue := submit(local, api.DirectiveRescue)
+	time.Sleep(20 * time.Millisecond)
+	kind, wait, ok := cfg.acts.relaunching()
+	if !ok || kind != api.DirectiveRescue {
+		t.Fatalf("relaunching() = (%q, %v) with a rescue held open; want the rescue", kind, ok)
+	}
+	before := atomic.LoadInt32(&cycles)
+	time.Sleep(20 * time.Millisecond)
+	if now := atomic.LoadInt32(&cycles); now <= before {
+		t.Fatalf("the loop stopped ticking behind a held rescue: %d cycles then, %d now", before, now)
+	}
+	if o := await(t, "an act beside the rescue", submit(local, api.DirectiveSync), time.Second); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "busy") {
+		t.Fatalf("an act while a rescue runs = %+v, want refused busy", o)
+	}
+	select {
+	case <-wait:
+		t.Fatal("the relaunch's done closed before the rescue ended")
+	default:
+	}
+	close(release)
+	if o := await(t, "the released rescue", rescue, time.Second); o.State != api.OutcomeDone {
+		t.Fatalf("the released rescue = %+v, want done", o)
+	}
+	select {
+	case <-wait:
+	case <-time.After(time.Second):
+		t.Fatal("the relaunch's done never closed after the rescue ended")
+	}
+	if _, _, ok := cfg.acts.relaunching(); ok {
+		t.Fatal("relaunching() still reports one after the rescue ended")
+	}
+	cancel()
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 }
