@@ -1424,11 +1424,18 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
+		// A CLUSTER THE GUEST DID NOT ANSWER FOR IS NOT A CLUSTER THIS NODE HAS LEFT. A read
+		// error -- a verb refused, or a deadline on a guest busy answering something else --
+		// leaves cl empty, and empty reads as "not serving" to the promotion edge below, which
+		// would take it for a demotion and then, on the next good read, for a promotion, and
+		// re-read the volume for nothing. (The redundancy alerter ignores a non-quorate reading
+		// on its own.) This cycle reports degraded and moves no edge on the state it did not get.
+		known := err == nil
 		// A node that has just PROMOTED may be running services it was never told about: converge
 		// renders from the volume, so the volume -- not this host's memory -- is what
 		// it is actually running. Read it once per promotion and re-derive this cycle's report, so
 		// the first status the cloud sees from a new primary already names what it serves.
-		if primary := cl.Serving(); primary != wasPrimary {
+		if primary := cl.Serving(); known && primary != wasPrimary {
 			if primary {
 				cfg.beat.Beat()
 				actx, acancel := context.WithTimeout(ctx, 10*time.Second) // a list and one manifest per service

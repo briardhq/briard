@@ -1430,3 +1430,46 @@ func TestObserveDoesNotWaitOnTheReport(t *testing.T) {
 		t.Fatalf("acked %d + pending %+v, want the reply's noop directive applied exactly once", a, pending)
 	}
 }
+
+// A CLUSTER THE GUEST DID NOT ANSWER FOR IS NOT A CLUSTER THIS NODE HAS LEFT. A cycle whose
+// cluster read fails carries an empty cluster, which reads as "not serving" to the promotion
+// edge; it must not move the edge, or the next good read looks like a promotion and re-reads the
+// volume for nothing. Counted through the volume read the edge makes.
+func TestObserveMovesNoPromotionEdgeOnAClusterItCouldNotRead(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	var lists int32
+	// Primary and answering on every cycle but one in the middle, which fails as a verb error.
+	full := model.QuorumState{Primary: true, Quorate: true, Connected: 2}
+	var n int32
+	r := edgeGuest{fakeStatus: fakeStatus{qs: full}, lists: &lists, failOn: 3, cycle: &n}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if err := cfg.observe(ctx, r, nil, nil, nil, nil, nil, nil, "", nil, &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&lists); got != 1 {
+		t.Fatalf("the volume was read %d times; want once, at the first Primary cycle -- a failed read must not look like a demotion and the next good one like a promotion", got)
+	}
+}
+
+// edgeGuest answers Primary and full on every cycle but failOn, where the cluster read is a verb
+// error; it counts the volume reads the promotion edge makes.
+type edgeGuest struct {
+	fakeStatus
+	lists  *int32
+	failOn int32
+	cycle  *int32
+}
+
+func (g edgeGuest) Cluster(ctx context.Context, res string) (model.Cluster, error) {
+	if atomic.AddInt32(g.cycle, 1) == g.failOn {
+		return model.Cluster{}, errors.New("drbdsetup: busy")
+	}
+	return g.fakeStatus.Cluster(ctx, res)
+}
+func (g edgeGuest) SupportsServiceList() bool { return true }
+func (g edgeGuest) ServiceList(context.Context) ([]string, error) {
+	atomic.AddInt32(g.lists, 1)
+	return nil, nil
+}
