@@ -44,7 +44,7 @@ type Health struct {
 // the generic Manager keeps no service knowledge. nil = the floor alone (v0/dummy/
 // non-HA payloads are unaffected).
 //
-// The Manager captures a Baseline before quiesce (old version still serving), then after
+// The Gate captures a Baseline before the change (old version still serving), then after
 // the floor reports ready calls Assess to settle and judge the post-upgrade signal. A
 // Rollback verdict trips the {code+data} rollback; Hold keeps the upgrade but surfaces
 // it (Hold leans on the rollback window +
@@ -131,10 +131,6 @@ type Config struct {
 	// VIP/data stay up and no target re-raise is needed. Empty = no promoter
 	// coordination (unit tests / non-promoter payloads).
 	ReactorSnippet string
-	// ReadinessAssessor, if set, layers the differential S1 health-gate above the
-	// HTTP-200 floor: the upgrade paths capture its Baseline before quiesce
-	// and consult its verdict after the floor passes. nil = floor-only (the default).
-	ReadinessAssessor ReadinessAssessor
 	// Logf, if set, receives one line per upgrade step (progress/observability).
 	Logf func(format string, args ...any)
 }
@@ -331,7 +327,7 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 // be owned by the side that owns the disk (agent/host/osupgrade.go).
 //
 // What is left here is what the guest genuinely owns -- Switch, StageBoot, AwaitReady,
-// CaptureBaseline/Assess, EnterMaintenance/ExitMaintenance -- called by the host in order, on
+// EnterMaintenance/ExitMaintenance -- called by the host in order, on
 // both paths, rather than composed into a second sequence. The service half went the other way
 // entirely: {manifest + data} rolling back together is still the whole point, but a service is
 // installed from a runtime manifest now, so that sequence lives host-side with the manifest
@@ -508,12 +504,9 @@ type Readiness struct {
 // what a failed sample means, and which verdict is worth undoing an upgrade for — and holds it
 // exactly once.
 //
-// It is a type rather than two Manager methods because there are two callers with no route to
-// each other. The OS-upgrade path drives it through a Manager, which is where the assessor is
-// configured; the SERVICE-install path has no Manager at all — it is handed a narrow guest
-// interface, and `upgrader` deliberately carries nothing that can name a service, so an OS
-// upgrade cannot touch one. Two copies of these twenty lines would be two S1 gates
-// that could drift on the only question that matters: when to roll a household back.
+// Its one caller is the SERVICE-install path, which has no Manager — it is handed a narrow guest
+// interface. The OS-upgrade path runs no assessor: an OS gate asks only generic questions of the
+// guest, never a service-specific one (agent/host/osupgrade.go).
 type Gate struct {
 	// Assessor is the service-specific differential signal. nil = the liveness floor alone,
 	// which is the shipped default for every service the product holds no knowledge about.
@@ -567,19 +560,6 @@ func (g Gate) Judge(ctx context.Context, r Readiness) error {
 	}
 	return nil
 }
-
-// gate is the Manager's own, built from its config.
-func (m *Manager) gate() Gate {
-	return Gate{Assessor: m.cfg.ReadinessAssessor, Logf: m.cfg.Logf}
-}
-
-// CaptureBaseline samples the assessor's pre-upgrade signal while the old version still serves —
-// the OS-upgrade path's entry into the shared Gate above.
-func (m *Manager) CaptureBaseline(ctx context.Context) Readiness { return m.gate().Capture(ctx) }
-
-// Assess runs the differential S1 gate above the liveness floor — the OS-upgrade path's entry
-// into the shared Gate above.
-func (m *Manager) Assess(ctx context.Context, r Readiness) error { return m.gate().Judge(ctx, r) }
 
 // Stub is a no-op GuestManager for core tests and v0 wiring.
 type Stub struct{}

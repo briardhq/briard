@@ -25,8 +25,8 @@ import (
 // is bound to, and the boot selector deciding which generation comes up is a property of the
 // launch rather than anything written to the disk. host.go already owns
 // launch/adopt/reconnect, so this is where both sequences belong. What they do NOT do is keep
-// a second copy of the upgrade bracket: baseline, maintenance, health-gate and assess are the
-// Manager's own phases, called from here in order.
+// a second copy of the upgrade bracket: maintenance and the health-gate are the Manager's own
+// phases, called from here in order.
 //
 // THE SHAPE, and it is one shape with two middles (the (c2) procedure, phases A/B/C):
 //
@@ -284,7 +284,6 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 		return true, fmt.Errorf("read current system: %w", err)
 	}
 	u.logf("image-upgrade: %s (%s) -> %s (%s)", prev, backing, rel.Version, rel.System)
-	rd := mgr.CaptureBaseline(ctx)
 	if e := mgr.EnterMaintenance(ctx); e != nil {
 		return true, fmt.Errorf("enter maintenance: %w", e)
 	}
@@ -338,7 +337,7 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 			return u.restoreImage(ctx, qspec, backing, prev, e)
 		}
 	}
-	if e := mgr.Assess(ctx, rd); e != nil {
+	if e := systemRunning(ctx, u.client, systemPollEvery); e != nil {
 		return u.restoreImage(ctx, qspec, backing, prev, e)
 	}
 	if e := os.Remove(prevImage(backing)); e != nil {
@@ -346,6 +345,53 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	}
 	u.logf("image-upgrade: %s committed", rel.Version)
 	return false, nil
+}
+
+// systemPollEvery paces systemRunning's wait for a guest still booting.
+const systemPollEvery = 2 * time.Second
+
+// systemStater is the one guest read systemRunning needs -- a narrow interface for DI, not a seam.
+type systemStater interface {
+	SystemState(ctx context.Context) (guestagent.SystemState, error)
+}
+
+// systemRunning is the OS gate's GENERIC check: did every unit the new image starts actually
+// start? systemd's own `running` (no failed unit) is a question any guest can answer without
+// knowing what it runs, and its failures -- a missing kernel module, a unit the new image broke --
+// are things reverting the image repairs. The OS gate asks nothing service-specific: a release's
+// fitness for a household's services is established before it ships, not judged per house.
+//
+// READ ONCE, after the node-local gate has passed -- never polled until it turns `running`. Our own
+// recovery clears failed state (the promotion hold's `reset-failed` on the chain members, the firmware
+// bin units' resets), so a poll could wait out the very evidence it is looking for. Only
+// `starting`/`initializing` -- boot jobs still queued -- and a channel error are waited out; any
+// other state is the answer. What it cannot see: a member still inside its restart budget (not yet
+// `failed`, and covered for the storage chain by the gate before it), and a mount that came up but
+// wrong (a read-only btrfs is a mounted filesystem, not a failed unit).
+//
+// Each read runs on a context detached from ctx and bounded on its own, for AwaitReady's reason:
+// a deadline landing inside a call would close the channel the restore then needs.
+func systemRunning(ctx context.Context, g systemStater, every time.Duration) error {
+	for {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		st, err := g.SystemState(rctx)
+		cancel()
+		if err == nil && st.State != "starting" && st.State != "initializing" {
+			switch {
+			case st.State == "running":
+				return nil
+			case len(st.Failed) > 0:
+				return fmt.Errorf("guest system is %s: failed units %s", st.State, strings.Join(st.Failed, ", "))
+			default:
+				return fmt.Errorf("guest system is %q, not running", st.State)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("guest system never settled (last %q, %v): %w", st.State, err, ctx.Err())
+		case <-time.After(every):
+		}
+	}
 }
 
 // restoreImage puts the previous image back and boots it: the image path's restore(). Where

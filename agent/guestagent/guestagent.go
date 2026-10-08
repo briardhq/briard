@@ -196,6 +196,7 @@ const (
 	// guest reporting success for the old behaviour.
 	verbDataReplace = "data.replace"
 	verbOSSystem    = "os.system" // readlink -f /run/current-system -> closure store path
+	verbOSState     = "os.state"  // systemctl is-system-running, + the failed units when degraded
 )
 
 // There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
@@ -430,7 +431,7 @@ var guestCapabilities = []string{
 	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
-	verbOSSystem, guestfirmware.VerbOSPowerOff,
+	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
 	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts,
@@ -460,7 +461,7 @@ var besideActs = map[string]bool{
 	verbServiceHealth: true, verbServiceHealthOf: true, verbServiceInstalled: true,
 	verbServiceList: true, verbDataMembers: true, verbNetVIP: true, verbNetMDNSPublished: true,
 	verbNetMDNSOther: true, verbResources: true, verbStorageFree: true, verbCertRead: true,
-	verbReactorActive: true, verbOSSystem: true, verbDeadmanEpisode: true,
+	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
 	verbHassDBCheckResult: true,
 	// pushes
@@ -1459,6 +1460,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return strings.TrimSpace(string(out)), nil
+		case verbOSState:
+			return systemState(ctx, x), nil
 		case guestfirmware.VerbOSPowerOff:
 			// The FIRST-CHOICE clean shutdown, and the FIRMWARE's: the host may have
 			// to stop a guest it has never dressed, so the verb lives with the half the image
@@ -3179,6 +3182,13 @@ func (g *Client) SystemPath(ctx context.Context) (string, error) {
 	return path, err
 }
 
+// SystemState reads the guest OS's overall systemd state (os.state).
+func (g *Client) SystemState(ctx context.Context) (SystemState, error) {
+	var st SystemState
+	err := g.c.Call(ctx, verbOSState, nil, &st)
+	return st, err
+}
+
 // PowerOff asks the guest OS to shut itself down cleanly. It returns as soon as the request
 // is accepted -- the shutdown then proceeds without us, and the control channel dies with
 // it, which is expected rather than an error. Confirm completion by watching the VM stop
@@ -3325,6 +3335,32 @@ func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 		return g.ReactorStart(ctx, res, drbd.ReactorConfig(res, spec.Promoter))
 	}
 	return nil
+}
+
+// SystemState is the guest OS's own answer to "did everything start?": systemd's overall state
+// (`running`, `degraded`, `starting`, ...) and, when degraded, the units that failed -- named so
+// the host's log and the rollback's reason say WHAT broke, not just that something did.
+type SystemState struct {
+	State  string   `json:"state"`
+	Failed []string `json:"failed,omitempty"`
+}
+
+// systemState serves `os.state`. The exit status of `is-system-running` is discarded on purpose:
+// it is zero only for `running`, so every other answer -- the ones worth reporting -- would read
+// as an error. The STDOUT is the answer (guestfirmware.systemStopping has the same trap).
+func systemState(ctx context.Context, x Executor) SystemState {
+	out, _ := x.Run(ctx, "systemctl", "is-system-running")
+	st := SystemState{State: strings.TrimSpace(string(out))}
+	if st.State != "degraded" {
+		return st
+	}
+	out, _ = x.Run(ctx, "systemctl", "list-units", "--state=failed", "--no-legend", "--plain")
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) > 0 {
+			st.Failed = append(st.Failed, f[0])
+		}
+	}
+	return st
 }
 
 // loneCluster is the node status of a node that runs no DRBD: the second branch of the

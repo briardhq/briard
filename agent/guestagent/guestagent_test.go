@@ -2095,3 +2095,46 @@ func TestDashboardAlertsIsWrittenThenMovedIn(t *testing.T) {
 		t.Errorf("a casa view sent as alerts was accepted (err %v, runs %v)", err, x.runs)
 	}
 }
+
+// os.state reads systemd's answer off STDOUT, never the exit status (non-zero for every state but
+// `running`), and names the failed units only when there are some to name.
+func TestOSStateReportsTheStateAndTheFailedUnits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		state  string
+		failed string
+		want   SystemState
+	}{
+		{"running", "running\n", "", SystemState{State: "running"}},
+		{"starting is reported, not resolved", "starting\n", "", SystemState{State: "starting"}},
+		{"degraded names its units", "degraded\n",
+			"systemd-modules-load.service loaded failed failed Load Kernel Modules\nfoo.mount loaded failed failed /foo\n",
+			SystemState{State: "degraded", Failed: []string{"systemd-modules-load.service", "foo.mount"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+				if name == "systemctl" && args[0] == "is-system-running" {
+					if tc.state == "running\n" {
+						return []byte(tc.state), nil
+					}
+					return []byte(tc.state), errors.New("exit status 1")
+				}
+				if name == "systemctl" && args[0] == "list-units" {
+					return []byte(tc.failed), nil
+				}
+				return nil, errors.New("unexpected " + name + " " + strings.Join(args, " "))
+			}}
+			g := dial(t, f)
+			if !g.Supports(verbOSState) {
+				t.Fatal("os.state is not advertised")
+			}
+			got, err := g.SystemState(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("SystemState = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

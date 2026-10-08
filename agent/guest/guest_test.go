@@ -265,18 +265,9 @@ func (a *fakeAssessor) Assess(_ context.Context, base Baseline) (Verdict, string
 	return a.verdict, string(a.verdict) + "-reason", a.assessErr
 }
 
-func managerWithAssessor(ctl control, healthURL string, a ReadinessAssessor) *Manager {
-	return NewManager(ctl, Config{
-		HealthURL:         healthURL,
-		gateInterval:      time.Millisecond,
-		ReadinessAssessor: a,
-	})
-}
-
-// The S1 gate's verdicts, driven on the pair the upgrade paths actually call. Every upgrade
-// path consults it identically -- capture a baseline while the old code still serves, then
-// assess once the floor has passed -- so the semantics are asserted once, here, and each
-// sequence is left to prove only that it consults them (agent/host/osupgrade_test.go).
+// The S1 gate's verdicts, driven on the pair the service-install path calls -- capture a
+// baseline while the old code still serves, then judge once the floor has passed -- so the
+// semantics are asserted once, here.
 //
 // A non-nil error means "roll back"; everything else keeps the upgrade. The degrade cases are
 // the load-bearing ones: S1 must never revert a node because its own telemetry broke.
@@ -296,8 +287,8 @@ func TestAssessVerdicts(t *testing.T) {
 			&fakeAssessor{verdict: VerdictRollback, assessErr: errors.New("settle timed out")}, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := managerWithAssessor(&fakeControl{}, "", tc.a)
-			err := m.Assess(context.Background(), m.CaptureBaseline(context.Background()))
+			g := Gate{Assessor: tc.a}
+			err := g.Judge(context.Background(), g.Capture(context.Background()))
 			if (err != nil) != tc.wantErr {
 				t.Errorf("Assess error = %v, want error: %v", err, tc.wantErr)
 			}

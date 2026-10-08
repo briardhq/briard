@@ -457,3 +457,71 @@ func TestStopCleanlyReportsAGuestThatWillNotGoDown(t *testing.T) {
 		t.Errorf("want both the agent and the power-button failure in the error, got %v", err)
 	}
 }
+
+// stateSeq answers systemRunning's reads in order, repeating the last one.
+type stateSeq struct {
+	answers []guestagent.SystemState
+	errs    []error
+	reads   int
+}
+
+func (s *stateSeq) SystemState(context.Context) (guestagent.SystemState, error) {
+	i := min(s.reads, len(s.answers)-1)
+	s.reads++
+	return s.answers[i], s.errs[i]
+}
+
+// The OS gate's generic check: only `running` passes; boot jobs still queued and a channel error
+// are waited out; any other state is the answer on FIRST sight -- a degraded guest is never
+// polled until something resets its failed units into looking healthy.
+func TestSystemRunningReadsTheAnswerOnce(t *testing.T) {
+	st := func(s string, failed ...string) guestagent.SystemState {
+		return guestagent.SystemState{State: s, Failed: failed}
+	}
+	chanErr := errors.New("channel reset")
+	for _, tc := range []struct {
+		name      string
+		answers   []guestagent.SystemState
+		errs      []error
+		wantErr   string // "" = pass
+		wantReads int
+	}{
+		{"running passes", []guestagent.SystemState{st("running")}, []error{nil}, "", 1},
+		{"degraded fails and names its units",
+			[]guestagent.SystemState{st("degraded", "systemd-modules-load.service")}, []error{nil},
+			"failed units systemd-modules-load.service", 1},
+		{"degraded is final even if a reset would follow",
+			[]guestagent.SystemState{st("degraded", "x.service"), st("running")}, []error{nil, nil}, "degraded", 1},
+		{"starting is waited out, then judged",
+			[]guestagent.SystemState{st("starting"), st("starting"), st("running")}, []error{nil, nil, nil}, "", 3},
+		{"starting then degraded fails",
+			[]guestagent.SystemState{st("starting"), st("degraded", "y.service")}, []error{nil, nil}, "y.service", 2},
+		{"a channel error is retried",
+			[]guestagent.SystemState{{}, st("running")}, []error{chanErr, nil}, "", 2},
+		{"any other state fails", []guestagent.SystemState{st("maintenance")}, []error{nil}, "maintenance", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &stateSeq{answers: tc.answers, errs: tc.errs}
+			err := systemRunning(context.Background(), g, time.Millisecond)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("err = %v, want pass", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+			if g.reads != tc.wantReads {
+				t.Errorf("reads = %d, want %d", g.reads, tc.wantReads)
+			}
+		})
+	}
+}
+
+// A guest that never leaves `starting` fails when the gate's budget runs out, not never.
+func TestSystemRunningGivesUpWithTheBudget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	g := &stateSeq{answers: []guestagent.SystemState{{State: "starting"}}, errs: []error{nil}}
+	if err := systemRunning(ctx, g, time.Millisecond); err == nil || !strings.Contains(err.Error(), "never settled") {
+		t.Errorf("err = %v, want never settled", err)
+	}
+}
