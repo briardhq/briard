@@ -160,19 +160,19 @@ pkgs.testers.runNixOSTest {
     try:
         host.wait_until_succeeds(f"test $(journalctl -u briard-agent | grep -c 'control channel reconnected') -gt {reconnects}", timeout=120)
         host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+        # What the thaw cost, and what the guest agent did across it: how long until the host
+        # was back on the channel, and the guest agent's own journal for the stretch.
+        print("=== host agent across the thaw ===")
+        print(host.succeed(f"journalctl -u briard-agent -o short-precise --since='{thawed}' | grep -vE 'status node=' | head -40 || true"))
+        print("=== guest agent across the thaw ===")
+        host.succeed(f"(printf '\\n'; sleep 2; printf 'journalctl -u briard-guest-agent -o short-precise --since=\"{thawed}\" --no-pager | grep -v Consumed | tail -60\\n'; sleep 6; printf '\\035') | briard-agent debug shell > /tmp/thaw.out 2>&1")
+        print(host.succeed("tr -d '\\r' < /tmp/thaw.out"))
         # ONE ATTEMPT, OR THE PHASES ARE COLLIDING AGAIN. The guest agent restarts on the EOF the
         # freeze's close gave it and reads the buffered hello ~11 s later; the handshake window
         # must outlast that cycle, or every attempt times out just before its answer and a thaw
         # takes four to six attempts (~100 s, measured 2026-10-08 with a 10 s window).
         failed = int(host.succeed(f"journalctl -u briard-agent --since='{thawed}' | grep -c 'reconnect attempt' || true").strip())
         assert failed == 0, f"the thaw took {failed + 1} handshake attempts; the window is shorter than a guest agent restart"
-        # What the thaw cost, and what the guest agent did across it: how long until the host
-        # was back on the channel, and the guest agent's own journal for the stretch.
-        print("=== host agent across the thaw ===")
-        print(host.succeed(f"journalctl -u briard-agent -o short --since='{thawed}' | grep -vE 'status node=' | head -40 || true"))
-        print("=== guest agent across the thaw ===")
-        host.succeed(f"(printf '\\n'; sleep 2; printf 'journalctl -u briard-guest-agent -o short --since=\"{thawed}\" --no-pager | tail -60\\n'; sleep 6; printf '\\035') | briard-agent debug shell > /tmp/thaw.out 2>&1")
-        print(host.succeed("tr -d '\\r' < /tmp/thaw.out"))
     except Exception:
         print("=== host agent since the freeze ===")
         print(host.succeed("journalctl -u briard-agent -o cat | grep -vE 'status node=' | tail -40 || true"))

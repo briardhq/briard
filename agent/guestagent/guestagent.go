@@ -1909,6 +1909,9 @@ func ServeStamped(ctx context.Context, conn io.ReadWriteCloser, x Executor) erro
 	d := dispatch(x)
 	hooked := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
 		touchStamp(ContactStampPath) // the host agent just talked to us — freshen the deadman's stamp
+		if verb == guestfirmware.VerbHello {
+			log.Printf("control: the host connected") // the one request per session worth a line
+		}
 		return d(ctx, verb, payload)
 	}
 	return guestfirmware.ServeFrames(ctx, conn, hooked, isAct)

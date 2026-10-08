@@ -352,6 +352,7 @@ func runGuest(ctx context.Context) error {
 	if err := guestagent.ServeStamped(ctx, conn, x); err != nil {
 		return err
 	}
+	log.Printf("control: the host disconnected; handing the port back and restarting")
 
 	// A clean EOF: the host disconnected (a host-agent restart, a re-adopt). Hand the port back
 	// so qemu buffers the next host request instead of losing it, then pause before exiting --
