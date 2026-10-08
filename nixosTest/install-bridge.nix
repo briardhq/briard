@@ -133,6 +133,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    ${import ./multicast-receive.nix { inherit pkgs; }}
     start_all()
     host.wait_for_unit("multi-user.target")
     client.wait_for_unit("multi-user.target")
@@ -270,6 +271,10 @@ pkgs.testers.runNixOSTest {
         "journalctl -u briard-agent | grep -q 'role=anchor primary=true quorate=true.*healthy=true'",
         timeout=60,
     )
+
+    # Inbound multicast to a group the guest joined, through the user's bridge AND the macvlan the
+    # guest holds the VIP on -- a filter of its own, kept by the guest's kernel from its joins.
+    assert_guest_receives_multicast(client, "eth1", "192.168.1.2", "192.168.1.100")
 
     # --- DELTA 5: A ROLE CYCLE, observed off-box.
     #

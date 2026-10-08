@@ -95,6 +95,7 @@ pkgs.testers.runNixOSTest {
     };
 
   testScript = ''
+    ${import ./multicast-receive.nix { inherit pkgs; }}
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")  # nested KVM present in L1 (the report card gates on it)
 
@@ -228,6 +229,9 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"ip -n briard-hold -4 addr show dev briard0 | grep -qw {vip}/32")
     host.wait_until_succeeds(f"ip netns exec lan curl -fsS --max-time 5 http://{vip}/healthz", timeout=120)
     print("the household reached the guest at its VIP, over the access point")
+    # Inbound multicast over the air: the access point sends a group's frames to every station,
+    # and the ipvtap child filters them by group exactly as a macvtap child does.
+    assert_guest_receives_multicast(host, "wlan1", "192.168.7.1", vip, ns="ip netns exec lan ")
     # ...and the lease renews: the ACK to a renewal is unicast to the VIP, so a second ACK proves
     # the copy carries it. With a two-minute lease T1 falls within ninety seconds.
     host.wait_until_succeeds(

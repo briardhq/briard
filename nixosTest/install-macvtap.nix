@@ -231,6 +231,7 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     import time
+    ${import ./multicast-receive.nix { inherit pkgs; }}
 
     # The guest's address is the ROUTER's to know, so this is how the test learns it -- the same
     # place a household would look. Returns (ip, mac, hostname, client-id) from dnsmasq's lease
@@ -813,6 +814,11 @@ pkgs.testers.runNixOSTest {
     )
     client.succeed(f"curl -fsS -m 20 http://briard-{flock_name}.local/healthz")
     print(f"off-box client reached http://briard-{flock_name}.local/ by NAME from a COLD cache")
+
+    # ...AND A GROUP THAT IS NOT mDNS. ALLMULTI is all-or-nothing, so the name above already
+    # depends on it; this pins the property the household relies on -- every group the guest joins
+    # -- rather than the one group whose failure the installer happens to make visible.
+    assert_guest_receives_multicast(client, "eth1", "192.168.1.2", vip)
 
     # DELTA 5: THE INSTALL HOST REACHES ITS OWN GUEST -- the one machine on this L2 that
     # could not. Everything above is proved from `client`, deliberately, and that is exactly how
