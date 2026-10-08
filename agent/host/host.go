@@ -1356,6 +1356,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
 	wasPrimary := false
+	// An install the volume holds STAGED and never committed is undone once this node serves
+	// (undoPending); set at each promotion edge, cleared once nothing is pending or the undo started.
+	undoDue := false
 	// EVERY cfg.beat.Beat() below sits in front of one ctx-BOUNDED call, and that is the whole
 	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever
 	// a gap would otherwise open. It is not one ping per cycle -- these calls carry 5s deadlines
@@ -1441,11 +1444,17 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				actx, acancel := context.WithTimeout(ctx, 10*time.Second) // a list and one manifest per service
 				cfg.adoptVolumeServices(actx, r, logf)
 				acancel()
+				undoDue = true
 				sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				st.Services = cfg.serviceStatuses(sctx, r, true)
 				cancel()
 			}
 			wasPrimary = primary
+		}
+		if undoDue && known && cl.Serving() {
+			cfg.beat.Beat()
+			i, ok := r.(serviceInstaller)
+			undoDue = ok && !cfg.undoPending(ctx, i, logf)
 		}
 		// THE CLOCK SAMPLE, once an interval per service, on the node that holds the
 		// volume. Cheap on every other cycle: a time comparison and nothing else.

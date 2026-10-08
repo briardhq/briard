@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"briard.io/agent/drbd"
+	"briard.io/agent/guestagent"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
@@ -44,7 +45,12 @@ type fakeInstaller struct {
 	// prior is the volume's recorded manifests, KEYED BY SERVICE NAME — absent = fresh install.
 	// A map rather than one string because that is the shape the volume now has: a fake holding
 	// another service's manifest must not satisfy a read for this one.
-	prior        map[string]string
+	prior map[string]string
+	// staged and rollbacks are the volume's STAGED installs (agent/guestagent/staging.go): the
+	// manifest nothing has accepted yet, and the member that undoes its data.
+	staged       map[string]string
+	rollbacks    map[string]string
+	commitEr     error
 	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
 	noMember     bool     // advertises everything BUT data.member: a guest older than the ring
 	noSweep      bool     // advertises data.restore but not data.replace: cannot sweep a member
@@ -65,7 +71,7 @@ type fakeInstaller struct {
 	// rest. An install whose own service is named there must fail: the node is still serving the
 	// prior version.
 	convergeSkips []string
-	forgetEr      error
+	discardEr     error
 	warmEr        error
 	restoreEr     error
 	members       []quadlet.SnapshotEntry // the ring data.members answers with
@@ -221,14 +227,57 @@ func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
 
 // ServiceConverge is what an install does instead of rewriting the promoter chain: the volume
 // is written first, and this tells the node to re-read it.
-func (f *fakeInstaller) ServiceConverge(context.Context) ([]string, error) {
-	f.steps = append(f.steps, "converge")
+func (f *fakeInstaller) ServiceConverge(_ context.Context, live string) ([]string, error) {
+	if live != "" {
+		f.steps = append(f.steps, "converge:"+live)
+	} else {
+		f.steps = append(f.steps, "converge")
+	}
 	return f.convergeSkips, f.convergeEr
 }
 func (f *fakeInstaller) SupportsServiceConverge() bool { return !f.oldGuest }
-func (f *fakeInstaller) ServiceForget(_ context.Context, name string) error {
-	f.steps = append(f.steps, "forget:"+name)
-	return f.forgetEr
+func (f *fakeInstaller) ServiceStage(_ context.Context, name, _ string, _ []string, manifest, rollback string) error {
+	f.steps = append(f.steps, "stage:"+name)
+	f.manifests = append(f.manifests, manifest)
+	if f.provEr != nil {
+		return f.provEr
+	}
+	if f.staged == nil {
+		f.staged, f.rollbacks = map[string]string{}, map[string]string{}
+	}
+	f.staged[name], f.rollbacks[name] = manifest, rollback
+	return nil
+}
+func (f *fakeInstaller) ServiceCommit(_ context.Context, name string) error {
+	f.steps = append(f.steps, "commit:"+name)
+	if f.commitEr != nil {
+		return f.commitEr
+	}
+	if f.prior == nil {
+		f.prior = map[string]string{}
+	}
+	f.prior[name] = f.staged[name]
+	delete(f.staged, name)
+	delete(f.rollbacks, name)
+	return nil
+}
+func (f *fakeInstaller) ServiceDiscard(_ context.Context, name string) error {
+	f.steps = append(f.steps, "discard:"+name)
+	if f.discardEr != nil {
+		return f.discardEr
+	}
+	delete(f.staged, name)
+	delete(f.rollbacks, name)
+	return nil
+}
+func (f *fakeInstaller) ServicePending(context.Context) ([]guestagent.PendingInstall, error) {
+	f.steps = append(f.steps, "pending?")
+	var out []guestagent.PendingInstall
+	for n, m := range f.staged {
+		out = append(out, guestagent.PendingInstall{Name: n, Staged: m, Accepted: f.prior[n], Rollback: f.rollbacks[n]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 func (f *fakeInstaller) ServiceStart(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "warm:"+unit)
@@ -346,13 +395,13 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	// A fresh install: read the (empty) installed manifest, render+warm (which is also the
-	// PREWARM every node does), provision the volume, converge, gate. No snapshot: nothing is
+	// PREWARM every node does), stage on the volume, converge it live, gate, commit. No snapshot: nothing is
 	// installed yet, so there is no rollback point to take. No pause/quiesce/rewrite: the chain is
 	// static, and stopping the running containers is converge's job on the services whose
 	// rendering actually changed.
 	want := []string{
-		"active?", "installed?:home-assistant", "render", "warm:briard-home-assistant-ha-image.service", "status", "provision:home-assistant",
-		"converge", "health", "nudge",
+		"active?", "installed?:home-assistant", "render", "warm:briard-home-assistant-ha-image.service", "status", "stage:home-assistant",
+		"converge:home-assistant", "health", "commit:home-assistant", "nudge",
 	}
 	if strings.Join(f.steps, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v\nwant   %v", f.steps, want)
@@ -432,7 +481,7 @@ func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a failure naming the image warm", o)
 	}
 	joined := strings.Join(f.steps, ",")
-	for _, forbidden := range []string{"converge", "provision"} {
+	for _, forbidden := range []string{"converge", "provision", "stage:"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("a failed warm still ran %q — the node was changed by a failed install: %v", forbidden, f.steps)
 		}
@@ -454,7 +503,7 @@ func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a failure naming the open bracket", o)
 	}
 	for _, s := range f.steps {
-		if s == "render" || strings.HasPrefix(s, "provision") || s == "converge" {
+		if s == "render" || strings.HasPrefix(s, "provision") || strings.HasPrefix(s, "stage:") || strings.HasPrefix(s, "converge") {
 			t.Fatalf("refusal still touched the node: %v", f.steps)
 		}
 	}
@@ -480,16 +529,18 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
 	// The revert converges a SECOND time — that is what puts the node back, now that there is no
-	// chain to rewrite: the volume is corrected first (here, by forgetting a fresh install's
-	// manifest) and then re-read.
+	// chain to rewrite: the stage is discarded first and the volume then re-read. It never commits.
 	joined := strings.Join(f.steps, ",")
 	if n := strings.Count(joined, "converge"); n != 2 {
 		t.Fatalf("converged %d times, want 2 (install then revert): %v", n, f.steps)
 	}
-	// The correction reaches the VOLUME before the re-converge, not after it. Reversed, the node
-	// would re-render the broken service it was meant to be dropping.
-	if fi, ci := strings.Index(joined, "forget:"), strings.LastIndex(joined, "converge"); fi < 0 || fi > ci {
-		t.Fatalf("the volume was not corrected before the re-converge: %v", f.steps)
+	if strings.Contains(joined, "commit:") {
+		t.Fatalf("a failed install was committed: %v", f.steps)
+	}
+	// The discard reaches the VOLUME before the re-converge, not after it. Reversed, the re-converge
+	// would hold the service back as still pending and nothing would start it.
+	if fi, ci := strings.Index(joined, "discard:"), strings.LastIndex(joined, "converge"); fi < 0 || fi > ci {
+		t.Fatalf("the stage was not discarded before the re-converge: %v", f.steps)
 	}
 }
 
@@ -530,19 +581,19 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	}
 	joined := strings.Join(f.steps, ",")
 	snap := "snapshot:" + wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)
-	// The rollback point is taken BEFORE the volume is mutated (provision) and before the switch.
-	si, pi := strings.Index(joined, snap), strings.Index(joined, "provision")
+	// The rollback point is taken BEFORE the volume is written (stage) and before the switch.
+	si, pi := strings.Index(joined, snap), strings.Index(joined, "stage:")
 	if si < 0 || pi < 0 || si > pi {
-		t.Fatalf("snapshot must precede provision: %v", f.steps)
+		t.Fatalf("snapshot must precede the stage: %v", f.steps)
 	}
 	// The data is rolled back from that exact snapshot.
 	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)) {
 		t.Fatalf("a failed upgrade did not restore the data subvolume: %v", f.steps)
 	}
-	// The volume ends up holding the PRIOR manifest again — the identity is reverted, not just the
-	// chain. provision is called with the new manifest, then again with the prior on rollback.
-	if n := len(f.manifests); n < 2 || f.manifests[n-1] != priorRaw {
-		t.Fatalf("volume manifest not reverted to the prior: got %v", f.manifests)
+	// The volume ends up holding the PRIOR manifest and nothing staged — the identity was never
+	// moved off it, and the undo read its rollback point from the volume, not from memory.
+	if f.prior["home-assistant"] != priorRaw || len(f.staged) != 0 {
+		t.Fatalf("volume after the revert: accepted %q, staged %v", f.prior["home-assistant"], f.staged)
 	}
 	// Converged twice: forward (onto the new manifest) and again on the revert (onto the prior
 	// one, re-recorded above). No pause/resume pair, because there is no bracket left to hold.
@@ -605,8 +656,8 @@ func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
-	if !strings.Contains(strings.Join(f.steps, ","), "forget:home-assistant") {
-		t.Fatalf("the failed service is still recorded on the volume: %v", f.steps)
+	if _, ok := f.prior["home-assistant"]; ok || len(f.staged) != 0 {
+		t.Fatalf("the failed service is still recorded on the volume: accepted %v, staged %v", f.prior, f.staged)
 	}
 }
 
@@ -622,7 +673,7 @@ func TestInstallOnSecondaryRendersButDoesNotProvision(t *testing.T) {
 	if !strings.Contains(joined, "render") {
 		t.Fatalf("secondary did not render its units: %v", f.steps)
 	}
-	for _, forbidden := range []string{"provision", "pause", "adjust"} {
+	for _, forbidden := range []string{"provision", "stage:", "pause", "adjust"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("secondary ran %q: %v", forbidden, f.steps)
 		}
@@ -1374,7 +1425,7 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	ri := strings.Index(joined, "readiness:")
 	qi := strings.Index(joined, "stop:")
 	si := strings.Index(joined, "snapshot:")
-	pi := strings.Index(joined, "provision")
+	pi := strings.Index(joined, "stage:")
 	if ri < 0 {
 		t.Fatalf("no baseline was captured on an upgrade: %v", f.steps)
 	}
@@ -1385,7 +1436,7 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 		t.Fatalf("the baseline must precede the snapshot: %v", f.steps)
 	}
 	if pi < 0 || ri > pi {
-		t.Fatalf("the baseline must precede provision — the volume is already mutated by then: %v", f.steps)
+		t.Fatalf("the baseline must precede the stage — the volume is already written by then: %v", f.steps)
 	}
 	if f.readinessHit != 2 {
 		t.Fatalf("sampled %d times, want 2 (baseline, then settled)", f.readinessHit)
@@ -1484,7 +1535,7 @@ func TestAFailedRollbackPointRestartsTheService(t *testing.T) {
 	if ci < 0 || ci < si {
 		t.Fatalf("the service was left stopped after the snapshot failed: %v", f.steps)
 	}
-	if strings.Contains(joined, "provision") {
+	if strings.Contains(joined, "provision") || strings.Contains(joined, "stage:") {
 		t.Fatalf("the volume was mutated after the rollback point could not be taken: %v", f.steps)
 	}
 }
@@ -1663,7 +1714,7 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a refusal naming what is needed and what is free", o)
 	}
 	joined := strings.Join(f.steps, ",")
-	for _, forbidden := range []string{"warm", "render", "provision", "converge", "pulling"} {
+	for _, forbidden := range []string{"warm", "render", "provision", "stage:", "converge", "pulling"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("a refused install still ran %q: %v", forbidden, f.steps)
 		}
@@ -1744,7 +1795,7 @@ func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 		t.Errorf("the refusal does not name the missing verb: %q", o.Detail)
 	}
 	for _, s := range f.steps {
-		if strings.HasPrefix(s, "snapshot:") || strings.HasPrefix(s, "provision") {
+		if strings.HasPrefix(s, "snapshot:") || strings.HasPrefix(s, "provision") || strings.HasPrefix(s, "stage:") {
 			t.Errorf("the install acted before refusing: %v", f.steps)
 		}
 	}

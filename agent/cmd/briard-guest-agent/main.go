@@ -267,7 +267,7 @@ func runInternal(args []string) {
 		// packaging. Converge has already logged which one and declined to start it. The install
 		// path reads the list through the verb, where failing IS the right answer.
 		run, what := func(ctx context.Context, x guestagent.Executor) error {
-			_, err := guestagent.Converge(ctx, x)
+			_, err := guestagent.Converge(ctx, x, "")
 			return err
 		}, "converge"
 		if *convergeStop {

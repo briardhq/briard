@@ -284,13 +284,6 @@ const (
 	// stopping one deactivates drbd-reactor's target, which unmounts the volume and demotes the
 	// node. Same code, same unit, no unit lifecycle touched.
 	verbServiceConverge = "service.converge"
-	// service.forget REMOVES one service's manifest from the volume. It exists because converge
-	// made the volume the truth: a FRESH install that fails its health gate used to
-	// be undone by putting the node-local promoter chain back, which simply did not mention the
-	// new service -- but the manifest it wrote to the volume stayed, and under converge every
-	// future promotion anywhere in the flock would render and start it again. Reverting a fresh
-	// install therefore has to remove the identity, not just stop the units.
-	verbServiceForget = "service.forget"
 	// ── SERVICE-SPECIFIC VERBS: `service.<catalog name>.<action>` ────────────────────────────
 	//
 	// The naming rule, and it is a property rather than a style (owner, 2026-08-30). Every other
@@ -429,7 +422,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
 	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceForget, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
+	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -463,7 +456,7 @@ var besideActs = map[string]bool{
 	verbNetMDNSOther: true, verbResources: true, verbStorageFree: true, verbCertRead: true,
 	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
-	verbHassDBCheckResult: true,
+	verbHassDBCheckResult: true, verbServicePending: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true,
 	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
@@ -1327,28 +1320,36 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			return mosquitto.Probe(ctx, x, quadlet.ContainerName(m.Name, m.Primary().Name), req.Token)
 		case verbServiceConverge:
-			// No request body: converge takes its whole input from the volume, which is the point
-			// -- a caller that could name what to converge TO would be the node-was-told model
-			// this replaces. It ANSWERS with the services it could not prepare, having started
-			// every other one -- see Converge on why the two callers need opposite things from
-			// that list.
-			return Converge(ctx, x)
-		case verbServiceForget:
+			// The input is the volume, which is the point -- a caller that could name what to
+			// converge TO would be the node-was-told model this replaces. The one thing a caller
+			// may name is the install it is running RIGHT NOW, whose staged manifest is then the
+			// one rendered for that service (staging.go); every other staged install is held
+			// back. It ANSWERS with the services it could not prepare, having started every
+			// other one -- see Converge on why the two callers need opposite things from that list.
+			var req serviceConvergeRequest
+			if len(payload) > 0 {
+				if err := json.Unmarshal(payload, &req); err != nil {
+					return nil, err
+				}
+			}
+			return Converge(ctx, x, req.Live)
+		case verbServiceStage:
+			var req serviceStageRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, stageService(ctx, x, run, req)
+		case verbServiceCommit, verbServiceDiscard:
 			var req serviceInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if err := safeUnitName(req.Name); err != nil { // the name is a path element
-				return nil, err
+			if verb == verbServiceCommit {
+				return nil, commitService(ctx, x, run, req.Name)
 			}
-			// `rm -f`: an absent manifest is the desired end state, not an error. Then flush the
-			// DIRECTORY, because the durable fact here is the entry's REMOVAL -- the same reason
-			// provisionService syncs after writing one.
-			if err := run("rm", "-f", manifestPath(req.Name)); err != nil {
-				return nil, err
-			}
-			_, err := x.Run(ctx, "sync", "-f", manifestDir)
-			return nil, err
+			return nil, discardService(ctx, x, run, req.Name)
+		case verbServicePending:
+			return pendingInstalls(ctx, x)
 		case verbServiceList:
 			// The same listing converge itself renders from, so what the host learns a node runs
 			// and what the node actually renders cannot drift: one reader, one directory. Names
@@ -2148,20 +2149,7 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	if err := safeUnitName(req.Name); err != nil { // the name becomes a path element
 		return err
 	}
-	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", req.DataDir); err != nil || len(out) == 0 {
-		if err := run("btrfs", "subvolume", "create", req.DataDir); err != nil {
-			return err
-		}
-	}
-	for _, d := range req.Subdirs {
-		if err := safeUnitName(d); err != nil { // same escape check; a subdir is a bare name
-			return err
-		}
-		if err := run("mkdir", "-p", req.DataDir+"/"+d); err != nil {
-			return err
-		}
-	}
-	if err := run("mkdir", "-p", manifestDir); err != nil {
+	if err := ensureServiceData(ctx, x, run, req.DataDir, req.Subdirs); err != nil {
 		return err
 	}
 	pin := manifestPath(req.Name)
@@ -2182,6 +2170,26 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	// what it is meant to be running. Same reasoning as service.provision's sync.
 	_, err := x.Run(ctx, "sync", "-f", pin)
 	return err
+}
+
+// ensureServiceData creates a service's subvolume and its per-container subdirectories, reusing
+// an existing subvolume (re-creating it would silently delete the user's state), and the manifest
+// directory beside them.
+func ensureServiceData(ctx context.Context, x Executor, run func(string, ...string) error, dataDir string, subdirs []string) error {
+	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", dataDir); err != nil || len(out) == 0 {
+		if err := run("btrfs", "subvolume", "create", dataDir); err != nil {
+			return err
+		}
+	}
+	for _, d := range subdirs {
+		if err := safeUnitName(d); err != nil { // same escape check; a subdir is a bare name
+			return err
+		}
+		if err := run("mkdir", "-p", dataDir+"/"+d); err != nil {
+			return err
+		}
+	}
+	return run("mkdir", "-p", manifestDir)
 }
 
 // gatherResources measures the appliance's resource footprint for the soak trend oracle
@@ -2859,29 +2867,22 @@ func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sa
 // the volume is mounted nowhere else, and a Secondary converges when it promotes, which is the
 // whole design.
 //
-// It takes no arguments deliberately. A caller that could name what to converge TO would be the
-// node-was-told model this replaces; the volume is the only input, and the install path's job is
-// to have written it first.
+// The volume is the only input, and the install path's job is to have written it first. live
+// names the install the caller is running now ("" for none): its STAGED manifest is rendered for
+// that service, and every other staged install is held back (staging.go).
 //
 // SupportsServiceConverge gates it: an older guest has no briard-services unit to converge, so a
 // host must refuse rather than call a verb that guest cannot honour.
-func (g *Client) ServiceConverge(ctx context.Context) ([]string, error) {
+func (g *Client) ServiceConverge(ctx context.Context, live string) ([]string, error) {
 	var skipped []string
 	// A guest built before converge reported anything answers with no value at all, which decodes
 	// to an empty list -- correctly, since such a guest also has nothing that can be skipped.
-	err := g.c.Call(ctx, verbServiceConverge, nil, &skipped)
+	err := g.c.Call(ctx, verbServiceConverge, serviceConvergeRequest{Live: live}, &skipped)
 	return skipped, err
 }
 
 // SupportsServiceConverge reports whether the guest can converge itself to the volume.
 func (g *Client) SupportsServiceConverge() bool { return g.Supports(verbServiceConverge) }
-
-// ServiceForget removes one service's manifest from the replicated volume -- what a failed FRESH
-// install must do, because under converge the volume is what every future promotion renders from.
-// Idempotent: an absent manifest is the end state this asks for.
-func (g *Client) ServiceForget(ctx context.Context, name string) error {
-	return g.c.Call(ctx, verbServiceForget, serviceInstalledRequest{Name: name}, nil)
-}
 
 // ServiceInstalled reads the manifest recorded on the replicated volume for ONE service, or ""
 // when that service is not installed there. "" is a legitimate answer — the shipped zero-service

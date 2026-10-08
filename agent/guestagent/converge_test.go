@@ -48,7 +48,31 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 		if c.services == nil {
 			return nil, errors.New("exit status 2") // no such directory
 		}
-		return []byte(strings.Join(c.services, "\n") + "\n"), nil
+		// The listing is the services named PLUS whatever staging put in the directory, so a test
+		// that stages sees its own files the way the real directory would show them.
+		seen := map[string]bool{}
+		var ls []string
+		for _, n := range c.services {
+			seen[n] = true
+			ls = append(ls, n)
+		}
+		for f := range c.fakeExec.files {
+			if n, ok := strings.CutPrefix(f, manifestDir+"/"); ok && !seen[n] {
+				ls = append(ls, n)
+			}
+		}
+		return []byte(strings.Join(ls, "\n") + "\n"), nil
+	case name == "mv" && len(args) == 3 && args[0] == "-T" && strings.HasPrefix(args[1], manifestDir+"/"):
+		body, ok := c.fakeExec.files[args[1]]
+		if !ok {
+			return []byte("mv: cannot stat"), errors.New("exit status 1")
+		}
+		delete(c.fakeExec.files, args[1])
+		c.fakeExec.files[args[2]] = body
+		return nil, nil
+	case name == "rm" && len(args) == 2 && args[0] == "-f" && strings.HasPrefix(args[1], manifestDir+"/"):
+		delete(c.fakeExec.files, args[1])
+		return nil, nil
 	case name == "ls" && len(args) == 2 && args[1] == quadletDir:
 		return []byte(strings.Join(c.quadlet, "\n") + "\n"), nil
 	case name == "podman" && len(args) >= 2 && args[0] == "network" && args[1] == "inspect":
@@ -110,7 +134,7 @@ func dummyNode(t *testing.T) *convergeExec {
 // the volume said so. The measured failure was a survivor that promoted and served nothing.
 func TestConvergeRendersFromTheVolume(t *testing.T) {
 	x := dummyNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, f := range []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"} {
@@ -133,7 +157,7 @@ func TestConvergeRendersFromTheVolume(t *testing.T) {
 // given a workload to, which is every node at install time.
 func TestConvergeToNothingIsNotAnError(t *testing.T) {
 	x := &convergeExec{} // services nil => `ls` fails => no such directory
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("a zero-service node must converge successfully to nothing, got: %v", err)
 	}
 	if x.ran("systemctl", "daemon-reload") == false && len(x.fakeExec.files) > 1 {
@@ -149,7 +173,7 @@ func TestConvergeToNothingIsNotAnError(t *testing.T) {
 func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 	x := &convergeExec{services: []string{"dummy.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/dummy.json": "{not json"}
-	_, err := Converge(context.Background(), x)
+	_, err := Converge(context.Background(), x, "")
 	if err == nil {
 		t.Fatal("converge accepted a manifest that does not parse — the node would promote and serve nothing")
 	}
@@ -163,7 +187,7 @@ func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 // podman's own generator), so a resident image must not have its unit started.
 func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 	x := dummyNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if x.ran("systemctl", "start", "briard-dummy-app-image.service") {
@@ -179,7 +203,7 @@ func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 func TestConvergePullsAMissingImage(t *testing.T) {
 	x := dummyNode(t)
 	x.haveImage = false
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if !x.ran("systemctl", "start", "briard-dummy-app-image.service") {
@@ -194,7 +218,7 @@ func TestConvergeFailsWhenAnAbsentImageCannotBeFetched(t *testing.T) {
 	x := dummyNode(t)
 	x.haveImage = false
 	x.failStart = map[string]bool{"briard-dummy-app-image.service": true}
-	if _, err := Converge(context.Background(), x); err == nil {
+	if _, err := Converge(context.Background(), x, ""); err == nil {
 		t.Fatal("converge promoted with an image it could neither find nor fetch")
 	}
 	if x.ran("systemctl", "start", "briard-dummy-app.service") {
@@ -213,7 +237,7 @@ func TestAServiceThatWillNotStartDoesNotFailConverge(t *testing.T) {
 		manifestDir + "/other.json": otherManifest,
 	}
 	x.failStart = map[string]bool{"briard-dummy-app.service": true}
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("a crashing service demoted the node: %v", err)
 	}
 	// ...and the OTHER service still ran. This is the "N-1" half, and without it the test would
@@ -229,7 +253,7 @@ func TestAServiceThatWillNotStartDoesNotFailConverge(t *testing.T) {
 func TestConvergeRemovesOrphanUnits(t *testing.T) {
 	x := dummyNode(t)
 	x.quadlet = []string{"briard-gone-app.container", "briard-gone.pod", "user-thing.container"}
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, orphan := range []string{"briard-gone-app.container", "briard-gone.pod"} {
@@ -249,7 +273,7 @@ func TestConvergeRemovesOrphanUnits(t *testing.T) {
 // that is about to be unmounted.
 func TestConvergeStopStopsWhatItStarted(t *testing.T) {
 	x := dummyNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	before := len(x.fakeExec.runs)
@@ -300,14 +324,14 @@ const dummyManifestV2 = `{"name":"dummy","version":"2","network":"host","contain
 // the bracket's deletion.
 func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
 	x := dummyNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
 	// The upgrade: a new manifest lands on the volume and the node re-converges in place.
 	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2
 	x.quadlet = []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"}
 	before := len(x.fakeExec.runs)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("re-Converge: %v", err)
 	}
 	var stopped []string
@@ -336,14 +360,14 @@ func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
 // new bytes to disk first, exactly as the install path does.
 func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 	x := dummyNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
 	// The install: the new manifest lands on the volume AND the new units are rendered to /run by
 	// the host, before converge is asked to make the node match.
 	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2
 	x.quadlet = []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"}
-	svcs, err := renderVolume(context.Background(), x)
+	svcs, err := renderVolume(context.Background(), x, "")
 	if err != nil {
 		t.Fatalf("render the upgrade: %v", err)
 	}
@@ -351,7 +375,7 @@ func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 		x.fakeExec.files[quadletDir+"/"+name] = body
 	}
 	before := len(x.fakeExec.runs)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("re-Converge: %v", err)
 	}
 	var stopped []string
@@ -375,7 +399,7 @@ func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
 		manifestDir + "/dummy.json": dummyManifest,
 		manifestDir + "/other.json": otherManifest,
 	}
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
 	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2 // only `dummy` is upgraded
@@ -384,35 +408,13 @@ func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
 		"briard-other.pod", "briard-other-app.container", "briard-other-app.image",
 	}
 	before := len(x.fakeExec.runs)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("re-Converge: %v", err)
 	}
 	for _, r := range x.fakeExec.runs[before:] {
 		if len(r) == 3 && r[0] == "systemctl" && r[1] == "stop" && strings.HasPrefix(r[2], "briard-other") {
 			t.Fatalf("upgrading `dummy` took `other` down: stopped %s", r[2])
 		}
-	}
-}
-
-// TestServiceForgetRemovesTheManifestAndFlushes: reverting a FRESH install has to remove the
-// service's identity from the volume, not just stop its units — under converge the volume is what
-// every future promotion, on every node, renders from.
-//
-// The `sync -f` is the durable half and is asserted rather than assumed: the fact that has to
-// survive a power cut here is the directory ENTRY's removal, the same reason provisionService
-// syncs after writing one. Without it a crash inside the writeback window resurrects a service
-// the install had already given up on.
-func TestServiceForgetRemovesTheManifestAndFlushes(t *testing.T) {
-	x := dummyNode(t)
-	g := dial(t, x)
-	if err := g.ServiceForget(context.Background(), "dummy"); err != nil {
-		t.Fatalf("ServiceForget: %v", err)
-	}
-	if !x.ran("rm", "-f", manifestDir+"/dummy.json") {
-		t.Fatalf("the manifest was not removed; ran %v", x.fakeExec.runs)
-	}
-	if !x.ran("sync", "-f", manifestDir) {
-		t.Fatalf("the removal was not flushed to the replicated volume; ran %v", x.fakeExec.runs)
 	}
 }
 
@@ -431,8 +433,10 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 	if !g.SupportsServiceConverge() {
 		t.Fatal("service.converge is handled but not advertised — every install would refuse this guest")
 	}
-	if !g.Supports(verbServiceForget) {
-		t.Fatal("service.forget is handled but not advertised")
+	for _, v := range []string{verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending} {
+		if !g.Supports(v) {
+			t.Fatalf("%s is handled but not advertised", v)
+		}
 	}
 }
 
@@ -457,7 +461,7 @@ func hassNode(t *testing.T) *convergeExec {
 // HA's run script is a service that can never start.
 func TestConvergePreparesTheControlChannel(t *testing.T) {
 	x := hassNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if _, ok := x.fakeExec.files[hass.TokenPath+".new"]; !ok {
@@ -485,7 +489,7 @@ func TestConvergePreparesTheControlChannel(t *testing.T) {
 // the product knows nothing about must converge exactly as it did before any of this existed.
 func TestConvergeLeavesOtherServicesAlone(t *testing.T) {
 	x := dummyNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, r := range x.fakeExec.runs {
@@ -516,7 +520,7 @@ func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
 		manifestDir + "/dummy.json":          dummyManifest,
 		manifestDir + "/home-assistant.json": hassManifest,
 	}
-	skipped, err := Converge(context.Background(), x)
+	skipped, err := Converge(context.Background(), x, "")
 	if err != nil {
 		t.Fatalf("one service's preparation failure took the whole converge down: %v", err)
 	}
@@ -551,7 +555,7 @@ func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
 func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
 	x := &convergeExec{services: []string{"home-assistant.json"}, haveImage: true, failExtract: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/home-assistant.json": hassManifest}
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, r := range x.fakeExec.runs {
@@ -568,7 +572,7 @@ func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
 func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[mdnsEnvPath] = "FLOCK_NAME=brave-elf\n"
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	raw, ok := x.fakeExec.files[routes.Path]
@@ -607,7 +611,7 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 // routed in the table; it simply has no name yet, and the front door says exactly that.
 func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 	x := dummyNode(t) // no mdns.env at all
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
@@ -630,7 +634,7 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"address":"127.0.0.1","routes":[{"listen":"name","to":"http://:8080"}]}]}`,
 	}
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
@@ -726,7 +730,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 		// node needs the pool net.configure hands down or it cannot render one at all.
 		podSubnetPath: "10.12.7\n",
 	}
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	tbl, err := routes.Parse([]byte(x.fakeExec.files[routes.Path]))
@@ -792,7 +796,7 @@ func privateNode(t *testing.T) *convergeExec {
 // it. This is the property that shape cannot have.
 func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
 	x := privateNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	first := addressOf(t, x, "mosquitto")
@@ -803,7 +807,7 @@ func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
 	// A second private service arrives, then leaves. The broker must not move for either.
 	x.services = []string{"mosquitto.json", "other.json"}
 	x.fakeExec.files[manifestDir+"/other.json"] = strings.Replace(otherManifest, `"network":"host",`, "", 1)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge with a second service: %v", err)
 	}
 	if got := addressOf(t, x, "mosquitto"); got != first {
@@ -816,7 +820,7 @@ func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
 
 	x.services = []string{"mosquitto.json"}
 	delete(x.fakeExec.files, manifestDir+"/other.json")
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge after the uninstall: %v", err)
 	}
 	if got := addressOf(t, x, "mosquitto"); got != first {
@@ -829,12 +833,12 @@ func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
 // anything. This is the tmpfs lifetime being the correctness argument.
 func TestARebootReallocatesFromNothing(t *testing.T) {
 	x := privateNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	before := addressOf(t, x, "mosquitto")
 	delete(x.fakeExec.files, routes.Path) // /run is gone; the guest rebooted
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge after the reboot: %v", err)
 	}
 	if got := addressOf(t, x, "mosquitto"); got == "" || !strings.HasPrefix(got, "10.12.7.") {
@@ -849,7 +853,7 @@ func TestARebootReallocatesFromNothing(t *testing.T) {
 func TestAPrivateServiceRefusesWithoutAPool(t *testing.T) {
 	x := &convergeExec{services: []string{"mosquitto.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/mosquitto.json": mosquittoManifest}
-	_, err := Converge(context.Background(), x)
+	_, err := Converge(context.Background(), x, "")
 	if err == nil {
 		t.Fatal("a private service rendered on a node with no pod pool")
 	}
@@ -878,7 +882,7 @@ func addressOf(t *testing.T, x *convergeExec, name string) string {
 func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 	hostOnly := dummyNode(t)
 	hostOnly.fakeExec.files[podSubnetPath] = "10.12.7\n"
-	if _, err := Converge(context.Background(), hostOnly); err != nil {
+	if _, err := Converge(context.Background(), hostOnly, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if hostOnly.ran("podman", "network", "create", "--subnet", "10.12.7.0/24", "briard") {
@@ -886,7 +890,7 @@ func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 	}
 
 	x := privateNode(t)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	if !x.ran("podman", "network", "create", "--subnet", "10.12.7.0/24", "briard") {
@@ -894,7 +898,7 @@ func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 	}
 	// Idempotent: a second converge adopts the network it already made rather than making another.
 	before := len(x.fakeExec.runs)
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("second Converge: %v", err)
 	}
 	creates := 0
@@ -915,7 +919,7 @@ func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 func TestAPodNetworkOnTheWrongSubnetIsRefused(t *testing.T) {
 	x := privateNode(t)
 	x.podNetwork = "10.12.42.0/24" // drawn before, or by something else
-	_, err := Converge(context.Background(), x)
+	_, err := Converge(context.Background(), x, "")
 	if err == nil {
 		t.Fatal("converge adopted a pod network on a different subnet")
 	}
@@ -932,7 +936,7 @@ func TestAPodNetworkOnTheWrongSubnetIsRefused(t *testing.T) {
 func TestConvergeStopsWhatItNoLongerRenders(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[unitsFile] = "briard-gone-pod.service\nbriard-gone-app.service\nbriard-dummy-pod.service\nbriard-dummy-app.service\n"
-	if _, err := Converge(context.Background(), x); err != nil {
+	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	var stopped []string

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -100,8 +101,12 @@ const unitPrefix = "briard-"
 // chain member, so it must promote anyway and let the household keep the services that work; an
 // INSTALL must fail, because the service it was told to install is the one that did not start.
 // Same code, one report, each caller deciding for itself.
-func Converge(ctx context.Context, x Executor) ([]string, error) {
-	svcs, err := renderVolume(ctx, x)
+//
+// live names the install the caller is running now, "" for none (staging.go): its STAGED
+// manifest is rendered for that service, and every other staged service is left out entirely --
+// not rendered, not started, its stale units stopped -- until the host's undo puts its data back.
+func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
+	svcs, err := renderVolume(ctx, x, live)
 	if err != nil {
 		return nil, err
 	}
@@ -326,15 +331,39 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 // is present and unusable IS a failure, and the difference is deliberate: absence is a state we
 // ship, while a corrupt manifest means this node cannot honour what the volume says it runs, and
 // promoting anyway is how a household silently loses a service.
-func renderVolume(ctx context.Context, x Executor) ([]convergedService, error) {
+//
+// A STAGED service is the exception to "render what the volume says" (staging.go): the live one
+// renders from its `.json.next`, including a fresh install that has no accepted manifest yet,
+// and every other one is left out.
+func renderVolume(ctx context.Context, x Executor, live string) ([]convergedService, error) {
 	names, err := manifestNames(ctx, x)
 	if err != nil {
 		return nil, err
 	}
+	staged, err := stagedNames(ctx, x)
+	if err != nil {
+		return nil, err
+	}
+	held := map[string]bool{}
+	for _, n := range staged {
+		held[n+".json"] = true
+	}
+	if live != "" && held[live+".json"] && !slices.Contains(names, live+".json") {
+		names = append(names, live+".json") // a fresh install: staged, nothing accepted yet
+		sort.Strings(names)
+	}
 	var svcs []convergedService
 	alloc := newAllocator(x)
 	for _, n := range names {
-		raw, err := x.ReadFile(manifestDir + "/" + n)
+		path := manifestDir + "/" + n
+		switch {
+		case held[n] && n == live+".json":
+			path += ".next"
+		case held[n]:
+			log.Printf("converge: %s has an install that was never accepted; it is NOT being started until the host undoes it", strings.TrimSuffix(n, ".json"))
+			continue
+		}
+		raw, err := x.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("converge: read %s: %w", n, err)
 		}

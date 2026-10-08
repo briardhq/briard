@@ -166,6 +166,24 @@ func (cfg Config) run(ctx context.Context, d api.Directive, o origin, rq *localR
 	return api.DirectiveOutcome{}, false
 }
 
+// runInternal runs f as an act the agent started itself -- one no directive asked for, so its
+// outcome goes to the log and nowhere else. It reports false, running nothing, while another act
+// holds the slot. Without a lane (tests) f runs inline.
+func (a *actLane) runInternal(kind string, f func()) bool {
+	if a == nil {
+		f()
+		return true
+	}
+	if _, ok := a.claim(kind); !ok {
+		return false
+	}
+	go func() {
+		defer a.release()
+		f()
+	}()
+	return true
+}
+
 // results is the lane's channel for the loop's select; nil -- never ready -- without a lane.
 func (a *actLane) ch() <-chan actResult {
 	if a == nil {

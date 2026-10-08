@@ -222,6 +222,22 @@ let
       commonModules = [ { environment.etc."briard-test/v1.tar".source = growFixture.variants.v1.image; } ];
     };
   };
+  # An install killed inside its health gate is undone at the next start, from the volume alone.
+  # The broken variant poisons the service's data and never answers, so the undo has data to put
+  # back; both images are staged, so nothing pulls.
+  undoFixture = import ./fixture-service.nix {
+    inherit pkgs;
+    variants.bad = { version = "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; };
+  };
+  agentInstallUndo = import ./agent-install-undo.nix {
+    inherit pkgs netWrap dressBase;
+    agent = agentPkg;
+    fixture = undoFixture;
+    guestDisk = import ../guest-image/disk-image.nix {
+      inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
+      stageImages = [ undoFixture.image undoFixture.variants.bad.image ];
+    };
+  };
   agentReadopt = import ./agent-readopt.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # restart transparent to guest
   agentRecover = import ./agent-recover.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # host restarts a wedged guest
   agentWatchdog = import ./agent-watchdog.nix { inherit pkgs guestDisk netWrap dressBase; agent = agentPkg; }; # init restarts a wedged AGENT
@@ -442,6 +458,7 @@ in
       agent-memory-grow = agentMemoryGrow; # a guest short of memory is grown a DIMM by its host, and keeps it
       agent-disk-grow = agentDiskGrow; # an install the state disk cannot hold grows it first, or is refused when the host cannot pay
       agent-readopt = agentReadopt; # an agent restart re-adopts the running guest
+      agent-install-undo = agentInstallUndo; # an install killed inside its gate is undone at the next start
       agent-deadman = agentDeadman; # a lone node holds (never self-outages) when its agent dies
       # The mirror of agent-deadman: there the host goes silent and the guest reboots itself;
       # here the GUEST goes silent and the host restarts its VM. Minutes long by construction --

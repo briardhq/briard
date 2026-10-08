@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"briard.io/agent/guest"
+	"briard.io/agent/guestagent"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/platform"
@@ -34,8 +35,15 @@ import (
 // upgrade, from "empty service" to the current version, and belongs on the same rails as one
 // rather than getting its own.
 //
-//	fetch+verify manifest -> render units (this node) -> provision (Primary only)
-//	  -> converge -> health-gate -> revert on failure (the {code+data} rollback)
+//	fetch+verify manifest -> render units (this node) -> stage (Primary only)
+//	  -> converge -> health-gate -> commit, or undo on failure (the {code+data} rollback)
+//
+// THE UNDO READS ONLY THE VOLUME. The install stages the new manifest beside the accepted one,
+// with its rollback point, and the gate's pass is a rename (agent/guestagent/staging.go). A
+// failed gate and a crash inside the gate's window are therefore undone by one procedure from the
+// same files: the install calls it on failure, and the observe loop calls it for any install it
+// finds still staged when the node starts serving (undoPending) -- after an agent restart, a
+// guest relaunch or a failover.
 //
 // The chain is static and service units are not members of it, so none of this
 // pauses the promoter. The one promoter contact left is a guard: refuse to start while the
@@ -59,8 +67,9 @@ type serviceInstaller interface {
 	// ServiceConverge returns the services the node could not PREPARE, having started every other
 	// one. An install must fail when its own service is in that list: the node is still serving
 	// the prior version, and reporting success would leave the volume, the cache and the cloud
-	// naming a version nothing is running.
-	ServiceConverge(ctx context.Context) ([]string, error)
+	// naming a version nothing is running. live names the install being run now ("" for none):
+	// its staged manifest is what renders, and every other staged install is held back.
+	ServiceConverge(ctx context.Context, live string) ([]string, error)
 	SupportsServiceConverge() bool
 	// StorageFree measures the guest's image store: the free-space gate reads it
 	// before a pull starts. An older guest that cannot measure gets no gate, not a refusal.
@@ -75,9 +84,13 @@ type serviceInstaller interface {
 	ServicePulling(ctx context.Context, service string, size, installed int64) error
 	ServicePulled(ctx context.Context, service string) error
 	SupportsServicePulling() bool
-	// ServiceForget removes one service's manifest from the volume -- what reverting a FRESH
-	// install requires, now that the volume is what every future promotion renders from.
-	ServiceForget(ctx context.Context, name string) error
+	// STAGE, THEN COMMIT (agent/guestagent/staging.go): an install is recorded on the volume beside
+	// the accepted manifest, with its rollback point, and becomes the identity only at the commit.
+	// ServicePending reads back every install that never committed, with all its undo needs.
+	ServiceStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error
+	ServiceCommit(ctx context.Context, name string) error
+	ServiceDiscard(ctx context.Context, name string) error
+	ServicePending(ctx context.Context) ([]guestagent.PendingInstall, error)
 	// ReactorActive is the interim overlap guard, and the ONLY promoter verb left here: an
 	// install no longer takes the maintenance bracket, it only refuses to start
 	// while somebody else holds it. Pausing and resuming belong to the OS upgrade path
@@ -326,9 +339,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// closure is a property of the node, and the front door is what "is this node serving" means.
 
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
-	// zero-service node) or an idempotent re-install of the same manifest. Read BEFORE
-	// ServiceProvision overwrites the volume's manifest, so a failed upgrade can put the prior back.
-	prior, priorSubdirs, priorRaw, _ := cfg.priorService(ctx, g, m.Name, raw, logf)
+	// zero-service node) or an idempotent re-install of the same manifest: the manifest whose data
+	// the rollback point below is taken under.
+	prior, _, priorRaw, _ := cfg.priorService(ctx, g, m.Name, raw, logf)
 
 	// Units are node-local (/run), so this node renders its own. A multi-node home has the
 	// directive delivered to EVERY node, and each renders locally — that is what lets a survivor
@@ -427,8 +440,8 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// CONTAINER UNITS, never the pod: quiesce's own comment carries the full trace of why. Only
 	// the upgraded service stops, so the node keeps serving every other one.
 	//
-	// THE UNDO IS A RE-CONVERGE, and it needs no new mechanism. Until ServiceProvision below
-	// overwrites the volume's manifest, the volume still names the PRIOR service — so a converge
+	// THE UNDO IS A RE-CONVERGE, and it needs no new mechanism. Until the stage below lands, the
+	// volume names nothing but the PRIOR service — so a converge
 	// re-renders from it and starts exactly what the stop above stopped (converge starts every
 	// unit of every service it does not skip, whether or not its bytes changed, so a unit stopped
 	// out from under it comes back). That is why the two steps below undo rather than abandon:
@@ -439,14 +452,14 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if prior != nil {
 		cfg.quiesce(ctx, g, prior.ContainerUnits, logf)
 		stoppedFail = func(detail string) api.DirectiveOutcome {
-			if _, err := g.ServiceConverge(ctx); err != nil {
+			if _, err := g.ServiceConverge(ctx, ""); err != nil {
 				return failed(fmt.Sprintf("%s; AND the service could not be restarted: %v", detail, err))
 			}
 			return failed(detail + " (the service was restarted)")
 		}
 		// THE MEMBER IS PINNED TO THE VERSION IT IS TAKEN UNDER, which is v1 by construction —
 		// it is taken before the switch, so the manifest recorded here is the one still on the
-		// volume and the one a revert re-provisions. v2's own first member will pin v2, leaving
+		// volume and the one an undo goes back to. v2's own first member will pin v2, leaving
 		// two members seconds apart with near-identical data and unambiguous meanings: this one
 		// goes back to v1, that one goes to v2 as of then. Both are kept; the duplication is not
 		// fought, and no "who wrote the data" bookkeeping is needed.
@@ -474,29 +487,26 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		}
 	}
 
-	// Provision writes the NEW manifest to the volume + ensures the subvolume/subdirs. On an
-	// upgrade this overwrites the prior manifest on the volume; the rollback re-writes the prior.
+	// STAGE the NEW manifest beside the accepted one, with the rollback point, and ensure the
+	// subvolume/subdirs. The accepted manifest is not touched until the commit below.
 	//
-	// A FAILURE HERE ALSO CONVERGES, and which service comes back depends on how far it got: the
-	// manifest is written last (provisionService, agent/guestagent), so a failure before that
-	// leaves the prior one on the volume and converge restores it exactly. A failure after it
-	// brings up the NEW service, ungated — which is why the outcome is still `failed` and says
-	// only that the service was restarted, never that the install stood. Either way the household
-	// ends with a running service, which is the property worth having; before the stop above
-	// existed this path could afford to report and leave everything alone.
-	if err := g.ServiceProvision(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw)); err != nil {
-		return stoppedFail(fmt.Sprintf("provision storage: %v", err))
+	// From here on every failure is the UNDO, which reads what to undo from the volume: a stage
+	// that failed part-way has either landed its `.json.next` (then it is undone like any other)
+	// or not (then the accepted manifest still stands and the undo is a converge back to it).
+	revert := func(cause error) api.DirectiveOutcome {
+		return cfg.revert(ctx, g, d, m.Name, logf, cause)
+	}
+	if err := g.ServiceStage(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw), snap); err != nil {
+		return revert(fmt.Errorf("stage the install: %w", err))
 	}
 
-	// CONVERGE, in place. Everything past here must return the node to the prior service, hence
-	// the explicit revert on each failure path rather than a defer that would also fire on
-	// success.
+	// CONVERGE, in place, with this install LIVE: its staged manifest is what renders.
 	//
 	// THERE IS NO MAINTENANCE BRACKET ANY MORE, and its absence is the point. This
 	// used to pause the promoter, quiesce the containers, rewrite the start-list and resume —
 	// because the services WERE chain members and changing what a live promoted resource runs
 	// meant editing the list it was promoted with. With a static chain there is nothing to
-	// rewrite: an install is provision + tell the node to re-read the volume. So installing a
+	// rewrite: an install is stage + tell the node to re-read the volume. So installing a
 	// service no longer stops the promoter for every OTHER service on the node, and a failure
 	// here can no longer demote it.
 	//
@@ -504,10 +514,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// member, so stopping it would deactivate drbd-reactor's target, unmount the volume and
 	// demote the node — the exact accident the bracket existed to prevent, re-created by the
 	// obvious way of triggering a re-converge. Same code, same unit, no unit lifecycle touched.
-	revert := func(cause error) api.DirectiveOutcome {
-		return cfg.revert(ctx, g, d, m.Name, dataDir, rendered, prior, priorSubdirs, priorRaw, snap, logf, cause)
-	}
-	skipped, err := g.ServiceConverge(ctx)
+	skipped, err := g.ServiceConverge(ctx, m.Name)
 	if err != nil {
 		return revert(fmt.Errorf("install %s: %w", m.Name, err))
 	}
@@ -540,6 +547,12 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if err := gate.Judge(ctx, readiness); err != nil {
 		logf("service install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
+	}
+	// THE COMMIT: one rename on the volume, and the install is the identity. A commit that fails
+	// leaves it staged, and a staged install is undone -- the same as a gate that failed.
+	if err := g.ServiceCommit(ctx, m.Name); err != nil {
+		logf("service install %s could not be committed (%v); reverting", m.Name, err)
+		return revert(fmt.Errorf("commit the install: %w", err))
 	}
 	// Record the manifest NODE-LOCALLY as well as on the volume. Both copies are needed and they
 	// do different jobs: the volume's is the replicated identity (what the service IS), while
@@ -856,11 +869,10 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 // manifest, called it this install's prior, and then had filesToRemove delete that service's
 // rendered units as a renamed prior's orphans.
 //
-// Returns (nil, nil, "") for a fresh install, an idempotent re-install of the same
+// Returns (nil, nil, "", "") for a fresh install, an idempotent re-install of the same
 // manifest, or a prior that no longer parses/renders (no usable rollback target → treated as
-// fresh; the gate still guards the new service, so the worst case is a rollback to empty rather
-// than to the broken new one, never to it). The raw bytes and subdirs come back too, because the
-// rollback re-provisions them as the volume's identity.
+// fresh: no rollback point is taken). The raw bytes and subdirs come back too: the raw bytes are
+// what the rollback point is pinned to.
 // It also returns the prior manifest's VERSION, which is not derivable from the rendering: it is
 // what a restore reports it moved the app between ("code too (2026.8.0 -> 2026.7.1)").
 func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string, string) {
@@ -933,93 +945,158 @@ func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnit
 	}
 }
 
-// Revert returns the node to the service it ran before this install — the prior manifest and its
-// data (an upgrade), or nothing at all (a fresh install) — and reports the terminal outcome. It
-// runs on a DETACHED, freshly-budgeted context (revertBudget): the most likely trigger is the
-// health gate's deadline expiring, and a revert inheriting that dead deadline could restore
-// nothing.
-//
-// Stop the broken service -> restore the data -> put the prior manifest back on the volume ->
-// converge, which re-renders from that manifest and starts the prior version fresh. Data is
-// restored BEFORE code, the order the guest manager's rollback uses.
-//
-// NO PROMOTER PAUSE, and the safety it used to buy is bought more cheaply now. The
-// old rollback ran under one pause so the promoter could not restart the broken service between
-// steps; with the services out of the chain the promoter has no opinion about them at all, and
-// the units are stopped here by name. The failed-restore case improves outright: it used to
-// leave the promoter PAUSED — a node that will not fail over — rather than resume onto poisoned
-// data. Now it simply does not converge, so the one service stays stopped and the node keeps
-// serving everything else and keeps its ability to fail over. Smaller blast radius, same refusal.
-func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, name, dataDir string, next quadlet.Rendered, prior *quadlet.Rendered, priorSubdirs []string, priorRaw, snap string, logf func(string, ...any), cause error) api.DirectiveOutcome {
+// revert is the install's undo: undo whatever the volume holds staged for name, and report the
+// terminal outcome. It runs on a DETACHED, freshly-budgeted context (revertBudget): the most likely
+// trigger is the health gate's deadline expiring, and a revert inheriting that dead deadline could
+// restore nothing.
+func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, name string, logf func(string, ...any), cause error) api.DirectiveOutcome {
 	rctx, rcancel := cfg.beat.budget(context.WithoutCancel(ctx), revertBudget)
 	defer rcancel()
-
-	bothFailed := func(what string, err error) api.DirectiveOutcome {
-		// The install AND its revert failed — the node needs a human. Name the exact failed step.
+	if err := cfg.undoInstall(rctx, g, name, logf); err != nil {
+		// The install AND its undo failed -- the node needs a human. Name the exact failed step.
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed,
-			Detail: fmt.Sprintf("%v; AND the revert failed to %s: %v", cause, what, err)}
+			Detail: fmt.Sprintf("%v; AND the revert failed to %v", cause, err)}
 	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: cause.Error()}
+}
 
-	// Stop the just-installed CONTAINERS (not the pod — that would make podman kill them out
-	// from under their units): releases the data subvolume's bind, which restore needs.
-	cfg.quiesce(rctx, g, next.ContainerUnits, logf)
-	if snap != "" {
-		// SWEPT LIKE ANY OTHER MATERIALISED MEMBER: the pre-upgrade point can carry a
-		// household's in-flight backup restore like any other, and putting it back unswept would
-		// replay it. The markers come from the PRIOR manifest, which is what this member is
-		// pinned to.
+// undoInstall undoes the install staged for name, reading what to undo from the volume. Nothing
+// staged means the stage never landed: the accepted manifest still stands, and putting the node
+// back is a converge to it (which also restarts what the install stopped).
+func (cfg Config) undoInstall(ctx context.Context, g serviceInstaller, name string, logf func(string, ...any)) error {
+	all, err := g.ServicePending(ctx)
+	if err != nil {
+		return fmt.Errorf("read the staged install: %w", err)
+	}
+	for _, p := range all {
+		if p.Name == name {
+			return cfg.undo(ctx, g, p, logf)
+		}
+	}
+	if _, err := g.ServiceConverge(ctx, ""); err != nil {
+		return fmt.Errorf("converge back to the prior service: %w", err)
+	}
+	return nil
+}
+
+// undo returns the node to what the volume ACCEPTED for one staged install -- the prior manifest
+// and its data (an upgrade), or nothing at all (a fresh install) -- from the record alone, so a gate
+// that failed and a crash nobody saw are undone identically.
+//
+// Stop the staged version -> restore the data -> discard the stage -> converge, which renders the
+// accepted manifest and starts the prior version fresh. Data is restored BEFORE the stage is
+// discarded: until the discard, every converge holds the service back, so nothing can start the
+// prior version on the staged version's data. An undo interrupted anywhere is simply run again.
+//
+// NO PROMOTER PAUSE: the services are not chain members, so the promoter has no opinion about
+// them, and the units are stopped here by name. A failed restore does not converge, so the one
+// service stays stopped and the node keeps serving everything else and keeps its ability to fail
+// over. Silent data corruption is not recoverable; a stopped service is.
+func (cfg Config) undo(ctx context.Context, g serviceInstaller, p guestagent.PendingInstall, logf func(string, ...any)) error {
+	// Stop the staged version's CONTAINERS (not the pod -- that would make podman kill them out
+	// from under their units): releases the data subvolume's bind, which restore needs. A staged
+	// manifest a crash tore cannot name its units; the accepted one names the same service's.
+	units := containerUnits(p.Staged)
+	if units == nil {
+		units = containerUnits(p.Accepted)
+	}
+	cfg.quiesce(ctx, g, units, logf)
+	if p.Rollback != "" {
+		// SWEPT LIKE ANY OTHER MATERIALISED MEMBER: the pre-upgrade point can carry a household's
+		// in-flight backup restore like any other, and putting it back unswept would replay it. The
+		// markers come from the ACCEPTED manifest, which is what this member is pinned to.
 		//
 		// ⚠️ AND THIS IS THE ONE CALLER THAT FALLS BACK when the guest cannot sweep. Refusing here
-		// would leave a failed upgrade with no data rollback at all, which is a worse outcome than
-		// a marker nobody may ever have written; the restore path, whose alternative is simply
-		// leaving the household as they are, refuses instead.
+		// would leave a failed upgrade with no data rollback at all, which is a worse outcome than a
+		// marker nobody may ever have written; the restore path, whose alternative is simply leaving
+		// the household as they are, refuses instead.
 		var sweep []string
-		if pm, _, err := manifest.Parse([]byte(priorRaw)); err == nil {
+		if pm, _, err := manifest.Parse([]byte(p.Accepted)); err == nil {
 			sweep = services.RestoreMarkers(pm)
 		}
-		// THE REVERT IS AN UNDO and records itself as one: an event on a point of the
-		// failed version's data, quiesced by the stop above, so the history shows the update and
-		// then its undoing -- and the update can still be redone. Best-effort: the rollback matters
-		// more than its entry.
+		// THE UNDO RECORDS ITSELF: an event on a point of the failed version's data, pinned to the
+		// STAGED manifest it ran under, so the history shows the update and then its undoing -- and
+		// the update can still be redone. Best-effort: the rollback matters more than its entry.
 		at := cfg.takenAt()
-		if err := cfg.takeMember(rctx, g, name, quadlet.SnapshotMember(name, quadlet.TriggerAppUndoBefore, at),
+		if err := cfg.takeMemberOf(ctx, g, p.Name, p.Staged, quadlet.SnapshotMember(p.Name, quadlet.TriggerAppUndoBefore, at),
 			quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
 			&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: "The update did not work and was undone"}}},
-			at, logf); err != nil {
-			logf("revert %s: could not record the undo point (%v); reverting anyway", name, err)
+			at); err != nil {
+			logf("undo %s: could not record the undo point (%v); undoing anyway", p.Name, err)
 		}
 		restore := g.Restore
 		if len(sweep) > 0 && !g.SupportsRestoreSweep() {
-			logf("revert %s: this guest cannot sweep a restored member; rolling the data back anyway", name)
+			logf("undo %s: this guest cannot sweep a restored member; rolling the data back anyway", p.Name)
 			restore = func(ctx context.Context, dataDir, src string, _ []string) error {
 				return g.RestoreWithoutSweep(ctx, dataDir, src)
 			}
 		}
-		if err := restore(rctx, dataDir, snap, sweep); err != nil {
-			// Data could not be rolled back. Do NOT converge — that would start the prior units
-			// on the poisoned data. Leaving this one service stopped is the safe end state:
-			// silent data corruption is not recoverable, a stopped service is.
-			return bothFailed("restore the data subvolume (the service is left stopped)", err)
+		if err := restore(ctx, quadlet.DataRoot(p.Name), p.Rollback, sweep); err != nil {
+			return fmt.Errorf("restore the data subvolume (the service is left stopped): %w", err)
 		}
 	}
-	if prior != nil {
-		if err := g.ServiceProvision(rctx, name, dataDir, priorSubdirs, priorRaw); err != nil {
-			return bothFailed("re-record the prior manifest", err)
+	if err := g.ServiceDiscard(ctx, p.Name); err != nil {
+		return fmt.Errorf("discard the staged install: %w", err)
+	}
+	// The converge's skip list is not consulted, and that is not an oversight: the accepted
+	// manifest is one this node already prepared and ran, so a preparation failure here is a new
+	// fault on the undo path, and converge has logged it.
+	if _, err := g.ServiceConverge(ctx, ""); err != nil {
+		return fmt.Errorf("converge back to the prior service: %w", err)
+	}
+	return nil
+}
+
+// undoPending undoes every install the volume holds staged, as an act of the agent's own. It runs
+// when a node starts serving -- an agent that restarted, a guest that was relaunched, a peer that
+// promoted -- because that is when a staged install can be one nobody is running any more: an
+// install in progress holds the act slot for its whole length, so a stage found with the slot free
+// is one whose installer is gone. Converge has held the service back since (staging.go), so
+// nothing has run on its data in between.
+//
+// It reports whether this promotion's check is settled: true when nothing is staged or the undo
+// has started; false to ask again next cycle (an act holds the slot, or the read failed). An undo
+// that fails is not retried until the next promotion -- a restore that failed once and is retried
+// every cycle would only fail every cycle -- and leaves the service stopped, which the log names.
+func (cfg Config) undoPending(ctx context.Context, g serviceInstaller, logf func(string, ...any)) bool {
+	if cfg.acts.inFlight() {
+		return false
+	}
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	all, err := g.ServicePending(pctx)
+	cancel()
+	if err != nil {
+		logf("undo: could not read the staged installs (%v); asking again", err)
+		return false
+	}
+	if len(all) == 0 {
+		return true
+	}
+	return cfg.acts.runInternal("service-undo", func() {
+		uctx, ucancel := cfg.beat.budget(ctx, revertBudget*time.Duration(len(all)))
+		defer ucancel()
+		for _, p := range all {
+			logf("undo %s: an install of it was staged and never accepted; putting the node back", p.Name)
+			if err := cfg.undo(uctx, g, p, logf); err != nil {
+				logf("undo %s: FAILED to %v", p.Name, err)
+				continue
+			}
+			logf("undo %s: back on what the volume accepted", p.Name)
 		}
-	} else if err := g.ServiceForget(rctx, name); err != nil {
-		// A FRESH install that failed: the volume must not keep naming a service this node could
-		// not bring up, or the next promotion anywhere in the flock converges to it and fails the
-		// same way. There is no prior manifest to put back, so the identity is removed instead.
-		return bothFailed("remove the failed service's manifest from the volume", err)
+	})
+}
+
+// containerUnits names a manifest's container units, nil when it does not parse or render.
+func containerUnits(raw string) []string {
+	m, _, err := manifest.Parse([]byte(raw))
+	if err != nil {
+		return nil
 	}
-	// The revert's skip list is not consulted, and that is not an oversight: the prior manifest is
-	// one this node already prepared and ran, so a preparation failure here is a new fault on the
-	// undo path, and converge has logged it. What matters to the caller is the same either way —
-	// the node is on the prior service, and the outcome below says rolled-back.
-	if _, err := g.ServiceConverge(rctx); err != nil {
-		return bothFailed("converge back to the prior service", err)
+	r, err := quadlet.Render(m, "")
+	if err != nil {
+		return nil
 	}
-	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: cause.Error()}
+	return r.ContainerUnits
 }
 
 // AwaitHealthy polls the SERVICE's OWN health endpoint until it comes up, or the gate expires.
@@ -1209,7 +1286,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 			// The volume still names the running service -- ServiceProvision below has not run --
 			// so a converge re-renders from it and starts exactly what the stop above stopped.
 			// The same undo applyServiceInstall uses; no new mechanism.
-			if _, err := g.ServiceConverge(ctx); err != nil {
+			if _, err := g.ServiceConverge(ctx, ""); err != nil {
 				return failed(fmt.Sprintf("%s; AND the service could not be restarted: %v", detail, err))
 			}
 			return failed(detail + " (the service was restarted)")
@@ -1248,7 +1325,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	}
 	// (6) CONVERGE, which re-renders from the volume and starts what it now names. Its start sample
 	// is not compared with the undo's point: the app did not run between them.
-	if _, err := g.ServiceConverge(ctx); err != nil {
+	if _, err := g.ServiceConverge(ctx, ""); err != nil {
 		return failed(fmt.Sprintf("converge onto the restored member (the service is left stopped): %v", err))
 	}
 	moved := "data only"
@@ -1275,6 +1352,12 @@ func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
+	return cfg.takeMemberOf(ctx, g, service, raw, member, tr, cons, ev, at)
+}
+
+// takeMemberOf is takeMember with the manifest the member is pinned to NAMED rather than read: the
+// undo's point is taken of a version the volume never accepted (undo).
+func (cfg Config) takeMemberOf(ctx context.Context, g memberTaker, service, raw, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time) error {
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
 		Service: service, Trigger: tr, TakenAt: at, Consistency: cons, Manifest: raw, Event: ev,
 	})
