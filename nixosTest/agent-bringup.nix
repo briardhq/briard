@@ -156,9 +156,17 @@ pkgs.testers.runNixOSTest {
     # the handshake must *resync* past it, not fail on the id mismatch. Proven by the
     # reconnect log, the VIP serving again, and a fresh healthy status line after the thaw.
     host.succeed(f"kill -CONT {qemu}")
+    thawed = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
     try:
         host.wait_until_succeeds(f"test $(journalctl -u briard-agent | grep -c 'control channel reconnected') -gt {reconnects}", timeout=120)
         host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+        # What the thaw cost, and what the guest agent did across it: how long until the host
+        # was back on the channel, and the guest agent's own journal for the stretch.
+        print("=== host agent across the thaw ===")
+        print(host.succeed(f"journalctl -u briard-agent -o short --since='{thawed}' | grep -vE 'status node=' | head -40 || true"))
+        print("=== guest agent across the thaw ===")
+        host.succeed(f"(printf '\\n'; sleep 2; printf 'journalctl -u briard-guest-agent -o short --since=\"{thawed}\" --no-pager | tail -60\\n'; sleep 6; printf '\\035') | briard-agent debug shell > /tmp/thaw.out 2>&1")
+        print(host.succeed("tr -d '\\r' < /tmp/thaw.out"))
     except Exception:
         print("=== host agent since the freeze ===")
         print(host.succeed("journalctl -u briard-agent -o cat | grep -vE 'status node=' | tail -40 || true"))
