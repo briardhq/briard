@@ -118,8 +118,8 @@ const (
 	DefaultJitter = 60 * time.Second
 
 	// SelfUpdateWindow is the worst-case host-agent self-update trial before the pivot's
-	// Type=notify TimeoutStartSec (≥180s) reverts it, plus the revert + re-adopt
-	// margin. The INVARIANT (asserted in the tests): DefaultDeadman > SelfUpdateWindow — so a trial
+	// Type=notify TimeoutStartSec (60s in briard-agent.service; the 180s here leaves headroom
+	// over it) reverts it, plus the revert + re-adopt margin. The INVARIANT (asserted in the tests): DefaultDeadman > SelfUpdateWindow — so a trial
 	// always converges or auto-reverts before the deadman can fire. Threshold-only; no protocol.
 	SelfUpdateWindow = 180*time.Second + 60*time.Second
 )
