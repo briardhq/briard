@@ -144,6 +144,9 @@ pkgs.testers.runNixOSTest {
     # (ErrChannelDown) -- the event that, older, blinded the host to the guest
     # *forever* (it dialed once and observe never re-dialed).
     qemu = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
+    # Counted, not grepped: the bring-up already logged one reconnect (the dress restarts the
+    # guest agent), so "a reconnected line exists" was true before the freeze and proved nothing.
+    reconnects = int(host.succeed("journalctl -u briard-agent | grep -c 'control channel reconnected' || true").strip())
     host.succeed(f"kill -STOP {qemu}")
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'control channel down'", timeout=60)
 
@@ -153,8 +156,15 @@ pkgs.testers.runNixOSTest {
     # the handshake must *resync* past it, not fail on the id mismatch. Proven by the
     # reconnect log, the VIP serving again, and a fresh healthy status line after the thaw.
     host.succeed(f"kill -CONT {qemu}")
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'control channel reconnected'", timeout=120)
-    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    try:
+        host.wait_until_succeeds(f"test $(journalctl -u briard-agent | grep -c 'control channel reconnected') -gt {reconnects}", timeout=120)
+        host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    except Exception:
+        print("=== host agent since the freeze ===")
+        print(host.succeed("journalctl -u briard-agent -o cat | grep -vE 'status node=' | tail -40 || true"))
+        print("=== guest console (tail) ===")
+        print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -120 || true"))
+        raise
     since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
     host.wait_until_succeeds(
         f"journalctl -u briard-agent --since='{since}' | grep -q 'healthy=true'",
