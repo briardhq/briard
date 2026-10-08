@@ -25,6 +25,11 @@ type request struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// cancelRequest is the payload of VerbCancel: the id of the request to stop.
+type cancelRequest struct {
+	ID uint64 `json:"id"`
+}
+
 type response struct {
 	ID      uint64          `json:"id"`
 	Error   string          `json:"error,omitempty"`
@@ -69,8 +74,9 @@ func readFrame(r io.Reader, v any) error {
 // Conn is the host end: calls multiplexed over the single stream, matched to their replies
 // by id. Any number may be in flight; the guest answers them in whatever order it serves them.
 //
-// A call's deadline abandons THAT call -- its reply, if it ever comes, is dropped -- and
-// leaves the channel up for everything else, with one exception that is the liveness rule:
+// A call's deadline abandons THAT call -- its reply, if it ever comes, is dropped, and the
+// guest is told to stop it (VerbCancel), so a hung act does not hold the guest's act lane --
+// and leaves the channel up for everything else, with one exception that is the liveness rule:
 // if nothing at all has arrived from the guest since the call was sent, the guest is not
 // answering anything, and the deadline closes the channel so the host re-dials and, failing
 // that, climbs the recovery ladder. A guest that answered something meanwhile is alive and
@@ -195,8 +201,24 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 			_ = c.rw.Close()
 			return channelDown(ctx, ctx.Err())
 		}
+		c.cancel(id)
 		return ctx.Err()
 	}
+}
+
+// cancel tells the guest to stop the request with this id: fire-and-forget, its own id, its
+// reply dropped by the reader like any other reply nothing waits on. An older firmware answers
+// "unknown verb", which costs the same nothing. A write error here is the stream going away,
+// which the reader reports on its own.
+func (c *Conn) cancel(id uint64) {
+	payload, _ := json.Marshal(cancelRequest{ID: id})
+	c.mu.Lock()
+	c.nextID++
+	cid := c.nextID
+	c.mu.Unlock()
+	c.wmu.Lock()
+	_ = writeFrame(c.rw, request{ID: cid, Verb: VerbCancel, Payload: payload})
+	c.wmu.Unlock()
 }
 
 // abandon forgets a call: its reply, if one comes, is dropped by the reader.
@@ -257,12 +279,22 @@ func channelDown(ctx context.Context, err error) error {
 // flight. An act keeps running to its end whether the host is listening or not, exactly as it
 // did when the loop could not read the next frame until it finished, and the caller's own exit
 // deadline remains the backstop for a handler that never returns.
+//
+// ...UNLESS THE HOST CANCELS IT. VerbCancel names a request in flight; the loop handles it here,
+// never d: the request's context is cancelled, exec.CommandContext kills its child, the handler
+// returns, and whatever it held -- the act mutex above all -- is free again. This is what the
+// host sends when a deadline abandons a call, and it is what keeps a hung act from holding the
+// guest's act lane until the next restart. A cancel for an id nothing is running is a no-op,
+// answered like any other request so the host's Conn can drop the reply.
 func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc, act func(verb string) bool) error {
 	var (
 		open    sync.RWMutex   // held (read) by every handler for its run; taken (write) to close
 		writing sync.Mutex     // one reply on the stream at a time
 		acting  sync.Mutex     // one act at a time
 		wg      sync.WaitGroup // every handler, so the return waits for them
+		// inflight is the cancel for every request still being handled, by id, for VerbCancel.
+		inflightMu sync.Mutex
+		inflight   = map[uint64]context.CancelFunc{}
 	)
 	done := make(chan struct{})
 	defer close(done)
@@ -289,17 +321,41 @@ func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc, act
 			}
 			return err
 		}
+		hctx, hcancel := context.WithCancel(ctx)
+		inflightMu.Lock()
+		inflight[req.ID] = hcancel
+		inflightMu.Unlock()
 		wg.Add(1)
 		go func(req request) {
 			defer wg.Done()
+			defer func() {
+				inflightMu.Lock()
+				delete(inflight, req.ID)
+				inflightMu.Unlock()
+				hcancel()
+			}()
 			open.RLock()
 			defer open.RUnlock()
+			if req.Verb == VerbCancel {
+				var c cancelRequest
+				if err := json.Unmarshal(req.Payload, &c); err == nil {
+					inflightMu.Lock()
+					if cancel, ok := inflight[c.ID]; ok {
+						cancel()
+					}
+					inflightMu.Unlock()
+				}
+				writing.Lock()
+				defer writing.Unlock()
+				_ = writeFrame(rw, response{ID: req.ID})
+				return
+			}
 			if act(req.Verb) {
 				acting.Lock()
 				defer acting.Unlock()
 			}
 			resp := response{ID: req.ID}
-			if result, herr := d(ctx, req.Verb, req.Payload); herr != nil {
+			if result, herr := d(hctx, req.Verb, req.Payload); herr != nil {
 				resp.Error = herr.Error()
 			} else if result != nil {
 				if b, merr := json.Marshal(result); merr != nil {

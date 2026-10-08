@@ -183,7 +183,7 @@ pkgs.testers.runNixOSTest {
     # to re-establish the channel instead of climbing the recovery ladder, which would reboot the
     # VM the rescue is halfway through replacing; the loop resumes on the new channel the moment
     # the rescue ends. The loop is paused for the stretch the guest is down (there is nothing to
-    # read, and the host-side alerters pause with it: the residual B.176i records). Asserted
+    # read, and the host-side alerters pause with it -- a known, accepted gap). Asserted
     # strictly between the journal marks, each claim on its own line.
     cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
     host.succeed("${agent}/bin/briard-agent rescue -yes -sock /run/briard/admin.sock")

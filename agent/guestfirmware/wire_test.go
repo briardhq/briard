@@ -209,11 +209,14 @@ func TestCallDropsAStaleFrame(t *testing.T) {
 	}
 }
 
-// slowDispatch: "slow" blocks until released; "echo" answers at once. The guest end of a channel
-// that serves reads beside a long act.
-func slowDispatch(release <-chan struct{}) DispatchFunc {
+// slowDispatch: "slow" signals on started (if given) and blocks until released; "echo" answers
+// at once. The guest end of a channel that serves reads beside a long act.
+func slowDispatch(release <-chan struct{}, started chan<- struct{}) DispatchFunc {
 	return func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
 		if verb == "slow" {
+			if started != nil {
+				started <- struct{}{}
+			}
 			select {
 			case <-release:
 			case <-ctx.Done():
@@ -231,7 +234,8 @@ func slowDispatch(release <-chan struct{}) DispatchFunc {
 func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	cc, sc := net.Pipe()
 	release := make(chan struct{})
-	go ServeFrames(context.Background(), sc, slowDispatch(release), func(verb string) bool { return verb == "slow" })
+	started := make(chan struct{}, 1)
+	go ServeFrames(context.Background(), sc, slowDispatch(release, started), func(verb string) bool { return verb == "slow" })
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
 
@@ -239,6 +243,8 @@ func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	sctx, scancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer scancel()
 	go func() { slow <- c.Call(sctx, "slow", nil, nil) }()
+	<-started // the slow request is in the guest's hands BEFORE the echo is sent: the liveness
+	// rule compares the echo's reply against the slow call's send time, so the order matters.
 
 	// Beside it, an echo answers at once.
 	var out string
@@ -274,7 +280,7 @@ func TestADeadlineWithNoAnswerAtAllIsChannelDown(t *testing.T) {
 	cc, sc := net.Pipe()
 	release := make(chan struct{})
 	defer close(release)
-	go ServeFrames(context.Background(), sc, slowDispatch(release), allActs)
+	go ServeFrames(context.Background(), sc, slowDispatch(release, nil), allActs)
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
 
@@ -288,5 +294,54 @@ func TestADeadlineWithNoAnswerAtAllIsChannelDown(t *testing.T) {
 	err := c.Call(ectx, "echo", "x", nil)
 	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrChannelDown) {
 		t.Fatalf("echo behind a serial guest's slow verb = %v, want DeadlineExceeded AND ErrChannelDown", err)
+	}
+}
+
+// AN ABANDONED ACT IS STOPPED IN THE GUEST. A "slow" act hangs; the host's deadline abandons it;
+// the host sends cancel; the handler sees its context cancelled and returns; the act mutex is
+// free, so the next act is served instead of queueing behind a hung one forever. The echo
+// beside it proves the guest was alive throughout (so this is the abandon path, not the
+// liveness close), and the cancelled handler is observed directly.
+func TestAnAbandonedActIsCancelledInTheGuest(t *testing.T) {
+	cc, sc := net.Pipe()
+	cancelled := make(chan struct{}, 1)
+	started := make(chan struct{}, 1)
+	hang := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+		if verb == "slow" {
+			started <- struct{}{}
+			<-ctx.Done() // never released: only a cancel from the host ends this
+			cancelled <- struct{}{}
+			return nil, ctx.Err()
+		}
+		return echoDispatch(ctx, verb, payload)
+	}
+	go ServeFrames(context.Background(), sc, hang, func(verb string) bool { return verb != "echo" })
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
+
+	slow := make(chan error, 1)
+	sctx, scancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer scancel()
+	go func() { slow <- c.Call(sctx, "slow", nil, nil) }()
+	<-started // in the guest's hands before the echo, so the echo's reply counts for it
+	var out string
+	ectx, ecancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer ecancel()
+	if err := c.Call(ectx, "echo", "x", &out); err != nil {
+		t.Fatalf("echo beside the hung act: %v", err)
+	}
+	if err := <-slow; !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrChannelDown) {
+		t.Fatalf("the hung act = %v, want its own deadline with the channel up", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the guest never cancelled the abandoned act's handler")
+	}
+	// The act lane is free: another act is served, not queued behind the hung one.
+	actx, acancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer acancel()
+	if err := c.Call(actx, "boom", nil, nil); err == nil || err.Error() != "kaboom" {
+		t.Fatalf("the next act after a cancelled one = %v, want it served (kaboom)", err)
 	}
 }

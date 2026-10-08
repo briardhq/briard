@@ -74,6 +74,10 @@ const (
 const (
 	VerbHello      = "hello"       // handshake: the verb set, the boot, the bundle
 	VerbOSPowerOff = "os.poweroff" // ask the guest OS to shut itself down cleanly
+	// VerbCancel stops a request in flight, by id. A protocol verb: the serve loop handles it,
+	// no dispatch ever sees it, and it is not in Capabilities -- the host sends it on every
+	// abandoned call and drops the answer, so an older firmware's "unknown verb" costs nothing.
+	VerbCancel = "cancel"
 )
 
 // Capabilities is what the FIRMWARE advertises: the handshake, the three push verbs, and the
