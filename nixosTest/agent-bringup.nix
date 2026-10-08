@@ -160,6 +160,12 @@ pkgs.testers.runNixOSTest {
     try:
         host.wait_until_succeeds(f"test $(journalctl -u briard-agent | grep -c 'control channel reconnected') -gt {reconnects}", timeout=120)
         host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+        # ONE ATTEMPT, OR THE PHASES ARE COLLIDING AGAIN. The guest agent restarts on the EOF the
+        # freeze's close gave it and reads the buffered hello ~11 s later; the handshake window
+        # must outlast that cycle, or every attempt times out just before its answer and a thaw
+        # takes four to six attempts (~100 s, measured 2026-10-08 with a 10 s window).
+        failed = int(host.succeed(f"journalctl -u briard-agent --since='{thawed}' | grep -c 'reconnect attempt' || true").strip())
+        assert failed == 0, f"the thaw took {failed + 1} handshake attempts; the window is shorter than a guest agent restart"
         # What the thaw cost, and what the guest agent did across it: how long until the host
         # was back on the channel, and the guest agent's own journal for the stretch.
         print("=== host agent across the thaw ===")

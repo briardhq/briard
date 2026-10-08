@@ -1266,11 +1266,22 @@ func dialControl(ctx context.Context, sock string) (net.Conn, error) {
 	}
 }
 
+// handshakeWindow bounds a reconnect's handshake, and it is longer than one restart of the
+// guest agent ON PURPOSE. The guest agent exits on the EOF a host disconnect gives it (a pause,
+// then a restart, then its own start-up before it reads the port: ~11 s end to end) and the port
+// buffers what the host wrote meanwhile, so a fresh agent reads the previous attempt's hello and
+// the EOF that ended it, exits again, and the next one reads ours. With a window shorter than
+// that cycle every attempt timed out just before its answer came, the timeout's own close fed
+// the next cycle, and a thawed guest took four to six attempts (~100 s) to come back. Measured
+// 2026-10-08 on the freeze/thaw rig; 30 s covers the cycle with room. A guest that is truly
+// mute costs 30 s per attempt against a recovery window of minutes.
+const handshakeWindow = 30 * time.Second
+
 // connectAndHandshake dials the control socket and negotiates the protocol — the
 // handshake both proves the channel is live and re-learns the (possibly restarted) guest's
 // capabilities. Bounded so a mute guest doesn't hang the dial.
 func connectAndHandshake(ctx context.Context, sock string) (*guestagent.Client, error) {
-	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	dctx, cancel := context.WithTimeout(ctx, handshakeWindow)
 	defer cancel()
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
