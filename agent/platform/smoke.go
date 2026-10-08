@@ -111,18 +111,24 @@ func SmokeTest(ctx context.Context, tree, accel, cpu string, logf func(string, .
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	exited := false
-	defer func() {
+	// stop ends the machine and waits for it: after it, Wait has returned, so the stderr pipe's
+	// copier is finished and the buffer may be read. Reading it with the process alive is a race
+	// with that copier -- a torn first line in the error, in the product's own bring-up path.
+	stop := func() {
 		if !exited {
+			exited = true
 			_ = cmd.Process.Kill()
 			<-done
 		}
-	}()
+	}
+	defer stop()
 	for {
 		select {
 		case err := <-done:
 			exited = true
 			return fmt.Errorf("qemu smoke test: scratch machine exited before it ran (%v): %s", err, firstLine(stderr.String()))
 		case <-ctx.Done():
+			stop()
 			return fmt.Errorf("qemu smoke test: scratch machine did not reach running within %s: %s", smokeTimeout, firstLine(stderr.String()))
 		case <-time.After(50 * time.Millisecond):
 		}
@@ -146,6 +152,7 @@ func SmokeTest(ctx context.Context, tree, accel, cpu string, logf func(string, .
 		}
 		switch st.Status {
 		case "internal-error", "guest-panicked", "shutdown", "io-error":
+			stop()
 			return fmt.Errorf("qemu smoke test: scratch machine is %s: %s", st.Status, firstLine(stderr.String()))
 		}
 	}
