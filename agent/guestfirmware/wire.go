@@ -93,8 +93,10 @@ type Conn struct {
 	nextID  uint64
 	pending map[uint64]chan response
 	// lastReply is when the reader last read a frame -- any frame, any id. The liveness rule
-	// above compares a timed-out call's send time against it.
+	// above compares a timed-out call's send time against it; alive says whether any frame has
+	// ever arrived, because the rule applies only to a connection that has proven itself once.
 	lastReply time.Time
+	alive     bool
 	// readErr is why the reader stopped; set once, after which every call fails with it.
 	readErr  error
 	readDone chan struct{}
@@ -131,7 +133,7 @@ func (c *Conn) reader() {
 			close(c.readDone)
 			return
 		}
-		c.lastReply = time.Now()
+		c.lastReply, c.alive = time.Now(), true
 		if ch, ok := c.pending[resp.ID]; ok {
 			delete(c.pending, resp.ID)
 			ch <- resp
@@ -193,16 +195,26 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 	case <-ctx.Done():
 		c.abandon(id)
 		c.mu.Lock()
-		silent := c.lastReply.Before(sent)
+		silent, alive := c.lastReply.Before(sent), c.alive
 		c.mu.Unlock()
-		if silent {
-			// The liveness rule: nothing answered since this was sent. Close, so the reader
-			// ends and the host re-dials; the error carries both facts, as it always has.
+		switch {
+		case silent && alive:
+			// The liveness rule: nothing answered since this was sent, on a connection that
+			// used to answer. Close, so the reader ends and the host re-dials; the error
+			// carries both facts, as it always has.
 			_ = c.rw.Close()
 			return channelDown(ctx, ctx.Err())
+		case silent:
+			// Nothing has EVER arrived here: not a guest that stopped answering but one that
+			// has not answered yet -- the handshake's case, where the guest agent may be
+			// between an EOF and its restart and the request written meanwhile is lost with
+			// the port it held. The caller decides; sending again on this same connection is
+			// what reaches the agent that opens the port next.
+			return ctx.Err()
+		default:
+			c.cancel(id)
+			return ctx.Err()
 		}
-		c.cancel(id)
-		return ctx.Err()
 	}
 }
 

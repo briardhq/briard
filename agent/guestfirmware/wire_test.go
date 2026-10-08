@@ -111,32 +111,54 @@ func TestServeEndsOnClose(t *testing.T) {
 
 // A guest that reads the request but never replies must not hang the host: the
 // call returns when its context deadline fires (turning a wedged verb into a
-// timeout the caller can act on), not block forever.
+// timeout the caller can act on), not block forever. Two cases, by whether the connection
+// ever answered: one that did and stopped is DEAD (the liveness rule closes it, ErrChannelDown
+// too, so the observe loop re-dials); one that never answered at all is merely UNANSWERED --
+// the handshake's case, where the hello may have been lost in the guest agent's own restart
+// and the right move is to send it again on this same connection, not to close.
 func TestCallHonorsContextOnStuckGuest(t *testing.T) {
-	cconn, sconn := net.Pipe()
-	go io.Copy(io.Discard, sconn) // drain requests, never respond
-	g := NewConn(cconn)
-	defer g.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- g.Call(ctx, VerbHello, nil, nil) }()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("err = %v, want DeadlineExceeded", err)
+	t.Run("never answered: the caller's own deadline, the connection kept", func(t *testing.T) {
+		cconn, sconn := net.Pipe()
+		go io.Copy(io.Discard, sconn) // drain requests, never respond
+		g := NewConn(cconn)
+		defer g.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		err := g.Call(ctx, VerbHello, nil, nil)
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrChannelDown) {
+			t.Fatalf("err = %v, want a plain DeadlineExceeded: nothing has proven this connection alive", err)
 		}
-		// Nothing answered since the call was sent -- the liveness rule -- so the deadline also
-		// closed the channel and it is ErrChannelDown too: a
-		// bounded op sees its timeout AND the observe loop reconnects.
-		if !errors.Is(err, ErrChannelDown) {
-			t.Errorf("a mid-call deadline must also be ErrChannelDown, got %v", err)
+		// Still open: a second hello goes out on it (and times out the same way).
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel2()
+		if err := g.Call(ctx2, VerbHello, nil, nil); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrChannelDown) {
+			t.Fatalf("second hello on the kept connection = %v, want a plain DeadlineExceeded", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("call hung despite a ctx deadline")
-	}
+	})
+	t.Run("answered once, then silent: dead", func(t *testing.T) {
+		cconn, sconn := net.Pipe()
+		answered := false
+		stuck := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+			if !answered {
+				answered = true
+				return "first", nil
+			}
+			<-ctx.Done() // wedged from now on
+			return nil, ctx.Err()
+		}
+		go ServeFrames(context.Background(), sconn, stuck, allActs)
+		g := NewConn(cconn)
+		defer g.Close()
+		if err := g.Call(context.Background(), "echo", nil, nil); err != nil {
+			t.Fatalf("the first call: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		err := g.Call(ctx, "echo", nil, nil)
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrChannelDown) {
+			t.Fatalf("err = %v, want DeadlineExceeded AND ErrChannelDown: it answered once and stopped", err)
+		}
+	})
 }
 
 // A REPLY ALREADY BEING WRITTEN SURVIVES CANCELLATION, which is what makes EOF mean "the agent
@@ -283,6 +305,10 @@ func TestADeadlineWithNoAnswerAtAllIsChannelDown(t *testing.T) {
 	go ServeFrames(context.Background(), sc, slowDispatch(release, nil), allActs)
 	c := NewConn(cc)
 	t.Cleanup(func() { c.Close() })
+	var out string
+	if err := c.Call(context.Background(), "echo", "a", &out); err != nil { // proven alive once
+		t.Fatal(err)
+	}
 
 	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer scancel()

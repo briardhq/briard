@@ -1266,33 +1266,43 @@ func dialControl(ctx context.Context, sock string) (net.Conn, error) {
 	}
 }
 
-// handshakeWindow bounds a reconnect's handshake, and it is longer than one restart of the
-// guest agent ON PURPOSE. The guest agent exits on the EOF a host disconnect gives it (a pause,
-// then a restart, then its own start-up before it reads the port: ~11 s end to end) and the port
-// buffers what the host wrote meanwhile, so a fresh agent reads the previous attempt's hello and
-// the EOF that ended it, exits again, and the next one reads ours. With a window shorter than
-// that cycle every attempt timed out just before its answer came, the timeout's own close fed
-// the next cycle, and a thawed guest took four to six attempts (~100 s) to come back. Measured
-// 2026-10-08 on the freeze/thaw rig; 30 s covers the cycle with room. A guest that is truly
-// mute costs 30 s per attempt against a recovery window of minutes.
-const handshakeWindow = 30 * time.Second
+// A reconnect's handshake is SENT AGAIN on the same connection until something answers, every
+// helloEvery for up to handshakeWindow. The guest agent exits on the EOF a host disconnect gives
+// it, and a hello written into the port between that EOF and its close is lost with the port --
+// the window is the handler it was finishing, under a second, and a thawed guest lands the
+// first hello in it more often than not. Closing on the timeout and re-dialling (the old shape)
+// gave the fresh agent another EOF and another restart, and a thawed guest came back on the
+// second to sixth attempt (measured 2026-10-08: ~100 s). Resending keeps the connection, so the
+// agent that opens the port next reads the hello that was written for it and nobody restarts.
+// A guest that is truly mute is given up on after the window, and the recovery ladder has it.
+const (
+	helloEvery      = 5 * time.Second
+	handshakeWindow = 30 * time.Second
+)
 
 // connectAndHandshake dials the control socket and negotiates the protocol — the
 // handshake both proves the channel is live and re-learns the (possibly restarted) guest's
 // capabilities. Bounded so a mute guest doesn't hang the dial.
 func connectAndHandshake(ctx context.Context, sock string) (*guestagent.Client, error) {
-	dctx, cancel := context.WithTimeout(ctx, handshakeWindow)
-	defer cancel()
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		return nil, err
 	}
 	client := guestagent.NewClient(conn)
-	if _, err := client.Handshake(dctx); err != nil {
-		_ = client.Close()
-		return nil, err
+	giveUp := time.Now().Add(handshakeWindow)
+	for {
+		hctx, cancel := context.WithTimeout(ctx, helloEvery)
+		_, err := client.Handshake(hctx)
+		cancel()
+		if err == nil {
+			return client, nil
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, guestfirmware.ErrChannelDown) || time.Now().After(giveUp) || ctx.Err() != nil {
+			_ = client.Close()
+			return nil, err
+		}
+		// Unanswered, on a connection nothing has answered on yet: send it again.
 	}
-	return client, nil
 }
 
 // Observe reads the node's status on a fixed cadence until ctx is cancelled or the control
