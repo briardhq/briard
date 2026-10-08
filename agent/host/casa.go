@@ -103,7 +103,23 @@ type casaRunner struct {
 	certRead  time.Time // when certUntil was last read back
 	nextRenew time.Time
 	renewing  chan casaIssued // an issuance in flight, off the loop; nil when none
-	pushed    *dashboard.Casa // what the guest was last told, this channel session (newSession)
+	// The other two cloud calls, the same way: a goroutine makes the call and hands the answer
+	// back here for the next tick to apply, so a slow Worker never holds the observe loop. The
+	// loop keeps every write to the runner's state; the goroutines touch none of it.
+	polling chan casaPolled // a claim-status poll in flight; nil when none
+	setting chan casaSetA   // an address write in flight; nil when none
+	pushed  *dashboard.Casa // what the guest was last told, this channel session (newSession)
+}
+
+// casaPolled is what a claim-status poll hands back; casaSetA what an address write does.
+type casaPolled struct {
+	st  casa.ClaimStatus
+	err error
+}
+
+type casaSetA struct {
+	addr string
+	err  error
 }
 
 // casaIssued is what an issuance goroutine hands back.
@@ -228,9 +244,25 @@ func (c *casaRunner) tick(ctx context.Context, r any, vip guest.VIPReader, logf 
 }
 
 func (c *casaRunner) poll(ctx context.Context, now time.Time, logf func(string, ...any)) {
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	st, err := c.cl.ClaimStatus(pctx, c.st.Claim)
+	if c.polling == nil {
+		// Start one, off the loop; its answer lands on a later tick. Never two at once.
+		c.polling = make(chan casaPolled, 1)
+		go func(out chan<- casaPolled, claim string) {
+			pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			st, err := c.cl.ClaimStatus(pctx, claim)
+			out <- casaPolled{st: st, err: err}
+		}(c.polling, c.st.Claim)
+		return
+	}
+	var res casaPolled
+	select {
+	case res = <-c.polling:
+		c.polling = nil
+	default:
+		return // still asking
+	}
+	st, err := res.st, res.err
 	if err != nil {
 		c.nextPoll = now.Add(casaPollRetry)
 		logf("casa: claim status: %v (retrying in %s)", err, casaPollRetry)
@@ -263,20 +295,33 @@ func (c *casaRunner) address(ctx context.Context, vip guest.VIPReader, now time.
 		return // no address to publish yet; the guest says so every tick until there is
 	}
 	addr, _, _ := strings.Cut(cidr, "/")
+	if c.setting != nil {
+		// A write in flight: take its answer if it has one, else let it finish.
+		select {
+		case res := <-c.setting:
+			c.setting = nil
+			if res.err != nil {
+				c.nextA = now.Add(casaAddrRetry)
+				logf("casa: address %s -> %s: %v (retrying in %s)", c.cfg.FlockName, res.addr, res.err, casaAddrRetry)
+				return
+			}
+			c.lastA = res.addr
+			logf("casa: %s -> %s", casa.Names(c.cfg.FlockName)[0], res.addr)
+		default:
+			return
+		}
+	}
 	if addr == c.lastA || now.Before(c.nextA) {
 		return
 	}
 	ts := now.Unix()
 	req := casa.ARequest{Name: c.cfg.FlockName, IP: addr, TS: ts, Sig: ed25519.Sign(c.key, casa.CanonicalA(c.cfg.FlockName, addr, ts))}
-	actx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := c.cl.SetA(actx, req); err != nil {
-		c.nextA = now.Add(casaAddrRetry)
-		logf("casa: address %s -> %s: %v (retrying in %s)", c.cfg.FlockName, addr, err, casaAddrRetry)
-		return
-	}
-	c.lastA = addr
-	logf("casa: %s -> %s", casa.Names(c.cfg.FlockName)[0], addr)
+	c.setting = make(chan casaSetA, 1)
+	go func(out chan<- casaSetA) {
+		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		out <- casaSetA{addr: addr, err: c.cl.SetA(actx, req)}
+	}(c.setting)
 }
 
 // certificate keeps a certificate for the flock's two names on the volume: read back hourly,

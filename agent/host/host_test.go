@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1372,5 +1373,60 @@ func TestObserveSamplesResourcesOnceAMinuteUnlessASoakCollects(t *testing.T) {
 		case !c.perCycle && reads != 1:
 			t.Errorf("%s: sys.resources asked %d times over %d cycles (30 ms); want one", c.what, reads, cycles)
 		}
+	}
+}
+
+// slowCloud answers every report after a delay, and hands back the directives it was given
+// to hand back, once.
+type slowCloud struct {
+	delay      time.Duration
+	directives chan []api.Directive // drained once; later reports bring none
+	reports    *int32
+	acked      *int32 // outcomes the reports carried up, in total
+}
+
+func (c slowCloud) Register(context.Context, api.NodeInfo) (api.Assignment, error) {
+	return api.Assignment{}, nil
+}
+func (c slowCloud) Report(_ context.Context, req api.ReportRequest) ([]api.Directive, error) {
+	time.Sleep(c.delay)
+	atomic.AddInt32(c.reports, 1)
+	atomic.AddInt32(c.acked, int32(len(req.Outcomes)))
+	select {
+	case ds := <-c.directives:
+		return ds, nil
+	default:
+		return nil, nil
+	}
+}
+func (c slowCloud) ReportMetrics(context.Context, string, []api.MetricAggregate) error { return nil }
+
+// A SLOW CONTROLLER COSTS DIRECTIVE LATENCY, NEVER LIVENESS. The report runs off the loop: with
+// a controller that answers in 200 ms the loop cycles many times per report instead of once,
+// one report is in flight at a time, and the directives a reply brings are still applied.
+func TestObserveDoesNotWaitOnTheReport(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	var cycles, reports, acked int32
+	ds := make(chan []api.Directive, 1)
+	ds <- []api.Directive{{ID: "d1", Kind: api.DirectiveNoop}}
+	r := actingGuest{fakeStatus: fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}}, cycles: &cycles, handoffs: new(int32)}
+	var pending []api.DirectiveOutcome
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := cfg.observe(ctx, r, nil, nil, nil, slowCloud{delay: 200 * time.Millisecond, directives: ds, reports: &reports, acked: &acked}, nil, nil, "", nil, &pending, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	n, rp := atomic.LoadInt32(&cycles), atomic.LoadInt32(&reports)
+	if rp < 1 || rp > 3 {
+		t.Fatalf("reports = %d over 500 ms with a 200 ms controller; want one in flight at a time (1-3)", rp)
+	}
+	if n < 10*rp {
+		t.Fatalf("cycles = %d for %d reports; the loop waited on the controller", n, rp)
+	}
+	// The first reply's noop was applied and its outcome rode a later report (and was acked
+	// off pending), or is still pending if the run ended first: either way exactly one outcome.
+	if a := atomic.LoadInt32(&acked); int(a)+len(pending) != 1 {
+		t.Fatalf("acked %d + pending %+v, want the reply's noop directive applied exactly once", a, pending)
 	}
 }

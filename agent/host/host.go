@@ -10,6 +10,7 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -1320,6 +1321,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// The last resource sample and when the next is due (resourcesEvery on a shipped node, below).
 	res := &telemetry.NodeResources{}
 	var resNext time.Time
+	// The cloud calls in flight, off the loop (below): nil when none.
+	var reporting chan reportResult
+	var uploading chan uploadResult
 	// What the guest did while this agent was away (deadman.episode): asked at the start of the
 	// connection and twice more over the next minute, because the deadman leaves its record on
 	// its own 15 s tick after the first contact -- then never, this connection.
@@ -1488,14 +1492,28 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// Retries next cycle; only a success prunes the completed ones.
 		if fresh && agg != nil && rep != nil {
 			agg.add(time.Now(), res)
-			cfg.beat.Beat()
-			mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := rep.ReportMetrics(mctx, cfg.Node, agg.snapshot()); err != nil {
-				logf("metrics upload failed: %v", err)
-			} else {
-				agg.prune(time.Now())
+			// Off the loop, like the report: one upload in flight; its answer prunes what the
+			// snapshot held (the buckets complete when it was taken), never what came after.
+			if uploading != nil {
+				select {
+				case res := <-uploading:
+					uploading = nil
+					if res.err != nil {
+						logf("metrics upload failed: %v", res.err)
+					} else {
+						agg.prune(res.at)
+					}
+				default:
+				}
 			}
-			cancel()
+			if uploading == nil {
+				uploading = make(chan uploadResult, 1)
+				go func(out chan<- uploadResult, at time.Time, snap []api.MetricAggregate) {
+					mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					out <- uploadResult{at: at, err: rep.ReportMetrics(mctx, cfg.Node, snap)}
+				}(uploading, time.Now(), agg.snapshot())
+			}
 		}
 		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s bundle=%s%s tick=%dms",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
@@ -1513,28 +1531,46 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			da.observe(ctx, n, cfg.Node, cfg.StateDisk, time.Now(), logf) // one statfs every diskReadEvery
 		}
 		if rep != nil {
-			cfg.beat.Beat()
-			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			mdnsNames(rctx, r, &st) // the report is what carries them; nothing here reads them
-			csr := cr.pendingCSR    // ride a queued CSR up (nil on every ordinary report)
-			directives, err := rep.Report(rctx, api.ReportRequest{Status: st, CSR: csr, Outcomes: *pending})
-			cancel()
-			if err != nil {
-				logf("report to controller failed: %v", err) // transient: keep observing (outcomes retry)
-			} else {
-				if csr != nil {
-					cr.pendingCSR = nil // uploaded; keep the key stashed until the cert returns
-				}
-				*pending = nil // acked -- collect this cycle's fresh outcomes below
-				for _, d := range directives {
-					// Per directive, not per batch: a batch of slow ones would otherwise open
-					// exactly the gap this rule exists to close. The legs that block for minutes
-					// (the upgrade path, the recovery ladder) take their own lease.
-					cfg.beat.Beat()
-					if o, done := cfg.run(ctx, d, originCloud, nil, r, up, n, cr, cs, su, logf); done {
-						cfg.finish(actResult{d: d, o: o}, pending, logf)
+			// THE REPORT RUNS OFF THE LOOP, like every cloud call: a goroutine sends it and
+			// hands the reply back here, where the next cycle applies it -- the outcomes it
+			// carried are acked, the CSR it carried is cleared, the directives it brought are
+			// routed to their lanes. One report in flight at a time; a cycle that finds one
+			// still out skips its own, and the next report carries the newer status. A slow
+			// controller therefore costs directive latency, never liveness.
+			if reporting != nil {
+				select {
+				case res := <-reporting:
+					reporting = nil
+					if res.err != nil {
+						logf("report to controller failed: %v", res.err) // transient: keep observing (outcomes retry)
+					} else {
+						if res.csr != nil && bytes.Equal(cr.pendingCSR, res.csr) {
+							cr.pendingCSR = nil // uploaded; keep the key stashed until the cert returns
+						}
+						*pending = (*pending)[res.sent:] // acked: what rode this report; later ones stay
+						for _, d := range res.directives {
+							// Per directive, not per batch: a batch of slow ones would otherwise open
+							// exactly the gap this rule exists to close. The legs that block for minutes
+							// (the upgrade path, the recovery ladder) take their own lease.
+							cfg.beat.Beat()
+							if o, done := cfg.run(ctx, d, originCloud, nil, r, up, n, cr, cs, su, logf); done {
+								cfg.finish(actResult{d: d, o: o}, pending, logf)
+							}
+						}
 					}
+				default:
 				}
+			}
+			if reporting == nil {
+				reporting = make(chan reportResult, 1)
+				req := api.ReportRequest{Status: st, CSR: cr.pendingCSR, Outcomes: slices.Clone(*pending)}
+				go func(out chan<- reportResult, req api.ReportRequest) {
+					rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					mdnsNames(rctx, r, &req.Status) // the report is what carries them; nothing else reads them
+					ds, err := rep.Report(rctx, req)
+					out <- reportResult{sent: len(req.Outcomes), csr: req.CSR, directives: ds, err: err}
+				}(reporting, req)
 			}
 		}
 		// AN ARMED CANDIDATE IS TRIALLED HERE, in the loop body rather than under `rep != nil`,
@@ -2094,6 +2130,22 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		st.Healthy = healthy
 	}
 	return st, cl, probe, nil
+}
+
+// reportResult is what a report goroutine hands back: what it sent (so the loop acks exactly
+// that) and what the controller answered.
+type reportResult struct {
+	sent       int    // how many pending outcomes rode it
+	csr        []byte // the CSR it carried, nil on an ordinary report
+	directives []api.Directive
+	err        error
+}
+
+// uploadResult is what a metrics upload hands back: when its snapshot was taken, and whether
+// it landed.
+type uploadResult struct {
+	at  time.Time
+	err error
 }
 
 // mdnsNames adds what the node is publishing to a snapshot -- read when something asks (the

@@ -37,6 +37,7 @@ type fakeCasaCloud struct {
 	certs    int
 	certErr  error
 	notAfter time.Time
+	slow     time.Duration // how long every poll and address write takes to answer
 }
 
 func (f *fakeCasaCloud) Claim(_ context.Context, req casa.ClaimRequest) (string, *casa.ClaimStatus, error) {
@@ -55,6 +56,7 @@ func (f *fakeCasaCloud) Claim(_ context.Context, req casa.ClaimRequest) (string,
 }
 
 func (f *fakeCasaCloud) ClaimStatus(_ context.Context, id string) (casa.ClaimStatus, error) {
+	time.Sleep(f.slow)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.polls++
@@ -65,6 +67,7 @@ func (f *fakeCasaCloud) ClaimStatus(_ context.Context, id string) (casa.ClaimSta
 }
 
 func (f *fakeCasaCloud) SetA(_ context.Context, req casa.ARequest) error {
+	time.Sleep(f.slow)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.addrErr != nil {
@@ -166,7 +169,29 @@ func (r *casaRig) restart() {
 	r.cs.now = func() time.Time { return r.now }
 }
 
-func (r *casaRig) tick(t *testing.T) { r.cs.tick(context.Background(), r.guest, r.guest, t.Logf) }
+// tick is one observe tick plus what it set in motion: the cloud calls (a poll, an address
+// write, an issuance) run off the loop and answer on a later tick, so a test tick waits for each
+// one it started to answer and ticks again to apply it. The fake cloud answers at once.
+func (r *casaRig) tick(t *testing.T) {
+	t.Helper()
+	r.cs.tick(context.Background(), r.guest, r.guest, t.Logf)
+	for round := 0; round < 4; round++ {
+		pending := 0
+		for _, n := range []int{len(r.cs.polling), len(r.cs.setting), len(r.cs.renewing)} {
+			pending += n
+		}
+		inflight := r.cs.polling != nil || r.cs.setting != nil || r.cs.renewing != nil
+		if !inflight {
+			return
+		}
+		deadline := time.Now().Add(time.Second)
+		for pending == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+			pending = len(r.cs.polling) + len(r.cs.setting) + len(r.cs.renewing)
+		}
+		r.cs.tick(context.Background(), r.guest, r.guest, t.Logf)
+	}
+}
 
 func (r *casaRig) claim(t *testing.T, email string) api.DirectiveOutcome {
 	t.Helper()
@@ -377,5 +402,35 @@ func TestCasaViewIsPushedAgainEachSession(t *testing.T) {
 	r.tick(t)
 	if len(r.guest.views) != 2 || r.guest.views[1] != r.guest.views[0] {
 		t.Fatalf("after a new session the views are %+v; want the same view pushed again", r.guest.views)
+	}
+}
+
+// A SLOW WORKER NEVER HOLDS THE TICK. The poll and the address write run off the loop and
+// answer on a later tick, so a tick with a Worker that takes half a second returns at once --
+// and the answers still land: the claim registers and the address is written once they do.
+func TestCasaSlowCloudDoesNotHoldTheTick(t *testing.T) {
+	r := newCasaRig(t)
+	r.cloud.slow = 500 * time.Millisecond
+	r.claim(t, "owner@example.org")
+	r.cloud.status = casa.ClaimStatus{State: casa.ClaimRegistered}
+
+	start := time.Now()
+	r.cs.tick(context.Background(), r.guest, r.guest, t.Logf) // starts the poll, bare
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Fatalf("a tick waited %s on the Worker; the poll must run off the loop", took)
+	}
+	r.tick(t) // settles it
+	if !r.cs.st.Registered {
+		t.Fatal("the slow poll's answer never landed: the claim is not registered")
+	}
+	r.now = r.now.Add(time.Minute)
+	start = time.Now()
+	r.cs.tick(context.Background(), r.guest, r.guest, t.Logf) // starts the address write, bare
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Fatalf("a tick waited %s on the Worker; the address write must run off the loop", took)
+	}
+	r.tick(t)
+	if addrs, _, _ := r.cloud.snapshot(); len(addrs) != 1 {
+		t.Fatalf("addresses = %v, want the one write once its answer landed", addrs)
 	}
 }
