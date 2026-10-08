@@ -1034,6 +1034,13 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	if st, _, _, _ := snap(cfg, fakeStatus{qs: isolated, peers: holder, vip: ""}, ""); st.Healthy {
 		t.Error("a non-quorate secondary must not read healthy")
 	}
+
+	// A LONE node that is not serving -- its chain failed (a converge that could not fetch an
+	// image, a member past its start limit) and the hold took it down -- stands by for nobody.
+	// Quorate and up to date on its own, it is a house nobody holds and must read unhealthy.
+	if st, _, _, _ := snap(cfg, fakeStatus{qs: participating, vip: ""}, ""); st.Healthy {
+		t.Error("a lone node that is not serving has no one to stand by for and must not read healthy")
+	}
 }
 
 // When the guest predates service.health (the verb errors), snapshot falls back to the legacy
