@@ -26,8 +26,8 @@ import (
 )
 
 // localRequest is one CLI-submitted directive plus the channel its terminal outcome returns on.
-// The observe loop is the only consumer: applying there rather than in the accept goroutine is
-// what keeps an admin op off the guest channel while a cycle is using it.
+// The observe loop is the only consumer: it decides the lane a directive runs on (acts.go), and
+// one place must own that decision.
 type localRequest struct {
 	d    api.Directive
 	resp chan api.DirectiveOutcome

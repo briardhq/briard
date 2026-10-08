@@ -141,9 +141,23 @@ pkgs.testers.runNixOSTest {
         return m.group(1) == "0"
 
     def install(label):
+        # THE LOOP KEEPS TICKING WHILE AN INSTALL RUNS. A service install leaves the observe loop
+        # (agent/host/acts.go), so the status line -- every STATUS_EVERY=2s here -- keeps coming
+        # between the moment the directive is submitted and the moment the install says it is
+        # serving; an install that held the loop logged nothing in between (the 2026-09-01 shape:
+        # a guest frozen inside a pull, unnoticed until the budget expired). The window is real
+        # by construction -- the app is ready 3 s after its start and the health gate polls every
+        # 5 s -- and asserted as such: an install that spans no tick fails here too.
+        cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
         rc, out = host.execute("briard-agent app install ${fixture.serviceName} 2>&1")
         print(f"install {label}: rc={rc}\n{out}")
         assert rc == 0, f"installing {label} failed (rc={rc}):\n{out}"
+        lines = host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{cursor}'").splitlines()
+        first = next(i for i, l in enumerate(lines) if "directive kind=service-install submitted locally" in l)
+        last = next(i for i, l in enumerate(lines) if "healthy, serving" in l)
+        ticks = sum(1 for l in lines[first:last] if "status node=" in l)
+        assert ticks >= 1, f"install {label}: no status line between submit and serving ({last - first} lines) -- the install held the loop:\n" + "\n".join(lines[first:last + 1])
+        print(f"install {label}: {ticks} status lines while it ran")
 
     # v1 arrives the way a pull would leave it: loaded at runtime, so NOT one the OS image carries.
     guest("podman load -i /etc/briard-test/v1.tar", wait=20)

@@ -417,6 +417,9 @@ type Config struct {
 	// holds a refusal the doctor reads. Machinery like beat; nil-safe, and inert on any other
 	// substrate. Written by the observe loop only.
 	ipvtap *ipvtapCopier
+	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
+	// nil means everything runs on the loop (tests). Set by Run.
+	acts *actLane
 
 	// vip is VIPAddr as it stands NOW: `briard config set vip` changes it at runtime (configset.go),
 	// and every bring-up after that must carry the new value. A pointer for net's reason -- Config
@@ -823,6 +826,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// closure mechanisms failing on the same case is what made this a deterministic loop on a
 	// broken release rather than an occasional retry.
 	var pendingOutcomes []api.DirectiveOutcome
+	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
 	var recovery guestRecovery
 	for {
 		served := time.Now()
@@ -1514,10 +1518,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 					// exactly the gap this rule exists to close. The legs that block for minutes
 					// (the upgrade path, the recovery ladder) take their own lease.
 					cfg.beat.Beat()
-					o := cfg.dispatch(ctx, d, originCloud, r, up, n, cr, cs, su, logf)
-					cfg.adoptInstalledServices(d, o, logf)
-					if o.ID != "" {
-						*pending = append(*pending, o)
+					if o, done := cfg.run(ctx, d, originCloud, nil, r, up, n, cr, cs, su, logf); done {
+						cfg.finish(actResult{d: d, o: o}, pending, logf)
 					}
 				}
 			}
@@ -1536,12 +1538,13 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// directive's outcome goes back to the CLI and is never appended -- which is what lets
 		// one gate serve both instead of a second call site under `rep == nil`.
 		//
-		// THIS IS THE SAFE POINT the CLI and the installer promise. The loop is a single
-		// goroutine and every leg that must not be interrupted -- bring-up, recovery, a cloud or
-		// a local directive -- runs to completion inside one iteration, so reaching this line is
-		// itself the proof that none is in flight. The restart is detached and the guest is
-		// re-adopted rather than relaunched, so acting now costs the household nothing.
-		if su != nil && su.Armed() && len(*pending) == 0 {
+		// THIS IS THE SAFE POINT the CLI and the installer promise. Every leg that must not be
+		// interrupted and runs on the loop -- bring-up, recovery, a relaunching directive --
+		// runs to completion inside one iteration, so reaching this line proves none of those
+		// is in flight; the one kind of leg that runs OFF the loop (an act, acts.go) is asked
+		// directly. The restart is detached and the guest is re-adopted rather than
+		// relaunched, so acting now costs the household nothing.
+		if su != nil && su.Armed() && len(*pending) == 0 && !cfg.acts.inFlight() {
 			logf("agent-update: armed -- restarting to trial the staged binary")
 			if err := su.Restart(ctx); err != nil {
 				logf("agent-update: restart request failed (will retry next cycle): %v", err)
@@ -1551,20 +1554,24 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		case <-ctx.Done():
 			return nil
 		case rq := <-local:
-			// A directive submitted through the local admin door. Applied HERE, in the
-			// observe loop, for exactly the reason cloud directives are: the agent owns the guest
-			// control channel, so an admin op must never run concurrently with a cycle. Arriving
-			// on the select also WAKES the loop, so the CLI isn't left waiting out a StatusEvery
-			// tick before anything happens.
+			// A directive submitted through the local admin door. Routed HERE, by the observe
+			// loop, for exactly the reason cloud directives are: the loop decides the lane
+			// (acts.go) -- on itself for one that relaunches the guest, off it for an act or a
+			// pull -- and only one place may make that decision. Arriving on the select also
+			// WAKES the loop, so the CLI isn't left waiting out a StatusEvery tick.
 			//
 			// Its outcome goes back to the CLI and NOWHERE ELSE — deliberately not appended to
 			// pendingOutcomes. Outcomes close the loop on an intent the cloud announced;
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
 			cfg.beat.Beat()
-			o := cfg.dispatch(ctx, rq.d, originLocal, r, up, n, cr, cs, su, logf)
-			rq.resp <- o // answer the CLI first; adopting is bookkeeping it need not wait on
-			cfg.adoptInstalledServices(rq.d, o, logf)
+			if o, done := cfg.run(ctx, rq.d, originLocal, &rq, r, up, n, cr, cs, su, logf); done {
+				cfg.finish(actResult{d: rq.d, o: o, rq: &rq}, pending, logf)
+			}
+		case res := <-cfg.acts.ch():
+			// A directive that ran off the loop (acts.go) is finished here, where its
+			// bookkeeping lives; arriving on the select wakes the loop like a local request.
+			cfg.finish(res, pending, logf)
 		case <-t.C:
 			cfg.alertGuestRevert(ctx, n, logf, &revertAlerted)
 		}
