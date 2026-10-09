@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -369,6 +370,12 @@ type systemStater interface {
 // `failed`, and covered for the storage chain by the gate before it), and a mount that came up but
 // wrong (a read-only btrfs is a mounted filesystem, not a failed unit).
 //
+// ONE FAILED UNIT IS NOT THE IMAGE'S: drbd-reactor's promote unit (drbd-promote@<res>). The
+// promoter tries to promote on every node that comes up, and on a standby -- a peer already
+// Primary -- `drbdadm primary` refuses and the unit is left failed; that is the promoter losing
+// the race it is meant to lose, and the reactor retries on its own. Whether the storage came up
+// is the node-local gate's question, answered before this one.
+//
 // Each read runs on a context detached from ctx and bounded on its own, for AwaitReady's reason:
 // a deadline landing inside a call would close the channel the restore then needs.
 func systemRunning(ctx context.Context, g systemStater, every time.Duration) error {
@@ -377,11 +384,12 @@ func systemRunning(ctx context.Context, g systemStater, every time.Duration) err
 		st, err := g.SystemState(rctx)
 		cancel()
 		if err == nil && st.State != "starting" && st.State != "initializing" {
+			failed := slices.DeleteFunc(slices.Clone(st.Failed), func(u string) bool { return strings.HasPrefix(u, "drbd-promote@") })
 			switch {
-			case st.State == "running":
+			case st.State == "running", st.State == "degraded" && len(st.Failed) > 0 && len(failed) == 0:
 				return nil
-			case len(st.Failed) > 0:
-				return fmt.Errorf("guest system is %s: failed units %s", st.State, strings.Join(st.Failed, ", "))
+			case len(failed) > 0:
+				return fmt.Errorf("guest system is %s: failed units %s", st.State, strings.Join(failed, ", "))
 			default:
 				return fmt.Errorf("guest system is %q, not running", st.State)
 			}
