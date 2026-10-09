@@ -1338,6 +1338,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	sa := &serviceAlerter{}
 	// When the host disk holding this node's disks runs short (disks.go); same reason.
 	da := &diskAlerter{read: reportcard.DiskFreeMB}
+	// The health of the disks under this node's data (disks.go); same reason.
+	sm := &smartAlerter{disks: reportcard.DataDisks, read: reportcard.ReadSMART}
 	// When the guest needs more memory (memory.go); its clocks span cycles, so it lives here too.
 	mg := &memoryGrower{}
 	var memSizeNext time.Time // when to next ask the VM its size, to end a memory alert (below)
@@ -1570,6 +1572,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 
 		if cfg.StateDisk != "" {
 			da.observe(ctx, n, cfg.Node, cfg.StateDisk, time.Now(), logf) // one statfs every diskReadEvery
+		}
+		if cfg.DataDisk != "" {
+			sm.observe(ctx, n, cfg.Node, cfg.DataDisk, time.Now(), logf) // a background smartctl every smartReadEvery
 		}
 		if rep != nil {
 			// THE REPORT RUNS OFF THE LOOP, like every cloud call: a goroutine sends it and

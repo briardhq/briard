@@ -31,24 +31,34 @@ let
   # The binaries the free-local install needs: qemu-system-x86_64 to boot the guest, and
   # qemu-img to make the writable guest overlay at install time (the installer ships its own
   # qemu, so it can't lean on a distro qemu-img). They share one qemu build, so one identical
-  # .so closure -- relocate both into $out/bin over the shared $out/lib.
-  qemuBins = "qemu-system-x86_64 qemu-img";
+  # .so closure -- relocate both into $out/bin over the shared $out/lib. smartctl rides along for
+  # the disk-health check (agent/reportcard/diskhealth.go): one more binary on the same glibc and
+  # libstdc++, so it costs its own 1.2 MB and no library the tree did not already hold.
+  bundleBins = "${baseQemu}/bin/qemu-system-x86_64 ${baseQemu}/bin/qemu-img ${pkgs.smartmontools}/bin/smartctl";
 
-  # Relocate: copy the qemu binaries + their transitive .so closure + the loader into a flat
+  # Relocate: copy the binaries + their transitive .so closure + the loader into a flat
   # tree, then patchelf the interpreter to <prefix>/lib and every RPATH to $ORIGIN-relative.
   # dlopen'd modules are NOT captured by ldd -- baseQemu with modules is a known gap for booting
   # (block drivers); --version + accel probing don't dlopen, which is what assertion (a) proves.
   bundle = pkgs.runCommand "briard-qemu-bundle" {
-    nativeBuildInputs = [ pkgs.patchelf pkgs.glibc.bin pkgs.coreutils ];
-    inherit installPrefix qemuBins;
+    nativeBuildInputs = [ pkgs.patchelf pkgs.glibc.bin pkgs.coreutils pkgs.diffutils ];
+    inherit installPrefix bundleBins;
   } ''
     mkdir -p "$out/bin" "$out/lib"
-    for b in $qemuBins; do
-      cp "${baseQemu}/bin/$b" "$out/bin/$b"
+    for src in $bundleBins; do
+      b=$(basename "$src")
+      cp "$src" "$out/bin/$b"
       chmod u+w "$out/bin/$b"
       # Transitive shared-library closure (ldd shows the full transitive set for a non-dlopen binary).
-      for so in $(ldd "${baseQemu}/bin/$b" | awk '{print $3}' | grep '^/'); do
-        cp -Ln "$so" "$out/lib/" 2>/dev/null || true
+      # The tree is flat, so two binaries needing two different builds of one library would
+      # silently get the first: refuse that instead.
+      for so in $(ldd "$src" | awk '{print $3}' | grep '^/'); do
+        dst="$out/lib/$(basename "$so")"
+        if [ -e "$dst" ]; then
+          cmp -s "$so" "$dst" || { echo "$b needs a different $(basename "$so") than the bundle holds" >&2; exit 1; }
+        else
+          cp -L "$so" "$dst"
+        fi
       done
     done
     # The dynamic loader itself (identical for both binaries).
@@ -63,7 +73,7 @@ let
     # locate libc.so.6 in lib/. The loader itself must stay pristine -- patchelf'ing ld-linux
     # corrupts it (segfault in _dl_start), so it is explicitly excluded from the rpath pass below.
     loaderBase=$(basename "$loader")
-    for b in $qemuBins; do
+    for b in $(cd "$out/bin" && ls); do
       patchelf --set-interpreter "${installPrefix}/lib/$loaderBase" \
                --set-rpath '$ORIGIN/../lib' "$out/bin/$b"
     done
@@ -92,7 +102,7 @@ let
     done
 
     # A record of what we bundled, for debugging drift.
-    for b in $qemuBins; do ${pkgs.file}/bin/file "$out/bin/$b" >> "$out/PROVENANCE" || true; done
+    for b in $(cd "$out/bin" && ls); do ${pkgs.file}/bin/file "$out/bin/$b" >> "$out/PROVENANCE" || true; done
     echo "prefix=${installPrefix}" >> "$out/PROVENANCE"
     echo "firmware:" >> "$out/PROVENANCE"
     ls "$out/share/qemu" >> "$out/PROVENANCE" || true
@@ -154,6 +164,13 @@ let
           + "sh -c 'mount -t tmpfs none /nix && exec /opt/briard/qemu/bin/qemu-img --version'"
       )
       assert "qemu-img" in out, "bundled qemu-img did not run with /nix hidden"
+
+      # And smartctl, which the agent's disk-health check runs from this tree.
+      out = machine.succeed(
+          "unshare --mount --propagation private "
+          + "sh -c 'mount -t tmpfs none /nix && exec /opt/briard/qemu/bin/smartctl --version'"
+      )
+      assert "smartctl" in out, "bundled smartctl did not run with /nix hidden"
     '';
   };
 in

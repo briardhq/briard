@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"briard.io/agent/platform"
+	"briard.io/agent/reportcard"
 	"briard.io/shared/notify"
 )
 
@@ -217,4 +218,74 @@ func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	if len(fn.alerts) != 3 || fn.alerts[2].Kind != notify.Open {
 		t.Fatalf("a second episode did not warn: %+v", fn.alerts)
 	}
+}
+
+// The disk-health alert: a steady count of recorded errors says nothing, a GROWING one warns,
+// the disk's own failing verdict is critical, an unreadable read changes nothing, and only a
+// clean disk resolves. One read an hour, and never a second while one is still out.
+func TestSMARTAlerterWarnsOnGrowthAndFailure(t *testing.T) {
+	fn := &fakeNotifier{}
+	st := testStore(t, fn)
+
+	var answer reportcard.SMART
+	reads := 0
+	release := make(chan struct{})
+	a := &smartAlerter{
+		disks: func(path string) ([]string, error) {
+			if path != "/var/lib/briard" {
+				t.Errorf("resolved %q, want the data disk's directory", path)
+			}
+			return []string{"/dev/sda"}, nil
+		},
+		read: func(context.Context, []string) []reportcard.SMART {
+			<-release
+			reads++
+			return []reportcard.SMART{answer}
+		},
+	}
+	t0 := time.Now()
+	observe := func(at time.Time) {
+		a.observe(context.Background(), st, "n1", "/var/lib/briard/data.img", at, func(string, ...any) {})
+	}
+	at := func(hour int, s reportcard.SMART) {
+		t.Helper()
+		s.Device = "/dev/sda"
+		answer = s
+		now := t0.Add(time.Duration(hour) * time.Hour)
+		observe(now) // starts the read
+		release <- struct{}{}
+		for a.got != nil { // the loop's later ticks take the answer
+			observe(now)
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	at(0, reportcard.SMART{Read: true, Errors: 3}) // a count it came with: nothing
+	observe(t0.Add(30 * time.Minute))              // inside the hour: no read
+	at(1, reportcard.SMART{Read: true, Errors: 3})
+	if reads != 2 || len(fn.alerts) != 0 {
+		t.Fatalf("a steady count: %d reads, alerts %+v; want 2 reads and none", reads, fn.alerts)
+	}
+	at(2, reportcard.SMART{Read: true, Errors: 5})
+	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open || fn.alerts[0].Severity != notify.Warning ||
+		fn.alerts[0].Key != "disk-health:sda" || !strings.Contains(fn.alerts[0].Body, "up from 3") {
+		t.Fatalf("want a growth warning for sda, got %+v", fn.alerts)
+	}
+	at(3, reportcard.SMART{Why: "asleep"}) // unknown: nothing
+	at(4, reportcard.SMART{Read: true, Failing: true, Errors: 5, Why: "read-only"})
+	if len(fn.alerts) != 2 || fn.alerts[1].Severity != notify.Critical || !strings.Contains(fn.alerts[1].Body, "read-only") {
+		t.Fatalf("want a critical failing alert, got %+v", fn.alerts)
+	}
+	at(5, reportcard.SMART{Read: true}) // a replaced disk
+	if len(fn.alerts) != 3 || fn.alerts[2].Kind != notify.Resolved {
+		t.Fatalf("want a resolve on a clean disk, got %+v", fn.alerts)
+	}
+
+	// A read that does not come back holds the next: one smartctl at a time, however long.
+	observe(t0.Add(6 * time.Hour))
+	observe(t0.Add(8 * time.Hour))
+	if reads != 6 || a.got == nil {
+		t.Fatalf("%d reads, in flight %v; want the stuck read alone", reads, a.got != nil)
+	}
+	release <- struct{}{}
 }

@@ -188,3 +188,95 @@ func (a *diskAlerter) observe(ctx context.Context, n notify.Notifier, node, disk
 		})
 	}
 }
+
+// smartAlerter tells the household when a disk under this node's data says it is failing, or
+// records new bad sectors -- the likeliest way a home machine dies, and otherwise the first sign
+// is the failure itself.
+//
+// IT READS IN THE BACKGROUND, one read in flight at a time, and the loop takes the answer at a
+// later tick: a disk behind a slow bridge can hold smartctl in a command timeout that no context
+// can cut short, and the loop must keep beating through it.
+//
+// FAILING opens at Critical, and GROWTH opens at Warning: more recorded errors than the first
+// read this agent made. A steady count opens nothing -- some disks run for years with a few
+// remapped sectors -- and an agent restarted under an open growth alert says nothing, so the
+// store keeps it. Only a disk reading clean (no verdict of failing, no errors) resolves: a
+// replaced disk, in practice. AN UNKNOWN IS NOT AN ALARM: an unreadable disk, or one asleep,
+// changes nothing.
+type smartAlerter struct {
+	disks func(path string) ([]string, error)                // reportcard.DataDisks in production
+	read  func(context.Context, []string) []reportcard.SMART // reportcard.ReadSMART in production
+	next  time.Time
+	got   chan []reportcard.SMART // non-nil while a read is in flight
+	base  map[string]int64        // per disk: the errors it had at this agent's first read of it
+}
+
+const smartReadEvery = time.Hour
+
+// observe starts a read of the disks under disk (the data disk) when one is due, and judges one
+// when it is done.
+func (a *smartAlerter) observe(ctx context.Context, n notify.Notifier, node, disk string, now time.Time, logf func(string, ...any)) {
+	if a.got != nil {
+		select {
+		case ss := <-a.got:
+			a.got = nil
+			a.judge(ctx, n, node, ss, logf)
+		default:
+		}
+		return
+	}
+	if now.Before(a.next) {
+		return
+	}
+	a.next = now.Add(smartReadEvery)
+	devs, err := a.disks(filepath.Dir(disk))
+	if err != nil || len(devs) == 0 {
+		return
+	}
+	got := make(chan []reportcard.SMART, 1)
+	a.got = got
+	go func() { got <- a.read(ctx, devs) }()
+}
+
+func (a *smartAlerter) judge(ctx context.Context, n notify.Notifier, node string, ss []reportcard.SMART, logf func(string, ...any)) {
+	if a.base == nil {
+		a.base = map[string]int64{}
+	}
+	for _, s := range ss {
+		if !s.Read {
+			continue
+		}
+		base, seen := a.base[s.Device]
+		if !seen {
+			a.base[s.Device], base = s.Errors, s.Errors
+		}
+		key := "disk-health:" + filepath.Base(s.Device)
+		switch {
+		case s.Failing:
+			fireAlert(ctx, n, logf, notify.Alert{
+				Key:      key,
+				Kind:     notify.Open,
+				Severity: notify.Critical,
+				Title:    "Briard: a disk is failing",
+				Body: fmt.Sprintf("disk %s on node %s reports it is failing (%s). Your data lives on it: replace it soon.",
+					s.Device, node, s.Why),
+			})
+		case s.Errors > base:
+			fireAlert(ctx, n, logf, notify.Alert{
+				Key:      key,
+				Kind:     notify.Open,
+				Severity: notify.Warning,
+				Title:    "Briard: a disk is recording errors",
+				Body: fmt.Sprintf("disk %s on node %s has recorded %d bad sectors or media errors, up from %d. A disk whose "+
+					"count keeps growing is wearing out: plan to replace it.", s.Device, node, s.Errors, base),
+			})
+		case s.Errors == 0:
+			fireAlert(ctx, n, logf, notify.Alert{
+				Key:   key,
+				Kind:  notify.Resolved,
+				Title: "Briard: the disk reports no warnings",
+				Body:  fmt.Sprintf("disk %s on node %s reports no warnings in its health report.", s.Device, node),
+			})
+		}
+	}
+}

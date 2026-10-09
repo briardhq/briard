@@ -1,0 +1,35 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "platform_info": "x86_64-linux-6.18.54",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "-j",
+      "-H",
+      "-A",
+      "-n",
+      "standby",
+      "/dev/zram0"
+    ],
+    "messages": [
+      {
+        "string": "/dev/zram0: Unable to detect device type",
+        "severity": "error"
+      }
+    ],
+    "exit_status": 1
+  },
+  "local_time": {
+    "time_t": 1791536912,
+    "asctime": "Fri Oct  9 12:08:32 2026 EEST"
+  }
+}

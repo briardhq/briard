@@ -16,6 +16,8 @@ type LiveFacts struct {
 	DiskFreeMB int
 	// NTPSynced is timedatectl's NTPSynchronized: "yes", "no", or "" when it could not be read.
 	NTPSynced string
+	// Disks is the health report of each disk under the node's data, read by smartctl.
+	Disks []SMART
 }
 
 // The live disk threshold: a running node's volumes are already paid for, so what it needs free is
@@ -46,13 +48,23 @@ func AssessLive(f LiveFacts) []Check {
 	default:
 		cs = append(cs, Check{"clock", Warn, "could not read whether the clock is synchronised (timedatectl)", ""})
 	}
+	for _, d := range f.Disks {
+		cs = append(cs, SMARTCheck(d))
+	}
 	return cs
 }
 
 // GatherLive reads LiveFacts. Best-effort: an unreadable fact reads as "could not tell", which
 // AssessLive says out loud rather than passing.
 func GatherLive(ctx context.Context) LiveFacts {
-	return LiveFacts{DiskFreeMB: diskFreeMB(installRoot()), NTPSynced: NTPSynced(ctx)}
+	f := LiveFacts{DiskFreeMB: diskFreeMB(installRoot()), NTPSynced: NTPSynced(ctx)}
+	devs, err := DataDisks(petDir)
+	if err != nil {
+		f.Disks = []SMART{{Device: petDir, Why: err.Error()}}
+	} else {
+		f.Disks = ReadSMART(ctx, devs)
+	}
+	return f
 }
 
 // NTPSynced is timedatectl's NTPSynchronized: "yes", "no", or "" when it could not be read (no
