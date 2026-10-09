@@ -1590,6 +1590,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 						}
 						*pending = (*pending)[res.sent:] // acked: what rode this report; later ones stay
 						for _, d := range res.directives {
+							if cfg.acts.ours(d.ID, *pending) {
+								continue // a re-delivered copy of one still in hand (acts.go)
+							}
 							// Per directive, not per batch: a batch of slow ones would otherwise open
 							// exactly the gap this rule exists to close. The legs that block for minutes
 							// (the upgrade path, the recovery ladder) take their own lease.
@@ -1661,6 +1664,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		case res := <-cfg.acts.ch():
 			// A directive that ran off the loop (acts.go) is finished here, where its
 			// bookkeeping lives; arriving on the select wakes the loop like a local request.
+			cfg.acts.drained(res.d.ID)
 			cfg.finish(res, pending, logf)
 		case <-t.C:
 			cfg.alertGuestRevert(ctx, n, logf, &revertAlerted)

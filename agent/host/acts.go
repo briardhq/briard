@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"briard.io/agent/install"
@@ -42,8 +43,9 @@ import (
 // it started with and still reports through here.
 type actLane struct {
 	mu      sync.Mutex
-	busy    string        // the kind of the act in flight, "" when none
-	done    chan struct{} // closed when the act in flight ends; Run waits on it for a relauncher
+	busy    string          // the kind of the act in flight, "" when none
+	sent    map[string]bool // IDs sent off the loop whose result the loop has not drained yet
+	done    chan struct{}   // closed when the act in flight ends; Run waits on it for a relauncher
 	results chan actResult
 }
 
@@ -59,7 +61,7 @@ func newActLane() *actLane {
 	// Buffered past anything in flight: one act plus a handful of pulls, and the loop drains it
 	// every cycle. A send never waits on the loop, so a directive's goroutine cannot be held
 	// by the loop it is reporting to.
-	return &actLane{results: make(chan actResult, 16)}
+	return &actLane{results: make(chan actResult, 16), sent: map[string]bool{}}
 }
 
 // offLoopActs are the kinds that run off the loop one at a time; offLoopPulls the kinds that run
@@ -157,6 +159,9 @@ func (cfg Config) run(ctx context.Context, d api.Directive, o origin, rq *localR
 				Detail: "busy: a " + held + " is in progress on this node; try again when it finishes"}, true
 		}
 	}
+	a.mu.Lock()
+	a.sent[d.ID] = true
+	a.mu.Unlock()
 	go func() {
 		if offLoopActs[d.Kind] {
 			defer a.release()
@@ -164,6 +169,32 @@ func (cfg Config) run(ctx context.Context, d api.Directive, o origin, rq *localR
 		a.results <- actResult{d: d, o: cfg.dispatch(ctx, d, o, r, up, n, cr, cs, su, logf), rq: rq}
 	}()
 	return api.DirectiveOutcome{}, false
+}
+
+// drained forgets a directive the loop has taken off the results channel: from here its outcome
+// is the loop's own (pendingOutcomes), not the lane's.
+func (a *actLane) drained(id string) {
+	a.mu.Lock()
+	delete(a.sent, id)
+	a.mu.Unlock()
+}
+
+// ours reports whether the cloud's directive id is still this node's to finish: running off the
+// loop, or finished with its outcome not yet acknowledged. The cloud re-delivers a directive on
+// every report until an outcome reaches it (at-least-once), and a report runs off the loop, so
+// its reply can arrive after the act it names has started or even ended. Running such a copy
+// again repeats a whole act; refusing it as busy reports a FAILED outcome under the running
+// act's own ID. Neither answers anything, so the copy is skipped. nil-safe like inFlight.
+func (a *actLane) ours(id string, pending []api.DirectiveOutcome) bool {
+	if slices.ContainsFunc(pending, func(o api.DirectiveOutcome) bool { return o.ID == id }) {
+		return true
+	}
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sent[id]
 }
 
 // runInternal runs f as an act the agent started itself -- one no directive asked for, so its

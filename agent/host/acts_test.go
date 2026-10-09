@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -232,4 +234,74 @@ func TestARelauncherOffTheLoopIsWhatRunWaitsFor(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// AN ACT THE CLOUD RE-DELIVERS RUNS ONCE AND ANSWERS ONCE. The controller hands a directive back
+// on every report until an outcome for it arrives, and the report runs off the loop, so copies
+// arrive while the act runs and, from a report sent before it ended, after it has ended. Neither
+// copy is a new request: a copy refused as busy would report FAILED under the running act's own
+// ID, and a copy run again would repeat the whole act (an OS upgrade, staged and booted twice).
+func TestARedeliveredActRunsOnceAndAnswersOnce(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	cfg.acts = newActLane()
+	var cycles, syncs int32
+	release := make(chan struct{})
+	g := countingSync{actingGuest{fakeStatus: fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}}, release: release, handoffs: new(int32), cycles: &cycles}, &syncs}
+	cloud := &redeliveringCloud{d: api.Directive{ID: "sync-1", Kind: api.DirectiveSync}}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	time.AfterFunc(100*time.Millisecond, func() { close(release) })
+	var pending []api.DirectiveOutcome
+	if err := cfg.observe(ctx, g, nil, nil, nil, cloud, nil, nil, "", nil, &pending, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(&syncs); n != 1 {
+		t.Fatalf("the act ran %d times; want once", n)
+	}
+	got := append(cloud.got(), pending...)
+	if len(got) != 1 || got[0].State != api.OutcomeDone {
+		t.Fatalf("outcomes for the act = %+v; want exactly one, done", got)
+	}
+}
+
+// countingSync counts the syncs that reach the guest.
+type countingSync struct {
+	actingGuest
+	syncs *int32
+}
+
+func (g countingSync) FsSync(ctx context.Context) (string, error) {
+	atomic.AddInt32(g.syncs, 1)
+	return g.actingGuest.FsSync(ctx)
+}
+
+// redeliveringCloud is the controller's at-least-once delivery: it hands d back on every report,
+// after a short delay, until a report carries an outcome for it.
+type redeliveringCloud struct {
+	d        api.Directive
+	mu       sync.Mutex
+	outcomes []api.DirectiveOutcome
+}
+
+func (c *redeliveringCloud) got() []api.DirectiveOutcome {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.outcomes)
+}
+func (c *redeliveringCloud) Register(context.Context, api.NodeInfo) (api.Assignment, error) {
+	return api.Assignment{}, nil
+}
+func (c *redeliveringCloud) Report(_ context.Context, req api.ReportRequest) ([]api.Directive, error) {
+	time.Sleep(5 * time.Millisecond)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.outcomes = append(c.outcomes, req.Outcomes...)
+	if slices.ContainsFunc(c.outcomes, func(o api.DirectiveOutcome) bool { return o.ID == c.d.ID }) {
+		return nil, nil
+	}
+	return []api.Directive{c.d}, nil
+}
+func (c *redeliveringCloud) ReportMetrics(context.Context, string, []api.MetricAggregate) error {
+	return nil
 }
