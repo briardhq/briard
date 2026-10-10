@@ -1511,7 +1511,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// background and collected over later cycles, so it never holds this loop (clocksample.go).
 		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
 		// THE BACKUP, once a night on the node that holds the volume, the same way (backup.go).
-		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), logf)
+		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), n, logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant

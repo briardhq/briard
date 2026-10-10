@@ -19,6 +19,7 @@ import (
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/notify"
 )
 
 // THE NIGHTLY BACKUP, 02:00 local: before the guest-update window (03:00) and the recorder check
@@ -62,17 +63,15 @@ type backupScheduler struct {
 
 func newBackupScheduler() *backupScheduler { return &backupScheduler{loc: householdLocation()} }
 
-// backup collects a run that is going, or starts tonight's if it is due: backup is on, this node
-// serves, and the local time is inside tonight's window.
-func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler, serving bool, now time.Time, logf func(string, ...any)) {
+// backup collects a run that is going, or starts tonight's if it is due: this node serves, and the
+// local time is inside tonight's window. Every night that should have run and did not is recorded
+// as a failed one, so the alert counts what the household would count.
+func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
 	if cfg.stateDir() == "" || cfg.hostNodeIP() == "" || !serving {
 		return
 	}
 	if !b.waiting.IsZero() {
-		cfg.collectBackup(ctx, g, b, logf)
-		return
-	}
-	if cfg.backupFolder() == "" {
+		cfg.collectBackup(ctx, g, b, n, logf)
 		return
 	}
 	local := now.In(b.loc)
@@ -82,9 +81,18 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		return
 	}
 	b.done = day
+	if cfg.backupFolder() == "" {
+		// Off is the household's decision: whatever was failing is no longer being asked of it.
+		fireAlert(ctx, n, logf, backupWorking(cfg.Node, "The nightly backup is turned off."))
+		return
+	}
+	failed := func(why string) {
+		logf("backup: %s", why)
+		cfg.recordNight(ctx, dashboard.BackupRun{At: now, Error: cfg.backupFailure(why)}, n, logf)
+	}
 	key, err := backupKey(cfg.stateDir())
 	if err != nil {
-		logf("backup: no repository key: %v", err)
+		failed("no repository key: " + err.Error())
 		return
 	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
@@ -92,7 +100,7 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 	started, err := g.DataBackup(sctx, url, key, cfg.backupHostFacts(logf))
 	cancel()
 	if err != nil {
-		logf("backup: could not start tonight's run: %v", err)
+		failed("could not start tonight's run: " + err.Error())
 		return
 	}
 	if !started {
@@ -104,20 +112,23 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 }
 
 // collectBackup asks for a started run's report, logs it once it has come, and records it as the
-// last night -- what the page says -- unless there was nothing to back up.
-func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupScheduler, logf func(string, ...any)) {
+// night -- unless there was nothing to back up.
+func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupScheduler, n notify.Notifier, logf func(string, ...any)) {
 	sctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
 	s, err := g.DataBackupResult(sctx)
 	cancel()
+	started := b.waiting
 	switch {
 	case err != nil, s.Report == nil && s.Running:
 		return // asked again next cycle
 	case s.Report == nil:
-		logf("backup: tonight's run left no report") // the guest agent restarted and lost it
+		// The guest agent restarted and lost it: a night that did not happen.
 		b.waiting = time.Time{}
+		why := "the run was lost when the guest restarted"
+		logf("backup: %s", why)
+		cfg.recordNight(ctx, dashboard.BackupRun{At: started, Error: cfg.backupFailure(why)}, n, logf)
 		return
 	}
-	started := b.waiting
 	b.waiting = time.Time{}
 	rep := *s.Report
 	switch {
@@ -125,21 +136,84 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 		logf("backup: FAILED (snapshot %q): %s", rep.Snapshot, rep.Error)
 	case rep.Snapshot == "":
 		logf("backup: nothing to back up (no service has a snapshot yet)")
+		return
 	default:
 		logf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(rep.Services, ", "), rep.Files, rep.BytesAdded)
 	}
-	if rep.Error == "" && rep.Snapshot == "" {
-		return
+	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Size: folderSize(cfg.backupFolder())}
+	if rep.Error != "" {
+		night.Error = cfg.backupFailure(rep.Error)
 	}
-	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Error: rep.Error,
-		Size: folderSize(cfg.backupFolder())}
+	cfg.recordNight(ctx, night, n, logf)
+}
+
+// recordNight keeps the night, newest first, and says what it means for the household: a second
+// failed night in a row opens the backup alert, a good one ends it.
+func (cfg Config) recordNight(ctx context.Context, night dashboard.BackupRun, n notify.Notifier, logf func(string, ...any)) {
+	var nights []dashboard.BackupRun
 	if err := cfg.updateBackupRecord(func(r *backupRecord) {
 		r.Nights = append([]dashboard.BackupRun{night}, r.Nights...)
 		if len(r.Nights) > backupNightsKept {
 			r.Nights = r.Nights[:backupNightsKept]
 		}
+		nights = r.Nights
 	}); err != nil {
 		logf("backup: could not record tonight's run: %v", err)
+		nights = []dashboard.BackupRun{night}
+	}
+	if night.Error == "" {
+		fireAlert(ctx, n, logf, backupWorking(cfg.Node, fmt.Sprintf("Last night's backup into %s finished.", cfg.backupFolder())))
+		return
+	}
+	streak := 0
+	for streak < len(nights) && nights[streak].Error != "" {
+		streak++
+	}
+	if streak >= backupAlertAfter {
+		fireAlert(ctx, n, logf, backupFailing(cfg.Node, streak, night.Error))
+	}
+}
+
+// backupAlertAfter is how many failed nights in a row reach the household. One is a laptop lid, a
+// NAS rebooting, a sync drive not mounted yet; two is something to fix.
+const backupAlertAfter = 2
+
+// backupFailure says what went wrong in the household's terms, from what the host can see of the
+// folder itself rather than from the run's own words: a folder that is not there wants a disk
+// plugged in, one that cannot be written wants its permissions, anything else is the run's.
+func (cfg Config) backupFailure(runErr string) string {
+	dir := cfg.backupFolder()
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Sprintf("the backup folder %s is not there. If it is on a disk or a network drive, connect it", dir)
+	}
+	f, err := os.CreateTemp(dir, ".briard-check-")
+	if err != nil {
+		return fmt.Sprintf("Briard cannot write to the backup folder %s (%v)", dir, err)
+	}
+	f.Close()
+	_ = os.Remove(f.Name())
+	return "the backup did not finish: " + runErr
+}
+
+// backupFailing is the open alert: the copy is getting old, the data is intact -- a Warning.
+func backupFailing(node string, nights int, why string) notify.Alert {
+	return notify.Alert{
+		Key:      "backup",
+		Kind:     notify.Open,
+		Severity: notify.Warning,
+		Title:    "Briard: the nightly backup is not working",
+		Body: fmt.Sprintf("The last %d nights' backups on node %s did not happen: %s. Your apps and their data are fine; "+
+			"the backup copy is what is getting old.", nights, node, why),
+	}
+}
+
+// backupWorking ends it; the store drops it when nothing is open, which is every other night.
+func backupWorking(node, why string) notify.Alert {
+	return notify.Alert{
+		Key:   "backup",
+		Kind:  notify.Resolved,
+		Title: "Briard: the nightly backup is working again",
+		Body:  fmt.Sprintf("%s (node %s)", why, node),
 	}
 }
 

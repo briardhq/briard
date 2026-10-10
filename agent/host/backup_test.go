@@ -14,6 +14,7 @@ import (
 	"briard.io/agent/guestagent"
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/notify"
 )
 
 // backupRig is a node whose state dir holds a flock id and name (no casa claim yet) and whose
@@ -40,13 +41,13 @@ func tonightAt(hhmm string) time.Time {
 func TestTheBackupStartsOnceANightOnTheServingNode(t *testing.T) {
 	ctx := context.Background()
 	cfg, g, b := backupRig(t)
-	cfg.backup(ctx, g, b, false, tonightAt("02:05"), quiet)
-	cfg.backup(ctx, g, b, true, tonightAt("01:59"), quiet)
-	cfg.backup(ctx, g, b, true, tonightAt("03:00"), quiet)
+	cfg.backup(ctx, g, b, false, tonightAt("02:05"), nil, quiet)
+	cfg.backup(ctx, g, b, true, tonightAt("01:59"), nil, quiet)
+	cfg.backup(ctx, g, b, true, tonightAt("03:00"), nil, quiet)
 	if g.backup.starts != 0 {
 		t.Fatalf("started %d times outside the window or off the serving node", g.backup.starts)
 	}
-	cfg.backup(ctx, g, b, true, tonightAt("02:05"), quiet)
+	cfg.backup(ctx, g, b, true, tonightAt("02:05"), nil, quiet)
 	if g.backup.starts != 1 {
 		t.Fatalf("started %d times in the window, want 1", g.backup.starts)
 	}
@@ -67,13 +68,13 @@ func TestTheBackupStartsOnceANightOnTheServingNode(t *testing.T) {
 	}
 
 	// Running: collected, never started again -- not this night, not while it runs.
-	cfg.backup(ctx, g, b, true, tonightAt("02:06"), quiet)
+	cfg.backup(ctx, g, b, true, tonightAt("02:06"), nil, quiet)
 	g.backup.running, g.backup.report = false, &guestagent.BackupReport{Snapshot: "abc"}
-	cfg.backup(ctx, g, b, true, tonightAt("02:07"), quiet)
+	cfg.backup(ctx, g, b, true, tonightAt("02:07"), nil, quiet)
 	if !b.waiting.IsZero() {
 		t.Fatal("a finished report was not collected")
 	}
-	cfg.backup(ctx, g, b, true, tonightAt("02:30"), quiet)
+	cfg.backup(ctx, g, b, true, tonightAt("02:30"), nil, quiet)
 	if g.backup.starts != 1 {
 		t.Fatalf("started %d times in one night, want 1", g.backup.starts)
 	}
@@ -83,7 +84,7 @@ func TestTheBackupStartsOnceANightOnTheServingNode(t *testing.T) {
 func TestTheBackupIsOffWhenTheFolderIsEmpty(t *testing.T) {
 	cfg, g, b := backupRig(t)
 	cfg.BackupDir = ""
-	cfg.backup(context.Background(), g, b, true, tonightAt("02:05"), quiet)
+	cfg.backup(context.Background(), g, b, true, tonightAt("02:05"), nil, quiet)
 	if g.backup.starts != 0 {
 		t.Fatal("a disabled backup ran")
 	}
@@ -124,7 +125,7 @@ func TestTheKeyIsMintedOnceAndNeverOverAnUnreadableOne(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(cfg.stateDir(), backupKeyName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg.backup(context.Background(), g, b, true, tonightAt("02:05"), quiet)
+	cfg.backup(context.Background(), g, b, true, tonightAt("02:05"), nil, quiet)
 	if g.backup.starts != 0 {
 		t.Fatal("a run started without the household's key")
 	}
@@ -284,9 +285,9 @@ func TestTheNightsAreRecorded(t *testing.T) {
 	for night := 0; night < backupNightsKept+2; night++ {
 		*b = backupScheduler{loc: time.UTC}
 		start := tonightAt("02:04").Add(time.Duration(night) * 24 * time.Hour)
-		cfg.backup(context.Background(), g, b, true, start, quiet)
+		cfg.backup(context.Background(), g, b, true, start, nil, quiet)
 		g.backup.running, g.backup.report = false, &guestagent.BackupReport{Snapshot: "s", BytesAdded: int64(night)}
-		cfg.backup(context.Background(), g, b, true, start.Add(time.Minute), quiet)
+		cfg.backup(context.Background(), g, b, true, start.Add(time.Minute), nil, quiet)
 	}
 	nights := cfg.readBackupRecord().Nights
 	if len(nights) != backupNightsKept {
@@ -372,5 +373,119 @@ func TestTheBackupMoves(t *testing.T) {
 	}
 	if o := setBackup(cfg, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
 		t.Fatalf("a root folder was accepted: %+v", o)
+	}
+}
+
+// backupNight runs one night through the scheduler: started at 02:04 on day d, and finished with rep (nil
+// leaves the guest's report lost).
+func backupNight(t *testing.T, cfg Config, g fakeStatus, n *fakeNotifier, d int, rep *guestagent.BackupReport) {
+	t.Helper()
+	b := &backupScheduler{loc: time.UTC}
+	start := tonightAt("02:04").Add(time.Duration(d) * 24 * time.Hour)
+	cfg.backup(context.Background(), g, b, true, start, n, quiet)
+	if g.backup != nil {
+		g.backup.running, g.backup.report = false, rep
+	}
+	cfg.backup(context.Background(), g, b, true, start.Add(time.Minute), n, quiet)
+}
+
+func backupAlerts(n *fakeNotifier) []notify.Alert {
+	var out []notify.Alert
+	for _, a := range n.alerts {
+		if a.Key == "backup" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+var failedRun = &guestagent.BackupReport{Error: "Fatal: unable to save snapshot"}
+
+// One failed night is a laptop lid; the second in a row reaches the household, as a Warning that
+// names what went wrong; the next good night ends it.
+func TestTheSecondFailedNightAlerts(t *testing.T) {
+	cfg, g, _ := backupRig(t)
+	n := &fakeNotifier{}
+	backupNight(t, cfg, g, n, 0, failedRun)
+	if a := backupAlerts(n); len(a) != 0 {
+		t.Fatalf("one failed night alerted: %+v", a)
+	}
+	backupNight(t, cfg, g, n, 1, failedRun)
+	a := backupAlerts(n)
+	if len(a) != 1 || a[0].Kind != notify.Open || a[0].Severity != notify.Warning || !strings.Contains(a[0].Body, "unable to save snapshot") {
+		t.Fatalf("after two failed nights: %+v", a)
+	}
+	backupNight(t, cfg, g, n, 2, &guestagent.BackupReport{Snapshot: "s"})
+	if a := backupAlerts(n); len(a) != 2 || a[1].Kind != notify.Resolved {
+		t.Fatalf("a good night did not end it: %+v", a)
+	}
+}
+
+// A good night between two failed ones starts the count again.
+func TestAGoodNightBreaksTheStreak(t *testing.T) {
+	cfg, g, _ := backupRig(t)
+	n := &fakeNotifier{}
+	backupNight(t, cfg, g, n, 0, failedRun)
+	backupNight(t, cfg, g, n, 1, &guestagent.BackupReport{Snapshot: "s"})
+	backupNight(t, cfg, g, n, 2, failedRun)
+	for _, a := range backupAlerts(n) {
+		if a.Kind == notify.Open {
+			t.Fatalf("failures either side of a good night alerted: %+v", a)
+		}
+	}
+}
+
+// Nights that never ran are failed nights: the guest could not be asked, or lost the run.
+func TestNightsThatNeverRanCount(t *testing.T) {
+	cfg, g, _ := backupRig(t)
+	n := &fakeNotifier{}
+	backupNight(t, cfg, g, n, 0, nil) // the report was lost
+	none := fakeStatus{}              // a guest that cannot be asked
+	backupNight(t, cfg, none, n, 1, nil)
+	if a := backupAlerts(n); len(a) != 1 || a[0].Kind != notify.Open {
+		t.Fatalf("two nights that never ran: %+v", a)
+	}
+	if got := len(cfg.readBackupRecord().Nights); got != 2 {
+		t.Fatalf("%d nights recorded, want 2", got)
+	}
+}
+
+// What the household is told to do, from the folder itself: connect it, fix it, or the run's own
+// words. Each is also what the card shows for that night.
+func TestTheFailureSaysWhatToDo(t *testing.T) {
+	for name, tc := range map[string]struct {
+		folder func(t *testing.T) string
+		want   string
+	}{
+		"missing":  {func(t *testing.T) string { return filepath.Join(t.TempDir(), "unplugged") }, "is not there. If it is on a disk or a network drive, connect it"},
+		"unusable": {func(t *testing.T) string { p := filepath.Join(t.TempDir(), "f"); os.WriteFile(p, nil, 0o600); return p }, "cannot write to the backup folder"},
+		"run":      {func(t *testing.T) string { return t.TempDir() }, "the backup did not finish: Fatal: unable to save snapshot"},
+	} {
+		cfg, g, _ := backupRig(t)
+		cfg.BackupDir = tc.folder(t)
+		n := &fakeNotifier{}
+		backupNight(t, cfg, g, n, 0, failedRun)
+		backupNight(t, cfg, g, n, 1, failedRun)
+		a := backupAlerts(n)
+		if len(a) != 1 || !strings.Contains(a[0].Body, tc.want) {
+			t.Errorf("%s: %+v, want the body to say %q", name, a, tc.want)
+		}
+		if nights := cfg.readBackupRecord().Nights; len(nights) == 0 || !strings.Contains(nights[0].Error, tc.want) {
+			t.Errorf("%s: the card's night says %+v", name, nights)
+		}
+	}
+}
+
+// Turned off, the backup is no longer asked of the folder: an open alert ends at the next window.
+func TestTurningTheBackupOffEndsTheAlert(t *testing.T) {
+	cfg, g, _ := backupRig(t)
+	n := &fakeNotifier{}
+	backupNight(t, cfg, g, n, 0, failedRun)
+	backupNight(t, cfg, g, n, 1, failedRun)
+	cfg.BackupDir = ""
+	backupNight(t, cfg, g, n, 2, nil)
+	a := backupAlerts(n)
+	if len(a) != 2 || a[1].Kind != notify.Resolved || !strings.Contains(a[1].Body, "turned off") {
+		t.Fatalf("off: %+v", a)
 	}
 }
