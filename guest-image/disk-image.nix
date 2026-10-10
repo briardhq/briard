@@ -365,6 +365,14 @@ let
           pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry
           pkgs.util-linux # blockdev, for storage.grow: the state disk's size as the kernel sees it
           pkgs.e2fsprogs # resize2fs, for storage.grow: the state disk's filesystem grown online
+          # restic, for data.backup: the household's repository, which the host serves over REST.
+          # The BINARY ONLY: nixpkgs wraps it with rclone and openssh on its PATH for backends we
+          # never use, +115 MB of closure. Copying the wrapped-over binary fails closed -- a
+          # nixpkgs that stops wrapping has no `.restic-wrapped`, and the build stops. ~11 MB of
+          # download (measured, zstd -19); stripping would save 0.7 MB of that.
+          (pkgs.runCommand "restic-${pkgs.restic.version}" { } ''
+            install -Dm755 ${pkgs.restic}/bin/.restic-wrapped $out/bin/restic
+          '')
           # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
           # differently-wrapped copy of the runtime (configuration.nix explains).
           config.virtualisation.podman.package # podman, for the renderer + service.* verbs

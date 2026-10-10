@@ -277,6 +277,12 @@ const (
 	// first. It is what the picker reads, and it is a verb rather than a directory the
 	// host could stat because only the guest has the volume mounted.
 	verbDataMembers = "data.members"
+	// data.backup STARTS a backup of the newest member of every service into the repository the
+	// request names (backup.go) and answers whether it did; data.backup.result answers whether one
+	// is running and hands over a finished one's report once. The recorder check's two-verb shape:
+	// a run reads for minutes, and this channel serves one verb at a time.
+	verbDataBackup       = "data.backup"
+	verbDataBackupResult = "data.backup.result"
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start (converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -421,7 +427,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -456,7 +462,8 @@ var besideActs = map[string]bool{
 	verbNetMDNSOther: true, verbResources: true, verbStorageFree: true, verbCertRead: true,
 	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
-	verbHassDBCheckResult: true, verbServicePending: true,
+	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
+	verbDataBackupResult: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true,
 	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
@@ -1216,6 +1223,14 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return startDBCheck(x), nil
 		case verbHassDBCheckResult:
 			return dbCheckResult(), nil
+		case verbDataBackup:
+			var req backupRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return startBackup(x, req)
+		case verbDataBackupResult:
+			return backupResult(), nil
 		case verbHassDBRestore:
 			var req dbRestoreRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2795,6 +2810,21 @@ func (g *Client) HassDBCheck(ctx context.Context) (bool, error) {
 func (g *Client) HassDBCheckResult(ctx context.Context) (hass.DBCheckState, error) {
 	var s hass.DBCheckState
 	err := g.c.Call(ctx, verbHassDBCheckResult, nil, &s)
+	return s, err
+}
+
+// DataBackup starts a backup in the guest's background into the REST repository at url, and
+// answers whether it did; false means one is running or its report is uncollected.
+func (g *Client) DataBackup(ctx context.Context, url, password string) (bool, error) {
+	var started bool
+	err := g.c.Call(ctx, verbDataBackup, backupRequest{Repository: url, Password: password}, &started)
+	return started, err
+}
+
+// DataBackupResult answers whether a backup is running, with a finished one's report, once.
+func (g *Client) DataBackupResult(ctx context.Context) (BackupState, error) {
+	var s BackupState
+	err := g.c.Call(ctx, verbDataBackupResult, nil, &s)
 	return s, err
 }
 
