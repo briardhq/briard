@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"briard.io/agent/guestagent"
+	"briard.io/agent/platform"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/dashboard"
@@ -130,10 +131,38 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 	if rep.Error == "" && rep.Snapshot == "" {
 		return
 	}
-	last := &dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Error: rep.Error}
-	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Last = last }); err != nil {
+	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Error: rep.Error,
+		Size: folderSize(cfg.backupFolder())}
+	if err := cfg.updateBackupRecord(func(r *backupRecord) {
+		r.Nights = append([]dashboard.BackupRun{night}, r.Nights...)
+		if len(r.Nights) > backupNightsKept {
+			r.Nights = r.Nights[:backupNightsKept]
+		}
+	}); err != nil {
 		logf("backup: could not record tonight's run: %v", err)
 	}
+}
+
+// backupNightsKept is how many nights the page lists: a week, which is also as far back as the
+// repository keeps daily snapshots plus its one weekly.
+const backupNightsKept = 7
+
+// folderSize is what the folder holds, summed from what each file says it is -- never read, so a
+// sync client's placeholder for a file it has moved to the cloud costs nothing. 0 when unreadable.
+func folderSize(dir string) int64 {
+	if dir == "" {
+		return 0
+	}
+	var n int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	return n
 }
 
 // backupHostFacts reads the host facts that exist. An absent one is a node that never had it (no
@@ -195,12 +224,14 @@ func backupKey(dir string) (string, error) {
 const backupRecordName = "backup.json"
 
 // backupRecord is that file. Folder is the folder the backup last ran into, kept while it is off
-// so turning it on again knows where; KeySaved is the household's word that the key has a copy
-// off this machine; Last is the newest night.
+// so turning it on again knows where; Previous the one it ran into before the household moved it;
+// KeySaved the household's word that the key has a copy off this machine; Nights the recent runs,
+// newest first.
 type backupRecord struct {
-	Folder   string               `json:"folder,omitempty"`
-	KeySaved bool                 `json:"keySaved,omitempty"`
-	Last     *dashboard.BackupRun `json:"last,omitempty"`
+	Folder   string                `json:"folder,omitempty"`
+	Previous string                `json:"previous,omitempty"`
+	KeySaved bool                  `json:"keySaved,omitempty"`
+	Nights   []dashboard.BackupRun `json:"nights,omitempty"`
 }
 
 // backupFolder is the backup folder as it stands NOW: `config set backup-dir` turns it off and on
@@ -240,7 +271,8 @@ func (cfg Config) updateBackupRecord(change func(*backupRecord)) error {
 // key if one has been minted -- read, never minted here -- and the record.
 func (cfg Config) backupView() dashboard.Backup {
 	rec := cfg.readBackupRecord()
-	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", KeySaved: rec.KeySaved, Last: rec.Last}
+	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", Previous: rec.Previous,
+		KeySaved: rec.KeySaved, Nights: rec.Nights}
 	if !v.On {
 		v.Folder = rec.Folder
 		if v.Folder == "" {
@@ -285,8 +317,7 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, pushed *string, log
 //
 //   - backup-dir: "" turns the nightly backup off (BACKUP_DIR="", the existing backups are left
 //     where they are); the folder it last used -- or, with none, the agent's own -- turns it on
-//     again. Choosing a DIFFERENT folder is not built: that needs the folder checked (absolute,
-//     a person's, writable) before the host writes into it as root.
+//     again; any other folder moves it there, once checkBackupFolder has passed it.
 //   - backup-key-saved: "yes" records that the household has the key somewhere else.
 const (
 	settingBackupDir      = "backup-dir"
@@ -330,18 +361,18 @@ func (cfg Config) applyBackupSetting(d api.Directive, logf func(string, ...any))
 	}
 	now := cfg.backupFolder()
 	want := s.Value
-	if want != "" {
-		back := cfg.readBackupRecord().Folder
-		if back == "" {
-			back = defaultBackupDir
+	last := cfg.readBackupRecord().Folder
+	switch {
+	case want == "":
+	case want == defaultBackupDir:
+		if err := os.MkdirAll(want, 0o700); err != nil {
+			return failed("%v", err)
 		}
-		if want != back && want != now {
-			return failed("the backup goes back to %s; choosing another folder is not possible yet", back)
-		}
-		if want == defaultBackupDir {
-			if err := os.MkdirAll(want, 0o700); err != nil {
-				return failed("%v", err)
-			}
+	case want == now || want == last:
+		// A folder this backup already uses: nothing to check.
+	default:
+		if err := checkBackupFolder(want); err != nil {
+			return failed("%v", err)
 		}
 	}
 	if want == now {
@@ -352,7 +383,15 @@ func (cfg Config) applyBackupSetting(d api.Directive, logf func(string, ...any))
 		return failed("could not record it in %s: %v", path, err)
 	}
 	if want != "" {
-		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = want }); err != nil {
+		// MOVED, NOT CARRIED: the earlier backups stay where they are, the household's to keep or
+		// delete, and the next night opens the repository already in the new folder -- one the
+		// household moved there itself -- or starts one, with the same key.
+		if err := cfg.updateBackupRecord(func(r *backupRecord) {
+			if r.Folder != "" && r.Folder != want {
+				r.Previous = r.Folder
+			}
+			r.Folder = want
+		}); err != nil {
 			logf("backup: could not remember the folder: %v", err)
 		}
 	}
@@ -367,4 +406,63 @@ func backupWord(dir string) string {
 		return "off"
 	}
 	return "on, into " + dir
+}
+
+// checkBackupFolder is what a folder must be before the host, as root, writes the backup into it
+// -- and before it serves what is in it to the guest, which may be the one asking:
+//
+//   - a full path to a folder that EXISTS. Never created here: a missing folder may be a disk not
+//     mounted, and creating it would write onto whatever is underneath.
+//   - owned by a person, not root: every file is given the folder's owner, so it stays theirs, and
+//     no system directory qualifies.
+//   - EMPTY, or already a restic repository -- these backups, moved there by the household, which
+//     the next night continues. Hidden files (a sync client's marker) do not count. Anything else
+//     is refused: the store answers `GET /config` from the folder, so a folder holding some other
+//     `config` (~/.kube, ~/.ssh) would hand that file to whoever asks for the backup's.
+//   - writable: a read-only mount is found now, not at 02:00.
+func checkBackupFolder(dir string) error {
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
+		return fmt.Errorf("%q is not a full path to a folder (like /home/you/Backups)", dir)
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("there is no folder at %s: create it first", dir)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder", dir)
+	}
+	uid, err := platform.OwnerUID(dir)
+	if err != nil {
+		return fmt.Errorf("%s: %v", dir, err)
+	}
+	if uid == 0 {
+		return fmt.Errorf("%s belongs to root: choose a folder a person owns, like one in their home", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("%s cannot be read: %v", dir, err)
+	}
+	visible := 0
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".") {
+			visible++
+		}
+	}
+	if visible > 0 && !isResticRepository(dir) {
+		return fmt.Errorf("%s already holds other files: choose an empty folder, or one that holds these backups", dir)
+	}
+	f, err := os.CreateTemp(dir, ".briard-check-")
+	if err != nil {
+		return fmt.Errorf("%s cannot be written: %v", dir, err)
+	}
+	f.Close()
+	return os.Remove(f.Name())
+}
+
+// isResticRepository says whether dir is one: a config file and a keys directory, as every restic
+// repository has.
+func isResticRepository(dir string) bool {
+	c, err := os.Stat(filepath.Join(dir, "config"))
+	k, kerr := os.Stat(filepath.Join(dir, "keys"))
+	return err == nil && c.Mode().IsRegular() && kerr == nil && k.IsDir()
 }

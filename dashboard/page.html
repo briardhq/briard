@@ -167,11 +167,24 @@
       <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>, on this machine. That protects against a broken app or a damaged volume, not against losing the machine itself.</p>
       <p class="muted">To keep a copy that survives a dead disk, a theft or a fire, the folder has to leave the machine: keep it in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS, or copy it somewhere else from time to time.</p>
       {{if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
-      {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new.</p>
+      {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.</p>
       {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
     {{else}}
       <p>The nightly backup is off. The backups already in <code>{{.Folder}}</code> are kept.</p>
     {{end}}
+    {{with .Previous}}<p class="muted">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
+    {{if .Nights}}<details><summary class="muted">Recent nights</summary>
+      <ul class="alerts">
+        {{range .Nights}}<li><span class="when">{{.When}}</span>{{if .Error}}<span class="warning">did not finish: {{.Error}}</span>{{else}}<span class="resolved">{{.Added}} new</span>{{end}}</li>{{end}}
+      </ul>
+    </details>{{end}}
+    <details><summary class="muted">Change the folder</summary>
+      <form method="post" action="/backup/folder" class="approve">
+        <label for="backup-folder">Back up into this folder from tonight. It must already exist, belong to you, and be empty — or hold these backups, if you moved them there yourself. Your earlier backups stay where they are.</label>
+        <input id="backup-folder" name="folder" required placeholder="/home/you/Dropbox/Briard Backup" style="width: 100%">
+        <button type="submit">Change</button>
+      </form>
+    </details>
     {{if .Key}}
       {{if not .KeySaved}}<p class="banner">Your recovery key is only on this machine. The backups cannot be opened without it, so if this machine dies, they die with it. Write it down, or keep it in your password manager.</p>{{end}}
       <p>Recovery key</p>

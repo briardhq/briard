@@ -281,3 +281,50 @@ func TestTheStoreAnswersNothingWhileTheBackupIsOff(t *testing.T) {
 		t.Fatalf("the store wrote %v while off", entries)
 	}
 }
+
+// A move with the real client: an empty new folder starts a repository under the same key (the
+// guest's run does `cat config`, then `init`) while the old keeps its snapshots untouched; a
+// folder the household moved the repository into is simply continued.
+func TestRealResticMovesByStartingFreshOrContinuing(t *testing.T) {
+	s, srv, _ := storeRig(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := s.dir
+	restic(t, srv.URL, "init")
+	restic(t, srv.URL, "backup", "--host", "briard", src)
+
+	fresh := t.TempDir()
+	s.folder = func() string { return fresh }
+	cmd := exec.Command("restic", "--repo", "rest:"+srv.URL+"/", "--no-cache", "cat", "config")
+	cmd.Env = append(os.Environ(), "RESTIC_PASSWORD=correct horse")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("an empty folder opened as a repository")
+	}
+	restic(t, srv.URL, "init")
+	restic(t, srv.URL, "backup", "--host", "briard", src)
+	count := func(dir string) int {
+		c := exec.Command("restic", "--repo", dir, "--no-cache", "snapshots", "--json")
+		c.Env = append(os.Environ(), "RESTIC_PASSWORD=correct horse")
+		out, err := c.Output()
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		return strings.Count(string(out), `"id"`)
+	}
+	if count(fresh) != 1 || count(old) != 1 {
+		t.Fatalf("fresh %d, old %d snapshots; want 1 and 1", count(fresh), count(old))
+	}
+
+	carried := filepath.Join(t.TempDir(), "moved")
+	if out, err := exec.Command("cp", "-a", old, carried).CombinedOutput(); err != nil {
+		t.Fatalf("cp: %v %s", err, out)
+	}
+	s.folder = func() string { return carried }
+	restic(t, srv.URL, "cat", "config")
+	restic(t, srv.URL, "backup", "--host", "briard", src)
+	if count(carried) != 2 {
+		t.Fatalf("the moved repository has %d snapshots, want its 1 plus tonight's", count(carried))
+	}
+}

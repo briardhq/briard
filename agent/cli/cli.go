@@ -508,7 +508,8 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 	if fs.NArg() != 3 || fs.Arg(0) != "set" {
-		fmt.Fprint(stderr, "usage: briard config set vip <address>[/prefix]|dhcp\n")
+		fmt.Fprint(stderr, "usage: briard config set vip <address>[/prefix]|dhcp\n"+
+			"       briard config set backup-dir <folder>|\"\"     (\"\" turns the nightly backup off)\n")
 		return 2
 	}
 	payload, err := json.Marshal(api.ConfigSetting{Key: fs.Arg(1), Value: fs.Arg(2)})
@@ -516,7 +517,9 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stderr, "briard: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "setting %s to %s (the VM restarts to apply it)\n", fs.Arg(1), fs.Arg(2))
+	if fs.Arg(1) == "vip" {
+		fmt.Fprintf(stdout, "setting %s to %s (the VM restarts to apply it)\n", fs.Arg(1), fs.Arg(2))
+	}
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveConfigSet, Payload: string(payload)})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)

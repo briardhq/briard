@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"briard.io/shared/api"
@@ -31,13 +32,22 @@ import (
 type backupView struct {
 	Folder   string
 	On       bool
+	Previous string
 	Key      string
 	KeySaved bool
 	// Last is the newest night, in the household's words; LastFailed says whether it went wrong.
 	LastWhen, LastSize, LastError string
 	LastFailed                    bool
+	// Held is what the folder held after the newest night; Nights the recent nights, newest first.
+	Held   string
+	Nights []nightView
 	// Asked is the host's refusal of the last thing asked from this card, until the next ask.
 	Asked string
+}
+
+// nightView is one row of the recent nights.
+type nightView struct {
+	When, Added, Error string
 }
 
 // backupState reads the host's view. Nil until the host has said anything -- a guest the host
@@ -52,10 +62,19 @@ func (a *app) backupState() *backupView {
 		return nil
 	}
 	v := &backupView{Folder: h.Folder, On: h.On, Key: h.Key, KeySaved: h.KeySaved}
-	if h.Last != nil {
-		v.LastWhen = h.Last.At.In(zone()).Format("Mon 2 Jan, 15:04")
-		v.LastSize = sizeWord(h.Last.BytesAdded)
-		v.LastError, v.LastFailed = h.Last.Error, h.Last.Error != ""
+	if h.Previous != h.Folder {
+		v.Previous = h.Previous
+	}
+	for _, n := range h.Nights {
+		v.Nights = append(v.Nights, nightView{When: n.At.In(zone()).Format("Mon 2 Jan, 15:04"), Added: sizeWord(n.BytesAdded), Error: n.Error})
+	}
+	if len(h.Nights) > 0 {
+		last := h.Nights[0]
+		v.LastWhen, v.LastSize = v.Nights[0].When, v.Nights[0].Added
+		v.LastError, v.LastFailed = last.Error, last.Error != ""
+		if last.Size > 0 {
+			v.Held = sizeWord(last.Size)
+		}
 	}
 	a.mu.Lock()
 	v.Asked = a.backupAsked
@@ -76,10 +95,18 @@ func sizeWord(n int64) string {
 	return fmt.Sprintf("%d bytes", n)
 }
 
-// requestBackup is the card's three buttons, each one setting through the admin port.
+// requestBackup is the card's buttons, each one setting through the admin port. The host checks a
+// new folder; the page only carries what was typed.
 func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string) {
 	var s api.ConfigSetting
 	switch what {
+	case "folder":
+		folder := strings.TrimSpace(r.FormValue("folder"))
+		if folder == "" {
+			http.Error(w, "a folder is needed\n", http.StatusBadRequest)
+			return
+		}
+		s = api.ConfigSetting{Key: "backup-dir", Value: folder}
 	case "saved":
 		s = api.ConfigSetting{Key: "backup-key-saved", Value: "yes"}
 	case "off":

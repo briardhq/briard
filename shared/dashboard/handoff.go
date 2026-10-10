@@ -148,12 +148,15 @@ type Backup struct {
 	Folder string `json:"folder"`
 	// On is whether the nightly backup runs.
 	On bool `json:"on"`
-	// Key is the repository key, the household's key of record; "" until the first run mints it.
+	// Previous is the folder the backups went to before the household moved them: still holding
+	// the earlier backups, never touched again, theirs to delete. "" when never moved.
+	Previous string `json:"previous,omitempty"`
+	// Key is the repository key, the household's key of record; "" until the agent mints it.
 	Key string `json:"key,omitempty"`
 	// KeySaved is the household saying it has a copy of the key somewhere else.
 	KeySaved bool `json:"keySaved"`
-	// Last is the newest finished run; nil until there has been one.
-	Last *BackupRun `json:"last,omitempty"`
+	// Nights are the recent finished runs, newest first; empty until there has been one.
+	Nights []BackupRun `json:"nights,omitempty"`
 }
 
 // BackupRun is one finished night.
@@ -161,5 +164,7 @@ type BackupRun struct {
 	At         time.Time `json:"at"`
 	Snapshot   string    `json:"snapshot,omitempty"`
 	BytesAdded int64     `json:"bytesAdded"`
-	Error      string    `json:"error,omitempty"`
+	// Size is what the backup folder held after the run.
+	Size  int64  `json:"size,omitempty"`
+	Error string `json:"error,omitempty"`
 }

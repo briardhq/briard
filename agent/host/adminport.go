@@ -38,10 +38,12 @@ import (
 // behind the same door.
 //
 // config-set joins them for the BACKUP'S settings only, never the address: the page's Backup
-// section turns the nightly backup off and on and records that the key is saved. The one effect
-// outside the guest is that a guest taken over could stop tomorrow's backup of data it already
-// holds; it cannot choose a folder (backup.go refuses any but the one already in use), and it
-// cannot touch the address, whose change restarts the guest onto the host's network.
+// section turns the nightly backup off and on, moves it to another folder, and records that the
+// key is saved. What a guest taken over gains outside itself: it can stop tomorrow's backup of
+// data it already holds, or point it at an EMPTY folder a person owns and fill that with
+// ciphertext -- checkBackupFolder refuses root's folders and any folder already holding files, so
+// the store never serves the guest a file it did not write. It cannot touch the address, whose
+// change restarts the guest onto the host's network.
 func guestMayAsk(d api.Directive) bool {
 	switch d.Kind {
 	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,

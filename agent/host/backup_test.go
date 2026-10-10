@@ -274,15 +274,103 @@ func (g *viewGuest) DashboardBackup(_ context.Context, b dashboard.Backup) error
 	return nil
 }
 
-// A finished night is the page's "last backup", with the time it started; a night with nothing
-// to back up is not.
-func TestTheLastNightIsRecorded(t *testing.T) {
+// A finished night is the page's "last backup", with the time it started and what the folder then
+// holds; a week of them is kept, newest first.
+func TestTheNightsAreRecorded(t *testing.T) {
 	cfg, g, b := backupRig(t)
-	cfg.backup(context.Background(), g, b, true, tonightAt("02:04"), quiet)
-	g.backup.running, g.backup.report = false, &guestagent.BackupReport{Snapshot: "abc", BytesAdded: 42}
-	cfg.backup(context.Background(), g, b, true, tonightAt("02:10"), quiet)
-	last := cfg.readBackupRecord().Last
-	if last == nil || last.Snapshot != "abc" || last.BytesAdded != 42 || !last.At.Equal(tonightAt("02:04")) {
-		t.Fatalf("last night %+v", last)
+	if err := os.WriteFile(filepath.Join(cfg.BackupDir, "pack"), make([]byte, 1000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for night := 0; night < backupNightsKept+2; night++ {
+		*b = backupScheduler{loc: time.UTC}
+		start := tonightAt("02:04").Add(time.Duration(night) * 24 * time.Hour)
+		cfg.backup(context.Background(), g, b, true, start, quiet)
+		g.backup.running, g.backup.report = false, &guestagent.BackupReport{Snapshot: "s", BytesAdded: int64(night)}
+		cfg.backup(context.Background(), g, b, true, start.Add(time.Minute), quiet)
+	}
+	nights := cfg.readBackupRecord().Nights
+	if len(nights) != backupNightsKept {
+		t.Fatalf("%d nights kept, want %d", len(nights), backupNightsKept)
+	}
+	newest := nights[0]
+	if newest.BytesAdded != backupNightsKept+1 || !newest.At.Equal(tonightAt("02:04").Add(time.Duration(backupNightsKept+1)*24*time.Hour)) || newest.Size != 1000 {
+		t.Fatalf("newest night %+v, want the last one, at its start, with the folder's 1000 bytes", newest)
+	}
+}
+
+// What a new folder must be before root writes into it and serves it to the guest.
+func TestANewFolderIsChecked(t *testing.T) {
+	empty := t.TempDir()
+	markers := t.TempDir()
+	if err := os.WriteFile(filepath.Join(markers, ".stfolder"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "config"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	kube := t.TempDir()
+	if err := os.WriteFile(filepath.Join(kube, "config"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for dir, ok := range map[string]bool{empty: true, markers: true, repo: true} {
+		if err := checkBackupFolder(dir); (err == nil) != ok {
+			t.Errorf("%s: %v", dir, err)
+		}
+	}
+	missing := filepath.Join(empty, "not-mounted")
+	for _, dir := range []string{"relative/dir", empty + "/../" + filepath.Base(empty), missing, kube, "/"} {
+		if err := checkBackupFolder(dir); err == nil {
+			t.Errorf("%s was accepted", dir)
+		}
+	}
+	if _, err := os.Stat(missing); err == nil {
+		t.Error("checking a missing folder created it")
+	}
+	if err := checkBackupFolder("/"); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Errorf("a root-owned folder: %v", err)
+	}
+	if entries, _ := os.ReadDir(empty); len(entries) != 0 {
+		t.Errorf("the check left %v behind", entries)
+	}
+}
+
+// A move: the new folder from tonight, the old one remembered as holding the earlier backups --
+// and nothing done to either folder.
+func TestTheBackupMoves(t *testing.T) {
+	old := filepath.Join(t.TempDir(), "Briard Backup")
+	if err := os.Mkdir(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := liveBackup(t, old)
+	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = old }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "README.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved := t.TempDir()
+	if o := setBackup(cfg, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.backupFolder() != moved {
+		t.Fatalf("move: %+v, folder %q", o, cfg.backupFolder())
+	}
+	if v := cfg.backupView(); v.Folder != moved || v.Previous != old {
+		t.Fatalf("view %+v, want the new folder and the old one named", v)
+	}
+	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+moved+"\n") {
+		t.Fatalf("config:\n%s", b)
+	}
+	if _, err := os.Stat(filepath.Join(old, "README.txt")); err != nil {
+		t.Fatal("the old folder was touched")
+	}
+	// Off and on again comes back to the new folder, not the old.
+	setBackup(cfg, settingBackupDir, "")
+	if o := setBackup(cfg, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.readBackupRecord().Previous != old {
+		t.Fatalf("on again: %+v, record %+v", o, cfg.readBackupRecord())
+	}
+	if o := setBackup(cfg, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
+		t.Fatalf("a root folder was accepted: %+v", o)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,7 @@ func TestTheBackupCardRendersTheHostsView(t *testing.T) {
 		t.Fatal("a card with no view from the host")
 	}
 	last := &dashboard.BackupRun{At: time.Date(2026, 10, 10, 2, 4, 0, 0, time.UTC), Snapshot: "abc", BytesAdded: 312 << 20}
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, Last: last})
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, Nights: []dashboard.BackupRun{*last}})
 	body := r.page(c)
 	for _, want := range []string{"/home/ana/Briard Backup", testKey, "only on this machine", `action="/backup/saved"`, "312 MB new", `action="/backup/off"`} {
 		if !strings.Contains(body, want) {
@@ -47,7 +48,7 @@ func TestTheBackupCardRendersTheHostsView(t *testing.T) {
 		}
 	}
 
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true, Last: last})
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true, Nights: []dashboard.BackupRun{*last}})
 	body = r.page(c)
 	if !strings.Contains(body, testKey) || strings.Contains(body, "only on this machine") || strings.Contains(body, `action="/backup/saved"`) {
 		t.Errorf("saved key: the card still nudges, or lost the key: %s", body)
@@ -59,7 +60,7 @@ func TestTheBackupCardRendersTheHostsView(t *testing.T) {
 		t.Errorf("off: %s", body)
 	}
 
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Key: testKey, Last: &dashboard.BackupRun{At: last.At, Error: "the backup folder is not there"}})
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Key: testKey, Nights: []dashboard.BackupRun{{At: last.At, Error: "the backup folder is not there"}}})
 	if body := r.page(c); !strings.Contains(body, "did not finish: the backup folder is not there") {
 		t.Errorf("a failed night is not said: %s", body)
 	}
@@ -113,5 +114,55 @@ func TestTheKeyIsShownToATrustedDeviceOnly(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusUnauthorized || strings.Contains(string(body), testKey) {
 		t.Fatalf("an untrusted browser got %d and the key: %v", resp.StatusCode, strings.Contains(string(body), testKey))
+	}
+}
+
+// Changing the folder carries what was typed to the host as one config-set; the host judges it,
+// and its refusal is what the card shows.
+func TestTheFolderFormAsksTheHost(t *testing.T) {
+	r, c, port := backupRig(t)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey})
+	if body := r.page(c); !strings.Contains(body, `action="/backup/folder"`) {
+		t.Fatalf("no way to change the folder: %s", body)
+	}
+	if resp := r.form("/backup/folder", c, url.Values{"folder": {"  "}}); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("an empty folder = %d, want 400", resp.StatusCode)
+	}
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "/etc belongs to root: choose a folder a person owns"}
+	r.form("/backup/folder", c, url.Values{"folder": {" /home/ana/Dropbox/Briard Backup "}})
+	port.mu.Lock()
+	asked := append([]api.Directive(nil), port.asked...)
+	port.mu.Unlock()
+	var got api.ConfigSetting
+	if len(asked) == 1 {
+		_ = json.Unmarshal([]byte(asked[0].Payload), &got)
+	}
+	if want := (api.ConfigSetting{Key: "backup-dir", Value: "/home/ana/Dropbox/Briard Backup"}); len(asked) != 1 || got != want {
+		t.Fatalf("asked %+v, want one config-set %+v", asked, want)
+	}
+	if body := r.page(c); !strings.Contains(body, "belongs to root") {
+		t.Errorf("the host's refusal is not shown: %s", body)
+	}
+}
+
+// After a move: the earlier backups are named as still there and the household's; the nights list
+// and what the folder holds come from the host's record.
+func TestTheCardSaysWhereTheEarlierBackupsAre(t *testing.T) {
+	r, c, _ := backupRig(t)
+	at := time.Date(2026, 10, 10, 2, 4, 0, 0, time.UTC)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/new", Previous: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true,
+		Nights: []dashboard.BackupRun{
+			{At: at, BytesAdded: 5 << 20, Size: 3 << 30},
+			{At: at.Add(-24 * time.Hour), Error: "the backup folder is not there"},
+		}})
+	body := r.page(c)
+	for _, want := range []string{"earlier backups are still in <code>/home/ana/Briard Backup</code>", "the folder holds 3.0 GB", "Recent nights", "5 MB new", "did not finish: the backup folder is not there"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card lacks %q", want)
+		}
+	}
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/new", Previous: "/new", On: true})
+	if body := r.page(c); strings.Contains(body, "earlier backups are still in") {
+		t.Error("a previous folder that is the current one is named as somewhere else")
 	}
 }
