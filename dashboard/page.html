@@ -164,7 +164,8 @@
     <h2>Backup</h2>
     {{with .Asked}}<p class="banner">{{.}}</p>{{end}}
     {{if .On}}
-      <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>. That is a copy on this machine: it survives a broken app or a damaged volume, not a broken disk.</p>
+      <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>, on this machine. That protects against a broken app or a damaged volume, not against losing the machine itself.</p>
+      <p class="muted">To keep a copy that survives a dead disk, a theft or a fire, the folder has to leave the machine: keep it in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS, or copy it somewhere else from time to time.</p>
       {{if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
       {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new.</p>
       {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
