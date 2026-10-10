@@ -206,6 +206,7 @@
             gopls
             gotools # goimports, etc.
             go-tools # staticcheck
+            restic # the backup store's tests drive the real client against it
           ];
           # Install the tracked git hooks on shell entry. Symlink (not copy)
           # so edits to scripts/hooks/ take effect without re-running install.
