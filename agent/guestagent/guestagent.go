@@ -361,6 +361,9 @@ const (
 	// dashboard.alerts writes the host's alert store for the page to list -- a copy, pushed when
 	// the store records something and at the start of every connection; the store stays the host's.
 	verbDashboardAlerts = "dashboard.alerts"
+	// dashboard.backup writes the host's view of the nightly backup for the page -- the folder,
+	// whether it runs, the last night and the key -- pushed the same way; the key stays the host's.
+	verbDashboardBackup = "dashboard.backup"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -433,7 +436,7 @@ var guestCapabilities = []string{
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
-	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts,
+	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts, verbDashboardBackup,
 	verbResources,
 	verbFsSync,
 	guestfirmware.VerbHello, guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate,
@@ -465,7 +468,7 @@ var besideActs = map[string]bool{
 	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
 	verbDataBackupResult: true,
 	// pushes
-	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true,
+	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
 }
 
@@ -1288,14 +1291,18 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
 			}
 			return nil, nil
-		case verbDashboardCasa, verbDashboardAlerts:
-			// Two of the host's facts for the page, written the same way; the payload is parsed
+		case verbDashboardCasa, verbDashboardAlerts, verbDashboardBackup:
+			// Three of the host's facts for the page, written the same way; the payload is parsed
 			// as its own shape, so a malformed one never reaches the page.
-			// The alert copy's directory is readable by more than the page (dashboard.AlertsDir).
+			// The alert copy's directory is readable by more than the page (dashboard.AlertsDir);
+			// the backup view carries the key, so it stays in the page's own.
 			var v any = &dashboard.Casa{}
 			path, dir, mode := dashboard.CasaPath, dashboard.Dir, "0700"
-			if verb == verbDashboardAlerts {
+			switch verb {
+			case verbDashboardAlerts:
 				v, path, dir, mode = &[]notify.Record{}, dashboard.AlertsPath, dashboard.AlertsDir, "0755"
+			case verbDashboardBackup:
+				v, path = &dashboard.Backup{}, dashboard.BackupPath
 			}
 			if err := json.Unmarshal(payload, v); err != nil {
 				return nil, err
@@ -1311,6 +1318,13 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			tmp := path + ".new"
 			if err := x.WriteFile(tmp, raw); err != nil {
 				return nil, fmt.Errorf("%s: %w", verb, err)
+			}
+			if verb == verbDashboardBackup {
+				// It carries the household's key: 0600, as the handoff's code is, and not only
+				// behind the directory's mode.
+				if out, err := x.Run(ctx, "chmod", "0600", tmp); err != nil {
+					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
+				}
 			}
 			if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
 				return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
@@ -2871,6 +2885,11 @@ func (g *Client) DashboardCasa(ctx context.Context, c dashboard.Casa) error {
 // SupportsDashboardCasa reports whether this guest takes the casa view (an older image does not;
 // the name still works there, the page just cannot show it).
 func (g *Client) SupportsDashboardCasa() bool { return g.Supports(verbDashboardCasa) }
+
+// DashboardBackup tells the guest what the host knows about the nightly backup, for the page.
+func (g *Client) DashboardBackup(ctx context.Context, b dashboard.Backup) error {
+	return g.c.Call(ctx, verbDashboardBackup, b, nil)
+}
 
 // DashboardAlerts hands the guest a copy of the host's alert store, for the dashboard to list.
 func (g *Client) DashboardAlerts(ctx context.Context, recs []notify.Record) error {

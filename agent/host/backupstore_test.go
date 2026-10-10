@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ func storeRig(t *testing.T) (*backupStore, *httptest.Server, map[string]bool) {
 	t.Helper()
 	var mu sync.Mutex
 	owned := map[string]bool{}
-	s := &backupStore{dir: t.TempDir(), client: "127.0.0.1", own: func(p string) error {
+	s := &backupStore{dir: t.TempDir(), client: "127.0.0.1", own: func(_, p string) error {
 		mu.Lock()
 		defer mu.Unlock()
 		owned[p] = true
@@ -224,5 +225,59 @@ func TestTheStoreListsInTheVersionAsked(t *testing.T) {
 	}
 	if ct, body := get(""); ct != "application/vnd.x.restic.rest.v1" || body != `["`+strings.Repeat("cd", 32)+`"]` {
 		t.Errorf("v1: %s %s", ct, body)
+	}
+}
+
+// A repository the store creates carries a README.txt that says what the folder is and how to
+// restore it without Briard; a household's own copy is never replaced.
+func TestTheStoreLeavesAReadme(t *testing.T) {
+	s, srv, owned := storeRig(t)
+	resp, err := http.Post(srv.URL+"/?create=true", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	readme := filepath.Join(s.dir, "README.txt")
+	b, err := os.ReadFile(readme)
+	if err != nil || !strings.Contains(string(b), "restic -r") || !strings.Contains(string(b), "recovery key") {
+		t.Fatalf("README.txt: %v\n%s", err, b)
+	}
+	// Written as every object is -- a temp beside it, given the owner, renamed -- so a temp in the
+	// folder's own root is what was given the owner before it became the README.
+	rootTemp := false
+	for p := range owned {
+		rootTemp = rootTemp || (filepath.Dir(p) == s.dir && strings.HasPrefix(filepath.Base(p), ".tmp-"))
+	}
+	if !rootTemp {
+		t.Error("the README was not given the folder's owner")
+	}
+	if err := os.WriteFile(readme, []byte("ours"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp, _ = http.Post(srv.URL+"/?create=true", "", nil)
+	resp.Body.Close()
+	if b, _ := os.ReadFile(readme); string(b) != "ours" {
+		t.Fatal("the household's README was replaced")
+	}
+}
+
+// Turned off, the store refuses everything and writes nothing.
+func TestTheStoreAnswersNothingWhileTheBackupIsOff(t *testing.T) {
+	s, srv, _ := storeRig(t)
+	dir := s.dir
+	s.folder = func() string { return "" }
+	resp, err := http.Post(srv.URL+"/?create=true", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	// Said as OFF, not as a missing folder: the run's report carries this, and "the folder is not
+	// there" would send the household looking for a disk.
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "turned off") {
+		t.Fatalf("status %d %q while off, want 503 saying it is off", resp.StatusCode, body)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("the store wrote %v while off", entries)
 	}
 }

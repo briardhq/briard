@@ -2,13 +2,18 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"briard.io/agent/guestagent"
+	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 )
 
 // backupRig is a node whose state dir holds a flock id and name (no casa claim yet) and whose
@@ -140,5 +145,144 @@ func TestBackupDirIsDeclared(t *testing.T) {
 	t.Setenv("BACKUP_DIR", "/home/ana/Briard Backup")
 	if d := ConfigFromEnv().BackupDir; d != "/home/ana/Briard Backup" {
 		t.Errorf("set: %q", d)
+	}
+}
+
+// liveBackup is a node whose backup folder can be switched at runtime, with a config file.
+func liveBackup(t *testing.T, folder string) Config {
+	t.Helper()
+	cfg, _, _ := backupRig(t)
+	cfg.BackupDir = folder
+	cfg.backupLive = &atomic.Pointer[string]{}
+	cfg.backupLive.Store(&folder)
+	conf := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(conf, []byte("DATA_DISK=/d\nBACKUP_DIR="+folder+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BRIARD_CONFIG", conf)
+	return cfg
+}
+
+func setBackup(cfg Config, key, value string) api.DirectiveOutcome {
+	raw, _ := json.Marshal(api.ConfigSetting{Key: key, Value: value})
+	out, ok := cfg.applyBackupSetting(api.Directive{ID: "d", Kind: api.DirectiveConfigSet, Payload: string(raw)}, quiet)
+	if !ok {
+		return api.DirectiveOutcome{State: "not-a-backup-setting"}
+	}
+	return out
+}
+
+// Off writes BACKUP_DIR= (the decision, not the default), takes effect at once and leaves the
+// folder remembered; on returns there; any other folder is refused; and the key's
+// acknowledgement is recorded.
+func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "Briard Backup")
+	cfg := liveBackup(t, folder)
+	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = folder }); err != nil {
+		t.Fatal(err)
+	}
+	conf := os.Getenv("BRIARD_CONFIG")
+
+	if o := setBackup(cfg, settingBackupDir, ""); o.State != api.OutcomeDone {
+		t.Fatalf("off: %+v", o)
+	}
+	b, _ := os.ReadFile(conf)
+	if !strings.Contains(string(b), "\nBACKUP_DIR=\n") || !strings.Contains(string(b), "DATA_DISK=/d") {
+		t.Fatalf("config after off:\n%s", b)
+	}
+	if cfg.backupFolder() != "" {
+		t.Fatal("off did not take effect")
+	}
+	if v := cfg.backupView(); v.On || v.Folder != folder {
+		t.Fatalf("off view %+v, want off and the folder it returns to", v)
+	}
+
+	if o := setBackup(cfg, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
+		t.Fatalf("another folder was accepted: %+v", o)
+	}
+	if o := setBackup(cfg, settingBackupDir, folder); o.State != api.OutcomeDone || cfg.backupFolder() != folder {
+		t.Fatalf("on: %+v, folder %q", o, cfg.backupFolder())
+	}
+	if b, _ := os.ReadFile(conf); !strings.Contains(string(b), "BACKUP_DIR="+folder+"\n") {
+		t.Fatalf("config after on:\n%s", b)
+	}
+
+	if v := cfg.backupView(); v.KeySaved {
+		t.Fatal("saved before anyone said so")
+	}
+	if o := setBackup(cfg, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone || !cfg.backupView().KeySaved {
+		t.Fatalf("saved: %+v", o)
+	}
+	if o := setBackup(cfg, "vip", "dhcp"); o.State != "not-a-backup-setting" {
+		t.Fatal("the address was taken for a backup setting")
+	}
+}
+
+// With no folder ever recorded, on goes to the agent's own -- and the view says so while off.
+func TestTheBackupWithNoFolderGoesToTheAgentsOwn(t *testing.T) {
+	cfg := liveBackup(t, "")
+	if v := cfg.backupView(); v.On || v.Folder != defaultBackupDir {
+		t.Fatalf("view %+v, want off, returning to %s", v, defaultBackupDir)
+	}
+	if o := setBackup(cfg, settingBackupDir, "/somewhere/else"); o.State != api.OutcomeFailed {
+		t.Fatalf("a folder never used was accepted: %+v", o)
+	}
+}
+
+// The guest's page may ask for the backup's settings, and for no other config-set.
+func TestTheGuestMayAskForTheBackupSettingsOnly(t *testing.T) {
+	ask := func(key string) bool {
+		raw, _ := json.Marshal(api.ConfigSetting{Key: key, Value: ""})
+		return guestMayAsk(api.Directive{Kind: api.DirectiveConfigSet, Payload: string(raw)})
+	}
+	if !ask(settingBackupDir) || !ask(settingBackupKeySaved) {
+		t.Error("the page cannot turn the backup off, or say the key is saved")
+	}
+	if ask("vip") || ask("") || guestMayAsk(api.Directive{Kind: api.DirectiveConfigSet, Payload: "not json"}) {
+		t.Error("the guest may change a setting outside the backup")
+	}
+}
+
+// The page is told the key the host holds -- read, never minted -- and told again only when the
+// view moved.
+func TestThePageIsToldTheViewWhenItMoves(t *testing.T) {
+	cfg := liveBackup(t, "/f")
+	g := &viewGuest{}
+	pushed := ""
+	cfg.pushBackupView(context.Background(), g, &pushed, quiet)
+	if len(g.views) != 1 || g.views[0].Key != "" || !g.views[0].On {
+		t.Fatalf("first push %+v", g.views)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.stateDir(), backupKeyName)); err == nil {
+		t.Fatal("telling the page minted a key")
+	}
+	cfg.pushBackupView(context.Background(), g, &pushed, quiet)
+	if len(g.views) != 1 {
+		t.Fatal("an unchanged view was pushed again")
+	}
+	k, _ := backupKey(cfg.stateDir())
+	cfg.pushBackupView(context.Background(), g, &pushed, quiet)
+	if len(g.views) != 2 || g.views[1].Key != k {
+		t.Fatalf("the key did not reach the page: %+v", g.views)
+	}
+}
+
+type viewGuest struct{ views []dashboard.Backup }
+
+func (g *viewGuest) DashboardBackup(_ context.Context, b dashboard.Backup) error {
+	g.views = append(g.views, b)
+	return nil
+}
+
+// A finished night is the page's "last backup", with the time it started; a night with nothing
+// to back up is not.
+func TestTheLastNightIsRecorded(t *testing.T) {
+	cfg, g, b := backupRig(t)
+	cfg.backup(context.Background(), g, b, true, tonightAt("02:04"), quiet)
+	g.backup.running, g.backup.report = false, &guestagent.BackupReport{Snapshot: "abc", BytesAdded: 42}
+	cfg.backup(context.Background(), g, b, true, tonightAt("02:10"), quiet)
+	last := cfg.readBackupRecord().Last
+	if last == nil || last.Snapshot != "abc" || last.BytesAdded != 42 || !last.At.Equal(tonightAt("02:04")) {
+		t.Fatalf("last night %+v", last)
 	}
 }

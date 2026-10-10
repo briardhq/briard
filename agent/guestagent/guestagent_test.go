@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2136,5 +2137,30 @@ func TestOSStateReportsTheStateAndTheFailedUnits(t *testing.T) {
 				t.Errorf("SystemState = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// dashboard.backup writes the host's view of the backup the same way -- but it carries the
+// household's key, so it is 0600 before it is moved in, in the page's own 0700 directory.
+func TestDashboardBackupIsWrittenSecretThenMovedIn(t *testing.T) {
+	x := &fakeExec{}
+	raw, _ := json.Marshal(dashboard.Backup{Folder: "/f", On: true, Key: "abcd-efgh"})
+	if _, err := dispatch(x)(context.Background(), verbDashboardBackup, raw); err != nil {
+		t.Fatal(err)
+	}
+	tmp := dashboard.BackupPath + ".new"
+	if got := x.files[tmp]; !strings.Contains(got, `"key":"abcd-efgh"`) {
+		t.Errorf("written %q; want the view", got)
+	}
+	want := [][]string{
+		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
+		{"chmod", "0600", tmp},
+		{"mv", "-f", tmp, dashboard.BackupPath},
+	}
+	if !reflect.DeepEqual(x.runs, want) {
+		t.Errorf("runs = %v, want %v", x.runs, want)
+	}
+	if !slices.Contains(guestCapabilities, verbDashboardBackup) || isAct(verbDashboardBackup) {
+		t.Error("the push is not advertised, or waits behind acts")
 	}
 }

@@ -383,7 +383,7 @@ func TestCasaClaimIsLocalOnly(t *testing.T) {
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "local admin socket") {
 		t.Fatalf("from the cloud: %+v", o)
 	}
-	if !guestMayAsk(api.DirectiveCasaClaim) {
+	if !guestMayAsk(api.Directive{Kind: api.DirectiveCasaClaim}) {
 		t.Fatal("the dashboard cannot ask for a name")
 	}
 }

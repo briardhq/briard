@@ -127,13 +127,16 @@ type app struct {
 	// alertsPath is the host's copy of its alert store (alerts.go); contactPath the guest agent's
 	// stamp of the host's last request, which says whether that copy is still current.
 	alertsPath, contactPath string
+	// backupPath is the host's view of the nightly backup (backup.go); backupAsked the host's
+	// refusal of the last thing asked from that card.
+	backupPath, backupAsked string
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
 		pending: map[string]*pending{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
-		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath}
+		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath}
 }
 
 const (
@@ -219,6 +222,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.skipCasa(w, r)
+	case strings.HasPrefix(r.URL.Path, "/backup/") && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.requestBackup(w, r, strings.TrimPrefix(r.URL.Path, "/backup/"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -651,7 +660,9 @@ type view struct {
 	// Casa is the household's name (casa.go): the first card, until skipped or done.
 	Casa *casaView
 	// Alerts is the host's alert list (alerts.go), or the banner that its agent is away.
-	Alerts  *alertsView
+	Alerts *alertsView
+	// Backup is the nightly backup (backup.go): where it goes, last night, the key.
+	Backup  *backupView
 	Refresh bool
 }
 
@@ -731,6 +742,7 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 	v.Install = a.installState(hass.Name, v.HA != nil)
 	v.Casa = a.casaState()
 	v.Alerts = a.alertsState()
+	v.Backup = a.backupState()
 	// Poll while something is on its way: an install in flight, a Home Assistant that is
 	// routed but not yet RUNNING, or a name claim waiting on its link.
 	v.Refresh = (v.Install != nil && v.Install.Running) || (v.HA != nil && !v.HA.Running) || v.Casa.Refresh()

@@ -37,6 +37,8 @@
   ul.alerts .when { color: var(--muted); margin-right: .4rem; }
   ul.alerts .critical::before, ul.alerts .warning::before { content: "● "; color: var(--bad); }
   ul.alerts .resolved::before { content: "✓ "; color: var(--accent); }
+  /* One click selects the whole key: the page is plain http, where the clipboard API is not offered. */
+  .key code { font-size: 1.15rem; letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
 </style>{{end}}
 
 {{define "refused"}}<!doctype html>
@@ -157,6 +159,28 @@
   {{end}}
   {{if .HA}}<p class="muted"><a href="/history/home-assistant">Home Assistant's history</a> — every update, the changes Briard notices and each quiet day, any of which you can undo.</p>{{end}}
   {{if .Services}}<p class="muted">Apps on this machine: {{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</p>{{end}}
+  {{with .Backup}}
+  <div class="card" id="backup">
+    <h2>Backup</h2>
+    {{with .Asked}}<p class="banner">{{.}}</p>{{end}}
+    {{if .On}}
+      <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>. That is a copy on this machine: it survives a broken app or a damaged volume, not a broken disk.</p>
+      {{if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
+      {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new.</p>
+      {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
+    {{else}}
+      <p>The nightly backup is off. The backups already in <code>{{.Folder}}</code> are kept.</p>
+    {{end}}
+    {{if .Key}}
+      {{if not .KeySaved}}<p class="banner">Your recovery key is only on this machine. The backups cannot be opened without it, so if this machine dies, they die with it. Write it down, or keep it in your password manager.</p>{{end}}
+      <p>Recovery key</p>
+      <p class="key"><code>{{.Key}}</code></p>
+      <p class="muted">Whoever has this key and the backup folder has everything in it.</p>
+      {{if not .KeySaved}}<form method="post" action="/backup/saved"><button type="submit">I have saved the key</button></form>{{end}}
+    {{end}}
+    <form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}" class="approve"><button type="submit" class="quiet">{{if .On}}Turn off nightly backup{{else}}Turn nightly backup back on{{end}}</button></form>
+  </div>
+  {{end}}
   <div class="card">
     <h2>Trusted devices</h2>
     <p class="muted">Browsers that can open this page. Lost one? Revoke it; it can come back only through <code>sudo briard open</code>.</p>

@@ -24,8 +24,9 @@ import (
 // (a reinstall that names it overwrites it, as before), and applies it the one way a bring-up
 // fact is applied: restart the guest, so the next bring-up carries it.
 //
-// One key, `vip`. The command is named for the general act so a second key does not need a second
-// verb, and nothing more general exists until it does.
+// Three keys: `vip`, applied by a guest restart, and the backup's two (`backup-dir`,
+// `backup-key-saved`, backup.go), applied in place -- the host is the only thing that reads them.
+// The command is named for the general act, so a key joins without a second verb.
 
 // configSetBudget bounds the change: the address probe, the write, and a guest restart.
 const configSetBudget = 10 * time.Minute
@@ -48,7 +49,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 		return failed("bad setting payload: %v", err)
 	}
 	if s.Key != "vip" {
-		return failed("unknown setting %q: the one setting that can be changed is vip", s.Key)
+		return failed("unknown setting %q: the settings that can be changed are vip, backup-dir and backup-key-saved", s.Key)
 	}
 	// THE ADDRESS IS THE FLOCK'S. Changed on one node of a pair, the next failover would move the
 	// service to a different address than the one the household uses; changing it everywhere at
@@ -76,7 +77,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "vip is already " + vipWord(want) + "; nothing changed"}
 	}
 	path := cfg.configPathForMessage()
-	if err := setConfigKey(path, "VIP_ADDR", want); err != nil {
+	if err := setConfigKey(path, "VIP_ADDR", want, true); err != nil {
 		return failed("could not record it in %s: %v", path, err)
 	}
 	if cfg.vip != nil {
@@ -143,9 +144,11 @@ func vipWord(v string) string {
 	return v
 }
 
-// setConfigKey rewrites config.env with key set to value, or removed when value is "". Every
+// setConfigKey rewrites config.env with key set to value. An empty value removes the line when
+// dropEmpty -- absent is that key's default, VIP_ADDR's dhcp -- and writes `key=` otherwise, for a
+// key whose empty value is a decision of its own (BACKUP_DIR, off; config.go's `declared`). Every
 // other line is kept as it was. tmp + fsync + rename: the file is the setting's only copy.
-func setConfigKey(path, key, value string) error {
+func setConfigKey(path, key, value string, dropEmpty bool) error {
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -159,7 +162,7 @@ func setConfigKey(path, key, value string) error {
 			out = append(out, l)
 		}
 	}
-	if value != "" {
+	if value != "" || !dropEmpty {
 		out = append(out, key+"="+value)
 	}
 	return atomicfile.Write(path, []byte(strings.Join(out, "\n")+"\n"), 0o600, 0o755)

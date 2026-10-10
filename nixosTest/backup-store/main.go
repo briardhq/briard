@@ -19,5 +19,5 @@ func main() {
 	if len(os.Args) != 4 {
 		log.Fatal("usage: backup-store <folder> <listen-ip> <client-ip>")
 	}
-	host.ServeBackupStore(context.Background(), os.Args[1], os.Args[2], os.Args[3], log.Printf)
+	host.ServeBackupStore(context.Background(), func() string { return os.Args[1] }, os.Args[2], os.Args[3], log.Printf)
 }

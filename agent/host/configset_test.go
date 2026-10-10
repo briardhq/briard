@@ -55,14 +55,14 @@ func TestSetConfigKey(t *testing.T) {
 	if err := os.WriteFile(p, []byte(orig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := setConfigKey(p, "VIP_ADDR", "192.168.7.50/24"); err != nil {
+	if err := setConfigKey(p, "VIP_ADDR", "192.168.7.50/24", true); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
 	if want := "# written by install.sh\nQEMU=/opt/briard/qemu\nNIC=wlan0\nVIP_ADDR=192.168.7.50/24\n"; string(b) != want {
 		t.Errorf("after set:\n%s\nwant:\n%s", b, want)
 	}
-	if err := setConfigKey(p, "VIP_ADDR", ""); err != nil {
+	if err := setConfigKey(p, "VIP_ADDR", "", true); err != nil {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(p)

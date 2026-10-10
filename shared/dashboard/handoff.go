@@ -135,3 +135,31 @@ const AlertsPath = AlertsDir + "/alerts.json"
 // request the host makes. The deadman reads it to decide when to act; the dashboard reads it to
 // say the agent is unreachable instead of showing a copy of the alerts that has stopped moving.
 const ContactStampPath = "/run/briard/.host-contact"
+
+// BackupPath is where the host keeps the dashboard told about the household's backup: written
+// through `dashboard.backup` whenever the host's view changes and at the start of every
+// connection, for the reason CasaPath is. It holds the repository key, so it lives in Dir, which
+// no workload sees, and the page shows it only to a trusted device.
+const BackupPath = Dir + "/backup.json"
+
+// Backup is that file's content: the host's view of the nightly backup, for the page.
+type Backup struct {
+	// Folder is where the backups go -- or, while they are off, where they went and will go again.
+	Folder string `json:"folder"`
+	// On is whether the nightly backup runs.
+	On bool `json:"on"`
+	// Key is the repository key, the household's key of record; "" until the first run mints it.
+	Key string `json:"key,omitempty"`
+	// KeySaved is the household saying it has a copy of the key somewhere else.
+	KeySaved bool `json:"keySaved"`
+	// Last is the newest finished run; nil until there has been one.
+	Last *BackupRun `json:"last,omitempty"`
+}
+
+// BackupRun is one finished night.
+type BackupRun struct {
+	At         time.Time `json:"at"`
+	Snapshot   string    `json:"snapshot,omitempty"`
+	BytesAdded int64     `json:"bytesAdded"`
+	Error      string    `json:"error,omitempty"`
+}

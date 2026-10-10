@@ -101,6 +101,9 @@ pkgs.testers.runNixOSTest {
     strangers = node1.succeed("find '${folder}' ! -user ana -o ! -group users").strip()
     assert strangers == "", f"files the folder's owner does not own:\n{strangers}"
     assert int(node1.succeed("find '${folder}' -type f | wc -l")) > 0, "the folder is empty"
+    # Whoever finds the folder is told what it is and how to restore it -- and the README beside
+    # the repository did not stop plain restic opening it (the `ls` and `dump` above).
+    node1.succeed("grep -q 'restic -r' '${folder}/README.txt'")
 
     # Nothing of the run is left behind: no mount, no copies (the host's secrets ride those), no password.
     node1.fail("findmnt /run/briard/backup/services/${fixture.name}")

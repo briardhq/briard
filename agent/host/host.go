@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"briard.io/agent/cloud"
@@ -432,6 +433,10 @@ type Config struct {
 	// is copied into the Manager, into observe, into bringUp -- and read through vipAddr(). nil
 	// (every unit test) reads VIPAddr itself.
 	vip *string
+	// backupLive is BackupDir as it stands NOW, for the same reason -- `config set backup-dir`
+	// turns the backup off and on (backup.go) -- and atomic, because the store reads it from its
+	// own goroutine. Read through backupFolder().
+	backupLive *atomic.Pointer[string]
 
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
@@ -531,6 +536,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	cfg.ipvtap = newIPvtapCopier()
 	vip := cfg.VIPAddr
 	cfg.vip = &vip
+	backupDir := cfg.BackupDir
+	cfg.backupLive = &atomic.Pointer[string]{}
+	cfg.backupLive.Store(&backupDir)
 	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). FIRST,
 	// because everything below is keyed to it: the DRBD `on <name>`, the VM's UUID, the service
 	// MAC, the cloud's key for this node and the name the household types. A node that cannot write
@@ -627,7 +635,20 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			logf("backup store: %v", err)
 		}
 	}
-	go ServeBackupStore(ctx, cfg.BackupDir, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
+	if cfg.BackupDir != "" && cfg.stateDir() != "" && cfg.readBackupRecord().Folder != cfg.BackupDir {
+		// Remembered, so that turning the backup off and on again comes back to this folder.
+		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = cfg.BackupDir }); err != nil {
+			logf("backup: could not remember the folder: %v", err)
+		}
+	}
+	if cfg.BackupDir != "" && cfg.stateDir() != "" {
+		// The key from the agent's first start rather than the first night, so the page can ask
+		// the household to save it the first time they open it.
+		if _, err := backupKey(cfg.stateDir()); err != nil {
+			logf("backup: no repository key: %v", err)
+		}
+	}
+	go ServeBackupStore(ctx, cfg.backupFolder, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
 	// THE CLOUD SEAM, BUILT BEFORE THE NETWORK RATHER THAN AFTER THE GUEST. None of
 	// it depends on a guest -- CloudClient is Register/Report/ReportMetrics, and Resolve needs
 	// only this node's name, role and zone -- so its old position below bring-up was an accident
@@ -1373,6 +1394,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	episodeAsks := []int{0, 6, 12}
 	// The alert store generation the guest's copy was last taken at; none yet, this connection.
 	alertsPushed := -1
+	backupPushed := "" // the page's backup view last pushed on this connection (backup.go)
 	cycle := 0
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
@@ -1445,7 +1467,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()
-		pushAlerts(ctx, r, n, &alertsPushed, logf) // the page's copy of the alert store, when it moved
+		pushAlerts(ctx, r, n, &alertsPushed, logf)      // the page's copy of the alert store, when it moved
+		cfg.pushBackupView(ctx, r, &backupPushed, logf) // the page's view of the backup, when it moved
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
@@ -1756,8 +1779,12 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		return cfg.applyDoctor(ctx, d, r)
 	}
 	if d.Kind == api.DirectiveConfigSet {
-		// Applied the way pair applies a membership: record it, then the one act only the
-		// upgrader owns -- a guest restart, whose bring-up carries the new value.
+		// The backup's settings apply in place: only the host reads them (backup.go).
+		if out, ok := cfg.applyBackupSetting(d, logf); ok {
+			return out
+		}
+		// The address is applied the way pair applies a membership: record it, then the one act
+		// only the upgrader owns -- a guest restart, whose bring-up carries the new value.
 		rb, ok := up.(guestRebooter)
 		if !ok {
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no guest to restart on this node"}

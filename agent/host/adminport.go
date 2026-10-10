@@ -36,10 +36,22 @@ import (
 // service-restore joins them: its effect is one service's data and code on this node,
 // the same blast radius an install already has, and the picker that asks for it is the dashboard
 // behind the same door.
-func guestMayAsk(kind string) bool {
-	return kind == api.DirectiveServiceInstall || kind == api.DirectiveServicePrewarm ||
-		kind == api.DirectiveServiceRestore || kind == api.DirectiveServiceMembers ||
-		kind == api.DirectiveCasaClaim // a name for this household, asked from its own page
+//
+// config-set joins them for the BACKUP'S settings only, never the address: the page's Backup
+// section turns the nightly backup off and on and records that the key is saved. The one effect
+// outside the guest is that a guest taken over could stop tomorrow's backup of data it already
+// holds; it cannot choose a folder (backup.go refuses any but the one already in use), and it
+// cannot touch the address, whose change restarts the guest onto the host's network.
+func guestMayAsk(d api.Directive) bool {
+	switch d.Kind {
+	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,
+		api.DirectiveServiceMembers,
+		api.DirectiveCasaClaim: // a name for this household, asked from its own page
+		return true
+	case api.DirectiveConfigSet:
+		return isBackupSetting(d.Payload)
+	}
+	return false
 }
 
 // serveAdminPort dials the host end of the guest's admin port and serves it until ctx ends,
@@ -87,7 +99,7 @@ func serveAdminPortConn(ctx context.Context, conn net.Conn, reqs chan<- localReq
 			writeOutcome(conn, api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "bad request: " + err.Error()})
 			continue
 		}
-		if !guestMayAsk(d.Kind) {
+		if !guestMayAsk(d) {
 			logf("admin port: refused a %q directive from the guest", d.Kind)
 			writeOutcome(conn, api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "the guest may not ask for " + d.Kind + "; only a service install"})
 			continue

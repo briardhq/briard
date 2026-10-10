@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"briard.io/agent/guestagent"
+	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
+	"briard.io/shared/dashboard"
 )
 
 // THE NIGHTLY BACKUP, 02:00 local: before the guest-update window (03:00) and the recorder check
@@ -60,11 +64,14 @@ func newBackupScheduler() *backupScheduler { return &backupScheduler{loc: househ
 // backup collects a run that is going, or starts tonight's if it is due: backup is on, this node
 // serves, and the local time is inside tonight's window.
 func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler, serving bool, now time.Time, logf func(string, ...any)) {
-	if cfg.BackupDir == "" || cfg.stateDir() == "" || cfg.hostNodeIP() == "" || !serving {
+	if cfg.stateDir() == "" || cfg.hostNodeIP() == "" || !serving {
 		return
 	}
 	if !b.waiting.IsZero() {
-		collectBackup(ctx, g, b, logf)
+		cfg.collectBackup(ctx, g, b, logf)
+		return
+	}
+	if cfg.backupFolder() == "" {
 		return
 	}
 	local := now.In(b.loc)
@@ -95,8 +102,9 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 	b.waiting = now
 }
 
-// collectBackup asks for a started run's report, and logs it once it has come.
-func collectBackup(ctx context.Context, g backupRunner, b *backupScheduler, logf func(string, ...any)) {
+// collectBackup asks for a started run's report, logs it once it has come, and records it as the
+// last night -- what the page says -- unless there was nothing to back up.
+func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupScheduler, logf func(string, ...any)) {
 	sctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
 	s, err := g.DataBackupResult(sctx)
 	cancel()
@@ -108,6 +116,7 @@ func collectBackup(ctx context.Context, g backupRunner, b *backupScheduler, logf
 		b.waiting = time.Time{}
 		return
 	}
+	started := b.waiting
 	b.waiting = time.Time{}
 	rep := *s.Report
 	switch {
@@ -117,6 +126,13 @@ func collectBackup(ctx context.Context, g backupRunner, b *backupScheduler, logf
 		logf("backup: nothing to back up (no service has a snapshot yet)")
 	default:
 		logf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(rep.Services, ", "), rep.Files, rep.BytesAdded)
+	}
+	if rep.Error == "" && rep.Snapshot == "" {
+		return
+	}
+	last := &dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Error: rep.Error}
+	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Last = last }); err != nil {
+		logf("backup: could not record tonight's run: %v", err)
 	}
 }
 
@@ -137,7 +153,8 @@ func (cfg Config) backupHostFacts(logf func(string, ...any)) map[string][]byte {
 	return out
 }
 
-// backupKey is the repository key, minted on the first run and kept 0600 in the state dir.
+// backupKey is the repository key, minted the first time it is asked for -- the agent's start, when
+// the backup is on, so the page can show it from the first open -- and kept 0600 in the state dir.
 //
 // ⚠️ MINTED ONLY WHEN THE FILE IS ABSENT, never when it cannot be read: a new key over an
 // unreadable old one would orphan every snapshot the old one opens. The repository's own init
@@ -171,4 +188,183 @@ func backupKey(dir string) (string, error) {
 		return "", err
 	}
 	return k, nil
+}
+
+// backupRecordName is the backup's node-local record beside the key: what the household told the
+// page, and what the nights did. Node-scoped, like the key it sits beside.
+const backupRecordName = "backup.json"
+
+// backupRecord is that file. Folder is the folder the backup last ran into, kept while it is off
+// so turning it on again knows where; KeySaved is the household's word that the key has a copy
+// off this machine; Last is the newest night.
+type backupRecord struct {
+	Folder   string               `json:"folder,omitempty"`
+	KeySaved bool                 `json:"keySaved,omitempty"`
+	Last     *dashboard.BackupRun `json:"last,omitempty"`
+}
+
+// backupFolder is the backup folder as it stands NOW: `config set backup-dir` turns it off and on
+// at runtime, and the store and the nightly tick both read it. Atomic, because the store reads it
+// from its own goroutine. nil (every unit test that does not set it) reads BackupDir.
+func (cfg Config) backupFolder() string {
+	if cfg.backupLive != nil {
+		return *cfg.backupLive.Load()
+	}
+	return cfg.BackupDir
+}
+
+func (cfg Config) readBackupRecord() backupRecord {
+	var rec backupRecord
+	if b, err := os.ReadFile(filepath.Join(cfg.stateDir(), backupRecordName)); err == nil {
+		_ = json.Unmarshal(b, &rec)
+	}
+	return rec
+}
+
+// updateBackupRecord changes the record and writes it whole (tmp + fsync + rename: the file is the
+// only copy of what the household acknowledged).
+func (cfg Config) updateBackupRecord(change func(*backupRecord)) error {
+	if cfg.stateDir() == "" {
+		return errors.New("no state directory")
+	}
+	rec := cfg.readBackupRecord()
+	change(&rec)
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(filepath.Join(cfg.stateDir(), backupRecordName), b, 0o600, 0o700)
+}
+
+// backupView is what the page is told: the folder (the one in use, or the one it returns to), the
+// key if one has been minted -- read, never minted here -- and the record.
+func (cfg Config) backupView() dashboard.Backup {
+	rec := cfg.readBackupRecord()
+	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", KeySaved: rec.KeySaved, Last: rec.Last}
+	if !v.On {
+		v.Folder = rec.Folder
+		if v.Folder == "" {
+			v.Folder = defaultBackupDir // where turning it on goes (applyBackupSetting)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(cfg.stateDir(), backupKeyName)); err == nil {
+		v.Key = strings.TrimSpace(string(b))
+	}
+	return v
+}
+
+// backupViewGuest is the slice of the guest the page's copy costs.
+type backupViewGuest interface {
+	DashboardBackup(ctx context.Context, b dashboard.Backup) error
+}
+
+// pushBackupView hands the guest the page's view when it differs from what this connection last
+// pushed. pushed starts empty with every connection, so a fresh guest is always told.
+func (cfg Config) pushBackupView(ctx context.Context, r any, pushed *string, logf func(string, ...any)) {
+	g, ok := r.(backupViewGuest)
+	if !ok || cfg.stateDir() == "" {
+		return
+	}
+	v := cfg.backupView()
+	b, err := json.Marshal(v)
+	if err != nil || string(b) == *pushed {
+		return
+	}
+	pctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
+	defer cancel()
+	if err := g.DashboardBackup(pctx, v); err != nil {
+		logf("backup: dashboard copy: %v", err)
+		return
+	}
+	*pushed = string(b)
+}
+
+// THE BACKUP'S TWO SETTINGS, through `config set` -- the one runtime writer -- so the page and the
+// CLI change them the same way. Applied in place: the store and the tick read backupFolder() at
+// every use, so nothing restarts, and the guest is not involved.
+//
+//   - backup-dir: "" turns the nightly backup off (BACKUP_DIR="", the existing backups are left
+//     where they are); the folder it last used -- or, with none, the agent's own -- turns it on
+//     again. Choosing a DIFFERENT folder is not built: that needs the folder checked (absolute,
+//     a person's, writable) before the host writes into it as root.
+//   - backup-key-saved: "yes" records that the household has the key somewhere else.
+const (
+	settingBackupDir      = "backup-dir"
+	settingBackupKeySaved = "backup-key-saved"
+)
+
+// isBackupSetting says whether a config-set payload names one of the backup's settings -- the only
+// config-set the guest's page may ask for (adminport.go).
+func isBackupSetting(payload string) bool {
+	var s api.ConfigSetting
+	if json.Unmarshal([]byte(payload), &s) != nil {
+		return false
+	}
+	return s.Key == settingBackupDir || s.Key == settingBackupKeySaved
+}
+
+// applyBackupSetting applies a config-set naming a backup setting; ok is false for any other key.
+func (cfg Config) applyBackupSetting(d api.Directive, logf func(string, ...any)) (out api.DirectiveOutcome, ok bool) {
+	var s api.ConfigSetting
+	if err := json.Unmarshal([]byte(d.Payload), &s); err != nil || (s.Key != settingBackupDir && s.Key != settingBackupKeySaved) {
+		return api.DirectiveOutcome{}, false
+	}
+	failed := func(format string, a ...any) (api.DirectiveOutcome, bool) {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf(format, a...)}, true
+	}
+	done := func(format string, a ...any) (api.DirectiveOutcome, bool) {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf(format, a...)}, true
+	}
+	if cfg.backupLive == nil || cfg.stateDir() == "" {
+		return failed("this node keeps no backup settings")
+	}
+	if s.Key == settingBackupKeySaved {
+		if s.Value != "yes" {
+			return failed(`%s takes "yes"`, settingBackupKeySaved)
+		}
+		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.KeySaved = true }); err != nil {
+			return failed("could not record it: %v", err)
+		}
+		logf("backup: the household has saved the recovery key")
+		return done("noted: the recovery key is saved")
+	}
+	now := cfg.backupFolder()
+	want := s.Value
+	if want != "" {
+		back := cfg.readBackupRecord().Folder
+		if back == "" {
+			back = defaultBackupDir
+		}
+		if want != back && want != now {
+			return failed("the backup goes back to %s; choosing another folder is not possible yet", back)
+		}
+		if want == defaultBackupDir {
+			if err := os.MkdirAll(want, 0o700); err != nil {
+				return failed("%v", err)
+			}
+		}
+	}
+	if want == now {
+		return done("the backup is already %s; nothing changed", backupWord(want))
+	}
+	path := cfg.configPathForMessage()
+	if err := setConfigKey(path, "BACKUP_DIR", want, false); err != nil {
+		return failed("could not record it in %s: %v", path, err)
+	}
+	if want != "" {
+		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = want }); err != nil {
+			logf("backup: could not remember the folder: %v", err)
+		}
+	}
+	cfg.backupLive.Store(&want)
+	logf("backup: %s -> %s, recorded in %s", backupWord(now), backupWord(want), path)
+	return done("the nightly backup is now %s", backupWord(want))
+}
+
+// backupWord names a BACKUP_DIR value for a person.
+func backupWord(dir string) string {
+	if dir == "" {
+		return "off"
+	}
+	return "on, into " + dir
 }

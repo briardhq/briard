@@ -45,10 +45,36 @@ const backupStorePort = "7791"
 
 // backupStore serves one repository directory to one client address.
 type backupStore struct {
-	dir    string                  // the repository: the household's backup folder
-	client string                  // the only source address answered: the guest's node IP
-	own    func(path string) error // gives path the folder's owner (platform.ChownLike)
+	// folder is the household's backup folder as it stands now -- `config set` turns it off ("")
+	// and on again with no restart -- read once per request into dir, the repository that request
+	// works in.
+	folder func() string
+	dir    string
+	client string                       // the only source address answered: the guest's node IP
+	own    func(dir, path string) error // gives path dir's owner (platform.ChownLike)
 }
+
+// backupReadme is the README.txt the store puts in a repository it creates: whoever finds the
+// folder in three years -- the household, a relative, a technician -- learns what it is and how to
+// get the files out with no Briard anywhere.
+const backupReadme = `This folder holds the encrypted nightly backups of a Briard home server.
+
+Every night Briard copies the apps' data into it. It is a standard restic
+repository (https://restic.net), and only the recovery key opens it: the key
+shown in the Backup section of the Briard dashboard. Whoever holds this folder
+and that key holds everything in it; without the key it cannot be read.
+
+To get the files back on any computer, without Briard:
+
+  1. Install restic.
+  2. Run, with the path of this folder and a folder to put the files in:
+
+       restic -r "/path/to/Briard Backup" restore latest --target ~/briard-restore
+
+     and type the recovery key when it asks for the password.
+
+Deleting this folder deletes the backups. Briard never deletes it.
+`
 
 // backupObjectTypes are the repository's directories, one per kind of object restic stores.
 var backupObjectTypes = []string{"data", "keys", "locks", "snapshots", "index"}
@@ -62,6 +88,15 @@ const resticV2 = "application/vnd.x.restic.rest.v2"
 func (s *backupStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err != nil || host != s.client {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if s.folder != nil {
+		c := *s
+		c.dir = s.folder()
+		s = &c
+	}
+	if s.dir == "" {
+		http.Error(w, "the backup is turned off", http.StatusServiceUnavailable)
 		return
 	}
 	if _, err := os.Stat(s.dir); err != nil {
@@ -135,6 +170,13 @@ func (s *backupStore) create(w http.ResponseWriter) {
 			return
 		}
 	}
+	readme := filepath.Join(s.dir, "README.txt")
+	if _, err := os.Lstat(readme); err == nil {
+		return // the household's copy, perhaps annotated: never replaced
+	}
+	if err := s.save(readme, strings.NewReader(backupReadme)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // mkdir makes one directory inside the folder, the folder's owner's.
@@ -145,7 +187,7 @@ func (s *backupStore) mkdir(d string) error {
 		}
 		return err
 	}
-	return s.own(d)
+	return s.own(s.dir, d)
 }
 
 // object answers HEAD/GET/POST/DELETE on one file.
@@ -209,7 +251,7 @@ func (s *backupStore) save(path string, body io.Reader) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := s.own(tmp.Name()); err != nil {
+	if err := s.own(s.dir, tmp.Name()); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
@@ -280,10 +322,11 @@ func storeError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
-// ServeBackupStore serves the repository at dir to the guest until ctx ends. Skipped -- not an
-// error -- when there is no folder (backup disabled) or no private link to serve it on. Every
-// failure is logged and non-fatal, as the admin socket's is: a node that cannot take tonight's
-// backup still serves the household, and the run's report says the store is unreachable.
+// ServeBackupStore serves the repository in folder() -- read per request, "" while the backup is
+// off -- to the guest until ctx ends. Skipped -- not an error -- when there is no private link to
+// serve it on. Every failure is logged and non-fatal, as the admin socket's is: a node that cannot
+// take tonight's backup still serves the household, and the run's report says the store is
+// unreachable.
 //
 // THE BIND WAITS FOR THE ADDRESS. The network converger puts hostIP on the private link, which may
 // not exist yet when the agent starts, so the bind retries until it holds. Once held it outlives
@@ -291,8 +334,8 @@ func storeError(w http.ResponseWriter, err error) {
 //
 // Exported for one other caller, the agent-less rig's store (nixosTest/backup-store), which
 // serves the same code with no agent around it.
-func ServeBackupStore(ctx context.Context, dir, hostIP, guestIP string, logf func(string, ...any)) {
-	if dir == "" || hostIP == "" || guestIP == "" {
+func ServeBackupStore(ctx context.Context, folder func() string, hostIP, guestIP string, logf func(string, ...any)) {
+	if hostIP == "" || guestIP == "" {
 		return
 	}
 	var ln net.Listener
@@ -310,13 +353,13 @@ func ServeBackupStore(ctx context.Context, dir, hostIP, guestIP string, logf fun
 		case <-time.After(5 * time.Second):
 		}
 	}
-	store := &backupStore{dir: dir, client: guestIP, own: func(p string) error { return platform.ChownLike(dir, p) }}
+	store := &backupStore{folder: folder, client: guestIP, own: platform.ChownLike}
 	srv := &http.Server{Handler: store, ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
 	}()
-	logf("backup store: serving %s to %s on %s", dir, guestIP, ln.Addr())
+	logf("backup store: serving %q to %s on %s", folder(), guestIP, ln.Addr())
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logf("backup store: %v", err)
 	}
