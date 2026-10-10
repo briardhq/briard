@@ -2813,11 +2813,12 @@ func (g *Client) HassDBCheckResult(ctx context.Context) (hass.DBCheckState, erro
 	return s, err
 }
 
-// DataBackup starts a backup in the guest's background into the REST repository at url, and
-// answers whether it did; false means one is running or its report is uncollected.
-func (g *Client) DataBackup(ctx context.Context, url, password string) (bool, error) {
+// DataBackup starts a backup in the guest's background into the REST repository at url, with
+// the host's own facts beside the volume's, and answers whether it did; false means one is
+// running or its report is uncollected.
+func (g *Client) DataBackup(ctx context.Context, url, password string, host map[string][]byte) (bool, error) {
 	var started bool
-	err := g.c.Call(ctx, verbDataBackup, backupRequest{Repository: url, Password: password}, &started)
+	err := g.c.Call(ctx, verbDataBackup, backupRequest{Repository: url, Password: password, Host: host}, &started)
 	return started, err
 }
 

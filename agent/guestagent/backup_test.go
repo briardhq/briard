@@ -12,7 +12,8 @@ import (
 )
 
 // backupRig is a volume holding two services, each with a ring whose newest member was taken by a
-// different trigger, and a restic that answers from the table it is given (keyed by subcommand).
+// different trigger, a VIP and manifests but no certificate yet, and a restic that answers from
+// the table it is given (keyed by subcommand).
 func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]string) {
 	now := time.Now()
 	name := func(svc string, tr quadlet.Trigger, ago time.Duration) string {
@@ -33,6 +34,12 @@ func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]
 	f.runFn = func(n string, args []string) ([]byte, error) {
 		if n == "ls" && len(args) > 1 && args[1] == manifestDir {
 			return []byte("home-assistant.json\nmosquitto.json\n"), nil
+		}
+		if n == "test" && len(args) == 2 && args[0] == "-e" {
+			if args[1] == tlsDir {
+				return nil, errors.New("exit status 1")
+			}
+			return nil, nil
 		}
 		if n == "restic" {
 			for _, a := range args {
@@ -81,10 +88,10 @@ func TestTheBackupRunsInTheBackground(t *testing.T) {
 		"backup": func() ([]byte, error) { <-release; return []byte(resticSummary), nil },
 	})
 	g := dial(t, f)
-	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "pw"); err != nil || !ok {
+	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "pw", nil); err != nil || !ok {
 		t.Fatalf("the backup did not start: %v %v", ok, err)
 	}
-	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "pw"); err != nil || ok {
+	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "pw", nil); err != nil || ok {
 		t.Fatalf("a second backup started beside the first: %v %v", ok, err)
 	}
 	if s, err := g.DataBackupResult(ctx); err != nil || !s.Running || s.Report != nil {
@@ -137,7 +144,7 @@ func TestTheBackupCommandLines(t *testing.T) {
 
 	backup := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "backup") })
 	for svc, member := range newest {
-		p := backupMounts + "/" + svc
+		p := backupServices + "/" + svc
 		at := runIndex(f, 0, "mount", "-o", "bind,ro", member, p)
 		if at < 0 || at > backup {
 			t.Errorf("%s: %s not mounted at %s before the backup: %v", svc, member, p, f.runs)
@@ -147,7 +154,7 @@ func TestTheBackupCommandLines(t *testing.T) {
 		}
 	}
 	if step(f, func(r []string) bool {
-		return slices.Equal(r, []string{"install", "-m", "0600", "/dev/null", backupPasswordFile})
+		return slices.Equal(r, []string{"install", "-D", "-m", "0600", "/dev/null", backupPasswordFile})
 	}) < 0 {
 		t.Error("the password file was not created 0600 before it was written")
 	}
@@ -171,7 +178,7 @@ func TestTheBackupCommandLines(t *testing.T) {
 	for _, want := range []string{
 		"--repo rest:http://10.0.0.129:7791/", "--password-file " + backupPasswordFile,
 		"--exclude **/app/backups", "--host " + backupHost,
-		backupMounts + "/home-assistant " + backupMounts + "/mosquitto",
+		"--exclude **/app/backups " + backupRoot,
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("restic backup %q lacks %q", args, want)
@@ -218,7 +225,7 @@ func TestTheBackupCreatesTheRepositoryOnlyWhenItCannotOpenOne(t *testing.T) {
 	}
 	initAt := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "init") })
 	for _, svc := range []string{"home-assistant", "mosquitto"} {
-		if runIndex(f, initAt, "umount", backupMounts+"/"+svc) < 0 {
+		if runIndex(f, initAt, "umount", backupServices+"/"+svc) < 0 {
 			t.Errorf("a failed run left %s mounted", svc)
 		}
 	}
@@ -257,4 +264,60 @@ func runIndex(f *fakeExec, from int, want ...string) int {
 		}
 	}
 	return -1
+}
+
+// TestTheBackupCarriesWhatARestoreNeeds: beside each service's data, the manifest it was written
+// under; the volume's flock-scoped facts that exist; the host's facts as 0600 files whose content
+// never reaches a command line -- all in place before restic reads, and the copies gone after.
+func TestTheBackupCarriesWhatARestoreNeeds(t *testing.T) {
+	f, newest := backupRig(map[string]func() ([]byte, error){
+		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
+	})
+	host := map[string][]byte{"flock-id": []byte("f1d"), "casa.key": []byte("k3y")}
+	if rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Password: "pw", Host: host}); rep.Error != "" {
+		t.Fatalf("report %+v", rep)
+	}
+	backup := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "backup") })
+	before := func(what string, want ...string) {
+		t.Helper()
+		if at := runIndex(f, 0, want...); at < 0 || at > backup {
+			t.Errorf("%s: no %v before the backup", what, want)
+		}
+	}
+	for svc, member := range newest {
+		before(svc+"'s manifest", "cp", "-a", quadlet.SnapshotSidecar(member), backupFacts+"/members/"+svc+".json")
+	}
+	before("the VIP", "cp", "-a", dataMountRoot+"/.vip-address", backupFacts+"/volume/")
+	before("the installed services", "cp", "-a", manifestDir, backupFacts+"/volume/")
+	if runIndex(f, 0, "cp", "-a", tlsDir, backupFacts+"/volume/") >= 0 {
+		t.Error("copied a certificate directory the volume does not have")
+	}
+	for name, data := range host {
+		p := backupFacts + "/host/" + name
+		before(name+" created 0600", "install", "-D", "-m", "0600", "/dev/null", p)
+		if f.files[p] != string(data) {
+			t.Errorf("%s holds %q", p, f.files[p])
+		}
+		for _, r := range f.runs {
+			if slices.Contains(r, string(data)) {
+				t.Errorf("host fact %s is on a command line: %v", name, r)
+			}
+		}
+	}
+	if runIndex(f, backup, "rm", "-rf", backupFacts) < 0 {
+		t.Error("the copies (the host's secrets among them) were left behind")
+	}
+	if b := resticRuns(f, "backup"); len(b) != 1 || b[0][len(b[0])-1] != backupRoot || slices.Contains(b[0], backupServices) {
+		t.Errorf("restic backup %v, want the one root and nothing else", b)
+	}
+}
+
+// TestTheBackupRefusesAHostFactThatIsAPath: a host fact is a name in one directory, never a path.
+func TestTheBackupRefusesAHostFactThatIsAPath(t *testing.T) {
+	for _, name := range []string{"", ".", "..", "../x", "a/b", `a\b`} {
+		req := backupRequest{Repository: "http://h/", Password: "pw", Host: map[string][]byte{name: nil}}
+		if ok, err := startBackup(&fakeExec{}, req); ok || err == nil {
+			t.Errorf("%q: started=%v err=%v, want a refusal", name, ok, err)
+		}
+	}
 }
