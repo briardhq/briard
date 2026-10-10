@@ -11,6 +11,9 @@ import (
 	"briard.io/shared/notify"
 )
 
+// rt0 is the redundancy tests' clock: one instant, past nothing, so only the grace test moves it.
+var rt0 = time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+
 type fakeNotifier struct{ alerts []notify.Alert }
 
 func (f *fakeNotifier) Notify(_ context.Context, a notify.Alert) error {
@@ -50,20 +53,20 @@ func TestRedundancyAlerter(t *testing.T) {
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
 	ctx := context.Background()
 
-	a.observe(ctx, qstat(true, 2)) // prime full -- no alert
-	a.observe(ctx, qstat(true, 2)) // steady full -- no alert
+	a.observe(ctx, qstat(true, 2), rt0) // prime full -- no alert
+	a.observe(ctx, qstat(true, 2), rt0) // steady full -- no alert
 	if len(fn.alerts) != 0 {
 		t.Fatalf("no alert expected while full, got %+v", fn.alerts)
 	}
-	a.observe(ctx, qstat(true, 1)) // lost a replica -> warning
+	a.observe(ctx, qstat(true, 1), rt0) // lost a replica -> warning
 	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open {
 		t.Fatalf("expected one warning, got %+v", fn.alerts)
 	}
-	a.observe(ctx, qstat(true, 1)) // steady reduced -- must NOT re-fire
+	a.observe(ctx, qstat(true, 1), rt0) // steady reduced -- must NOT re-fire
 	if len(fn.alerts) != 1 {
 		t.Errorf("re-fired on a steady degrade: %+v", fn.alerts)
 	}
-	a.observe(ctx, qstat(true, 2)) // reconnected -> recovered
+	a.observe(ctx, qstat(true, 2), rt0) // reconnected -> recovered
 	if len(fn.alerts) != 2 || fn.alerts[1].Kind != notify.Resolved {
 		t.Errorf("expected a recovered alert, got %+v", fn.alerts)
 	}
@@ -75,17 +78,38 @@ func TestRedundancyAlerter(t *testing.T) {
 func TestRedundancyAlerterPrimesReduced(t *testing.T) {
 	fn := &fakeNotifier{}
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
-	a.observe(context.Background(), qstat(true, 1)) // first reading reduced -> prime, no warning
+	a.observe(context.Background(), qstat(true, 1), rt0) // first reading reduced -> prime, no warning
 	if len(fn.alerts) != 0 {
 		t.Fatalf("must prime silently, not warn on the first reading: %+v", fn.alerts)
 	}
-	a.observe(context.Background(), qstat(true, 2)) // converged: nothing was open, nothing to resolve
+	a.observe(context.Background(), qstat(true, 2), rt0) // converged: nothing was open, nothing to resolve
 	if len(fn.alerts) != 0 {
 		t.Errorf("resolved a condition that was never announced: %+v", fn.alerts)
 	}
-	a.observe(context.Background(), qstat(true, 1)) // a real loss after convergence
+	a.observe(context.Background(), qstat(true, 1), rt0) // a real loss after convergence
 	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open {
 		t.Errorf("expected the loss to be announced, got %+v", fn.alerts)
+	}
+}
+
+// THE GRACE IS TIME, NOT READINGS: a loop that ticks twice in the second after bring-up, before
+// the peer has connected, must not open a Critical "no second copy" that resolves seconds later.
+// A peer still absent after redundancyConvergeFor is lost, and is announced without waiting
+// for a full reading that may never come.
+func TestRedundancyAlerterConvergeGraceIsTime(t *testing.T) {
+	fn := &fakeNotifier{}
+	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
+	ctx := context.Background()
+	booting := seen(true, 1, anchorGone, witnessUp)
+	a.observe(ctx, booting, rt0)
+	a.observe(ctx, booting, rt0)
+	a.observe(ctx, booting, rt0.Add(redundancyConvergeFor-time.Second))
+	if len(fn.alerts) != 0 {
+		t.Fatalf("opened inside the startup grace: %+v", fn.alerts)
+	}
+	a.observe(ctx, booting, rt0.Add(redundancyConvergeFor))
+	if len(fn.alerts) != 1 || fn.alerts[0].Title != "Briard: no second copy" {
+		t.Errorf("a peer absent past the grace must be announced, got %+v", fn.alerts)
 	}
 }
 
@@ -95,12 +119,12 @@ func TestRedundancyAlerterNotQuorateHolds(t *testing.T) {
 	fn := &fakeNotifier{}
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
 	ctx := context.Background()
-	a.observe(ctx, qstat(true, 2))  // prime full
-	a.observe(ctx, qstat(false, 0)) // not quorate -- hold, no alert
+	a.observe(ctx, qstat(true, 2), rt0)  // prime full
+	a.observe(ctx, qstat(false, 0), rt0) // not quorate -- hold, no alert
 	if len(fn.alerts) != 0 {
 		t.Fatalf("not-quorate must not alert, got %+v", fn.alerts)
 	}
-	a.observe(ctx, qstat(true, 1)) // quorate again but reduced -> warning
+	a.observe(ctx, qstat(true, 1), rt0) // quorate again but reduced -> warning
 	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open {
 		t.Errorf("expected a warning after recovering to quorate-but-reduced, got %+v", fn.alerts)
 	}
@@ -109,11 +133,11 @@ func TestRedundancyAlerterNotQuorateHolds(t *testing.T) {
 // A nil alerter (witness) and a single-node cluster (peers==0) have no redundancy signal.
 func TestRedundancyAlerterNilAndSingleNode(t *testing.T) {
 	var nilA *redundancyAlerter
-	nilA.observe(context.Background(), qstat(true, 0)) // must not panic
+	nilA.observe(context.Background(), qstat(true, 0), rt0) // must not panic
 
 	fn := &fakeNotifier{}
 	single := newRedundancyAlerter(testStore(t, fn), "n1", 0, func(string, ...any) {})
-	single.observe(context.Background(), qstat(true, 0))
+	single.observe(context.Background(), qstat(true, 0), rt0)
 	if len(fn.alerts) != 0 {
 		t.Errorf("single-node has no redundancy to lose, got %+v", fn.alerts)
 	}
@@ -147,8 +171,8 @@ func TestRedundancyAlerterSaysWhichCopyWentAway(t *testing.T) {
 			fn := &fakeNotifier{}
 			a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
 			ctx := context.Background()
-			a.observe(ctx, seen(true, 2, anchorUp, witnessUp)) // prime full
-			a.observe(ctx, tc.lost)
+			a.observe(ctx, seen(true, 2, anchorUp, witnessUp), rt0) // prime full
+			a.observe(ctx, tc.lost, rt0)
 			if len(fn.alerts) != 1 {
 				t.Fatalf("expected exactly one alert, got %+v", fn.alerts)
 			}
@@ -170,9 +194,9 @@ func TestRedundancyAlerterFiresOnReducedToAlone(t *testing.T) {
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 3, func(string, ...any) {})
 	ctx := context.Background()
 
-	a.observe(ctx, seen(true, 3, anchorUp, anchor3Up, witnessUp))     // prime full
-	a.observe(ctx, seen(true, 2, anchorUp, anchor3Gone, witnessUp))   // one anchor gone -> reduced
-	a.observe(ctx, seen(true, 1, anchorGone, anchor3Gone, witnessUp)) // the last copy gone -> alone
+	a.observe(ctx, seen(true, 3, anchorUp, anchor3Up, witnessUp), rt0)     // prime full
+	a.observe(ctx, seen(true, 2, anchorUp, anchor3Gone, witnessUp), rt0)   // one anchor gone -> reduced
+	a.observe(ctx, seen(true, 1, anchorGone, anchor3Gone, witnessUp), rt0) // the last copy gone -> alone
 	if len(fn.alerts) != 2 {
 		t.Fatalf("expected a warning for each state, got %+v", fn.alerts)
 	}
@@ -183,7 +207,7 @@ func TestRedundancyAlerterFiresOnReducedToAlone(t *testing.T) {
 		t.Errorf("second alert = %+v, want the no-second-copy warning", fn.alerts[1])
 	}
 	// And back to full is still one recovered, from either degraded state.
-	a.observe(ctx, seen(true, 3, anchorUp, anchor3Up, witnessUp))
+	a.observe(ctx, seen(true, 3, anchorUp, anchor3Up, witnessUp), rt0)
 	if len(fn.alerts) != 3 || fn.alerts[2].Kind != notify.Resolved {
 		t.Errorf("expected recovered from alone, got %+v", fn.alerts)
 	}
@@ -197,8 +221,8 @@ func TestRedundancyAlerterWithoutPeerDetailClaimsNothing(t *testing.T) {
 	fn := &fakeNotifier{}
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
 	ctx := context.Background()
-	a.observe(ctx, qstat(true, 2)) // prime full
-	a.observe(ctx, qstat(true, 1)) // reduced, and nothing known about who is left
+	a.observe(ctx, qstat(true, 2), rt0) // prime full
+	a.observe(ctx, qstat(true, 1), rt0) // reduced, and nothing known about who is left
 	if len(fn.alerts) != 1 {
 		t.Fatalf("expected one alert, got %+v", fn.alerts)
 	}
@@ -217,8 +241,8 @@ func TestRedundancyAlerterResyncingPeerIsNotACopy(t *testing.T) {
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
 	ctx := context.Background()
 	resyncing := model.PeerState{Name: "n2", Connected: true, Diskful: true} // UpToDate false
-	a.observe(ctx, seen(true, 2, anchorUp, witnessUp))
-	a.observe(ctx, seen(true, 1, resyncing, witnessGone))
+	a.observe(ctx, seen(true, 2, anchorUp, witnessUp), rt0)
+	a.observe(ctx, seen(true, 1, resyncing, witnessGone), rt0)
 	if len(fn.alerts) != 1 || fn.alerts[0].Title != "Briard: no second copy" {
 		t.Errorf("a resyncing peer is not a usable copy, got %+v", fn.alerts)
 	}

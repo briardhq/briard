@@ -1560,7 +1560,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
 			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res),
 			time.Since(tickStart).Milliseconds())
-		alerter.observe(ctx, cl) // edge-triggered redundancy warning (nil-safe on witness/single-node)
+		alerter.observe(ctx, cl, time.Now()) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		cfg.beat.Beat()
 		if slices.Contains(episodeAsks, cycle) {
 			cfg.collectDeadmanEpisode(ctx, r, n, logf)

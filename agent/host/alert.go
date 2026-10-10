@@ -30,16 +30,24 @@ const (
 // the DRBD/quorum state the observe loop already reads. Not built on a witness (its view is
 // redundant with the data nodes') nor a single-node cluster (no redundancy to lose).
 //
-// PRIMED ON THE FIRST READING, ONE WAY: a flock still converging at startup reads reduced for a
-// few seconds, so the first reading may resolve but never open. After that every reading is
-// asserted and the store decides whether it is news.
+// PRIMED BY CONVERGENCE OR BY TIME, ONE WAY: a flock still converging at startup reads reduced
+// until its peers connect, and how many readings that spans depends on how fast the loop ticks,
+// so the grace is a duration, never a count of readings. Until the first full reading, or
+// redundancyConvergeFor after the first reading, a reading may resolve but never open. After
+// that every reading is asserted and the store decides whether it is news.
 type redundancyAlerter struct {
 	n     notify.Notifier
 	node  string
 	peers int // expected connected peers (mesh size - 1)
 	logf  func(string, ...any)
-	armed bool // false until the first definite reading
+	start time.Time // the first reading; zero until there is one
+	armed bool      // false until a full reading, or redundancyConvergeFor after start
 }
+
+// redundancyConvergeFor bounds the startup grace: a peer still absent this long after the
+// first reading is a lost peer, not one still booting. The nodes of a household coming back
+// from a power cut boot their guests independently, so it is minutes, not one DRBD connect.
+const redundancyConvergeFor = 5 * time.Minute
 
 func newRedundancyAlerter(n notify.Notifier, node string, peers int, logf func(string, ...any)) *redundancyAlerter {
 	return &redundancyAlerter{n: n, node: node, peers: peers, logf: logf}
@@ -76,7 +84,7 @@ func (a *redundancyAlerter) classify(cl model.Cluster) redundancy {
 // records and pushes each: the reduced -> alone edge is the one this exists for. A household
 // whose peer anchor drops out while a witness keeps it quorate has lost its second copy, and
 // under a two-state machine that transition looked like more of what had already been reported.
-func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster) {
+func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster, now time.Time) {
 	if a == nil || a.peers <= 0 {
 		return
 	}
@@ -85,9 +93,12 @@ func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster) {
 	}
 	cur := a.classify(cl)
 	if !a.armed {
-		a.armed = true
-		if cur != redundancyFull {
-			return // the first reading may not open: the flock may still be converging
+		if a.start.IsZero() {
+			a.start = now
+		}
+		a.armed = cur == redundancyFull || now.Sub(a.start) >= redundancyConvergeFor
+		if !a.armed {
+			return // may not open yet: the flock may still be converging
 		}
 	}
 	a.fire(ctx, a.alertFor(cur, cl))
