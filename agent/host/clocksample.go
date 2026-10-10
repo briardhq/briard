@@ -201,14 +201,17 @@ type dbChecker struct {
 	waiting time.Time // zero when no report is awaited
 }
 
-func newDBChecker() *dbChecker {
-	loc := time.Local
+func newDBChecker() *dbChecker { return &dbChecker{loc: householdLocation()} }
+
+// householdLocation is the zone "tonight" is in for the nightly jobs: the host's, as the
+// household set it.
+func householdLocation() *time.Location {
 	if tz := localTimezone("/"); tz != "" {
 		if l, err := time.LoadLocation(tz); err == nil {
-			loc = l
+			return l
 		}
 	}
-	return &dbChecker{loc: loc}
+	return time.Local
 }
 
 // checkRecorder collects a check that is running, or starts tonight's if it is due: this node

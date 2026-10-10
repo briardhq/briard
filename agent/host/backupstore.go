@@ -280,7 +280,7 @@ func storeError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
-// serveBackupStore serves the repository at dir to the guest until ctx ends. Skipped -- not an
+// ServeBackupStore serves the repository at dir to the guest until ctx ends. Skipped -- not an
 // error -- when there is no folder (backup disabled) or no private link to serve it on. Every
 // failure is logged and non-fatal, as the admin socket's is: a node that cannot take tonight's
 // backup still serves the household, and the run's report says the store is unreachable.
@@ -288,7 +288,10 @@ func storeError(w http.ResponseWriter, err error) {
 // THE BIND WAITS FOR THE ADDRESS. The network converger puts hostIP on the private link, which may
 // not exist yet when the agent starts, so the bind retries until it holds. Once held it outlives
 // the address going and coming back with a guest relaunch: a bound socket keeps its address.
-func serveBackupStore(ctx context.Context, dir, hostIP, guestIP string, logf func(string, ...any)) {
+//
+// Exported for one other caller, the agent-less rig's store (nixosTest/backup-store), which
+// serves the same code with no agent around it.
+func ServeBackupStore(ctx context.Context, dir, hostIP, guestIP string, logf func(string, ...any)) {
 	if dir == "" || hostIP == "" || guestIP == "" {
 		return
 	}

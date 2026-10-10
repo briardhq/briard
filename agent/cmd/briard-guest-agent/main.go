@@ -133,6 +133,7 @@ func runInternal(args []string) {
 	clock := fs.String("clock", "", "take this service's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbCheck := fs.Bool("dbcheck", false, "run Home Assistant's recorder check in line and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbRestore := fs.String("dbrestore", "", "restore Home Assistant's recorder database from this ring member -- an internal flag a harness invokes; the product drives this verb from the host")
+	backup := fs.String("backup", "", "run the backup in line into the REST repository at this URL, password in $BRIARD_BACKUP_PASSWORD, and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
@@ -229,6 +230,17 @@ func runInternal(args []string) {
 		b, err := json.Marshal(guestagent.CheckRecorder(ctx, x))
 		if err != nil {
 			log.Fatalf("dbcheck: %v", err)
+		}
+		fmt.Println(string(b))
+		return
+	}
+
+	if *backup != "" {
+		// FOR A GUEST WITH NO HOST, like --dbcheck above: the product starts it through the host's
+		// verb, in the background; an agent-less rig runs the same backup in line through here.
+		b, err := json.Marshal(guestagent.Backup(ctx, guestfirmware.NewOSExecutor(), *backup, os.Getenv("BRIARD_BACKUP_PASSWORD")))
+		if err != nil {
+			log.Fatalf("backup: %v", err)
 		}
 		fmt.Println(string(b))
 		return

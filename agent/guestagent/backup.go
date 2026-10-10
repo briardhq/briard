@@ -303,3 +303,10 @@ func backupSummary(out []byte) BackupReport {
 	}
 	return rep
 }
+
+// Backup is one run in line FOR A GUEST WITH NO HOST, the accommodation CheckRecorder makes: the
+// agent-less rigs drive the product's own backup through it against a real store. Nothing in the
+// product invokes it; the host's facts are the host's, and a rig has none.
+func Backup(ctx context.Context, x Executor, url, password string) BackupReport {
+	return runBackup(ctx, x, backupRequest{Repository: url, Password: password})
+}

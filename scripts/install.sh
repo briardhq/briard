@@ -366,6 +366,21 @@ DATA_DISK=$DATA
 STATE_DISK=$STATE_DISK
 EOF
 
+# The household's backup folder: `Briard Backup` in the home of the person who ran this, made AS
+# them so it is theirs from the start -- they can move, copy or delete it without us, it outlives
+# an uninstall, and whatever already backs up or syncs their home takes it along. Laid down by this
+# install, so it is a line here rather than a default. Nobody human (root, a cloud-init) or no home
+# to put it in: no line, and the agent's own folder under /var/lib/briard is used. An operator who
+# named one (BRIARD_BACKUP_DIR, "" for off) is copied below like any other setting instead.
+if [ -z "${BRIARD_BACKUP_DIR+set}" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+	backup_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+	if [ -n "$backup_home" ] && [ -d "$backup_home" ] &&
+		sudo -u "$SUDO_USER" mkdir -p "$backup_home/Briard Backup"; then
+		echo "BACKUP_DIR=$backup_home/Briard Backup" >> "$PREFIX/config.env"
+		say "nightly backups go to $backup_home/Briard Backup"
+	fi
+fi
+
 # The operator's own settings, copied verbatim. EVERY `BRIARD_*` in the environment lands here with
 # the prefix stripped, so `BRIARD_CPU=qemu64` becomes `CPU=qemu64` and the rule is one sentence
 # rather than a table this script has to keep in step with config.go.

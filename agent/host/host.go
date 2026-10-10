@@ -344,6 +344,11 @@ type Config struct {
 	CatalogURL   string
 	ServiceCache string
 
+	// BackupDir is the household's backup folder: the restic repository the host serves the
+	// guest (backupstore.go). The installer creates it in the installing person's home and says
+	// so here; with no such person it is defaultBackupDir. "" turns the backup off.
+	BackupDir string
+
 	// MeshCache is where a runtime pairing's MeshSpec is kept NODE-LOCALLY, for the same reason
 	// ServiceCache exists and to close the same hole one step further out.
 	//
@@ -509,6 +514,8 @@ type guestReader interface {
 	memberTaker
 	// ...and the nightly recorder check, on the same cadence (clocksample.go).
 	recorderChecker
+	// ...and the nightly backup (backup.go).
+	backupRunner
 	SystemPath(ctx context.Context) (string, error)
 	Resources(ctx context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error)
 }
@@ -612,6 +619,15 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// wait loop answers on this channel while it waits; the observe loop takes it over after.
 	local := make(chan localRequest)
 	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	// THE BACKUP STORE, up for the agent's whole life on every node: the guest that dials it is
+	// whichever is serving tonight. The fallback folder is the agent's own directory, so it is the
+	// one the agent makes; any other folder is the person's, and is never created here.
+	if cfg.BackupDir == defaultBackupDir {
+		if err := os.MkdirAll(cfg.BackupDir, 0o700); err != nil {
+			logf("backup store: %v", err)
+		}
+	}
+	go ServeBackupStore(ctx, cfg.BackupDir, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
 	// THE CLOUD SEAM, BUILT BEFORE THE NETWORK RATHER THAN AFTER THE GUEST. None of
 	// it depends on a guest -- CloudClient is Register/Report/ReportMetrics, and Resolve needs
 	// only this node's name, role and zone -- so its old position below bring-up was an accident
@@ -1332,6 +1348,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	ng := newClockSampler()
 	// Which night the recorder was last checked (clocksample.go), for the same reason.
 	dc := newDBChecker()
+	// Which night was last backed up (backup.go), for the same reason.
+	bs := newBackupScheduler()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
 	// How long each installed service has been down (alert.go); same reason.
@@ -1469,6 +1487,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// THE RECORDER CHECK, once a night on the node that holds the volume: started in the guest's
 		// background and collected over later cycles, so it never holds this loop (clocksample.go).
 		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
+		// THE BACKUP, once a night on the node that holds the volume, the same way (backup.go).
+		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant

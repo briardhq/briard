@@ -63,6 +63,11 @@ const (
 	stateDir  = "/var/lib/briard"
 	runDir    = "/run/briard"
 
+	// defaultBackupDir is the backup folder when nobody human installed this node (root, a
+	// cloud-init): a server, not a home, so the repository stays beside the agent's own state --
+	// the one backup folder the agent creates itself, because it is its own directory.
+	defaultBackupDir = stateDir + "/backup"
+
 	// defaultConfigFile is where install.sh writes this node's configuration. The
 	// shipped unit states it in BRIARD_CONFIG so `systemctl cat` answers the question; this is the
 	// answer for a hand-run agent, which is told nothing.
@@ -288,8 +293,10 @@ func ConfigFromEnv() Config {
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; a service catalog is not a web page.
-		CatalogURL:        env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache:      env("SERVICE_CACHE", stateDir+"/services"),
+		CatalogURL:   env("CATALOG_URL", "https://get.briard.io/catalog"),
+		ServiceCache: env("SERVICE_CACHE", stateDir+"/services"),
+		// declared, not env: BACKUP_DIR="" is the household turning the backup off.
+		BackupDir:         declared("BACKUP_DIR", defaultBackupDir),
 		MeshCache:         env("MESH_CACHE", stateDir+"/mesh.json"),
 		ChannelURL:        env("CHANNEL_URL", "https://get.briard.io"),
 		GuestReleaseCache: env("GUEST_RELEASE_CACHE", stateDir+"/guest-release.json"),

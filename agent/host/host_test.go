@@ -20,6 +20,7 @@ import (
 
 	"briard.io/agent/cloud"
 	"briard.io/agent/drbd"
+	"briard.io/agent/guestagent"
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/overlay"
@@ -116,10 +117,11 @@ type fakeStatus struct {
 	took       *[]takenMember
 	snapErr    error
 	noRing     bool
-	noQuiesce  bool    // advertises the ring but not the quiesced take
-	held       bool    // the service held still across a quiesced take
-	quiesceErr error   // the quiesced take failed outright
-	db         *fakeDB // the guest's recorder check; nil is a guest that has none
+	noQuiesce  bool        // advertises the ring but not the quiesced take
+	held       bool        // the service held still across a quiesced take
+	quiesceErr error       // the quiesced take failed outright
+	db         *fakeDB     // the guest's recorder check; nil is a guest that has none
+	backup     *fakeBackup // the guest's backup run; nil is a guest that has none
 }
 
 // takenMember is one call to Snapshot: where the member went, and the sidecar that went with it.
@@ -1312,6 +1314,37 @@ type fakeDB struct {
 	report     *hass.DBReport
 	restored   []string
 	restoreErr error
+}
+
+// fakeBackup is the guest's background backup: started (with what), still running or finished
+// with a report it hands over once.
+type fakeBackup struct {
+	starts   int
+	url, key string
+	host     map[string][]byte
+	running  bool
+	report   *guestagent.BackupReport
+}
+
+func (f fakeStatus) DataBackup(_ context.Context, url, key string, host map[string][]byte) (bool, error) {
+	if f.backup == nil {
+		return false, errors.New("unknown verb")
+	}
+	if f.backup.running {
+		return false, nil
+	}
+	f.backup.starts++
+	f.backup.url, f.backup.key, f.backup.host, f.backup.running = url, key, host, true
+	return true, nil
+}
+
+func (f fakeStatus) DataBackupResult(context.Context) (guestagent.BackupState, error) {
+	if f.backup == nil {
+		return guestagent.BackupState{}, errors.New("unknown verb")
+	}
+	s := guestagent.BackupState{Running: f.backup.running, Report: f.backup.report}
+	f.backup.report = nil
+	return s, nil
 }
 
 func (f fakeStatus) HassDBCheck(context.Context) (bool, error) {

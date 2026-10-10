@@ -399,6 +399,7 @@ in
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
       service-memory-limit = import ./service-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own service
+      backup = import ./backup.nix { inherit pkgs fixture guestModule; }; # a ring member, through the real store, into a folder a person owns
       # The exit assertion of the lone node running no DRBD, a guard since the lone node stopped running DRBD: one bad
       # sector under a data file costs ONE file, and the node keeps serving. (The media-error spike
       # this grew out of measured the DRBD answer -- whole-volume outage -- and is history at the
