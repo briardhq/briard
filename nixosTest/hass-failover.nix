@@ -137,6 +137,20 @@ pkgs.testers.runNixOSTest {
     new_primary = next(m for m in survivors if role(m) == "Primary")
     new_primary.succeed(f"grep -rq {USER} {dataroot}/app/.storage")
 
+    # HA started INSIDE this promotion (briard-services is a chain member), and it reads its network
+    # once, at boot: the interface it advertises and answers mDNS on, and the address it builds its
+    # own URL from, are where the kernel sends 224.0.0.251. The chain claims the VIP -- and
+    # briard-vip routes multicast out of the VIP's NIC -- BEFORE the services start, so the HA that
+    # booted here saw the household LAN. Started the other way round it raced the claim, and on
+    # losing it advertised qemu's user-net address until its next restart.
+    import json as _zj
+    advert = _zj.loads(new_primary.succeed(
+        "podman exec -i briard-home-assistant-app python3 - < ${h.haAdvertProbe}"
+    ))
+    print(f"the new primary's HA advertises: {advert}")
+    assert "192.168.1.100" in advert["addresses"], f"HA booted at promotion does not advertise the VIP: {advert}"
+    assert "10.0.2.15" not in advert["addresses"], f"HA booted at promotion advertises the user-net address: {advert}"
+
     # The recorder SQLite rode the same volume and HA re-opened it intact on
     # the survivor — not quarantined as `.corrupt.<ts>` (the silent-history-loss
     # symptom warns of, which an abrupt crash on a torn DB would trigger). This

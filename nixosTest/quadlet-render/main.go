@@ -67,7 +67,7 @@ func main() {
 		}
 	}
 	// The service units, in start order. NOT a promoter chain: since converge-at-promotion the chain is
-	// static (data -> services -> vip) and these are not members of it -- briard-services starts
+	// static (data -> vip -> services) and these are not members of it -- briard-services starts
 	// them, which is what keeps a crashed container from demoting the node.
 	write("units", r.Units)
 	write("images", r.ImageUnits)

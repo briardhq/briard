@@ -393,7 +393,7 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// The chain is STATIC — data -> services -> vip — on every data node, whatever is installed.
+// The chain is STATIC — data -> vip -> services — on every data node, whatever is installed.
 // That is what makes converge-at-promotion possible: the chain is what drbd-reactor
 // promotes WITH, but the volume it must converge to is only readable AFTER promotion, so the
 // start-list cannot name the services themselves.
@@ -416,8 +416,8 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	}
 	want := []string{
 		"briard-primary-storage.service",
-		"briard-services.service",
 		"briard-vip.service",
+		"briard-services.service",
 		"briard-reverse-proxy.service",
 		"briard-dashboard.service",
 	}

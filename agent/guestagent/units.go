@@ -300,16 +300,19 @@ ExecStart=` + agent + ` --primary-storage
 ExecStop=` + agent + ` --primary-storage-stop
 `
 
-	// 2. SERVICES -- CONVERGE-AT-PROMOTION. Once the volume is mounted, read every
-	// manifest under its `.services/`, render, warm and start them. This node makes itself match
-	// the VOLUME, so what a node was told -- or whether it was even up when the install ran --
-	// stops deciding what the household gets after a failover.
+	// 3. SERVICES -- CONVERGE-AT-PROMOTION. Once the volume is mounted and the VIP is held, read
+	// every manifest under its `.services/`, render, warm and start them. This node makes itself
+	// match the VOLUME, so what a node was told -- or whether it was even up when the install ran
+	// -- stops deciding what the household gets after a failover. AFTER the VIP (shared/chain):
+	// an app reads the network it starts on, and the household LAN is part of that network.
 	//
-	// ITS FAILURE IS LOUD, BY POSITION. A promoter fails the whole promotion if a member fails,
-	// and the VIP comes after this -- so a node that cannot converge never takes the service
-	// address, and a primary with no address is already reported unhealthy. Built as a
-	// side-effect that shrugs, converge would put fallible work on the promotion path and leave
-	// the silent-healthy hole exactly as dangerous: a gate that shrugs is not a gate.
+	// ITS FAILURE IS LOUD, BECAUSE IT IS A MEMBER. A member that gives up fires the hold
+	// (chainMemberFailure), which stops the whole chain -- the VIP with it -- and hands the
+	// resource on, so a node that cannot converge does not keep the service address. While it
+	// is still retrying, the address is up with no door behind it (the door Requires= this
+	// unit), and a primary that answers nothing on the VIP is already reported unhealthy. Built
+	// as a side-effect that shrugs, converge would put fallible work on the promotion path and
+	// leave the silent-healthy hole exactly as dangerous: a gate that shrugs is not a gate.
 	//
 	// THE SERVICE UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "a service error alerts
 	// but never demotes" mechanically true -- drbd-reactor never sees them, so a crashed
@@ -318,7 +321,7 @@ ExecStop=` + agent + ` --primary-storage-stop
 	// would otherwise leave containers running on a volume about to be unmounted.
 	u[servicesUnit] = `[Unit]
 Description=Briard services, converged from the replicated volume at promotion
-` + chainEdges(1, members) + chainMemberFailure + `
+` + chainEdges(2, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
 RestartSec=2
@@ -329,7 +332,7 @@ ExecStart=` + agent + ` --converge
 ExecStop=` + agent + ` --converge-stop
 `
 
-	// 3. VIP -- claim the service address and gratuitous-ARP it so the L2 segment learns its
+	// 2. VIP -- claim the service address and gratuitous-ARP it so the L2 segment learns its
 	// (new) home. BOTH the address and the device are agent-determined: net.configure writes
 	// VIP_ADDR + VIP_DEV to vip.env, and this unit reads that file and NOTHING ELSE.
 	//
@@ -345,7 +348,7 @@ ExecStop=` + agent + ` --converge-stop
 	u[vipUnit] = `[Unit]
 Description=Briard service VIP
 Wants=` + vipRenewTimer + `
-` + chainEdges(2, members) + chainMemberFailure + `
+` + chainEdges(1, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
 RestartSec=2
@@ -358,7 +361,7 @@ ExecStartPost=-` + tool("briard-vip-arping") + `
 ExecStop=` + tool("briard-vip-down") + `
 `
 
-	// 3b. Ten-minute lease renewal, for as long as this node holds the VIP.
+	// 2b. Ten-minute lease renewal, for as long as this node holds the VIP.
 	//
 	// NOT A CHAIN MEMBER, deliberately, and for the same reason the hold exists: a renewal that fails must
 	// never be able to demote a serving node. Nothing Requires it, its failure propagates

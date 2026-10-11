@@ -27,8 +27,8 @@ let
     let
       units = [
         "briard-primary-storage.service"
-        "briard-services.service"
         "briard-vip.service"
+        "briard-services.service"
         "briard-reverse-proxy.service"
         "briard-dashboard.service"
       ];
@@ -549,6 +549,48 @@ let
         i: _: "/var/lib/containers/fixtures/${toString i}"
       ) allFixtures;
     };
+
+  # HA's OWN advert, as HA's own zeroconf resolves it: one JSON object, or exit 1 if none resolved.
+  haAdvertProbe = pkgs.writeText "ha-advert-probe.py" ''
+    """Browse _home-assistant._tcp with HA's own zeroconf; print the record as JSON."""
+    import json
+    import sys
+    import time
+
+    from zeroconf import ServiceBrowser, Zeroconf
+
+    found = {}
+
+
+    class Listener:
+        def add_service(self, zc, type_, name):
+            info = zc.get_service_info(type_, name, timeout=5000)
+            if info:
+                found[name] = info
+
+        def update_service(self, *a):
+            pass
+
+        def remove_service(self, *a):
+            pass
+
+
+    zc = Zeroconf()
+    ServiceBrowser(zc, "_home-assistant._tcp.local.", Listener())
+    for _ in range(45):
+        if found:
+            break
+        time.sleep(1)
+    zc.close()
+    if not found:
+        sys.exit(1)
+    info = next(iter(found.values()))
+    print(json.dumps({
+        "addresses": sorted(info.parsed_addresses()),
+        "port": info.port,
+        "txt": {k.decode(): (v.decode() if v is not None else None) for k, v in (info.properties or {}).items()},
+    }))
+  '';
 in
 {
   inherit
@@ -557,6 +599,9 @@ in
     fixtureInstall
     fixturesInstall
     fixtureHelpers
+    # Two rigs ask what HA advertises: one where HA is installed after promotion, one where it
+    # starts inside a promotion.
+    haAdvertProbe
     # Exported because two rigs write their OWN reactor snippet -- runtime-join needs
     # no baked r0.res, service-install installs one from the testScript -- and both restated the
     # chain by hand. That was survivable while every non-member rode briard-vip on wantedBy; it is

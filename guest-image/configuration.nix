@@ -519,6 +519,15 @@ let
       fi
     fi
 
+    # MULTICAST LEAVES ON THE HOUSEHOLD'S NIC. Multicast is local by definition, so where it goes
+    # out is where the LAN is -- and apps ask exactly that question to find their network: Home
+    # Assistant picks the interface it announces and answers mDNS on, and the address it builds its
+    # own URL from, by the source address the kernel gives it for 224.0.0.251. Without this route
+    # the answer is the default route's NIC, the user-net WAN path nothing on the LAN can reach.
+    # No `src`: the kernel takes the NIC's own address, so a renewed lease needs nothing here.
+    # Only multicast moves; the WAN path stays where it is.
+    ${pkgs.iproute2}/bin/ip route replace 224.0.0.0/4 dev "$VIP_DEV"
+
     printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
     # Remember it FOR THE FLOCK, so the peer that promotes next does not have to ask. Only what
     # DHCP gave us: a configured address is already known to every node from its own config, so
@@ -574,6 +583,8 @@ let
     if [ -n "$live" ]; then
       ${pkgs.iproute2}/bin/ip addr del "$live" dev "$VIP_DEV" || true
     fi
+    # The multicast route goes with the address it was added beside (briard-vip-up).
+    ${pkgs.iproute2}/bin/ip route del 224.0.0.0/4 dev "$VIP_DEV" 2>/dev/null || true
     rm -f ${vipLivePath}
     # TAKE THE NIC DOWN WHEN IT IS OURS ALONE. The MAC on a dedicated service NIC is flock-scoped
     # and therefore shared with the PEER, and a Secondary holding it up teaches the switch the

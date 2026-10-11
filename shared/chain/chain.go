@@ -19,8 +19,15 @@ package chain
 // this static target carries the identical member list in the identical order.
 const Target = "briard-chain.target"
 
-// Members is the ordered promoter chain for a data node: mount the DRBD volume -> converge this
-// node to what the volume says it runs -> claim the VIP -> answer on it -> serve the dashboard.
+// Members is the ordered promoter chain for a data node: mount the DRBD volume -> claim the VIP
+// -> converge this node to what the volume says it runs -> answer on it -> serve the dashboard.
+//
+// THE ADDRESS COMES BEFORE THE APPS, because the appliance is set up before anything runs on it.
+// An app reads the network it starts on, often exactly once: Home Assistant picks the interface
+// it announces itself on and builds its own URL from the source address the kernel gives it for
+// the mDNS group, at boot. An app started before the VIP exists sees a network without the
+// household LAN on it and keeps that answer until its next restart. The VIP needs only the mount
+// (a remembered address is read from the volume), so nothing it depends on comes later.
 //
 // IT IS STATIC, and that is what makes converge-at-promotion possible. The chain is
 // what drbd-reactor promotes WITH, but the volume is only readable AFTER promotion -- so the
@@ -53,8 +60,8 @@ const Target = "briard-chain.target"
 func Members() []string {
 	return []string{
 		"briard-primary-storage.service",
-		"briard-services.service",
 		"briard-vip.service",
+		"briard-services.service",
 		"briard-reverse-proxy.service",
 		"briard-dashboard.service",
 	}

@@ -504,6 +504,24 @@ pkgs.testers.runNixOSTest {
     assert host_mq in seen, f"the record HA saw does not point at {host_mq!r}: {seen!r}"
     assert "192.168.1.100" in seen, f"the record HA resolved does not carry the VIP: {seen!r}"
 
+    # ── HA ANNOUNCES ITSELF ON THE HOUSEHOLD'S NIC ───────────────────────────
+    #
+    # Home Assistant picks the interface it advertises and answers mDNS on -- and the address it
+    # builds its own URL from, which every integration hands to LAN devices -- by the source
+    # address the kernel gives it for 224.0.0.251. Left to the default route that is eth0, qemu's
+    # user-net, which nothing on the LAN can reach (measured, before the fix: the advert carried
+    # only 10.0.2.15). briard-vip routes multicast out of the VIP's NIC. (HA is installed after the
+    # promotion here, so this proves the route, not the chain order; hass-failover starts HA during
+    # a promotion.)
+    node1.succeed("ip route show 224.0.0.0/4 | grep -q dev")
+    advert = _zj.loads(node1.succeed(
+        "podman exec -i briard-home-assistant-app python3 - < ${h.haAdvertProbe}"
+    ))
+    print(f"HA's own advert: {advert}")
+    assert "192.168.1.100" in advert["addresses"], f"HA does not advertise the VIP: {advert}"
+    assert "10.0.2.15" not in advert["addresses"], f"HA still advertises the user-net address: {advert}"
+    assert "10.0.2.15" not in advert["txt"].get("internal_url", ""), f"HA's own URL is the user-net address: {advert}"
+
     node1.fail("test -e /run/briard/routes.hosts")
 
     # ── (c) BRIARD'S OWN INTEGRATION, AND THE BROKER WIRED FROM INSIDE IT ───
