@@ -44,9 +44,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"briard.io/shared/routes"
@@ -54,6 +56,11 @@ import (
 )
 
 func main() {
+	// FIRST, before anything can block: SIGHUP's default action is to terminate, and the guest
+	// agent sends one at every service start (forwardTrust) -- including starts that race this
+	// door's own.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
 	httpAddr := flag.String("http", ":80", "plain-HTTP listen address (on the VIP)")
 	listen := flag.String("listen", ":443", "TLS listen address (on the VIP)")
 	routesPath := flag.String("routes", routes.Path, "the routing table written by the guest's converge")
@@ -101,6 +108,14 @@ func main() {
 	}
 
 	h := newFrontDoor(tbl.current, fallback)
+	// Whether each service accepts X-Forwarded-For from this door: asked now, and again at every
+	// service start, which is when a service re-reads its proxy trust.
+	h.trust.recheck(tbl.current())
+	go func() {
+		for range hup {
+			h.trust.recheck(tbl.current())
+		}
+	}()
 	// Sane timeout so a stuck client can't pin a connection forever.
 	plain := &http.Server{Addr: *httpAddr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	tlsSrv := &http.Server{
@@ -164,31 +179,37 @@ type frontDoor struct {
 	routes   func() *routing
 	proxy    http.Handler
 	fallback *url.URL // the dashboard; nil answers 503 for a name nobody routes
+	trust    forwardTrust
 }
 
-// backendKey carries the resolved backend from ServeHTTP into the proxy's Rewrite hook. One
+// backendKey carries the resolved route from ServeHTTP into the proxy's Rewrite hook. One
 // ReverseProxy serves every route (so they share http.DefaultTransport's connection pooling and
-// the header doctrine below is written once); the per-request target rides the context.
+// the header doctrine below is written once); the per-request route rides the context.
 type backendKey struct{}
 
 func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
 	f := &frontDoor{routes: current, fallback: fallback}
 	f.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(r.In.Context().Value(backendKey{}).(*url.URL))
+			rt := r.In.Context().Value(backendKey{}).(route)
+			r.SetURL(rt.to)
 			// Keep the client's Host. It is what a service uses to build absolute URLs, and
 			// it is now also the thing that SELECTED this backend — rewriting it to 127.0.0.1
 			// would hand the service a name nobody typed.
 			r.Out.Host = r.In.Host
-			// Deliberately NO X-Forwarded-*. We do not own the service's configuration, and
-			// a service that is not expecting a proxy must keep working when put behind one:
-			// Home Assistant answers 400 to a forwarded header from a proxy it has not been
-			// told to trust, so sending one would break the flagship service out of the box.
-			// (Using Rewrite rather than Director is what makes this the default — Director
-			// appends X-Forwarded-For automatically.) Revisit when per-service trust is
-			// something the catalog can state and we can pair the header with it.
+			// X-Forwarded-For ONLY TO A SERVICE THAT HAS SAID IT ACCEPTS IT (forwardTrust). We do
+			// not own the service's configuration, and a service that is not expecting a proxy
+			// must keep working when put behind one: Home Assistant answers 400 to the header from
+			// a proxy it has not been told to trust. Rewrite (not Director) is what strips every
+			// inbound X-Forwarded-* first, so the value is always the peer this door saw -- the
+			// door is the edge, and a client's own claim is never passed on.
+			if rt.name != "" && f.trust.allows(rt.name) {
+				if ip, _, err := net.SplitHostPort(r.In.RemoteAddr); err == nil {
+					r.Out.Header.Set("X-Forwarded-For", ip)
+				}
+			}
 			//
-			// THE ONE EXCEPTION IS OURS: the dashboard is not a service that never asked for a
+			// THE DASHBOARD IS OURS: it is not a service that never asked for a
 			// proxy, it is built for this door, and it needs the scheme the browser used -- a
 			// Secure cookie set over plain http would never come back, and the Home Assistant
 			// origin it hands the browser must match. So the door says https to the dashboard
@@ -225,7 +246,7 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "nothing answers at this name on this machine\n", http.StatusServiceUnavailable)
 			return
 		}
-		f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, f.fallback)))
+		f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, route{to: f.fallback})))
 		return
 	}
 	if r.to == nil {
@@ -236,7 +257,7 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, fmt.Sprintf("%s does not answer HTTP; reach it on its own port\n", r.name), http.StatusNotImplemented)
 		return
 	}
-	f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r.to)))
+	f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r)))
 }
 
 // health answers the NODE's readiness, and only ever its own.

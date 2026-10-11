@@ -136,6 +136,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 		// FROM INSIDE A RUNNING CONTAINER: Home Assistant restarting itself, which is the one
 		// boundary nothing outside the container can see -- and one whose previous instance the
 		// clean-stop marker says nothing about.
+		defer signalDoor(ctx, x)
 		detail, err := startingMember(ctx, x, service, false)
 		if err != nil {
 			return reply(inboundResponse{Error: err.Error()})
@@ -958,7 +959,23 @@ func ToolsBin() string { return toolsBin() }
 // yet to ask.
 func TakeStartMember(ctx context.Context, x Executor, service string) (string, error) {
 	ensureToolsOnPath()
+	defer signalDoor(ctx, x)
 	return startingMember(ctx, x, service, true)
+}
+
+// signalDoor tells the front door a service is starting, so it asks again whether that service
+// accepts X-Forwarded-For from it: a service reads its proxy trust at start, so a start is the only
+// moment the answer can change. Both start boundaries come through here -- the container's own
+// (TakeStartMember) and Home Assistant restarting inside it (the inbound verb) -- whatever the
+// member's outcome.
+//
+// BEST-EFFORT, like the take: a door that is not running yet (a promotion starts services before
+// the door) asks at its own start instead, and a missed recheck costs client addresses, never a
+// request.
+func signalDoor(ctx context.Context, x Executor) {
+	if _, err := x.Run(ctx, "systemctl", "kill", "--kill-whom=main", "--signal=SIGHUP", reverseProxyUnit); err != nil {
+		log.Printf("signal the front door to recheck forwarded-header trust: %v", err)
+	}
 }
 
 // ensureToolsOnPath puts the image's tool profile on this process's PATH.

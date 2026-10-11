@@ -333,10 +333,10 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 }
 
 // What the proxy passes through matters as much as that it does. Home Assistant answers 400
-// to an X-Forwarded-For header from a proxy it has not been told to trust, so adding one --
-// which net/http does automatically under Director -- silently breaks the flagship service
-// behind the front door. And the client's Host has to survive: a service builds its absolute
-// URLs from it, and it is now also the thing that CHOSE this backend.
+// to an X-Forwarded-For header from a proxy it has not been told to trust, so adding one to a
+// service that has not said it accepts it (forwardTrust; nothing has, here) silently breaks
+// the flagship service behind the front door. And the client's Host has to survive: a service
+// builds its absolute URLs from it, and it is now also the thing that CHOSE this backend.
 func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	var gotHost string
 	var gotXFF []string

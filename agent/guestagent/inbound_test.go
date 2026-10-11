@@ -1243,3 +1243,29 @@ func TestReplacingKeepsTheWeakerConsistency(t *testing.T) {
 		t.Errorf("deleted %v, want the replaced start", got)
 	}
 }
+
+// Every start tells the front door to ask again whether the service accepts X-Forwarded-For --
+// both boundaries, since a service reads its proxy trust at start and Home Assistant's own restarts
+// are starts the container never sees.
+func TestEveryStartSignalsTheDoor(t *testing.T) {
+	signalled := func(f *fakeExec) bool {
+		for _, r := range f.runs {
+			if strings.Join(r, " ") == "systemctl kill --kill-whom=main --signal=SIGHUP "+reverseProxyUnit {
+				return true
+			}
+		}
+		return false
+	}
+	f := restoreRig("")
+	if _, err := TakeStartMember(context.Background(), f, "home-assistant"); err != nil {
+		t.Fatal(err)
+	}
+	if !signalled(f) {
+		t.Errorf("a container start did not signal the door: %v", f.runs)
+	}
+	f = ringExec()
+	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	if !signalled(f) {
+		t.Errorf("a restart inside the container did not signal the door: %v", f.runs)
+	}
+}
