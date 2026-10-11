@@ -816,7 +816,7 @@ dev)
 			say "keeping briard/$prev: $keep names it"
 		else
 			say "deleting briard/$prev (the previous dev; nothing else names it)"
-			aws s3 rm "$bucket/briard/$prev/" --recursive --endpoint-url "$endpoint" --no-progress
+			aws s3 rm "$bucket/briard/$prev/" --recursive --endpoint-url "$endpoint" --only-show-errors
 		fi
 	fi
 	if [ -n "$prev_vm" ] && [ "$prev_vm" != "$GV" ]; then
@@ -828,7 +828,7 @@ dev)
 			say "keeping vm/$prev_vm: $keep names it"
 		else
 			say "deleting vm/$prev_vm (the previous dev's image; nothing else names it)"
-			aws s3 rm "$bucket/vm/$prev_vm/" --recursive --endpoint-url "$endpoint" --no-progress
+			aws s3 rm "$bucket/vm/$prev_vm/" --recursive --endpoint-url "$endpoint" --only-show-errors
 		fi
 	elif [ -n "$prev_vm" ]; then
 		say "keeping vm/$prev_vm: the new dev pairs with it (unchanged image inputs)"
@@ -894,7 +894,7 @@ gc)
 			# object-tagging call to trip on and cannot leave a release half-removed the way a
 			# move does — but the rule stands for whatever ever replaces it.
 			say "deleting $c/$v (published $when, past the ${GC_FLOOR_DAYS}-day floor)"
-			aws s3 rm "$bucket/$c/$v/" --recursive --endpoint-url "$endpoint" --no-progress
+			aws s3 rm "$bucket/$c/$v/" --recursive --endpoint-url "$endpoint" --only-show-errors
 		done
 	done
 	;;
