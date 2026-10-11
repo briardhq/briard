@@ -115,7 +115,18 @@ type Casa struct {
 	// CertUntil is the current certificate's expiry (zero: none yet), so the page can say
 	// whether the name already serves TLS.
 	CertUntil time.Time `json:"certUntil,omitzero"`
+	// Resolves is whether the household's own network finds the name: "" until a check has
+	// positively answered, then CasaResolves or CasaBlocked. The page links the name only on
+	// CasaResolves, because a name the house cannot resolve opens nothing.
+	Resolves string `json:"resolves,omitempty"`
 }
+
+// Casa.Resolves values. Not yet known (the public answer still on its way, or the household's
+// resolver not answering) is "", never one of these: only a positive answer is reported.
+const (
+	CasaResolves = "yes"     // the household's resolver answers the name with the VIP
+	CasaBlocked  = "blocked" // public DNS has the name, the household's resolver drops it
+)
 
 // AlertsDir holds the guest's one copy of the host's alert store, for every display on the
 // guest: the dashboard reads it here, and Home Assistant's container gets the directory bound

@@ -93,8 +93,15 @@
   {{if eq .State "registered"}}
   <div class="card">
     <h2>Your address</h2>
+    {{if eq .Resolves "yes"}}
     <p>This home is <a href="https://{{.Name}}/">{{.Name}}</a>{{if .CertUntil}}, with a certificate valid until {{.CertUntil}} — renewed on its own.{{else}} — its certificate is on its way, which takes a minute or two.{{end}}</p>
     <p class="muted">Every app gets a name under it, like <code>home-assistant.{{.Name}}</code>. The names work from inside your home; nothing is opened to the internet.</p>
+    {{else if eq .Resolves "blocked"}}
+    <p>This home is registered as <code>{{.Name}}</code>, but your router blocks the name: it refuses names that point inside your home (often called DNS rebind protection). Keep using the address you are on now.</p>
+    <p class="muted">To use the name, allow <code>briard.casa</code> in your router's DNS rebind protection; Briard checks again the next time it starts.</p>
+    {{else}}
+    <p>This home is registered as <code>{{.Name}}</code>. Checking that your home network finds the name — the first time this takes a minute or two.</p>
+    {{end}}
   </div>
   {{else if eq .State "pending"}}
   <div class="card">

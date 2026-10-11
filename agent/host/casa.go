@@ -13,8 +13,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +56,10 @@ const (
 	casaRenewRetry  = time.Hour // after a failed issuance
 )
 
+// casaPublicResolvers are asked, in turn, whether the name has reached public DNS. Two
+// operators, because a network may block either one; one answer with the VIP is enough.
+var casaPublicResolvers = []string{"1.0.0.1", "8.8.8.8"}
+
 // casaState is the claim's state on disk.
 type casaState struct {
 	Email      string `json:"email,omitempty"`
@@ -88,6 +94,9 @@ type casaRunner struct {
 	cl  casaClient
 	dir string // pet state; "" = nowhere to keep a key, so no claim is possible
 	now func() time.Time
+	// lookup answers name's IPv4 addresses from server; server "" is this machine's own
+	// resolver, the one the household's network handed out. casaLookup, faked by the tests.
+	lookup func(ctx context.Context, server, name string) ([]string, error)
 
 	// mu guards st, key and the per-session fields below: tick runs them on the observe loop
 	// and claim runs off it (acts.go), the one directive that writes what tick reads.
@@ -109,6 +118,24 @@ type casaRunner struct {
 	polling chan casaPolled // a claim-status poll in flight; nil when none
 	setting chan casaSetA   // an address write in flight; nil when none
 	pushed  *dashboard.Casa // what the guest was last told, this channel session (newSession)
+
+	// The resolve check, for the address last written (resolveFor): first public DNS, then the
+	// household's resolver. resolves is "" until that answers positively (dashboard.Casa.Resolves),
+	// and the name is used nowhere until it is CasaResolves; resolveNote says what is awaited.
+	resolveFor  string
+	resolves    string
+	resolveNote string
+	nextResolve time.Time
+	resolving   chan casaResolved // a check in flight; nil when none
+}
+
+// casaResolved is what a resolve check hands back. public is whether 1.0.0.1 or 8.8.8.8 answered
+// the VIP; local is the household's verdict ("" when it could not tell), err why not.
+type casaResolved struct {
+	addr   string
+	public bool
+	local  string
+	err    error
 }
 
 // casaPolled is what a claim-status poll hands back; casaSetA what an address write does.
@@ -132,7 +159,7 @@ type casaIssued struct {
 // newCasaRunner loads whatever the last run left in the state dir. cl == nil is a build with no
 // casa client (tests that do not care); every claim is then refused.
 func (cfg Config) newCasaRunner(cl casaClient) *casaRunner {
-	c := &casaRunner{cfg: cfg, cl: cl, dir: cfg.stateDir(), now: time.Now}
+	c := &casaRunner{cfg: cfg, cl: cl, dir: cfg.stateDir(), now: time.Now, lookup: casaLookup}
 	if c.dir == "" {
 		return c
 	}
@@ -238,6 +265,7 @@ func (c *casaRunner) tick(ctx context.Context, r any, vip guest.VIPReader, logf 
 	}
 	if c.st.Registered && c.key != nil {
 		c.address(ctx, vip, now, logf)
+		c.resolve(ctx, now, logf)
 		c.certificate(ctx, g, now, logf)
 	}
 	c.push(ctx, g, logf)
@@ -322,6 +350,113 @@ func (c *casaRunner) address(ctx context.Context, vip guest.VIPReader, now time.
 		defer cancel()
 		out <- casaSetA{addr: addr, err: c.cl.SetA(actx, req)}
 	}(c.setting)
+}
+
+// resolve checks, for the address last written, that the household's network finds the name,
+// and is the gate on using it (the page's link, HA's external_url): routers with DNS rebinding
+// protection drop a public answer that points at a private address, and then a valid
+// certificate opens nothing. Two steps, in order. Public DNS first (1.0.0.1, else 8.8.8.8),
+// waited on until it answers the VIP, so the local resolver is never asked early and left
+// caching a "no such name". Then the household's resolver, whose answer is final for this
+// address in this session. A step that could not tell is asked again; only a positive answer
+// is recorded. Runs off the loop and lands on a later tick, like the cloud calls.
+func (c *casaRunner) resolve(ctx context.Context, now time.Time, logf func(string, ...any)) {
+	if c.lastA == "" {
+		return // nothing written yet, so nothing to look for
+	}
+	if c.lastA != c.resolveFor {
+		// A new address: what was found for the old one says nothing about it.
+		c.resolveFor, c.resolves, c.resolveNote, c.nextResolve = c.lastA, "", "", time.Time{}
+	}
+	if c.resolving != nil {
+		var res casaResolved
+		select {
+		case res = <-c.resolving:
+			c.resolving = nil
+		default:
+			return // still asking
+		}
+		if res.addr != c.resolveFor {
+			return // asked about an address since replaced; the next tick asks about this one
+		}
+		name := casa.Names(c.cfg.FlockName)[0]
+		switch {
+		case !res.public:
+			c.resolveNote = "public DNS (" + strings.Join(casaPublicResolvers, ", ") + ") does not answer " + name + " with " + res.addr + " yet"
+			c.nextResolve = now.Add(casaPollEvery)
+		case res.local == "":
+			c.resolveNote = "could not ask this network's DNS about " + name + ": " + res.err.Error()
+			c.nextResolve = now.Add(casaAddrRetry)
+			logf("casa: %s (retrying in %s)", c.resolveNote, casaAddrRetry)
+		default:
+			c.resolves, c.resolveNote = res.local, ""
+			if res.local == dashboard.CasaResolves {
+				logf("casa: this network resolves %s to %s", name, res.addr)
+			} else {
+				logf("casa: public DNS resolves %s to %s but this network does not (%v): DNS rebind protection; the name is not used", name, res.addr, res.err)
+			}
+		}
+		return
+	}
+	if c.resolves != "" || now.Before(c.nextResolve) {
+		return
+	}
+	c.resolving = make(chan casaResolved, 1)
+	go func(out chan<- casaResolved, name, addr string) {
+		out <- casaCheck(ctx, c.lookup, name, addr)
+	}(c.resolving, casa.Names(c.cfg.FlockName)[0], c.resolveFor)
+}
+
+// casaCheck runs the two steps once. The household's verdict is CasaBlocked only on a positive
+// answer that is not the VIP: no such name, or another address. A resolver that timed out or
+// failed could not tell, and is reported as such (local "").
+func casaCheck(ctx context.Context, lookup func(context.Context, string, string) ([]string, error), name, addr string) casaResolved {
+	res := casaResolved{addr: addr}
+	for _, server := range casaPublicResolvers {
+		lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ips, _ := lookup(lctx, server, name)
+		cancel()
+		if slices.Contains(ips, addr) {
+			res.public = true
+			break
+		}
+	}
+	if !res.public {
+		return res
+	}
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ips, err := lookup(lctx, "", name)
+	cancel()
+	var dnsErr *net.DNSError
+	switch {
+	case err == nil && slices.Contains(ips, addr):
+		res.local = dashboard.CasaResolves
+	case err == nil:
+		res.local, res.err = dashboard.CasaBlocked, fmt.Errorf("answered %s", strings.Join(ips, ", "))
+	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+		res.local, res.err = dashboard.CasaBlocked, errors.New("answered no such name")
+	default:
+		res.err = err
+	}
+	return res
+}
+
+// casaLookup asks server (host, port 53) for name's IPv4 addresses, or this machine's own
+// resolver when server is "".
+func casaLookup(ctx context.Context, server, name string) ([]string, error) {
+	r := net.DefaultResolver
+	if server != "" {
+		r = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, net.JoinHostPort(server, "53"))
+		}}
+	}
+	ips, err := r.LookupIP(ctx, "ip4", name+".")
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.String())
+	}
+	return out, err
 }
 
 // certificate keeps a certificate for the flock's two names on the volume: read back hourly,
@@ -429,7 +564,7 @@ func (c *casaRunner) view() dashboard.Casa {
 	case c.st.Claim != "":
 		v.State = casa.ClaimPending
 	case c.st.Registered:
-		v.State = casa.ClaimRegistered
+		v.State, v.Resolves = casa.ClaimRegistered, c.resolves
 	case c.st.Last != "":
 		v.State, v.Reason = c.st.Last, c.st.Reason
 	}
@@ -464,4 +599,17 @@ func (c *casaRunner) newSession() {
 		c.pushed = nil
 		c.mu.Unlock()
 	}
+}
+
+// doctor hands `briard doctor` the registered name and its resolve check.
+func (c *casaRunner) doctor(f *doctorFacts) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.st.Registered || c.cfg.FlockName == "" {
+		return
+	}
+	f.Casa, f.CasaAddr, f.CasaResolves, f.CasaNote = casa.Names(c.cfg.FlockName)[0], c.resolveFor, c.resolves, c.resolveNote
 }

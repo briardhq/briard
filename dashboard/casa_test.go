@@ -69,7 +69,24 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 		t.Errorf("the pending page: %s", body)
 	}
 
-	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Email: "a@x.org", CertUntil: time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC)})
+	// Registered, but the household's network not yet found to resolve the name: the name is not
+	// linked anywhere, and the page polls for the check's answer.
+	reg := dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Email: "a@x.org", CertUntil: time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC)}
+	r.hostSays(t, reg)
+	body = r.page(c)
+	if strings.Contains(body, "https://brave-elf.briard.casa") || strings.Contains(body, "home-assistant.brave-elf.briard.casa") || !strings.Contains(body, "Checking that your home network finds the name") || !strings.Contains(body, `http-equiv="refresh"`) {
+		t.Errorf("the registered page, check unanswered: %s", body)
+	}
+
+	reg.Resolves = dashboard.CasaBlocked
+	r.hostSays(t, reg)
+	body = r.page(c)
+	if strings.Contains(body, "https://brave-elf.briard.casa") || !strings.Contains(body, "your router blocks the name") || strings.Contains(body, `http-equiv="refresh"`) {
+		t.Errorf("the registered page, name blocked: %s", body)
+	}
+
+	reg.Resolves = dashboard.CasaResolves
+	r.hostSays(t, reg)
 	body = r.page(c)
 	if !strings.Contains(body, `href="https://brave-elf.briard.casa/"`) || !strings.Contains(body, "valid until 2 Jan 2027") || strings.Contains(body, `http-equiv="refresh"`) || strings.Contains(body, `action="/casa/claim"`) {
 		t.Errorf("the registered page: %s", body)

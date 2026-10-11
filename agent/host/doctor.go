@@ -24,6 +24,7 @@ import (
 	"briard.io/agent/nic"
 	"briard.io/agent/reportcard"
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/model"
 	"briard.io/shared/routes"
 )
@@ -78,10 +79,14 @@ type doctorFacts struct {
 	CertPEM   string
 	CertErr   error
 	Now       time.Time
+
+	// Casa is the registered casa name ("" when none), and the casa runner's resolve check for
+	// CasaAddr: CasaResolves is dashboard.Casa.Resolves, CasaNote what an unfinished one awaits.
+	Casa, CasaAddr, CasaResolves, CasaNote string
 }
 
 // applyDoctor gathers doctorFacts and answers with the judged checks as JSON.
-func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReader) api.DirectiveOutcome {
+func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReader, cs *casaRunner) api.DirectiveOutcome {
 	ctx, cancel := context.WithTimeout(ctx, doctorBudget)
 	defer cancel()
 	f := doctorFacts{
@@ -96,6 +101,7 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 		f.ParentUp = f.Parent != "" && nic.Up(f.Parent)
 	}
 	f.Refused, f.RefusedFix = cfg.ipvtap.refusal()
+	cs.doctor(&f)
 	if f.DataDisk != "" {
 		_, err := os.Stat(f.DataDisk)
 		f.DiskFound = err == nil
@@ -251,6 +257,24 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 				"this one is always "+want+"; use that name when it matters which")
 		default:
 			add("name", reportcard.Pass, "published as "+want+" and "+routes.BareFlockHostName, "")
+		}
+	}
+
+	// THE CASA NAME IS USED ONLY WHERE THE HOUSE RESOLVES IT: not yet known is a warning, because
+	// until it is known the page does not link the name.
+	if f.Casa != "" {
+		switch f.CasaResolves {
+		case dashboard.CasaResolves:
+			add("casa", reportcard.Pass, fmt.Sprintf("this network resolves %s to %s", f.Casa, f.CasaAddr), "")
+		case dashboard.CasaBlocked:
+			add("casa", reportcard.Warn, fmt.Sprintf("public DNS resolves %s, but this network's DNS drops it (DNS rebind protection), so the name is not used", f.Casa),
+				fmt.Sprintf("use %s, or allow briard.casa in your router's DNS rebind protection; it is checked again when the agent next starts", routes.FlockHostName(f.FlockName)))
+		case "":
+			note := f.CasaNote
+			if note == "" {
+				note = "not checked yet"
+			}
+			add("casa", reportcard.Warn, fmt.Sprintf("%s is not used until this network is found to resolve it: %s", f.Casa, note), "")
 		}
 	}
 

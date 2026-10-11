@@ -10,8 +10,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -149,6 +151,7 @@ type casaRig struct {
 	guest *fakeCasaGuest
 	now   time.Time
 	cs    *casaRunner
+	dns   *fakeDNS
 }
 
 func newCasaRig(t *testing.T) *casaRig {
@@ -159,6 +162,7 @@ func newCasaRig(t *testing.T) *casaRig {
 		now:   time.Unix(1_700_000_000, 0).UTC(),
 	}
 	r.cloud = &fakeCasaCloud{notAfter: r.now.Add(90 * 24 * time.Hour)}
+	r.dns = &fakeDNS{addr: "192.168.1.50"}
 	r.restart()
 	return r
 }
@@ -167,27 +171,29 @@ func newCasaRig(t *testing.T) *casaRig {
 func (r *casaRig) restart() {
 	r.cs = r.cfg.newCasaRunner(r.cloud)
 	r.cs.now = func() time.Time { return r.now }
+	r.cs.lookup = r.dns.lookup
 }
 
 // tick is one observe tick plus what it set in motion: the cloud calls (a poll, an address
-// write, an issuance) run off the loop and answer on a later tick, so a test tick waits for each
-// one it started to answer and ticks again to apply it. The fake cloud answers at once.
+// write, an issuance) and the resolve check run off the loop and answer on a later tick, so a
+// test tick waits for each one it started to answer and ticks again to apply it. The fakes
+// answer at once.
 func (r *casaRig) tick(t *testing.T) {
 	t.Helper()
 	r.cs.tick(context.Background(), r.guest, r.guest, t.Logf)
-	for round := 0; round < 4; round++ {
+	for round := 0; round < 6; round++ {
 		pending := 0
-		for _, n := range []int{len(r.cs.polling), len(r.cs.setting), len(r.cs.renewing)} {
+		for _, n := range []int{len(r.cs.polling), len(r.cs.setting), len(r.cs.renewing), len(r.cs.resolving)} {
 			pending += n
 		}
-		inflight := r.cs.polling != nil || r.cs.setting != nil || r.cs.renewing != nil
+		inflight := r.cs.polling != nil || r.cs.setting != nil || r.cs.renewing != nil || r.cs.resolving != nil
 		if !inflight {
 			return
 		}
 		deadline := time.Now().Add(time.Second)
 		for pending == 0 && time.Now().Before(deadline) {
 			time.Sleep(time.Millisecond)
-			pending = len(r.cs.polling) + len(r.cs.setting) + len(r.cs.renewing)
+			pending = len(r.cs.polling) + len(r.cs.setting) + len(r.cs.renewing) + len(r.cs.resolving)
 		}
 		r.cs.tick(context.Background(), r.guest, r.guest, t.Logf)
 	}
@@ -432,5 +438,155 @@ func TestCasaSlowCloudDoesNotHoldTheTick(t *testing.T) {
 	r.tick(t)
 	if addrs, _, _ := r.cloud.snapshot(); len(addrs) != 1 {
 		t.Fatalf("addresses = %v, want the one write once its answer landed", addrs)
+	}
+}
+
+// fakeDNS answers the resolve check: every public resolver and the household's own answer addr,
+// unless a test says otherwise per server. asked records who was asked, in order.
+type fakeDNS struct {
+	mu     sync.Mutex
+	addr   string
+	public map[string][]string // per public server; absent = addr
+	pubErr map[string]error
+	local  []string // the household's answer; nil = addr
+	locErr error
+	asked  []string
+}
+
+func (d *fakeDNS) lookup(_ context.Context, server, name string) ([]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.asked = append(d.asked, server)
+	if name != "alert-fox.briard.casa" {
+		return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	}
+	if server == "" {
+		if d.locErr != nil {
+			return nil, d.locErr
+		}
+		if d.local != nil {
+			return d.local, nil
+		}
+		return []string{d.addr}, nil
+	}
+	if err := d.pubErr[server]; err != nil {
+		return nil, err
+	}
+	if ips, ok := d.public[server]; ok {
+		return ips, nil
+	}
+	return []string{d.addr}, nil
+}
+
+func (d *fakeDNS) set(f func(d *fakeDNS)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	f(d)
+	d.asked = nil
+}
+
+func (d *fakeDNS) askedLocal() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Contains(d.asked, "")
+}
+
+// registered drives a rig to a registered name with its address written and certificate issued.
+func (r *casaRig) registered(t *testing.T) {
+	t.Helper()
+	r.claim(t, "a@x.org")
+	r.cloud.status = casa.ClaimStatus{State: casa.ClaimRegistered}
+	r.tickUntilWritten(t, 1)
+}
+
+// THE NAME IS USED ONLY ONCE THE HOUSE RESOLVES IT. Public DNS first, waited on and never
+// skipped: until 1.0.0.1 or 8.8.8.8 answers the VIP, the household's resolver is not asked at
+// all. Either public resolver is enough. Then the household's answer is final for the address;
+// a moved address starts again.
+func TestCasaResolveCheckGatesTheName(t *testing.T) {
+	r := newCasaRig(t)
+	r.dns.set(func(d *fakeDNS) { d.public = map[string][]string{"1.0.0.1": nil, "8.8.8.8": nil} })
+	r.registered(t)
+	if v := r.guest.lastView(t); v.State != casa.ClaimRegistered || v.Resolves != "" {
+		t.Fatalf("view before public DNS answers = %+v, want registered and not resolved", v)
+	}
+	if r.dns.askedLocal() {
+		t.Fatal("the household's resolver was asked before public DNS had the name")
+	}
+
+	// 1.0.0.1 is blocked on this network; 8.8.8.8 has the answer: that is enough.
+	r.dns.set(func(d *fakeDNS) {
+		d.public = map[string][]string{}
+		d.pubErr = map[string]error{"1.0.0.1": errors.New("i/o timeout")}
+	})
+	r.now = r.now.Add(casaPollEvery)
+	r.tick(t)
+	if v := r.guest.lastView(t); v.Resolves != dashboard.CasaResolves {
+		t.Fatalf("view once both answer = %+v, want resolves", v)
+	}
+	if !r.dns.askedLocal() {
+		t.Fatal("the household's resolver was never asked")
+	}
+
+	// Final for this address: nothing is asked again.
+	r.dns.set(func(*fakeDNS) {})
+	r.now = r.now.Add(time.Hour)
+	r.tick(t)
+	if len(r.dns.asked) != 0 {
+		t.Fatalf("asked %v again about an address already confirmed", r.dns.asked)
+	}
+
+	// A moved address is a new question; until it is answered, the name is not used.
+	r.dns.set(func(d *fakeDNS) {
+		d.public = map[string][]string{"1.0.0.1": {"192.168.1.50"}, "8.8.8.8": {"192.168.1.50"}}
+	})
+	r.guest.vip = "192.168.1.77/24"
+	r.tick(t)
+	if v := r.guest.lastView(t); v.Resolves != "" {
+		t.Fatalf("view after the address moved = %+v, want not resolved until asked again", v)
+	}
+}
+
+// The household's verdict. Blocked only on a positive answer that is not the VIP; a resolver
+// that could not answer leaves the name unused and is asked again a minute later.
+func TestCasaResolveCheckLocalVerdicts(t *testing.T) {
+	cases := []struct {
+		name   string
+		local  []string
+		locErr error
+		want   string
+	}{
+		{"resolves", nil, nil, dashboard.CasaResolves},
+		{"rebind protection answers no such name", nil, &net.DNSError{Err: "no such host", IsNotFound: true}, dashboard.CasaBlocked},
+		{"answers another address", []string{"0.0.0.0"}, nil, dashboard.CasaBlocked},
+		{"could not tell", nil, &net.DNSError{Err: "i/o timeout", IsTimeout: true}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCasaRig(t)
+			r.dns.set(func(d *fakeDNS) { d.local, d.locErr = tc.local, tc.locErr })
+			r.registered(t)
+			if v := r.guest.lastView(t); v.Resolves != tc.want {
+				t.Fatalf("resolves = %q, want %q", v.Resolves, tc.want)
+			}
+			var f doctorFacts
+			r.cs.doctor(&f)
+			if f.Casa != "alert-fox.briard.casa" || f.CasaAddr != "192.168.1.50" || f.CasaResolves != tc.want {
+				t.Fatalf("doctor facts = %+v", f)
+			}
+			if tc.want != "" {
+				return
+			}
+			if f.CasaNote == "" {
+				t.Fatal("an unanswered check tells the doctor nothing")
+			}
+			// Asked again after the retry, and this time it answers.
+			r.dns.set(func(d *fakeDNS) { d.locErr = nil })
+			r.now = r.now.Add(casaAddrRetry)
+			r.tick(t)
+			if v := r.guest.lastView(t); v.Resolves != dashboard.CasaResolves {
+				t.Fatalf("after the retry resolves = %q", v.Resolves)
+			}
+		})
 	}
 }

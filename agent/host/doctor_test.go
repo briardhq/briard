@@ -16,6 +16,7 @@ import (
 
 	"briard.io/agent/reportcard"
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/model"
 )
 
@@ -133,6 +134,11 @@ func TestDoctorWarnings(t *testing.T) {
 		{"another briard answers briard.local", func(f *doctorFacts) { f.Other = "192.168.1.50" }, "name"},
 		{"volume nearly full", func(f *doctorFacts) { f.VolFree = 100 << 20 }, "volume"},
 		{"volume unreadable", func(f *doctorFacts) { f.VolErr = errors.New("no") }, "volume"},
+		// The casa name is not used until the house resolves it, so anything short of that warns.
+		{"casa name not checked yet", func(f *doctorFacts) { f.Casa = "brave-elf.briard.casa" }, "casa"},
+		{"casa name blocked by the router", func(f *doctorFacts) {
+			f.Casa, f.CasaAddr, f.CasaResolves = "brave-elf.briard.casa", "192.168.1.50", dashboard.CasaBlocked
+		}, "casa"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +148,11 @@ func TestDoctorWarnings(t *testing.T) {
 				t.Errorf("%s = %+v, want warn", tc.check, c)
 			}
 		})
+	}
+	f := servingLone()
+	f.Casa, f.CasaAddr, f.CasaResolves = "brave-elf.briard.casa", "192.168.1.50", dashboard.CasaResolves
+	if c := checkNamed(t, judgeDoctor(f), "casa"); c.Status != reportcard.Pass || !strings.Contains(c.Detail, "192.168.1.50") {
+		t.Errorf("casa resolved = %+v, want pass", c)
 	}
 }
 

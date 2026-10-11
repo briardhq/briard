@@ -47,16 +47,18 @@ type casaView struct {
 	Reason    string
 	CertUntil string
 	Skipped   bool
+	Resolves  string // dashboard.Casa.Resolves: the name is linked only on "yes"
 	Asked     *casaAsk
 }
 
 // Refresh says whether the page should poll itself: a claim is in flight, or one was just asked
-// and the host has not yet said pending.
+// and the host has not yet said pending, or a registered name's resolve check has not answered.
 func (v *casaView) Refresh() bool {
 	if v == nil {
 		return false
 	}
-	return v.State == casa.ClaimPending || (v.Asked != nil && !v.Asked.Failed && v.State != casa.ClaimRegistered)
+	return v.State == casa.ClaimPending || (v.Asked != nil && !v.Asked.Failed && v.State != casa.ClaimRegistered) ||
+		(v.State == casa.ClaimRegistered && v.Resolves == "")
 }
 
 // casaState reads the host's view, the household's skip, and this page's last ask. Nil until
@@ -71,7 +73,7 @@ func (a *app) casaState() *casaView {
 		return nil
 	}
 	v := &casaView{}
-	v.State, v.Name, v.Email, v.Reason = h.State, h.Name, h.Email, h.Reason
+	v.State, v.Name, v.Email, v.Reason, v.Resolves = h.State, h.Name, h.Email, h.Reason, h.Resolves
 	if !h.CertUntil.IsZero() {
 		v.CertUntil = h.CertUntil.In(zone()).Format("2 Jan 2006")
 	}

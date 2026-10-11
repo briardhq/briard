@@ -1774,7 +1774,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		return cfg.applyDebugConsole(ctx, d, logf)
 	}
 	if d.Kind == api.DirectiveDoctor {
-		return cfg.applyDoctor(ctx, d, r)
+		return cfg.applyDoctor(ctx, d, r, cs)
 	}
 	if d.Kind == api.DirectiveConfigSet {
 		// The backup's settings apply in place (backup.go).
