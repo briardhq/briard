@@ -7,7 +7,10 @@
 # beside its manifest and the volume's facts, that HA's own tarballs stay out, that a root
 # process leaves every file the folder's owner's, that the folder opens on its own as a standard
 # repository, that the second night adds only what changed and restores what changed, and that
-# an earlier household's nights in the same repository survive this one's retention.
+# an earlier household's nights in the same repository survive this one's retention -- and that a
+# night comes back out of the repository as a read-only ring member holding that night's data,
+# labelled with the manifest it was written under, which is what the host's restore then puts
+# back exactly as it puts back any member.
 #
 # Agent-less, as every rig that runs a service is: `briard-guest-agent --backup` runs the guest's
 # backup in line (the product starts it through the host's verb, in the background), and
@@ -142,5 +145,24 @@ pkgs.testers.runNixOSTest {
     assert len(earlier) == 3, f"the earlier household kept {len(earlier)} of its 3 nights"
     ours = json.loads(plain("snapshots --host briard --json"))
     assert len(ours) == 2, f"our group holds {len(ours)}, want 2: three nights on one day, the policy applied to us"
+
+    # ---- a night comes back as a ring member ----
+    # The FIRST night, by id (it is the one the retention would prune next, so a stale id must
+    # still name it while it is there), into the ring: a read-only subvolume with that night's
+    # payload and the sidecar that names the manifest, beside the members the ring took itself.
+    member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -service ${fixture.name} -snapshot {first['snapshot']}").strip()
+    assert member.startswith("/var/lib/briard/.snapshots/${fixture.name}-from-backup-"), f"member {member}"
+    got = node1.succeed(f"cat {member}/${fixture.container}/payload.txt").strip()
+    assert got == "first", f"the member holds {got!r}, want the first night's"
+    node1.succeed(f"btrfs subvolume show {member} | grep -q 'readonly'")
+    node1.fail(f"touch {member}/x")
+    side = json.loads(node1.succeed(f"cat {member}.json"))
+    assert side["trigger"] == "from-backup" and side["service"] == "${fixture.name}" and side["manifest"], f"sidecar {side}"
+    assert not side.get("pending"), "a member from the backup is pending nothing"
+    # The night that is not there is a refusal, and the ring is as it was.
+    before = node1.succeed("ls /var/lib/briard/.snapshots").split()
+    node1.fail(f"briard-guest-agent --backup-restore=${url} -service nothing-installed -snapshot {first['snapshot']}")
+    assert node1.succeed("ls /var/lib/briard/.snapshots").split() == before, "a refused night changed the ring"
+    node1.fail("test -e /run/briard/backup.password")
   '';
 }

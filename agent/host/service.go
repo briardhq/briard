@@ -1308,10 +1308,16 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// down: the data below is untouched until it is on disk.
 	at := cfg.takenAt()
 	undo := quadlet.SnapshotMember(service, quadlet.TriggerAppUndoBefore, at)
+	// A night from the backup says so: the household chose it from the Backup section, not from
+	// the history, and the row should read like what they did.
+	back := target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")
+	what := "Undid changes back to " + back
+	if target.Meta.Trigger == quadlet.TriggerFromBackup {
+		what = "Restored the backup from " + back
+	}
 	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
 		// THE UNDO IS ITSELF AN EVENT, on the point that undoes it -- which is the redo.
-		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo,
-			What: "Undid changes back to " + target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")}}},
+		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: what}}},
 		at, logf); err != nil {
 		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
 	}
@@ -1343,7 +1349,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if runningVersion != "" && runningVersion != pm.Version {
 		moved = fmt.Sprintf("code too (%s -> %s)", runningVersion, pm.Version)
 	}
-	back := target.Meta.TakenAt.Local().Format("Mon 2 Jan 2006, 15:04:05")
+	back = target.Meta.TakenAt.Local().Format("Mon 2 Jan 2006, 15:04:05")
 	logf("service restore %s: back to %s, %s", service, back, moved)
 	// The code moved too, so the image it ran on is superseded the same way an upgrade's is; the
 	// undo point names it, and putting it back re-pulls (step 1 above).

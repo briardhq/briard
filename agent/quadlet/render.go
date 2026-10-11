@@ -468,12 +468,21 @@ const (
 	// alone, after the nightly check found the newest copy damaged (agent/hass/dbcheck.go). It
 	// holds the damaged database, so undoing its event puts that back.
 	TriggerHassDBRestoreBefore Trigger = "hass-db-restore-before"
+	// TriggerFromBackup is a member MATERIALISED from the household's backup rather than taken
+	// off the live data: one night's copy of a service, put into the ring so that the ordinary
+	// restore can put it back. Its bytes are the backup's, so the sidecar's TakenAt is the night
+	// the backup copied (what a restore to it goes back to) while the NAME is stamped when it was
+	// materialised -- it must be the newest member until the restore has used it, or the prune
+	// would take it first. It counts as Before(): the app never ran on it, so nothing is compared
+	// against it.
+	TriggerFromBackup Trigger = "from-backup"
 )
 
-// Before reports whether a member was taken just before an operation, with the app stopped.
+// Before reports whether a member was taken just before an operation, with the app stopped --
+// or put in place for one (TriggerFromBackup): either way the app did not run on it.
 func (t Trigger) Before() bool {
 	return t == TriggerAppUpdateBefore || t == TriggerAppUndoBefore || t == TriggerHassRestoreBefore ||
-		t == TriggerHassDBRestoreBefore
+		t == TriggerHassDBRestoreBefore || t == TriggerFromBackup
 }
 
 // SnapshotMemberService reads the service out of a member's name, and reports whether the name is
@@ -497,7 +506,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore, TriggerHassDBRestoreBefore} {
+	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore, TriggerHassDBRestoreBefore, TriggerFromBackup} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {

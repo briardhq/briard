@@ -376,3 +376,25 @@ func TestTheRecorderRestoreSampleIsABeforeSample(t *testing.T) {
 		t.Fatalf("hass-restore-before parsed as %q", tr)
 	}
 }
+
+// TestAMemberFromTheBackupIsABeforeSampleAndTheNewest: nothing is compared against it (the app
+// never ran on it), its name reads back, and -- stamped when it was materialised -- it is the
+// newest member, which is what keeps the prune off it until the restore has used it.
+func TestAMemberFromTheBackupIsABeforeSampleAndTheNewest(t *testing.T) {
+	if !TriggerFromBackup.Before() {
+		t.Fatal("from-backup is not a *-before sample")
+	}
+	at := retentionNow
+	svc, tr, got, ok := ParseSnapshotMember(SnapshotMember("home-assistant", TriggerFromBackup, at))
+	if !ok || svc != "home-assistant" || tr != TriggerFromBackup || !got.Equal(at) {
+		t.Fatalf("parsed %q %q %v %t", svc, tr, got, ok)
+	}
+	old := sample(TriggerClock, 30*24*time.Hour) // a stale sample a prune would take
+	fromBackup := SnapshotEntry{Member: SnapshotMember("home-assistant", TriggerFromBackup, at),
+		Meta: SnapshotMeta{Service: "home-assistant", Trigger: TriggerFromBackup, TakenAt: at.Add(-3 * 24 * time.Hour)}}
+	for _, m := range RetentionPrune([]SnapshotEntry{old, fromBackup}, at) {
+		if m == fromBackup.Member {
+			t.Fatal("the member from the backup was pruned before the restore could use it")
+		}
+	}
+}

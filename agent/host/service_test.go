@@ -77,6 +77,7 @@ type fakeInstaller struct {
 	restoreEr     error
 	members       []quadlet.SnapshotEntry // the ring data.members answers with
 	membersEr     error
+	nightEr       error    // a night of the backup that cannot be read into the ring
 	ensureEr      error    // an image that cannot be fetched: the restore must refuse before stopping
 	sidecars      []string // the member metadata handed to Snapshot, in order
 	snapEr        error    // the rollback-point snapshot failing: the upgrade stops the service before taking it, so the undo must restart it
@@ -2171,5 +2172,81 @@ func TestARevertedInstallTellsTheOwner(t *testing.T) {
 	}
 	if len(fn.alerts) != 0 {
 		t.Fatalf("a committed install raised %+v", fn.alerts)
+	}
+}
+
+// The backup restore's slice: a night materialised as a from-backup member, pinned to the fake's
+// manifest, that the ring then offers; nightEr is a night that cannot be read.
+func (f *fakeInstaller) DataBackupRestore(_ context.Context, url, snapshot, service string) (string, error) {
+	f.steps = append(f.steps, "backup-restore:"+snapshot+":"+service)
+	if f.nightEr != nil {
+		return "", f.nightEr
+	}
+	raw, _ := json.Marshal(testManifest())
+	member := quadlet.SnapshotMember(service, quadlet.TriggerFromBackup, fixedNow)
+	f.members = append(f.members, quadlet.SnapshotEntry{Member: member, Meta: quadlet.SnapshotMeta{
+		Service: service, Trigger: quadlet.TriggerFromBackup, TakenAt: fixedNow.Add(-3 * 24 * time.Hour), Manifest: string(raw),
+	}})
+	return member, nil
+}
+func (f *fakeInstaller) SupportsBackupRestore() bool { return !f.oldGuest }
+
+func backupRestore(cfg Config, f *fakeInstaller, service, snapshot string) api.DirectiveOutcome {
+	raw, _ := json.Marshal(api.BackupRestore{Service: service, Snapshot: snapshot})
+	d := api.Directive{ID: "d1", Kind: api.DirectiveBackupRestore, Payload: string(raw)}
+	return cfg.applyBackupRestore(context.Background(), f, d, func(string, ...any) {})
+}
+
+// TestBackupRestoreIsAMemberRestore: the night goes into the ring first, and from there the
+// restore is the ordinary one -- images, stop, undo, swap -- with a history row that names the
+// backup rather than an undo.
+func TestBackupRestoreIsAMemberRestore(t *testing.T) {
+	cfg, f, _ := ringWith(t, testManifest(), nil)
+	cfg.BackupDir, cfg.SystemHostCIDR = t.TempDir(), "10.7.0.129/32"
+	if o := backupRestore(cfg, f, "home-assistant", ""); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	bi := strings.Index(joined, "backup-restore:latest:home-assistant")
+	ei := strings.Index(joined, "ensure:")
+	si := strings.Index(joined, "stop:")
+	ri := strings.Index(joined, "restore:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerFromBackup, fixedNow))
+	if bi < 0 || ei < 0 || si < 0 || ri < 0 || !(bi < ei && ei < si && si < ri) {
+		t.Fatalf("order was %v, want materialise -> ensure -> stop -> restore of the night's member", f.steps)
+	}
+	var meta quadlet.SnapshotMeta
+	if len(f.sidecars) != 1 || json.Unmarshal([]byte(f.sidecars[0]), &meta) != nil || meta.Event == nil ||
+		!strings.Contains(meta.Event.Reasons[0].What, "Restored the backup from") {
+		t.Errorf("the undo point's row does not say a backup was restored: %v", f.sidecars)
+	}
+}
+
+// TestBackupRestoreRefusesBeforeItTouchesAnything: off, an old guest, or a night that cannot be
+// read -- each leaves the service running and the ring as it was.
+func TestBackupRestoreRefusesBeforeItTouchesAnything(t *testing.T) {
+	cases := map[string]func(cfg *Config, f *fakeInstaller){
+		"the backup is off":     func(cfg *Config, f *fakeInstaller) { cfg.BackupDir = "" },
+		"an old guest":          func(cfg *Config, f *fakeInstaller) { f.oldGuest = true },
+		"a night unreadable":    func(cfg *Config, f *fakeInstaller) { f.nightEr = errors.New("that night has no home-assistant") },
+		"a payload with no app": func(cfg *Config, f *fakeInstaller) {},
+	}
+	for name, arrange := range cases {
+		cfg, f, _ := ringWith(t, testManifest(), nil)
+		cfg.BackupDir, cfg.SystemHostCIDR = t.TempDir(), "10.7.0.129/32"
+		arrange(&cfg, f)
+		service := "home-assistant"
+		if name == "a payload with no app" {
+			service = ""
+		}
+		o := backupRestore(cfg, f, service, "abc12345")
+		if o.State != api.OutcomeFailed {
+			t.Errorf("%s: outcome = %+v, want failed", name, o)
+		}
+		joined := strings.Join(f.steps, ",")
+		for _, forbidden := range []string{"stop:", ",restore:", "provision", "snapshot:"} {
+			if strings.Contains(joined, forbidden) {
+				t.Errorf("%s: the restore did %q before refusing: %v", name, forbidden, f.steps)
+			}
+		}
 	}
 }

@@ -134,6 +134,9 @@ func runInternal(args []string) {
 	dbCheck := fs.Bool("dbcheck", false, "run Home Assistant's recorder check in line and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbRestore := fs.String("dbrestore", "", "restore Home Assistant's recorder database from this ring member -- an internal flag a harness invokes; the product drives this verb from the host")
 	backup := fs.String("backup", "", "run the backup in line into the REST repository at this URL, under the key the volume holds, and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
+	backupRestore := fs.String("backup-restore", "", "put one night of the backup at this REST URL into the ring as a member (-service, -snapshot) and print the member's path -- an internal flag a harness invokes; the product drives this verb from the host")
+	restoreService := fs.String("service", "", "with -backup-restore: the service")
+	restoreSnapshot := fs.String("snapshot", "latest", "with -backup-restore: the night, a snapshot id or latest")
 	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
@@ -243,6 +246,17 @@ func runInternal(args []string) {
 			log.Fatalf("backup: %v", err)
 		}
 		fmt.Println(string(b))
+		return
+	}
+
+	if *backupRestore != "" {
+		// FOR A GUEST WITH NO HOST, like --backup above: the product's host materialises a night
+		// through the verb and restores the member; a rig proves the materialisation here.
+		member, err := guestagent.RestoreBackupMember(ctx, guestfirmware.NewOSExecutor(), *backupRestore, *restoreSnapshot, *restoreService)
+		if err != nil {
+			log.Fatalf("backup-restore: %v", err)
+		}
+		fmt.Println(member)
 		return
 	}
 

@@ -2,6 +2,7 @@ package guestagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"slices"
@@ -81,6 +82,9 @@ func resticRuns(f *fakeExec, sub string) [][]string {
 // calls, and a read that minutes long must not hold the act lane.
 func TestTheBackupVerbsAreAdvertisedBesideActs(t *testing.T) {
 	for _, v := range []string{verbDataBackup, verbDataBackupResult, verbDataBackupKey} {
+		if !slices.Contains(guestCapabilities, verbDataBackupRestore) || !isAct(verbDataBackupRestore) {
+			t.Error("data.backup.restore must be advertised and must be an act: it writes the ring")
+		}
 		if !slices.Contains(guestCapabilities, v) {
 			t.Errorf("the guest does not advertise %s", v)
 		}
@@ -406,6 +410,116 @@ func TestASnapshotWithNoGroupIsTheGuestsOwn(t *testing.T) {
 	for _, sub := range []string{"backup", "forget"} {
 		if r := resticRuns(f, sub); len(r) != 1 || !strings.Contains(strings.Join(r[0], " "), "--host "+backupHost) {
 			t.Errorf("%s %v, want --host %s", sub, r, backupHost)
+		}
+	}
+}
+
+// TestANightIsMaterialisedAsAMember: the sidecar is read from the backup first and names the
+// manifest; the member is created empty, restored into from the service's subtree of that night,
+// made read-only, labelled from-backup with the night's own TakenAt, and synced -- with the key
+// in a file, never on a command line; and a restore that fails leaves nothing in the ring.
+func TestANightIsMaterialisedAsAMember(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	taken := now.Add(-3 * 24 * time.Hour)
+	side, _ := json.Marshal(quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: taken,
+		Consistency: quadlet.Quiesced, Manifest: `{"name":"home-assistant"}`, Pending: true})
+	var restoreErr error
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"dump":    func() ([]byte, error) { return side, nil },
+		"restore": func() ([]byte, error) { return nil, restoreErr },
+	})
+	inner := f.runFn
+	f.runFn = func(n string, args []string) ([]byte, error) {
+		if n == "btrfs" && args[1] == "show" {
+			return nil, errors.New("not found") // no collision
+		}
+		return inner(n, args)
+	}
+	member, err := restoreBackupMember(ctx, f, backupRestoreRequest{Repository: "http://10.0.0.129:7791/", Snapshot: "abc12345", Service: "home-assistant"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := quadlet.SnapshotMember("home-assistant", quadlet.TriggerFromBackup, now)
+	if member != want {
+		t.Fatalf("member %q, want %q", member, want)
+	}
+	dump := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "dump") })
+	create := runIndex(f, 0, "btrfs", "subvolume", "create", member)
+	restore := step(f, func(r []string) bool {
+		return r[0] == "restic" && slices.Contains(r, "restore") && slices.Contains(r, "abc12345:"+backupServices+"/home-assistant") && slices.Contains(r, member)
+	})
+	ro := runIndex(f, 0, "btrfs", "property", "set", "-ts", member, "ro", "true")
+	synced := runIndex(f, 0, "sync", "-f", dataMountRoot)
+	if dump < 0 || create < dump || restore < create || ro < restore || synced < ro {
+		t.Fatalf("order: dump %d, create %d, restore %d, ro %d, sync %d: %v", dump, create, restore, ro, synced, f.runs)
+	}
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(member)]), &meta); err != nil {
+		t.Fatalf("sidecar: %v", err)
+	}
+	if meta.Trigger != quadlet.TriggerFromBackup || meta.Pending || !meta.TakenAt.Equal(taken) || meta.Manifest != `{"name":"home-assistant"}` || meta.Consistency != quadlet.Quiesced {
+		t.Errorf("sidecar %+v, want from-backup, not pending, the night's TakenAt and the backed-up manifest", meta)
+	}
+	for _, r := range f.runs {
+		if slices.Contains(r, "s3cret") {
+			t.Errorf("the key is on a command line: %v", r)
+		}
+	}
+	if lastStep(f, func(r []string) bool { return slices.Equal(r, []string{"rm", "-f", backupPasswordFile}) }) < 0 {
+		t.Error("the password file was left behind")
+	}
+
+	// The restore fails: the half-made member goes, and the error says the ring is untouched.
+	f, _ = backupRig(map[string]func() ([]byte, error){
+		"dump":    func() ([]byte, error) { return side, nil },
+		"restore": func() ([]byte, error) { return []byte("path not found"), errors.New("exit status 1") },
+	})
+	inner = f.runFn
+	f.runFn = func(n string, args []string) ([]byte, error) {
+		if n == "btrfs" && args[1] == "show" {
+			return nil, errors.New("not found")
+		}
+		return inner(n, args)
+	}
+	if _, err := restoreBackupMember(ctx, f, backupRestoreRequest{Repository: "http://h/", Snapshot: "latest", Service: "home-assistant"}, now); err == nil || !strings.Contains(err.Error(), "nothing was left") {
+		t.Fatalf("err %v, want the failure and the ring untouched", err)
+	}
+	if runIndex(f, 0, "btrfs", "subvolume", "delete", want) < 0 {
+		t.Errorf("the half-made member was not removed: %v", f.runs)
+	}
+	if _, ok := f.files[quadlet.SnapshotSidecar(want)]; ok {
+		t.Error("a sidecar was written for a member that does not exist")
+	}
+}
+
+// TestANightIsRefusedBeforeAnythingIsRead: a snapshot that is not an id, a service that is a
+// path, a sidecar that describes another service -- none of them creates a member.
+func TestANightIsRefusedBeforeAnythingIsRead(t *testing.T) {
+	ctx := context.Background()
+	other, _ := json.Marshal(quadlet.SnapshotMeta{Service: "mosquitto", Manifest: "{}"})
+	for name, req := range map[string]backupRestoreRequest{
+		"not a REST url":  {Repository: "/x", Snapshot: "latest", Service: "home-assistant"},
+		"not a snapshot":  {Repository: "http://h/", Snapshot: "latest; rm -rf /", Service: "home-assistant"},
+		"a service path":  {Repository: "http://h/", Snapshot: "latest", Service: "../etc"},
+		"another service": {Repository: "http://h/", Snapshot: "latest", Service: "home-assistant"},
+		"no such night":   {Repository: "http://h/", Snapshot: "ffffffff", Service: "home-assistant"},
+	} {
+		f, _ := backupRig(map[string]func() ([]byte, error){
+			"dump": func() ([]byte, error) {
+				if name == "no such night" {
+					return []byte("no matching ID found"), errors.New("exit status 1")
+				}
+				return other, nil
+			},
+		})
+		if _, err := restoreBackupMember(ctx, f, req, time.Now()); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		for _, r := range f.runs {
+			if r[0] == "btrfs" && len(r) > 2 && r[2] == "create" {
+				t.Errorf("%s: a member was created: %v", name, r)
+			}
 		}
 	}
 }

@@ -509,3 +509,47 @@ func isResticRepository(dir string) bool {
 	k, kerr := os.Stat(filepath.Join(dir, "keys"))
 	return err == nil && c.Mode().IsRegular() && kerr == nil && k.IsDir()
 }
+
+// backupRestorer is the slice of the guest a restore from the backup costs beyond what a restore
+// of a ring member already does.
+type backupRestorer interface {
+	DataBackupRestore(ctx context.Context, url, snapshot, service string) (string, error)
+	SupportsBackupRestore() bool
+}
+
+// applyBackupRestore puts one service back to one night of the backup: the night's copy becomes a
+// ring member (the guest's data.backup.restore), and the member is restored as any member is
+// (applyServiceRestore) -- so the images, the undo point, the stop, the swap, the manifest and the
+// converge are the one path History already has, and the restore is a row that can be undone.
+//
+// THE MATERIALISATION COSTS NOTHING THE HOUSEHOLD CAN SEE: the service keeps running while the
+// night is read in, and a night that cannot be read leaves the ring as it was. Everything that can
+// refuse, refuses before applyServiceRestore stops anything.
+func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	var req api.BackupRestore
+	if err := json.Unmarshal([]byte(d.Payload), &req); err != nil || req.Service == "" {
+		return failed("the payload does not name a service and a night")
+	}
+	if req.Snapshot == "" {
+		req.Snapshot = "latest"
+	}
+	br, ok := g.(backupRestorer)
+	if !ok || !br.SupportsBackupRestore() {
+		return failed("this guest is too old to restore from the backup; update the guest OS first")
+	}
+	if cfg.backupFolder() == "" || cfg.hostNodeIP() == "" {
+		return failed("the backup is turned off on this node, so there is no repository to restore from")
+	}
+	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
+	mctx, cancel := cfg.beat.budget(ctx, installBudget)
+	member, err := br.DataBackupRestore(mctx, url, req.Snapshot, req.Service)
+	cancel()
+	if err != nil {
+		return failed(fmt.Sprintf("read %s's copy from the backup (nothing was changed): %v", req.Service, err))
+	}
+	logf("backup restore %s: night %s is in the ring as %s; restoring it", req.Service, req.Snapshot, member)
+	return cfg.applyServiceRestore(ctx, g, api.Directive{ID: d.ID, Kind: api.DirectiveServiceRestore, Payload: member}, logf)
+}

@@ -509,7 +509,22 @@ const (
 	//                        filesystem answers. Idempotent -- disarming a console that was never
 	//                        armed is the same monitor call -- which is what lets a caller run it
 	//                        from an unconditional cleanup path.
+	DirectiveBackupRestore = "backup-restore" // Payload = a JSON BackupRestore. Put one service back to
+	//                        one night of the household's backup: the night's copy is materialised
+	//                        in the service's ring as a member, and that member is restored exactly
+	//                        as service-restore restores one -- images first, the undo point, stop,
+	//                        swap, the member's manifest, converge -- so a night from the backup
+	//                        and a point from the ring are one path, and the restore is itself a
+	//                        row in the history that can be undone. Local-only: the household's
+	//                        data is the household's to put back.
 )
+
+// BackupRestore is a DirectiveBackupRestore's payload: the service, and the night -- a restic
+// snapshot id as the dashboard's Backup section lists them, or "latest".
+type BackupRestore struct {
+	Service  string `json:"service"`
+	Snapshot string `json:"snapshot"`
+}
 
 // ConfigSetting is a DirectiveConfigSet's payload: one setting and its new value.
 type ConfigSetting struct {

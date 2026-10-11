@@ -130,6 +130,18 @@ var commands = []command{
 		run: runDashboard, probe: []string{"-h"},
 	},
 	{
+		name: "backup", args: "restore <app> [-at <night>]", group: groupRepair,
+		synopsis: "put an app back to a night of the nightly backup",
+		detail: "restore <app> -- put that app's data back to the newest night in the backup folder, or\n" +
+			"to the night -at names (a snapshot id as the Briard page's Backup section lists them, or\n" +
+			"as `restic snapshots` prints them; nights from an earlier install of this folder work\n" +
+			"too). The night is read into the app's history first, then restored like any point of it:\n" +
+			"the app stops, starts again afterwards, and the restore is a row in its history that\n" +
+			"`briard app undo` can undo. If the night needs an image this machine no longer has and\n" +
+			"cannot fetch, nothing is changed and it says so.",
+		run: runBackup, probe: []string{"-h"},
+	},
+	{
 		name: "config", args: "set vip <address>[/prefix]|dhcp", group: groupRepair,
 		synopsis: "change a setting of this machine's briard, and apply it",
 		detail: "One setting today: vip, the address your home reaches Briard at. Give a free address on\n" +
@@ -500,6 +512,45 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 }
 
 // runConfig is `briard config set <key> <value>`. The agent judges the value; this only carries it.
+// runBackup is `briard backup restore <app> [-at <night>]`: the night named, or the newest, as one
+// directive -- the machine materialises the night and restores it, and answers once it has.
+func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 || args[0] != "restore" {
+		fmt.Fprint(stderr, "usage: briard backup restore <app> [-at <night>]\n")
+		return 2
+	}
+	fs := flag.NewFlagSet("briard backup restore", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	at := fs.String("at", "latest", "the night: a snapshot id, or latest")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprint(stderr, "briard backup restore: want exactly one app name\n")
+		return 2
+	}
+	payload, err := json.Marshal(api.BackupRestore{Service: fs.Arg(0), Snapshot: *at})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "restoring %s from the backup's %s night\n", fs.Arg(0), *at)
+	fmt.Fprint(stdout, "  everything the app recorded since then is lost; the restore is itself in the history, so it can be undone\n")
+	fmt.Fprint(stdout, "  the app stops for it and starts again afterwards\n")
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveBackupRestore, Payload: string(payload)})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "briard backup restore: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s\n", o.Detail)
+	return 0
+}
+
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard config", flag.ContinueOnError)
 	fs.SetOutput(stderr)

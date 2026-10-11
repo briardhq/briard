@@ -294,6 +294,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"app":       groupEveryday,
 		"handover":  groupEveryday,
 		"open":      groupEveryday,
+		"backup":    groupRepair, // restore from the nightly backup -- the one verb of a data repair
 		"config":    groupRepair,
 		"rescue":    groupRepair,
 		"update":    groupRepair,

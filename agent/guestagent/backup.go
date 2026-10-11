@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"briard.io/agent/quadlet"
 )
@@ -419,4 +421,112 @@ func backupSummary(out []byte) BackupReport {
 // product invokes it; the host's facts and the group are the host's, and a rig has neither.
 func Backup(ctx context.Context, x Executor, url string) BackupReport {
 	return runBackup(ctx, x, backupRequest{Repository: url})
+}
+
+// THE RESTORE'S GUEST HALF: one service's copy from one night of the backup, MATERIALISED AS A
+// RING MEMBER -- a read-only subvolume with a sidecar, beside the members the ring took itself.
+// Putting it back is then the ordinary restore of a member (the host's service-restore: the
+// images first, the undo point, stop, swap, the member's manifest, converge), so there is one
+// restore path and the backup joins it rather than adding a second.
+//
+// WHAT IT READS is what the backup wrote (runBackup): the service's data from
+// services/<service>/ and the member's own sidecar from briard/members/<service>.json, which
+// names the manifest the data was written under -- the sidecar is the member's, verbatim, except
+// for its trigger (TriggerFromBackup says where these bytes come from) and Pending (nothing is
+// waiting to evaluate it). The snapshot may be any night's, of any group in the repository
+// ("latest" for the newest), so an earlier install's nights restore the same way as this one's.
+//
+// AN ACT, in line: it writes the ring, and the channel serves acts one at a time beside its
+// reads, so a restore that takes minutes stalls nothing the host asks meanwhile.
+//
+// SIDECAR BEFORE DATA, and the member goes if either cannot be finished: a half-restored member
+// would be offered as a restore point, which is worse than none. The subvolume is created empty,
+// restic restores into it, and only then is it made read-only and labelled.
+type backupRestoreRequest struct {
+	Repository string `json:"repository"`
+	Snapshot   string `json:"snapshot"`
+	Service    string `json:"service"`
+}
+
+// backupSnapshotID is what a restic snapshot may be named by: a (prefix of a) hex id, or latest.
+var backupSnapshotID = regexp.MustCompile(`^([0-9a-f]{8,64}|latest)$`)
+
+func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreRequest, now time.Time) (string, error) {
+	if !strings.HasPrefix(req.Repository, "http://") && !strings.HasPrefix(req.Repository, "https://") {
+		return "", fmt.Errorf("the repository is not a REST URL: %q", req.Repository)
+	}
+	if !backupSnapshotID.MatchString(req.Snapshot) {
+		return "", fmt.Errorf("%q is not a snapshot id", req.Snapshot)
+	}
+	if err := safeUnitName(req.Service); err != nil {
+		return "", err
+	}
+	run := func(name string, args ...string) ([]byte, error) {
+		out, err := x.Run(ctx, name, args...)
+		if err != nil {
+			return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+	key, err := backupKey(ctx, x)
+	if err != nil {
+		return "", fmt.Errorf("no repository key: %w", err)
+	}
+	defer x.Run(ctx, "rm", "-f", backupPasswordFile)
+	if _, err := run("install", "-D", "-m", "0600", "/dev/null", backupPasswordFile); err != nil {
+		return "", err
+	}
+	if err := x.WriteFile(backupPasswordFile, []byte(key)); err != nil {
+		return "", fmt.Errorf("write %s: %w", backupPasswordFile, err)
+	}
+	restic := func(args ...string) ([]byte, error) {
+		return run("restic", append([]string{"--repo", "rest:" + req.Repository, "--password-file", backupPasswordFile, "--no-cache"}, args...)...)
+	}
+
+	raw, err := restic("dump", req.Snapshot, backupFacts+"/members/"+req.Service+".json")
+	if err != nil {
+		return "", fmt.Errorf("that night has no %s: %w", req.Service, err)
+	}
+	var meta quadlet.SnapshotMeta
+	if err := json.Unmarshal(raw, &meta); err != nil || meta.Service != req.Service || meta.Manifest == "" {
+		return "", fmt.Errorf("the backup's sidecar for %s does not describe it (%v)", req.Service, err)
+	}
+	meta.Trigger, meta.Pending = quadlet.TriggerFromBackup, false
+	sidecar, err := json.Marshal(meta)
+	if err != nil {
+		return "", err
+	}
+	member := quadlet.SnapshotMember(req.Service, quadlet.TriggerFromBackup, now)
+	if _, err := x.Run(ctx, "btrfs", "subvolume", "show", member); err == nil {
+		return "", fmt.Errorf("%s already exists -- refusing to replace a ring member", member)
+	}
+	if _, err := run("btrfs", "subvolume", "create", member); err != nil {
+		return "", err
+	}
+	undo := func(err error) (string, error) {
+		if _, derr := run("btrfs", "subvolume", "delete", member); derr != nil {
+			return "", fmt.Errorf("%w; AND the half-made member could not be removed: %v", err, derr)
+		}
+		return "", fmt.Errorf("%w (nothing was left in the ring)", err)
+	}
+	if _, err := restic("restore", req.Snapshot+":"+backupServices+"/"+req.Service, "--target", member); err != nil {
+		return undo(err)
+	}
+	if _, err := run("btrfs", "property", "set", "-ts", member, "ro", "true"); err != nil {
+		return undo(err)
+	}
+	if err := x.WriteFile(quadlet.SnapshotSidecar(member), sidecar); err != nil {
+		return undo(fmt.Errorf("write the sidecar: %w", err))
+	}
+	if _, err := run("sync", "-f", dataMountRoot); err != nil {
+		return undo(err)
+	}
+	log.Printf("backup: %s of %s from snapshot %s is in the ring as %s", meta.TakenAt.Format(time.RFC3339), req.Service, req.Snapshot, member)
+	return member, nil
+}
+
+// RestoreBackupMember is one materialisation in line FOR A GUEST WITH NO HOST, as Backup is:
+// the agent-less rigs prove it against a real ring and a real store.
+func RestoreBackupMember(ctx context.Context, x Executor, url, snapshot, service string) (string, error) {
+	return restoreBackupMember(ctx, x, backupRestoreRequest{Repository: url, Snapshot: snapshot, Service: service}, time.Now())
 }
