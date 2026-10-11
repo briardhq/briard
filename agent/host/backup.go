@@ -70,13 +70,18 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		cfg.collectBackup(ctx, g, b, n, logf)
 		return
 	}
+	// A kicked run (an adoption) runs now and does not count as the night: the night still runs,
+	// and finds nearly nothing to add.
+	kicked := cfg.backupKick != nil && cfg.backupKick.Swap(false)
 	local := now.In(b.loc)
 	day := local.Format(time.DateOnly)
 	mins := local.Hour()*60 + local.Minute()
-	if b.done == day || mins < backupAt || mins >= backupAt+backupWindow {
+	if !kicked && (b.done == day || mins < backupAt || mins >= backupAt+backupWindow) {
 		return
 	}
-	b.done = day
+	if !kicked {
+		b.done = day
+	}
 	if cfg.backupFolder() == "" {
 		// Off is the household's decision: whatever was failing is no longer being asked of it.
 		fireAlert(ctx, n, logf, backupWorking(cfg.Node, "The nightly backup is turned off."))
@@ -133,8 +138,10 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 	default:
 		logf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(rep.Services, ", "), rep.Files, rep.BytesAdded)
 	}
-	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Size: folderSize(cfg.backupFolder())}
-	if rep.Error != "" {
+	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Size: folderSize(cfg.backupFolder()), WrongKey: rep.WrongKey}
+	if rep.WrongKey {
+		night.Error = "the folder holds a backup made with another key -- an earlier install's? Enter that key on the Briard page to continue it, or choose another folder"
+	} else if rep.Error != "" {
 		night.Error = cfg.backupFailure(rep.Error)
 	}
 	cfg.recordNight(ctx, night, n, logf)
@@ -354,10 +361,17 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, pushed *string, log
 //     again; any other folder moves it there, once checkBackupFolder has passed it.
 //   - backup-key-saved: "yes" records that the household has the key somewhere else -- on the
 //     volume, beside the key, through the guest: the household's word is the household's.
+//   - backup-adopt: the key that opens the backup already in the folder; the household's own key
+//     is added to it (the guest's data.backup.adopt) and a run starts now. The typed key is the
+//     payload of this one directive and is kept nowhere.
 const (
 	settingBackupDir      = "backup-dir"
 	settingBackupKeySaved = "backup-key-saved"
+	settingBackupAdopt    = "backup-adopt"
 )
+
+// backupSettings are the keys applyBackupSetting answers for.
+var backupSettings = map[string]bool{settingBackupDir: true, settingBackupKeySaved: true, settingBackupAdopt: true}
 
 // isBackupSetting says whether a config-set payload names one of the backup's settings -- the only
 // config-set the guest's page may ask for (adminport.go).
@@ -366,13 +380,13 @@ func isBackupSetting(payload string) bool {
 	if json.Unmarshal([]byte(payload), &s) != nil {
 		return false
 	}
-	return s.Key == settingBackupDir || s.Key == settingBackupKeySaved
+	return backupSettings[s.Key]
 }
 
 // applyBackupSetting applies a config-set naming a backup setting; ok is false for any other key.
 func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any, logf func(string, ...any)) (out api.DirectiveOutcome, ok bool) {
 	var s api.ConfigSetting
-	if err := json.Unmarshal([]byte(d.Payload), &s); err != nil || (s.Key != settingBackupDir && s.Key != settingBackupKeySaved) {
+	if err := json.Unmarshal([]byte(d.Payload), &s); err != nil || !backupSettings[s.Key] {
 		return api.DirectiveOutcome{}, false
 	}
 	failed := func(format string, a ...any) (api.DirectiveOutcome, bool) {
@@ -401,6 +415,30 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 		}
 		logf("backup: the household has saved the recovery key")
 		return done("noted: the recovery key is saved")
+	}
+	if s.Key == settingBackupAdopt {
+		g, ok := r.(backupAdopter)
+		if !ok || !g.SupportsBackupAdopt() {
+			return failed("this guest cannot adopt a backup; update the guest OS first")
+		}
+		folder := cfg.backupFolder()
+		if folder == "" || cfg.hostNodeIP() == "" {
+			return failed("the nightly backup is off: turn it on, into the folder that holds the backup, first")
+		}
+		if !isResticRepository(folder) {
+			return failed("%s holds no backup to adopt", folder)
+		}
+		actx, cancel := context.WithTimeout(ctx, configSetBudget)
+		defer cancel()
+		url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
+		if err := g.DataBackupAdopt(actx, url, s.Value); err != nil {
+			return failed("not adopted: %v", err)
+		}
+		if cfg.backupKick != nil {
+			cfg.backupKick.Store(true)
+		}
+		logf("backup: adopted the backup in %s; a run starts now", folder)
+		return done("the backup in %s is now this household's; tonight's copy is being made now", folder)
 	}
 	now := cfg.backupFolder()
 	want := s.Value
@@ -552,4 +590,10 @@ func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d 
 	}
 	logf("backup restore %s: night %s is in the ring as %s; restoring it", req.Service, req.Snapshot, member)
 	return cfg.applyServiceRestore(ctx, g, api.Directive{ID: d.ID, Kind: api.DirectiveServiceRestore, Payload: member}, logf)
+}
+
+// backupAdopter is the slice of the guest an adoption costs.
+type backupAdopter interface {
+	DataBackupAdopt(ctx context.Context, url, password string) error
+	SupportsBackupAdopt() bool
 }

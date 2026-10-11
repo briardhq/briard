@@ -195,7 +195,14 @@ type BackupReport struct {
 	Files      int      `json:"files"`
 	BytesAdded int64    `json:"bytesAdded"`
 	Error      string   `json:"error,omitempty"`
+	// WrongKey says the Error is a repository the volume's key does not open: one an earlier
+	// install of this folder wrote, or one made with another key. The page offers to adopt it.
+	WrongKey bool `json:"wrongKey,omitempty"`
 }
+
+// resticWrongKey is what restic says when a repository exists and the password is not one of
+// its keys -- the one open failure that is a question for the household rather than for a disk.
+const resticWrongKey = "wrong password or no key found"
 
 // BackupState is what the host reads back of a run in the background: whether it is still
 // running, and its report once it has finished, handed over once.
@@ -363,6 +370,11 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	// not be read for any other reason (a wrong password, the store down) fails here too rather
 	// than being replaced.
 	if _, err := restic("cat", "config"); err != nil {
+		if strings.Contains(err.Error(), resticWrongKey) {
+			rep := fail(fmt.Errorf("the folder holds a backup made with another key"))
+			rep.WrongKey = true
+			return rep
+		}
 		if _, ierr := restic("init"); ierr != nil {
 			return fail(errors.Join(err, ierr))
 		}
@@ -529,4 +541,78 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 // the agent-less rigs prove it against a real ring and a real store.
 func RestoreBackupMember(ctx context.Context, x Executor, url, snapshot, service string) (string, error) {
 	return restoreBackupMember(ctx, x, backupRestoreRequest{Repository: url, Snapshot: snapshot, Service: service}, time.Now())
+}
+
+// THE ADOPTION: a repository in the folder that the volume's key does not open -- an earlier
+// install's, or one made with another key -- opened once with the key the household typed, to
+// ADD this household's key to its key set. restic repositories hold a set of keys, so nothing is
+// replaced: the volume's key never changes (the page keeps showing the one key, the save-your-key
+// story stays true, and a folder it opened before still opens), the earlier key still works, and
+// the typed key is used for this one command and then gone. From the next night the repository
+// is this household's to write -- under its own group (backupRequest.Group), so the earlier
+// nights stay exactly as they are.
+type backupAdoptRequest struct {
+	Repository string `json:"repository"`
+	Password   string `json:"password"`
+}
+
+// backupAdoptFile holds the typed key for the one command, 0600 on tmpfs, as the password file is.
+const backupAdoptFile = "/run/briard/backup.adopt"
+
+func adoptBackup(ctx context.Context, x Executor, req backupAdoptRequest) error {
+	if !strings.HasPrefix(req.Repository, "http://") && !strings.HasPrefix(req.Repository, "https://") {
+		return fmt.Errorf("the repository is not a REST URL: %q", req.Repository)
+	}
+	if strings.TrimSpace(req.Password) == "" {
+		return errors.New("no key was given")
+	}
+	run := func(name string, args ...string) ([]byte, error) {
+		out, err := x.Run(ctx, name, args...)
+		if err != nil {
+			return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+	key, err := backupKey(ctx, x)
+	if err != nil {
+		return fmt.Errorf("no repository key: %w", err)
+	}
+	secret := func(path, data string) error {
+		if _, err := run("install", "-D", "-m", "0600", "/dev/null", path); err != nil {
+			return err
+		}
+		if err := x.WriteFile(path, []byte(data)); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		return nil
+	}
+	defer x.Run(ctx, "rm", "-f", backupPasswordFile, backupAdoptFile)
+	if err := secret(backupPasswordFile, key); err != nil {
+		return err
+	}
+	if err := secret(backupAdoptFile, strings.TrimSpace(req.Password)); err != nil {
+		return err
+	}
+	repo := []string{"--repo", "rest:" + req.Repository, "--no-cache"}
+	// Already ours: adopted before, or the household typed its own key. Nothing to add.
+	if _, err := run("restic", append(slices.Clone(repo), "--password-file", backupPasswordFile, "cat", "config")...); err == nil {
+		return nil
+	}
+	if _, err := run("restic", append(slices.Clone(repo), "--password-file", backupAdoptFile, "key", "add", "--new-password-file", backupPasswordFile)...); err != nil {
+		if strings.Contains(err.Error(), resticWrongKey) {
+			return errors.New("that key does not open the backup in this folder")
+		}
+		return err
+	}
+	// Verified with the volume's key alone, so "adopted" means what the next night needs.
+	if _, err := run("restic", append(slices.Clone(repo), "--password-file", backupPasswordFile, "cat", "config")...); err != nil {
+		return fmt.Errorf("the key was added but does not open the repository: %w", err)
+	}
+	log.Printf("backup: adopted the repository at %s under the household's key", req.Repository)
+	return nil
+}
+
+// AdoptBackup is one adoption in line FOR A GUEST WITH NO HOST, as Backup is.
+func AdoptBackup(ctx context.Context, x Executor, url, password string) error {
+	return adoptBackup(ctx, x, backupAdoptRequest{Repository: url, Password: password})
 }

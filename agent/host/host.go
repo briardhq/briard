@@ -437,6 +437,9 @@ type Config struct {
 	// turns the backup off and on (backup.go) -- and atomic, because the store reads it from its
 	// own goroutine. Read through backupFolder().
 	backupLive *atomic.Pointer[string]
+	// backupKick asks the scheduler for a run now, outside the nightly window: set by an adoption,
+	// so the page shows the adopted folder working within minutes rather than at 02:00.
+	backupKick *atomic.Bool
 
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
@@ -539,6 +542,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	backupDir := cfg.BackupDir
 	cfg.backupLive = &atomic.Pointer[string]{}
 	cfg.backupLive.Store(&backupDir)
+	cfg.backupKick = &atomic.Bool{}
 	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). FIRST,
 	// because everything below is keyed to it: the DRBD `on <name>`, the VM's UUID, the service
 	// MAC, the cloud's key for this node and the name the household types. A node that cannot write

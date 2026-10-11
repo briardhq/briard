@@ -166,7 +166,13 @@
     {{if .On}}
       <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>, on this machine. That protects against a broken app or a damaged volume, not against losing the machine itself.</p>
       <p class="muted">To keep a copy that survives a dead disk, a theft or a fire, the folder has to leave the machine: keep it in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS, or copy it somewhere else from time to time.</p>
-      {{if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
+      {{if .WrongKey}}<p class="banner">The folder holds a backup that this Briard cannot open — from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
+      <form method="post" action="/backup/adopt" class="approve">
+        <label for="backup-key">That backup's recovery key</label>
+        <input id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx" style="width: 100%">
+        <button type="submit">Enter its key</button>
+      </form>
+      {{else if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
       {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.</p>
       {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
     {{else}}

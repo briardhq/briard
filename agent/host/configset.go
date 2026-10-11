@@ -24,8 +24,8 @@ import (
 // (a reinstall that names it overwrites it, as before), and applies it the one way a bring-up
 // fact is applied: restart the guest, so the next bring-up carries it.
 //
-// Three keys: `vip`, applied by a guest restart, and the backup's two (`backup-dir`,
-// `backup-key-saved`, backup.go), applied in place -- the folder is read by the host alone, and
+// Four keys: `vip`, applied by a guest restart, and the backup's three (`backup-dir`,
+// `backup-key-saved`, `backup-adopt`, backup.go), applied in place -- the folder is read by the host alone, and
 // the acknowledgement is written where the key is, on the volume.
 // The command is named for the general act, so a key joins without a second verb.
 
@@ -50,7 +50,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 		return failed("bad setting payload: %v", err)
 	}
 	if s.Key != "vip" {
-		return failed("unknown setting %q: the settings that can be changed are vip, backup-dir and backup-key-saved", s.Key)
+		return failed("unknown setting %q: the settings that can be changed are vip, backup-dir, backup-key-saved and backup-adopt", s.Key)
 	}
 	// THE ADDRESS IS THE FLOCK'S. Changed on one node of a pair, the next failover would move the
 	// service to a different address than the one the household uses; changing it everywhere at

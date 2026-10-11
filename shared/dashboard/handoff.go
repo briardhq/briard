@@ -167,4 +167,7 @@ type BackupRun struct {
 	// Size is what the backup folder held after the run.
 	Size  int64  `json:"size,omitempty"`
 	Error string `json:"error,omitempty"`
+	// WrongKey says the Error is a backup in the folder that this household's key does not
+	// open -- an earlier install's, or one made with another key. The page offers to adopt it.
+	WrongKey bool `json:"wrongKey,omitempty"`
 }

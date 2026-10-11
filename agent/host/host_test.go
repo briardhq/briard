@@ -1325,7 +1325,19 @@ type fakeBackup struct {
 	running    bool
 	report     *guestagent.BackupReport
 	key        guestagent.BackupKey // what the volume holds
+	adopted    string               // the key the guest was handed to adopt with; "" for none
+	adoptErr   error
+	noAdopt    bool // does not advertise data.backup.adopt
 }
+
+func (f fakeStatus) DataBackupAdopt(_ context.Context, url, password string) error {
+	if f.backup == nil {
+		return errors.New("unknown verb")
+	}
+	f.backup.adopted = password
+	return f.backup.adoptErr
+}
+func (f fakeStatus) SupportsBackupAdopt() bool { return f.backup != nil && !f.backup.noAdopt }
 
 func (f fakeStatus) DataBackup(_ context.Context, url, group string, host map[string][]byte) (bool, error) {
 	if f.backup == nil {

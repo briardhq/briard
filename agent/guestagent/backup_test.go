@@ -82,8 +82,10 @@ func resticRuns(f *fakeExec, sub string) [][]string {
 // calls, and a read that minutes long must not hold the act lane.
 func TestTheBackupVerbsAreAdvertisedBesideActs(t *testing.T) {
 	for _, v := range []string{verbDataBackup, verbDataBackupResult, verbDataBackupKey} {
-		if !slices.Contains(guestCapabilities, verbDataBackupRestore) || !isAct(verbDataBackupRestore) {
-			t.Error("data.backup.restore must be advertised and must be an act: it writes the ring")
+		for _, act := range []string{verbDataBackupRestore, verbDataBackupAdopt} {
+			if !slices.Contains(guestCapabilities, act) || !isAct(act) {
+				t.Errorf("%s must be advertised and must be an act: it writes", act)
+			}
 		}
 		if !slices.Contains(guestCapabilities, v) {
 			t.Errorf("the guest does not advertise %s", v)
@@ -521,5 +523,85 @@ func TestANightIsRefusedBeforeAnythingIsRead(t *testing.T) {
 				t.Errorf("%s: a member was created: %v", name, r)
 			}
 		}
+	}
+}
+
+// TestAWrongKeyIsNamedNotReplaced: a repository the volume's key does not open is reported as
+// such -- never re-initialised, never a bare error the page cannot act on.
+func TestAWrongKeyIsNamedNotReplaced(t *testing.T) {
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"cat": func() ([]byte, error) { return []byte("Fatal: " + resticWrongKey), errors.New("exit status 1") },
+	})
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
+	if !rep.WrongKey || rep.Error == "" || rep.Snapshot != "" {
+		t.Fatalf("report %+v, want a wrong-key failure", rep)
+	}
+	if len(resticRuns(f, "init")) != 0 || len(resticRuns(f, "backup")) != 0 {
+		t.Error("a repository under another key was initialised or written")
+	}
+}
+
+// TestAdoptionAddsTheVolumesKey: the typed key opens the repository for `key add` of the
+// volume's key, both only ever in 0600 files, both files gone after; a repository the volume's
+// key already opens needs nothing; and a typed key that does not open it is said so.
+func TestAdoptionAddsTheVolumesKey(t *testing.T) {
+	ctx := context.Background()
+	opens := map[string]bool{backupAdoptFile: true} // which password file restic accepts
+	rig := func() *fakeExec {
+		f, _ := backupRig(nil)
+		inner := f.runFn
+		f.runFn = func(n string, args []string) ([]byte, error) {
+			if n == "restic" {
+				pw := args[slices.Index(args, "--password-file")+1]
+				if !opens[pw] {
+					return []byte("Fatal: " + resticWrongKey), errors.New("exit status 1")
+				}
+				if slices.Contains(args, "add") {
+					opens[args[slices.Index(args, "--new-password-file")+1]] = true
+				}
+				return nil, nil
+			}
+			return inner(n, args)
+		}
+		return f
+	}
+	f := rig()
+	if err := adoptBackup(ctx, f, backupAdoptRequest{Repository: "http://h/", Password: " old-key\n"}); err != nil {
+		t.Fatal(err)
+	}
+	add := step(f, func(r []string) bool {
+		return r[0] == "restic" && slices.Contains(r, "add") && slices.Contains(r, "--password-file") && r[slices.Index(r, "--password-file")+1] == backupAdoptFile &&
+			slices.Contains(r, "--new-password-file") && r[slices.Index(r, "--new-password-file")+1] == backupPasswordFile
+	})
+	if add < 0 {
+		t.Fatalf("no key add opened by the typed key adding the volume's: %v", f.runs)
+	}
+	if f.files[backupAdoptFile] != "old-key" || f.files[backupPasswordFile] != "s3cret" {
+		t.Errorf("files %q / %q", f.files[backupAdoptFile], f.files[backupPasswordFile])
+	}
+	for _, r := range f.runs {
+		if slices.Contains(r, "old-key") || slices.Contains(r, "s3cret") {
+			t.Errorf("a key is on a command line: %v", r)
+		}
+	}
+	if lastStep(f, func(r []string) bool {
+		return slices.Equal(r, []string{"rm", "-f", backupPasswordFile, backupAdoptFile})
+	}) < add {
+		t.Error("the key files were not removed after")
+	}
+
+	// Already ours: no add.
+	f = rig()
+	if err := adoptBackup(ctx, f, backupAdoptRequest{Repository: "http://h/", Password: "whatever"}); err != nil || len(resticRuns(f, "add")) != 0 {
+		t.Fatalf("a repository the volume's key opens: err %v, adds %d", err, len(resticRuns(f, "add")))
+	}
+
+	opens = map[string]bool{}
+	f = rig()
+	if err := adoptBackup(ctx, f, backupAdoptRequest{Repository: "http://h/", Password: "wrong"}); err == nil || !strings.Contains(err.Error(), "does not open") {
+		t.Fatalf("a wrong typed key: %v", err)
+	}
+	if err := adoptBackup(ctx, f, backupAdoptRequest{Repository: "http://h/", Password: "  "}); err == nil {
+		t.Fatal("an empty key was accepted")
 	}
 }

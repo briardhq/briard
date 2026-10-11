@@ -290,6 +290,9 @@ const (
 	// member (backup.go) and answers the member's path, for the ordinary service restore to put
 	// back. An act: it writes the ring, and it reads from the repository for as long as that takes.
 	verbDataBackupRestore = "data.backup.restore"
+	// data.backup.adopt adds the volume's key to a repository another key opens (backup.go), so
+	// the next night can write it. An act, one restic command.
+	verbDataBackupAdopt = "data.backup.adopt"
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start (converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -437,7 +440,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -1253,6 +1256,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return restoreBackupMember(ctx, x, req, time.Now())
+		case verbDataBackupAdopt:
+			var req backupAdoptRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, adoptBackup(ctx, x, req)
 		case verbHassDBRestore:
 			var req dbRestoreRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2862,6 +2871,14 @@ func (g *Client) DataBackupRestore(ctx context.Context, url, snapshot, service s
 	err := g.c.Call(ctx, verbDataBackupRestore, backupRestoreRequest{Repository: url, Snapshot: snapshot, Service: service}, &member)
 	return member, err
 }
+
+// DataBackupAdopt adds the volume's key to the repository at url, opened once with password.
+func (g *Client) DataBackupAdopt(ctx context.Context, url, password string) error {
+	return g.c.Call(ctx, verbDataBackupAdopt, backupAdoptRequest{Repository: url, Password: password}, nil)
+}
+
+// SupportsBackupAdopt says whether this guest can adopt a repository.
+func (g *Client) SupportsBackupAdopt() bool { return g.Supports(verbDataBackupAdopt) }
 
 // SupportsBackupRestore says whether this guest can materialise a backup's night as a member.
 func (g *Client) SupportsBackupRestore() bool { return g.Supports(verbDataBackupRestore) }

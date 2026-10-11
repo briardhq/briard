@@ -137,6 +137,8 @@ func runInternal(args []string) {
 	backupRestore := fs.String("backup-restore", "", "put one night of the backup at this REST URL into the ring as a member (-service, -snapshot) and print the member's path -- an internal flag a harness invokes; the product drives this verb from the host")
 	restoreService := fs.String("service", "", "with -backup-restore: the service")
 	restoreSnapshot := fs.String("snapshot", "latest", "with -backup-restore: the night, a snapshot id or latest")
+	backupAdopt := fs.String("backup-adopt", "", "add the volume's key to the repository at this REST URL, opened once with -key -- an internal flag a harness invokes; the product drives this verb from the host")
+	adoptKey := fs.String("key", "", "with -backup-adopt: the key that opens the repository")
 	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
@@ -257,6 +259,13 @@ func runInternal(args []string) {
 			log.Fatalf("backup-restore: %v", err)
 		}
 		fmt.Println(member)
+		return
+	}
+
+	if *backupAdopt != "" {
+		if err := guestagent.AdoptBackup(ctx, guestfirmware.NewOSExecutor(), *backupAdopt, *adoptKey); err != nil {
+			log.Fatalf("backup-adopt: %v", err)
+		}
 		return
 	}
 

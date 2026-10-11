@@ -38,6 +38,9 @@ type backupView struct {
 	// Last is the newest night, in the household's words; LastFailed says whether it went wrong.
 	LastWhen, LastSize, LastError string
 	LastFailed                    bool
+	// WrongKey: the newest night found a backup in the folder that this household's key does not
+	// open; the card offers to adopt it with its key, or to choose another folder.
+	WrongKey bool
 	// Held is what the folder held after the newest night; Nights the recent nights, newest first.
 	Held   string
 	Nights []nightView
@@ -71,7 +74,7 @@ func (a *app) backupState() *backupView {
 	if len(h.Nights) > 0 {
 		last := h.Nights[0]
 		v.LastWhen, v.LastSize = v.Nights[0].When, v.Nights[0].Added
-		v.LastError, v.LastFailed = last.Error, last.Error != ""
+		v.LastError, v.LastFailed, v.WrongKey = last.Error, last.Error != "", last.WrongKey
 		if last.Size > 0 {
 			v.Held = sizeWord(last.Size)
 		}
@@ -109,6 +112,13 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 		s = api.ConfigSetting{Key: "backup-dir", Value: folder}
 	case "saved":
 		s = api.ConfigSetting{Key: "backup-key-saved", Value: "yes"}
+	case "adopt":
+		key := strings.TrimSpace(r.FormValue("key"))
+		if key == "" {
+			http.Error(w, "the backup's key is needed\n", http.StatusBadRequest)
+			return
+		}
+		s = api.ConfigSetting{Key: "backup-adopt", Value: key}
 	case "off":
 		s = api.ConfigSetting{Key: "backup-dir", Value: ""}
 	case "on":
@@ -137,7 +147,7 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 	case o.State != api.OutcomeDone:
 		asked = o.Detail
 	}
-	log.Printf("dashboard: backup %s: outcome=%+v err=%v", what, o, err)
+	log.Printf("dashboard: backup %s: outcome=%+v err=%v", what, o, err) // the typed key is not in the outcome
 	a.mu.Lock()
 	a.backupAsked = asked
 	a.mu.Unlock()

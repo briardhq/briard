@@ -10,7 +10,9 @@
 # an earlier household's nights in the same repository survive this one's retention -- and that a
 # night comes back out of the repository as a read-only ring member holding that night's data,
 # labelled with the manifest it was written under, which is what the host's restore then puts
-# back exactly as it puts back any member.
+# back exactly as it puts back any member -- and that a folder holding a backup under another key
+# is named as such rather than written, and is this household's to write once that key has added
+# ours.
 #
 # Agent-less, as every rig that runs a service is: `briard-guest-agent --backup` runs the guest's
 # backup in line (the product starts it through the host's verb, in the background), and
@@ -27,6 +29,7 @@ let
   };
   live = "/var/lib/briard/${fixture.name}/${fixture.container}";
   folder = "/home/ana/Briard Backup";
+  folder2 = "/home/ana/Earlier Backup";
   url = "http://127.0.0.1:7791/";
 in
 pkgs.testers.runNixOSTest {
@@ -67,11 +70,13 @@ pkgs.testers.runNixOSTest {
         node1.succeed(f"echo {payload} > ${live}/payload.txt")
         node1.succeed("briard-guest-agent --clock=${fixture.name}")
 
-    def backup():
+    def backup(ok=True):
         out = node1.succeed("briard-guest-agent --backup=${url} 2>/tmp/backup.log")
         print(node1.succeed("tail -5 /tmp/backup.log"))
         rep = json.loads(out.strip().splitlines()[-1])
         print(f"backup: {rep}")
+        if not ok:
+            return rep
         assert rep.get("snapshot") and not rep.get("error"), f"the backup did not complete: {rep}"
         assert rep.get("services") == ["${fixture.name}"], f"backed up {rep.get('services')}"
         return rep
@@ -164,5 +169,24 @@ pkgs.testers.runNixOSTest {
     node1.fail(f"briard-guest-agent --backup-restore=${url} -service nothing-installed -snapshot {first['snapshot']}")
     assert node1.succeed("ls /var/lib/briard/.snapshots").split() == before, "a refused night changed the ring"
     node1.fail("test -e /run/briard/backup.password")
+
+    # ---- a folder under another key: named, not written; then adopted ----
+    # An earlier install's folder, as a reinstall finds it: a repository plain restic made under
+    # a key this volume does not hold, served by the same store.
+    node1.succeed("systemctl stop backup-store")
+    node1.succeed("su ana -c 'mkdir -p \"${folder2}\"'")
+    node1.succeed("su ana -c 'RESTIC_PASSWORD=earlier-key restic -q -r \"${folder2}\" init'")
+    node1.succeed("systemd-run --unit=backup-store2 backup-store '${folder2}' 127.0.0.1 127.0.0.1")
+    node1.wait_for_open_port(7791)
+    refused = backup(ok=False)
+    assert refused.get("wrongKey") and not refused.get("snapshot"), f"a foreign repository was not named: {refused}"
+    assert len(node1.succeed("ls '${folder2}/snapshots' 2>/dev/null || true").split()) == 0, "a foreign repository was written"
+    node1.fail("briard-guest-agent --backup-adopt=${url} -key not-the-key")
+    node1.succeed("briard-guest-agent --backup-adopt=${url} -key earlier-key")
+    node1.fail("test -e /run/briard/backup.adopt")
+    adopted = backup()
+    # Both keys open it now: ours (the night above wrote under it) and the earlier household's.
+    assert len(json.loads(node1.succeed("RESTIC_PASSWORD=earlier-key restic --no-cache -r '${folder2}' snapshots --json"))) == 1, "the earlier key no longer opens the adopted folder"
+    assert len(json.loads(plain("snapshots --json", repo="'${folder2}'"))) == 1, "the volume's key does not open the adopted folder"
   '';
 }

@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,8 +198,8 @@ func TestTheGuestMayAskForTheBackupSettingsOnly(t *testing.T) {
 		raw, _ := json.Marshal(api.ConfigSetting{Key: key, Value: ""})
 		return guestMayAsk(api.Directive{Kind: api.DirectiveConfigSet, Payload: string(raw)})
 	}
-	if !ask(settingBackupDir) || !ask(settingBackupKeySaved) {
-		t.Error("the page cannot turn the backup off, or say the key is saved")
+	if !ask(settingBackupDir) || !ask(settingBackupKeySaved) || !ask(settingBackupAdopt) {
+		t.Error("the page cannot turn the backup off, say the key is saved, or adopt a backup")
 	}
 	if ask("vip") || ask("") || guestMayAsk(api.Directive{Kind: api.DirectiveConfigSet, Payload: "not json"}) {
 		t.Error("the guest may change a setting outside the backup")
@@ -460,5 +461,72 @@ func TestTurningTheBackupOffEndsTheAlert(t *testing.T) {
 	a := backupAlerts(n)
 	if len(a) != 2 || a[1].Kind != notify.Resolved || !strings.Contains(a[1].Body, "turned off") {
 		t.Fatalf("off: %+v", a)
+	}
+}
+
+// TestAdoptingABackup: the typed key reaches the guest once and is kept nowhere; a run is kicked
+// so the page sees the folder working; and a folder with no repository, a backup that is off, or
+// a guest without the verb refuse before the guest is asked.
+func TestAdoptingABackup(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "Briard Backup")
+	for _, p := range []string{"config", "keys/k1"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(folder, p)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(folder, p), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, g := liveBackup(t, folder)
+	cfg.backupKick = &atomic.Bool{}
+	if o := setBackup(cfg, g, settingBackupAdopt, "old-key"); o.State != api.OutcomeDone {
+		t.Fatalf("adopt: %+v", o)
+	}
+	if g.adopted != "old-key" || !cfg.backupKick.Load() {
+		t.Fatalf("adopted with %q, kicked %v", g.adopted, cfg.backupKick.Load())
+	}
+	if b, _ := os.ReadFile(filepath.Join(cfg.stateDir(), backupRecordName)); strings.Contains(string(b), "old-key") {
+		t.Fatal("the typed key was recorded")
+	}
+	// The kicked run starts outside the window, once.
+	bs := &backupScheduler{loc: time.UTC}
+	cfg.backup(context.Background(), fakeStatus{backup: g}, bs, true, tonightAt("14:00"), nil, quiet)
+	cfg.backup(context.Background(), fakeStatus{backup: g}, bs, true, tonightAt("14:01"), nil, quiet)
+	if g.starts != 1 {
+		t.Fatalf("the kicked run started %d times, want 1", g.starts)
+	}
+
+	g.adopted, g.adoptErr = "", errors.New("that key does not open the backup in this folder")
+	if o := setBackup(cfg, g, settingBackupAdopt, "wrong"); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "does not open") {
+		t.Fatalf("a wrong key: %+v", o)
+	}
+	g.adopted, g.adoptErr = "", nil
+	if err := os.Remove(filepath.Join(folder, "config")); err != nil {
+		t.Fatal(err)
+	}
+	if o := setBackup(cfg, g, settingBackupAdopt, "k"); o.State != api.OutcomeFailed || g.adopted != "" {
+		t.Fatalf("no repository, yet asked the guest (%q): %+v", g.adopted, o)
+	}
+	g.noAdopt = true
+	if o := setBackup(cfg, g, settingBackupAdopt, "k"); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "update the guest") {
+		t.Fatalf("an old guest: %+v", o)
+	}
+	g.noAdopt = false
+	setBackup(cfg, g, settingBackupDir, "")
+	if o := setBackup(cfg, g, settingBackupAdopt, "k"); o.State != api.OutcomeFailed || g.adopted != "" {
+		t.Fatalf("off, yet asked the guest: %+v", o)
+	}
+}
+
+// TestAWrongKeyNightIsNamedForThePage: the night's record carries the flag the card acts on, and
+// its words say what to do.
+func TestAWrongKeyNightIsNamedForThePage(t *testing.T) {
+	cfg, g, b := backupRig(t)
+	cfg.backup(context.Background(), g, b, true, tonightAt("02:04"), nil, quiet)
+	g.backup.running, g.backup.report = false, &guestagent.BackupReport{Error: "the folder holds a backup made with another key", WrongKey: true}
+	cfg.backup(context.Background(), g, b, true, tonightAt("02:05"), nil, quiet)
+	nights := cfg.readBackupRecord().Nights
+	if len(nights) != 1 || !nights[0].WrongKey || !strings.Contains(nights[0].Error, "Enter that key") {
+		t.Fatalf("nights %+v, want one wrong-key night that says what to do", nights)
 	}
 }
