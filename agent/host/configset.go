@@ -25,7 +25,8 @@ import (
 // fact is applied: restart the guest, so the next bring-up carries it.
 //
 // Three keys: `vip`, applied by a guest restart, and the backup's two (`backup-dir`,
-// `backup-key-saved`, backup.go), applied in place -- the host is the only thing that reads them.
+// `backup-key-saved`, backup.go), applied in place -- the folder is read by the host alone, and
+// the acknowledgement is written where the key is, on the volume.
 // The command is named for the general act, so a key joins without a second verb.
 
 // configSetBudget bounds the change: the address probe, the write, and a guest restart.

@@ -6,12 +6,13 @@
 # that a read-only btrfs member bind-mounts at its stable path, that the snapshot holds the data
 # beside its manifest and the volume's facts, that HA's own tarballs stay out, that a root
 # process leaves every file the folder's owner's, that the folder opens on its own as a standard
-# repository, and that the second night adds only what changed and restores what changed.
+# repository, that the second night adds only what changed and restores what changed, and that
+# an earlier household's nights in the same repository survive this one's retention.
 #
 # Agent-less, as every rig that runs a service is: `briard-guest-agent --backup` runs the guest's
 # backup in line (the product starts it through the host's verb, in the background), and
 # `backup-store` serves agent/host's store with no agent around it, on loopback. The 02:00
-# schedule, the key and the host's facts are unit-tested.
+# schedule, the key's rules and the host's facts are unit-tested.
 { pkgs, guestModule, fixture }:
 
 let
@@ -64,7 +65,7 @@ pkgs.testers.runNixOSTest {
         node1.succeed("briard-guest-agent --clock=${fixture.name}")
 
     def backup():
-        out = node1.succeed("BRIARD_BACKUP_PASSWORD=correct-horse briard-guest-agent --backup=${url} 2>/tmp/backup.log")
+        out = node1.succeed("briard-guest-agent --backup=${url} 2>/tmp/backup.log")
         print(node1.succeed("tail -5 /tmp/backup.log"))
         rep = json.loads(out.strip().splitlines()[-1])
         print(f"backup: {rep}")
@@ -72,9 +73,10 @@ pkgs.testers.runNixOSTest {
         assert rep.get("services") == ["${fixture.name}"], f"backed up {rep.get('services')}"
         return rep
 
-    def plain(cmd):
-        # THE EXIT GUARANTEE: the folder on its own, opened with nothing but restic and the key.
-        return node1.succeed(f"RESTIC_PASSWORD=correct-horse restic --no-cache -r '${folder}' {cmd}")
+    def plain(cmd, repo="'${folder}'"):
+        # THE EXIT GUARANTEE: the folder on its own, opened with nothing but restic and the key --
+        # the one the volume holds, which the dashboard shows the household.
+        return node1.succeed(f"RESTIC_PASSWORD=\"$(cat /var/lib/briard/.backup-key)\" restic --no-cache -r {repo} {cmd}")
 
     # ---- the first night ----
     # WEIGHT, so the sizes below mean something: 4 MiB of the service's own data (random, so it
@@ -83,6 +85,8 @@ pkgs.testers.runNixOSTest {
     node1.succeed("mkdir -p ${live}/backups && head -c 8M /dev/urandom > ${live}/backups/ha.tar")
     sample("first")
     first = backup()
+    # The key was minted on the volume by that first run, for the household alone.
+    assert node1.succeed("stat -c %a /var/lib/briard/.backup-key").strip() == "600", "the key is not 0600"
     # Between the two: the service's data went in, and the tarball did not.
     assert 4 << 20 < first["bytesAdded"] < 8 << 20, f"the first night added {first['bytesAdded']} bytes"
 
@@ -94,6 +98,7 @@ pkgs.testers.runNixOSTest {
     ]:
         assert want in files, f"{want} is not in the snapshot: {files}"
     assert not any("/app/backups" in f for f in files), "Home Assistant's own tarballs were backed up"
+    assert not any("backup-key" in f for f in files), "the key went into the repository it opens"
     side = json.loads(plain("dump latest /run/briard/backup/briard/members/${fixture.name}.json"))
     assert side.get("manifest"), f"the member's sidecar carries no manifest: {side}"
 
@@ -121,5 +126,21 @@ pkgs.testers.runNixOSTest {
     got = node1.succeed("cat /tmp/restored/run/briard/backup/services/${fixture.name}/${fixture.container}/payload.txt").strip()
     assert got == "second", f"restored {got!r}, want the second night's"
     plain("check --read-data")
+
+    # ---- an earlier household's nights are not this one's to prune ----
+    # Three snapshots under another group, through the same store, as a previous install of this
+    # folder would have left them; one more night here; the policy keeps 2 daily + 1 weekly of OUR
+    # group and touches nothing of theirs.
+    for n in range(3):
+        node1.succeed(f"echo earlier-{n} > /tmp/earlier.txt")
+        plain("backup --host earlier-house /tmp/earlier.txt", repo="rest:${url}")
+    sample("third")
+    backup()
+    groups = {s["hostname"] for s in json.loads(plain("snapshots --json"))}
+    assert groups == {"briard", "earlier-house"}, f"groups {groups}"
+    earlier = json.loads(plain("snapshots --host earlier-house --json"))
+    assert len(earlier) == 3, f"the earlier household kept {len(earlier)} of its 3 nights"
+    ours = json.loads(plain("snapshots --host briard --json"))
+    assert len(ours) == 2, f"our group holds {len(ours)}, want 2: three nights on one day, the policy applied to us"
   '';
 }

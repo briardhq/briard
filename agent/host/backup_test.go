@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,7 +26,7 @@ func backupRig(t *testing.T) (Config, fakeStatus, *backupScheduler) {
 			t.Fatal(err)
 		}
 	}
-	cfg := Config{BackupDir: t.TempDir(), AssignmentCache: filepath.Join(state, "assignment.json"), SystemHostCIDR: "10.7.0.129/32"}
+	cfg := Config{BackupDir: t.TempDir(), FlockID: "f1d", AssignmentCache: filepath.Join(state, "assignment.json"), SystemHostCIDR: "10.7.0.129/32"}
 	return cfg, fakeStatus{backup: &fakeBackup{}}, &backupScheduler{loc: time.UTC}
 }
 
@@ -37,7 +36,8 @@ func tonightAt(hhmm string) time.Time {
 }
 
 // TestTheBackupStartsOnceANightOnTheServingNode: tonight's window, once, on the node that holds the
-// volume, with the store's URL, the key and the host's facts -- the node id never among them.
+// volume, with the store's URL, the flock's id as the group and the host's facts -- the node id never
+// among them.
 func TestTheBackupStartsOnceANightOnTheServingNode(t *testing.T) {
 	ctx := context.Background()
 	cfg, g, b := backupRig(t)
@@ -54,8 +54,8 @@ func TestTheBackupStartsOnceANightOnTheServingNode(t *testing.T) {
 	if g.backup.url != "http://10.7.0.129:7791/" {
 		t.Errorf("url %q", g.backup.url)
 	}
-	if !regexp.MustCompile(`^([a-z2-7]{4}-){7}[a-z2-7]{4}$`).MatchString(g.backup.key) {
-		t.Errorf("key %q is not eight groups of base32", g.backup.key)
+	if g.backup.group != "f1d" {
+		t.Errorf("group %q, want the flock's id", g.backup.group)
 	}
 	if string(g.backup.host[flockIDName]) != "f1d\n" || string(g.backup.host[flockNameName]) != "maple\n" {
 		t.Errorf("host facts %v", g.backup.host)
@@ -88,47 +88,6 @@ func TestTheBackupIsOffWhenTheFolderIsEmpty(t *testing.T) {
 	if g.backup.starts != 0 {
 		t.Fatal("a disabled backup ran")
 	}
-	if _, err := os.Stat(filepath.Join(cfg.stateDir(), backupKeyName)); err == nil {
-		t.Fatal("a disabled backup minted a key")
-	}
-}
-
-// TestTheKeyIsMintedOnceAndNeverOverAnUnreadableOne: the same key every night, 0600; and a key
-// file that cannot be read stops the run rather than being replaced -- a new key would orphan
-// every snapshot the old one opens.
-func TestTheKeyIsMintedOnceAndNeverOverAnUnreadableOne(t *testing.T) {
-	dir := t.TempDir()
-	k1, err := backupKey(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	k2, err := backupKey(dir)
-	if err != nil || k2 != k1 {
-		t.Fatalf("second read %q %v, want %q", k2, err, k1)
-	}
-	if fi, err := os.Stat(filepath.Join(dir, backupKeyName)); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("key file %v %v, want 0600", fi.Mode(), err)
-	}
-
-	bad := t.TempDir()
-	// A link to itself: the read fails (ELOOP, as root too) with something other than "absent",
-	// while a rename over it would succeed -- so only the guard stands between it and a new key.
-	p := filepath.Join(bad, backupKeyName)
-	if err := os.Symlink(p, p); err != nil {
-		t.Fatal(err)
-	}
-	if k, err := backupKey(bad); err == nil {
-		t.Fatalf("minted %q over an unreadable key", k)
-	}
-
-	cfg, g, b := backupRig(t)
-	if err := os.Mkdir(filepath.Join(cfg.stateDir(), backupKeyName), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cfg.backup(context.Background(), g, b, true, tonightAt("02:05"), nil, quiet)
-	if g.backup.starts != 0 {
-		t.Fatal("a run started without the household's key")
-	}
 }
 
 // TestBackupDirIsDeclared: absent is the shipped folder, empty is off -- the one key whose empty
@@ -150,9 +109,9 @@ func TestBackupDirIsDeclared(t *testing.T) {
 }
 
 // liveBackup is a node whose backup folder can be switched at runtime, with a config file.
-func liveBackup(t *testing.T, folder string) Config {
+func liveBackup(t *testing.T, folder string) (Config, *fakeBackup) {
 	t.Helper()
-	cfg, _, _ := backupRig(t)
+	cfg, fg, _ := backupRig(t)
 	cfg.BackupDir = folder
 	cfg.backupLive = &atomic.Pointer[string]{}
 	cfg.backupLive.Store(&folder)
@@ -161,12 +120,12 @@ func liveBackup(t *testing.T, folder string) Config {
 		t.Fatal(err)
 	}
 	t.Setenv("BRIARD_CONFIG", conf)
-	return cfg
+	return cfg, fg.backup
 }
 
-func setBackup(cfg Config, key, value string) api.DirectiveOutcome {
+func setBackup(cfg Config, g *fakeBackup, key, value string) api.DirectiveOutcome {
 	raw, _ := json.Marshal(api.ConfigSetting{Key: key, Value: value})
-	out, ok := cfg.applyBackupSetting(api.Directive{ID: "d", Kind: api.DirectiveConfigSet, Payload: string(raw)}, quiet)
+	out, ok := cfg.applyBackupSetting(context.Background(), api.Directive{ID: "d", Kind: api.DirectiveConfigSet, Payload: string(raw)}, fakeStatus{backup: g}, quiet)
 	if !ok {
 		return api.DirectiveOutcome{State: "not-a-backup-setting"}
 	}
@@ -178,13 +137,14 @@ func setBackup(cfg Config, key, value string) api.DirectiveOutcome {
 // acknowledgement is recorded.
 func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 	folder := filepath.Join(t.TempDir(), "Briard Backup")
-	cfg := liveBackup(t, folder)
+	cfg, g := liveBackup(t, folder)
+	ctx := context.Background()
 	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = folder }); err != nil {
 		t.Fatal(err)
 	}
 	conf := os.Getenv("BRIARD_CONFIG")
 
-	if o := setBackup(cfg, settingBackupDir, ""); o.State != api.OutcomeDone {
+	if o := setBackup(cfg, g, settingBackupDir, ""); o.State != api.OutcomeDone {
 		t.Fatalf("off: %+v", o)
 	}
 	b, _ := os.ReadFile(conf)
@@ -194,38 +154,39 @@ func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 	if cfg.backupFolder() != "" {
 		t.Fatal("off did not take effect")
 	}
-	if v := cfg.backupView(); v.On || v.Folder != folder {
+	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.On || v.Folder != folder {
 		t.Fatalf("off view %+v, want off and the folder it returns to", v)
 	}
 
-	if o := setBackup(cfg, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
+	if o := setBackup(cfg, g, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
 		t.Fatalf("another folder was accepted: %+v", o)
 	}
-	if o := setBackup(cfg, settingBackupDir, folder); o.State != api.OutcomeDone || cfg.backupFolder() != folder {
+	if o := setBackup(cfg, g, settingBackupDir, folder); o.State != api.OutcomeDone || cfg.backupFolder() != folder {
 		t.Fatalf("on: %+v, folder %q", o, cfg.backupFolder())
 	}
 	if b, _ := os.ReadFile(conf); !strings.Contains(string(b), "BACKUP_DIR="+folder+"\n") {
 		t.Fatalf("config after on:\n%s", b)
 	}
 
-	if v := cfg.backupView(); v.KeySaved {
+	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.KeySaved {
 		t.Fatal("saved before anyone said so")
 	}
-	if o := setBackup(cfg, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone || !cfg.backupView().KeySaved {
+	if o := setBackup(cfg, g, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone || !cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}).KeySaved {
 		t.Fatalf("saved: %+v", o)
 	}
-	if o := setBackup(cfg, "vip", "dhcp"); o.State != "not-a-backup-setting" {
+	if o := setBackup(cfg, g, "vip", "dhcp"); o.State != "not-a-backup-setting" {
 		t.Fatal("the address was taken for a backup setting")
 	}
 }
 
 // With no folder ever recorded, on goes to the agent's own -- and the view says so while off.
 func TestTheBackupWithNoFolderGoesToTheAgentsOwn(t *testing.T) {
-	cfg := liveBackup(t, "")
-	if v := cfg.backupView(); v.On || v.Folder != defaultBackupDir {
+	cfg, g := liveBackup(t, "")
+	ctx := context.Background()
+	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.On || v.Folder != defaultBackupDir {
 		t.Fatalf("view %+v, want off, returning to %s", v, defaultBackupDir)
 	}
-	if o := setBackup(cfg, settingBackupDir, "/somewhere/else"); o.State != api.OutcomeFailed {
+	if o := setBackup(cfg, g, settingBackupDir, "/somewhere/else"); o.State != api.OutcomeFailed {
 		t.Fatalf("a folder never used was accepted: %+v", o)
 	}
 }
@@ -244,31 +205,42 @@ func TestTheGuestMayAskForTheBackupSettingsOnly(t *testing.T) {
 	}
 }
 
-// The page is told the key the host holds -- read, never minted -- and told again only when the
-// view moved.
+// The page is told the key the volume holds -- the guest's, minted there the first time it is
+// asked -- and told again only when the view moved; a guest with no volume mounted gives the page
+// a view without the key, not no view.
 func TestThePageIsToldTheViewWhenItMoves(t *testing.T) {
-	cfg := liveBackup(t, "/f")
-	g := &viewGuest{}
+	cfg, g := liveBackup(t, "/f")
+	ctx := context.Background()
+	vg := &viewGuest{fakeStatus: fakeStatus{backup: g}}
 	pushed := ""
-	cfg.pushBackupView(context.Background(), g, &pushed, quiet)
-	if len(g.views) != 1 || g.views[0].Key != "" || !g.views[0].On {
-		t.Fatalf("first push %+v", g.views)
+	cfg.pushBackupView(ctx, vg, &pushed, quiet)
+	if len(vg.views) != 1 || vg.views[0].Key != g.key.Key || vg.views[0].Key == "" || !vg.views[0].On || vg.views[0].KeySaved {
+		t.Fatalf("first push %+v", vg.views)
 	}
-	if _, err := os.Stat(filepath.Join(cfg.stateDir(), backupKeyName)); err == nil {
-		t.Fatal("telling the page minted a key")
-	}
-	cfg.pushBackupView(context.Background(), g, &pushed, quiet)
-	if len(g.views) != 1 {
+	cfg.pushBackupView(ctx, vg, &pushed, quiet)
+	if len(vg.views) != 1 {
 		t.Fatal("an unchanged view was pushed again")
 	}
-	k, _ := backupKey(cfg.stateDir())
-	cfg.pushBackupView(context.Background(), g, &pushed, quiet)
-	if len(g.views) != 2 || g.views[1].Key != k {
-		t.Fatalf("the key did not reach the page: %+v", g.views)
+	if o := setBackup(cfg, g, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone {
+		t.Fatalf("saved: %+v", o)
+	}
+	cfg.pushBackupView(ctx, vg, &pushed, quiet)
+	if len(vg.views) != 2 || !vg.views[1].KeySaved {
+		t.Fatalf("the acknowledgement did not reach the page: %+v", vg.views)
+	}
+
+	none := &viewGuest{fakeStatus: fakeStatus{}} // no volume here: the verb fails
+	pushed = ""
+	cfg.pushBackupView(ctx, none, &pushed, quiet)
+	if len(none.views) != 1 || none.views[0].Key != "" || !none.views[0].On {
+		t.Fatalf("push with no key %+v", none.views)
 	}
 }
 
-type viewGuest struct{ views []dashboard.Backup }
+type viewGuest struct {
+	fakeStatus
+	views []dashboard.Backup
+}
 
 func (g *viewGuest) DashboardBackup(_ context.Context, b dashboard.Backup) error {
 	g.views = append(g.views, b)
@@ -346,7 +318,8 @@ func TestTheBackupMoves(t *testing.T) {
 	if err := os.Mkdir(old, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := liveBackup(t, old)
+	cfg, g := liveBackup(t, old)
+	ctx := context.Background()
 	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = old }); err != nil {
 		t.Fatal(err)
 	}
@@ -354,10 +327,10 @@ func TestTheBackupMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved := t.TempDir()
-	if o := setBackup(cfg, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.backupFolder() != moved {
+	if o := setBackup(cfg, g, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.backupFolder() != moved {
 		t.Fatalf("move: %+v, folder %q", o, cfg.backupFolder())
 	}
-	if v := cfg.backupView(); v.Folder != moved || v.Previous != old {
+	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.Folder != moved || v.Previous != old {
 		t.Fatalf("view %+v, want the new folder and the old one named", v)
 	}
 	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+moved+"\n") {
@@ -367,11 +340,11 @@ func TestTheBackupMoves(t *testing.T) {
 		t.Fatal("the old folder was touched")
 	}
 	// Off and on again comes back to the new folder, not the old.
-	setBackup(cfg, settingBackupDir, "")
-	if o := setBackup(cfg, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.readBackupRecord().Previous != old {
+	setBackup(cfg, g, settingBackupDir, "")
+	if o := setBackup(cfg, g, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.readBackupRecord().Previous != old {
 		t.Fatalf("on again: %+v, record %+v", o, cfg.readBackupRecord())
 	}
-	if o := setBackup(cfg, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
+	if o := setBackup(cfg, g, settingBackupDir, "/etc"); o.State != api.OutcomeFailed {
 		t.Fatalf("a root folder was accepted: %+v", o)
 	}
 }

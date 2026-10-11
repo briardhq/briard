@@ -283,6 +283,9 @@ const (
 	// a run reads for minutes, and this channel serves one verb at a time.
 	verbDataBackup       = "data.backup"
 	verbDataBackupResult = "data.backup.result"
+	// data.backup.key answers the household's repository key, minting it on the volume the first
+	// time it is asked for (backup.go), and records the household's word that it is saved.
+	verbDataBackupKey = "data.backup.key"
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start (converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -430,7 +433,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -466,7 +469,7 @@ var besideActs = map[string]bool{
 	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
 	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
-	verbDataBackupResult: true,
+	verbDataBackupResult: true, verbDataBackupKey: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
@@ -1234,6 +1237,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return startBackup(x, req)
 		case verbDataBackupResult:
 			return backupResult(), nil
+		case verbDataBackupKey:
+			var req backupKeyRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return backupKeyState(ctx, x, req)
 		case verbHassDBRestore:
 			var req dbRestoreRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2827,13 +2836,21 @@ func (g *Client) HassDBCheckResult(ctx context.Context) (hass.DBCheckState, erro
 	return s, err
 }
 
-// DataBackup starts a backup in the guest's background into the REST repository at url, with
-// the host's own facts beside the volume's, and answers whether it did; false means one is
-// running or its report is uncollected.
-func (g *Client) DataBackup(ctx context.Context, url, password string, host map[string][]byte) (bool, error) {
+// DataBackup starts a backup in the guest's background into the REST repository at url, under
+// the household's group, with the host's own facts beside the volume's, and answers whether it
+// did; false means one is running or its report is uncollected.
+func (g *Client) DataBackup(ctx context.Context, url, group string, host map[string][]byte) (bool, error) {
 	var started bool
-	err := g.c.Call(ctx, verbDataBackup, backupRequest{Repository: url, Password: password, Host: host}, &started)
+	err := g.c.Call(ctx, verbDataBackup, backupRequest{Repository: url, Group: group, Host: host}, &started)
 	return started, err
+}
+
+// DataBackupKey reads the household's repository key off the volume, minting it the first time,
+// and with saved records that the household has a copy of it elsewhere.
+func (g *Client) DataBackupKey(ctx context.Context, saved bool) (BackupKey, error) {
+	var k BackupKey
+	err := g.c.Call(ctx, verbDataBackupKey, backupKeyRequest{Saved: saved}, &k)
+	return k, err
 }
 
 // DataBackupResult answers whether a backup is running, with a finished one's report, once.

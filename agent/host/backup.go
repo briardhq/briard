@@ -2,8 +2,6 @@ package host
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +22,8 @@ import (
 
 // THE NIGHTLY BACKUP, 02:00 local: before the guest-update window (03:00) and the recorder check
 // (05:30), so it copies the night's quietest hour. The guest does the work (agent/guestagent's
-// data.backup says what goes in and how); this schedules it, holds the key, and serves the
-// repository the guest writes to (backupstore.go).
+// data.backup says what goes in and how, and the key is the volume's -- the household's, not
+// this node's); this schedules it and serves the repository the guest writes to (backupstore.go).
 //
 // IT NEVER BLOCKS THIS LOOP: the recorder check's shape. This starts the run in the guest's
 // background and asks for the report once a cycle with an ordinary short call, for as long as the
@@ -38,8 +36,6 @@ const (
 	backupAt          = 2 * 60 // minutes after local midnight
 	backupWindow      = 60     // minutes after backupAt a late agent may still start it
 	backupCallTimeout = 5 * time.Second
-	// backupKeyName is the repository key's file in the state dir: the household's key of record.
-	backupKeyName = "backup-key"
 )
 
 // backupHostFacts are the host's own files a fresh install needs to come back as this household
@@ -49,7 +45,7 @@ var backupHostFacts = []string{flockIDName, flockNameName, casaStateName, casaKe
 
 // backupRunner is the slice of the guest the backup costs.
 type backupRunner interface {
-	DataBackup(ctx context.Context, url, password string, host map[string][]byte) (bool, error)
+	DataBackup(ctx context.Context, url, group string, host map[string][]byte) (bool, error)
 	DataBackupResult(ctx context.Context) (guestagent.BackupState, error)
 }
 
@@ -90,14 +86,11 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		logf("backup: %s", why)
 		cfg.recordNight(ctx, dashboard.BackupRun{At: now, Error: cfg.backupFailure(why)}, n, logf)
 	}
-	key, err := backupKey(cfg.stateDir())
-	if err != nil {
-		failed("no repository key: " + err.Error())
-		return
-	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
 	sctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
-	started, err := g.DataBackup(sctx, url, key, cfg.backupHostFacts(logf))
+	// THE GROUP IS THE FLOCK'S ID (guestagent.backupRequest.Group says why): shared by every node
+	// of the pair, and nobody else's.
+	started, err := g.DataBackup(sctx, url, cfg.FlockID, cfg.backupHostFacts(logf))
 	cancel()
 	if err != nil {
 		failed("could not start tonight's run: " + err.Error())
@@ -256,55 +249,17 @@ func (cfg Config) backupHostFacts(logf func(string, ...any)) map[string][]byte {
 	return out
 }
 
-// backupKey is the repository key, minted the first time it is asked for -- the agent's start, when
-// the backup is on, so the page can show it from the first open -- and kept 0600 in the state dir.
-//
-// ⚠️ MINTED ONLY WHEN THE FILE IS ABSENT, never when it cannot be read: a new key over an
-// unreadable old one would orphan every snapshot the old one opens. The repository's own init
-// refuses a second key the same way (a repository that exists is never re-created).
-//
-// Base32 in groups of four: a person copies it by hand from the dashboard, and 160 bits read
-// aloud is eight short groups.
-func backupKey(dir string) (string, error) {
-	path := filepath.Join(dir, backupKeyName)
-	b, err := os.ReadFile(path)
-	if err == nil {
-		if k := strings.TrimSpace(string(b)); k != "" {
-			return k, nil
-		}
-		return "", errors.New(path + " is empty")
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-	raw := make([]byte, 20)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	enc := strings.ToLower(base32.StdEncoding.EncodeToString(raw))
-	var groups []string
-	for i := 0; i < len(enc); i += 4 {
-		groups = append(groups, enc[i:i+4])
-	}
-	k := strings.Join(groups, "-")
-	if err := atomicfile.Write(path, []byte(k+"\n"), 0o600, 0o700); err != nil {
-		return "", err
-	}
-	return k, nil
-}
-
-// backupRecordName is the backup's node-local record beside the key: what the household told the
-// page, and what the nights did. Node-scoped, like the key it sits beside.
+// backupRecordName is the backup's node-local record: the folder, which is a path on this host,
+// and what the nights did here. The key and the household's word that it is saved are the
+// volume's (guestagent's data.backup.key) -- one household, one key.
 const backupRecordName = "backup.json"
 
 // backupRecord is that file. Folder is the folder the backup last ran into, kept while it is off
 // so turning it on again knows where; Previous the one it ran into before the household moved it;
-// KeySaved the household's word that the key has a copy off this machine; Nights the recent runs,
-// newest first.
+// Nights the recent runs, newest first.
 type backupRecord struct {
 	Folder   string                `json:"folder,omitempty"`
 	Previous string                `json:"previous,omitempty"`
-	KeySaved bool                  `json:"keySaved,omitempty"`
 	Nights   []dashboard.BackupRun `json:"nights,omitempty"`
 }
 
@@ -342,25 +297,30 @@ func (cfg Config) updateBackupRecord(change func(*backupRecord)) error {
 }
 
 // backupView is what the page is told: the folder (the one in use, or the one it returns to), the
-// key if one has been minted -- read, never minted here -- and the record.
-func (cfg Config) backupView() dashboard.Backup {
+// record, and the key with the household's word on it -- read from the volume through the guest,
+// which mints it the first time it is asked (so the page can ask the household to save it from
+// its first open). Where the volume is not mounted there is no key to show and no page to show
+// it on: the view goes without it.
+func (cfg Config) backupView(ctx context.Context, g backupViewGuest) dashboard.Backup {
 	rec := cfg.readBackupRecord()
-	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", Previous: rec.Previous,
-		KeySaved: rec.KeySaved, Nights: rec.Nights}
+	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", Previous: rec.Previous, Nights: rec.Nights}
 	if !v.On {
 		v.Folder = rec.Folder
 		if v.Folder == "" {
 			v.Folder = defaultBackupDir // where turning it on goes (applyBackupSetting)
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(cfg.stateDir(), backupKeyName)); err == nil {
-		v.Key = strings.TrimSpace(string(b))
+	kctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
+	defer cancel()
+	if k, err := g.DataBackupKey(kctx, false); err == nil {
+		v.Key, v.KeySaved = k.Key, k.Saved
 	}
 	return v
 }
 
 // backupViewGuest is the slice of the guest the page's copy costs.
 type backupViewGuest interface {
+	DataBackupKey(ctx context.Context, saved bool) (guestagent.BackupKey, error)
 	DashboardBackup(ctx context.Context, b dashboard.Backup) error
 }
 
@@ -371,7 +331,7 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, pushed *string, log
 	if !ok || cfg.stateDir() == "" {
 		return
 	}
-	v := cfg.backupView()
+	v := cfg.backupView(ctx, g)
 	b, err := json.Marshal(v)
 	if err != nil || string(b) == *pushed {
 		return
@@ -392,7 +352,8 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, pushed *string, log
 //   - backup-dir: "" turns the nightly backup off (BACKUP_DIR="", the existing backups are left
 //     where they are); the folder it last used -- or, with none, the agent's own -- turns it on
 //     again; any other folder moves it there, once checkBackupFolder has passed it.
-//   - backup-key-saved: "yes" records that the household has the key somewhere else.
+//   - backup-key-saved: "yes" records that the household has the key somewhere else -- on the
+//     volume, beside the key, through the guest: the household's word is the household's.
 const (
 	settingBackupDir      = "backup-dir"
 	settingBackupKeySaved = "backup-key-saved"
@@ -409,7 +370,7 @@ func isBackupSetting(payload string) bool {
 }
 
 // applyBackupSetting applies a config-set naming a backup setting; ok is false for any other key.
-func (cfg Config) applyBackupSetting(d api.Directive, logf func(string, ...any)) (out api.DirectiveOutcome, ok bool) {
+func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any, logf func(string, ...any)) (out api.DirectiveOutcome, ok bool) {
 	var s api.ConfigSetting
 	if err := json.Unmarshal([]byte(d.Payload), &s); err != nil || (s.Key != settingBackupDir && s.Key != settingBackupKeySaved) {
 		return api.DirectiveOutcome{}, false
@@ -427,7 +388,15 @@ func (cfg Config) applyBackupSetting(d api.Directive, logf func(string, ...any))
 		if s.Value != "yes" {
 			return failed(`%s takes "yes"`, settingBackupKeySaved)
 		}
-		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.KeySaved = true }); err != nil {
+		g, ok := r.(interface {
+			DataBackupKey(ctx context.Context, saved bool) (guestagent.BackupKey, error)
+		})
+		if !ok {
+			return failed("no guest on this node to record it on")
+		}
+		kctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
+		defer cancel()
+		if _, err := g.DataBackupKey(kctx, true); err != nil {
 			return failed("could not record it: %v", err)
 		}
 		logf("backup: the household has saved the recovery key")

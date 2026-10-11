@@ -1319,14 +1319,15 @@ type fakeDB struct {
 // fakeBackup is the guest's background backup: started (with what), still running or finished
 // with a report it hands over once.
 type fakeBackup struct {
-	starts   int
-	url, key string
-	host     map[string][]byte
-	running  bool
-	report   *guestagent.BackupReport
+	starts     int
+	url, group string
+	host       map[string][]byte
+	running    bool
+	report     *guestagent.BackupReport
+	key        guestagent.BackupKey // what the volume holds
 }
 
-func (f fakeStatus) DataBackup(_ context.Context, url, key string, host map[string][]byte) (bool, error) {
+func (f fakeStatus) DataBackup(_ context.Context, url, group string, host map[string][]byte) (bool, error) {
 	if f.backup == nil {
 		return false, errors.New("unknown verb")
 	}
@@ -1334,8 +1335,21 @@ func (f fakeStatus) DataBackup(_ context.Context, url, key string, host map[stri
 		return false, nil
 	}
 	f.backup.starts++
-	f.backup.url, f.backup.key, f.backup.host, f.backup.running = url, key, host, true
+	f.backup.url, f.backup.group, f.backup.host, f.backup.running = url, group, host, true
 	return true, nil
+}
+
+func (f fakeStatus) DataBackupKey(_ context.Context, saved bool) (guestagent.BackupKey, error) {
+	if f.backup == nil {
+		return guestagent.BackupKey{}, errors.New("unknown verb")
+	}
+	if f.backup.key.Key == "" {
+		f.backup.key.Key = "key1-key1-key1-key1-key1-key1-key1-key1"
+	}
+	if saved {
+		f.backup.key.Saved = true
+	}
+	return f.backup.key, nil
 }
 
 func (f fakeStatus) DataBackupResult(context.Context) (guestagent.BackupState, error) {

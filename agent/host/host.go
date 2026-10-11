@@ -641,13 +641,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			logf("backup: could not remember the folder: %v", err)
 		}
 	}
-	if cfg.BackupDir != "" && cfg.stateDir() != "" {
-		// The key from the agent's first start rather than the first night, so the page can ask
-		// the household to save it the first time they open it.
-		if _, err := backupKey(cfg.stateDir()); err != nil {
-			logf("backup: no repository key: %v", err)
-		}
-	}
 	go ServeBackupStore(ctx, cfg.backupFolder, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
 	// THE CLOUD SEAM, BUILT BEFORE THE NETWORK RATHER THAN AFTER THE GUEST. None of
 	// it depends on a guest -- CloudClient is Register/Report/ReportMetrics, and Resolve needs
@@ -1779,8 +1772,8 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		return cfg.applyDoctor(ctx, d, r)
 	}
 	if d.Kind == api.DirectiveConfigSet {
-		// The backup's settings apply in place: only the host reads them (backup.go).
-		if out, ok := cfg.applyBackupSetting(d, logf); ok {
+		// The backup's settings apply in place (backup.go).
+		if out, ok := cfg.applyBackupSetting(ctx, d, r, logf); ok {
 			return out
 		}
 		// The address is applied the way pair applies a membership: record it, then the one act

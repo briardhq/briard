@@ -3,6 +3,7 @@ package guestagent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -11,9 +12,9 @@ import (
 	"briard.io/agent/quadlet"
 )
 
-// backupRig is a volume holding two services, each with a ring whose newest member was taken by a
-// different trigger, a VIP and manifests but no certificate yet, and a restic that answers from
-// the table it is given (keyed by subcommand).
+// backupRig is a mounted volume holding two services, each with a ring whose newest member was
+// taken by a different trigger, a VIP, manifests and the household's key but no certificate yet,
+// and a restic that answers from the table it is given (keyed by subcommand).
 func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]string) {
 	now := time.Now()
 	name := func(svc string, tr quadlet.Trigger, ago time.Duration) string {
@@ -30,13 +31,23 @@ func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]
 		"mosquitto":      quadlet.SnapshotsDir + members[3],
 	}
 	f := ringExec(members...)
+	if f.files == nil {
+		f.files = map[string]string{}
+	}
+	f.files[backupKeyFile] = "s3cret\n"
 	inner := f.runFn
 	f.runFn = func(n string, args []string) ([]byte, error) {
 		if n == "ls" && len(args) > 1 && args[1] == manifestDir {
 			return []byte("home-assistant.json\nmosquitto.json\n"), nil
 		}
+		if n == "stat" && len(args) == 3 && args[2] == dataMountRoot {
+			return []byte(dataMountRoot + "\n"), nil // mounted here
+		}
+		if n == "touch" && len(args) == 1 {
+			return nil, f.WriteFile(args[0], nil)
+		}
 		if n == "test" && len(args) == 2 && args[0] == "-e" {
-			if args[1] == tlsDir {
+			if _, ok := f.files[args[1]]; args[1] == tlsDir || (strings.HasPrefix(args[1], dataMountRoot+"/.backup-key") && !ok) {
 				return nil, errors.New("exit status 1")
 			}
 			return nil, nil
@@ -69,7 +80,7 @@ func resticRuns(f *fakeExec, sub string) [][]string {
 // TestTheBackupVerbsAreAdvertisedBesideActs: a verb absent from the handshake is one no host
 // calls, and a read that minutes long must not hold the act lane.
 func TestTheBackupVerbsAreAdvertisedBesideActs(t *testing.T) {
-	for _, v := range []string{verbDataBackup, verbDataBackupResult} {
+	for _, v := range []string{verbDataBackup, verbDataBackupResult, verbDataBackupKey} {
 		if !slices.Contains(guestCapabilities, v) {
 			t.Errorf("the guest does not advertise %s", v)
 		}
@@ -88,10 +99,10 @@ func TestTheBackupRunsInTheBackground(t *testing.T) {
 		"backup": func() ([]byte, error) { <-release; return []byte(resticSummary), nil },
 	})
 	g := dial(t, f)
-	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "pw", nil); err != nil || !ok {
+	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "f1d", nil); err != nil || !ok {
 		t.Fatalf("the backup did not start: %v %v", ok, err)
 	}
-	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "pw", nil); err != nil || ok {
+	if ok, err := g.DataBackup(ctx, "http://10.0.0.129:7791/", "f1d", nil); err != nil || ok {
 		t.Fatalf("a second backup started beside the first: %v %v", ok, err)
 	}
 	if s, err := g.DataBackupResult(ctx); err != nil || !s.Running || s.Report != nil {
@@ -117,12 +128,11 @@ func TestTheBackupRunsInTheBackground(t *testing.T) {
 }
 
 // TestTheBackupRefusesWhatIsNotARESTRepository: the backend is the guest's choice, never the
-// request's, and a run with no password has nothing to open the repository with.
+// request's.
 func TestTheBackupRefusesWhatIsNotARESTRepository(t *testing.T) {
 	for _, req := range []backupRequest{
-		{Repository: "/var/lib/briard", Password: "pw"},
-		{Repository: "sftp:host:/x", Password: "pw"},
-		{Repository: "http://10.0.0.129:7791/"},
+		{Repository: "/var/lib/briard"},
+		{Repository: "sftp:host:/x"},
 	} {
 		if ok, err := startBackup(&fakeExec{}, req); ok || err == nil {
 			t.Errorf("%+v: started=%v err=%v, want a refusal", req, ok, err)
@@ -131,13 +141,14 @@ func TestTheBackupRefusesWhatIsNotARESTRepository(t *testing.T) {
 }
 
 // TestTheBackupCommandLines: the newest member of every service (whatever took it) at a stable
-// path, read-only; the password in a 0600 file, never an argument; HA's own tarballs excluded;
-// one host name across nodes; the retention policy; everything unmounted and removed after.
+// path, read-only; the volume's key in a 0600 file, never an argument; HA's own tarballs
+// excluded; the household's group on the backup and on the forget; the retention policy;
+// everything unmounted and removed after.
 func TestTheBackupCommandLines(t *testing.T) {
 	f, newest := backupRig(map[string]func() ([]byte, error){
 		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
 	})
-	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://10.0.0.129:7791/", Password: "s3cret"})
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://10.0.0.129:7791/", Group: "f1d"})
 	if rep.Error != "" || rep.Snapshot != "abc123" {
 		t.Fatalf("report %+v", rep)
 	}
@@ -177,7 +188,7 @@ func TestTheBackupCommandLines(t *testing.T) {
 	args := strings.Join(b[0], " ")
 	for _, want := range []string{
 		"--repo rest:http://10.0.0.129:7791/", "--password-file " + backupPasswordFile,
-		"--exclude **/app/backups", "--host " + backupHost,
+		"--exclude **/app/backups", "--host f1d",
 		"--exclude **/app/backups " + backupRoot,
 	} {
 		if !strings.Contains(args, want) {
@@ -188,8 +199,8 @@ func TestTheBackupCommandLines(t *testing.T) {
 		t.Errorf("restic backup reads a stamped member path: %q", args)
 	}
 	fg := resticRuns(f, "forget")
-	if len(fg) != 1 || !strings.Contains(strings.Join(fg[0], " "), "--keep-daily 2 --keep-weekly 1 --prune") {
-		t.Errorf("forget %v, want the 2-daily 1-weekly policy with prune", fg)
+	if len(fg) != 1 || !strings.Contains(strings.Join(fg[0], " "), "--host f1d --keep-daily 2 --keep-weekly 1 --prune") {
+		t.Errorf("forget %v, want the 2-daily 1-weekly policy with prune, on this household's group only", fg)
 	}
 	if unlock := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "unlock") }); unlock < 0 || unlock > backup {
 		t.Error("a stale lock is not cleared before the backup")
@@ -208,7 +219,7 @@ func TestTheBackupCreatesTheRepositoryOnlyWhenItCannotOpenOne(t *testing.T) {
 		},
 		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
 	})
-	if rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Password: "pw"}); rep.Error != "" {
+	if rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"}); rep.Error != "" {
 		t.Fatalf("report %+v", rep)
 	}
 	if len(resticRuns(f, "init")) != 1 {
@@ -219,7 +230,7 @@ func TestTheBackupCreatesTheRepositoryOnlyWhenItCannotOpenOne(t *testing.T) {
 		"cat":  func() ([]byte, error) { return nil, errors.New("wrong password") },
 		"init": func() ([]byte, error) { return nil, errors.New("config file already exists") },
 	})
-	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Password: "pw"})
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
 	if rep.Error == "" || len(resticRuns(f, "backup")) != 0 {
 		t.Fatalf("report %+v after a refused init; backup must not run", rep)
 	}
@@ -237,7 +248,7 @@ func TestAFailedBackupIsTheReportNotASilence(t *testing.T) {
 	f, _ := backupRig(map[string]func() ([]byte, error){
 		"backup": func() ([]byte, error) { return []byte("Fatal: unable to save snapshot"), errors.New("exit status 1") },
 	})
-	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Password: "pw"})
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
 	if rep.Error == "" || rep.Snapshot != "" {
 		t.Fatalf("report %+v, want an error and no snapshot", rep)
 	}
@@ -250,7 +261,7 @@ func TestAFailedBackupIsTheReportNotASilence(t *testing.T) {
 func TestANodeWithNothingInstalledBacksUpNothing(t *testing.T) {
 	f := ringExec()
 	f.runFn = func(n string, args []string) ([]byte, error) { return nil, errors.New("no such directory") }
-	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Password: "pw"})
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
 	if rep.Error != "" || rep.Snapshot != "" || len(f.runs) != 1 {
 		t.Fatalf("report %+v after %v, want nothing done", rep, f.runs)
 	}
@@ -274,7 +285,7 @@ func TestTheBackupCarriesWhatARestoreNeeds(t *testing.T) {
 		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
 	})
 	host := map[string][]byte{"flock-id": []byte("f1d"), "casa.key": []byte("k3y")}
-	if rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Password: "pw", Host: host}); rep.Error != "" {
+	if rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/", Host: host}); rep.Error != "" {
 		t.Fatalf("report %+v", rep)
 	}
 	backup := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "backup") })
@@ -315,9 +326,86 @@ func TestTheBackupCarriesWhatARestoreNeeds(t *testing.T) {
 // TestTheBackupRefusesAHostFactThatIsAPath: a host fact is a name in one directory, never a path.
 func TestTheBackupRefusesAHostFactThatIsAPath(t *testing.T) {
 	for _, name := range []string{"", ".", "..", "../x", "a/b", `a\b`} {
-		req := backupRequest{Repository: "http://h/", Password: "pw", Host: map[string][]byte{name: nil}}
+		req := backupRequest{Repository: "http://h/", Host: map[string][]byte{name: nil}}
 		if ok, err := startBackup(&fakeExec{}, req); ok || err == nil {
 			t.Errorf("%q: started=%v err=%v, want a refusal", name, ok, err)
+		}
+	}
+}
+
+// TestTheKeyIsTheVolumes: minted once, 0600 and synced, only where the volume is mounted; the same
+// key on every later ask; never over a key that is there but cannot be read (a new one would
+// orphan every snapshot the old one opens); the household's word that it is saved recorded beside
+// it; and a run with no key is a failed run, not a repository under a key the volume lacks.
+func TestTheKeyIsTheVolumes(t *testing.T) {
+	ctx := context.Background()
+	f, _ := backupRig(nil)
+	delete(f.files, backupKeyFile)
+	k, err := backupKeyState(ctx, f, backupKeyRequest{})
+	if err != nil || k.Saved {
+		t.Fatalf("first ask %+v %v", k, err)
+	}
+	if !regexp.MustCompile(`^([a-z2-7]{4}-){7}[a-z2-7]{4}$`).MatchString(k.Key) {
+		t.Errorf("key %q is not eight groups of base32", k.Key)
+	}
+	if f.files[backupKeyFile] != k.Key+"\n" {
+		t.Errorf("the volume holds %q", f.files[backupKeyFile])
+	}
+	made := step(f, func(r []string) bool {
+		return slices.Equal(r, []string{"install", "-m", "0600", "/dev/null", backupKeyFile})
+	})
+	synced := step(f, func(r []string) bool { return slices.Equal(r, []string{"sync", "-f", dataMountRoot}) })
+	if made < 0 || synced < made {
+		t.Errorf("the key was not created 0600 and then synced: %v", f.runs)
+	}
+	again, err := backupKeyState(ctx, f, backupKeyRequest{Saved: true})
+	if err != nil || again.Key != k.Key || !again.Saved {
+		t.Fatalf("second ask %+v %v, want the same key, saved", again, err)
+	}
+	if _, ok := f.files[backupKeySavedFile]; !ok {
+		t.Error("the household's word was not recorded on the volume")
+	}
+
+	// There, but unreadable: no key, and no new one.
+	f, _ = backupRig(nil)
+	f.files[backupKeyFile] = ""
+	if k, err := backupKeyState(ctx, f, backupKeyRequest{}); err == nil {
+		t.Fatalf("minted %+v over an unreadable key", k)
+	}
+	if rep := runBackup(ctx, f, backupRequest{Repository: "http://h/"}); rep.Error == "" || len(resticRuns(f, "init")) != 0 {
+		t.Fatalf("report %+v after %d inits; a run without the key must fail before it opens anything", rep, len(resticRuns(f, "init")))
+	}
+
+	// Not mounted here (a Secondary): the path is the empty mountpoint, and nothing is written to it.
+	f, _ = backupRig(nil)
+	delete(f.files, backupKeyFile)
+	inner := f.runFn
+	f.runFn = func(n string, args []string) ([]byte, error) {
+		if n == "stat" {
+			return []byte("/\n"), nil
+		}
+		return inner(n, args)
+	}
+	if k, err := backupKeyState(ctx, f, backupKeyRequest{}); err == nil {
+		t.Fatalf("minted %+v where the volume is not mounted", k)
+	}
+	if _, ok := f.files[backupKeyFile]; ok {
+		t.Error("a key was written onto the empty mountpoint")
+	}
+}
+
+// TestASnapshotWithNoGroupIsTheGuestsOwn: a request that names no group (a rig with no host) is
+// taken under the one fixed name, so plain restic finds it where the README says.
+func TestASnapshotWithNoGroupIsTheGuestsOwn(t *testing.T) {
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
+	})
+	if rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"}); rep.Error != "" {
+		t.Fatalf("report %+v", rep)
+	}
+	for _, sub := range []string{"backup", "forget"} {
+		if r := resticRuns(f, sub); len(r) != 1 || !strings.Contains(strings.Join(r[0], " "), "--host "+backupHost) {
+			t.Errorf("%s %v, want --host %s", sub, r, backupHost)
 		}
 	}
 }

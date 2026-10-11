@@ -2,6 +2,8 @@ package guestagent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +38,8 @@ import (
 // facts arrive as content under names the guest checks.
 //
 // THE REPOSITORY IS THE HOST'S: restic's REST backend, served by the host agent on the private
-// link and written into the household's folder. The request carries its URL and the password;
-// the guest keeps neither, nor the host's facts, past the run.
+// link and written into the household's folder. The request carries its URL; the guest keeps
+// neither it nor the host's facts past the run. THE KEY IS THE VOLUME'S (backupKey below).
 //
 // THE STATE IS THIS PROCESS'S, as the check's is. A restart loses a running backup and its
 // report; the lock it leaves is cleared by the next run's unlock.
@@ -45,6 +47,101 @@ var backups struct {
 	sync.Mutex
 	busy   bool          // a backup is running
 	report *BackupReport // the finished run's report, until the host collects it
+}
+
+// THE REPOSITORY KEY LIVES ON THE REPLICATED VOLUME, beside the certificate's private key: there
+// is one repository per household and one key opens it, so the key is the flock's, shared by
+// every node and read by whichever is Primary tonight. In a node's own state directory, each node
+// of a pair would mint a key of its own and the one that promoted next could not open what the
+// other wrote. Nothing needs the key without the volume -- the run, a restore and the page all
+// stand on it mounted -- and a household whose volume is gone has only the copy it saved.
+//
+// MINTED ONLY WHERE THE VOLUME IS MOUNTED (anywhere else the path is the empty mountpoint) AND
+// ONLY WHEN THE FILE IS ABSENT, never when it cannot be read: a new key over an unreadable old
+// one would orphan every snapshot the old one opens. Synced like .vip-address, for the same
+// reason: the next promotion may follow a power cut. Under one mutex, because the nightly run
+// and the page's read may both find no key at once, and two minted keys would leave the
+// repository opened under one the volume does not hold.
+//
+// Base32 in groups of four: a person copies it by hand from the dashboard, and 160 bits read
+// aloud is eight short groups.
+const (
+	backupKeyFile = dataMountRoot + "/.backup-key"
+	// backupKeySavedFile marks that the household said it has a copy of the key elsewhere -- the
+	// household's word, so the flock's, like the key it is about.
+	backupKeySavedFile = dataMountRoot + "/.backup-key-saved"
+)
+
+var backupKeyMu sync.Mutex
+
+func backupKey(ctx context.Context, x Executor) (string, error) {
+	backupKeyMu.Lock()
+	defer backupKeyMu.Unlock()
+	out, err := x.Run(ctx, "stat", "-c", "%m", dataMountRoot)
+	if err != nil || strings.TrimSpace(string(out)) != dataMountRoot {
+		return "", errors.New("the data volume is not mounted here")
+	}
+	if _, err := x.Run(ctx, "test", "-e", backupKeyFile); err == nil {
+		b, err := x.ReadFile(backupKeyFile)
+		if err != nil {
+			return "", err
+		}
+		if k := strings.TrimSpace(string(b)); k != "" {
+			return k, nil
+		}
+		return "", errors.New(backupKeyFile + " is empty")
+	}
+	raw := make([]byte, 20)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	enc := strings.ToLower(base32.StdEncoding.EncodeToString(raw))
+	var groups []string
+	for i := 0; i < len(enc); i += 4 {
+		groups = append(groups, enc[i:i+4])
+	}
+	k := strings.Join(groups, "-")
+	if out, err := x.Run(ctx, "install", "-m", "0600", "/dev/null", backupKeyFile); err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := x.WriteFile(backupKeyFile, []byte(k+"\n")); err != nil {
+		return "", err
+	}
+	if out, err := x.Run(ctx, "sync", "-f", dataMountRoot); err != nil {
+		return "", fmt.Errorf("sync: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("backup: minted the household's repository key")
+	return k, nil
+}
+
+// BackupKey is what the page shows of the key: the key itself, and whether the household said it
+// has a copy somewhere else.
+type BackupKey struct {
+	Key   string `json:"key"`
+	Saved bool   `json:"saved"`
+}
+
+// backupKeyRequest asks for the key, minting it if there is none; Saved true records the
+// household's word that it is saved.
+type backupKeyRequest struct {
+	Saved bool `json:"saved,omitempty"`
+}
+
+func backupKeyState(ctx context.Context, x Executor, req backupKeyRequest) (BackupKey, error) {
+	k, err := backupKey(ctx, x)
+	if err != nil {
+		return BackupKey{}, err
+	}
+	if req.Saved {
+		if out, err := x.Run(ctx, "touch", backupKeySavedFile); err != nil {
+			return BackupKey{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		}
+		if out, err := x.Run(ctx, "sync", "-f", dataMountRoot); err != nil {
+			return BackupKey{}, fmt.Errorf("sync: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	_, err = x.Run(ctx, "test", "-e", backupKeySavedFile)
+	return BackupKey{Key: k, Saved: err == nil}, nil
 }
 
 const (
@@ -60,10 +157,8 @@ const (
 	// backupRoot: an argument or an environment variable would put it in /proc for the run's whole
 	// length, and inside the root it would be backed up beside what it opens.
 	backupPasswordFile = "/run/briard/backup.password"
-	// backupHost is the name every snapshot is taken under. restic groups snapshots by host for
-	// parent detection and for forget, and the node that runs the backup is whichever is Primary
-	// tonight: under each node's own name, a failover would rescan everything and keep a second
-	// retention ladder.
+	// backupHost is the name a snapshot is taken under when the request names no group: a guest
+	// with no host (Backup below), or a node from before it had a flock id.
 	backupHost = "briard"
 )
 
@@ -71,13 +166,20 @@ const (
 // whichever promotes next reads -- copied whole when present. tls/ carries the private key; the repository is encrypted under the household's key.
 var volumeFacts = []string{dataMountRoot + "/.vip-address", manifestDir, tlsDir}
 
-// backupRequest is what the host hands a run: where the repository is, how to open it, and the
-// facts only the host holds.
+// backupRequest is what the host hands a run: where the repository is, whose snapshots these are,
+// and the facts only the host holds.
 type backupRequest struct {
 	// Repository is the REST endpoint's URL (http://...). The guest prefixes the backend itself,
 	// so the host can only ever point a run at a REST server.
 	Repository string `json:"repository"`
-	Password   string `json:"password"`
+	// Group is the name every snapshot is taken under and the only group the retention touches:
+	// restic groups snapshots by host for parent detection and for forget. THE HOUSEHOLD'S, not
+	// the node's -- the flock id -- so a failover continues one ladder rather than starting a
+	// second, and so a repository an earlier household wrote is never pruned by this one: a
+	// fresh install writing into it keeps its own ladder, and the earlier nights are frozen, there
+	// to restore from until somebody deletes them on purpose, rather than pushed out within two
+	// nights by a new install's near-empty data.
+	Group string `json:"group,omitempty"`
 	// Host is the host's node-held facts a new install could not re-derive, by file name.
 	Host map[string][]byte `json:"host,omitempty"`
 }
@@ -105,9 +207,6 @@ type BackupState struct {
 func startBackup(x Executor, req backupRequest) (bool, error) {
 	if !strings.HasPrefix(req.Repository, "http://") && !strings.HasPrefix(req.Repository, "https://") {
 		return false, fmt.Errorf("%s: the repository is not a REST URL: %q", verbDataBackup, req.Repository)
-	}
-	if req.Password == "" {
-		return false, fmt.Errorf("%s: no repository password", verbDataBackup)
 	}
 	for name := range req.Host {
 		if name == "" || name == "." || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
@@ -192,8 +291,12 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		}
 		return nil
 	}
+	key, err := backupKey(ctx, x)
+	if err != nil {
+		return fail(fmt.Errorf("no repository key: %w", err))
+	}
 	defer x.Run(ctx, "rm", "-f", backupPasswordFile)
-	if err := secret(backupPasswordFile, []byte(req.Password)); err != nil {
+	if err := secret(backupPasswordFile, []byte(key)); err != nil {
 		return fail(err)
 	}
 
@@ -267,8 +370,12 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	if _, err := restic("unlock"); err != nil {
 		return fail(err)
 	}
+	group := req.Group
+	if group == "" {
+		group = backupHost
+	}
 	// HA's own backup tarballs are a second copy of the same data inside the first.
-	out, err := restic("backup", "--json", "--quiet", "--host", backupHost,
+	out, err := restic("backup", "--json", "--quiet", "--host", group,
 		"--exclude", "**/app/backups", backupRoot)
 	rep := backupSummary(out)
 	rep.Services = services
@@ -279,7 +386,10 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 			return rep
 		}
 	}
-	if _, err := restic("forget", "--keep-daily", "2", "--keep-weekly", "1", "--prune"); err != nil {
+	// OUR GROUP ONLY (backupRequest.Group): restic applies the policy per group and keep-* counts
+	// snapshots, not days, so another household's nights in this repository stay exactly as they
+	// are -- but the flag says so, rather than the policy's arithmetic.
+	if _, err := restic("forget", "--host", group, "--keep-daily", "2", "--keep-weekly", "1", "--prune"); err != nil {
 		rep.Error = strings.TrimSpace(rep.Error + "\n" + err.Error())
 		log.Printf("backup: %v", err)
 	}
@@ -306,7 +416,7 @@ func backupSummary(out []byte) BackupReport {
 
 // Backup is one run in line FOR A GUEST WITH NO HOST, the accommodation CheckRecorder makes: the
 // agent-less rigs drive the product's own backup through it against a real store. Nothing in the
-// product invokes it; the host's facts are the host's, and a rig has none.
-func Backup(ctx context.Context, x Executor, url, password string) BackupReport {
-	return runBackup(ctx, x, backupRequest{Repository: url, Password: password})
+// product invokes it; the host's facts and the group are the host's, and a rig has neither.
+func Backup(ctx context.Context, x Executor, url string) BackupReport {
+	return runBackup(ctx, x, backupRequest{Repository: url})
 }
