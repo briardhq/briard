@@ -40,17 +40,29 @@ whole disk image, and its identity is the store path of its system closure. Ever
 makes a node *this* node — its name, its addresses, its storage layout, its peers — is held by
 the host and pushed in at every bring-up, never baked into the image. A fact shared by the whole
 home lives instead on the replicated volume, written by the primary and read by whichever node
-promotes next. Exactly three qualify: the VIP address, the installed services' manifests, and the
-TLS material. Everything else is re-derived or pushed, so a stale copy has nowhere to live.
+promotes next. Five qualify: the VIP address, the installed services' manifests, the TLS
+material, and the backup's key with the flag that says you have saved it. Everything else is
+re-derived or pushed, so a stale copy has nowhere to live.
+
+The guest's OS is a **read-only image** under a tmpfs root: nothing it writes lands in the OS,
+and an OS update is a different file, never a changed one. Everything it does write — the
+container store, the journal, each boot's scratch — goes to a small node-local **state disk**
+that an install grows before it pulls. Its memory is grown, never guessed: the guest boots with
+what the installed services declare they need, is given more by memory hotplug as they ask (up
+to the host's RAM less what the host keeps), and starts over at the next launch, so a relaunch
+is the deliberate shrink. A host that fills up under a running guest never pauses it: the write
+fails inside the guest, where the service can see it, and the host warns you.
 
 **The guest is a citizen of your LAN, not a tenant behind your host.** Its network interfaces
-are children of the host's own NIC (macvtap), so it takes an address from your router like
-any other machine, owns the service address (the **VIP**) natively, and is found by name
-(`briard-<name>.local`, and optionally a claimed `<name>.briard.casa` with a real certificate)
-with no reflector or relay. We never create a bridge, never move the
-host's address, and never run a second DHCP server; if the machine already has a bridge —
-libvirt, Proxmox, Incus — the guest joins it instead. Which shape a node gets is *derived from
-the machine*, never configured. If the NIC the guest hangs off disappears, the agent re-parents
+are children of the host's own NIC (macvtap on a wired NIC, ipvtap on a wireless one), so it
+takes an address from your router like any other machine, owns the service address (the
+**VIP**) natively, and is found by name (`briard-<name>.local`, and optionally a claimed
+`<name>.briard.casa` with a real certificate) with no reflector or relay. We never create a
+bridge, never move the host's address, and never run a second DHCP server; if the machine
+already has a bridge — libvirt, Proxmox, Incus — the guest joins it instead. Which shape a
+node gets is *derived from the machine*, never configured. A Wi-Fi machine is a
+**single-anchor** node: fully serving, and unable to take a second machine until it is wired,
+because a wireless station carries one MAC and the guest borrows it. If the NIC the guest hangs off disappears, the agent re-parents
 the guest onto the machine's new uplink. A macvtap cannot move, so that costs one guest restart,
 and it is paced so an ordinary blip does not trigger it.
 
@@ -144,6 +156,16 @@ crawl.
 Each service's data is its own btrfs subvolume, so a snapshot and a rollback touch that
 service and nothing else.
 
+**Off-site is a folder you own.** Every night the node backs the whole data volume up with
+`restic` — the same read-only sample the history already takes, so consistency is free — into a
+folder on the host (`Briard Backup` in the installing user's home by default, or any folder you
+point it at: a USB disk, a NAS mount, a synced drive). It is on from install, asks nothing, and
+ships inside each night everything a fresh install needs to come back as *this* household. The
+archive's key lives on the replicated volume and is shown once, with a README beside the
+archive telling you to copy it; the node warns after two failed nights and never gates an
+update on the copy. Restoring a night is an ordinary undo (below): the night is materialised as
+a point in the service's history and the same Undo steps back to it.
+
 ## Updates, and undoing them
 
 The update model is the product, so it is built to be reversible. There are two kinds of
@@ -170,7 +192,15 @@ service start and every operation takes a snapshot, and an hourly sample fills t
 stretches. Points stay undoable for five days, and the most recent update's for two weeks,
 since "the update broke my house" is found days later. Home Assistant is **quiesced** for a
 sample: its recorder pauses writes so the database is caught consistent. A sample taken when
-the pause did not hold is recorded as crash-consistent instead.
+the pause did not hold is recorded as crash-consistent instead. Each point is judged once,
+after the start that follows it, by the service's own health — healthy, unhealthy, still
+starting, or unknown — and the app-update gate reads the same verdict: it reverts on unhealthy
+or still starting, never on unknown. Undoing a row undoes exactly the rows above it.
+
+Leaving is the install's inverse: `briard uninstall` stops the units (the guest by a clean
+stop), removes what the install laid down, and by default keeps your data and the node's
+identity whole, so the same install resumes the same home; `-delete-data` is the only finer
+knob. It tells nobody — a claimed name simply lapses.
 
 **An OS update** — a whole new guest image — never touches your services. The new OS boots,
 runs the same containers on the same data, and is gated on their health; if it fails the
@@ -189,6 +219,16 @@ The agent itself is watched by init: a systemd watchdog catches the one failure 
 no other reflex — an agent that is alive but stuck. A trip kills it with a full stack dump
 of every goroutine in the journal (evidence, not just a restart), the restarted agent
 re-adopts the running guest, and your service never notices.
+
+## When something needs you
+
+The agent keeps a small, closed set of **alerts** — a disk filling up, a clock an hour out of
+sync, updates that stopped, a service down for ten minutes, the guest not answering, a backup
+that failed two nights running, a disk reporting media errors. Each is raised by the thing that
+observes it and cleared by the same thing when the condition ends; an alert the code does not
+list does not exist. They land where you already look: `sudo briard alerts` on the host, the
+Briard page's banner, Home Assistant's Repairs panel, and — if you set an `ntfy` topic — your
+phone. Nothing is sent anywhere else.
 
 ## Local-first, and cloudless by default
 
@@ -253,6 +293,21 @@ the host at every bring-up, so the two sides cannot drift apart; the cross-relea
 do exist ride the signed release manifests (a guest image names the oldest agent that may install
 it, a release names its own upgrade floor).
 
+The host's observe loop ticks only for what it acts on — serving, liveness, quorum, an
+alert's gate. A person's or the dashboard's read is fetched when asked; a long read runs off
+the loop and the tick reads its last result; anything that *changes* the node — an install, a
+restore, an update, a handover — is an **act** that runs off the loop, one at a time, and a
+second act is refused as busy rather than queued. The channel carries many calls at once,
+demultiplexed by id: a deadline abandons its own call (and cancels it in the guest), and the
+channel is declared down only when the guest has answered nothing at all since that call was
+sent. A hung act therefore never stops the tick that would notice the guest is gone.
+
+One tiny channel points the other way. A service that restarts *itself* — Home Assistant does,
+far more often than we restart it — needs to tell the guest agent so, and be told when it may
+proceed, so each service gets one socket and a token minted for it alone. The caller is
+untrusted (for Home Assistant that is every custom component ever installed): it never names
+itself, no verb names a path, no verb chooses what is destroyed, and every verb is bounded.
+
 A prose specification will follow when there is a cloud tier worth writing one for. Until
 then, pointing you at types that are compiled and tested is more honest than a document
 that could quietly drift from them.
@@ -315,12 +370,14 @@ The words the code and its comments use, briefly:
   it is a *service*.
 - **Flock** — the home's nodes under one name. Every install has one, and a **lone node** is a
   flock of one, running no DRBD.
-- **Anchor** — an always-on node that holds a full copy of the data and can be primary.
+- **Anchor** — an always-on node that holds a full copy of the data and can be primary. A
+  **single-anchor** node is a Wi-Fi machine: serving, and unable to take a peer until wired.
 - **Witness** — a diskless DRBD member that votes but stores nothing, run locally or by us.
 - **VIP** — the service address, held by whichever node is primary.
 - **Node IP, system subnet, private link** — a node's own address, the home's range it comes
   from, and the host-to-guest tap (see [The shape](#the-shape)).
-- **Substrate** — how the guest's NICs attach to your LAN: macvtap by default, or the bridge the
+- **Substrate** — how the guest's NICs attach to your LAN: macvtap on a wired NIC, ipvtap on a
+  wireless one, or the bridge the
   machine already has. Derived, never configured.
 - **Bring-up** — the host starting a guest and pushing it everything that makes it this node:
   binaries, name, addresses, storage spec, peers.
@@ -329,6 +386,8 @@ The words the code and its comments use, briefly:
 - **Promoter chain** — the five units promotion starts, in order.
 - **Deadman** — the guest's reboot when its host agent has gone silent.
 - **Quiesce** — pausing a service's writes so a snapshot of it is consistent.
+- **History / Undo** — the per-app list of points you can go back to, and going back to one.
+  Never *backup* (that is the off-site copy) and never *version* (that is the app's own).
 - **Report card** — the verdict on whether a machine can be a node, at install and on demand
   with `briard doctor`. It refuses with a reason rather than half-installing.
 - **Dashboard / Briard page** — the household page at `briard-<name>.local`. The code calls it

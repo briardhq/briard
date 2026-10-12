@@ -129,9 +129,15 @@ These further rules are not machine-checked but are equally load-bearing:
   operator or a test did on purpose fights its own users. And only the three wrapper scripts that
   supervise the agent's own replacement are frozen by necessity: a fix to anything else baked
   into an installed script ships in a release and reaches no installed node.
-- **Configuration is deployment wiring.** It is environment variables read once, in
-  `agent/host/config.go`, over `/opt/briard/config.env`, with defaults in code and an empty
-  value meaning off. Behavioural feature flags are not accepted.
+- **Configuration is deployment wiring.** It is environment variables, with
+  `/opt/briard/config.env` loaded once in `agent/host/config.go` as the layer under them, defaults
+  in code and an empty
+  value meaning off. Behavioural feature flags are not accepted. There are two writers and no
+  third: `install.sh` appends every `BRIARD_K` in its environment as `K` and holds no key list,
+  and `briard config set` rewrites one key at runtime (`vip` and the backup's three). The
+  installer configures only what never changes — where files live, which units exist; every
+  per-machine decision is the agent's, re-asked at every start, and the node's identity is
+  minted by the agent, never the script.
 - **The alpha is reinstall-only.** No compatibility path protects an installed node. A change
   that would need one says so, and the release floor makes older nodes reinstall.
 
@@ -155,6 +161,12 @@ Some specific defaults, so they are not a surprise in review:
 - **One way per concern.** Go standard library `net/http` for HTTP, standard `log` for logging,
   `fmt.Errorf` with `%w` for error wrapping. No client framework, no logging framework, no error
   package. Shared types are defined once in `shared/` and imported by both sides, never redefined.
+- **The loop ticks for what it acts on.** A timer in the host agent is for serving, liveness,
+  quorum and an alert's gate; a person's read is fetched when asked; a long read runs off the
+  loop and the tick reads its last result; anything that changes the node is an act that runs
+  off the loop, one at a time, refused as busy rather than queued. The guest channel is
+  multiplexed by id and never wrapped — a new directive names its lane, or it is on the loop by
+  accident.
 - **Durable writes have one shape.** A fact whose only copy is the file must survive a power cut:
   node-local state is written tmp + fsync + rename (`agent/selfupdate/layout.go` is the canonical
   form); writes on the replicated volume are `sync -f`'d, because stopping the guest *is* a power
