@@ -2180,3 +2180,31 @@ func TestDashboardBackupIsWrittenSecretThenMovedIn(t *testing.T) {
 		t.Error("the push is not advertised, or waits behind acts")
 	}
 }
+
+// VIPLeased reads dhcpcd's per-boot lease file for the device: present and non-empty is a server
+// that answered this boot; absent or empty is not; and a "device" that is really a path is refused
+// before it is ever joined into one.
+func TestVIPLeasedReadsThisBootsLeaseFile(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		dev   string
+		want  bool
+	}{
+		{"a server answered", map[string]string{"/var/lib/dhcpcd/eth2.lease": "\x02\x01..."}, "eth2", true},
+		{"no answer this boot", nil, "eth2", false},
+		{"an empty file is no lease", map[string]string{"/var/lib/dhcpcd/eth2.lease": ""}, "eth2", false},
+		{"another device's lease", map[string]string{"/var/lib/dhcpcd/eth1.lease": "x"}, "eth2", false},
+		{"a path is not a device", map[string]string{"/var/lib/dhcpcd/../x.lease": "x"}, "../x", false},
+		{"no device", nil, "", false},
+	} {
+		g := dial(t, &fakeExec{files: tc.files})
+		got, err := g.VIPLeased(context.Background(), tc.dev)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: VIPLeased(%q) = %v, want %v", tc.name, tc.dev, got, tc.want)
+		}
+	}
+}

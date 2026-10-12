@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -92,6 +93,20 @@ const verbNetVIP = "net.vip"
 // guest was handed: briard-vip-up claims a remembered address optimistically at the next
 // promotion, so a refused one left there would be claimed -- and refused -- again.
 const verbNetVIPForget = "net.vip.forget"
+
+// verbNetVIPLeased reports whether a DHCP server answered for the VIP device ON THIS BOOT: dhcpcd
+// writes the device's lease file when a server ACKs, and /var is the state disk's scratch, emptied
+// at every boot, so the file exists only if this boot was answered. It is the one signal that a
+// THIRD PARTY on the LAN heard this guest -- holding the VIP is not, because a promotion claims the
+// flock's remembered address before any server is asked. The host reads it after a launch to tell a
+// guest on the LAN from one whose frames never left the host's bridge.
+const verbNetVIPLeased = "net.vip.leased"
+
+// dhcpcdLease is dhcpcd's lease file for one interface (its DBDIR, /var/lib/dhcpcd).
+func dhcpcdLease(dev string) string { return "/var/lib/dhcpcd/" + dev + ".lease" }
+
+// ifaceName is what a Linux interface name can be -- and what keeps a name from being a path.
+var ifaceName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
 
 // vipAddrFile is the image's `vipAddrFile` (guest-image/configuration.nix), restated as
 // dataMountRoot is.
@@ -437,7 +452,7 @@ const dataMountRoot = "/var/lib/briard"
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
+	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget, verbNetVIPLeased,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
 	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
@@ -471,7 +486,7 @@ var besideActs = map[string]bool{
 	// reads
 	guestfirmware.VerbHello: true, verbStatus: true, verbServiceActive: true,
 	verbServiceHealth: true, verbServiceHealthOf: true, verbServiceInstalled: true,
-	verbServiceList: true, verbDataMembers: true, verbNetVIP: true, verbNetMDNSPublished: true,
+	verbServiceList: true, verbDataMembers: true, verbNetVIP: true, verbNetVIPLeased: true, verbNetMDNSPublished: true,
 	verbNetMDNSOther: true, verbResources: true, verbStorageFree: true, verbCertRead: true,
 	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
@@ -1911,6 +1926,17 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return "", nil
 			}
 			return firstCIDR(string(out)), nil
+		case verbNetVIPLeased:
+			var req netVIPRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			// An interface name, never a path: the file read below is named after it.
+			if !ifaceName.MatchString(req.Dev) {
+				return false, nil
+			}
+			b, err := x.ReadFile(dhcpcdLease(req.Dev))
+			return err == nil && len(b) > 0, nil
 		case verbNetMDNSName:
 			var req mdnsNameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2760,6 +2786,20 @@ func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
 		return "", err
 	}
 	return cidr, nil
+}
+
+// VIPLeased reports whether a DHCP server answered for dev on the guest's current boot -- see
+// verbNetVIPLeased for why that, and not the VIP itself, is the evidence the guest reached the LAN.
+// SupportsVIPLeased reports whether this guest can answer VIPLeased: a guest dressed before the
+// verb existed cannot, and is not judged by it.
+func (g *Client) SupportsVIPLeased() bool { return g.Supports(verbNetVIPLeased) }
+
+func (g *Client) VIPLeased(ctx context.Context, dev string) (bool, error) {
+	var leased bool
+	if err := g.c.Call(ctx, verbNetVIPLeased, netVIPRequest{Dev: dev}, &leased); err != nil {
+		return false, err
+	}
+	return leased, nil
 }
 
 // NodeStorage hands the guest this node's storage spec and runs briard-node-storage.service:

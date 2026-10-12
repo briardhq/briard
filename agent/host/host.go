@@ -424,6 +424,9 @@ type Config struct {
 	// holds a refusal the doctor reads. Machinery like beat; nil-safe, and inert on any other
 	// substrate. Written by the observe loop only.
 	ipvtap *ipvtapCopier
+	// lan confirms each launch reached the LAN, on a substrate that can hide it (lanpresence.go).
+	// Machinery like beat; nil-safe, nil wherever it does not apply. Set by Run, read by the loop.
+	lan *lanPresence
 	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
 	// nil means everything runs on the loop (tests). Set by Run.
 	acts *actLane
@@ -703,6 +706,11 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// BRIARD_NIC is the only way a node legitimately reaches a different subnet -- we never do it
 	// on our own -- and what that invalidates is the collision check behind this node's drawn
 	// system subnet, which nothing else would ever notice.
+	// Asked before bringUp, which answers the same question and then acts on it: whether the guest
+	// this agent is about to serve is one it launches, or one it adopts from its previous life.
+	if confirmLANPresence && cfg.net != nil && cfg.net.Bridge && cfg.VIPDev != "" && cfg.vipAddr() == "" && len(cfg.Resource.Peers) <= 1 {
+		cfg.lan = newLANPresence(platform.Running(ctx, cfg.guestSpec()))
+	}
 	movedLAN := cfg.net != nil && nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, cfg.net.Parent)) == nic.Elsewhere
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
@@ -1446,6 +1454,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// them; a dead channel is one failed read they all see the same way.
 		cfg.beat.Beat()
 		vip := cfg.readVIP(ctx, r)
+		cfg.judgeLAN(ctx, r, logf) // after a launch: did the LAN answer it (lanpresence.go)
 		st, cl, probe, err := cfg.snapshot(ctx, r, vip, sys)
 		// AHEAD of the channel-down return, and that placement is the load-bearing part. A dead
 		// channel is precisely when the local guest may have stopped serving and a PEER may have
