@@ -37,6 +37,12 @@ func main() {
 	if len(args) > 0 && args[0] == "uninstall" {
 		os.Exit(runUninstall(args[1:]))
 	}
+	// `install` is its inverse and the installer's body: install.sh calls it on the bootstrap
+	// agent and, once the service runs, `install -wait` on the installed one. Nobody types it,
+	// so the household's help does not list it.
+	if len(args) > 0 && args[0] == "install" {
+		os.Exit(runInstall(args[1:]))
+	}
 
 	// Internal plumbing, still flags on purpose: a pipeline or a unit file invokes each of these,
 	// nobody types them, and promoting them to verbs would put them in a help written for a

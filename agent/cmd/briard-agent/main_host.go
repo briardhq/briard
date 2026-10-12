@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
+	"os/signal"
+	"syscall"
 
 	"briard.io/agent/host"
 	"briard.io/agent/install"
 	"briard.io/agent/platform"
+	"briard.io/agent/reportcard"
 	"briard.io/agent/selfupdate"
 )
 
@@ -30,16 +32,14 @@ func runGuestShutdown(ctx context.Context, qmpSock string) error {
 }
 
 // runFetchInstall downloads + verifies the signed artifact sets of BOTH chains into dest
-// (assertion e), the network half of install.sh: the briard bundle lands under dest/briard and
-// the VM image under dest/vm, each beside the manifest that verified it. The channel root, the
-// release to install and the release keyring PEM come from the environment (install.sh sets
-// BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING, the last the bundled release public
-// key). It lives here, not main.go; the guest is its own main and never links
-// install/net/http (the trim).
+// (install.FetchRelease). The channel root, the release to install and the release keyring PEM
+// come from the environment: BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING. It lives
+// here, not main.go; the guest is its own main and never links install/net/http (the trim).
 //
-// All-or-nothing across the two chains as well as within each: dest appears only once both
-// have verified, so install.sh never sees a briard bundle without the VM image it was
-// published beside (briard/stable + vm/stable IS the tested pair, by construction).
+// `briard install` fetches through the same function. The flag stays for the installer that
+// predates the verb: an install.sh saved to disk heals forward to current stable ("old
+// installer, new artifacts", scripts/publish-release.sh), so a bootstrap must still answer the
+// --report-card / --fetch-install pair that installer calls before laying the files down itself.
 func runFetchInstall(ctx context.Context, dest string) error {
 	base := os.Getenv("BRIARD_CHANNEL_URL")
 	if base == "" {
@@ -61,44 +61,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(dest); err == nil {
-		return fmt.Errorf("staging dest %s already exists", dest)
-	}
-	tmp, err := os.MkdirTemp(filepath.Dir(dest), ".briard-install-")
-	if err != nil {
-		return fmt.Errorf("staging dir: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			os.RemoveAll(tmp)
-		}
-	}()
-	// The briard chain first -- this binary installs its Linux arm --
-	// and then the vm release ITS MANIFEST NAMES: the VM image is a function of its
-	// inputs and is re-published only when they change, so its id is no longer derivable from the
-	// briard id, and the briard manifest is where the pairing lives. One selector still installs
-	// one tested pair; it is just the briard side that resolves it.
-	bf := &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf}
-	if err := bf.FetchVerified(ctx, release, filepath.Join(tmp, install.ChainBriard)); err != nil {
-		return err
-	}
-	bm, err := install.ReadManifest(filepath.Join(tmp, install.ChainBriard, install.ManifestName))
-	if err != nil {
-		return fmt.Errorf("read the fetched briard manifest: %w", err)
-	}
-	if bm.VM == "" {
-		return fmt.Errorf("briard release %s names no vm release -- published before releases carried one; the alpha reinstalls from a current channel", bm.Version)
-	}
-	vf := &install.Fetcher{BaseURL: base, Chain: install.ChainVM, Platform: install.PlatformVM, Keyring: kr, Logf: log.Printf}
-	if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, install.ChainVM)); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, dest); err != nil {
-		return fmt.Errorf("place staging dir: %w", err)
-	}
-	committed = true
-	return nil
+	return install.FetchRelease(ctx, base, release, kr, dest, log.Printf)
 }
 
 // runFetchUpdate is the update unit's verb: resolve target on the briard chain, decide
@@ -138,6 +101,55 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 // trim excludes.
 func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
 	return install.WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs)
+}
+
+// runInstall is `briard-agent install [-wait]`, the installer's body (host.Install). Without
+// -wait: the machine report card, then the layout -- the card FIRST, so a refusal is truthful
+// when it says nothing was installed and its disk check measures a disk the install has not
+// eaten into. With -wait: the closing, once the installer has enabled the service
+// (host.InstallWait). Failures read as the installer's own (`briard: ERROR: ...`), since that is
+// whose output they are.
+func runInstall(args []string) int {
+	fs := flag.NewFlagSet("briard install", flag.ContinueOnError)
+	wait := fs.Bool("wait", false, "wait for the installed node to answer, then print its one-time link")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprint(os.Stderr, "briard install: takes no arguments\n")
+		return 2
+	}
+	say := func(format string, a ...any) { fmt.Printf("briard: "+format+"\n", a...) }
+	fail := func(err error) int { fmt.Fprintf(os.Stderr, "briard: ERROR: %v\n", err); return 1 }
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	if *wait {
+		if err := host.InstallWait(ctx, say); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
+	if os.Geteuid() != 0 {
+		return fail(errors.New("run as root (curl ... | sudo sh)"))
+	}
+	// The card is told the two things it cannot infer. VIP_ADDR, because judging a service
+	// address against THIS LAN is the one check that compares our intent with the household's
+	// network. BRIARD_NIC (read as is), because the card SELECTS the device the guest's L2 will
+	// hang off and validates it by creating a throwaway macvtap on it -- judging a different device
+	// than the install will use is the worst possible half-truth. The substrate is not passed at
+	// all: the card derives it from the device.
+	say("checking host readiness ...")
+	os.Setenv("VIP_ADDR", os.Getenv("BRIARD_VIP_ADDR"))
+	cardCtx, cancel := context.WithTimeout(ctx, cardTimeout)
+	ok := reportcard.Run(cardCtx, os.Stdout)
+	cancel()
+	if !ok {
+		return fail(errors.New("host is not ready (see the fix above); nothing was installed"))
+	}
+	if err := host.Install(ctx, say, log.Printf); err != nil {
+		return fail(err)
+	}
+	return 0
 }
 
 // runUninstall is `briard uninstall`. The flags are parsed here and the work is the host

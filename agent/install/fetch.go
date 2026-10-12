@@ -516,3 +516,49 @@ func (f *Fetcher) Artifact(ctx context.Context, version, dir string, a Entry) er
 func IsPointer(target string) bool {
 	return target == TargetStable || target == TargetLatest || target == TargetDev
 }
+
+// FetchRelease downloads + verifies the signed artifact sets of BOTH chains into dest: the
+// briard bundle (this binary's Linux arm) under dest/briard and the VM image under dest/vm, each
+// beside the manifest that verified it. The vm release is the one the briard manifest NAMES: the
+// VM image is a function of its inputs and is re-published only when they change, so its id is
+// not derivable from the briard id, and the briard manifest is where the pairing lives. One
+// selector still installs one tested pair; it is just the briard side that resolves it.
+//
+// All-or-nothing across the two chains as well as within each: dest appears only once both
+// have verified, so an install never sees a briard bundle without the VM image it was
+// published beside (briard/stable + vm/stable IS the tested pair, by construction).
+func FetchRelease(ctx context.Context, base, release string, kr *selfupdate.Keyring, dest string, logf func(string, ...any)) error {
+	if _, err := os.Stat(dest); err == nil {
+		return fmt.Errorf("staging dest %s already exists", dest)
+	}
+	tmp, err := os.MkdirTemp(filepath.Dir(dest), ".briard-install-")
+	if err != nil {
+		return fmt.Errorf("staging dir: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			os.RemoveAll(tmp)
+		}
+	}()
+	bf := &Fetcher{BaseURL: base, Chain: ChainBriard, Platform: PlatformLinux, Keyring: kr, Logf: logf}
+	if err := bf.FetchVerified(ctx, release, filepath.Join(tmp, ChainBriard)); err != nil {
+		return err
+	}
+	bm, err := ReadManifest(filepath.Join(tmp, ChainBriard, ManifestName))
+	if err != nil {
+		return fmt.Errorf("read the fetched briard manifest: %w", err)
+	}
+	if bm.VM == "" {
+		return fmt.Errorf("briard release %s names no vm release -- published before releases carried one; the alpha reinstalls from a current channel", bm.Version)
+	}
+	vf := &Fetcher{BaseURL: base, Chain: ChainVM, Platform: PlatformVM, Keyring: kr, Logf: logf}
+	if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, ChainVM)); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		return fmt.Errorf("place staging dir: %w", err)
+	}
+	committed = true
+	return nil
+}
