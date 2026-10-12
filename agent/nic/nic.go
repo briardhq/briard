@@ -104,7 +104,7 @@ func Select(override string) Selection {
 	switch {
 	case override != "":
 		s.Dev, s.Override = override, true
-		if !exists("/sys/class/net/" + override) {
+		if !Exists(override) {
 			s.Err = fmt.Errorf("%w: %s", ErrNoSuchDevice, override)
 			return s
 		}
@@ -132,7 +132,7 @@ func Select(override string) Selection {
 
 // Up reports whether dev exists and is up -- the question the agent's hot path asks of the
 // devices its config names, before it asks anything about a parent.
-func Up(dev string) bool { return exists("/sys/class/net/"+dev) && up(dev) }
+func Up(dev string) bool { return Exists(dev) && up(dev) }
 
 // Usable reports whether the agent may build on this selection. Wireless is not a fault: it is a
 // substrate, and what it costs (no failover) is the report card's to grade.
@@ -250,10 +250,6 @@ func procTable(text string) [][]string {
 	return rows
 }
 
-// DefaultRoute reads the interface owning the default route (destination 00000000) from
-// /proc/net/route -- the MAIN table, which is the point (see Choose). "" if none.
-func DefaultRoute() string { return parseDefaultRouteDev(readText(procRoute)) }
-
 // parseDefaultRouteDev pulls the default route's interface out of /proc/net/route's text. Pure, so
 // the format handling is unit-tested against real output rather than trusted.
 func parseDefaultRouteDev(text string) string {
@@ -280,13 +276,6 @@ func Candidates() []string {
 		}
 	}
 	return out
-}
-
-// Wireless reports whether dev is an 802.11 station. Both spellings: `wireless` is the old
-// extension, `phy80211` the cfg80211 one, and drivers differ on which they publish.
-func Wireless(dev string) bool {
-	base := "/sys/class/net/" + dev
-	return exists(base+"/wireless") || exists(base+"/phy80211")
 }
 
 func exists(path string) bool {

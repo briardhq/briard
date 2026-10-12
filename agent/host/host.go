@@ -967,6 +967,8 @@ func (cfg Config) baseGuestSpec() platform.QEMUSpec {
 		NetMode:    cfg.NetMode,
 		NetWrapBin: cfg.NetWrapBin,
 		SerialLog:  cfg.SerialLog,
+		// qemu's own output: the journal under systemd (""), a file under a manager that keeps none.
+		UnitLog: guestUnitLog,
 	}
 }
 

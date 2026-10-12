@@ -105,7 +105,7 @@ func New(base, runDir string) Layout {
 	if runDir == "" {
 		runDir = DefaultRunDir
 	}
-	return Layout{Base: base, RunDir: runDir}
+	return Layout{Base: filepath.Clean(base), RunDir: filepath.Clean(runDir)}
 }
 
 // AgentPath is the committed binary the systemd unit runs by default (via briard-exec).

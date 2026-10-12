@@ -82,3 +82,8 @@ func (zeroReader) Read(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// diskCache is every guest disk's qemu cache mode. `none` is O_DIRECT: the guest keeps a page cache
+// of its own, so the host's would be a second copy of the same bytes, paid out of RAM a small board
+// does not have, and guest flushes are honoured either way.
+const diskCache = "none"

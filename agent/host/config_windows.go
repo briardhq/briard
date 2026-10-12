@@ -1,0 +1,29 @@
+package host
+
+// The install roots on Windows: one tree under %ProgramData%, which is where a machine-wide
+// service keeps its files. Constants rather than read from the environment, for the reason the
+// Linux roots are -- every default below derives from them, and an agent that relocated itself on
+// a variable would be looking for its own state somewhere the installer never put it.
+//
+// There is no tmpfs, so runDir survives a reboot. What lives there is sockets, which every
+// listener removes before it binds, and the trial flags of self-update, which on Windows need an
+// explicit clear at boot where Linux gets one from the filesystem.
+const (
+	prefixDir = `C:\ProgramData\briard`
+	stateDir  = prefixDir + `\state`
+	runDir    = prefixDir + `\run`
+	logDir    = prefixDir + `\log`
+
+	adminPortSock = runDir + `\admin-port.sock`
+	guestConsole  = logDir + `\guest-console.log`
+	// guestUnitLog is qemu's own output. The SCM keeps no journal, so it is a file or it is lost.
+	guestUnitLog = logDir + `\briard-guest.log`
+
+	// defaultAccel is WHPX, with TCG as the fallback qemu takes when the hypervisor platform is not
+	// enabled.
+	defaultAccel = "whpx:tcg"
+)
+
+// AgentLog is the agent's own log file. Under the SCM a service's stderr goes nowhere, so the
+// agent's main sends log.Printf here.
+func AgentLog() string { return logDir + `\briard-agent.log` }

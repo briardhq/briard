@@ -118,7 +118,7 @@ func (s Spec) built(ctx context.Context) bool {
 			if held[d] == nil {
 				return false
 			}
-		case !exists("/sys/class/net/" + d):
+		case !Exists(d):
 			return false
 		}
 	}
@@ -244,7 +244,7 @@ func Rebuild(ctx context.Context, s Spec) error {
 		if t == "" {
 			continue
 		}
-		if exists("/sys/class/net/" + t) {
+		if Exists(t) {
 			if out, err := ip(ctx, "link", "del", t); err != nil {
 				return fmt.Errorf("nic: removing %s before re-parenting: %s", t, firstLine(out, err))
 			}
@@ -272,7 +272,7 @@ func Remove(ctx context.Context, s Spec) error {
 		}
 	}
 	for _, t := range []string{s.SystemTap, s.ServiceTap, s.PrivTap} {
-		if t != "" && exists("/sys/class/net/"+t) {
+		if t != "" && Exists(t) {
 			if out, err := ip(ctx, "link", "del", t); err != nil {
 				keep(fmt.Errorf("nic: removing %s: %s", t, firstLine(out, err)))
 			}
@@ -299,7 +299,7 @@ func Remove(ctx context.Context, s Spec) error {
 // on the overwhelmingly common path -- and so the agent can SAY that the network is not what it
 // should be without having tried to fix it yet.
 func Converged(s Spec) bool {
-	if s.Parent == "" || !exists("/sys/class/net/"+s.Parent) {
+	if s.Parent == "" || !Exists(s.Parent) {
 		return false
 	}
 	var held map[string][]string
@@ -324,7 +324,7 @@ func Converged(s Spec) bool {
 		// EXISTENCE, NOT LINK STATE. A device that is administratively down is not drift to be
 		// reconciled -- it is somebody's decision, and Converge would not undo it anyway (see the
 		// rule above it), so reporting it as unconverged would only make the tick say so forever.
-		if !exists("/sys/class/net/" + t) {
+		if !Exists(t) {
 			return false
 		}
 		// The two flags on a macvtap child that are not kernel defaults. BOTH are checked, and
@@ -353,7 +353,7 @@ func Converged(s Spec) bool {
 
 // ensureMacvtap creates one macvtap child and gives it the two flags that are not defaults.
 func ensureMacvtap(ctx context.Context, dev, parent string) error {
-	created := !exists("/sys/class/net/" + dev)
+	created := !Exists(dev)
 	if created {
 		if out, err := ip(ctx, macvtapAddArgs(dev, parent)...); err != nil {
 			return fmt.Errorf("nic: macvtap %s on %s: %s", dev, parent, firstLine(out, err))
@@ -409,7 +409,7 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 // ensureTap creates a plain tap if it is not there. The private host<->guest link and the bridge
 // substrate's one port are both this shape.
 func ensureTap(ctx context.Context, dev string) error {
-	if exists("/sys/class/net/" + dev) {
+	if Exists(dev) {
 		return nil // exists: not ours to re-up (see the rule above Converge)
 	}
 	if out, err := ip(ctx, tapAddArgs(dev)...); err != nil {
@@ -453,10 +453,6 @@ func ensureAddr(ctx context.Context, a Addr) error {
 	return nil
 }
 
-// IsBridge reports whether dev is a bridge -- the substrate fork, asked of the device itself.
-// /sys/class/net/<dev>/bridge exists only on one, whoever created it and however.
-func IsBridge(dev string) bool { return dev != "" && exists("/sys/class/net/"+dev+"/bridge") }
-
 // ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6
 // at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
 // the tick does not chase a knob the machine does not have.
@@ -472,12 +468,6 @@ func ipv6Disabled(dev string) bool {
 	return strings.TrimSpace(string(b)) == "1"
 }
 
-// up reads IFF_UP off the device rather than asking `ip`, because this runs on every tick.
-func up(dev string) bool {
-	i, err := net.InterfaceByName(dev)
-	return err == nil && i.Flags&net.FlagUp != 0
-}
-
 // flags reads /sys/class/net/<dev>/flags -- the raw IFF_ bitmap, which is where ALLMULTI is
 // visible at all (net.Interface does not carry it).
 func flags(dev string) int64 { return parseIfFlags(readText("/sys/class/net/" + dev + "/flags")) }
@@ -491,15 +481,6 @@ func parseIfFlags(text string) int64 {
 		return 0
 	}
 	return n
-}
-
-// master names the bridge dev is a port of, "" when it is a port of nothing.
-func master(dev string) string {
-	l, err := os.Readlink("/sys/class/net/" + dev + "/master")
-	if err != nil {
-		return ""
-	}
-	return parseMaster(l)
 }
 
 // parseMaster takes the bridge name out of the `master` symlink's target. Pure, so the one detail

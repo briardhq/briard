@@ -63,7 +63,7 @@ func ensureIpvtap(ctx context.Context, dev, parent string, held map[string][]str
 	if flags == nil {
 		// A device by this name in the HOST's namespace is ours from the macvtap substrate,
 		// left by a move from wire to Wi-Fi. It holds the name the child needs.
-		if exists("/sys/class/net/" + dev) {
+		if Exists(dev) {
 			if out, err := ip(ctx, "link", "del", dev); err != nil {
 				return fmt.Errorf("nic: removing %s before re-creating it as ipvtap: %s", dev, firstLine(out, err))
 			}

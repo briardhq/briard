@@ -65,6 +65,12 @@ func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard run", flag.ExitOnError)
 	_ = fs.Parse(args)
 
+	// Started by the Windows service manager: it owns the lifecycle from here (service_windows.go).
+	// False everywhere else, including a `briard run` typed into a Windows console.
+	if runService() {
+		return
+	}
+
 	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
 	// kill: the host agent stops its guest.
 	//

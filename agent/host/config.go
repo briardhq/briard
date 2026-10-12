@@ -56,13 +56,9 @@ func versionBanner(version string) string {
 // the channel can fix. A node whose config.env is missing a key is not a broken node; it is a node
 // taking the shipped answer.
 //
-// The three roots are constants because the prefix is: /opt/briard is baked into the qemu bundle's
-// own ELF interpreter, so an install anywhere else produces a qemu that cannot execute.
+// The roots themselves -- prefixDir, stateDir, runDir and the logs -- are per OS (config_linux.go,
+// config_windows.go); everything below derives from them.
 const (
-	prefixDir = "/opt/briard"
-	stateDir  = "/var/lib/briard"
-	runDir    = "/run/briard"
-
 	// defaultBackupDir is the backup folder when nobody human installed this node (root, a
 	// cloud-init): a server, not a home, so the repository stays beside the agent's own state --
 	// the one backup folder the agent creates itself, because it is its own directory.
@@ -158,7 +154,7 @@ func ConfigFromEnv() Config {
 		// backing image", and a default would hand qemu a path to a file that is not there.
 		QEMUBinary:  env("QEMU", "qemu-system-x86_64"),
 		QEMUDataDir: os.Getenv("QEMU_DATADIR"),
-		Accel:       env("ACCEL", "kvm:tcg"),
+		Accel:       env("ACCEL", defaultAccel),
 		// `max` = every feature the accelerator can give the guest, which under KVM is the
 		// host's own CPU. The escape hatch (BRIARD_CPU=qemu64 at the installer, CPU= here) is
 		// for a host where the passthrough itself is the suspect -- one env line beats a release.
@@ -184,12 +180,12 @@ func ConfigFromEnv() Config {
 		// machine whose job is not losing data. Its own directory, because platform.Launch
 		// makes that directory 0700: QMP is unrestricted control of the VM (it can dump guest
 		// RAM to a file), so it must not share a directory with a socket meant to be reachable.
-		QMPSock: env("QMP_SOCK", "/run/briard/qmp/guest.sock"),
+		QMPSock: env("QMP_SOCK", runDir+"/qmp/guest.sock"),
 		// On by default, because an admin door only an expert can find is not a door.
 		// The CLI defaults to this same path (agent/cli); keep the two literals in step.
-		AdminSock: env("ADMIN_SOCK", "/run/briard/admin.sock"),
+		AdminSock: env("ADMIN_SOCK", runDir+"/admin.sock"),
 		// The guest's admin port, beside the control socket it mirrors.
-		AdminPortSock: env("ADMIN_PORT_SOCK", "/run/briard-admin.sock"),
+		AdminPortSock: env("ADMIN_PORT_SOCK", adminPortSock),
 		// THE GUEST'S THREE NICS, by the name of the host device behind each. `declared` and not
 		// `env`: an explicitly EMPTY entry is how a node says it has no such NIC, and the default
 		// must not overrule it. Unset -- every shipped install, whose config.env names
@@ -207,7 +203,7 @@ func ConfigFromEnv() Config {
 		// The guest's serial console, captured to the host. Under macvtap the host cannot reach the
 		// guest over the network at all, so this file is the only witness to anything inside the VM.
 		// `declared`, because an empty entry is how BRIARD_GUEST_SERIAL= switches capture off.
-		SerialLog: declared("GUEST_SERIAL", "/var/log/briard-guest-console.log"),
+		SerialLog: declared("GUEST_SERIAL", guestConsole),
 		// Host-side witness-forwarder identity. Bin + the anchor cert/key/ca; a managed
 		// pairing directive (MeshSpec.Witness) starts the forwarder with these. Unset -> a pairing
 		// that needs the cloud witness fails fast (before any DRBD change).
@@ -309,7 +305,7 @@ func ConfigFromEnv() Config {
 		// tests -- it is the running binary's own id, so a committed update reports the new one.
 		UpdateKeyring: readFileOrNil(env("UPDATE_KEYRING", prefixDir+"/keyring.pem")),
 		UpdateBase:    env("UPDATE_BASE", prefixDir+"/agent"),
-		UpdateRunDir:  os.Getenv("UPDATE_RUN_DIR"),
+		UpdateRunDir:  env("UPDATE_RUN_DIR", runDir),
 		UpdateUnit:    os.Getenv("UPDATE_UNIT"),
 		Version:       env("AGENT_VERSION", buildVersion),
 	}

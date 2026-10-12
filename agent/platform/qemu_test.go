@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -311,6 +312,9 @@ func TestQEMUArgsMinimal(t *testing.T) {
 //     systemd's SIGKILL through the middle of a shutdown still making progress, i.e. it
 //     manufactures the power cut the whole mechanism exists to prevent.
 func TestLaunchArgsCleanStopContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the systemd unit's ExecStop contract; on Windows the agent stops the guest itself, on preshutdown")
+	}
 	const sock = "/run/briard/qmp/qmp.sock"
 	args := launchArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", QMPSock: sock})
 

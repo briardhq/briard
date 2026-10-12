@@ -204,7 +204,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		// we never created it and must not start now.
 		return "", nic.Unknown
 	}
-	if nic.Up(cfg.net.Parent) || exists("/sys/class/net/"+cfg.net.Parent) {
+	if nic.Exists(cfg.net.Parent) {
 		if !r.goneSince.IsZero() {
 			logf("network: %s is back; nothing to re-parent", cfg.net.Parent)
 			r.goneSince, r.said = time.Time{}, ""

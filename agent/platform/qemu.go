@@ -90,6 +90,11 @@ type QEMUSpec struct {
 	NetWrapBin string
 	SerialLog  string // if set, capture the guest serial console (ttyS0) to this file; empty = discard
 	Unit       string // transient systemd unit name for the guest; empty = GuestUnit
+	// UnitLog is where the unit's own stdout and stderr go -- qemu's, not the guest's (that is
+	// SerialLog). Empty = the service manager's default, which on Linux is the journal and is
+	// right there. A host whose manager keeps no log (the SCM) names a file, or qemu's one line
+	// explaining why it would not start goes nowhere.
+	UnitLog string
 	// DataDir is qemu's firmware/BIOS blob directory, passed as `-L`. Empty = qemu's
 	// compiled-in default (correct when qemu is a distro/Nix package). The relocatable
 	// bundle sets it to <prefix>/share/qemu: that qemu's built-in datadir is a /nix/store path
@@ -244,14 +249,15 @@ func qemuArgs(s QEMUSpec) []string {
 	// RootDriveID); a serial is what the guest finds a disk by (/dev/disk/by-id/virtio-<serial>).
 	//
 	// EVERY DISK ALSO GETS: format= (qemu probes the format of a file that does not name one, which
-	// its own docs call unsafe); cache=none (the guest keeps a page cache of its own, so the host's
-	// is a second copy of the same bytes, paid out of RAM a small board does not have -- guest
-	// flushes are still honoured, so durability does not move); and the one iothread, so block I/O
+	// its own docs call unsafe); the cache mode diskCache, per OS -- `none` wherever qemu can open
+	// an image with it (the guest keeps a page cache of its own, so the host's is a second copy of
+	// the same bytes, paid out of RAM a small board does not have -- guest flushes are still
+	// honoured, so durability does not move); and the one iothread, so block I/O
 	// runs off qemu's main loop. That loop also serves the virtio-serial control channel, the
 	// agent's liveness signal, and a disk busy with a resync must not delay it into a self-fence.
 	args = append(args, "-object", "iothread,id="+IOThreadID)
 	if s.DiskImage != "" {
-		args = append(args, "-drive", "file="+s.DiskImage+",if=none,format=qcow2,cache=none,readonly=on,id="+RootDriveID,
+		args = append(args, "-drive", "file="+s.DiskImage+",if=none,format=qcow2,cache="+diskCache+",readonly=on,id="+RootDriveID,
 			"-device", "virtio-blk-pci,drive="+RootDriveID+",iothread="+IOThreadID+",bootindex=0")
 	}
 	if s.DataDisk != "" {
@@ -259,7 +265,7 @@ func qemuArgs(s QEMUSpec) []string {
 		// reachable only where a copy-on-write host filesystem did not honour the reservation, and
 		// there an I/O error the guest's btrfs and DRBD can see and report beats qemu's default --
 		// a whole-VM pause that nothing inside it can observe or explain.
-		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,cache=none,werror=report,id="+DataDriveID,
+		args = append(args, "-drive", "file="+s.DataDisk+",if=none,format=raw,cache="+diskCache+",werror=report,id="+DataDriveID,
 			"-device", "virtio-blk-pci,drive="+DataDriveID+",iothread="+IOThreadID)
 	}
 	if s.StateDisk != "" {
@@ -271,7 +277,7 @@ func qemuArgs(s QEMUSpec) []string {
 		// did not reach) is an I/O error to the one guest writer, not qemu's default of pausing the
 		// whole VM -- the state disk holds a cache, a journal and scratch, none of which is worth the
 		// household's service stopping for.
-		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,cache=none,werror=report,id="+StateDriveID,
+		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,cache="+diskCache+",werror=report,id="+StateDriveID,
 			"-device", "virtio-blk-pci,drive="+StateDriveID+",iothread="+IOThreadID+",serial="+StateDiskSerial)
 	}
 	if s.MachineUUID != "" {
@@ -454,6 +460,9 @@ func launchArgs(s QEMUSpec) []string {
 			"-p", "ExecStop="+bin+" --guest-shutdown="+s.QMPSock,
 			"-p", "TimeoutStopSec="+strconv.Itoa(int(guestStopTimeout.Seconds())),
 		)
+	}
+	if s.UnitLog != "" {
+		args = append(args, "-p", "StandardOutput=append:"+s.UnitLog, "-p", "StandardError=append:"+s.UnitLog)
 	}
 	return append(append(args, "--"), launchExec(s)...)
 }

@@ -36,3 +36,9 @@ func (zeroReader) Read(p []byte) (int, error) {
 
 // setNoCOW is the Windows arm of SetNoCOW: NTFS does not copy on write, so there is nothing to set.
 func setNoCOW(string) error { return nil }
+
+// diskCache is `writeback` on Windows, because the Linux answer does not open: with cache.direct on
+// (`none`, `directsync`) the Windows qemu reads the image unbuffered and refuses a good qcow2 as
+// "not in qcow2 format" (measured on the shipped bundle). Guest flushes are honoured in writeback
+// too, so what this costs is the host's second copy of the bytes, not durability.
+const diskCache = "writeback"

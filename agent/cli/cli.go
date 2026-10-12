@@ -40,12 +40,6 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// defaultSock mirrors ConfigFromEnv's ADMIN_SOCK default (agent/host/config.go). The literal is
-// written twice rather than shared, because the alternative — a const in shared/api — would put
-// a deployment path in the closed wire-contract package. Keep the two in step; a mismatch
-// surfaces as "is the agent running?", which is why that error names the path it tried.
-const defaultSock = "/run/briard/admin.sock"
-
 // A command is one row of the CLI's SINGLE source of truth: `commands` is both the dispatch table
 // and the help text. The fault this shape exists to prevent is the one the CLI once shipped —
 // a help listing and a real surface that had drifted apart, with no test able to notice, because

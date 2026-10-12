@@ -60,11 +60,11 @@ func Write(path string, data []byte, perm, dirPerm os.FileMode) error {
 	return SyncDir(filepath.Dir(path))
 }
 
-// SyncDir flushes a directory so a rename(2) into it is durable. Opening a directory read-only and
-// fsyncing it is the portable spelling; a filesystem that refuses the open is reported rather than
-// swallowed, since the caller's whole reason for being here is knowing the write landed.
+// SyncDir flushes a directory so a rename(2) into it is durable. How a directory is opened for that
+// is per OS (openDir); a filesystem that refuses the open is reported rather than swallowed, since
+// the caller's whole reason for being here is knowing the write landed.
 func SyncDir(dir string) error {
-	d, err := os.Open(dir)
+	d, err := openDir(dir)
 	if err != nil {
 		return err
 	}

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package sdnotify sends systemd service-manager notifications (sd_notify(3)) over the
 // $NOTIFY_SOCKET datagram socket — no cgo, no dependency, just the documented protocol.
 //
