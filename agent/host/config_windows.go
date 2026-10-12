@@ -24,10 +24,6 @@ const (
 	// bridgeWhose says, in the log, whose bridge the guest hangs off: on Windows, the one briard built.
 	bridgeWhose = "briard's bridge, built at install"
 
-	// confirmLANPresence is on: a launch behind the Windows bridge was measured reaching only the
-	// bridge (lanpresence.go).
-	confirmLANPresence = true
-
 	// defaultSystemTap is the tap-windows6 adapter the bridge is built with, under the name the bridge
 	// build gives it.
 	defaultSystemTap = nic.TapName

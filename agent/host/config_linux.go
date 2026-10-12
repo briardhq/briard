@@ -17,9 +17,6 @@ const (
 	// bridgeWhose says, in the log, whose bridge the guest hangs off: on Linux, always the user's.
 	bridgeWhose = "a bridge this host did not create"
 
-	// confirmLANPresence is off: no Linux substrate was measured hiding a launch inside the host.
-	confirmLANPresence = false
-
 	// defaultSystemTap is the guest's eth1 on the host: a tap the agent creates.
 	defaultSystemTap = "briard-drbd0"
 
