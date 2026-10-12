@@ -96,6 +96,9 @@ func TestAnActOffTheLoopLeavesItTicking(t *testing.T) {
 		t.Fatalf("the loop stopped ticking behind a held act: %d cycles then, %d now", before, now)
 	}
 
+	if o := await(t, "a backup restore beside an act", submit(local, api.DirectiveBackupRestore), time.Second); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "busy") {
+		t.Fatalf("a backup restore while an act runs = %+v, want refused busy (it is an act: off the loop, one at a time)", o)
+	}
 	if o := await(t, "a second act", submit(local, api.DirectiveSync), time.Second); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "busy") {
 		t.Fatalf("a second act while one runs = %+v, want refused busy", o)
 	}

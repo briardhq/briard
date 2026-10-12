@@ -80,6 +80,7 @@ var (
 		api.DirectiveServiceInstall: true,
 		api.DirectiveServicePrewarm: true,
 		api.DirectiveServiceRestore: true,
+		api.DirectiveBackupRestore:  true, // a restic restore then a service restore: an act, like the one it ends in
 		api.DirectiveHandover:       true,
 		api.DirectiveSync:           true,
 		api.DirectiveCert:           true,
