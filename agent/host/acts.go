@@ -96,6 +96,7 @@ var (
 		api.DirectiveServiceMembers: true,
 		api.DirectiveDashboard:      true,
 		api.DirectiveCasaClaim:      true,
+		api.DirectiveCasaRecheck:    true,
 		api.DirectiveDebugArm:       true,
 		api.DirectiveDebugDisarm:    true,
 	}

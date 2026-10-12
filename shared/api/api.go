@@ -430,6 +430,10 @@ const (
 	//                                   address and keeps a certificate renewed. Local-only: the household
 	//                                   asks from its dashboard (the guest admin port) or the CLI; the
 	//                                   cloud has no business claiming a name on a node's behalf.
+	DirectiveCasaRecheck = "casa-recheck" // No payload. The node asks again whether the household's
+	//                                       network resolves its registered casa name, for when the
+	//                                       household changed its router after the name was found
+	//                                       blocked. Local-only, like the claim.
 
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place

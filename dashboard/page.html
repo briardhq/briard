@@ -98,9 +98,11 @@
     <p class="muted">Every app gets a name under it, like <code>home-assistant.{{.Name}}</code>. The names work from inside your home; nothing is opened to the internet.</p>
     {{else if eq .Resolves "blocked"}}
     <p>This home is registered as <code>{{.Name}}</code>, but your router blocks the name: it refuses names that point inside your home (often called DNS rebind protection). Keep using the address you are on now.</p>
-    <p class="muted">To use the name, allow <code>briard.casa</code> in your router's DNS rebind protection; Briard checks again the next time it starts.</p>
+    <p class="muted">To use the name, allow <code>briard.casa</code> in your router's DNS rebind protection, then check again.</p>
+    {{if .RecheckErr}}<p class="banner">{{.RecheckErr}}</p>{{end}}
+    <form method="post" action="/casa/recheck"><button type="submit">Check again</button></form>
     {{else}}
-    <p>This home is registered as <code>{{.Name}}</code>. Checking that your home network finds the name — the first time this takes a minute or two.</p>
+    <p>This home is registered as <code>{{.Name}}</code>. Checking that your home network finds the name — this takes up to a minute or two.</p>
     {{end}}
   </div>
   {{else if eq .State "pending"}}

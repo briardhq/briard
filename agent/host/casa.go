@@ -245,6 +245,21 @@ func (c *casaRunner) claim(ctx context.Context, d api.Directive, logf func(strin
 		Detail: "a confirmation link was sent to " + email + "; open it within 20 minutes"}
 }
 
+// recheck is the casa-recheck directive: forget the resolve check's verdict for the current
+// address, so the next tick runs both steps again. For a household that changed its router after
+// the name was found blocked; the name stays unused until the new answer is positive. A check
+// already in flight is left to land, and its answer counts.
+func (c *casaRunner) recheck(d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.st.Registered || c.cfg.FlockName == "" {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this home has no registered name to check"}
+	}
+	c.resolves, c.resolveNote, c.nextResolve = "", "", time.Time{}
+	logf("casa: checking again whether this network resolves %s", casa.Names(c.cfg.FlockName)[0])
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "checking again; this takes up to a minute"}
+}
+
 // tick is the runner's step in the observe loop: poll a pending claim, keep a registered name's
 // address and certificate current, and keep the page told. Every call out is short and
 // ctx-bounded; the one long one (issuance, a real ACME solve) runs off the loop. vip is the

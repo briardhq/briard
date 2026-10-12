@@ -146,3 +146,65 @@ func TestCasaSkipIsRememberedAndUndone(t *testing.T) {
 		t.Errorf("skip with no session = %d, want 401", resp.StatusCode)
 	}
 }
+
+// "Check again" is offered only while the name is found blocked, is relayed to the host as one
+// casa-recheck, and turns the card to checking until the host's view moves; a refusal is shown,
+// and a check that comes back blocked again shows the button again.
+func TestCasaRecheckIsOfferedOnlyWhenBlocked(t *testing.T) {
+	r := newRig(t)
+	r.app.casaPath = filepath.Join(r.dir, "casa.json")
+	c := r.trust()
+	port := newFakePort()
+	r.app.port = port
+	reg := dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Email: "a@x.org"}
+	for _, res := range []string{"", dashboard.CasaResolves} {
+		reg.Resolves = res
+		r.hostSays(t, reg)
+		if body := r.page(c); strings.Contains(body, `action="/casa/recheck"`) {
+			t.Errorf("resolves=%q offers Check again: %s", res, body)
+		}
+	}
+	reg.Resolves = dashboard.CasaBlocked
+	r.hostSays(t, reg)
+	if body := r.page(c); !strings.Contains(body, `action="/casa/recheck"`) || strings.Contains(body, `http-equiv="refresh"`) {
+		t.Fatalf("the blocked card does not offer Check again, or polls: %s", body)
+	}
+	if resp := r.form("/casa/recheck", nil, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("recheck with no session = %d, want 401", resp.StatusCode)
+	}
+
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "checking again"}
+	if resp := r.form("/casa/recheck", c, nil); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("recheck = %d, want 303", resp.StatusCode)
+	}
+	port.mu.Lock()
+	asked := append([]api.Directive(nil), port.asked...)
+	port.mu.Unlock()
+	if len(asked) != 1 || asked[0].Kind != api.DirectiveCasaRecheck {
+		t.Fatalf("the host was asked %+v; want one casa-recheck", asked)
+	}
+	// The host has not pushed yet: the card says checking and polls, never the old verdict.
+	if body := r.page(c); strings.Contains(body, `action="/casa/recheck"`) || !strings.Contains(body, "Checking that your home network finds the name") || !strings.Contains(body, `http-equiv="refresh"`) {
+		t.Errorf("right after asking: %s", body)
+	}
+	// The new check came back blocked before the page saw it restart: once the wait has passed,
+	// the verdict and the button are back.
+	r.app.casaRecheck.at = time.Now().Add(-casaRecheckWait)
+	if body := r.page(c); !strings.Contains(body, `action="/casa/recheck"`) || strings.Contains(body, `http-equiv="refresh"`) {
+		t.Errorf("after a blocked answer again: %s", body)
+	}
+
+	// A refusal is read on the card.
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "this home has no registered name to check"}
+	r.form("/casa/recheck", c, nil)
+	if body := r.page(c); !strings.Contains(body, "this home has no registered name to check") || !strings.Contains(body, `action="/casa/recheck"`) {
+		t.Errorf("a refused recheck: %s", body)
+	}
+	// And the host restarting the check supersedes the ask.
+	reg.Resolves = ""
+	r.hostSays(t, reg)
+	r.page(c)
+	if r.app.casaRecheck != nil {
+		t.Error("the ask outlived the host's restarted check")
+	}
+}

@@ -124,6 +124,9 @@ type app struct {
 	// last claim asked from this page, until the host's view moves past it.
 	casaPath  string
 	casaAsked *casaAsk
+	// casaRecheck is the last "check again" asked from this page (casa.go), until the host's view
+	// moves past it.
+	casaRecheck *casaRecheck
 	// alertsPath is the host's copy of its alert store (alerts.go); contactPath the guest agent's
 	// stamp of the host's last request, which says whether that copy is still current.
 	alertsPath, contactPath string
@@ -222,6 +225,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.skipCasa(w, r)
+	case r.URL.Path == "/casa/recheck" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w)
+			return
+		}
+		a.recheckCasa(w, r)
 	case strings.HasPrefix(r.URL.Path, "/backup/") && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w)

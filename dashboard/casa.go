@@ -39,16 +39,28 @@ type casaAsk struct {
 	Detail string
 }
 
+// casaRecheck is the last "check again" asked from this page. Until the host's view shows the
+// check restarted (or casaRecheckWait passes, the check having come back blocked again before the
+// page saw it), the card reads as checking rather than showing the old verdict.
+type casaRecheck struct {
+	at     time.Time
+	Failed bool
+	Detail string
+}
+
+const casaRecheckWait = 30 * time.Second
+
 // casaView is the card's data.
 type casaView struct {
-	State     string // "" / pending / registered / refused / expired
-	Name      string
-	Email     string
-	Reason    string
-	CertUntil string
-	Skipped   bool
-	Resolves  string // dashboard.Casa.Resolves: the name is linked only on "yes"
-	Asked     *casaAsk
+	State      string // "" / pending / registered / refused / expired
+	Name       string
+	Email      string
+	Reason     string
+	CertUntil  string
+	Skipped    bool
+	Resolves   string // dashboard.Casa.Resolves: the name is linked only on "yes"
+	RecheckErr string // why the last "check again" was not taken
+	Asked      *casaAsk
 }
 
 // Refresh says whether the page should poll itself: a claim is in flight, or one was just asked
@@ -88,8 +100,40 @@ func (a *app) casaState() *casaView {
 		a.casaAsked = nil
 	}
 	v.Asked = a.casaAsked
+	if rc := a.casaRecheck; rc != nil {
+		switch {
+		case h.Resolves != dashboard.CasaBlocked:
+			a.casaRecheck = nil // the host restarted the check, or it already answered yes
+		case rc.Failed:
+			v.RecheckErr = rc.Detail
+		case time.Since(rc.at) < casaRecheckWait:
+			v.Resolves = "" // asked, and the host has not shown the new check yet
+		default:
+			a.casaRecheck = nil // the new check came back blocked too
+		}
+	}
 	a.mu.Unlock()
 	return v
+}
+
+// recheckCasa is the "check again" button: one directive, and the card reads as checking until
+// the host's view says otherwise.
+func (a *app) recheckCasa(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveCasaRecheck})
+	rc := &casaRecheck{at: time.Now()}
+	switch {
+	case err != nil:
+		rc.Failed, rc.Detail = true, err.Error()
+	case o.State != api.OutcomeDone:
+		rc.Failed, rc.Detail = true, o.Detail
+	}
+	log.Printf("dashboard: casa recheck: outcome=%+v err=%v", o, err)
+	a.mu.Lock()
+	a.casaRecheck = rc
+	a.mu.Unlock()
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // requestCasa is the form: one email, one directive, one answer shown on the page.

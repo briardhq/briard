@@ -1755,6 +1755,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveDoctor:        true,
 	api.DirectiveBackupRestore: true,
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
+	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
 	api.DirectiveConfigSet:     true, // ...and changes its own address
 }
 
@@ -1794,6 +1795,12 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
 		}
 		return cs.claim(ctx, d, logf)
+	}
+	if d.Kind == api.DirectiveCasaRecheck {
+		if cs == nil {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
+		}
+		return cs.recheck(d, logf)
 	}
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
 		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers || d.Kind == api.DirectiveBackupRestore {

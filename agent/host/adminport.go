@@ -48,7 +48,8 @@ func guestMayAsk(d api.Directive) bool {
 	switch d.Kind {
 	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,
 		api.DirectiveServiceMembers,
-		api.DirectiveCasaClaim: // a name for this household, asked from its own page
+		api.DirectiveCasaClaim,   // a name for this household, asked from its own page
+		api.DirectiveCasaRecheck: // and its network asked again about it
 		return true
 	case api.DirectiveConfigSet:
 		return isBackupSetting(d.Payload)

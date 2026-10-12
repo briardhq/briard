@@ -268,7 +268,7 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 			add("casa", reportcard.Pass, fmt.Sprintf("this network resolves %s to %s", f.Casa, f.CasaAddr), "")
 		case dashboard.CasaBlocked:
 			add("casa", reportcard.Warn, fmt.Sprintf("public DNS resolves %s, but this network's DNS drops it (DNS rebind protection), so the name is not used", f.Casa),
-				fmt.Sprintf("use %s, or allow briard.casa in your router's DNS rebind protection; it is checked again when the agent next starts", routes.FlockHostName(f.FlockName)))
+				fmt.Sprintf("use %s, or allow briard.casa in your router's DNS rebind protection, then press Check again on the Briard page", routes.FlockHostName(f.FlockName)))
 		case "":
 			note := f.CasaNote
 			if note == "" {

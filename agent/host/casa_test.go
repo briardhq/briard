@@ -590,3 +590,41 @@ func TestCasaResolveCheckLocalVerdicts(t *testing.T) {
 		})
 	}
 }
+
+// "Check again": a blocked verdict is forgotten and both steps run again, so a household that
+// fixed its router gets the name used; the name stays unused until that new answer is positive.
+// Local-only, and the dashboard may ask for it. A node with no registered name refuses.
+func TestCasaRecheckAsksAgain(t *testing.T) {
+	r := newCasaRig(t)
+	if o := r.cs.recheck(api.Directive{ID: "d1"}, t.Logf); o.State != api.OutcomeFailed {
+		t.Fatalf("recheck with nothing registered = %+v, want refused", o)
+	}
+	r.dns.set(func(d *fakeDNS) { d.locErr = &net.DNSError{Err: "no such host", IsNotFound: true} })
+	r.registered(t)
+	if v := r.guest.lastView(t); v.Resolves != dashboard.CasaBlocked {
+		t.Fatalf("resolves = %q, want blocked", v.Resolves)
+	}
+
+	// The household allows briard.casa in its router, then presses the button.
+	r.dns.set(func(d *fakeDNS) { d.locErr = nil })
+	r.now = r.now.Add(time.Hour)
+	r.tick(t)
+	if r.dns.askedLocal() {
+		t.Fatal("a blocked verdict was asked again without a recheck")
+	}
+	if o := r.cs.recheck(api.Directive{ID: "d2"}, t.Logf); o.State != api.OutcomeDone {
+		t.Fatalf("recheck = %+v", o)
+	}
+	r.tick(t)
+	if v := r.guest.lastView(t); v.Resolves != dashboard.CasaResolves {
+		t.Fatalf("after the recheck resolves = %q, want yes", v.Resolves)
+	}
+
+	if !guestMayAsk(api.Directive{Kind: api.DirectiveCasaRecheck}) {
+		t.Error("the dashboard cannot ask to check again")
+	}
+	cfg := Config{}
+	if o := cfg.dispatch(context.Background(), api.Directive{ID: "d3", Kind: api.DirectiveCasaRecheck}, originCloud, nil, nil, nil, nil, nil, nil, t.Logf); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "local admin socket") {
+		t.Errorf("from the cloud: %+v", o)
+	}
+}
