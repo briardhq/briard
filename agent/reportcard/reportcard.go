@@ -98,6 +98,13 @@ type HostFacts struct {
 	// deliberately static host on a DHCP-serving LAN reads false. So it may warn and must never
 	// refuse.
 	HostLeased bool
+
+	// The Windows host's requirements (platform_windows.go); unread on Linux.
+	Hypervisor        bool   // the Windows hypervisor is running (WHvGetCapability), so WHPX can accelerate
+	HypervisorPending bool   // the Hypervisor Platform feature is enabled but not running: a restart away
+	Elevated          bool   // this process holds an administrator's full token
+	TAP               bool   // a tap-windows6 adapter exists
+	NICSpeedBps       uint64 // the selected NIC's link speed
 }
 
 // RAM. The thresholds are deliberately BELOW the round numbers they describe, because the number
@@ -187,56 +194,8 @@ func nicDetail(s nic.Selection) string {
 // Assess maps host facts to the closed set of admission checks. Pure -- the whole point is that
 // the refuse-with-fix logic is unit-testable without touching a real host.
 func Assess(f HostFacts) Report {
-	var cs []Check
-
-	// KVM -- the one thing we can't bundle (kernel side). Distinguish "virt disabled in BIOS"
-	// (flags absent) from "module not loaded" (flags present, /dev/kvm absent) so the fix is exact.
-	switch {
-	case f.DevKVM:
-		cs = append(cs, Check{"kvm", Pass, "/dev/kvm available", ""})
-	case !f.VirtFlags:
-		cs = append(cs, Check{"kvm", Refuse, "no CPU virtualization (vmx/svm) detected",
-			"enable VT-x / AMD-V in the BIOS/UEFI (often labelled \"Virtualization\" or \"SVM Mode\"); if this CPU truly lacks it, it can't be a briard node"})
-	default:
-		cs = append(cs, Check{"kvm", Refuse, "CPU supports virtualization but /dev/kvm is absent",
-			"load the KVM module: `sudo modprobe kvm_intel` (Intel) or `sudo modprobe kvm_amd` (AMD)"})
-	}
-
-	// TUN/TAP -- kernel side, but we modprobe it, so refuse only if the kernel genuinely lacks it.
-	if f.DevNetTun || f.TunModule {
-		cs = append(cs, Check{"tun", Pass, "TUN/TAP available", ""})
-	} else {
-		cs = append(cs, Check{"tun", Refuse, "no TUN/TAP driver (/dev/net/tun absent, tun module unavailable)",
-			"this kernel lacks CONFIG_TUN; use a stock distro kernel (Debian/Ubuntu/Fedora/Arch all ship it)"})
-	}
-
-	// Iproute2 -- near-universal base; the installer can't conjure it, so refuse with the line.
-	if f.HasIP {
-		cs = append(cs, Check{"iproute2", Pass, "`ip` present", ""})
-	} else {
-		cs = append(cs, Check{"iproute2", Refuse, "`ip` (iproute2) not found on PATH",
-			"install iproute2: `sudo apt install iproute2` (or your distro's equivalent)"})
-	}
-
-	// SYSTEMD -- and it is here, with the other hard requirements, because it is one.
-	//
-	// install.sh writes unit files and runs `systemctl daemon-reload`/`enable`/`start`; there is no
-	// non-systemd path and none is planned (we do not own the host's init). It had a
-	// guard already, but the LAST branch of the script: a box booted with OpenRC or runit passed
-	// every gate, downloaded and unpacked ~400 MB into /opt/briard, created taps, formatted the
-	// data volume, wrote units nothing would ever read -- and only then heard "no systemd". Every
-	// other hard requirement refuses before anything is written; this is the one that did not.
-	//
-	// BOOTED, not merely installed. `systemctl` on PATH is the weaker question: a host with the
-	// binary present but another init as PID 1 answers yes and then fails at daemon-reload, which
-	// is exactly the late failure this check exists to move forward. /run/systemd/system is the
-	// documented "systemd is running this machine" test, so that is what is asked.
-	if f.SystemdBooted {
-		cs = append(cs, Check{"systemd", Pass, "systemd is the init", ""})
-	} else {
-		cs = append(cs, Check{"systemd", Refuse, "systemd is not running this machine (/run/systemd/system absent)",
-			"this install path targets systemd hosts -- briard registers itself as systemd units; on OpenRC/runit/s6 there is nothing for it to register with"})
-	}
+	// What this OS requires of the host before anything else (platform_<os>.go).
+	cs := platformChecks(f)
 
 	// RAM -- hard floor + recommended warn.
 	switch {
@@ -488,11 +447,7 @@ func Print(w io.Writer, r Report) {
 func Run(ctx context.Context, w io.Writer) bool {
 	f := Gather(ctx)
 	r := Assess(f)
-	// Not on a wireless station either: its guest rides the station's own MAC (ipvtap), so neither
-	// caveat is about anything that happens there.
-	if !f.NIC.Bridge && !f.NIC.Wireless {
-		r.Checks = append(r.Checks, MacvtapAdvisories(f)...)
-	}
+	r.Checks = append(r.Checks, platformAdvisories(f)...)
 	Print(w, r)
 	return r.Admit()
 }
@@ -502,3 +457,8 @@ func gbOf(mb int) string {
 	s := strconv.FormatFloat(float64(mb)/1024, 'f', 1, 64)
 	return strings.TrimSuffix(s, ".0") + " GB"
 }
+
+// FastNICBps is the link speed above which a Windows bridge's disabled checksum offload costs
+// throughput a household could notice: gigabit is the audience that unconditional disable was
+// decided for. One number for the card's advisory and the host's alert.
+const FastNICBps = 1_000_000_000

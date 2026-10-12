@@ -119,10 +119,10 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		if err := os.MkdirAll(filepath.Join(hostSrc, "qemu"), 0o755); err != nil {
 			return err
 		}
-		if err := run(ctx, "tar", "-xf", filepath.Join(hostSrc, "qemu-bundle.tar"), "-C", filepath.Join(hostSrc, "qemu")); err != nil {
+		if err := run(ctx, "tar", "-xf", filepath.Join(hostSrc, qemuBundleTar), "-C", filepath.Join(hostSrc, "qemu")); err != nil {
 			return err
 		}
-		os.Remove(filepath.Join(hostSrc, "qemu-bundle.tar"))
+		os.Remove(filepath.Join(hostSrc, qemuBundleTar))
 	}
 	if err := r.layDown(ctx, hostSrc, guestSrc, say); err != nil {
 		return err
@@ -146,26 +146,15 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 	// the disk before its contents do. A power cut in the next few seconds would leave a truncated
 	// qemu or image under a verified name, surfacing at the next BOOT where nobody would connect it
 	// to the install. One sync covers every file laid down; it costs seconds, once.
-	say("flushing the installed files to disk")
-	return run(ctx, "sync")
+	return flushInstall(ctx, say)
 }
 
 // layDown places a staged artifact set -- hostSrc the briard chain, guestSrc the vm chain (the
 // same flat dir on the BRIARD_ARTIFACTS path) -- under the roots.
 func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say func(string, ...any)) error {
 	agentDir := filepath.Join(r.prefix, "agent")
-	if err := installFile(filepath.Join(hostSrc, "briard-agent"), filepath.Join(agentDir, "briard-agent"), 0o755); err != nil {
-		return fmt.Errorf("staging dir %s has no usable briard-agent: %w", hostSrc, err)
-	}
-	// The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
-	// ExecStart. Cattle that rides with the agent: an update stages briard-net-wrap.next beside it
-	// for briard-commit to move.
-	netWrap := ""
-	if _, err := os.Stat(filepath.Join(hostSrc, "briard-net-wrap")); err == nil {
-		netWrap = filepath.Join(agentDir, "briard-net-wrap")
-		if err := installFile(filepath.Join(hostSrc, "briard-net-wrap"), netWrap, 0o755); err != nil {
-			return err
-		}
+	if err := installFile(filepath.Join(hostSrc, agentExe), filepath.Join(agentDir, agentExe), 0o755); err != nil {
+		return fmt.Errorf("staging dir %s has no usable %s: %w", hostSrc, agentExe, err)
 	}
 
 	// THE QEMU TREE, REACHED THROUGH A LINK. One extracted bundle per release lives at
@@ -174,11 +163,9 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 	// stages qemu.next as a link; briard-commit commits qemu with ONE rename of that link, so no
 	// recursive delete ever runs near a frozen script.
 	//
-	// <prefix>/qemu stays as the PUBLIC path, a fixed link onto that moving one: the bundle bakes
-	// /opt/briard/qemu/lib/ld-linux... into its ELF interpreter, so that path must always resolve
-	// to the running tree, and the agent's QEMU / QEMU_DATADIR defaults point through it. Named by
-	// the installed release when a manifest is present, so a later pin back to it reuses the tree;
-	// the local staging path has no manifest and gets a fixed name.
+	// The tree is named by the installed release when a manifest is present, so a later pin back to
+	// it reuses the tree; the local staging path has no manifest and gets a fixed name. (On Linux
+	// <prefix>/qemu is also a public link onto agent/qemu -- install_linux.go says why.)
 	rel := "install"
 	if m, err := install.ReadManifest(filepath.Join(hostSrc, install.ManifestName)); err == nil && m.Version != "" {
 		rel = m.Version
@@ -187,22 +174,13 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 	if err := freshDir(qemuTree); err != nil {
 		return err
 	}
-	if err := run(ctx, "cp", "-a", filepath.Join(hostSrc, "qemu")+"/.", qemuTree+"/"); err != nil {
+	if err := copyTree(ctx, filepath.Join(hostSrc, "qemu"), qemuTree); err != nil {
 		return err
 	}
-	if err := run(ctx, "chmod", "-R", "u+w", qemuTree); err != nil {
+	if err := makeWritable(ctx, qemuTree); err != nil {
 		return err
 	}
 	if err := relink(filepath.Base(qemuTree), filepath.Join(agentDir, "qemu")); err != nil {
-		return err
-	}
-	// An install that predates the link laid a real directory here; a link cannot replace one.
-	if fi, err := os.Lstat(filepath.Join(r.prefix, "qemu")); err == nil && fi.IsDir() {
-		if err := os.RemoveAll(filepath.Join(r.prefix, "qemu")); err != nil {
-			return err
-		}
-	}
-	if err := relink("agent/qemu", filepath.Join(r.prefix, "qemu")); err != nil {
 		return err
 	}
 
@@ -219,11 +197,7 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 		if err := run(ctx, "tar", "-xf", bundle, "-C", guestTree); err != nil {
 			return err
 		}
-		// Freeing the tarball is an OPTIMISATION for the network path, where hostSrc is our own
-		// temp dir. BRIARD_ARTIFACTS points at a read-only staging dir (a Nix store path, in the
-		// install rigs), so a failure here is not one the install may stop on.
-		os.Remove(bundle)
-		if err := run(ctx, "chmod", "-R", "u+w", guestTree); err != nil {
+		if err := makeWritable(ctx, guestTree); err != nil {
 			return err
 		}
 		if err := relink(filepath.Base(guestTree), filepath.Join(agentDir, "guest")); err != nil {
@@ -258,59 +232,7 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 			return err
 		}
 	}
-	// `briard` -- the operator CLI, a MODE of the agent binary rather than a second one. Nothing
-	// under the prefix is on $PATH, so this symlink IS the CLI's existence as far as a user is
-	// concerned. A symlink rather than a copy: self-update replaces the binary in place, and a copy
-	// would leave a stale CLI talking to a newer agent. Best-effort: an unwritable /usr/local/bin
-	// costs the CLI, never the install.
-	os.MkdirAll(filepath.Dir(r.cliLink), 0o755)
-	if err := relink(filepath.Join(agentDir, "briard-agent"), r.cliLink); err != nil {
-		say("note: could not link %s; run %s directly", r.cliLink, filepath.Join(agentDir, "briard-agent"))
-	}
-
-	// NETWORKING IS NOT CONFIGURED HERE: the agent owns the whole of it, converged on its status
-	// tick. One thing still has to be true, and it is checked rather than assumed: without the
-	// fd-passing launch wrapper the agent cannot attach a macvtap to qemu, and that failure belongs
-	// at the install rather than at the first guest launch.
-	if netWrap == "" {
-		return errors.New("the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC")
-	}
-
-	// THE AGENT'S THREE FROZEN SCRIPTS, copied out of the verified set. briard-exec and
-	// briard-commit are self-update's on-disk pivot; briard-update is the fetch, which must not be
-	// shipped by the thing it updates. Frozen means dumb, agent-INDEPENDENT shell, so a bug in the
-	// volatile agent cannot wedge the mechanism that replaces it; shipped means they are signed
-	// artifacts of the host chain, covered by the same manifest as the binary they start.
-	say("installing the agent's scripts")
-	for _, s := range []string{"briard-exec", "briard-commit", "briard-update"} {
-		if !exists(filepath.Join(hostSrc, s)) {
-			return fmt.Errorf("%s is absent from staging; this release cannot be installed", s)
-		}
-		if err := installFile(filepath.Join(hostSrc, s), filepath.Join(agentDir, s), 0o755); err != nil {
-			return err
-		}
-	}
-	if err := r.writeConfig(ctx, netWrap, say); err != nil {
-		return err
-	}
-
-	// THE UNITS, copied, not written: shipped artifacts of the host chain, hashed by the same
-	// signed manifest. Every path in them is /opt/briard, a constant on every install, so there is
-	// nothing to interpolate. Refused rather than skipped when one is missing: a staging dir without
-	// briard-agent.service is one this host cannot run briard from.
-	if err := os.MkdirAll(r.unitDir, 0o755); err != nil {
-		return err
-	}
-	say("installing the systemd units to %s", r.unitDir)
-	for _, u := range []string{"briard-agent.service", "briard-update.service", "briard-update.timer"} {
-		if !exists(filepath.Join(hostSrc, u)) {
-			return fmt.Errorf("%s is absent from staging; this release cannot be installed", u)
-		}
-		if err := installFile(filepath.Join(hostSrc, u), filepath.Join(r.unitDir, u), 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.layDownOS(ctx, hostSrc, say)
 }
 
 // installEnvKey is an operator setting in the installer's environment: BRIARD_ + a config.env key.
@@ -335,7 +257,10 @@ var installOnlyKeys = map[string]bool{
 //
 // ⚠️ AND NO IDENTIFIERS. The node id, the flock id and the flock name are minted once into pet
 // state at the agent's first start (identity.go), never written here.
-func (r installRoots) writeConfig(ctx context.Context, netWrap string, say func(string, ...any)) error {
+//
+// bundle is the per-OS block naming the qemu this install laid down (and, on Linux, the launch
+// wrapper): the one part of the file whose shape differs by OS.
+func (r installRoots) writeConfig(ctx context.Context, bundle string, say func(string, ...any)) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, `# briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
 # '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is
@@ -345,13 +270,11 @@ func (r installRoots) writeConfig(ctx context.Context, netWrap string, say func(
 # The bundle and the disks THIS INSTALL laid down. Paths to files it created or staged, so they
 # are facts about this host rather than defaults -- and their absence is a decision too, which is
 # why the agent defaults none of them: an empty one is how a harness says it has no such disk.
-QEMU=%[1]s/qemu/bin/qemu-system-x86_64
-QEMU_DATADIR=%[1]s/qemu/share/qemu
-NET_WRAP_BIN=%[2]s
-GUEST_IMAGE=%[1]s/guest-image/nixos.qcow2
-DATA_DISK=%[3]s/data.img
-STATE_DISK=%[3]s/state.img
-`, r.prefix, netWrap, r.state)
+%sGUEST_IMAGE=%s
+DATA_DISK=%s
+STATE_DISK=%s
+`, bundle, filepath.Join(r.prefix, "guest-image", "nixos.qcow2"),
+		filepath.Join(r.state, "data.img"), filepath.Join(r.state, "state.img"))
 	if dir := backupFolder(ctx); dir != "" {
 		fmt.Fprintf(&b, "BACKUP_DIR=%s\n", dir)
 		say("nightly backups go to %s", dir)
@@ -377,40 +300,6 @@ STATE_DISK=%[3]s/state.img
 		return err
 	}
 	return os.Chmod(path, 0o600)
-}
-
-// backupFolder makes the household's backup folder: `Briard Backup` in the home of the person who
-// ran the installer, made AS them so it is theirs from the start -- they can move, copy or delete
-// it without us, it outlives an uninstall, and whatever already backs up or syncs their home takes
-// it along. Laid down by this install, so it is a line in config.env rather than a default. Nobody
-// human (root, a cloud-init) or no home to put it in: "", and the agent's own folder under the
-// state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like any
-// other setting instead.
-//
-// getent and sudo rather than os/user and a chown: the static agent reads /etc/passwd alone, and
-// a household's account may come from NSS; and a folder the user could not have made themselves
-// is not one this should make for them.
-func backupFolder(ctx context.Context) string {
-	user := os.Getenv("SUDO_USER")
-	if _, set := os.LookupEnv("BRIARD_BACKUP_DIR"); set || user == "" || user == "root" {
-		return ""
-	}
-	out, err := exec.CommandContext(ctx, "getent", "passwd", user).Output()
-	if err != nil {
-		return ""
-	}
-	fields := strings.Split(strings.TrimSpace(string(out)), ":")
-	if len(fields) < 6 || fields[5] == "" {
-		return ""
-	}
-	if fi, err := os.Stat(fields[5]); err != nil || !fi.IsDir() {
-		return ""
-	}
-	dir := filepath.Join(fields[5], "Briard Backup")
-	if exec.CommandContext(ctx, "sudo", "-u", user, "mkdir", "-p", dir).Run() != nil {
-		return ""
-	}
-	return dir
 }
 
 // installFile copies src to dst whole: into a temp name beside it, then renamed over, so a binary
@@ -499,14 +388,14 @@ var (
 // NO ADDRESS IS PRINTED before then. Nothing answers yet, so a name or an address is a promise
 // about a node still booting -- and under DHCP there is no address to print at all.
 func InstallWait(ctx context.Context, say func(string, ...any)) error {
-	// The clock mark the journal is read from: a reinstall's journal still holds the previous
-	// life's "healthy=true", and a link minted on a stale line is minted before the guest exists.
-	since := time.Now().Format("2006-01-02 15:04:05")
+	// The mark the agent's log is read from: a reinstall's log still holds the previous life's
+	// "healthy=true", and a link minted on a stale line is minted before the guest exists.
+	since := agentLogMark()
 	say("installed. briard is starting (up to 3 minutes)...")
 	report := ""
-	if _, err := exec.LookPath("journalctl"); err == nil {
+	if agentLogReadable() {
 		for deadline := time.Now().Add(installWaitBound); time.Now().Before(deadline); {
-			journal, _ := exec.CommandContext(ctx, "journalctl", "-u", "briard-agent", "--since", since, "--no-pager", "-o", "cat").Output()
+			journal := agentLogSince(ctx, since)
 			// THE AGENT REFUSING ends the wait, in its own words: a node that cannot serve must not
 			// leave the household waiting out the bound for a sentence that says "still starting".
 			// Today that is a Wi-Fi guest handed the host's own address (DHCP client IDs), and the
@@ -519,7 +408,7 @@ func InstallWait(ctx context.Context, say func(string, ...any)) error {
 				return fmt.Errorf("briard is installed but cannot serve your home: %s", refused)
 			}
 			if installHealthy.Match(journal) {
-				out, err := exec.CommandContext(ctx, filepath.Join(prefixDir, "agent", "briard-agent"), "open").Output()
+				out, err := exec.CommandContext(ctx, filepath.Join(prefixDir, "agent", agentExe), "open").Output()
 				if report = string(out); err != nil {
 					report = ""
 				}
@@ -535,13 +424,13 @@ func InstallWait(ctx context.Context, say func(string, ...any)) error {
 		}
 	}
 	if report == "" {
-		say("briard is still starting. once it answers, get a one-time link to your Briard page with: sudo briard open")
+		say("briard is still starting. once it answers, get a one-time link to your Briard page with: %s", openHint)
 		return nil
 	}
 	say("your Briard page is ready:")
 	say("")
 	fmt.Print(strings.TrimRight(report, "\n") + "\n")
-	say("another link, any time: sudo briard open")
+	say("another link, any time: %s", openHint)
 	// The desktop hand-off needs the bare URL, so it is picked back out of what was printed rather
 	// than minted a second time -- a second mint would burn the link just shown.
 	openForUser(installLink.FindString(report), say)
@@ -556,24 +445,4 @@ func refusedLine(journal []byte) string {
 		}
 	}
 	return ""
-}
-
-// openForUser hands the dashboard link to the invoking user's browser, on a desktop and only there:
-// a user to run it AS (the browser must be theirs, never root's), a display they can see (sudo
-// keeps DISPLAY and XAUTHORITY; a Wayland session carries DISPLAY through Xwayland), and xdg-open
-// present. Best-effort and silent otherwise -- a headless install is the printed link opened on a
-// phone, not a failure -- and never waited on: xdg-open may block until the browser exits.
-func openForUser(link string, say func(string, ...any)) {
-	user := os.Getenv("SUDO_USER")
-	if link == "" || user == "" || user == "root" || os.Getenv("DISPLAY")+os.Getenv("WAYLAND_DISPLAY") == "" {
-		return
-	}
-	if _, err := exec.LookPath("xdg-open"); err != nil {
-		return
-	}
-	say("also asking your desktop to open it")
-	cmd := exec.Command("sudo", "-u", user, "-H", "env",
-		"DISPLAY="+os.Getenv("DISPLAY"), "WAYLAND_DISPLAY="+os.Getenv("WAYLAND_DISPLAY"), "XAUTHORITY="+os.Getenv("XAUTHORITY"),
-		"xdg-open", link)
-	_ = cmd.Start()
 }

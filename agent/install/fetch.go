@@ -82,11 +82,11 @@ const (
 	ChainBriard = "briard" // briard-agent, briard-net-wrap, qemu-bundle.tar.zst, guest-bundle.tar.zst — per OS and CPU
 	ChainVM     = "vm"     // nixos.qcow2.zst — per CPU
 
-	// PlatformLinux is the briard arm this binary installs, named for the OS and CPU it was
-	// built for; the Windows arm (`windows-amd64`) is published beside it with no consumer yet.
+	// PlatformHost is the briard arm this binary installs, named for the OS and CPU it was
+	// built for: `linux-amd64`, or `windows-amd64` for the Windows agent.
 	// PlatformVM is the vm arm it boots -- the guest runs on the host's CPU, so the same CPU.
-	PlatformLinux = "linux-" + runtime.GOARCH
-	PlatformVM    = runtime.GOARCH
+	PlatformHost = runtime.GOOS + "-" + runtime.GOARCH
+	PlatformVM   = runtime.GOARCH
 
 	// TargetStable, TargetLatest and TargetDev are the three pointer paths every chain serves
 	// (IsPointer). Anything else passed as a target is taken to be an exact version id. `dev` is
@@ -152,7 +152,7 @@ type Entry struct {
 // release it is and where its artifacts live, and an unsigned sidecar could say anything.
 type Manifest struct {
 	Chain     string  `json:"chain"`
-	Platform  string  `json:"platform,omitempty"` // PlatformLinux on the briard chain, PlatformVM on the vm chain
+	Platform  string  `json:"platform,omitempty"` // PlatformHost on the briard chain, PlatformVM on the vm chain
 	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
 	// The vm chain names the CLOSURE, not just the image: System is the store path of
@@ -541,7 +541,7 @@ func FetchRelease(ctx context.Context, base, release string, kr *selfupdate.Keyr
 			os.RemoveAll(tmp)
 		}
 	}()
-	bf := &Fetcher{BaseURL: base, Chain: ChainBriard, Platform: PlatformLinux, Keyring: kr, Logf: logf}
+	bf := &Fetcher{BaseURL: base, Chain: ChainBriard, Platform: PlatformHost, Keyring: kr, Logf: logf}
 	if err := bf.FetchVerified(ctx, release, filepath.Join(tmp, ChainBriard)); err != nil {
 		return err
 	}

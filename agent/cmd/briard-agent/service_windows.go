@@ -8,15 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 
 	"briard.io/agent/host"
 	"briard.io/agent/platform"
 	"briard.io/shared/sdnotify"
 )
-
-// serviceName is the agent's name in the service manager.
-const serviceName = "briard-agent"
 
 // runService runs the host agent under the Windows service manager when that is what started this
 // process, and reports false when it is not (a `briard run` in a console runs in the foreground,
@@ -30,7 +28,7 @@ func runService() bool {
 	if w, err := openCappedLog(host.AgentLog()); err == nil {
 		log.SetOutput(w)
 	}
-	if err := svc.Run(serviceName, agentService{}); err != nil {
+	if err := svc.Run(host.ServiceName, agentService{}); err != nil {
 		log.Printf("service: %v", err)
 	}
 	return true
@@ -180,3 +178,10 @@ func (c *cappedLog) Write(p []byte) (int, error) {
 	c.n += int64(n)
 	return n, err
 }
+
+// elevateHint is the refusal when it does not.
+const elevateHint = "run as administrator"
+
+// elevated reports whether this process holds an administrator's full token -- what an install or
+// an uninstall needs, the way Linux needs root.
+func elevated() bool { return windows.GetCurrentProcessToken().IsElevated() }

@@ -180,11 +180,30 @@ func MemberSpeed(bridge string) (string, uint64) {
 		if a.name == "" || a.filter || a.name == TapName || master(a.name) != bridge {
 			continue
 		}
-		row := windows.MibIfRow2{InterfaceIndex: a.index}
-		if windows.GetIfEntry2Ex(windows.MibIfEntryNormalWithoutStatistics, &row) != nil {
-			return a.name, 0
-		}
-		return a.name, max(row.TransmitLinkSpeed, row.ReceiveLinkSpeed)
+		return a.name, Speed(a.name)
 	}
 	return "", 0
+}
+
+// Speed is dev's link speed in bits/s, 0 when it cannot be read.
+func Speed(dev string) uint64 {
+	a, ok := byName(adapters(), dev)
+	if !ok {
+		return 0
+	}
+	row := windows.MibIfRow2{InterfaceIndex: a.index}
+	if windows.GetIfEntry2Ex(windows.MibIfEntryNormalWithoutStatistics, &row) != nil {
+		return 0
+	}
+	return max(row.TransmitLinkSpeed, row.ReceiveLinkSpeed)
+}
+
+// TapInstalled reports whether a tap-windows6 adapter exists, bridged or not.
+func TapInstalled() bool {
+	for _, a := range adapters() {
+		if a.name != "" && !a.filter && (a.name == TapName || strings.HasPrefix(a.desc, tapDescription)) {
+			return true
+		}
+	}
+	return false
 }

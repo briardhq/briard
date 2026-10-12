@@ -2,5 +2,13 @@
 
 package main
 
+import "os"
+
 // runService is false off Windows: systemd runs the agent as an ordinary process.
 func runService() bool { return false }
+
+// elevateHint is the refusal when it is not.
+const elevateHint = "run as root (curl ... | sudo sh)"
+
+// elevated is root, which an install or an uninstall needs.
+func elevated() bool { return os.Geteuid() == 0 }

@@ -1,0 +1,162 @@
+package reportcard
+
+import (
+	"bufio"
+	"context"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"briard.io/agent/nic"
+)
+
+// Gather reads the real host into HostFacts (Linux /proc + /sys + /dev). Thin + best-effort: a
+// read that fails reads as "absent/false", which flows into a Refuse/Warn with a fix -- never a
+// crash. All the verdict logic lives in the pure Assess (this is just the eyes).
+//
+// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer.
+// It used to be re-read per fact from the default route, which quietly judged a different device
+// than the install would use whenever BRIARD_NIC was set.
+func Gather(ctx context.Context) HostFacts {
+	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"))
+	return HostFacts{
+		NIC:       sel,
+		DevKVM:    exists("/dev/kvm"),
+		VirtFlags: cpuHasVirtFlags(),
+		CPUAES:    cpuHasFlag("aes"),
+		DevNetTun: exists("/dev/net/tun"),
+		TunModule: tunModuleAvailable(),
+		HasIP:     onPath("ip"),
+		// /run/systemd/system is systemd's own "I am running this machine" marker (it creates the
+		// directory at boot), which is the question the install actually needs answered -- `systemctl`
+		// on PATH says only that a package is installed.
+		SystemdBooted: exists("/run/systemd/system"),
+		MemTotalMB:    MemTotalMB(),
+		PrimaryNICBus: primaryNICBus(sel.Dev),
+		DiskFreeMB:    diskFreeMB(installRoot()),
+		KeptDataDisk:  exists(petDir + "/data.img"),
+		KeptStateDisk: exists(petDir + "/state.img"),
+		HostCIDR:      HostCIDR(sel.Dev),
+		// The address the install is about to hand the guest. install.sh already computes it
+		// (BRIARD_VIP_ADDR, CIDR form) and passes it here the same way it passes NET_MODE -- the card
+		// cannot judge an address it is not told about, and this is the last gate before a VM
+		// boots holding it.
+		VIPAddr: os.Getenv("VIP_ADDR"),
+		// Is that address already somebody's? Probed here rather than inside the check so the
+		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
+		// router picks from its own pool and this question is not ours to ask.
+		VIPAnswered:     os.Getenv("VIP_ADDR") != "" && AddressAnswers(os.Getenv("VIP_ADDR")),
+		HostLeased:      hostHasLease(sel.Dev),
+		HasMDNSResolver: hasMDNSResolver(),
+	}
+}
+
+// AddressAnswers reports whether some machine on this segment already owns cidr's address.
+//
+// Exported for its second caller: the subnet draw asks the same question of a candidate flock
+// subnet's .1. One mechanism, two questions -- the VIP's is "is the address the user
+// named already taken", the draw's is "is another flock already living here".
+//
+// It provokes the kernel into resolving ARP by sending one datagram at the address (discard port,
+// nothing listens, and nothing needs to -- ARP sits below UDP, so any IPv4 host on the segment
+// must reply to the resolution regardless of what it does with the payload). Then it reads the
+// answer out of the kernel's own neighbour table. No raw sockets, no CAP_NET_RAW, no shelling out.
+//
+// A false is "nothing answered", which includes "we could not ask". That asymmetry is deliberate:
+// this gate turns evidence-of-use into a refusal, and must never turn absence-of-evidence into
+// permission -- a sleeping device will not answer, and the install proceeds, as it did before this
+// check existed.
+func AddressAnswers(cidr string) bool {
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil || ip.To4() == nil {
+		return false // malformed: the check itself refuses on that, with a better message
+	}
+	if c, err := net.DialTimeout("udp4", net.JoinHostPort(ip.String(), "9"), arpProbeWait); err == nil {
+		_, _ = c.Write([]byte{0})
+		_ = c.Close()
+	}
+	deadline := time.Now().Add(arpProbeWait)
+	for {
+		if neighbourComplete(ip) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// neighbourComplete reports whether /proc/net/arp holds a RESOLVED entry for ip. The flags column
+// carries ATF_COM (0x2) once an address actually replied; an unanswered probe leaves the entry
+// present but incomplete, with flags 0x0 -- so the flag, not the row, is the evidence.
+func neighbourComplete(ip net.IP) bool {
+	f, err := os.Open("/proc/net/arp")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) < 4 || fields[0] != ip.String() {
+			continue
+		}
+		flags, err := strconv.ParseInt(strings.TrimPrefix(fields[2], "0x"), 16, 64)
+		if err == nil && flags&0x2 != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hostHasLease reports whether THIS machine's address on dev looks DHCP-assigned, by looking for a
+// lease under any of the managers a stranger's box might be running. It is evidence that a DHCP
+// server answered on this segment recently, which is the closest we can get to "one will answer
+// the guest too" without taking a lease we might not keep.
+//
+// Deliberately a broad net over several managers rather than a detection of which one is in use:
+// we do not care who asked, only that somebody answered.
+func hostHasLease(dev string) bool {
+	if dev == "" {
+		return false
+	}
+	globs := []string{
+		"/var/lib/dhcpcd/" + dev + "*.lease",          // dhcpcd (and our own guest)
+		"/var/lib/dhcp/dhclient*" + dev + "*.lease*",  // ISC dhclient
+		"/var/lib/dhclient/*" + dev + "*.lease*",      // ISC dhclient, Fedora layout
+		"/var/lib/NetworkManager/*" + dev + "*.lease", // NetworkManager's internal client
+		"/run/systemd/netif/leases/*",                 // systemd-networkd (keyed by ifindex)
+	}
+	for _, g := range globs {
+		if m, err := filepath.Glob(g); err == nil && len(m) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// installRoot is the filesystem the install will land on. /opt and /var/lib can be separate
+// mounts, so measure the deepest existing ancestor of the prefix rather than assuming "/": on a
+// reinstall /opt/briard already exists and is the honest thing to measure, and on a fresh host the
+// walk ends at / anyway.
+//
+// The prefix is a CONSTANT, not a knob: the qemu bundle bakes it into its own ELF
+// interpreter, so an install anywhere else produces a qemu that cannot execute. This used to read
+// BRIARD_PREFIX, which nothing set and which could not have worked if anything had.
+// petDir is where install.sh puts the node's pet volumes (STATE in install.sh).
+const petDir = "/var/lib/briard"
+
+func installRoot() string {
+	p := "/opt/briard"
+	for p != "/" && p != "." {
+		if exists(p) {
+			return p
+		}
+		p = filepath.Dir(p)
+	}
+	return "/"
+}

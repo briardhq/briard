@@ -44,10 +44,10 @@ func sha(b []byte) string {
 const testVersion = "v3.20260905.abc1234"
 
 func pointerPath(name string) string {
-	return ChainBriard + "/" + TargetLatest + "/" + PlatformLinux + "/" + name
+	return ChainBriard + "/" + TargetLatest + "/" + PlatformHost + "/" + name
 }
 func releasePath(name string) string {
-	return ChainBriard + "/" + testVersion + "/" + PlatformLinux + "/" + name
+	return ChainBriard + "/" + testVersion + "/" + PlatformHost + "/" + name
 }
 
 // channel is a fake signed release channel: a keyring holding one signer, a set of served
@@ -75,7 +75,7 @@ func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	mb, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformLinux, Version: testVersion, Artifacts: arts})
+	mb, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformHost, Version: testVersion, Artifacts: arts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func (c *channel) serve() string {
 }
 
 func (c *channel) fetcher() *Fetcher {
-	return &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: c.kr}
+	return &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformHost, Keyring: c.kr}
 }
 
 // fetchLatest is what install.sh does: name the pointer, get whatever release it points at.
@@ -233,7 +233,7 @@ func TestFetchVerifiedRefusesUnsignedManifest(t *testing.T) {
 func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 	c := goodChannel(t)
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: nil} // no ring wired
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformHost, Keyring: nil} // no ring wired
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrNoKeyring)
 
 	// An EMPTY (but non-nil) ring is equally fail-closed.
@@ -242,7 +242,7 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest2 := stagedFresh(t)
-	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: empty}
+	f2 := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformHost, Keyring: empty}
 	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrNoKeyring)
 }
 
@@ -458,7 +458,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	write("briard-agent", agent, 0o755)
 	write("nixos.qcow2.zst", zstdOf(t, guest), 0o644)
 
-	if err := WriteManifest(stage, ChainBriard, PlatformLinux, testVersion, "", "", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainBriard, PlatformHost, testVersion, "", "", "", ""); err != nil {
 		t.Fatalf("WriteManifest: %v", err)
 	}
 	mb, err := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -469,8 +469,8 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if err := json.Unmarshal(mb, &man); err != nil {
 		t.Fatalf("the manifest we just wrote does not parse: %v", err)
 	}
-	if man.Chain != ChainBriard || man.Platform != PlatformLinux || man.Version != testVersion {
-		t.Errorf("chain/platform/version = %q/%q/%q, want %q/%q/%q", man.Chain, man.Platform, man.Version, ChainBriard, PlatformLinux, testVersion)
+	if man.Chain != ChainBriard || man.Platform != PlatformHost || man.Version != testVersion {
+		t.Errorf("chain/platform/version = %q/%q/%q, want %q/%q/%q", man.Chain, man.Platform, man.Version, ChainBriard, PlatformHost, testVersion)
 	}
 	if len(man.Artifacts) != 2 {
 		t.Fatalf("manifest lists %d artifacts, want 2: %+v", len(man.Artifacts), man.Artifacts)
@@ -487,7 +487,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 	// Running the writer AGAIN over its own output must not list the manifest as an artifact
 	// of itself -- the one file a release directory holds that the manifest cannot name.
-	if err := WriteManifest(stage, ChainBriard, PlatformLinux, testVersion, "", "", "", ""); err != nil {
+	if err := WriteManifest(stage, ChainBriard, PlatformHost, testVersion, "", "", "", ""); err != nil {
 		t.Fatalf("WriteManifest (second pass): %v", err)
 	}
 	mb2, _ := os.ReadFile(filepath.Join(stage, ManifestName))
@@ -517,7 +517,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	}
 	c := &channel{t: t, priv: priv, kr: kr, bodies: bodies, missing: map[string]bool{}}
 	dest := stagedFresh(t)
-	if err := (&Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformLinux, Keyring: kr}).FetchVerified(context.Background(), TargetLatest, dest); err != nil {
+	if err := (&Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformHost, Keyring: kr}).FetchVerified(context.Background(), TargetLatest, dest); err != nil {
 		t.Fatalf("a manifest written by WriteManifest was refused by FetchVerified: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
@@ -582,7 +582,7 @@ func TestFetchVerifiedResolvesArtifactsAgainstTheManifestVersion(t *testing.T) {
 	// succeed; the real one must fail, because the manifest says the bytes live elsewhere.
 	moved := map[string][]byte{}
 	for name, b := range c.bodies {
-		if rest, ok := strings.CutPrefix(name, ChainBriard+"/"+testVersion+"/"+PlatformLinux+"/"); ok {
+		if rest, ok := strings.CutPrefix(name, ChainBriard+"/"+testVersion+"/"+PlatformHost+"/"); ok {
 			moved[pointerPath(rest)] = b
 		} else {
 			moved[name] = b

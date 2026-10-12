@@ -3,12 +3,9 @@ package host
 import (
 	"fmt"
 
+	"briard.io/agent/reportcard"
 	"briard.io/shared/notify"
 )
-
-// fastNICBps is the link speed above which the bridge's disabled checksum offload costs throughput
-// a household could notice. Gigabit is the audience the unconditional disable was decided for.
-const fastNICBps = 1_000_000_000
 
 // fastNICAlert is the warning a bridged NIC faster than gigabit earns, and whether it earns one.
 // Building the bridge turned the NIC's IPv4 checksum offload off (bridge.sys emits frames a Linux
@@ -16,7 +13,7 @@ const fastNICBps = 1_000_000_000
 // test whether their NIC and their network tolerate it back on, so the alert hands them the
 // measured procedure rather than the agent guessing.
 func fastNICAlert(member string, bps uint64) (notify.Alert, bool) {
-	if member == "" || bps <= fastNICBps {
+	if member == "" || bps <= reportcard.FastNICBps {
 		return notify.Alert{}, false
 	}
 	return notify.Alert{

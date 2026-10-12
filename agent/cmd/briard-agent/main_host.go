@@ -87,7 +87,7 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 		return "", err
 	}
 	u := &install.Update{
-		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformLinux, Keyring: kr, Logf: log.Printf},
+		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformHost, Keyring: kr, Logf: log.Printf},
 		Layout:  selfupdate.New(os.Getenv("UPDATE_BASE"), os.Getenv("UPDATE_RUN_DIR")),
 		Logf:    log.Printf,
 	}
@@ -129,8 +129,8 @@ func runInstall(args []string) int {
 		}
 		return 0
 	}
-	if os.Geteuid() != 0 {
-		return fail(errors.New("run as root (curl ... | sudo sh)"))
+	if !elevated() {
+		return fail(errors.New(elevateHint))
 	}
 	// The card is told the two things it cannot infer. VIP_ADDR, because judging a service
 	// address against THIS LAN is the one check that compares our intent with the household's
@@ -178,7 +178,7 @@ func runUninstall(args []string) int {
 			"network devices, /opt/briard and the `briard` command.\n\n"+keep+"\nRe-run with -yes to go ahead.\n")
 		return 2
 	}
-	if os.Geteuid() != 0 {
+	if !elevated() {
 		fmt.Fprint(os.Stderr, "briard uninstall: run it as root (sudo briard uninstall ...)\n")
 		return 1
 	}

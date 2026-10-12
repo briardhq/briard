@@ -28,6 +28,9 @@ const (
 	// build gives it.
 	defaultSystemTap = nic.TapName
 
+	// openHint is how a person here asks for another one-time link.
+	openHint = "briard open, in a terminal opened as administrator"
+
 	// defaultAccel is WHPX, with TCG as the fallback qemu takes when the hypervisor platform is not
 	// enabled.
 	defaultAccel = "whpx:tcg"

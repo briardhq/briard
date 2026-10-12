@@ -558,6 +558,8 @@ in
   artifacts = {
     guest-disk = guestDisk;
     agent = agentPkg;
+    # The Windows host agent, cross-compiled; staged into the release's windows-amd64 arm.
+    agent-windows = pkgs.callPackage ../agent/package.nix { version = agentVersion; goos = "windows"; };
     driver = driverPkg;
     qemu-bundle = qemuBundle.bundle; # the relocatable qemu the free-local installer ships
     # The Windows arm of the same thing, repackaged from pinned upstream bytes because building it

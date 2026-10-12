@@ -23,9 +23,9 @@ func man(chain, platform, version string) Manifest {
 
 // The comparison rules of the update verb, one row each, including the ones that must REFUSE.
 func TestDecide(t *testing.T) {
-	host := func(v string) *Manifest { m := man(ChainBriard, PlatformLinux, v); return &m }
+	host := func(v string) *Manifest { m := man(ChainBriard, PlatformHost, v); return &m }
 	hostFloor := func(v, floor string) *Manifest {
-		m := man(ChainBriard, PlatformLinux, v)
+		m := man(ChainBriard, PlatformHost, v)
 		m.MinUpgradeFrom = floor
 		return &m
 	}
@@ -190,9 +190,9 @@ func TestUpdateStableOrdersOnTheDate(t *testing.T) {
 	c := goodChannel(t)
 	// Serve the same signed manifest under `stable`.
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformLinux+"/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+n] = c.bodies[pointerPath(n)]
 	}
-	pinned, _ := json.Marshal(man(ChainBriard, PlatformLinux, "v3.20260930.fffffff"))
+	pinned, _ := json.Marshal(man(ChainBriard, PlatformHost, "v3.20260930.fffffff"))
 	u, l := updateFixture(t, c, pinned)
 	line, err := u.Run(context.Background(), TargetStable)
 	if err != nil {
@@ -203,7 +203,7 @@ func TestUpdateStableOrdersOnTheDate(t *testing.T) {
 	}
 	assertNothingStaged(t, l)
 
-	older, _ := json.Marshal(man(ChainBriard, PlatformLinux, "v3.20260101.0000000"))
+	older, _ := json.Marshal(man(ChainBriard, PlatformHost, "v3.20260101.0000000"))
 	u2, l2 := updateFixture(t, c, older)
 	if _, err := u2.Run(context.Background(), TargetStable); err != nil {
 		t.Fatalf("update: %v", err)
@@ -218,15 +218,15 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	c := goodChannel(t)
 	// stable = the fixture's release; publish an OLDER exact version beside it.
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformLinux+"/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+n] = c.bodies[pointerPath(n)]
 	}
 	oldV := "v3.20250101.0ld0ld0"
 	agent := []byte("an old agent")
-	mb, _ := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformLinux, Version: oldV,
+	mb, _ := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformHost, Version: oldV,
 		Artifacts: []Entry{{Name: "briard-agent", SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755}}})
-	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformLinux+"/"+ManifestName] = mb
-	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformLinux+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
-	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformLinux+"/briard-agent"] = agent
+	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+ManifestName] = mb
+	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
+	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/briard-agent"] = agent
 	u, l := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])
 	_, err := u.Run(context.Background(), oldV)
 	if !errors.Is(err, ErrBelowFloor) {
@@ -235,8 +235,8 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	assertNothingStaged(t, l)
 
 	// The failable control: with stable MOVED to the old version, the same pin is accepted.
-	c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformLinux+"/"+ManifestName] = mb
-	c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformLinux+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
+	c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+ManifestName] = mb
+	c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
 	if _, err := u.Run(context.Background(), oldV); err != nil {
 		t.Fatalf("a pin at the moved floor was refused: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestWriteManifestPairingFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	inputs := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if err := WriteManifest(stage, ChainBriard, PlatformLinux, "v3.20260907.abc1234", "", "", "vm.20260901.def5678", ""); err != nil {
+	if err := WriteManifest(stage, ChainBriard, PlatformHost, "v3.20260907.abc1234", "", "", "vm.20260901.def5678", ""); err != nil {
 		t.Fatalf("host manifest naming its guest refused: %v", err)
 	}
 	m, err := ReadManifest(filepath.Join(stage, ManifestName))
@@ -620,7 +620,7 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 	stage := t.TempDir()
 	os.WriteFile(filepath.Join(stage, "briard-agent"), []byte("agent"), 0o755)
 	os.WriteFile(filepath.Join(stage, "install.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755)
-	if err := WriteManifest(stage, ChainBriard, PlatformLinux, "v3.20260920.abc1234", "", "", "vm.20260920.def5678", ""); err != nil {
+	if err := WriteManifest(stage, ChainBriard, PlatformHost, "v3.20260920.abc1234", "", "", "vm.20260920.def5678", ""); err != nil {
 		t.Fatal(err)
 	}
 	var m Manifest
@@ -698,7 +698,7 @@ func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
 		return m
 	}
 
-	if got := read(t, ChainBriard, PlatformLinux, "v3.20260921.bbb2222", "", "").MinUpgradeFrom; got != MinUpgradeFrom {
+	if got := read(t, ChainBriard, PlatformHost, "v3.20260921.bbb2222", "", "").MinUpgradeFrom; got != MinUpgradeFrom {
 		t.Errorf("host min_upgrade_from = %q, want the tree's %q", got, MinUpgradeFrom)
 	}
 	if got := read(t, ChainVM, PlatformVM, "vm.20260921.bbb2222", "/nix/store/x-nixos-system", "").MinUpgradeFrom; got != "" {
@@ -712,9 +712,9 @@ func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
 // Both ids appear because "too old" is meaningless without the pair: what is installed, and what
 // it would have to be.
 func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
-	want := man(ChainBriard, PlatformLinux, "v3.20260921.bbb2222")
+	want := man(ChainBriard, PlatformHost, "v3.20260921.bbb2222")
 	want.MinUpgradeFrom = "v3.20260920.aaa1111"
-	have := man(ChainBriard, PlatformLinux, "v3.20260910.ccc3333")
+	have := man(ChainBriard, PlatformHost, "v3.20260910.ccc3333")
 	_, err := Decide(TargetStable, want, &have, nil)
 	if !errors.Is(err, ErrTooOldToUpgrade) {
 		t.Fatalf("err = %v, want ErrTooOldToUpgrade", err)
@@ -736,7 +736,7 @@ func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
 // "already at X" (what agent/cli/cli.go's help row promises the verb prints); genuinely PAST
 // stable is a pin, and saying so is the point.
 func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T) {
-	at := man(ChainBriard, PlatformLinux, "v3.20260906.aaaaaaa")
+	at := man(ChainBriard, PlatformHost, "v3.20260906.aaaaaaa")
 	d, err := Decide(TargetStable, at, &at, nil)
 	if err != nil || d.Install {
 		t.Fatalf("Decide = %+v, %v; want a no-op", d, err)
@@ -745,7 +745,7 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 		t.Errorf("an up-to-date node reads %q, want `already at %s`", d.Reason, at.Version)
 	}
 	// A node PAST stable is a pin, and keeps the line that says so.
-	pinned := man(ChainBriard, PlatformLinux, "v3.20260910.ccccccc")
+	pinned := man(ChainBriard, PlatformHost, "v3.20260910.ccccccc")
 	d, err = Decide(TargetStable, at, &pinned, nil)
 	if err != nil || d.Install {
 		t.Fatalf("Decide = %+v, %v; want a no-op", d, err)
@@ -773,13 +773,13 @@ func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
 	}
 	// And it does what it says: a node on the stable that predates the read-only image is refused,
 	// one from that day on is not.
-	me := man(ChainBriard, PlatformLinux, "v3.20261005.aaaaaaa")
+	me := man(ChainBriard, PlatformHost, "v3.20261005.aaaaaaa")
 	me.MinUpgradeFrom = MinUpgradeFrom
-	old := man(ChainBriard, PlatformLinux, "v3.20260930.00acca9")
+	old := man(ChainBriard, PlatformHost, "v3.20260930.00acca9")
 	if _, err := Decide(TargetStable, me, &old, nil); !errors.Is(err, ErrTooOldToUpgrade) {
 		t.Errorf("the stable before the read-only image is not refused: %v", err)
 	}
-	ok := man(ChainBriard, PlatformLinux, "v3.20261004.5ee3525")
+	ok := man(ChainBriard, PlatformHost, "v3.20261004.5ee3525")
 	if _, err := Decide(TargetStable, me, &ok, nil); err != nil {
 		t.Errorf("a release at the floor's own date was refused: %v", err)
 	}
@@ -791,5 +791,5 @@ func armOf(chain string) string {
 	if chain == ChainVM {
 		return PlatformVM
 	}
-	return PlatformLinux
+	return PlatformHost
 }

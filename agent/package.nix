@@ -30,7 +30,9 @@
 # This is the same relocatability requirement qemu-bundle.nix solves by patchelf; the agent is
 # pure Go, so it can simply not need a loader. Nothing here uses cgo (net's pure-Go resolver
 # and os/user's pure-Go path are both fine -- the agent shells out to iproute2/systemd).
-{ buildGoModule, patchelf, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev" }:
+# goos: "windows" cross-compiles the Windows host agent (briard-agent.exe) -- a plain Go cross build,
+# which is the whole reason the agent is pure Go. The ELF check below does not apply to a PE file.
+{ lib, buildGoModule, patchelf, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null }:
 buildGoModule {
   pname = baseNameOf subPackage;
   inherit version;
@@ -38,6 +40,10 @@ buildGoModule {
   vendorHash = import ../vendor-hash.nix;
   subPackages = [ subPackage ];
   env.CGO_ENABLED = 0;
+  # In preBuild rather than env: buildGoModule sets GOOS/GOARCH itself, over anything in env.
+  preBuild = lib.optionalString (goos != null) "export GOOS=${goos} GOARCH=amd64";
+  # A cross-compiled test binary cannot run here; the Windows tests run on a Windows machine.
+  doCheck = goos == null;
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
   # self-update. Overridable by a real release version at build time.
   ldflags = [ "-X" "briard.io/agent/host.buildVersion=${version}" ];
@@ -48,7 +54,7 @@ buildGoModule {
   # path -- the failure we already shipped once, and one no NixOS test can see. This fails the
   # build instead: it is checked on the built binary, so it cannot go vacuous.
   nativeBuildInputs = [ patchelf ];
-  postFixup = ''
+  postFixup = lib.optionalString (goos == null) ''
     if interp=$(patchelf --print-interpreter "$out/bin/briard-agent" 2>/dev/null) && [ -n "$interp" ]; then
       echo "briard-agent has an ELF interpreter ($interp) -- it must be STATIC, or it cannot exec" >&2
       echo "on a host without /nix. Something re-enabled cgo; see the CGO_ENABLED note above." >&2

@@ -17,7 +17,7 @@
 #                                       briard-{exec,commit,update},
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
-#     <version>/windows-amd64/          manifest.json(+.sig), qemu-bundle-windows.tar.zst
+#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, qemu-bundle-windows.tar.zst, guest-bundle.tar.zst
 #                                       (the Windows arm; no consumer yet)
 #     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent (linux)
 #     stable/{linux,windows}-amd64/     likewise
@@ -496,6 +496,10 @@ stage)
 	W="$DIR/briard/$V/$WINDOWS_ARM"; mkdir -p "$W"
 	dtar "$W/qemu-bundle-windows.tar" -C "$(out_of .#artifacts.qemu-bundle-windows)" .
 	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
+	# The Windows agent, and the guest bundle it pushes. The bundle's bytes are the Linux arm's --
+	# the guest is Linux whatever runs it -- copied so a Windows install fetches one arm, not two.
+	install -m0755 "$(out_of .#artifacts.agent-windows)/bin/windows_amd64/briard-agent.exe" "$W/briard-agent.exe"
+	cp "$H/guest-bundle.tar.zst" "$W/guest-bundle.tar.zst"
 	"$H/briard-agent" --stage-manifest "$W" --chain briard --platform "$WINDOWS_ARM" --release "$V" --vm "$GV" || die "writing the windows manifest failed"
 
 	# THE VM CHAIN: the OS image, its own series, per CPU, and staged ONLY when its

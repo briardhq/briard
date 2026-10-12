@@ -20,6 +20,9 @@ const (
 	// defaultSystemTap is the guest's eth1 on the host: a tap the agent creates.
 	defaultSystemTap = "briard-drbd0"
 
+	// openHint is how a person here asks for another one-time link.
+	openHint = "sudo briard open"
+
 	// defaultAccel is KVM, with TCG as the fallback qemu takes when /dev/kvm is not there.
 	defaultAccel = "kvm:tcg"
 )

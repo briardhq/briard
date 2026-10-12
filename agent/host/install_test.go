@@ -153,7 +153,7 @@ func TestInstallConfigCopiesTheOperatorsSettings(t *testing.T) {
 	if err := os.MkdirAll(r.prefix, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.writeConfig(context.Background(), "/w", quiet); err != nil {
+	if err := r.writeConfig(context.Background(), r.bundleLines("/w"), quiet); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(r.prefix, "config.env"))

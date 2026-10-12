@@ -36,6 +36,7 @@ type adapter struct {
 	ipBound bool   // IPv4 or IPv6 is bound to it -- false on a bridge member, true on the bridge
 	desc    string // the driver's description, e.g. "TAP-Windows Adapter V9 #2"
 	filter  bool   // a filter layer over some adapter (WFP, QoS), never an adapter of its own
+	leased  bool   // a DHCPv4 server is recorded for it: its address came from a lease
 	guid    string // "{...}": the key that survives a rename, ours or the user's
 	mac     string // "aabbccddeeff"
 }
@@ -72,6 +73,7 @@ func adapters() []adapter {
 				ifType:  a.IfType,
 				up:      a.OperStatus == windows.IfOperStatusUp,
 				ipBound: a.Flags&(adapterIPv4Enabled|adapterIPv6Enabled) != 0,
+				leased:  a.Dhcpv4Server.Sockaddr != nil,
 				guid:    windows.BytePtrToString(a.AdapterName),
 				filter:  isFilter(a.IfIndex),
 				mac:     fmt.Sprintf("%x", a.PhysicalAddress[:a.PhysicalAddressLength]),
@@ -338,4 +340,10 @@ func substrateBuildable(s Spec) error {
 			"in use after a restart -- reinstall to build it again", s.Parent, BridgeName)
 	}
 	return nil
+}
+
+// Leased reports whether dev's address came from a DHCP server.
+func Leased(dev string) bool {
+	a, ok := byName(adapters(), dev)
+	return ok && a.leased
 }
