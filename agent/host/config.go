@@ -190,12 +190,12 @@ func ConfigFromEnv() Config {
 		// `env`: an explicitly EMPTY entry is how a node says it has no such NIC, and the default
 		// must not overrule it. Unset -- every shipped install, whose config.env names
 		// a tap only when the operator did -- takes the shipped names.
-		ServiceTap: declared("SERVICE_TAP", "briard0"),      // eth2, where the VIP lives
-		SystemTap:  declared("SYSTEM_TAP", "briard-drbd0"),  // eth1, the node IP and DRBD
-		WitnessTap: declared("WITNESS_TAP", "briard-priv0"), // eth3, the private host<->guest link
-		NetMode:    os.Getenv("NET_MODE"),                   // derived by the agent; "" -> it decides
-		VIPParent:  os.Getenv("VIP_PARENT"),                 // bridge substrate only: the NIC the guest builds VIP_DEV on
-		NetWrapBin: os.Getenv("NET_WRAP_BIN"),               // the fd-passing launch wrapper install.sh staged
+		ServiceTap: declared("SERVICE_TAP", "briard0"),       // eth2, where the VIP lives
+		SystemTap:  declared("SYSTEM_TAP", defaultSystemTap), // eth1, the node IP and DRBD
+		WitnessTap: declared("WITNESS_TAP", "briard-priv0"),  // eth3, the private host<->guest link
+		NetMode:    os.Getenv("NET_MODE"),                    // derived by the agent; "" -> it decides
+		VIPParent:  os.Getenv("VIP_PARENT"),                  // bridge substrate only: the NIC the guest builds VIP_DEV on
+		NetWrapBin: os.Getenv("NET_WRAP_BIN"),                // the fd-passing launch wrapper install.sh staged
 		// The device the guest's L2 hangs off, when an operator named one. The agent asks the same
 		// question the report card did, so it reads the same override.
 		NICOverride:  os.Getenv("NIC"),

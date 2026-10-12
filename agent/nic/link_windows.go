@@ -1,6 +1,12 @@
 package nic
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"os/exec"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -27,7 +33,11 @@ type adapter struct {
 	name    string
 	ifType  uint32
 	up      bool
-	ipBound bool // IPv4 or IPv6 is bound to it -- false on a bridge member, true on the bridge
+	ipBound bool   // IPv4 or IPv6 is bound to it -- false on a bridge member, true on the bridge
+	desc    string // the driver's description, e.g. "TAP-Windows Adapter V9 #2"
+	filter  bool   // a filter layer over some adapter (WFP, QoS), never an adapter of its own
+	guid    string // "{...}": the key that survives a rename, ours or the user's
+	mac     string // "aabbccddeeff"
 }
 
 // IP_ADAPTER_ADDRESSES.Flags bits (iptypes.h) that x/sys/windows does not name.
@@ -58,9 +68,13 @@ func adapters() []adapter {
 			out = append(out, adapter{
 				index:   a.IfIndex,
 				name:    windows.UTF16PtrToString(a.FriendlyName),
+				desc:    windows.UTF16PtrToString(a.Description),
 				ifType:  a.IfType,
 				up:      a.OperStatus == windows.IfOperStatusUp,
 				ipBound: a.Flags&(adapterIPv4Enabled|adapterIPv6Enabled) != 0,
+				guid:    windows.BytePtrToString(a.AdapterName),
+				filter:  isFilter(a.IfIndex),
+				mac:     fmt.Sprintf("%x", a.PhysicalAddress[:a.PhysicalAddressLength]),
 			})
 		}
 		return out
@@ -201,4 +215,127 @@ func DefaultRoute() string {
 	}
 	a, _ := byIndex(adapters(), best)
 	return a.name
+}
+
+// The writers. netsh rather than IP Helper's Create* calls: they are rare -- a first convergence,
+// or one after something flushed the address -- and netsh is the documented spelling of the one
+// setting IP Helper does not expose (dhcpstaticipcoexistence). The reads above stay in IP Helper,
+// because the tick asks them.
+
+func netsh(ctx context.Context, args ...string) error {
+	out, err := exec.CommandContext(ctx, "netsh", args...).CombinedOutput()
+	if err != nil {
+		return errors.New(firstLine(out, err))
+	}
+	return nil
+}
+
+// createTap cannot: a TAP adapter on Windows is a device instance of the tap-windows6 driver, laid
+// down by the installer with the driver, not something the agent makes at runtime.
+func createTap(_ context.Context, dev string) error {
+	return fmt.Errorf("no adapter named %q: the TAP adapter comes with the tap-windows6 driver, at install", dev)
+}
+
+// joinBridge cannot either: a Windows bridge carries a TAP member only if the bridge was BUILT with
+// it, and only after a restart (measured on the rig: a live add joins the bridge and carries
+// nothing). Membership is an install act, never a repair the tick can make.
+func joinBridge(_ context.Context, dev, bridge string) error {
+	return fmt.Errorf("%s is not a member of %s: the bridge is built with its TAP at install and "+
+		"carries it only after a restart", dev, bridge)
+}
+
+func linkUp(ctx context.Context, dev string) error {
+	return netsh(ctx, "interface", "set", "interface", "name="+dev, "admin=enabled")
+}
+
+// addAddr puts a host address on a DHCP-configured adapter WITHOUT turning its DHCP off, which is
+// what a manual address does there unless dhcpstaticipcoexistence is set first (measured: the
+// host's own lease was released within a second). The address is active-only -- the agent puts it
+// back at every start, as on Linux -- and never a source for the host's other traffic: Windows
+// has no per-route source, so a 10.x address an internet-bound connection could pick would be a
+// fault on the household's own desktop. What must come from it (a dial to the guest's node IP)
+// binds it explicitly.
+func addAddr(ctx context.Context, a Addr) error {
+	p, err := netip.ParsePrefix(a.CIDR)
+	if err != nil {
+		return err
+	}
+	if err := netsh(ctx, "interface", "ipv4", "set", "interface", "interface="+a.Dev, "dhcpstaticipcoexistence=enabled"); err != nil {
+		return fmt.Errorf("dhcpstaticipcoexistence on %s: %w", a.Dev, err)
+	}
+	return netsh(ctx, "interface", "ipv4", "add", "address", "name="+a.Dev, "address="+p.Addr().String(),
+		"mask="+maskOf(p.Bits()), "store=active", "skipassource=true")
+}
+
+func delAddr(ctx context.Context, a Addr) error {
+	p, err := netip.ParsePrefix(a.CIDR)
+	if err != nil {
+		return err
+	}
+	return netsh(ctx, "interface", "ipv4", "delete", "address", "name="+a.Dev, "address="+p.Addr().String(), "store=active")
+}
+
+// addRoute adds an on-link /32 (next hop 0.0.0.0). r.Src has no Windows spelling (see Route).
+func addRoute(ctx context.Context, r Route) error {
+	return netsh(ctx, "interface", "ipv4", "add", "route", "prefix="+r.Dst+"/32", "interface="+r.Dev,
+		"nexthop=0.0.0.0", "store=active")
+}
+
+func delRoute(ctx context.Context, r Route) error {
+	return netsh(ctx, "interface", "ipv4", "delete", "route", "prefix="+r.Dst+"/32", "interface="+r.Dev, "store=active")
+}
+
+// hasRoute asks the forward table for a /32 to r.Dst on r.Dev.
+func hasRoute(r Route) bool {
+	dst, err := netip.ParseAddr(r.Dst)
+	if err != nil {
+		return false
+	}
+	a, ok := byName(adapters(), r.Dev)
+	if !ok {
+		return false
+	}
+	var t *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
+		return false
+	}
+	defer windows.FreeMibTable(unsafe.Pointer(t))
+	for _, row := range t.Rows() {
+		if row.InterfaceIndex == a.index && row.DestinationPrefix.PrefixLength == 32 &&
+			netip.AddrFrom4((*windows.RawSockaddrInet4)(unsafe.Pointer(&row.DestinationPrefix.Prefix)).Addr) == dst {
+			return true
+		}
+	}
+	return false
+}
+
+// maskOf renders a prefix length as the dotted mask netsh takes.
+func maskOf(bits int) string {
+	m := net.CIDRMask(bits, 32)
+	return net.IP(m).String()
+}
+
+// ifFilterInterface is MIB_IF_ROW2's FilterInterface bit (InterfaceAndOperStatusFlags).
+const ifFilterInterface = 0x02
+
+// isFilter asks IP Helper whether an interface is a filter layer. Structure cannot answer it: a
+// filter sits ON its adapter exactly as a bridge sits on its members, and its description begins
+// with its adapter's.
+func isFilter(index uint32) bool {
+	row := windows.MibIfRow2{InterfaceIndex: index}
+	if windows.GetIfEntry2Ex(windows.MibIfEntryNormalWithoutStatistics, &row) != nil {
+		return false
+	}
+	return row.InterfaceAndOperStatusFlags&ifFilterInterface != 0
+}
+
+// substrateBuildable refuses everything but a bridge: there are no macvtap or ipvtap children on
+// Windows, and the bridge is built at install, so a parent that is not one is a node whose bridge
+// is missing -- said plainly, rather than as a macvtap that failed.
+func substrateBuildable(s Spec) error {
+	if !s.Bridge {
+		return fmt.Errorf("%s is not briard's bridge: on Windows the guest's network is %q, built at install and "+
+			"in use after a restart -- reinstall to build it again", s.Parent, BridgeName)
+	}
+	return nil
 }

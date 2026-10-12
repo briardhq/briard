@@ -46,11 +46,20 @@ const gateTimeout = 5 * time.Second
 // readGate probes the guest's gate. It never returns an error: the zero verdict already says
 // "learned nothing", and every caller treats a failure and an absence identically, so an error
 // return would only be a second way to spell the same thing.
-func readGate(ctx context.Context, addr string, logf func(string, ...any)) gateVerdict {
+//
+// from is the host's own system-subnet address, and the dial is bound to it rather than left to
+// the routing table: the guest answers on its node IP, and a standby with no LAN address of its own
+// can only reply to an address on its system subnet. Linux would pick it anyway (the node route
+// pins its source); Windows has no per-route source, and the address is kept out of its source
+// selection on purpose, so there the bind is the only thing that picks it. "" binds nothing.
+func readGate(ctx context.Context, addr, from string, logf func(string, ...any)) gateVerdict {
 	ctx, cancel := context.WithTimeout(ctx, gateTimeout)
 	defer cancel()
 
 	var d net.Dialer
+	if ip := net.ParseIP(from); ip != nil {
+		d.LocalAddr = &net.TCPAddr{IP: ip}
+	}
 	c, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		logf("guest-recovery: gate %s unreachable (%v) -- proceeding without it", addr, err)

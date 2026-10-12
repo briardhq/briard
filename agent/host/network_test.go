@@ -17,7 +17,7 @@ import (
 func macvtapCfg() Config {
 	return Config{
 		SystemTap: "briard-drbd0", ServiceTap: "briard0", WitnessTap: "briard-priv0",
-		SystemHostCIDR: "10.42.7.129/32", WitnessCIDR: "10.11.203.2/24",
+		SystemCIDR: "10.42.7.1/24", SystemHostCIDR: "10.42.7.129/32", WitnessCIDR: "10.11.203.2/24",
 		PrivHostCIDR: "10.11.203.1/24",
 	}
 }
@@ -44,8 +44,8 @@ func TestNetSpecMacvtap(t *testing.T) {
 // A BRIDGE PARENT IS A DIFFERENT NODE, and the narrowing is what makes the config true rather
 // than merely quiet: a second tap and a private link do not exist on this substrate, so naming
 // them would render the guest a NIC it cannot use. ONE port, the guest makes its own service
-// identity on top, and the host's address is on the bridge because it is genuinely on
-// that segment -- which is also why the /32 has to become a /24.
+// identity on top, and the host's address is on the bridge: a /32 and one on-link route to its own
+// guest, never the /24 that would claim the whole system subnet on the host's primary device.
 func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	s := macvtapCfg().netSpec("br0", true, false)
 	if !s.Bridge || s.SystemTap != "briard-drbd0" {
@@ -54,12 +54,16 @@ func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	if s.ServiceTap != "" || s.PrivTap != "" {
 		t.Errorf("a bridge parent has one port and no private link, got %+v", s)
 	}
-	// THE PREFIX IS THE ASSERTION. netSpec narrows before it reads, so the address on the bridge
-	// is the /24 -- not the /32 the config was written with, which on a segment the host is
-	// really on claims no on-link route and black-holes the guest's peers, silently.
-	want := []nic.Addr{{CIDR: "10.42.7.129/24", Dev: "br0"}}
+	// THE PREFIX AND THE ROUTE ARE THE ASSERTION: a /32, and the one route that makes it reach the
+	// guest -- without the route the host's /32 is on-link to nothing and the guest's node IP is
+	// unreachable from the host (the reboot gate, the backup store's replies).
+	want := []nic.Addr{{CIDR: "10.42.7.129/32", Dev: "br0"}}
 	if !slices.Equal(s.Addrs, want) {
 		t.Errorf("addrs = %+v, want %+v", s.Addrs, want)
+	}
+	wantR := []nic.Route{{Dst: "10.42.7.1", Dev: "br0", Src: "10.42.7.129"}}
+	if !slices.Equal(s.Routes, wantR) {
+		t.Errorf("routes = %+v, want %+v", s.Routes, wantR)
 	}
 
 	cfg := macvtapCfg().applySubstrate(true)
@@ -71,11 +75,6 @@ func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	}
 	if cfg.NetMode != platform.NetBridge {
 		t.Errorf("NetMode = %q, want the by-name substrate", cfg.NetMode)
-	}
-	// The prefix, which is the easiest half to forget and the one that black-holes the guest's
-	// peers if it is wrong: a /32 on a segment the host is really on claims no on-link route.
-	if cfg.SystemHostCIDR != "10.42.7.129/24" {
-		t.Errorf("SystemHostCIDR = %q, want the on-link prefix", cfg.SystemHostCIDR)
 	}
 }
 
@@ -130,17 +129,6 @@ func TestAwaitNetworkReturnsWhenThereIsNoNetworkToOwn(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("awaitNetwork never returned on a config that names no devices")
-	}
-}
-
-// An unparseable address is passed through rather than mangled. onLink is a narrowing, not a
-// validator -- the address is checked where it is used, and a silent rewrite here would be a
-// worse failure than the one it was trying to prevent.
-func TestOnLinkLeavesNonsenseAlone(t *testing.T) {
-	for _, in := range []string{"", "not-a-cidr", "10.0.0.1"} {
-		if got := onLink(in); got != in {
-			t.Errorf("onLink(%q) = %q, want it untouched", in, got)
-		}
 	}
 }
 

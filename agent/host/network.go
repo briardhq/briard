@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"net/netip"
 	"time"
 
 	"briard.io/agent/cloud"
@@ -57,20 +56,25 @@ func (cfg Config) linksPresent() bool {
 // operator. A wireless station is macvtap's spec with ipvtap children (nic/ipvtap.go).
 func (cfg Config) netSpec(dev string, bridge, wireless bool) nic.Spec {
 	// ⚠️ NARROWED FIRST, and here rather than at the caller so the two cannot disagree. The spec
-	// must describe the node the substrate actually makes: on a bridge there is no service tap,
-	// no private link, and the host's system-subnet address is a /24 on the bridge. Reading the
-	// config as WRITTEN would put the macvtap /32 on a segment the host is really on, which
-	// claims no on-link route and black-holes the guest's peers -- and it would do it silently.
+	// must describe the node the substrate actually makes: on a bridge there is no service tap and
+	// no private link, and reading the config as WRITTEN would name devices the guest cannot use.
 	cfg = cfg.applySubstrate(bridge)
 	s := nic.Spec{
 		Parent: dev, Bridge: bridge, Ipvtap: wireless && !bridge,
 		SystemTap: cfg.SystemTap, ServiceTap: cfg.ServiceTap, PrivTap: cfg.WitnessTap,
 	}
 	if bridge {
-		// ONE PORT ON A BRIDGE THE USER OWNS, and the host's own system-subnet address on the
-		// bridge itself -- where the host genuinely IS on that L2, so the honest prefix is the
-		// subnet's rather than the macvtap /32.
+		// ONE PORT ON THE BRIDGE, and the host's own system-subnet address on the bridge itself:
+		// a /32, plus ONE on-link route to its guest's node IP. The host reaches the one machine
+		// on that subnet it has business with and claims nothing else of the range -- a /24 here
+		// would put a second connected route for the whole system subnet on the host's PRIMARY
+		// device, beside its real LAN address. What a /24 added was only that implicit route;
+		// ARP is unaffected, because the guest's eth1 is on this same L2 and the request arrives
+		// on the interface holding the address.
 		s.Addrs = []nic.Addr{{CIDR: cfg.SystemHostCIDR, Dev: dev}}
+		if g := cfg.guestNodeIP(); g != "" && cfg.hostNodeIP() != "" {
+			s.Routes = []nic.Route{{Dst: g, Dev: dev, Src: cfg.hostNodeIP()}}
+		}
 		return s
 	}
 	if s.PrivTap != "" {
@@ -109,21 +113,7 @@ func (cfg Config) applySubstrate(bridge bool) Config {
 	cfg.ServiceTap, cfg.WitnessTap, cfg.WitnessCIDR = "", "", ""
 	cfg.VIPParent = "eth1"
 	cfg.NetMode = platform.NetBridge
-	cfg.SystemHostCIDR = onLink(cfg.SystemHostCIDR)
 	return cfg
-}
-
-// onLink re-prefixes the host's system-subnet address to the /24 the bridge substrate wants. The
-// macvtap /32 is a claim about a point-to-point wire; on a bridge the host is really on the
-// segment and needs the on-link route to reach the guest's node IP at all. An unparseable value
-// is returned untouched -- this is a narrowing, not a validator, and the address is checked where
-// it is used.
-func onLink(cidr string) string {
-	p, err := netip.ParsePrefix(cidr)
-	if err != nil {
-		return cidr
-	}
-	return netip.PrefixFrom(p.Addr(), 24).String()
 }
 
 // awaitNetwork brings the host's side of the guest's L2 up, waiting for a usable device if there
@@ -355,7 +345,7 @@ func (cfg Config) convergeNetwork(ctx context.Context, logf func(string, ...any)
 func substrateName(s nic.Spec) string {
 	switch {
 	case s.Bridge:
-		return "a bridge this host did not create -- one port, the guest makes its own service identity"
+		return bridgeWhose + " -- one port, the guest makes its own service identity"
 	case s.Ipvtap:
 		return "ipvtap children on the station's own MAC, held in " + nic.HoldNS + " -- wireless, so no failover"
 	}

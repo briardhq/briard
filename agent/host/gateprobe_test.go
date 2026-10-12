@@ -89,7 +89,7 @@ func TestReadGateOnADeadAddressLearnsNothing(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	if got := readGate(context.Background(), addr, func(string, ...any) {}); got != (gateVerdict{}) {
+	if got := readGate(context.Background(), addr, "", func(string, ...any) {}); got != (gateVerdict{}) {
 		t.Errorf("readGate on a dead address = %+v, want the zero verdict", got)
 	}
 }
@@ -117,7 +117,7 @@ func TestReadGateAgainstTheRealDeadmanGate(t *testing.T) {
 
 	var v gateVerdict
 	for range 100 {
-		if v = readGate(ctx, addr, func(string, ...any) {}); v.reached {
+		if v = readGate(ctx, addr, "", func(string, ...any) {}); v.reached {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -149,5 +149,29 @@ func TestParseGateRejectsAVersionPrefixCollision(t *testing.T) {
 	line := deadman.GateProto + "1 allowed=1 age=0"
 	if _, ok := parseGate(line); ok {
 		t.Errorf("parseGate accepted %q; %q is a different protocol version", line, strings.Fields(line)[0])
+	}
+}
+
+// The dial leaves FROM the host's system-subnet address when it is given one -- the guest's side
+// sees that source, which is the only thing a standby with no LAN address can reply to. Two
+// loopback addresses stand in for the host's two (127.0.0.2 is local on Linux without config).
+func TestReadGateDialsFromTheHostSystemAddress(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	src := make(chan string, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		src <- c.RemoteAddr().(*net.TCPAddr).IP.String()
+		c.Close()
+	}()
+	readGate(context.Background(), ln.Addr().String(), "127.0.0.2", func(string, ...any) {})
+	if got := <-src; got != "127.0.0.2" {
+		t.Errorf("the gate dial came from %s, want the host's system address 127.0.0.2", got)
 	}
 }

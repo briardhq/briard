@@ -96,12 +96,23 @@ type Spec struct {
 	PrivTap string
 	// Addrs are the addresses this host puts on its own side, in CIDR form, keyed by device.
 	// Under macvtap: the link's host end and this node's system-subnet /32, both on PrivTap.
-	// Under a bridge: this node's system-subnet address, a /24, on the bridge itself.
+	// Under a bridge: this node's system-subnet /32, on the bridge itself.
 	Addrs []Addr
+	// Routes are the host routes this host holds to its own guest. Under a bridge: one on-link
+	// /32 to the guest's node IP. The host's /32 claims no subnet, so this one route is how the
+	// host reaches its guest -- and it reaches nothing else of the system subnet, which is the
+	// point: a /24 there would be a second connected route for the whole range on the host's
+	// primary device, beside its real LAN address.
+	Routes []Route
 }
 
 // Addr is one address this host holds for its own guest's benefit.
 type Addr struct{ CIDR, Dev string }
+
+// Route is one host route: Dst (a bare address, routed as a /32) on-link on Dev, sourced from Src
+// where the OS can pin a route's source (Linux). Windows cannot, and its callers bind Src
+// themselves.
+type Route struct{ Dst, Dev, Src string }
 
 // built reports whether every device this spec names already exists. It is the difference between
 // a pass that BUILDS (first convergence, or the one after a reboot) and a pass that merely
@@ -146,6 +157,9 @@ func (s Spec) built(ctx context.Context) bool {
 func Converge(ctx context.Context, s Spec) error {
 	if s.Parent == "" || s.SystemTap == "" {
 		return fmt.Errorf("nic: incomplete spec (%+v)", s)
+	}
+	if err := substrateBuildable(s); err != nil {
+		return err
 	}
 	// The parent is brought up only when we are about to CREATE something on it -- a first
 	// convergence, or one after a reboot took our devices with it. On a pass that finds
@@ -216,6 +230,15 @@ func Converge(ctx context.Context, s Spec) error {
 			return err
 		}
 	}
+	// After the addresses: a route sourced from an address is refused until the address is there.
+	for _, r := range s.Routes {
+		if r.Dst == "" || hasRoute(r) {
+			continue
+		}
+		if err := addRoute(ctx, r); err != nil {
+			return fmt.Errorf("nic: route to %s on %s: %w", r.Dst, r.Dev, err)
+		}
+	}
 	return nil
 }
 
@@ -284,12 +307,20 @@ func Remove(ctx context.Context, s Spec) error {
 			keep(fmt.Errorf("nic: removing %s: %s", HoldNS, firstLine(out, err)))
 		}
 	}
+	for _, r := range s.Routes {
+		if r.Dst == "" || !hasRoute(r) {
+			continue
+		}
+		if err := delRoute(ctx, r); err != nil {
+			keep(fmt.Errorf("nic: removing the route to %s on %s: %w", r.Dst, r.Dev, err))
+		}
+	}
 	for _, a := range s.Addrs {
 		if a.CIDR == "" || !hasAddr(a.Dev, a.CIDR) {
 			continue
 		}
-		if out, err := ip(ctx, "addr", "del", a.CIDR, "dev", a.Dev); err != nil {
-			keep(fmt.Errorf("nic: removing %s from %s: %s", a.CIDR, a.Dev, firstLine(out, err)))
+		if err := delAddr(ctx, a); err != nil {
+			keep(fmt.Errorf("nic: removing %s from %s: %w", a.CIDR, a.Dev, err))
 		}
 	}
 	return first
@@ -345,6 +376,11 @@ func Converged(s Spec) bool {
 		// would say so on every pass forever. (Every agent-less harness has one: the private link
 		// is addressed by the rig, not from a config this agent was given.)
 		if a.CIDR != "" && !hasAddr(a.Dev, a.CIDR) {
+			return false
+		}
+	}
+	for _, r := range s.Routes {
+		if r.Dst != "" && !hasRoute(r) {
 			return false
 		}
 	}
@@ -412,8 +448,8 @@ func ensureTap(ctx context.Context, dev string) error {
 	if Exists(dev) {
 		return nil // exists: not ours to re-up (see the rule above Converge)
 	}
-	if out, err := ip(ctx, tapAddArgs(dev)...); err != nil {
-		return fmt.Errorf("nic: tap %s: %s", dev, firstLine(out, err))
+	if err := createTap(ctx, dev); err != nil {
+		return fmt.Errorf("nic: tap %s: %w", dev, err)
 	}
 	return ensureUp(ctx, dev)
 }
@@ -425,8 +461,8 @@ func ensureMaster(ctx context.Context, dev, bridge string) error {
 	if master(dev) == bridge {
 		return nil
 	}
-	if out, err := ip(ctx, "link", "set", dev, "master", bridge); err != nil {
-		return fmt.Errorf("nic: %s -> %s: %s", dev, bridge, firstLine(out, err))
+	if err := joinBridge(ctx, dev, bridge); err != nil {
+		return fmt.Errorf("nic: %s -> %s: %w", dev, bridge, err)
 	}
 	return nil
 }
@@ -435,8 +471,8 @@ func ensureUp(ctx context.Context, dev string) error {
 	if up(dev) {
 		return nil
 	}
-	if out, err := ip(ctx, "link", "set", dev, "up"); err != nil {
-		return fmt.Errorf("nic: %s up: %s", dev, firstLine(out, err))
+	if err := linkUp(ctx, dev); err != nil {
+		return fmt.Errorf("nic: %s up: %w", dev, err)
 	}
 	return nil
 }
@@ -447,8 +483,8 @@ func ensureAddr(ctx context.Context, a Addr) error {
 	if a.CIDR == "" || a.Dev == "" || hasAddr(a.Dev, a.CIDR) {
 		return nil
 	}
-	if out, err := ip(ctx, "addr", "replace", a.CIDR, "dev", a.Dev); err != nil {
-		return fmt.Errorf("nic: %s on %s: %s", a.CIDR, a.Dev, firstLine(out, err))
+	if err := addAddr(ctx, a); err != nil {
+		return fmt.Errorf("nic: %s on %s: %w", a.CIDR, a.Dev, err)
 	}
 	return nil
 }

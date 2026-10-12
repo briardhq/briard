@@ -1,6 +1,8 @@
 package nic
 
 import (
+	"context"
+	"errors"
 	"net"
 	"os"
 )
@@ -41,3 +43,48 @@ func master(dev string) string {
 // DefaultRoute reads the interface owning the default route (destination 00000000) from
 // /proc/net/route -- the MAIN table, which is the point (see Choose). "" if none.
 func DefaultRoute() string { return parseDefaultRouteDev(readText(procRoute)) }
+
+// The writers, as iproute2. Each returns the one line of `ip`'s complaint worth showing.
+
+func ipDo(ctx context.Context, args ...string) error {
+	if out, err := ip(ctx, args...); err != nil {
+		return errors.New(firstLine(out, err))
+	}
+	return nil
+}
+
+func createTap(ctx context.Context, dev string) error { return ipDo(ctx, tapAddArgs(dev)...) }
+
+func joinBridge(ctx context.Context, dev, bridge string) error {
+	return ipDo(ctx, "link", "set", dev, "master", bridge)
+}
+
+func linkUp(ctx context.Context, dev string) error { return ipDo(ctx, "link", "set", dev, "up") }
+
+// addAddr uses `addr replace` rather than `add`, so a prefix that changed converges rather than
+// collides.
+func addAddr(ctx context.Context, a Addr) error {
+	return ipDo(ctx, "addr", "replace", a.CIDR, "dev", a.Dev)
+}
+
+func delAddr(ctx context.Context, a Addr) error {
+	return ipDo(ctx, "addr", "del", a.CIDR, "dev", a.Dev)
+}
+
+func addRoute(ctx context.Context, r Route) error {
+	args := []string{"route", "replace", r.Dst + "/32", "dev", r.Dev}
+	if r.Src != "" {
+		args = append(args, "src", r.Src)
+	}
+	return ipDo(ctx, args...)
+}
+
+func delRoute(ctx context.Context, r Route) error {
+	return ipDo(ctx, "route", "del", r.Dst+"/32", "dev", r.Dev)
+}
+
+// hasRoute reads the main table rather than asking `ip`, because it runs on every tick.
+func hasRoute(r Route) bool { return parseHostRoute(readText(procRoute), r.Dev, r.Dst) }
+
+// substrateBuildable is nil on Linux: every substrate the spec can name is one this host builds.
+func substrateBuildable(Spec) error { return nil }

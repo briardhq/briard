@@ -14,6 +14,12 @@ const (
 	// guestUnitLog is where the guest unit's own output goes: "" is the journal, which is there.
 	guestUnitLog = ""
 
+	// bridgeWhose says, in the log, whose bridge the guest hangs off: on Linux, always the user's.
+	bridgeWhose = "a bridge this host did not create"
+
+	// defaultSystemTap is the guest's eth1 on the host: a tap the agent creates.
+	defaultSystemTap = "briard-drbd0"
+
 	// defaultAccel is KVM, with TCG as the fallback qemu takes when /dev/kvm is not there.
 	defaultAccel = "kvm:tcg"
 )

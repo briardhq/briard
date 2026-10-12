@@ -1,5 +1,7 @@
 package host
 
+import "briard.io/agent/nic"
+
 // The install roots on Windows: one tree under %ProgramData%, which is where a machine-wide
 // service keeps its files. Constants rather than read from the environment, for the reason the
 // Linux roots are -- every default below derives from them, and an agent that relocated itself on
@@ -18,6 +20,13 @@ const (
 	guestConsole  = logDir + `\guest-console.log`
 	// guestUnitLog is qemu's own output. The SCM keeps no journal, so it is a file or it is lost.
 	guestUnitLog = logDir + `\briard-guest.log`
+
+	// bridgeWhose says, in the log, whose bridge the guest hangs off: on Windows, the one briard built.
+	bridgeWhose = "briard's bridge, built at install"
+
+	// defaultSystemTap is the tap-windows6 adapter the bridge is built with, under the name the bridge
+	// build gives it.
+	defaultSystemTap = nic.TapName
 
 	// defaultAccel is WHPX, with TCG as the fallback qemu takes when the hypervisor platform is not
 	// enabled.

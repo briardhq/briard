@@ -211,3 +211,27 @@ func TestParseInet(t *testing.T) {
 		t.Errorf("parseInet of nothing = %q", got)
 	}
 }
+
+// A /32 to the guest's node IP on the bridge, in /proc/net/route's own shape: little-endian hex, a
+// full mask. The /24 beside it and the same /32 on another device are not the route.
+func TestParseHostRoute(t *testing.T) {
+	const text = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"br0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"br0\t0001A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n" +
+		"br0\t0105000A\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n" +
+		"eth9\t0205000A\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n"
+	for _, tc := range []struct {
+		dev, dst string
+		want     bool
+	}{
+		{"br0", "10.0.5.1", true},
+		{"br0", "10.0.5.2", false}, // on another device
+		{"eth9", "10.0.5.2", true},
+		{"br0", "192.168.1.0", false}, // a /24, not a host route
+		{"br0", "not-an-ip", false},
+	} {
+		if got := parseHostRoute(text, tc.dev, tc.dst); got != tc.want {
+			t.Errorf("parseHostRoute(%s, %s) = %v, want %v", tc.dev, tc.dst, got, tc.want)
+		}
+	}
+}

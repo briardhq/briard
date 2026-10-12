@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -292,3 +293,21 @@ const arpWait = 750 * time.Millisecond
 // timeAfter is time.After, named so the fingerprint's poll loop reads as a wait rather than as a
 // channel expression.
 func timeAfter(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// parseHostRoute reports whether /proc/net/route's text holds a /32 to dst on dev. The table
+// prints addresses as the kernel stores them, little-endian hex, so 10.0.0.1 is 0100000A. Pure, so
+// that detail is unit-tested rather than trusted.
+func parseHostRoute(text, dev, dst string) bool {
+	a, err := netip.ParseAddr(dst)
+	if err != nil || !a.Is4() {
+		return false
+	}
+	b := a.As4()
+	want := fmt.Sprintf("%02X%02X%02X%02X", b[3], b[2], b[1], b[0])
+	for _, f := range procTable(text) { // Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+		if len(f) >= 8 && f[0] == dev && strings.EqualFold(f[1], want) && strings.EqualFold(f[7], "FFFFFFFF") {
+			return true
+		}
+	}
+	return false
+}

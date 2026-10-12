@@ -222,14 +222,23 @@ pkgs.testers.runNixOSTest {
     # The host holds its system-subnet address on the BRIDGE -- it is genuinely on that L2 here,
     # which is why there is no private link to carry it. Read from the drawn subnet,
     # never spelled: a rig that spells a subnet the installer draws asserts about a coincidence.
+    #
+    # A /32 and ONE on-link route to its own guest -- never the /24, which would put a connected
+    # route for the whole system subnet on the host's primary device. Both halves are asserted,
+    # and the absence of the /24 route too: a re-prefix creeping back would pass every
+    # reachability line below.
     system_subnet = host.succeed("sed -n 's/^SYSTEM_SUBNET=//p' /var/lib/briard/subnets").strip()
     node_ip, host_ip = f"{system_subnet}.1", f"{system_subnet}.129"
-    host.succeed(f"ip -o -4 addr show dev br0 | grep -qw {host_ip}")
+    host.wait_until_succeeds(f"ip -o -4 addr show dev br0 | grep -q ' {host_ip}/32 '", timeout=300)
+    host.wait_until_succeeds(f"ip -4 route show {node_ip} dev br0 | grep -q 'src {host_ip}'", timeout=60)
+    host.fail(f"ip -4 route show {system_subnet}.0/24 | grep -q br0")
     print(f"host on the system subnet at {host_ip}, on the bridge")
 
     # The guest boots on the BUNDLED qemu and the agent converges to quorate Primary holding the VIP.
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64")
+    # The route is what the /32 reaches the guest through: the host dials its own guest's node IP.
+    host.succeed(f"ping -c1 -W2 {node_ip}")
 
     # --- DELTA 3 (THE PROOF): the OFF-BOX client reaches Briard at the VIP, through the
     # host's own bridge -- not the install host curling itself.
@@ -320,7 +329,7 @@ pkgs.testers.runNixOSTest {
     # (keep); this proves the other half, so nothing of ours may survive at all.
     installed = footprint() - pristine
     for want in ("/opt/briard", "/var/lib/briard", "/usr/local/bin/briard", "link briard-drbd0",
-                 f"addr br0 {host_ip}/24", "unit briard-guest.service"):
+                 f"addr br0 {host_ip}/32", f"route {node_ip} dev br0", "unit briard-guest.service"):
         assert want in installed, f"the footprint cannot see {want!r}, so it cannot prove it gone: {sorted(installed)}"
 
     # Without -yes it only says what it would do -- and says the data goes, since it was asked to.

@@ -314,31 +314,6 @@ func unameRelease() string {
 // The host agent checks the same number before it grows the guest's state disk.
 func DiskFreeMB(path string) int { return diskFreeMB(path) }
 
-// MemTotalMB is the machine's installed RAM (MemTotal), in MB; 0 when it cannot be read. The host
-// agent sizes its guest's growth ceiling from the same number the report card grades.
-func MemTotalMB() int {
-	f, err := os.Open("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "MemTotal:") {
-			continue
-		}
-		fields := strings.Fields(line) // MemTotal:  16384000 kB
-		if len(fields) >= 2 {
-			if kb, err := strconv.Atoi(fields[1]); err == nil {
-				return kb / 1024
-			}
-		}
-	}
-	_ = sc.Err()
-	return 0
-}
-
 // The any-ethernet / wired-ethernet survey used to live here, and the NIC selection retired it: it asked
 // whether the MACHINE had a wired device, not whether the device the install would actually use
 // was one. A laptop with an unplugged eth0 and the default route on wlan0 passed it, and then

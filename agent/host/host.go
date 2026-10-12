@@ -804,6 +804,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// ...and NOW the LAN is recorded: after bring-up, so a fingerprint of a network we never
 	// actually served on cannot teach the next re-parent decision something unverified.
 	cfg.recordNetwork(ctx, logf)
+	// What building a Windows bridge cost the household's NIC, said once if it matters (fastnic.go).
+	cfg.checkFastNIC(ctx, n, logf)
 	// A trial that refused its own release could not report it -- failing the start IS
 	// the mechanism -- so it left one line, and the agent that came back after the revert says
 	// so. Taken once. The staged bundle stays on disk, inert, until the channel moves past it.

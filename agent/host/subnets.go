@@ -174,12 +174,10 @@ func (cfg Config) applyDraw(d subnet.Draw) Config {
 		// presence and must still be dialable by its guest, and because the guest needs somewhere
 		// to reply to when the host dials IT (the reboot gate).
 		//
-		// ⚠️ THE PREFIX IS THE MACVTAP VALUE. A /32, on the private tap: under macvtap the host is
-		// isolated from its own guest on the LAN, so the tap is the only path, and a /24 there
-		// would claim an on-link route for the whole system subnet over a wire that reaches
-		// exactly one machine -- competing with the route the guest's own peers need. On a BRIDGE
-		// the host is genuinely on that L2 and the honest prefix is the subnet's; applySubstrate
-		// re-prefixes it, because that is where the substrate is known.
+		// A /32 on every substrate: on the private tap under macvtap, on the bridge beside one
+		// on-link route to the guest otherwise (netSpec). Either way it reaches exactly one machine,
+		// and a /24 would claim an on-link route for the whole system subnet -- competing with the
+		// route the guest's own peers need, or sitting on the host's primary device.
 		set(&cfg.SystemHostCIDR, d.System+".129/32")
 	}
 	if d.Priv != "" {

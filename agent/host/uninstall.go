@@ -100,16 +100,17 @@ func (cfg Config) Uninstall(ctx context.Context, deleteData bool, logf func(stri
 
 // uninstallSpec names what nic.Remove takes down: every tap this node's config names -- all three,
 // whatever the substrate, since a node that moved onto a bridge may still hold the other two --
-// and, on a bridge, the system-subnet address the agent put on it. That one is derived exactly as
-// the agent derives it (numbered from the recorded subnets, re-prefixed for the bridge), because
-// it is on a device the user owns and only an exact match may be taken off it.
+// and, on a bridge, the system-subnet address and the route to the guest the agent put on it.
+// Those are derived exactly as the agent derives them (numbered from the recorded subnets), because
+// they are on a device the user owns and only an exact match may be taken off it.
 //
 // nic.Select, not Choose: the probe validates a device something is about to be built on, and
 // nothing is.
 func (cfg Config) uninstallSpec() nic.Spec {
 	s := nic.Spec{SystemTap: cfg.SystemTap, ServiceTap: cfg.ServiceTap, PrivTap: cfg.WitnessTap}
 	if sel := nic.Select(cfg.NICOverride); sel.Usable() && sel.Bridge {
-		s.Addrs = cfg.applyDraw(cfg.recordedSubnets()).netSpec(sel.Dev, true, false).Addrs
+		ns := cfg.applyDraw(cfg.recordedSubnets()).netSpec(sel.Dev, true, false)
+		s.Addrs, s.Routes = ns.Addrs, ns.Routes
 	}
 	return s
 }
