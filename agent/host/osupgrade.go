@@ -18,40 +18,32 @@ import (
 	"briard.io/shared/model"
 )
 
-// AN OS UPGRADE, end to end, by both of its methods -- switch and reboot.
+// AN OS UPGRADE, end to end: the guest moves to a new IMAGE, and the host holds the file.
 //
-// WHY IT IS HERE AND NOT IN guest.Manager. Both methods roll back to the same thing: a
-// snapshot of the OS DISK, which only the host can take and only the host can restore. The
-// reboot method adds a second reason of its own -- it destroys the control channel a Manager
-// is bound to, and the boot selector deciding which generation comes up is a property of the
-// launch rather than anything written to the disk. host.go already owns
-// launch/adopt/reconnect, so this is where both sequences belong. What they do NOT do is keep
-// a second copy of the upgrade bracket: maintenance and the health-gate are the Manager's own
-// phases, called from here in order.
+// WHY IT IS HERE AND NOT IN guest.Manager. The upgrade destroys the control channel a Manager
+// is bound to (the guest goes down and comes back on another image), and the file the guest
+// boots is a property of the launch, not of anything written inside the guest. host.go already
+// owns launch/adopt/reconnect, so this is where the sequence belongs. What it does NOT do is
+// keep a second copy of the upgrade bracket: maintenance and the health-gate are the Manager's
+// own phases, called from here in order.
 //
-// THE SHAPE, and it is one shape with two middles (the (c2) procedure, phases A/B/C):
+// THE SHAPE: stop cleanly -> rename the image the guest boots (the old one kept beside it as
+// .prev) -> relaunch on the new one -> prove the booted closure is the one the release's signed
+// manifest names -> health-gate -> commit (drop .prev) or restore (rename it back). No
+// generation, no boot selector, no in-guest step: the guest is an appliance.
 //
-//	switch: snapshot the OS disk LIVE -> switch-to-configuration switch
-//	reboot: arm the boot -> stop cleanly -> snapshot the OS disk offline -> relaunch with the
-//	        selector -> prove the target actually booted
-//
-// then, identically for both: health-gate -> commit (+ collect, drop the point) or restore.
-//
-// WHAT NEITHER OF THEM TOUCHES: the workload. No service stop, no service
-// start, no data snapshot, no data restore. `switch-to-configuration switch` restarts a unit
-// only if that unit changed, which is what makes "the new OS runs the same containers on the
-// same data" a mechanism rather than an aspiration; the reboot method stops everything by
-// going down, and systemd does that in order without being asked. If the update fails, THE OS
-// rolls back -- the service has no reason to, and the replicated volume is never in scope.
-// The one thing that still reads service state is the health-gate, which is correct and is the
+// WHAT IT NEVER TOUCHES: the workload. No service stop, no service start, no data snapshot, no
+// data restore. The new OS runs the same containers on the same data; systemd stops and starts
+// them in order by going down and coming up, without being asked. If the update fails, THE OS
+// rolls back -- the service has no reason to, and the replicated volume is never in scope. The
+// one thing that still reads service state is the health-gate, which is correct and is the
 // line: reading a service to decide whether to revert the OS is not touching it.
 //
-// WHAT THE ROLLBACK POINT COVERS: the qcow2 snapshot, and deliberately no btrfs data snapshot.
+// WHAT THE ROLLBACK POINT COVERS: the previous image, and deliberately no btrfs data snapshot.
 // An OS upgrade cannot change service code -- a service's identity is the manifest on the
 // replicated volume, re-pointed only by a service install -- so there is no data migration to
 // undo, and reverting the subvolume would delete real user data written during the gate
-// window. What an OS upgrade *can* disturb (/var/lib/nixos, /var/lib/containers, systemd
-// state) all lives on the qcow2, which is exactly what the snapshot holds.
+// window. What an OS upgrade *can* disturb is the OS itself, which is exactly the image.
 
 // shutdownGrace bounds each clean-stop attempt. A guest that has not powered off in this long
 // is not going to: a converged guest -- DRBD Primary, volume mounted, services serving, VIP up --
@@ -93,7 +85,7 @@ var ErrHandoverRequired = errors.New("reboot needs a handover: a peer can take o
 
 // osUpgrade is the host's binding to the guest, and the upgrade surface the directive path
 // drives: a guest.Manager plus the one operation only the host can perform. Everything the
-// Manager already does is promoted unchanged; RebootUpgrade is the addition.
+// Manager already does is promoted unchanged; ImageUpgrade is the addition.
 //
 // It holds the binding rather than a snapshot of it because a reboot REPLACES all three parts
 // at once -- VM, channel and Manager -- and something has to own that swap. Run rebinds it on
@@ -240,9 +232,6 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 // then drop the old image or put it back. No generation, no boot selector, no in-guest step:
 // the guest is an appliance and the host holds the file.
 //
-// It coexists with the closure path (Upgrade / RebootUpgrade) until the closure path is
-// retired together with the lab and cloud demos that still drive closures; a node with a
-// cloud sees the closure directive, an OSS node the image path.
 
 // nextImage / prevImage name the staged and the superseded image beside the one in use. The
 // staged one is written by the update (decompressed, so the swap is a rename); the previous one
@@ -252,7 +241,7 @@ func prevImage(backing string) string { return backing + ".prev" }
 
 // ImageUpgrade moves THIS node to the guest release rel, whose image is already staged at
 // nextImage(backing) by the caller. rolledBack says where the node ended up, err what went
-// wrong -- the same three outcomes as RebootUpgrade, for the same reasons.
+// wrong -- three outcomes: moved, rolled back, or failed with the node where it says.
 func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) {
 	mgr := u.Manager
 	qspec := u.cfg.guestSpec()

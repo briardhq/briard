@@ -289,7 +289,7 @@ func TestHandshake(t *testing.T) {
 		t.Errorf("capabilities = %d, want the guest agent's %d", len(h.Capabilities), len(guestCapabilities))
 	}
 	if !g.Supports(verbOSSystem) {
-		t.Error("guest should advertise os.switch after the handshake")
+		t.Error("guest should advertise os.system after the handshake")
 	}
 	if g.Supports("bogus.verb") {
 		t.Error("guest must not advertise a bogus verb")
