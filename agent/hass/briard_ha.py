@@ -223,6 +223,17 @@ async def async_setup(hass, config):
 
     async_at_started(hass, _mirror)
     async_track_time_interval(hass, _mirror, ALERTS_EVERY)
+
+    # The household's casa name as Home Assistant's external URL: at start, then on the same slow
+    # poll, because the name is usually confirmed while Home Assistant is already running.
+    async def _external(_now=None):
+        try:
+            await _offer_external_url(hass)
+        except Exception:  # noqa: BLE001 — nothing in here may cost a household its Home Assistant
+            _LOGGER.warning("briard: could not set Home Assistant's external URL", exc_info=True)
+
+    async_at_started(hass, _external)
+    async_track_time_interval(hass, _external, EXTERNAL_URL_EVERY)
     return True
 
 # THE NODE'S ALERTS AS REPAIRS ISSUES. The node's host agent keeps the one record of every alert;
@@ -286,6 +297,41 @@ async def _mirror_alerts(hass):
     for domain, issue_id in list(registry.issues):
         if domain == DOMAIN and issue_id not in open_now:
             ir.async_delete_issue(hass, DOMAIN, issue_id)
+
+# THE CASA NAME AS HOME ASSISTANT'S EXTERNAL URL. A Home Assistant with no external URL cannot
+# cast a dashboard to a Chromecast or Nest Hub, which needs https, and the household's casa name
+# has a real certificate. The node writes the URL to EXTERNAL_URL_PATH only once the household's
+# own network has been seen to resolve that name, and empties it otherwise, so nothing here
+# decides whether the name works.
+#
+# FILL AN EMPTY SLOT, NEVER ANYTHING ELSE. An external URL already set (Nabu Casa, DuckDNS, the
+# household's own domain, or ours from an earlier start) is left alone, and this never clears
+# one: a name that later stops resolving costs the household a cast, while the internal URL
+# stays their way in. A core config managed in YAML is skipped too: `async_update` would mark it
+# UI-managed, and YAML owns those keys.
+#
+# Live, with no restart: `async_update` is what Settings -> System -> Network calls. Compared
+# against the string, because ConfigSource is a StrEnum whose module has moved between releases.
+EXTERNAL_URL_PATH = "@EXTERNAL_URL_PATH@"
+EXTERNAL_URL_EVERY = timedelta(seconds=30)
+
+def _read_external_url():
+    """The URL the node offers, or "" when it offers none. Blocking; called in the executor."""
+    try:
+        with open(EXTERNAL_URL_PATH, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+async def _offer_external_url(hass):
+    """Set the offered URL as Home Assistant's external URL, if it has none."""
+    if hass.config.external_url or hass.config.config_source == "yaml":
+        return
+    url = await hass.async_add_executor_job(_read_external_url)
+    if not url.startswith("https://"):
+        return
+    await hass.config.async_update(external_url=url)
+    _LOGGER.info("briard: set Home Assistant's external URL to %s", url)
 
 def _broker_listening():
     """Is there actually a broker on the node? Blocking; called in the executor."""

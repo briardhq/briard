@@ -1357,6 +1357,24 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
 				return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
 			}
+			if c, ok := v.(*dashboard.Casa); ok {
+				// The same view, as Home Assistant's integration reads it: the external URL, named
+				// only once the household's network resolves the name (hass.ExternalURL). 0644 in
+				// HA's service directory, beside a 0600 token, so its own mode is set.
+				if out, err := x.Run(ctx, "mkdir", "-p", hass.Dir); err != nil {
+					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
+				}
+				tmp := hass.ExternalURLPath + ".new"
+				if err := x.WriteFile(tmp, []byte(hass.ExternalURL(*c))); err != nil {
+					return nil, fmt.Errorf("%s: %w", verb, err)
+				}
+				if out, err := x.Run(ctx, "chmod", "0644", tmp); err != nil {
+					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
+				}
+				if out, err := x.Run(ctx, "mv", "-f", tmp, hass.ExternalURLPath); err != nil {
+					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
+				}
+			}
 			return nil, nil
 		case verbMosquittoProbe:
 			var req mosquittoProbeRequest

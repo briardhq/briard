@@ -1986,12 +1986,28 @@ func TestDashboardCasaIsWrittenThenMovedIn(t *testing.T) {
 	if got := x.files[tmp]; !strings.Contains(got, `"state":"registered"`) || !strings.Contains(got, `"name":"alert-fox.briard.casa"`) {
 		t.Errorf("written %q; want the view", got)
 	}
+	// Home Assistant's copy, written the same way and readable by the container: empty, because
+	// this name is registered but not known to resolve on the household's network.
+	urlTmp := hass.ExternalURLPath + ".new"
 	want := [][]string{
 		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
 		{"mv", "-f", tmp, dashboard.CasaPath},
+		{"mkdir", "-p", hass.Dir},
+		{"chmod", "0644", urlTmp},
+		{"mv", "-f", urlTmp, hass.ExternalURLPath},
 	}
 	if !reflect.DeepEqual(x.runs, want) {
 		t.Errorf("runs = %v, want %v", x.runs, want)
+	}
+	if got, ok := x.files[urlTmp]; !ok || got != "" {
+		t.Errorf("external URL = %q (written %v), want an empty file for a name not known to resolve", got, ok)
+	}
+	raw, _ = json.Marshal(dashboard.Casa{State: "registered", Name: "alert-fox.briard.casa", Resolves: dashboard.CasaResolves})
+	if _, err := dispatch(x)(context.Background(), verbDashboardCasa, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := x.files[urlTmp]; got != "https://home-assistant.alert-fox.briard.casa" {
+		t.Errorf("external URL = %q, want the service's casa name once it resolves", got)
 	}
 	if _, err := dispatch(x)(context.Background(), verbDashboardCasa, []byte(`not json`)); err == nil {
 		t.Error("a malformed view was accepted")

@@ -628,6 +628,31 @@ pkgs.testers.runNixOSTest {
     )
     print("the node's open alert became a Repairs issue, and its resolution removed it")
 
+    # THE EXTERNAL URL, from the file the guest agent writes for `dashboard.casa` (written by hand
+    # here, the same way). An empty slot is filled live, with no restart. A set one is never
+    # overwritten: judged after more than one whole poll (30 s, a timer running since setup) has
+    # passed with a different URL offered.
+    def ext_url():
+        return _zj.loads(node1.succeed(
+            f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config"
+        )).get("external_url")
+    def offer(url):
+        node1.succeed(
+            f"printf %s {shlex.quote(url)} > /run/briard/home-assistant/external-url.new "
+            "&& mv -f /run/briard/home-assistant/external-url.new /run/briard/home-assistant/external-url"
+        )
+    assert ext_url() is None, f"a fresh Home Assistant already has an external URL: {ext_url()}"
+    offer("https://home-assistant.brave-elf.briard.casa")
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config "
+        "| grep -q '\"external_url\": *\"https://home-assistant.brave-elf.briard.casa\"'",
+        timeout=120,
+    )
+    offer("https://home-assistant.other.briard.casa")
+    node1.sleep(35)
+    assert ext_url() == "https://home-assistant.brave-elf.briard.casa", f"the set external URL was overwritten: {ext_url()}"
+    print("the offered URL became Home Assistant's external URL, and a set one was left alone")
+
     # The entry is not asserted to exist "eventually" by polling forever: it is waited for once,
     # then its CONTENTS are read, because an entry naming the wrong broker would satisfy any
     # existence check.

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"briard.io/shared/casa"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
@@ -380,6 +382,10 @@ func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	if !strings.Contains(src, `ALERTS_PATH = "/briard-alerts/alerts.json"`) || !strings.Contains(src, `DASHBOARD_URL = "http://briard.local/"`) {
 		t.Error("the alert copy's path or the dashboard's address did not reach the integration")
 	}
+	// And where the external URL is read, inside the service directory's bind.
+	if !strings.Contains(src, `EXTERNAL_URL_PATH = "/briard/external-url"`) {
+		t.Error("the external URL's path did not reach the integration")
+	}
 	// An issue's words are translation keys read from beside the stub, so the stub carries them.
 	if tr := f.files[stubDir+"/translations/en.json"]; !strings.Contains(tr, `"alert"`) || !strings.Contains(tr, "{title}") || !strings.Contains(tr, "{body}") {
 		t.Errorf("the issue translation was not staged with the alert's placeholders: %q", tr)
@@ -518,10 +524,35 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 func TestPrepareRefusesAnIntegrationMissingAnyPlaceholder(t *testing.T) {
 	saved := implSource
 	t.Cleanup(func() { implSource = saved })
-	for _, tok := range []string{mqttPortToken, alertsPathToken, dashboardURLToken} {
+	for _, tok := range []string{mqttPortToken, alertsPathToken, dashboardURLToken, externalURLPathToken} {
 		implSource = strings.Replace(saved, tok, "x", 1)
 		if err := writeIntegration(context.Background(), withImage(), 1883); err == nil || !strings.Contains(err.Error(), tok) {
 			t.Errorf("an integration without %s: err = %v, want a refusal naming it", tok, err)
+		}
+	}
+}
+
+// The external URL is named only for a registered casa name the household's network resolves:
+// anything short of that positive answer leaves the file empty, and Home Assistant untouched.
+func TestExternalURLOnlyForAResolvingName(t *testing.T) {
+	reg := dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Resolves: dashboard.CasaResolves}
+	if got := ExternalURL(reg); got != "https://home-assistant.brave-elf.briard.casa" {
+		t.Errorf("resolving name = %q", got)
+	}
+	cases := map[string]func(c *dashboard.Casa){
+		"not checked yet":    func(c *dashboard.Casa) { c.Resolves = "" },
+		"blocked":            func(c *dashboard.Casa) { c.Resolves = dashboard.CasaBlocked },
+		"pending":            func(c *dashboard.Casa) { c.State = casa.ClaimPending },
+		"nothing claimed":    func(c *dashboard.Casa) { c.State = "" },
+		"not a casa name":    func(c *dashboard.Casa) { c.Name = "brave-elf.example.org" },
+		"not the apex":       func(c *dashboard.Casa) { c.Name = "x.brave-elf.briard.casa" },
+		"the bare zone only": func(c *dashboard.Casa) { c.Name = "." + casa.Zone },
+	}
+	for name, mutate := range cases {
+		c := reg
+		mutate(&c)
+		if got := ExternalURL(c); got != "" {
+			t.Errorf("%s: ExternalURL = %q, want empty", name, got)
 		}
 	}
 }

@@ -65,6 +65,7 @@ import (
 	"strconv"
 	"strings"
 
+	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
@@ -138,14 +139,38 @@ const implPath = implDir + "/briard_ha.py"
 // step with the catalog.
 const mqttPortToken = "@MQTT_PORT@"
 
-// alertsPathToken and dashboardURLToken are the integration's two other placeholders: where it
-// reads the alert copy inside the container, and the page its Repairs issues link to. Each value
-// has one definition elsewhere (the bind below, shared/routes), so the integration carries a
-// token rather than a second copy.
+// alertsPathToken, dashboardURLToken and externalURLPathToken are the integration's other
+// placeholders: where it reads the alert copy inside the container, the page its Repairs issues
+// link to, and where it reads the external URL. Each value has one definition elsewhere (the
+// binds, shared/routes, ExternalURLPath), so the integration carries a token rather than a
+// second copy.
 const (
-	alertsPathToken   = "@ALERTS_PATH@"
-	dashboardURLToken = "@DASHBOARD_URL@"
+	alertsPathToken      = "@ALERTS_PATH@"
+	dashboardURLToken    = "@DASHBOARD_URL@"
+	externalURLPathToken = "@EXTERNAL_URL_PATH@"
 )
+
+// ExternalURLPath is the URL the integration sets as Home Assistant's external_url when it has
+// none: `https://` and the service's casa name, written by the guest agent from the host's casa
+// view only once the household's network is known to resolve that name, and empty otherwise.
+// It is runtime state in the service directory, which the container sees at /briard: converge
+// writes its own files there by name and never clears the directory, and a change to it
+// restarts nothing (only a changed unit file does).
+const ExternalURLPath = Dir + "/external-url"
+
+// ExternalURL is that file's content for the host's casa view: the URL only for a registered
+// name the household's network resolves, else "". The view names the flock's apex
+// (`<flock>.briard.casa`); anything else yields "".
+func ExternalURL(c dashboard.Casa) string {
+	if c.State != casa.ClaimRegistered || c.Resolves != dashboard.CasaResolves {
+		return ""
+	}
+	flock, ok := strings.CutSuffix(c.Name, "."+casa.Zone)
+	if !ok || flock == "" || strings.Contains(flock, ".") {
+		return ""
+	}
+	return "https://" + routes.CasaHostName(flock, Name)
+}
 
 // alertsMount is where the guest's alert copy (shared/dashboard.AlertsDir) appears inside Home
 // Assistant's container: read-only, and a sibling of /briard, never inside it (a bind nested in
@@ -446,6 +471,7 @@ func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 		{mqttPortToken, strconv.Itoa(mqttPort)},
 		{alertsPathToken, alertsMount + "/" + filepath.Base(dashboard.AlertsPath)},
 		{dashboardURLToken, "http://" + routes.BareFlockHostName + "/"},
+		{externalURLPathToken, mountPoint + "/" + filepath.Base(ExternalURLPath)},
 	} {
 		if !strings.Contains(src, t[0]) {
 			return fmt.Errorf("hass: the integration no longer carries %s", t[0])
