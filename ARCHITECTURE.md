@@ -161,7 +161,8 @@ service and nothing else.
 folder on the host (`Briard Backup` in the installing user's home by default, or any folder you
 point it at: a USB disk, a NAS mount, a synced drive). It is on from install, asks nothing, and
 ships inside each night everything a fresh install needs to come back as *this* household. The
-archive's key lives on the replicated volume and is shown once, with a README beside the
+archive's key lives on the replicated volume and stays on the Briard page until you say you
+have saved it, with a README beside the
 archive telling you to copy it; the node warns after two failed nights and never gates an
 update on the copy. Restoring a night is an ordinary undo (below): the night is materialised as
 a point in the service's history and the same Undo steps back to it.
