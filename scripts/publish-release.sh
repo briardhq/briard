@@ -222,11 +222,13 @@ vm_of() {
 # The id a chain uses for the release named by a briard id.
 chain_id() { case "$1" in vm) vm_of "$2" ;; *) echo "$2" ;; esac; }
 # The vm release the live channel serves for these image inputs, if any: `latest` first
-# (what the last publish paired with), then `stable`, then `dev`. Empty when neither matches or the channel
+# (what the last publish paired with), then `stable`, then `dev`, then the exact id these inputs
+# would mint today (<candidate>) -- an image a run published and then died before pointing at,
+# which `publish` would otherwise refuse as already there. Empty when none matches or the channel
 # cannot be read -- in which case `stage` publishes a fresh image, which is always safe.
-live_vm_for_inputs() {
+live_vm_for_inputs() { # <inputs> <candidate id>
 	local p m
-	for p in latest stable dev; do
+	for p in latest stable dev "$2"; do
 		m=$(curl -fsS "$CHANNEL/vm/$p/$VM_ARM/manifest.json" 2>/dev/null) || continue
 		if [ "$(echo "$m" | jq -r '.inputs // ""')" = "$1" ]; then
 			echo "$m" | jq -r .version; return 0
@@ -418,7 +420,7 @@ stage)
 	INPUTS=$(nix eval --raw .#artifacts.guest-disk.inputs) || die "cannot read the guest image's inputs hash"
 	[ "${#INPUTS}" = 64 ] || die "the guest inputs hash is not a sha256 ($INPUTS)"
 	VM_REUSED=""
-	if GV=$(live_vm_for_inputs "$INPUTS"); then
+	if GV=$(live_vm_for_inputs "$INPUTS" "vm.$(date_of "$V").${INPUTS:0:7}"); then
 		VM_REUSED=1
 		say "staging release $V into $DIR -- the guest image is unchanged, pairing with the published $GV"
 	else
