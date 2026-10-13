@@ -78,7 +78,7 @@ var commands = []command{
 	{
 		name: "logs", group: groupEveryday,
 		synopsis: "what this machine has logged (-follow to stream)",
-		detail: "Reads both surfaces together: the agent's own journal and the serial console of the\n" +
+		detail: "Reads both surfaces together: the agent's own log and the serial console of the\n" +
 			"system briard runs your apps in, which is the only view into its boot and kernel. A bug\n" +
 			"report wants both.",
 		run: runLogs, probe: []string{"-h"},
@@ -599,7 +599,7 @@ func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 	if err != nil {
 		// The two things actually wrong when this fails, named so the operator doesn't have to
 		// guess: the agent isn't up, or this isn't root.
-		return zero, fmt.Errorf("cannot reach the agent at %s (is briard-agent running, and are you root?): %w", sock, err)
+		return zero, fmt.Errorf("cannot reach the agent at %s (is briard-agent running? %s): %w", sock, privHint, err)
 	}
 	defer conn.Close()
 	if dl, ok := ctx.Deadline(); ok {

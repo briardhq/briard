@@ -100,7 +100,7 @@ func TestDirectiveUnreachableAgent(t *testing.T) {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	msg := errOut.String()
-	for _, want := range []string{sock, "briard-agent", "root"} {
+	for _, want := range []string{sock, "briard-agent", privHint} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("stderr = %q, want it to mention %q", msg, want)
 		}
