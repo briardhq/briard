@@ -48,10 +48,15 @@ func (s *sleepAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 		return
 	}
 	s.woke = woke
+	// To the second under a minute: a short sleep rounded to the minute reads "0s".
+	asleep := woke.Sub(slept).Round(time.Minute)
+	if asleep < time.Minute {
+		asleep = woke.Sub(slept).Round(time.Second)
+	}
 	body := fmt.Sprintf("node %s was asleep from %s to %s (%s), and Briard's services, Home Assistant included, "+
 		"were unreachable for that time. Briard keeps this computer awake by itself, so the sleep was asked for: "+
 		"a closed lid, the power button, or Sleep from the Start menu.",
-		node, slept.Local().Format("Mon 2 Jan 15:04"), woke.Local().Format("15:04"), woke.Sub(slept).Round(time.Minute))
+		node, slept.Local().Format("Mon 2 Jan 15:04"), woke.Local().Format("15:04"), asleep)
 	if s.lid() == "sleeps" {
 		body += " This computer sleeps when its lid is closed while plugged in. To keep it serving with the lid shut, " +
 			"open Control Panel > Power Options > Choose what closing the lid does, and set \"When I close the lid\" " +
