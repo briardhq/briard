@@ -48,6 +48,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     ${h.fixtureHelpers}
     import json
+    import time
 
     node1.start()
     node1.wait_for_unit("multi-user.target")
@@ -68,6 +69,12 @@ pkgs.testers.runNixOSTest {
     def sample(payload):
         # What the service wrote, and a member of the ring taken after it.
         node1.succeed(f"echo {payload} > ${live}/payload.txt")
+        # A member's name carries its second, and two members in one second are unordered. The
+        # app's start took one as it came up -- an instant ago, and empty. The product's clock can
+        # never land beside it (it waits an hour from the ring's newest member); this in-line take
+        # can, and the backup would then read "the newest member" off the alphabet. Let that
+        # second pass: a take after a full second is in a later one.
+        time.sleep(1)
         node1.succeed("briard-guest-agent --clock=${fixture.name}")
 
     def backup(ok=True):
