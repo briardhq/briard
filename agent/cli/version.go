@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"briard.io/agent/install"
 )
@@ -16,7 +17,7 @@ var Version string
 
 // guestReleaseRecord is the node's record of the VM release it runs. It mirrors
 // ConfigFromEnv's GUEST_RELEASE_CACHE default (agent/host/config.go); a test asserts the two agree.
-const guestReleaseRecord = "/var/lib/briard/guest-release.json"
+var guestReleaseRecord = filepath.Join(stateDir, "guest-release.json")
 
 // runVersion is `briard version`: which briard this is, and which VM it runs apps in -- the first
 // question on every bug report. It reads no socket, so it answers with the agent down.

@@ -29,7 +29,7 @@ import (
 
 // serviceCacheDir is where the agent keeps one manifest per installed service. It mirrors
 // ConfigFromEnv's SERVICE_CACHE default (agent/host/config.go); a test asserts the two agree.
-const serviceCacheDir = "/var/lib/briard/services"
+var serviceCacheDir = filepath.Join(stateDir, "services")
 
 // installedServices names what this node runs, sorted, reading the cache the agent rebuilds itself
 // from at every start.
