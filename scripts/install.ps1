@@ -52,11 +52,11 @@ $Keyring = if ($env:BRIARD_UPDATE_KEYRING) { $env:BRIARD_UPDATE_KEYRING } else {
 $RELEASE_KEYRING_PEM = '__BRIARD_RELEASE_KEYRING_PEM__'
 
 # THE TAP DRIVER: tap-windows6, OpenVPN's signed build. A kernel driver is signed by whoever
-# Microsoft attests, and that is OpenVPN Inc., not us, so these are their bytes from their host,
-# pinned by hash -- the install refuses anything else. 9.24.7 is the newest standalone installer;
-# later builds ship only as merge modules for someone else's MSI. Its own installer creates the one
-# adapter the agent's bridge wants.
-$TapUrl    = 'https://build.openvpn.net/downloads/releases/tap-windows-9.24.7-I601-Win10.exe'
+# Microsoft attests, and that is OpenVPN Inc., not us, so these are their bytes, pinned by hash
+# (the same pin the release pipeline fetches them by) and served from the release's windows-amd64
+# arm beside the agent, so an install touches one origin -- the install refuses anything else.
+# 9.24.7 is the newest standalone installer; later builds ship only as merge modules for someone
+# else's MSI. Its own installer creates the one adapter the agent's bridge wants.
 $TapSha256 = '1c44e77ab148ddfb174de8041100efc38c4f23500183faff88f9badac5782e3c'
 $TapDescription = 'TAP-Windows Adapter V9' # how the driver describes its adapters, whatever they are named
 
@@ -134,17 +134,27 @@ if ($env:BRIARD_ARTIFACTS) {
 if (TapInstalled) {
 	Say 'the TAP driver is installed'
 } else {
-	$exe = "$env:TEMP\tap-windows.exe"
-	Say "fetching the TAP network driver (tap-windows6, OpenVPN's signed build) ..."
-	try { Invoke-WebRequest -UseBasicParsing -Uri $TapUrl -OutFile $exe }
-	catch { Die "could not fetch the TAP driver from $TapUrl ($_)" }
+	# From the staging dir on the offline path, else from the same arm the bootstrap came from.
+	if ($env:BRIARD_ARTIFACTS) {
+		$exe = "$env:BRIARD_ARTIFACTS\tap-windows.exe"
+		if (-not (Test-Path $exe)) { Die "staging dir $env:BRIARD_ARTIFACTS has no tap-windows.exe" }
+	} else {
+		$exe = "$Prefix\tap-windows.exe"
+		$url = "$Channel/briard/$Release/windows-amd64/tap-windows.exe"
+		Say "fetching the TAP network driver (tap-windows6, OpenVPN's signed build) ..."
+		try { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $exe }
+		catch { Die "could not fetch the TAP driver from $url ($_)" }
+	}
 	$got = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
-	if ($got -ne $TapSha256) { Remove-Item $exe; Die "the TAP driver download does not match the pinned hash (got $got); nothing installed" }
+	if ($got -ne $TapSha256) {
+		if (-not $env:BRIARD_ARTIFACTS) { Remove-Item $exe }
+		Die "the TAP driver at $exe does not match the pinned hash (got $got); nothing installed"
+	}
 	Say 'installing the TAP network driver ...'
 	# /S is the NSIS silent install; it creates the one TAP adapter. Windows trusts the driver's
 	# own signature at load, which is what Secure Boot evaluates -- nothing of ours is involved.
 	$p = Start-Process $exe -ArgumentList '/S' -PassThru -Wait
-	Remove-Item $exe
+	if (-not $env:BRIARD_ARTIFACTS) { Remove-Item $exe }
 	if ($p.ExitCode -ne 0) { Die "the TAP driver installer exited $($p.ExitCode); nothing installed" }
 	if (-not (TapInstalled)) { Die 'the TAP driver installed but no TAP adapter appeared; nothing installed' }
 }

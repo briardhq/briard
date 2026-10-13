@@ -19,7 +19,7 @@
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
 #     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, install.ps1,
-#                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst
+#                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst, tap-windows.exe
 #     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent / briard-agent.exe
 #     stable/{linux,windows}-amd64/     likewise
 #     dev/{linux,windows}-amd64/        likewise -- the one ungated pointer (see `dev`)
@@ -515,6 +515,9 @@ stage)
 	# the guest is Linux whatever runs it -- copied so a Windows install fetches one arm, not two.
 	install -m0755 "$(out_of .#artifacts.agent-windows)/bin/windows_amd64/briard-agent.exe" "$W/briard-agent.exe"
 	cp "$H/guest-bundle.tar.zst" "$W/guest-bundle.tar.zst"
+	# The TAP driver, OpenVPN's signed bytes pinned in the flake: the installer fetches it from this
+	# arm and checks the same hash, so a Windows install touches one origin.
+	install -m0644 "$(out_of .#artifacts.tap-windows)" "$W/tap-windows.exe"
 	embed_keyring scripts/install.ps1 "$W/install.ps1"
 	"$H/briard-agent" --stage-manifest "$W" --chain briard --platform "$WINDOWS_ARM" --release "$V" --vm "$GV" || die "writing the windows manifest failed"
 

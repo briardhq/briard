@@ -37,6 +37,17 @@ Two artifacts, from two different places, and the difference matters:
 QEMU's upstream source, for either: <https://www.qemu.org/download/> ·
 <https://gitlab.com/qemu-project/qemu>.
 
+## tap-windows6 — GPL-2.0
+
+**`windows/tap-windows.exe` is not our build** — it is OpenVPN Inc.'s signed installer for the
+tap-windows6 driver (9.24.7, the newest standalone build), byte for byte, served from our channel
+so a Windows install fetches everything from one origin. The exact file and its SHA-256 are pinned
+in [`nixosTest/outputs.nix`](nixosTest/outputs.nix) (`artifacts.tap-windows`), and the Windows
+installer (`scripts/install.ps1`) checks the same hash before running it. A kernel driver is signed
+by whoever Microsoft attests, which is OpenVPN, so the bytes are never rebuilt or re-signed here.
+Source: <https://github.com/OpenVPN/tap-windows6> · releases at
+<https://build.openvpn.net/downloads/releases/>.
+
 ## Go modules compiled into our binaries
 
 The agent (`briard-agent`, the same binary on the host and as `briard`), the guest agent and the

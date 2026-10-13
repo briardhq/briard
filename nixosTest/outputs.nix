@@ -566,6 +566,16 @@ in
     # ourselves is blocked upstream (qemu-bundle-windows.nix says where and why). Its proof is the
     # tier-4 Windows rig, not CI -- a Linux runner cannot run it.
     qemu-bundle-windows = qemuBundleWindows.bundle;
+    # The TAP driver the Windows guest's network rides: OpenVPN's signed tap-windows6 installer,
+    # their bytes pinned by hash and served from our channel (the Windows installer fetches it from
+    # the release's windows-amd64 arm, so an install touches one origin and a driver bump is a
+    # release). A kernel driver is signed by whoever Microsoft attests, so these bytes are never
+    # rebuilt here; the installer checks the same hash before running it. 9.24.7 is the newest
+    # standalone installer -- later builds ship only as merge modules for someone else's MSI.
+    tap-windows = pkgs.fetchurl {
+      url = "https://build.openvpn.net/downloads/releases/tap-windows-9.24.7-I601-Win10.exe";
+      hash = "sha256-HETnerFI3fsXTegEEQDvw4xPI1ABg/r/iPm62sV4Ljw=";
+    };
     net-wrap = netWrap; # macvtap launch wrapper; the fleet runs on it too
     guest-bundle = guestBundle; # the guest's briard binaries, shipped in the host chain
   };
