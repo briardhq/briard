@@ -159,11 +159,6 @@ func TestIPArgv(t *testing.T) {
 	if w := []string{"link", "set", "sys-n1", "allmulticast", "on"}; !slices.Equal(allmulticastOnArgs("sys-n1"), w) {
 		t.Errorf("allmulticastOnArgs = %q, want %q", allmulticastOnArgs("sys-n1"), w)
 	}
-	// The knob is per-DEVICE under conf/<dev>/, not the `default` or `all` node: writing those
-	// would change the host's own policy rather than this one macvtap's.
-	if w := "/proc/sys/net/ipv6/conf/sys-n1/disable_ipv6"; disableIPv6Path("sys-n1") != w {
-		t.Errorf("disableIPv6Path = %q, want %q", disableIPv6Path("sys-n1"), w)
-	}
 	// ipvtap: `mode l2`, or the guest is no L2 citizen (no ARP, no DHCP, no mDNS); `bridge`, or
 	// its two children cannot reach each other. Created in the host's namespace, like the probe's,
 	// so the probe still builds the very thing the install builds -- the move comes after.

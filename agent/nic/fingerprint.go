@@ -86,9 +86,9 @@ func Read(ctx context.Context, dev string) Fingerprint {
 	return f
 }
 
-// defaultGateway reads the next hop of the main table's default route on dev, from
-// /proc/net/route -- the same file and the same table DefaultRoute uses, for the same reason.
-func defaultGateway(dev string) string { return parseDefaultGateway(readText(procRoute), dev) }
+// The two readers Read needs -- defaultGateway (dev's default next hop, from the same table
+// DefaultRoute uses) and neighbourMAC (that hop's link address, provoked and read without a raw
+// socket) -- are the per-OS half, in link_linux.go / link_windows.go. The parsers stay here.
 
 // parseDefaultGateway pulls dev's default next hop out of /proc/net/route's text. Pure, so the
 // one detail that cannot be inferred by reading it -- the LITTLE-ENDIAN hex the address column is
@@ -109,39 +109,6 @@ func parseDefaultGateway(text, dev string) string {
 	}
 	return ""
 }
-
-// neighbourMAC resolves ip's link address on dev. It provokes the kernel the same way the
-// report card's address probe does -- one datagram at the discard port, then read the kernel's
-// own neighbour table -- so it needs no raw socket and no capability.
-func neighbourMAC(ctx context.Context, dev, ip string) string {
-	if mac := arpTableMAC(dev, ip); mac != "" {
-		return mac
-	}
-	if c, err := net.DialTimeout("udp4", net.JoinHostPort(ip, "9"), arpWait); err == nil {
-		_, _ = c.Write([]byte{0})
-		_ = c.Close()
-	}
-	for range 10 {
-		if mac := arpTableMAC(dev, ip); mac != "" {
-			return mac
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-timeAfter(arpWait / 10):
-		}
-	}
-	return ""
-}
-
-// procARP is the kernel's IPv4 neighbour table as text.
-//
-// ⚠️ IPv4-ONLY, and legacy. It is the right file while addressing is v4 (by design it
-// stays); the day it is not, this reader is the first thing that moves.
-const procARP = "/proc/net/arp"
-
-// arpTableMAC reads a RESOLVED entry for ip on dev out of /proc/net/arp.
-func arpTableMAC(dev, ip string) string { return parseARPMAC(readText(procARP), dev, ip) }
 
 // parseARPMAC pulls a resolved link address for ip on dev out of /proc/net/arp's text. Pure, so
 // the detail that cannot be inferred by reading it is unit-tested rather than trusted:

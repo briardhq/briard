@@ -2,6 +2,7 @@ package nic
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -193,31 +194,121 @@ func master(dev string) string {
 	return name
 }
 
-// DefaultRoute names the adapter holding the IPv4 default route with the lowest route metric. ""
-// if there is none. Windows has one routing table, so the main-table question Choose argues for
-// is the only one there is to ask.
-func DefaultRoute() string {
+// defaultRoute is one IPv4 default route: the adapter it leaves by, its next hop, and the metric
+// Windows actually orders it by.
+type defaultRoute struct {
+	index  uint32
+	hop    netip.Addr
+	metric uint32
+}
+
+var procGetIpInterfaceEntry = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetIpInterfaceEntry")
+
+// bestDefault is the default route Windows would use -- or, with on != 0, the one it would use
+// on that adapter. ok is false when there is none.
+//
+// ⚠️ THE EFFECTIVE METRIC IS ROUTE + INTERFACE. A route row's own Metric is only half of what
+// `route print` orders by: Windows adds the adapter's interface metric (automatic from link
+// speed, or set by hand), and on a machine with two live uplinks -- a laptop on both its wire
+// and its Wi-Fi -- the route metrics tie and the interface metric is the whole decision. Ranking
+// by the row alone picks whichever came first.
+func bestDefault(on uint32) (defaultRoute, bool) {
 	var t *windows.MibIpForwardTable2
 	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
-		return ""
+		return defaultRoute{}, false
 	}
 	defer windows.FreeMibTable(unsafe.Pointer(t))
-	best, found := uint32(0), false
-	var metric uint32
+	var best defaultRoute
+	found := false
 	for _, r := range t.Rows() {
-		if r.DestinationPrefix.PrefixLength != 0 {
+		if r.DestinationPrefix.PrefixLength != 0 || (on != 0 && r.InterfaceIndex != on) {
 			continue
 		}
-		if !found || r.Metric < metric {
-			best, metric, found = r.InterfaceIndex, r.Metric, true
+		m := r.Metric + interfaceMetric(r.InterfaceIndex)
+		if !found || m < best.metric {
+			hop := (*windows.RawSockaddrInet4)(unsafe.Pointer(&r.NextHop)).Addr
+			best, found = defaultRoute{index: r.InterfaceIndex, hop: netip.AddrFrom4(hop), metric: m}, true
 		}
 	}
-	if !found {
+	return best, found
+}
+
+// interfaceMetric is the adapter's IPv4 interface metric; 0 when it cannot be read, which leaves
+// the route's own metric to rank alone.
+func interfaceMetric(index uint32) uint32 {
+	row := windows.MibIpInterfaceRow{Family: windows.AF_INET, InterfaceIndex: index}
+	if r, _, _ := procGetIpInterfaceEntry.Call(uintptr(unsafe.Pointer(&row))); r != 0 {
+		return 0
+	}
+	return row.Metric
+}
+
+// DefaultRoute names the adapter holding the IPv4 default route Windows would use. "" if there
+// is none. Windows has one routing table, so the main-table question Choose argues for is the
+// only one there is to ask.
+func DefaultRoute() string {
+	d, ok := bestDefault(0)
+	if !ok {
 		return ""
 	}
-	a, _ := byIndex(adapters(), best)
+	a, _ := byIndex(adapters(), d.index)
 	return a.name
 }
+
+// defaultGateway is dev's default next hop, from the same table DefaultRoute reads.
+func defaultGateway(dev string) string {
+	a, ok := byName(adapters(), dev)
+	if !ok {
+		return ""
+	}
+	d, ok := bestDefault(a.index)
+	if !ok || d.hop.IsUnspecified() {
+		return ""
+	}
+	return d.hop.String()
+}
+
+var procSendARP = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("SendARP")
+
+// neighbourMAC resolves ip's link address: SendARP asks the wire and answers with the address,
+// so there is no table to provoke and read. The adapter is Windows' to choose (the route to ip),
+// which for a gateway is dev. Its wait is the stack's own ARP retry budget, a few seconds at
+// most; the context cannot shorten it.
+func neighbourMAC(_ context.Context, _ string, ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || !a.Is4() {
+		return ""
+	}
+	b := a.As4()
+	var mac [8]byte
+	n := uint32(len(mac))
+	if r, _, _ := procSendARP.Call(uintptr(binary.LittleEndian.Uint32(b[:])), 0,
+		uintptr(unsafe.Pointer(&mac[0])), uintptr(unsafe.Pointer(&n))); r != 0 || n == 0 {
+		return ""
+	}
+	return net.HardwareAddr(mac[:n]).String()
+}
+
+// canProbe: nothing the install builds is created at runtime here (substrateBuildable), so there
+// is nothing to validate by creating it.
+func canProbe() bool { return false }
+
+// The remedy line's copy-pasteable example, in this OS's installer. The elevation relaunch starts
+// from a fresh environment, so the setting reaches the agent only from an administrator's prompt.
+func overrideExample(dev string) string {
+	return "$env:BRIARD_NIC='" + dev + "'; irm https://get.briard.io/install.ps1 | iex   (in a PowerShell opened as administrator)"
+}
+
+// placeholderDev is the example device when this machine offers none to name.
+const placeholderDev = "Ethernet"
+
+// The macvtap child's flag readers have nothing to read: the substrate they describe is one
+// substrateBuildable refuses here, so Converge never reaches them and Converged's check is
+// behind the same fork. They answer "satisfied" so a spec that does name one is reported for
+// what it is -- unbuildable -- rather than as a device to repair.
+func flags(string) int64            { return ifAllmulti }
+func ipv6Disabled(string) bool      { return true }
+func disableIPv6Path(string) string { return "" }
 
 // The writers. netsh rather than IP Helper's Create* calls: they are rare -- a first convergence,
 // or one after something flushed the address -- and netsh is the documented spelling of the one

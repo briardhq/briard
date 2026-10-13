@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strings"
+	"time"
 )
 
 // The link facts, read from sysfs and procfs. They are the per-OS half of this package: what a
@@ -88,3 +90,106 @@ func hasRoute(r Route) bool { return parseHostRoute(readText(procRoute), r.Dev, 
 
 // substrateBuildable is nil on Linux: every substrate the spec can name is one this host builds.
 func substrateBuildable(Spec) error { return nil }
+
+// canProbe: the probe creates a device, which only root may. An unprivileged report card skips
+// it rather than condemning the host for an EPERM.
+func canProbe() bool { return os.Geteuid() == 0 }
+
+// The remedy line's copy-pasteable example, in this OS's installer.
+func overrideExample(dev string) string {
+	return "BRIARD_NIC=" + dev + " curl -fsSL https://get.briard.io/install.sh | sudo sh"
+}
+
+// placeholderDev is the example device when this machine offers none to name.
+const placeholderDev = "eth0"
+
+// THE PROCFS AND SYSFS READERS. Each reads one small kernel file whole and hands the text to a
+// pure parser in the shared files, so the format handling is unit-tested from any OS and only
+// the read is Linux's.
+
+// procRoute is the kernel's routing table as text. Named once because two readers parse it for
+// two different columns, and their tests parse the same fixture.
+const procRoute = "/proc/net/route"
+
+// procARP is the kernel's IPv4 neighbour table as text.
+//
+// ⚠️ IPv4-ONLY, and legacy. It is the right file while addressing is v4 (by design it
+// stays); the day it is not, this reader is the first thing that moves.
+const procARP = "/proc/net/arp"
+
+// readText reads a small procfs or sysfs file whole. An unreadable file reads as "", which is the
+// answer every caller in this package wants: absence is "no evidence" here, never an error to
+// propagate (see Read's best-effort rule), and there is nothing a caller could do with the error
+// that "" does not already say.
+//
+// Reading whole rather than scanning is what lets the parser above it be pure: these
+// files are a few hundred bytes, and the split is what makes the format handling testable.
+func readText(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// defaultGateway reads the next hop of the main table's default route on dev, from
+// /proc/net/route -- the same file and the same table DefaultRoute uses, for the same reason.
+func defaultGateway(dev string) string { return parseDefaultGateway(readText(procRoute), dev) }
+
+// arpWait bounds the fingerprint's neighbour resolution. A gateway is by definition something
+// this host has been talking to, so its entry is usually already in the table; this is the budget
+// for provoking one that is not, and it is short because a fingerprint must never be able to
+// delay a bring-up.
+const arpWait = 750 * time.Millisecond
+
+// neighbourMAC resolves ip's link address on dev. It provokes the kernel the same way the
+// report card's address probe does -- one datagram at the discard port, then read the kernel's
+// own neighbour table -- so it needs no raw socket and no capability.
+func neighbourMAC(ctx context.Context, dev, ip string) string {
+	if mac := arpTableMAC(dev, ip); mac != "" {
+		return mac
+	}
+	if c, err := net.DialTimeout("udp4", net.JoinHostPort(ip, "9"), arpWait); err == nil {
+		_, _ = c.Write([]byte{0})
+		_ = c.Close()
+	}
+	for range 10 {
+		if mac := arpTableMAC(dev, ip); mac != "" {
+			return mac
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(arpWait / 10):
+		}
+	}
+	return ""
+}
+
+// arpTableMAC reads a RESOLVED entry for ip on dev out of /proc/net/arp.
+func arpTableMAC(dev, ip string) string { return parseARPMAC(readText(procARP), dev, ip) }
+
+// disableIPv6Path names the procfs knob that stops a device autoconfiguring. See ensureMacvtap for
+// why the host must not autoconfigure on a device carrying the GUEST's MAC.
+func disableIPv6Path(dev string) string {
+	return "/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6"
+}
+
+// ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6
+// at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
+// the tick does not chase a knob the machine does not have.
+//
+// It reads with os.ReadFile rather than through readText because here the ERROR is the
+// answer: "no such file" means satisfied, while readText flattens an unreadable file and an empty
+// one to the same "".
+func ipv6Disabled(dev string) bool {
+	b, err := os.ReadFile(disableIPv6Path(dev))
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
+
+// flags reads /sys/class/net/<dev>/flags -- the raw IFF_ bitmap, which is where ALLMULTI is
+// visible at all (net.Interface does not carry it).
+func flags(dev string) int64 { return parseIfFlags(readText("/sys/class/net/" + dev + "/flags")) }

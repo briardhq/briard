@@ -20,7 +20,6 @@ import (
 	"net/netip"
 	"os"
 	"strings"
-	"time"
 )
 
 // The two ways there is no answer, separated because they want opposite handling from a caller
@@ -64,9 +63,6 @@ type Selection struct {
 	// child cannot hold one of its own. That is also why a wireless node is yellow, not green.
 	Bridge   bool
 	Wireless bool
-	// Probed is whether the probe actually ran. False on an unprivileged card run, where
-	// `ip link add` fails for a reason that says nothing about the host.
-	Probed bool
 	// Err is why Dev is unusable: one of the sentinels above, or a wrapped probe failure.
 	Err error
 	// Candidates are this host's non-loopback devices, for the message. The user needs the list
@@ -85,11 +81,11 @@ func Choose(ctx context.Context, override string) Selection {
 	// from them the way creating a macvtap on it does. docker0 and tailscale0 fall out of the
 	// selection because they hold no default route, never by a name blacklist.
 	//
-	// Skipped when unprivileged: `ip link add` fails with EPERM for a reason that says nothing
-	// about the host, and a curious user running `briard-agent --report-card` without sudo must
-	// not be told their machine is unfit.
-	if s.Err == nil && os.Geteuid() == 0 {
-		s.Probed = true
+	// Whether it can run is the OS's answer (canProbe): on Linux only as root -- `ip link add`
+	// fails with EPERM for a reason that says nothing about the host, and a curious user running
+	// `briard-agent --report-card` without sudo must not be told their machine is unfit; on
+	// Windows never, since nothing the install builds is created at runtime there.
+	if s.Err == nil && canProbe() {
 		s.Err = Probe(ctx, s.Dev)
 	}
 	return s
@@ -159,9 +155,8 @@ func (s Selection) Fix() string {
 	default:
 		return ""
 	}
-	b.WriteString(". Name the device yourself with BRIARD_NIC, e.g. `BRIARD_NIC=")
-	b.WriteString(exampleDev(s.Candidates))
-	b.WriteString(" curl -fsSL https://get.briard.io/install.sh | sudo sh`")
+	// The copy-pasteable line is the OS's own installer with the override set (overrideExample).
+	fmt.Fprintf(&b, ". Name the device yourself with BRIARD_NIC, e.g. `%s`", overrideExample(exampleDev(s.Candidates)))
 	if len(s.Candidates) > 0 {
 		fmt.Fprintf(&b, " -- this machine has: %s", strings.Join(s.Candidates, ", "))
 	}
@@ -169,12 +164,13 @@ func (s Selection) Fix() string {
 }
 
 // exampleDev makes the example copy-pasteable rather than notional: a name off THIS machine when
-// there is one, and a placeholder the user can see is a placeholder when there is not.
+// there is one, and a placeholder the user can see is a placeholder when there is not (the OS's
+// own spelling of one, placeholderDev).
 func exampleDev(candidates []string) string {
 	if len(candidates) > 0 {
 		return candidates[0]
 	}
-	return "eth0"
+	return placeholderDev
 }
 
 // Probe validates dev by creating the very thing the install creates — a macvtap child, or an
@@ -215,24 +211,9 @@ func firstLine(out []byte, err error) string {
 	return err.Error()
 }
 
-// procRoute is the kernel's routing table as text. Named once because two readers parse it for
-// two different columns, and their tests parse the same fixture.
-const procRoute = "/proc/net/route"
-
-// readText reads a small procfs or sysfs file whole. An unreadable file reads as "", which is the
-// answer every caller in this package wants: absence is "no evidence" here, never an error to
-// propagate (see Read's best-effort rule), and there is nothing a caller could do with the error
-// that "" does not already say.
-//
-// Reading whole rather than scanning is what lets the parser above it be pure: these
-// files are a few hundred bytes, and the split is what makes the format handling testable.
-func readText(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
+// THE PARSERS ARE SHARED, THE READERS ARE NOT. What follows here is pure text handling for the
+// Linux arm's procfs tables (link_linux.go reads them), kept beside the other pure renderers so the
+// unit tests reach it from any OS; nothing below touches the machine.
 
 // procTable splits a /proc/net table into its rows' fields, dropping the header line every one of
 // them carries. The header is the only thing these two files have in common, and skipping it is
@@ -283,16 +264,6 @@ func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
-
-// arpWait bounds the fingerprint's neighbour resolution. A gateway is by definition something
-// this host has been talking to, so its entry is usually already in the table; this is the budget
-// for provoking one that is not, and it is short because a fingerprint must never be able to
-// delay a bring-up.
-const arpWait = 750 * time.Millisecond
-
-// timeAfter is time.After, named so the fingerprint's poll loop reads as a wait rather than as a
-// channel expression.
-func timeAfter(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // parseHostRoute reports whether /proc/net/route's text holds a /32 to dst on dev. The table
 // prints addresses as the kernel stores them, little-endian hex, so 10.0.0.1 is 0100000A. Pure, so

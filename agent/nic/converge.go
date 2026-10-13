@@ -62,12 +62,6 @@ func allmulticastOnArgs(dev string) []string {
 	return []string{"link", "set", dev, "allmulticast", "on"}
 }
 
-// disableIPv6Path names the procfs knob that stops a device autoconfiguring. See ensureMacvtap for
-// why the host must not autoconfigure on a device carrying the GUEST's MAC.
-func disableIPv6Path(dev string) string {
-	return "/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6"
-}
-
 // Spec is the host-side L2 for one guest: which parent, and which devices on it. It is DERIVED
 // from the selected device rather than configured -- if the parent is a bridge the
 // user owns, the guest gets one port on it and makes its own service identity inside; if it is a
@@ -489,24 +483,9 @@ func ensureAddr(ctx context.Context, a Addr) error {
 	return nil
 }
 
-// ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6
-// at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
-// the tick does not chase a knob the machine does not have.
-//
-// It reads with os.ReadFile rather than through readText because here the ERROR is the
-// answer: "no such file" means satisfied, while readText flattens an unreadable file and an empty
-// one to the same "".
-func ipv6Disabled(dev string) bool {
-	b, err := os.ReadFile(disableIPv6Path(dev))
-	if err != nil {
-		return true
-	}
-	return strings.TrimSpace(string(b)) == "1"
-}
-
-// flags reads /sys/class/net/<dev>/flags -- the raw IFF_ bitmap, which is where ALLMULTI is
-// visible at all (net.Interface does not carry it).
-func flags(dev string) int64 { return parseIfFlags(readText("/sys/class/net/" + dev + "/flags")) }
+// The macvtap child's two flag readers -- flags (the raw IFF_ bitmap, where ALLMULTI is visible at
+// all) and ipv6Disabled (the per-device procfs knob) -- and disableIPv6Path are the Linux arm's,
+// in link_linux.go: the substrate they describe exists on no other OS.
 
 // parseIfFlags decodes that bitmap. Pure, so the `0x` hex the kernel renders it in is unit-tested
 // rather than trusted. An unreadable or unparseable value is 0 -- no flags set, which

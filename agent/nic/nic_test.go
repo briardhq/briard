@@ -23,7 +23,7 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 		},
 		{
 			"the default route is a full-tunnel VPN",
-			Selection{Dev: "tun0", Probed: true, Candidates: []string{"enp3s0", "tun0"},
+			Selection{Dev: "tun0", Candidates: []string{"enp3s0", "tun0"},
 				Err: errors.New("a macvtap could not be created on it (Device does not support macvlan)")},
 			[]string{"tun0 was chosen because it holds this machine's default route",
 				"Device does not support macvlan", "BRIARD_NIC=enp3s0"},
@@ -32,7 +32,7 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 			// A user who NAMED a device is not told how we would have guessed -- they already
 			// disagreed with the guess.
 			"BRIARD_NIC names something that cannot carry it",
-			Selection{Dev: "docker0", Override: true, Probed: true, Candidates: []string{"enp3s0", "docker0"},
+			Selection{Dev: "docker0", Override: true, Candidates: []string{"enp3s0", "docker0"},
 				Err: errors.New("a macvtap could not be created on it (Device does not support macvlan)")},
 			[]string{"docker0 cannot carry the guest's network", "BRIARD_NIC=enp3s0"},
 		},
@@ -68,11 +68,11 @@ func TestFixOnABareMachineDoesNotOfferTheOverride(t *testing.T) {
 // A usable selection has nothing to say, and a wireless one is usable: it is the ipvtap
 // substrate, and what it costs is the report card's to grade.
 func TestUsableAndTheSilentFix(t *testing.T) {
-	ok := Selection{Dev: "eth0", Probed: true}
+	ok := Selection{Dev: "eth0"}
 	if !ok.Usable() || ok.Fix() != "" {
 		t.Errorf("a good selection: Usable=%v Fix=%q", ok.Usable(), ok.Fix())
 	}
-	wifi := Selection{Dev: "wlan0", Wireless: true, Probed: true}
+	wifi := Selection{Dev: "wlan0", Wireless: true}
 	if !wifi.Usable() || wifi.Fix() != "" {
 		t.Errorf("wireless is a substrate, not a fault: Usable=%v Fix=%q", wifi.Usable(), wifi.Fix())
 	}

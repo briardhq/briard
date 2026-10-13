@@ -16,7 +16,7 @@ func capable() HostFacts {
 		// The device the guest's L2 will hang off: wired, holding the default route, and proven
 		// able to parent a macvtap. That last part is the probe having RUN and passed -- the
 		// fixture is the machine we expect to admit, not merely one we could not fault.
-		NIC:        nic.Selection{Dev: "eth0", Probed: true, Candidates: []string{"eth0"}},
+		NIC:        nic.Selection{Dev: "eth0", Candidates: []string{"eth0"}},
 		DiskFreeMB: 64 * 1024,
 		// A capable host on an ordinary home network holds a DHCP lease, and
 		// that is what makes the default install -- no BRIARD_VIP_ADDR, address from the router --
@@ -82,7 +82,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 			f.NIC = nic.Selection{Err: nic.ErrNoDefaultRoute, Candidates: []string{"eth0", "wlan0"}}
 		}, "network", "BRIARD_NIC=eth0"},
 		{"the default route is a full-tunnel VPN", func(f *HostFacts) {
-			f.NIC = nic.Selection{Dev: "tun0", Probed: true, Candidates: []string{"eth0", "tun0"},
+			f.NIC = nic.Selection{Dev: "tun0", Candidates: []string{"eth0", "tun0"},
 				Err: errors.New("a macvtap could not be created on it (argument \"tun0\" is wrong: Device does not support macvlan)")}
 		}, "network", "BRIARD_NIC=eth0"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
@@ -131,7 +131,7 @@ func TestAssessWarnsStillAdmit(t *testing.T) {
 	// derived, and admitted.
 	t.Run("wifi only", func(t *testing.T) {
 		f := capable()
-		f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Probed: true, Candidates: []string{"wlan0"}}
+		f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Candidates: []string{"wlan0"}}
 		r := Assess(f)
 		c := find(t, r, "network")
 		if c.Status != Warn || !strings.Contains(c.Fix, "cannot take a peer until it is wired") {
