@@ -58,16 +58,16 @@ func versionBanner(version string) string {
 //
 // The roots themselves -- prefixDir, stateDir, runDir and the logs -- are per OS (config_linux.go,
 // config_windows.go); everything below derives from them.
-const (
+var (
 	// defaultBackupDir is the backup folder when nobody human installed this node (root, a
 	// cloud-init): a server, not a home, so the repository stays beside the agent's own state --
 	// the one backup folder the agent creates itself, because it is its own directory.
-	defaultBackupDir = stateDir + "/backup"
+	defaultBackupDir = filepath.Join(stateDir, "backup")
 
 	// defaultConfigFile is where install.sh writes this node's configuration. The
 	// shipped unit states it in BRIARD_CONFIG so `systemctl cat` answers the question; this is the
 	// answer for a hand-run agent, which is told nothing.
-	defaultConfigFile = prefixDir + "/config.env"
+	defaultConfigFile = filepath.Join(prefixDir, "config.env")
 )
 
 // loadConfigFile makes the file the DEFAULT layer under the environment, by setting only the keys
@@ -122,7 +122,7 @@ func ConfigFromEnv() Config {
 	// after it. Three tiers, the same order every value here uses: the environment, then the record
 	// this node minted for itself (identity.go), then the literal every install answered to before
 	// each one got its own.
-	id := recordedIdentity(filepath.Dir(env("ASSIGNMENT_CACHE", stateDir+"/assignment.json")))
+	id := recordedIdentity(filepath.Dir(env("ASSIGNMENT_CACHE", filepath.Join(stateDir, "assignment.json"))))
 	node := env("NODE", id.node)
 	if node == "" {
 		node = defaultNodeName
@@ -174,16 +174,16 @@ func ConfigFromEnv() Config {
 		// data -- Home Assistant's `.storage` plus the recorder SQLite outgrows a gigabyte in
 		// months, and growing a DRBD-backed volume afterwards is not a one-liner.
 		DataSize:    env("DATA_SIZE", "4G"),
-		ControlSock: env("CONTROL_SOCK", runDir+"/ctl.sock"),
+		ControlSock: env("CONTROL_SOCK", filepath.Join(runDir, "ctl.sock")),
 		// QEMU's own control channel -- the VM, not the guest OS inside it. Without
 		// it the host's only way to stop a guest is killing qemu, i.e. a power cut to the
 		// machine whose job is not losing data. Its own directory, because platform.Launch
 		// makes that directory 0700: QMP is unrestricted control of the VM (it can dump guest
 		// RAM to a file), so it must not share a directory with a socket meant to be reachable.
-		QMPSock: env("QMP_SOCK", runDir+"/qmp/guest.sock"),
+		QMPSock: env("QMP_SOCK", filepath.Join(runDir, "qmp", "guest.sock")),
 		// On by default, because an admin door only an expert can find is not a door.
 		// The CLI defaults to this same path (agent/cli); keep the two literals in step.
-		AdminSock: env("ADMIN_SOCK", runDir+"/admin.sock"),
+		AdminSock: env("ADMIN_SOCK", filepath.Join(runDir, "admin.sock")),
 		// The guest's admin port, beside the control socket it mirrors.
 		AdminPortSock: env("ADMIN_PORT_SOCK", adminPortSock),
 		// THE GUEST'S THREE NICS, by the name of the host device behind each. `declared` and not
@@ -262,15 +262,15 @@ func ConfigFromEnv() Config {
 		// 5s, which is what every installed node has run at since the installer started writing it.
 		StatusEvery:     durEnv("STATUS_EVERY", 5*time.Second),
 		BringUpBudget:   durEnv("BRINGUP_BUDGET", 5*time.Minute),
-		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),             // the OS-upgrade bound, incl. the degraded wait before a revert
-		ControllerURL:   os.Getenv("CONTROLLER_URL"),                          // "" -> standalone, no north-bound report
-		ControllerToken: os.Getenv("CONTROLLER_TOKEN"),                        // bearer on seam calls; "" -> no auth
-		CasaURL:         env("CASA_URL", "https://api.briard.io"),             // the casa name service; the lab overrides
-		CasaWorkerURL:   env("CASA_WORKER_URL", "https://casa.briard.io"),     // the Worker the node writes its own address at
-		AssignmentCache: env("ASSIGNMENT_CACHE", stateDir+"/assignment.json"), // cold-boot cache
-		NotifyURL:       os.Getenv("NOTIFY_URL"),                              // ntfy topic URL for alerts; "" -> log-only
-		TelemetryPath:   os.Getenv("TELEMETRY_PATH"),                          // out-of-band soak collector file; "" -> don't write
-		MetricsWindow:   durEnv("METRICS_WINDOW", time.Hour),                  // cloud aggregate rollup bucket; soak shortens it to exercise rollover
+		UpgradeBudget:   durEnv("UPGRADE_BUDGET", 15*time.Minute),                            // the OS-upgrade bound, incl. the degraded wait before a revert
+		ControllerURL:   os.Getenv("CONTROLLER_URL"),                                         // "" -> standalone, no north-bound report
+		ControllerToken: os.Getenv("CONTROLLER_TOKEN"),                                       // bearer on seam calls; "" -> no auth
+		CasaURL:         env("CASA_URL", "https://api.briard.io"),                            // the casa name service; the lab overrides
+		CasaWorkerURL:   env("CASA_WORKER_URL", "https://casa.briard.io"),                    // the Worker the node writes its own address at
+		AssignmentCache: env("ASSIGNMENT_CACHE", filepath.Join(stateDir, "assignment.json")), // cold-boot cache
+		NotifyURL:       os.Getenv("NOTIFY_URL"),                                             // ntfy topic URL for alerts; "" -> log-only
+		TelemetryPath:   os.Getenv("TELEMETRY_PATH"),                                         // out-of-band soak collector file; "" -> don't write
+		MetricsWindow:   durEnv("METRICS_WINDOW", time.Hour),                                 // cloud aggregate rollup bucket; soak shortens it to exercise rollover
 		// A TEST FIXTURE, read here so it has one home rather than a stray Getenv in the observe
 		// loop. agent-watchdog.nix sets it to wedge that goroutine on purpose; nothing else does, and
 		// unset is a no-op. See wedgeForTest.
@@ -290,12 +290,12 @@ func ConfigFromEnv() Config {
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; a service catalog is not a web page.
 		CatalogURL:   env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache: env("SERVICE_CACHE", stateDir+"/services"),
+		ServiceCache: env("SERVICE_CACHE", filepath.Join(stateDir, "services")),
 		// declared, not env: BACKUP_DIR="" is the household turning the backup off.
 		BackupDir:         declared("BACKUP_DIR", defaultBackupDir),
-		MeshCache:         env("MESH_CACHE", stateDir+"/mesh.json"),
+		MeshCache:         env("MESH_CACHE", filepath.Join(stateDir, "mesh.json")),
 		ChannelURL:        env("CHANNEL_URL", "https://get.briard.io"),
-		GuestReleaseCache: env("GUEST_RELEASE_CACHE", stateDir+"/guest-release.json"),
+		GuestReleaseCache: env("GUEST_RELEASE_CACHE", filepath.Join(stateDir, "guest-release.json")),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
 		// the signed CATALOG (service install), not self-update any more: the
@@ -303,8 +303,8 @@ func ConfigFromEnv() Config {
 		// keyring file, and the agent only watches the arm flag. Base/RunDir/Unit default in
 		// newSelfUpdater. Version is baked at build time (buildVersion), overridable by env for
 		// tests -- it is the running binary's own id, so a committed update reports the new one.
-		UpdateKeyring: readFileOrNil(env("UPDATE_KEYRING", prefixDir+"/keyring.pem")),
-		UpdateBase:    env("UPDATE_BASE", prefixDir+"/agent"),
+		UpdateKeyring: readFileOrNil(env("UPDATE_KEYRING", filepath.Join(prefixDir, "keyring.pem"))),
+		UpdateBase:    env("UPDATE_BASE", filepath.Join(prefixDir, "agent")),
 		UpdateRunDir:  env("UPDATE_RUN_DIR", runDir),
 		UpdateUnit:    os.Getenv("UPDATE_UNIT"),
 		Version:       env("AGENT_VERSION", buildVersion),

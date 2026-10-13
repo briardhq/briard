@@ -25,15 +25,6 @@ func allocate(f *os.File, from, size int64) error {
 	return f.Sync()
 }
 
-type zeroReader struct{}
-
-func (zeroReader) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = 0
-	}
-	return len(p), nil
-}
-
 // setNoCOW is the Windows arm of SetNoCOW: NTFS does not copy on write, so there is nothing to set.
 func setNoCOW(string) error { return nil }
 

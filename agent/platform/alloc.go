@@ -90,3 +90,15 @@ func SetNoCOW(dir string) error {
 	}
 	return nil
 }
+
+// zeroReader is an endless source of zero bytes -- io.CopyN's buffer does the chunking, so the
+// write-the-bytes allocation (the Linux fallback, the Windows arm) streams rather than holding
+// the volume in memory.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}

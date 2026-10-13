@@ -72,17 +72,6 @@ func ignoreNoFlags(e syscall.Errno) error {
 	return e
 }
 
-// zeroReader is an endless source of zero bytes -- io.CopyN's buffer does the chunking, so the
-// fallback streams rather than allocating the volume in memory.
-type zeroReader struct{}
-
-func (zeroReader) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = 0
-	}
-	return len(p), nil
-}
-
 // diskCache is every guest disk's qemu cache mode. `none` is O_DIRECT: the guest keeps a page cache
 // of its own, so the host's would be a second copy of the same bytes, paid out of RAM a small board
 // does not have, and guest flushes are honoured either way.

@@ -87,7 +87,7 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		release := env("BRIARD_RELEASE", install.TargetStable)
 		// The release public key: the installer writes it before this runs (it travels inside
 		// install.sh, the one thing fetched before anything is on disk to trust).
-		keyPath := env("BRIARD_UPDATE_KEYRING", prefixDir+"/keyring.pem")
+		keyPath := env("BRIARD_UPDATE_KEYRING", filepath.Join(prefixDir, "keyring.pem"))
 		pemBytes, err := os.ReadFile(keyPath)
 		if err != nil {
 			return fmt.Errorf("read the release keyring %s: %w", keyPath, err)
@@ -260,7 +260,7 @@ var installOnlyKeys = map[string]bool{
 // wrapper): the one part of the file whose shape differs by OS.
 func (r installRoots) writeConfig(ctx context.Context, bundle string, say func(string, ...any)) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, `# briard node configuration, written by install.sh. KEY=value, one per line; blank lines and
+	fmt.Fprintf(&b, `# briard node configuration, written by `+"`briard-agent install`"+`. KEY=value, one per line; blank lines and
 # '#' comments are ignored, whitespace either side of the '=' is trimmed, and NOTHING else is
 # parsed -- no quoting, no expansion, no export. Every value is a path, a device name, an
 # address or a duration. What each key MEANS, and what it defaults to when absent, is

@@ -7,9 +7,9 @@ import "briard.io/agent/nic"
 // Linux roots are -- every default below derives from them, and an agent that relocated itself on
 // a variable would be looking for its own state somewhere the installer never put it.
 //
-// There is no tmpfs, so runDir survives a reboot. What lives there is sockets, which every
-// listener removes before it binds, and the trial flags of self-update, which on Windows need an
-// explicit clear at boot where Linux gets one from the filesystem.
+// There is no tmpfs, so runDir survives a reboot. What lives there today is sockets, which every
+// listener removes before it binds. Anything that relies on the Linux runDir being emptied by a
+// boot (self-update's trial flags) has no Windows arm yet, and gets its clear when it gets one.
 const (
 	prefixDir = `C:\ProgramData\briard`
 	stateDir  = prefixDir + `\state`

@@ -61,6 +61,10 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := run(ctx, "icacls", r.prefix, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"); err != nil {
 		return err
 	}
+	// THE SERVICE BEFORE THE BRIDGE, knowingly. A bridge build that fails leaves an auto-start
+	// service behind, so the agent runs degraded at the next boot and says so -- the better
+	// leftover than the other order's, a bridge nobody runs on, and every step here is
+	// idempotent, so the re-run the failure asks for finds its own work done.
 	if err := registerService(exe, say); err != nil {
 		return err
 	}
@@ -233,9 +237,25 @@ func copyTree(_ context.Context, src, dst string) error {
 // makeWritable has nothing to do: a tree extracted on Windows is writable by its owner already.
 func makeWritable(context.Context, string) error { return nil }
 
-// flushInstall has nothing to do: a Windows install ends in the restart the bridge needs, and a
-// clean restart writes every file out.
-func flushInstall(context.Context, func(string, ...any)) error { return nil }
+// flushInstall is Linux's `sync`, spelled file by file: Windows has no call that flushes a
+// whole volume from user space, so every regular file under the prefix is opened for writing
+// and flushed. The restart the install ends in would write them out too, but the person is
+// asked before it and may decline, and the rule (a verified name must never sit over truncated
+// bytes) does not get to depend on their answer.
+func flushInstall(_ context.Context, say func(string, ...any)) error {
+	say("flushing the installed files to disk")
+	return filepath.WalkDir(prefixDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		f, err := os.OpenFile(p, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return f.Sync()
+	})
+}
 
 // backupFolder is the agent's own folder on Windows for now: a folder in the household's profile
 // needs an owner the agent can give it, and the Windows owner model is not the Linux uid one.

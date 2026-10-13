@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -18,7 +19,7 @@ import (
 // node-local like the mesh cache beside it. `briard alerts` reads it; nothing reads a log for an
 // alert. It lives on the host because the host is the side that is up when the guest is not,
 // and it is pushed to the guest only as a copy to display.
-const AlertStorePath = stateDir + "/alerts.json"
+var AlertStorePath = filepath.Join(stateDir, "alerts.json")
 
 // alertStoreCap bounds the history. Alerts are rare (a handful a month on a healthy node), so
 // this is many months; the trim never drops a key's latest alert, because that is the record of
