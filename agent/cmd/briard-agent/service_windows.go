@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -54,8 +56,17 @@ const (
 // exactly as under systemd. A preshutdown is the machine going down, and is the one moment the
 // guest must be powered off cleanly -- on Linux that is the guest unit's ExecStop, because there
 // the agent cannot tell the two apart; here the SCM tells it.
+//
+// A resume is the third event, and it costs the guest a clean restart: a guest that slept with the
+// machine wakes with a stale clock and a lease the router may have given away, and a fresh boot
+// asks neither question. Powering it off is all this does -- a stopped guest is the case the host
+// already relaunches at once. Fast Startup is why this matters on a desktop: its "shut down" is a
+// hibernate that sends no PRESHUTDOWN, so the power-on is a resume and arrives here.
 func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending, WaitHint: uint32(startHint / time.Millisecond)}
+	if err := holdAwake(); err != nil {
+		log.Printf("service: cannot hold the machine awake, it may sleep while serving: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -65,7 +76,7 @@ func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status cha
 	for {
 		select {
 		case <-ready:
-			status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptPreShutdown}
+			status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptPreShutdown | svc.AcceptPowerEvent}
 			ready = nil
 		case err := <-done:
 			// The agent returned by itself. An error is reported as a non-zero exit, which the SCM's
@@ -79,6 +90,17 @@ func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status cha
 			switch c.Cmd {
 			case svc.Interrogate:
 				status <- c.CurrentStatus
+			case svc.PowerEvent:
+				if c.EventType == pbtAPMResumeAutomatic {
+					log.Printf("service: the machine resumed -- restarting the guest cleanly")
+					go func() {
+						sctx, scancel := context.WithTimeout(ctx, platform.GuestShutdownGrace+15*time.Second)
+						defer scancel()
+						if err := runGuestShutdown(sctx, qmp); err != nil {
+							log.Printf("service: guest shutdown after resume: %v", err)
+						}
+					}()
+				}
 			case svc.Stop:
 				log.Printf("service: stop -- the guest keeps running for the next agent to re-adopt")
 				stopping(status, req, func() { cancel(); <-done })
@@ -100,6 +122,48 @@ func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status cha
 			}
 		}
 	}
+}
+
+// pbtAPMResumeAutomatic is the power event every resume sends, whoever woke the machine.
+const pbtAPMResumeAutomatic = 0x12
+
+var (
+	procPowerCreateRequest = windows.NewLazySystemDLL("kernel32.dll").NewProc("PowerCreateRequest")
+	procPowerSetRequest    = windows.NewLazySystemDLL("kernel32.dll").NewProc("PowerSetRequest")
+)
+
+// reasonContext is REASON_CONTEXT carrying a simple reason string; the blank field is the rest of
+// its union.
+type reasonContext struct {
+	version uint32
+	flags   uint32
+	reason  *uint16
+	_       [2]uintptr
+}
+
+// awakeReason is what `powercfg /requests` shows against the agent, so a user asking why the PC
+// does not sleep is told by name.
+const awakeReason = "Briard is serving your home's services from this PC"
+
+// holdAwake keeps the machine out of idle sleep for the rest of the process's life: a
+// system-required power request, released by the process's exit. Idle sleep only -- a closed lid,
+// the power button and a chosen Sleep are the user's acts under the power plan, and no request
+// overrides them.
+func holdAwake() error {
+	reason, err := windows.UTF16PtrFromString(awakeReason)
+	if err != nil {
+		return err
+	}
+	rc := reasonContext{flags: 1 /* POWER_REQUEST_CONTEXT_SIMPLE_STRING */, reason: reason}
+	h, _, err := procPowerCreateRequest.Call(uintptr(unsafe.Pointer(&rc)))
+	if windows.Handle(h) == windows.InvalidHandle {
+		return fmt.Errorf("PowerCreateRequest: %w", err)
+	}
+	if ok, _, err := procPowerSetRequest.Call(h, 1 /* PowerRequestSystemRequired */); ok == 0 {
+		windows.CloseHandle(windows.Handle(h))
+		return fmt.Errorf("PowerSetRequest: %w", err)
+	}
+	return nil
 }
 
 // stopping runs work while telling the SCM, on a rolling checkpoint, that the stop is progressing.
