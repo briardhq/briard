@@ -1,0 +1,194 @@
+# briard one-command install, Windows.
+#
+#   irm https://get.briard.io/install.ps1 | iex
+#
+# Brings a Windows Home desktop to GREEN: a guest VM on our BUNDLED qemu holding the VIP, its
+# network hung off the machine's own NIC through a bridge, a data volume the guest lays out, and
+# Briard answering at the VIP on the LAN. No cloud, no name. One restart.
+#
+# THIS SCRIPT IS OUTSIDE THE VERSIONING SYSTEM, like install.sh, whose twin it is: fetched from the
+# channel root and run once, so nothing it does can be reached by a release afterwards. It does
+# only what has to happen before an agent can run on this machine -- be an administrator, get an
+# agent onto the box, put the two things in place the agent cannot (a kernel driver someone else
+# signs, a Windows feature), call the agent, arrange to be resumed after the restart, and ask for
+# the restart.
+#
+# EVERYTHING ELSE IS THE AGENT'S -- `briard-agent install` (agent/host/install.go,
+# install_windows.go): the machine report card, the signed fetch, the %ProgramData%\briard layout,
+# config.env, the tree's ACL, the service and its recovery, the firewall hole, `briard` on PATH,
+# the network bridge -- and `briard-agent install -wait`, the closing wait for the node's one-time
+# link, which runs at the first administrator logon after the restart. Adding something back here
+# means showing it has to happen before an agent can run.
+#
+# BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the rig). Unset = the
+# signed network fetch over the channel.
+#
+# Windows PowerShell 5.1 -- what every Windows Home ships -- so nothing newer is used here.
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest's progress bar slows a download tenfold
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# ---- what this script needs to know -------------------------------------------------
+# THE KNOBS ARE NOT HERE, and adding one back is the mistake. Every `BRIARD_*` in the environment
+# reaches the agent, which copies it into config.env with the prefix stripped, so this script
+# carries no list of them, no defaults for them and no documentation of them (install.sh says the
+# same). Below is the short list this script READS, because it acts on it before any agent runs.
+#
+# Settings reach the agent from an ADMINISTRATOR prompt. An elevation relaunch (below) starts from
+# a fresh environment, so a one-liner run from an ordinary prompt installs with the defaults.
+$Prefix = 'C:\ProgramData\briard'
+# A CONSTANT: the agent's own roots derive from it, and the service is registered on a path under it.
+
+# The signed release channel root, and WHICH release off it -- read here only to fetch the
+# bootstrap agent from the target's own path. The agent reads the same two to fetch the rest.
+$Channel = if ($env:BRIARD_CHANNEL_URL) { $env:BRIARD_CHANNEL_URL } else { 'https://get.briard.io' }
+$Release = if ($env:BRIARD_RELEASE) { $env:BRIARD_RELEASE } else { 'stable' }
+# The release public key: the verify root, before anything is on disk to trust.
+$Keyring = if ($env:BRIARD_UPDATE_KEYRING) { $env:BRIARD_UPDATE_KEYRING } else { "$Prefix\keyring.pem" }
+
+# The release signing public key(s), embedded at release time: this script is fetched over TLS from
+# the channel, so the key travels with it (the installer-carries-the-pubkey pattern). A placeholder
+# in the source tree that the release pipeline fills. Used only when no keyring is on disk.
+$RELEASE_KEYRING_PEM = '__BRIARD_RELEASE_KEYRING_PEM__'
+
+# THE TAP DRIVER: tap-windows6, OpenVPN's signed build. A kernel driver is signed by whoever
+# Microsoft attests, and that is OpenVPN Inc., not us, so these are their bytes from their host,
+# pinned by hash -- the install refuses anything else. 9.24.7 is the newest standalone installer;
+# later builds ship only as merge modules for someone else's MSI. Its own installer creates the one
+# adapter the agent's bridge wants.
+$TapUrl    = 'https://build.openvpn.net/downloads/releases/tap-windows-9.24.7-I601-Win10.exe'
+$TapSha256 = '1c44e77ab148ddfb174de8041100efc38c4f23500183faff88f9badac5782e3c'
+$TapDescription = 'TAP-Windows Adapter V9' # how the driver describes its adapters, whatever they are named
+
+# The resume: the task that runs the closing at the next administrator logon.
+$ResumeTask = 'briard-install'
+
+function Say($m) { Write-Host "briard: $m" }
+function Die($m) { throw "briard: ERROR: $m" }
+# Run a program of ours and return its exit code, its output shown as it comes. Its stderr is
+# merged and turned back into text: with this script's stderr redirected (a log, an ssh session)
+# PowerShell 5 wraps a program's stderr lines as error records, and under 'Stop' the first one
+# would end the script before the exit code was read.
+function Run($exe, [string[]]$a) {
+	$ErrorActionPreference = 'Continue'
+	& $exe @a 2>&1 | ForEach-Object { "$_" } | Write-Host
+	return $LASTEXITCODE
+}
+function IsAdmin {
+	([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+		[Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+function TapInstalled { @(Get-NetAdapter | Where-Object InterfaceDescription -like "$TapDescription*").Count -gt 0 }
+
+# ---- 0. an administrator ------------------------------------------------------------
+# Not elevated: relaunch elevated, in a window that stays, and let that run be the install. The
+# `irm | iex` form has no file to re-run, so it re-fetches this script from the channel root; a
+# saved copy re-runs the copy.
+if (-not (IsAdmin)) {
+	$cmd = if ($PSCommandPath) { "& '$PSCommandPath'" } else { "irm $Channel/install.ps1 | iex" }
+	Say 'asking for administrator rights (the install registers a service and builds a network bridge)'
+	Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd
+	return
+}
+
+# ---- 1. the agent that installs ----------------------------------------------------
+# The ONLY artifact this script fetches: everything heavy (the qemu bundle, the guest image) is the
+# agent's to fetch, AFTER its report card has admitted the machine. Asking before taking is what
+# lets a refusal say "nothing was installed" truthfully.
+$Boot = ''
+if ($env:BRIARD_ARTIFACTS) {
+	# Offline / rig path: the staging dir's own agent installs from it.
+	$Agent = "$env:BRIARD_ARTIFACTS\briard-agent.exe"
+	if (-not (Test-Path $Agent)) { Die "staging dir $env:BRIARD_ARTIFACTS has no briard-agent.exe" }
+} else {
+	# Signed network fetch. Bootstrap a briard-agent over TLS -- the channel's integrity anchors
+	# this FIRST binary -- and let it fetch and verify the whole set against the bundled release
+	# keyring. The bootstrap only RUNS the verified fetch; what lands under the prefix is the
+	# Ed25519-verified set, so a compromised bootstrap cannot seed bad cattle.
+	New-Item -ItemType Directory -Force $Prefix | Out-Null
+	if (-not (Test-Path $Keyring)) {
+		if ($RELEASE_KEYRING_PEM -notlike '*BEGIN PUBLIC KEY*') {
+			Die "no release keyring at $Keyring (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)"
+		}
+		Set-Content -Path $Keyring -Value $RELEASE_KEYRING_PEM -Encoding ascii
+	}
+	Say "bootstrapping the installer agent from $Channel (briard/$Release) ..."
+	# Fetched from the TARGET's path, never a fixed one: the bootstrap is the binary that parses
+	# the manifest and lays the release down, and a stale one that cannot is exactly the
+	# forward-compat bricking the channel layout exists to prevent. `briard-agent.exe` is the
+	# one artifact the channel duplicates under its pointers for this fetch.
+	$Boot = "$Prefix\bootstrap-agent.exe"
+	try { Invoke-WebRequest -UseBasicParsing -Uri "$Channel/briard/$Release/windows-amd64/briard-agent.exe" -OutFile $Boot }
+	catch { Die "could not fetch the bootstrap agent from $Channel/briard/$Release/windows-amd64 ($_)" }
+	# Fail with the REASON. A bootstrap that will not run (wrong arch, a blocked download) is not a
+	# verification failure, and reporting it as one sends the reader hunting for a bad signature.
+	$rc = 1
+	try { $rc = Run $Boot help 6> $null } catch {}
+	if ($rc -ne 0) { Die "the bootstrap agent at $Boot will not run on this machine; nothing installed" }
+	$Agent = $Boot
+}
+
+# ---- 2. what the agent cannot put in place for itself -----------------------------------
+# Both are in place BEFORE the agent's report card runs, which refuses a machine without them and
+# names this script as what installs them.
+if (TapInstalled) {
+	Say 'the TAP driver is installed'
+} else {
+	$exe = "$env:TEMP\tap-windows.exe"
+	Say "fetching the TAP network driver (tap-windows6, OpenVPN's signed build) ..."
+	try { Invoke-WebRequest -UseBasicParsing -Uri $TapUrl -OutFile $exe }
+	catch { Die "could not fetch the TAP driver from $TapUrl ($_)" }
+	$got = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
+	if ($got -ne $TapSha256) { Remove-Item $exe; Die "the TAP driver download does not match the pinned hash (got $got); nothing installed" }
+	Say 'installing the TAP network driver ...'
+	# /S is the NSIS silent install; it creates the one TAP adapter. Windows trusts the driver's
+	# own signature at load, which is what Secure Boot evaluates -- nothing of ours is involved.
+	$p = Start-Process $exe -ArgumentList '/S' -PassThru -Wait
+	Remove-Item $exe
+	if ($p.ExitCode -ne 0) { Die "the TAP driver installer exited $($p.ExitCode); nothing installed" }
+	if (-not (TapInstalled)) { Die 'the TAP driver installed but no TAP adapter appeared; nothing installed' }
+}
+# The Windows Hypervisor Platform: what qemu accelerates the guest with (WHPX). Turned on here,
+# running only after the restart -- the same restart the bridge needs, so it costs nothing extra.
+# The report card reads the hypervisor itself, so it knows "on, pending" from "running".
+if ((Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State -eq 'Enabled') {
+	Say 'the Windows Hypervisor Platform is on'
+} else {
+	Say 'turning on the Windows Hypervisor Platform (starts at the restart) ...'
+	Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart | Out-Null
+}
+
+# ---- 3. the install itself: the agent's ---------------------------------------------
+# The report card first (a refusal with the fix named, before a byte of the release is fetched),
+# then the verified set laid down, config.env, the service, the bridge. It says what it is doing
+# as it goes, and why when it stops.
+#
+# The bootstrap goes either way: on a refusal it is the one thing we put down, and "nothing was
+# installed" must be true while it sits there; on success the verified agent has replaced it.
+$rc = Run $Agent install
+if ($Boot) { Remove-Item $Boot -ErrorAction SilentlyContinue }
+if ($rc -ne 0) { Die 'the install did not finish (the agent said why above)' }
+
+# ---- 4. the hand-over, after the restart ----------------------------------------------
+# The service starts by itself at boot. The closing -- the installed agent waiting for its own
+# node to answer, then printing the one-time link to the household's Briard page -- needs an
+# administrator's console (the agent's files are the administrators'), so it runs as a task at
+# the next administrator logon, in a window that stays, and the task removes itself. Any
+# administrator, by group: no name, no password kept.
+$exe = "$Prefix\agent\briard-agent.exe"
+$resume = "& '$exe' install -wait; schtasks /delete /tn $ResumeTask /f | Out-Null"
+Register-ScheduledTask -TaskName $ResumeTask -Force `
+	-Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$resume`"") `
+	-Trigger (New-ScheduledTaskTrigger -AtLogOn) `
+	-Principal (New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Administrators' -RunLevel Highest) | Out-Null
+
+# ---- 5. the one restart ----------------------------------------------------------------
+# The bridge carries the guest only once Windows has started with it, and the hypervisor runs
+# only after a restart: one restart, asked for, never a shutdown (Fast Startup's resume is not a
+# start). Briard finishes on its own afterwards; the link appears when an administrator logs on.
+Say 'installed. Windows must restart once for the network bridge and the hypervisor.'
+Say 'after the restart, log on: Briard finishes starting and prints the link to your Briard page.'
+if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
+	Read-Host 'press Enter to restart now (Ctrl-C to restart later yourself)' | Out-Null
+}
+shutdown /r /t 5 /f /c 'Briard: restarting once to finish the install'

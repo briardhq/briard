@@ -11,15 +11,16 @@
 #   install.sh                          a byte-copy of briard/stable/linux-amd64/install.sh, laid by
 #                                       `promote`; unsigned where it is SERVED, since
 #                                       the one-liner fetches it before any verification exists
+#   install.ps1                         likewise, of briard/stable/windows-amd64/install.ps1
 #   briard/
 #     <version>/linux-amd64/            manifest.json(+.sig), briard-agent, briard-net-wrap,
 #                                       install.sh,
 #                                       briard-{exec,commit,update},
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
-#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, qemu-bundle-windows.tar.zst, guest-bundle.tar.zst
-#                                       (the Windows arm; no consumer yet)
-#     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent (linux)
+#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, install.ps1,
+#                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst
+#     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent / briard-agent.exe
 #     stable/{linux,windows}-amd64/     likewise
 #     dev/{linux,windows}-amd64/        likewise -- the one ungated pointer (see `dev`)
 #   vm/
@@ -290,6 +291,28 @@ purge_edge() {
 	fi
 }
 
+# Stage an installer with the release public key embedded: the placeholder, wherever it sits on
+# its line, becomes the PEM inside the quotes around it -- the same for install.sh's
+# `RELEASE_KEYRING_PEM='…'` and install.ps1's `$RELEASE_KEYRING_PEM = '…'`, so one function
+# stages both and neither can be shipped with the placeholder its script refuses on.
+# <src> <dst>; $RELEASE_PUBKEY is the PEM file.
+embed_keyring() {
+	local src=$1 dst=$2 ph=__BRIARD_RELEASE_KEYRING_PEM__
+	awk -v keyfile="$RELEASE_PUBKEY" -v ph="$ph" '
+		index($0, ph) {
+			i = index($0, ph)
+			printf "%s", substr($0, 1, i - 1)
+			while ((getline line < keyfile) > 0) print line
+			print substr($0, i + length(ph))
+			next
+		} { print }' "$src" > "$dst"
+	chmod 0755 "$dst"
+	grep -q "$ph" "$dst" \
+		&& die "the keyring placeholder survived in $dst — the published installer would refuse to install"
+	grep -q "BEGIN PUBLIC KEY" "$dst" \
+		|| die "no public key landed in the staged $dst"
+}
+
 # The files a pointer directory carries, in the upload order that fails closed: the bootstrap
 # agent (if any) first, then the signature, then the manifest. A client racing the upload sees a
 # coherent old pair, a coherent new pair, or a manifest/signature mismatch it refuses — never a
@@ -462,20 +485,12 @@ stage)
 	# so an installer somebody saved to disk months ago would silently install THAT release rather
 	# than healing forward to current stable, which is the property "old installer, new artifacts"
 	# rests on. Installing an exact id passes BRIARD_RELEASE beside the URL instead.
+	#
+	# The Windows installer, install.ps1, is the same thing on the windows-amd64 arm below: same
+	# placeholder, same embedding, same root copy at `promote`.
 	[ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key (embedded into install.sh)"
 	grep -q "BEGIN PUBLIC KEY" "$RELEASE_PUBKEY" || die "$RELEASE_PUBKEY is not a PEM PUBLIC KEY"
-	awk -v keyfile="$RELEASE_PUBKEY" '
-		/^RELEASE_KEYRING_PEM=/ {
-			printf "RELEASE_KEYRING_PEM='"'"'"
-			while ((getline line < keyfile) > 0) print line
-			printf "'"'"'\n"
-			next
-		} { print }' scripts/install.sh > "$H/install.sh"
-	chmod 0755 "$H/install.sh"
-	grep -q "__BRIARD_RELEASE_KEYRING_PEM__" "$H/install.sh" \
-		&& die "the keyring placeholder survived — the published installer would refuse to install"
-	grep -q "BEGIN PUBLIC KEY" "$H/install.sh" \
-		|| die "no public key landed in the staged install.sh"
+	embed_keyring scripts/install.sh "$H/install.sh"
 	sh -n "$H/install.sh" || die "the staged install.sh is not valid shell after substitution"
 
 	# The manifest, written BY THE AGENT rather than by this script: the format is a contract
@@ -500,6 +515,7 @@ stage)
 	# the guest is Linux whatever runs it -- copied so a Windows install fetches one arm, not two.
 	install -m0755 "$(out_of .#artifacts.agent-windows)/bin/windows_amd64/briard-agent.exe" "$W/briard-agent.exe"
 	cp "$H/guest-bundle.tar.zst" "$W/guest-bundle.tar.zst"
+	embed_keyring scripts/install.ps1 "$W/install.ps1"
 	"$H/briard-agent" --stage-manifest "$W" --chain briard --platform "$WINDOWS_ARM" --release "$V" --vm "$GV" || die "writing the windows manifest failed"
 
 	# THE VM CHAIN: the OS image, its own series, per CPU, and staged ONLY when its
@@ -565,12 +581,14 @@ publish)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	# The installer is an artifact of the LINUX ARM and lives nowhere else in a staging dir
+	# Each installer is an artifact of ITS ARM and lives nowhere else in a staging dir
 	# (stage lays no root copy, and `promote` is what puts one at the channel root). The
 	# check itself is unchanged: a staging dir carrying no installer was built before the keyring
 	# was embedded, and publishing it would ship a release nobody can install.
 	[ -f "$DIR/briard/$(staged_version "$DIR/briard")/$LINUX_ARM/install.sh" ] ||
 		die "no install.sh under $DIR/briard/<version>/$LINUX_ARM — run \`stage\` (it embeds the keyring)"
+	[ -f "$DIR/briard/$(staged_version "$DIR/briard")/$WINDOWS_ARM/install.ps1" ] ||
+		die "no install.ps1 under $DIR/briard/<version>/$WINDOWS_ARM — run \`stage\` (it embeds the keyring)"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 
@@ -708,6 +726,10 @@ promote)
 				have_key "$bucket/$c/$rel/install.sh" "$endpoint" ||
 					die "$c/$rel carries no install.sh — it was staged before install.sh was carried in the release; re-stage and publish it"
 			fi
+			if [ "$c" = briard ] && [ "$arm" = "$WINDOWS_ARM" ]; then
+				have_key "$bucket/$c/$rel/install.ps1" "$endpoint" ||
+					die "$c/$rel carries no install.ps1 — it was staged before the Windows installer was carried in the release; re-stage and publish it"
+			fi
 			if curl -fsS "$CHANNEL/$c/$p/manifest.json" -o "$tmp/$tag.stable.json" 2>/dev/null; then
 				cur=$(jq -r .version "$tmp/$tag.stable.json")
 				if [ "$cur" = "$v" ]; then
@@ -737,7 +759,7 @@ promote)
 			fi
 		done
 	done
-	# THE CHANNEL ROOT'S INSTALLER, byte-copied from the release just promoted and
+	# THE CHANNEL ROOT'S INSTALLERS, byte-copied from the release just promoted and
 	# laid LAST, after every pointer — so the root can never advertise a `stable` that is not
 	# there yet, which is the ordering the first publish of this tree got wrong.
 	#
@@ -747,6 +769,8 @@ promote)
 	# re-run is for.
 	copy_key "briard/$V/$LINUX_ARM/install.sh" "$bucket" "install.sh" "$endpoint"
 	say "install.sh at the root -> briard/$V/$LINUX_ARM/install.sh"
+	copy_key "briard/$V/$WINDOWS_ARM/install.ps1" "$bucket" "install.ps1" "$endpoint"
+	say "install.ps1 at the root -> briard/$V/$WINDOWS_ARM/install.ps1"
 	{
 		for c in $CHAINS; do
 			for arm in $(arms_of "$c"); do
@@ -754,6 +778,7 @@ promote)
 			done
 		done
 		echo "$CHANNEL/install.sh"
+		echo "$CHANNEL/install.ps1"
 	} | purge_edge
 	say "promoted $V — now run: ./scripts/publish-release.sh verify"
 	;;
@@ -931,6 +956,7 @@ verify)
 			die "briard/$V/$LINUX_ARM/install.sh is not served — an install gate on $V has no installer to fetch"
 		say "$V verifies: both arms, vm $GV, every artifact matching, and its own install.sh served"
 		say "   install it with: BRIARD_RELEASE=$V, fetching $CHANNEL/briard/$V/$LINUX_ARM/install.sh"
+		say "   on Windows: \$env:BRIARD_RELEASE='$V'; irm $CHANNEL/briard/$V/$WINDOWS_ARM/install.ps1 | iex"
 		exit 0
 	fi
 
@@ -998,8 +1024,22 @@ verify)
 		[ "$got" = "$want" ] ||
 			die "the root install.sh is NOT briard/stable/$LINUX_ARM/install.sh ($got != $want) — a promote that did not finish, or a hand-edited root"
 		say "install.sh at the root is briard/$sv/$LINUX_ARM/install.sh, byte for byte"
+		# The Windows installer, the same way -- but a stable from before it was carried is said,
+		# not failed: nothing is wrong with a channel whose root serves no installer for an arm its
+		# promoted release never had one for.
+		want=$(curl -fsS "$CHANNEL/briard/stable/$WINDOWS_ARM/manifest.json" |
+			jq -r '.artifacts[] | select(.name=="install.ps1") | .sha256') || die "cannot read briard/stable/$WINDOWS_ARM"
+		if [ -z "$want" ]; then
+			say "briard/stable ($sv) predates install.ps1 — the root serves no Windows installer yet"
+		else
+			curl -fsS "$CHANNEL/install.ps1" -o "$tmp/install.ps1" || die "install.ps1 is not fetchable at $CHANNEL/install.ps1"
+			got=$(sha256sum "$tmp/install.ps1" | cut -d' ' -f1)
+			[ "$got" = "$want" ] ||
+				die "the root install.ps1 is NOT briard/stable/$WINDOWS_ARM/install.ps1 ($got != $want) — a promote that did not finish, or a hand-edited root"
+			say "install.ps1 at the root is briard/$sv/$WINDOWS_ARM/install.ps1, byte for byte"
+		fi
 	fi
-	say "$CHANNEL verifies end to end: every pointer signed, every artifact matching, install.sh served at the root and pointing here"
+	say "$CHANNEL verifies end to end: every pointer signed, every artifact matching, the installers served at the root and pointing here"
 	;;
 
 *)
