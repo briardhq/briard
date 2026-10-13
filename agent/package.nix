@@ -44,6 +44,11 @@ buildGoModule {
   preBuild = lib.optionalString (goos != null) "export GOOS=${goos} GOARCH=amd64";
   # A cross-compiled test binary cannot run here; the Windows tests run on a Windows machine.
   doCheck = goos == null;
+  # The PE is NOT stripped by the fixup: binutils' strip is an ELF tool, and run over the PE Go
+  # emits it leaves a file Windows refuses to start ("not a valid Win32 application" -- measured
+  # on the rig, with the unstripped build of the same tree running beside it). Go's own
+  # `-s -w` would be the way to shed the symbol table; the size is not worth a second ldflags path.
+  dontStrip = goos != null;
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
   # self-update. Overridable by a real release version at build time.
   ldflags = [ "-X" "briard.io/agent/host.buildVersion=${version}" ];
