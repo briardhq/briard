@@ -89,8 +89,10 @@ func TestSmokeTestRefusesAMachineThatDiesOrHangs(t *testing.T) {
 	if took := time.Since(start); took > 5*time.Second {
 		t.Fatalf("the hang was not cut off by the smoke timeout (took %s)", took)
 	}
-	// The hung process was killed, not left behind holding the scratch dir.
-	if out, _ := exec.Command("pgrep", "-f", "sleep 30").Output(); strings.TrimSpace(string(out)) != "" {
+	// The hung process was killed, not left behind holding the scratch dir. The fake exec's its
+	// sleep, so its whole command line is exactly `sleep 30`: matched exactly (-x), because a
+	// substring match also hits any unrelated shell whose command text mentions the same words.
+	if out, _ := exec.Command("pgrep", "-fx", "sleep 30").Output(); strings.TrimSpace(string(out)) != "" {
 		t.Errorf("the hung scratch machine is still running: pids %s", out)
 	}
 }
