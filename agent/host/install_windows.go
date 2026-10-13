@@ -242,10 +242,14 @@ func makeWritable(context.Context, string) error { return nil }
 // and flushed. The restart the install ends in would write them out too, but the person is
 // asked before it and may decline, and the rule (a verified name must never sit over truncated
 // bytes) does not get to depend on their answer.
+//
+// The running executable is skipped: it is the installer's bootstrap, written before it ran rather
+// than by the install, and Windows refuses a running image to a writer.
 func flushInstall(_ context.Context, say func(string, ...any)) error {
 	say("flushing the installed files to disk")
+	self, _ := os.Executable()
 	return filepath.WalkDir(prefixDir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
+		if err != nil || !d.Type().IsRegular() || strings.EqualFold(p, self) {
 			return err
 		}
 		f, err := os.OpenFile(p, os.O_WRONLY, 0)
