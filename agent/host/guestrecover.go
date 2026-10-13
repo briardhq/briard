@@ -393,6 +393,11 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		if ctx.Err() != nil {
 			return nil, ctx.Err() // agent shutting down, not a wedged guest
 		}
+		// The wait ended because the unit stopped (awaitChannel): back to the top, which
+		// relaunches a stopped unit at once rather than rebooting a guest that is not there.
+		if !platform.Running(ctx, u.cfg.guestSpec()) {
+			continue
+		}
 
 		// Ask the guest whether taking it down is safe. Unreachable is not a refusal -- see the
 		// header: the gate can withhold a reboot, never authorise one.
@@ -514,6 +519,13 @@ func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRec
 // awaitChannel re-dials until the guest answers or the window closes. It is reconnect() under a
 // deadline rather than a second retry loop -- the bring-up path already drives it that way, so
 // the backoff, the logging and the handshake stay one implementation.
+//
+// THE UNIT IS ASKED AGAIN WHILE WE WAIT. The channel dies when the in-guest agent stops, which in
+// a clean poweroff is before qemu exits, so the check at the top of recover() can read "running"
+// about a guest that is seconds from gone -- and a stopped unit cannot produce a socket however
+// long we wait. A unit that stops during the wait ends it early, and the ladder relaunches at once
+// instead of after the window (measured on Windows: a resume's clean restart sat out the ten
+// minutes whenever the channel dropped first).
 func (u *osUpgrade) awaitChannel(ctx context.Context, window time.Duration) (*guestagent.Client, error) {
 	wctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
@@ -521,8 +533,27 @@ func (u *osUpgrade) awaitChannel(ctx context.Context, window time.Duration) (*gu
 	// Leased on its OWN deadline, so the watchdog neither misfires through it nor has to be widened
 	// to survive it. Ending the wait ends the lease, whichever way it ends.
 	u.cfg.beat.Lease(wctx)
+	spec := u.cfg.guestSpec()
+	go func() {
+		tick := time.NewTicker(unitRecheckEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-wctx.Done():
+				return
+			case <-tick.C:
+				if !platform.Running(wctx, spec) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	return reconnect(wctx, u.cfg.ControlSock, u.logf)
 }
+
+// unitRecheckEvery is how often a wait for the channel asks whether the guest's unit still runs.
+const unitRecheckEvery = 5 * time.Second
 
 // rebootGuest takes the wedged guest down and brings it back, replacing the whole binding.
 //
