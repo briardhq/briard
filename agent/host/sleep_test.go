@@ -57,7 +57,32 @@ func TestSleepAlerter(t *testing.T) {
 	}
 }
 
-// A machine that never says (Linux, no sleep since boot) never alerts.
+// The rig's sequence: an agent started on a machine that has not slept since boot primes on that
+// answer, and the FIRST sleep after it is told -- reading "no sleep yet" as unknown made the first
+// sleep the priming reading, and it went untold (measured on the Windows rig).
+func TestSleepAlerterFirstSleepAfterBoot(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	var slept, woke time.Time // no sleep since boot: ok, zero times
+	fn := &fakeNotifier{}
+	s := &sleepAlerter{
+		read: func() (time.Time, time.Time, bool) { return slept, woke, true },
+		lid:  func() string { return "" },
+	}
+	tick := func() { s.observe(ctx, fn, "n1", func(string, ...any) {}) }
+	tick()
+	tick()
+	if len(fn.alerts) != 0 {
+		t.Fatalf("no sleep since boot alerted: %+v", fn.alerts)
+	}
+	slept, woke = t0, t0.Add(10*time.Minute)
+	tick()
+	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Event {
+		t.Fatalf("the first sleep after boot went untold: %+v", fn.alerts)
+	}
+}
+
+// A machine that never says (Linux, a failed read) never alerts.
 func TestSleepAlerterUnknownNeverFires(t *testing.T) {
 	fn := &fakeNotifier{}
 	s := &sleepAlerter{

@@ -53,7 +53,8 @@ const (
 
 // lastSleep reads the machine's last sleep and wake as wall-clock times. Windows keeps both as the
 // interrupt-time count (100 ns ticks since boot, sleep included) at the moment, so each is placed
-// by its distance from the count now. Not ok when there has been no sleep since boot.
+// by its distance from the count now. No sleep since boot is ok with zero times (an answer, and the
+// one the first reading after a boot primes on); not ok only when the reads fail or disagree.
 func lastSleep() (slept, woke time.Time, ok bool) {
 	read := func(level uintptr) (uint64, bool) {
 		var v uint64
@@ -62,7 +63,12 @@ func lastSleep() (slept, woke time.Time, ok bool) {
 	}
 	s, okS := read(powerLastSleepTime)
 	w, okW := read(powerLastWakeTime)
-	if !okS || !okW || s == 0 || w == 0 || w < s {
+	switch {
+	case !okS || !okW:
+		return time.Time{}, time.Time{}, false
+	case s == 0 && w == 0:
+		return time.Time{}, time.Time{}, true
+	case s == 0 || w == 0 || w < s:
 		return time.Time{}, time.Time{}, false
 	}
 	var now uint64

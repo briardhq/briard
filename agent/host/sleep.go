@@ -17,12 +17,15 @@ import (
 // without meaning to stop a server.
 //
 // ONLY A SLEEP THIS AGENT SAW START TO END IS NEWS. The first reading primes: a sleep that ended
-// before the agent started was not one it was serving through. AN UNKNOWN IS NOT AN ALARM: no
-// sleep since boot, or a machine that does not say (Linux), reads not-ok and changes nothing.
+// before the agent started was not one it was serving through. "No sleep since boot" is an answer
+// (ok, zero times) and primes like any other -- read as unknown, the first sleep after a boot would
+// be the reading that primes, and go untold. AN UNKNOWN IS NOT AN ALARM: a machine that does not
+// say (Linux) or a read that failed is not-ok and changes nothing.
 type sleepAlerter struct {
-	read func() (slept, woke time.Time, ok bool) // lastSleep in production
-	lid  func() string                           // lidAction in production: "sleeps", "stays", or ""
-	woke time.Time                               // the wake already accounted for; zero until primed
+	read   func() (slept, woke time.Time, ok bool) // lastSleep in production
+	lid    func() string                           // lidAction in production: "sleeps", "stays", or ""
+	woke   time.Time                               // the wake already accounted for
+	primed bool
 }
 
 // sleepSameWake is how far two readings of one wake may disagree: the times are derived from a
@@ -34,11 +37,11 @@ func (s *sleepAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 	if !ok {
 		return
 	}
-	if s.woke.IsZero() {
-		s.woke = woke
+	if !s.primed {
+		s.woke, s.primed = woke, true
 		return
 	}
-	if woke.Sub(s.woke) < sleepSameWake {
+	if woke.IsZero() || woke.Sub(s.woke) < sleepSameWake {
 		return
 	}
 	s.woke = woke
