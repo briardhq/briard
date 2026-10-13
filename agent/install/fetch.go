@@ -424,7 +424,12 @@ func expand(src string, mode os.FileMode) error {
 		return fmt.Errorf("%w: %s expands past the %d-byte ceiling", ErrArtifactMismatch, filepath.Base(src), int64(maxArtifactSize))
 	}
 	// The compressed copy has served its purpose; leaving it would double the staging dir's
-	// footprint on a disk the report card has already sized.
+	// footprint on a disk the report card has already sized. Closed BEFORE it is removed: Windows
+	// refuses to delete a file a handle is still open on (a sharing violation), where Linux
+	// unlinks the name and lets the handle live. Both Close calls are idempotent, so the defers
+	// above stay for the error paths.
+	zr.Close()
+	in.Close()
 	if err := os.Remove(src); err != nil {
 		return fmt.Errorf("install: remove %s: %w", filepath.Base(src), err)
 	}
