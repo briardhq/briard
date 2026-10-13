@@ -251,8 +251,11 @@ staged_version() {
 # Read the bucket + endpoint out of a write URL.
 bucket_of() { echo "$1" | sed 's|^s3://\([^?]*\).*|s3://\1|'; }
 endpoint_of() { echo "https://$(echo "$1" | sed 's|.*endpoint=\([^&]*\).*|\1|')"; }
-# Does the bucket hold this key? (`s3 ls` prints nothing and exits 1 for a missing key.)
-have_key() { [ -n "$(aws s3 ls "$1" --endpoint-url "$2" 2>/dev/null)" ]; }
+# Does the bucket hold this key, EXACTLY? `s3 ls <key>` is a PREFIX listing: asked for
+# `briard-agent` in a directory holding `briard-agent.exe` it prints that, and a pointer move
+# that trusted it then copied a key that does not exist (the Windows arm, the first release to
+# carry the .exe). So the listing's last column must equal the key's own name.
+have_key() { aws s3 ls "$1" --endpoint-url "$2" 2>/dev/null | awk -v n="${1##*/}" '$NF == n { f = 1 } END { exit !f }'; }
 # Copy one key to another INSIDE the bucket, `$bucket`-relative on both sides.
 #
 # ⚠️ `s3api copy-object`, NOT `s3 cp`, and the difference is not style. awscli2's `s3 cp` between
