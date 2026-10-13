@@ -33,6 +33,9 @@ type sleepAlerter struct {
 const sleepSameWake = 5 * time.Second
 
 func (s *sleepAlerter) observe(ctx context.Context, n notify.Notifier, node string, logf func(string, ...any)) {
+	if s == nil {
+		return
+	}
 	slept, woke, ok := s.read()
 	if !ok {
 		return

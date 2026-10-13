@@ -427,6 +427,10 @@ type Config struct {
 	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
 	// nil means everything runs on the loop (tests). Set by Run.
 	acts *actLane
+	// sleep tells the household the machine slept (sleep.go). Set by Run, so it outlives observe():
+	// the resume it exists to report restarts the guest, which restarts observe, and an alerter made
+	// there would prime on the very wake it should tell. Nil in tests that build a Config by hand.
+	sleep *sleepAlerter
 
 	// vip is VIPAddr as it stands NOW: `briard config set vip` changes it at runtime (configset.go),
 	// and every bring-up after that must carry the new value. A pointer for net's reason -- Config
@@ -864,6 +868,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// broken release rather than an occasional retry.
 	var pendingOutcomes []api.DirectiveOutcome
 	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
+	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction}
 	var recovery guestRecovery
 	for {
 		served := time.Now()
@@ -1374,8 +1379,6 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	bs := newBackupScheduler()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
-	// The machine's last sleep, so the one that happens while serving is told (sleep.go); same reason.
-	sl := &sleepAlerter{read: lastSleep, lid: lidAction}
 	// How long each installed service has been down (alert.go); same reason.
 	sa := &serviceAlerter{}
 	// When the host disk holding this node's disks runs short (disks.go); same reason.
@@ -1613,7 +1616,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		}
 		cycle++
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
-		sl.observe(ctx, n, cfg.Node, logf)             // two power reads: a sleep since the last tick is an event
+		cfg.sleep.observe(ctx, n, cfg.Node, logf)      // two power reads: a sleep since the last tick is an event
 		// Each installed service, from this cycle's report: no read of its own.
 		sa.observe(ctx, n, cfg.Node, st.Services, known, cl.Serving(), time.Now(), logf)
 
