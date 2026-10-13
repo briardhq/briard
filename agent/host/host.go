@@ -1374,8 +1374,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	bs := newBackupScheduler()
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
-	// What closing the lid does to this machine (lid.go); same reason.
-	la := &lidAlerter{read: lidAction}
+	// The machine's last sleep, so the one that happens while serving is told (sleep.go); same reason.
+	sl := &sleepAlerter{read: lastSleep, lid: lidAction}
 	// How long each installed service has been down (alert.go); same reason.
 	sa := &serviceAlerter{}
 	// When the host disk holding this node's disks runs short (disks.go); same reason.
@@ -1613,7 +1613,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		}
 		cycle++
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
-		la.observe(ctx, n, cfg.Node, time.Now(), logf) // the power plan, every lidReadEvery
+		sl.observe(ctx, n, cfg.Node, logf)             // two power reads: a sleep since the last tick is an event
 		// Each installed service, from this cycle's report: no read of its own.
 		sa.observe(ctx, n, cfg.Node, st.Services, known, cl.Serving(), time.Now(), logf)
 
