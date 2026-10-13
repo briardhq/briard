@@ -65,9 +65,7 @@ type installRoots struct {
 //
 // The report card is NOT here: the caller runs it first, so a refusal means nothing was written.
 func Install(ctx context.Context, say, logf func(string, ...any)) error {
-	r := installRoots{prefix: prefixDir, state: stateDir, run: runDir,
-		// NixOS's /etc/systemd/system is a read-only store path, so the install rigs point this elsewhere.
-		unitDir: env("BRIARD_UNIT_DIR", "/etc/systemd/system"), cliLink: cliLink}
+	r := installRoots{prefix: prefixDir, state: stateDir, run: runDir}.osRoots()
 	if err := os.MkdirAll(filepath.Join(r.prefix, "agent"), 0o755); err != nil {
 		return err
 	}

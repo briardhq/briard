@@ -282,3 +282,7 @@ func (r installRoots) bundleLines(string) string {
 	q := filepath.Join(r.prefix, "agent", "qemu")
 	return fmt.Sprintf("QEMU=%s\nQEMU_DATADIR=%s\n", filepath.Join(q, "qemu-system-x86_64.exe"), filepath.Join(q, "share", "qemu"))
 }
+
+// osRoots has nothing to add: the service is registered, not a unit file, and `briard` goes on
+// PATH under the prefix (onPath).
+func (r installRoots) osRoots() installRoots { return r }

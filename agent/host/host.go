@@ -934,11 +934,11 @@ func (cfg Config) guestSpec() platform.QEMUSpec {
 // parentMAC reads dev's MAC. "" when unreadable, which leaves qemu its default -- a guest that
 // cannot reach the LAN, where a wrong guess would be one that reaches it as somebody else.
 func parentMAC(dev string) string {
-	b, err := os.ReadFile("/sys/class/net/" + dev + "/address")
+	i, err := net.InterfaceByName(dev)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	return i.HardwareAddr.String()
 }
 
 func (cfg Config) baseGuestSpec() platform.QEMUSpec {
@@ -2121,19 +2121,6 @@ func (cfg Config) wedgeForTest(logf func(string, ...any)) {
 	}
 	logf("wedge fixture: %s got a reader; the observe loop is moving again", cfg.WedgeFIFO)
 	_ = f.Close()
-}
-
-// selfResources measures this agent process's own resident set (KB) and open fd count from
-// /proc/self -- the host-side half of the leak signal. Both best-effort: a read miss leaves
-// the field zero (read as "unmeasured"), never an error on the observe path.
-func selfResources() (rssKB int64, fds int) {
-	if b, err := os.ReadFile("/proc/self/status"); err == nil {
-		rssKB = parseSelfVmRSSKB(b)
-	}
-	if ents, err := os.ReadDir("/proc/self/fd"); err == nil {
-		fds = len(ents)
-	}
-	return
 }
 
 // parseSelfVmRSSKB pulls the VmRSS kB value out of /proc/self/status. 0 if absent.

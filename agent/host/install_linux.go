@@ -188,3 +188,11 @@ func agentLogSince(ctx context.Context, m logMark) []byte {
 func (r installRoots) bundleLines(netWrap string) string {
 	return fmt.Sprintf("QEMU=%[1]s/qemu/bin/qemu-system-x86_64\nQEMU_DATADIR=%[1]s/qemu/share/qemu\nNET_WRAP_BIN=%[2]s\n", r.prefix, netWrap)
 }
+
+// osRoots fills the two roots only Linux has: where the shipped units go -- NixOS's
+// /etc/systemd/system is a read-only store path, so the install rigs point this elsewhere -- and
+// where `briard` lands on $PATH.
+func (r installRoots) osRoots() installRoots {
+	r.unitDir, r.cliLink = env("BRIARD_UNIT_DIR", "/etc/systemd/system"), cliLink
+	return r
+}
