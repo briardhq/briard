@@ -134,13 +134,20 @@ if ($env:BRIARD_ARTIFACTS) {
 if (TapInstalled) {
 	Say 'the TAP driver is installed'
 } else {
-	# From the staging dir on the offline path, else from the same arm the bootstrap came from.
+	# From the staging dir on the offline path, else from the release the bootstrap came from.
 	if ($env:BRIARD_ARTIFACTS) {
 		$exe = "$env:BRIARD_ARTIFACTS\tap-windows.exe"
 		if (-not (Test-Path $exe)) { Die "staging dir $env:BRIARD_ARTIFACTS has no tap-windows.exe" }
 	} else {
+		# Resolved against the manifest's own version, as every artifact is: a pointer (`stable`)
+		# serves a manifest and the bootstrap agent, nothing else. The manifest is read unverified
+		# because it only names the path -- the bytes are held to the pinned hash below.
+		$m = "$Channel/briard/$Release/windows-amd64/manifest.json"
+		try { $version = (Invoke-RestMethod -UseBasicParsing -Uri $m).version }
+		catch { Die "could not read the release manifest at $m ($_)" }
+		if (-not $version) { Die "the release manifest at $m names no version" }
 		$exe = "$Prefix\tap-windows.exe"
-		$url = "$Channel/briard/$Release/windows-amd64/tap-windows.exe"
+		$url = "$Channel/briard/$version/windows-amd64/tap-windows.exe"
 		Say "fetching the TAP network driver (tap-windows6, OpenVPN's signed build) ..."
 		try { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $exe }
 		catch { Die "could not fetch the TAP driver from $url ($_)" }
