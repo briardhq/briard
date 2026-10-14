@@ -34,15 +34,6 @@ const (
 	// defaultAccel is WHPX, with TCG as the fallback qemu takes when the hypervisor platform is not
 	// enabled.
 	defaultAccel = "whpx:tcg"
-
-	// defaultCPU is a whole named model rather than `max` with features taken out. The qemu we
-	// ship mishandles two things `max` brings on an Intel host under Hyper-V: `vmx` (the firmware's
-	// IA32_FEATURE_CONTROL write is refused and the guest triple-faults before its first console
-	// byte) and XSAVE (the guest kernel panics setting up its FPU state, and with `-xsave` alone the
-	// AVX bits still advertised make the first AVX instruction an invalid opcode). Westmere is
-	// SSE4.2 + AES-NI with no XSAVE, so the data volume's encryption keeps its hardware path and
-	// the feature set holds together on every host.
-	defaultCPU = "Westmere"
 )
 
 // AgentLog is the agent's own log file. Under the SCM a service's stderr goes nowhere, so the

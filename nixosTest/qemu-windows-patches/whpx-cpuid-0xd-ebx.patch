@@ -1,0 +1,57 @@
+whpx: i386: forward the dynamic EBX of CPUID[0xD] sub-leaves 0 and 1, not 1 and 2
+
+CPUID[0xD,0].EBX is the size of the XSAVE area for the guest's current
+XCR0, and CPUID[0xD,1].EBX the size for XCR0 | IA32_XSS: those are the
+two values that depend on guest state. For sub-leaf 2 and up, EBX is the
+component's offset in the standard format, a constant.
+
+whpx_vcpu_run() forwards Hyper-V's DefaultResultRbx for sub-leaves 1 and
+2 instead. Sub-leaf 2 is harmless: QEMU's own offset was read from
+Hyper-V at vCPU init. Sub-leaf 0 is not: QEMU computes it from
+env->xcr0, which WHPX refreshes only in whpx_get_registers(), never on
+a CPUID exit, so after the guest's XSETBV the leaf still reports the
+size for the reset XCR0, 576 bytes.
+
+A Linux guest on a host without XSAVES takes that as its kernel XSAVE
+size, fails the consistency check against the size it computed from the
+component offsets, disables XSAVE and panics on the fallback path:
+
+  XSAVE consistency problem: size 832 != kernel_size 576
+  WARNING: CPU: 0 PID: 0 at arch/x86/kernel/fpu/xstate.c:638 fpu__init_system_xstate
+  x86/fpu: XSAVE disabled
+  BUG: kernel NULL pointer dereference, address: 0000000000000010
+  RIP: 0010:fpstate_reset+0x1a/0x90
+  Kernel panic - not syncing: Attempted to kill the idle task!
+
+Every CPU model with XSAVE is affected there (-cpu max, Haswell,
+SandyBridge); models without it (Westmere, Nehalem, qemu64) boot. A host
+with XSAVES boots because Linux takes the compacted size from sub-leaf 1,
+which is forwarded; sub-leaf 0 is stale there too.
+
+Reproduced on an Intel Core i5-4440 (Haswell) under Windows 11 Home
+build 26300 with QEMU 11.1.2 (the code is unchanged on master), guest
+Linux 6.18. With this patch the guest enables xstate 0x7 at 832 bytes
+and boots with -cpu max. An AMD Ryzen 9 7900X under build 26100, not
+affected before, still boots with the patch, enabling 0xe7 (compacted,
+2432 bytes).
+
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -2618,10 +2618,14 @@
+                 }
+             }
+ 
+-            /* CPUID[0xD,{1,2}].EBX are dynamic depending on guest features. */
++            /*
++             * CPUID[0xD,{0,1}].EBX are dynamic: the XSAVE area size for the
++             * guest's current XCR0, resp. XCR0 | IA32_XSS. For sub-leaf >= 2,
++             * EBX is the component's fixed offset, which QEMU already reports.
++             */
+             if (vcpu->exit_ctx.CpuidAccess.Rax == 0xd) {
+-                if (vcpu->exit_ctx.CpuidAccess.Rcx == 1
+-                    || vcpu->exit_ctx.CpuidAccess.Rcx == 2) {
++                if (vcpu->exit_ctx.CpuidAccess.Rcx == 0
++                    || vcpu->exit_ctx.CpuidAccess.Rcx == 1) {
+                     reg_values[4].Reg64 = vcpu->exit_ctx.CpuidAccess.DefaultResultRbx;
+                 }
+             }

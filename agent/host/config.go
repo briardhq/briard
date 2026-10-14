@@ -155,10 +155,12 @@ func ConfigFromEnv() Config {
 		QEMUBinary:  env("QEMU", "qemu-system-x86_64"),
 		QEMUDataDir: os.Getenv("QEMU_DATADIR"),
 		Accel:       env("ACCEL", defaultAccel),
-		// The model is per OS (defaultCPU). The escape hatch (BRIARD_CPU=qemu64 at the installer,
-		// CPU= here) is for a host where the model itself is the suspect -- one env line beats a
-		// release.
-		CPUModel: env("CPU", defaultCPU),
+		// `max` = every feature the accelerator can give the guest, which under KVM is the
+		// host's own CPU. Under WHPX on an Intel host it needs the qemu we build: its patch for
+		// CPUID[0xD] is what lets a guest kernel enable XSAVE there. The escape hatch
+		// (BRIARD_CPU=qemu64 at the installer, CPU= here) is for a host where the passthrough
+		// itself is the suspect -- one env line beats a release.
+		CPUModel: env("CPU", "max"),
 		// The size the guest boots at. It starts small and grows while it runs (memory.go), so
 		// this is a floor, not a guess at what the household will install.
 		MemoryMB: atoi(os.Getenv("MEMORY_MB"), 1024),

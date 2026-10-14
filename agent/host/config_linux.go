@@ -25,8 +25,4 @@ const (
 
 	// defaultAccel is KVM, with TCG as the fallback qemu takes when /dev/kvm is not there.
 	defaultAccel = "kvm:tcg"
-
-	// defaultCPU is `max`: every feature the accelerator can give the guest, which under KVM is
-	// the host's own CPU.
-	defaultCPU = "max"
 )

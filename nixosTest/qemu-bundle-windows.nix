@@ -13,7 +13,8 @@
 # UCRT64, not MSYS2's older msvcrt `mingw64` environment: that one no longer carries libslirp, and
 # the UCRT is part of Windows 10 and later.
 #
-# WHAT OUR SIGNATURE MEANS HERE: the QEMU binaries are built by us from the pinned source below;
+# WHAT OUR SIGNATURE MEANS HERE: the QEMU binaries are built by us from the pinned source below,
+# with the patches in qemu-windows-patches/ applied (each one says what it fixes and on what host);
 # the DLLs beside them are MSYS2's binaries and the toolchain's runtime, pinned and unmodified.
 #
 # GPL: QEMU is GPL-2.0 and several of the libraries are LGPL. The corresponding source is the QEMU
@@ -77,6 +78,7 @@ let
   qemu = pkgs.stdenv.mkDerivation {
     pname = "qemu-windows";
     inherit version src;
+    patches = [ ./qemu-windows-patches/whpx-cpuid-0xd-ebx.patch ];
     nativeBuildInputs = with pkgs; [
       win.buildPackages.gcc pkg-config flex bison meson ninja perl zstd
       # QEMU's configure builds an offline venv that installs its vendored wheels (qemu.qmp), and

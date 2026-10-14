@@ -29,8 +29,9 @@ Two artifacts, from two different places, and the difference matters:
 - **`windows/qemu-bundle-windows.tar.zst`** — **QEMU itself is our build; the libraries beside
   it are MSYS2's.** The recipe is
   [`nixosTest/qemu-bundle-windows.nix`](nixosTest/qemu-bundle-windows.nix): the QEMU release
-  tarball it pins by SHA-256 (from <https://download.qemu.org/>), cross-compiled for Windows with
-  the mingw-w64 gcc from the nixpkgs revision in [`flake.lock`](flake.lock).
+  tarball it pins by SHA-256 (from <https://download.qemu.org/>), with the patches in
+  [`nixosTest/qemu-windows-patches/`](nixosTest/qemu-windows-patches/) applied, cross-compiled for
+  Windows with the mingw-w64 gcc from the nixpkgs revision in [`flake.lock`](flake.lock).
   `nix build .#artifacts.qemu-bundle-windows` reproduces it. The DLLs it links are binaries from
   [MSYS2](https://www.msys2.org/)'s UCRT64 repository, unmodified and pinned by SHA-256 in the
   same file: glib (LGPL-2.1+), libiconv and gettext's libintl (LGPL-2.1+), libslirp, pcre2 and
