@@ -26,13 +26,20 @@ Two artifacts, from two different places, and the difference matters:
   `nix build .#artifacts.qemu-bundle` reproduces it, and
   `nix build --inputs-from . nixpkgs#qemu_test.src` fetches the QEMU source it was compiled from.
 
-- **`windows/qemu-bundle-windows.tar.zst`** **is not our build** — it is repackaged, meaning
-  unpacked and trimmed rather than recompiled, from the Windows installer that QEMU's own
-  [download page](https://www.qemu.org/download/) points to: the build Stefan Weil publishes at
-  <https://qemu.weilnetz.de/w64/>. The exact installer and its SHA-256 are pinned in
-  [`nixosTest/qemu-bundle-windows.nix`](nixosTest/qemu-bundle-windows.nix) and recorded in the
-  bundle's own `PROVENANCE` file, so the upstream bytes we started from are identified exactly.
-  That build's sources are published by its builder, linked from <https://qemu.weilnetz.de/>.
+- **`windows/qemu-bundle-windows.tar.zst`** — **QEMU itself is our build; the libraries beside
+  it are MSYS2's.** The recipe is
+  [`nixosTest/qemu-bundle-windows.nix`](nixosTest/qemu-bundle-windows.nix): the QEMU release
+  tarball it pins by SHA-256 (from <https://download.qemu.org/>), cross-compiled for Windows with
+  the mingw-w64 gcc from the nixpkgs revision in [`flake.lock`](flake.lock).
+  `nix build .#artifacts.qemu-bundle-windows` reproduces it. The DLLs it links are binaries from
+  [MSYS2](https://www.msys2.org/)'s UCRT64 repository, unmodified and pinned by SHA-256 in the
+  same file: glib (LGPL-2.1+), libiconv and gettext's libintl (LGPL-2.1+), libslirp, pcre2 and
+  zstd (BSD-3-Clause), pixman and libffi (MIT), zlib (Zlib), winpthreads (MIT and BSD-3-Clause).
+  Each package's source archive is at <https://repo.msys2.org/mingw/sources/> under the same name
+  and version, and its recipe at <https://github.com/msys2/MINGW-packages>. Two runtime DLLs come
+  from the compiler instead, from the same nixpkgs revision: `libmcfgthread-2.dll` (mcfgthread,
+  LGPL-3.0+ with the GCC runtime exception) and `libssp-0.dll` (GCC, GPL-3.0+ with the GCC
+  runtime exception). The bundle's own `PROVENANCE` file lists every pin.
 
 QEMU's upstream source, for either: <https://www.qemu.org/download/> ·
 <https://gitlab.com/qemu-project/qemu>.

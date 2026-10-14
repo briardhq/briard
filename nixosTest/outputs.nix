@@ -562,9 +562,9 @@ in
     agent-windows = pkgs.callPackage ../agent/package.nix { version = agentVersion; goos = "windows"; };
     driver = driverPkg;
     qemu-bundle = qemuBundle.bundle; # the relocatable qemu the free-local installer ships
-    # The Windows arm of the same thing, repackaged from pinned upstream bytes because building it
-    # ourselves is blocked upstream (qemu-bundle-windows.nix says where and why). Its proof is the
-    # tier-4 Windows rig, not CI -- a Linux runner cannot run it.
+    # The Windows arm of the same thing: QEMU cross-built here from a pinned release over MSYS2's
+    # libraries (qemu-bundle-windows.nix says how). Its proof is a boot on a Windows machine, not
+    # CI -- a Linux runner cannot run it.
     qemu-bundle-windows = qemuBundleWindows.bundle;
     # The TAP driver the Windows guest's network rides: OpenVPN's signed tap-windows6 installer,
     # their bytes pinned by hash and served from our channel (the Windows installer fetches it from
