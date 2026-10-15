@@ -261,9 +261,35 @@ func flushInstall(_ context.Context, say func(string, ...any)) error {
 	})
 }
 
-// backupFolder is the agent's own folder on Windows for now: a folder in the household's profile
-// needs an owner the agent can give it, and the Windows owner model is not the Linux uid one.
-func backupFolder(context.Context) string { return "" }
+// backupFolder makes the household's backup folder: `Briard Backup` in the Documents of the account
+// that passed UAC -- the installer runs elevated AS that account, so the known folder is theirs.
+// Resolved through the shell, never composed: with OneDrive's folder backup on (Windows 11's default
+// with a Microsoft account) Documents IS OneDrive's, and the off-site copy comes with it. No owner
+// step: the profile's inherited ACL gives its owner every file under it, whoever wrote it. SYSTEM
+// (a remote or scripted install) has no household Documents: "", and the agent's own folder under
+// the state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like
+// any other setting instead.
+func backupFolder(context.Context) string {
+	if _, set := os.LookupEnv("BRIARD_BACKUP_DIR"); set || isLocalSystem() {
+		return ""
+	}
+	docs, err := windows.KnownFolderPath(windows.FOLDERID_Documents, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(docs, "Briard Backup")
+	if os.MkdirAll(dir, 0o755) != nil {
+		return ""
+	}
+	return dir
+}
+
+// isLocalSystem reports whether this process runs as SYSTEM rather than as a person; a token it
+// cannot read counts as SYSTEM, so the backup lands in the agent's own folder rather than a guess.
+func isLocalSystem() bool {
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	return err != nil || u.User.Sid.IsWellKnown(windows.WinLocalSystemSid)
+}
 
 // openForUser does nothing on Windows: the installer runs elevated, and a browser started from it
 // would be too. The link is printed, and the tray opens it as the person.

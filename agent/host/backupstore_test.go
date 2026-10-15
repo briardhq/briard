@@ -12,19 +12,22 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"briard.io/agent/platform"
 )
 
 // storeRig serves an empty folder through the store to this process (httptest's client is
-// 127.0.0.1), recording every path given the folder's owner.
+// 127.0.0.1), recording every path given the folder's owner. The owner step is this OS's real one,
+// so an OS whose step fails every write fails every store test here.
 func storeRig(t *testing.T) (*backupStore, *httptest.Server, map[string]bool) {
 	t.Helper()
 	var mu sync.Mutex
 	owned := map[string]bool{}
-	s := &backupStore{dir: t.TempDir(), client: "127.0.0.1", own: func(_, p string) error {
+	s := &backupStore{dir: t.TempDir(), client: "127.0.0.1", own: func(dir, p string) error {
 		mu.Lock()
-		defer mu.Unlock()
 		owned[p] = true
-		return nil
+		mu.Unlock()
+		return platform.ChownLike(dir, p)
 	}}
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)

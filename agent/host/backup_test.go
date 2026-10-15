@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -304,7 +305,8 @@ func TestANewFolderIsChecked(t *testing.T) {
 	if _, err := os.Stat(missing); err == nil {
 		t.Error("checking a missing folder created it")
 	}
-	if err := checkBackupFolder("/"); err == nil || !strings.Contains(err.Error(), "root") {
+	// A root-owned folder is a Linux refusal: Windows has no owner check (OwnerUID).
+	if err := checkBackupFolder("/"); runtime.GOOS == "linux" && (err == nil || !strings.Contains(err.Error(), "root")) {
 		t.Errorf("a root-owned folder: %v", err)
 	}
 	if entries, _ := os.ReadDir(empty); len(entries) != 0 {

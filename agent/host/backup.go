@@ -495,7 +495,8 @@ func backupWord(dir string) string {
 //   - a full path to a folder that EXISTS. Never created here: a missing folder may be a disk not
 //     mounted, and creating it would write onto whatever is underneath.
 //   - owned by a person, not root: every file is given the folder's owner, so it stays theirs, and
-//     no system directory qualifies.
+//     no system directory qualifies. Linux only: on Windows the folder's inherited ACL is what
+//     makes the files a person's, and OwnerUID says ErrUnsupported.
 //   - EMPTY, or already a restic repository -- these backups, moved there by the household, which
 //     the next night continues. Hidden files (a sync client's marker) do not count. Anything else
 //     is refused: the store answers `GET /config` from the folder, so a folder holding some other
@@ -513,10 +514,10 @@ func checkBackupFolder(dir string) error {
 		return fmt.Errorf("%s is not a folder", dir)
 	}
 	uid, err := platform.OwnerUID(dir)
-	if err != nil {
+	if err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		return fmt.Errorf("%s: %v", dir, err)
 	}
-	if uid == 0 {
+	if err == nil && uid == 0 {
 		return fmt.Errorf("%s belongs to root: choose a folder a person owns, like one in their home", dir)
 	}
 	entries, err := os.ReadDir(dir)
