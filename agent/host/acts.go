@@ -75,6 +75,7 @@ var (
 		api.DirectivePair:          true,
 		api.DirectiveUnpair:        true,
 		api.DirectiveRescue:        true,
+		leaseRelaunch:              true, // internal: the guest takes a new address (lease.go)
 	}
 	offLoopActs = map[string]bool{
 		api.DirectiveServiceInstall: true,

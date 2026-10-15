@@ -100,7 +100,7 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 		f.Parent, f.Bridge, f.Ipvtap = cfg.net.Parent, cfg.net.Bridge, cfg.net.Ipvtap
 		f.ParentUp = f.Parent != "" && nic.Up(f.Parent)
 	}
-	f.Refused, f.RefusedFix = cfg.ipvtap.refusal()
+	f.Refused, f.RefusedFix = cfg.lease.refusal()
 	cs.doctor(&f)
 	if f.DataDisk != "" {
 		_, err := os.Stat(f.DataDisk)

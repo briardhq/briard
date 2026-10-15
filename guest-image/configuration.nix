@@ -353,11 +353,10 @@ let
   #     one is worse than none because it looks like success.
   #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + the FLOCK MAC,
   #     VIP_MAC from the agent (the NIC's own address where a harness sets none), which dhcpcd
-  #     encodes as hex because the value is colon-separated. Not read off the NIC, because on a
-  #     wireless parent the NIC carries the station's MAC (ipvtap) and the lease would be the
-  #     host's own: chaddr is the station's there, and only the client-id tells the two apart.
-  #     One flock then
-  #     presents ONE identity, which is what makes a lease survive a failover -- and what stops
+  #     encodes as hex because the value is colon-separated. Stated rather than read off the NIC:
+  #     the identity is the flock's, never a property of whichever NIC carries it, and it is the
+  #     same pair the HOST asks under where it holds the lease instead (a single-anchor substrate,
+  #     VIP_LEASE=host above, agent/host/lease.go). One flock then presents ONE identity, which is what makes a lease survive a failover -- and what stops
   #     dhcpcd's own shipped `duid` (a per-host DUID that, in the man page's words, "should not be
   #     copied to other hosts") from giving two nodes of one flock different leases if a nixpkgs
   #     bump ever restores it.
@@ -379,10 +378,9 @@ let
   #     still refuses to do is squat an address somebody actively wants.
   #   -r asks for the address we already claimed, so the replicated store wins over this node's
   #     own lease file instead of the two quietly drifting apart.
-  #   -J sets the BROADCAST flag, so the server broadcasts its OFFER and ACK. On a wireless parent
-  #     a unicast reply goes to the station's MAC for an address the host has not yet copied onto
-  #     the guest's child (ipvtap demuxes on configured addresses only), and no lease would ever
-  #     be obtained. Harmless everywhere else, so it is not substrate-scoped.
+  #   -J sets the BROADCAST flag, so the server broadcasts its OFFER and ACK: the shape the host's
+  #     own client sends where it holds the lease, so a router answers the flock one way whichever
+  #     side asked. Harmless on every substrate.
   dhcpcdRun = pkgs.writeShellScript "briard-vip-dhcpcd" ''
     set -eu
     dev="$1"; want="$2"; shift 2
@@ -453,6 +451,14 @@ let
     mkdir -p "$(dirname ${vipLivePath})"
 
     configured="''${VIP_ADDR:-}"
+    # THE HOST HOLDS THE LEASE on a single-anchor substrate, where this NIC's frames carry the
+    # host's MAC: it asks under the flock's own and hands the answer down as VIP_ADDR. With none
+    # handed down the router leased the flock nothing of its own -- the host has refused and said
+    # so -- and a client started here would only be handed the host's own address. Claim nothing.
+    if [ -z "$configured" ] && [ "''${VIP_LEASE:-}" = host ]; then
+      echo "briard-vip: the host holds this address's lease and has none to give; claiming nothing on $VIP_DEV"
+      exit 0
+    fi
     addr="$configured"
     if [ -z "$addr" ] && [ -r ${vipAddrFile} ]; then
       addr="$(cat ${vipAddrFile})"

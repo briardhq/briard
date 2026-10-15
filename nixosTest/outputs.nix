@@ -361,8 +361,8 @@ let
     agent = agentPkg;
     qemuBundle = qemuBundle.bundle;
   };
-  # ...and the same station behind a host DHCP client that sends no client-id: the router hands
-  # the guest the host's own address, the agent refuses it, and the named remedy serves.
+  # ...and the same station on a router that leases only machines it knows: it leases the flock
+  # nothing, the agent refuses, and the named remedy serves.
   installWifiRefuse = import ./install-wifi.nix {
     inherit pkgs guestDisk guestBundle;
     agent = agentPkg;
@@ -489,7 +489,7 @@ in
       install-macvtap = installMacvtap; # DEFAULT substrate: curl|sh -> green, off-box VIP reach, cattle/pet reinstall
       install-bridge = installBridge; # bridge mode (Windows' shape): NIC enslave + host-IP move
       install-wifi = installWifi; # a wireless station: ipvtap, single-anchor, over a real access point
-      install-wifi-refuse = installWifiRefuse; # ...whose router hands the guest the host's address: refused, then the remedy
+      install-wifi-refuse = installWifiRefuse; # ...whose router leases the flock nothing: refused, then the remedy
     };
 
     # Debug harnesses — deliberately EXCLUDED from the curated set the nightly runs (the manifest

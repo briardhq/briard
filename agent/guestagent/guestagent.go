@@ -697,6 +697,10 @@ type netConfigureRequest struct {
 	CIDR    string `json:"cidr"`
 	VIPDev  string `json:"vip_dev,omitempty"`
 	VIPAddr string `json:"vip_addr,omitempty"`
+	// VIPLease: the HOST holds the VIP's lease (a single-anchor substrate, where the guest's own
+	// frames carry the host's MAC), so the guest claims VIP_ADDR when it is given one and never
+	// starts a client of its own -- with none given, it claims nothing.
+	VIPLease bool `json:"vip_lease,omitempty"`
 	// The private host<->guest link, when the substrate has one. PrivDev is the guest NIC facing
 	// it and PrivHostIP is the host's own address on the SYSTEM subnet, reached over that NIC by
 	// a /32 -- which must beat the on-link /24 the system address itself installs, because under
@@ -732,6 +736,7 @@ type NetConfig struct {
 	CIDR        string // that address, with prefix; "" leaves the NIC unaddressed
 	VIPDev      string // the NIC the promoter claims the VIP on; "" = this node claims none
 	VIPAddr     string // the VIP itself, CIDR form; "" = DHCP decides
+	VIPLease    bool   // the host holds the VIP's lease: the guest never asks DHCP itself
 	PrivDev     string // the guest NIC facing the private host link; "" = no such link
 	PrivCIDR    string // this end's own address on it -- SUBSTRATE, addressed by nobody; see the handler
 	PrivHostIP  string // the host's system-subnet address, routed over PrivDev
@@ -1880,15 +1885,17 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if req.VIPDev != "" && req.Dev != "" {
 				env = append(env, "SYSTEM_DEV="+req.Dev+"\n"...)
 			}
-			// VIP_MAC, the flock MAC, is the VIP's DHCP identity: its client-id and hostname. Read
-			// from here rather than off the NIC, because the NIC's own MAC is not always it -- on a
-			// wireless parent every guest NIC carries the station's MAC (ipvtap), and the lease
-			// must still be the flock's, distinct from the host's.
+			// VIP_MAC, the flock MAC, is the VIP's DHCP identity: its client-id and hostname. Stated
+			// rather than read off the NIC: the identity is the flock's, never a property of the NIC
+			// carrying it, and it is the one the host asks under where it holds the lease (VIPLease).
 			if req.VIPDev != "" && req.VIPMAC != "" {
 				env = append(env, "VIP_MAC="+req.VIPMAC+"\n"...)
 			}
 			if req.VIPAddr != "" {
 				env = append(env, "VIP_ADDR="+req.VIPAddr+"\n"...)
+			}
+			if req.VIPDev != "" && req.VIPLease {
+				env = append(env, "VIP_LEASE=host\n"...)
 			}
 			if len(env) > 0 {
 				return nil, x.WriteFile(vipEnvPath, env)
@@ -2710,7 +2717,7 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 // CIDR form -- the LAN decides it, so it cannot be baked. Idempotent.
 func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 	return g.c.Call(ctx, verbNetConfigure, netConfigureRequest{
-		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr,
+		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr, VIPLease: n.VIPLease,
 		PrivDev: n.PrivDev, PrivCIDR: n.PrivCIDR,
 		PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
 		PodSubnet: n.PodSubnet,

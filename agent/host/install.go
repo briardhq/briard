@@ -396,12 +396,11 @@ func InstallWait(ctx context.Context, say func(string, ...any)) error {
 			journal := agentLogSince(ctx, since)
 			// THE AGENT REFUSING ends the wait, in its own words: a node that cannot serve must not
 			// leave the household waiting out the bound for a sentence that says "still starting".
-			// Today that is a Wi-Fi guest handed the host's own address (DHCP client IDs), and the
-			// remedy is a re-run of the installer, so it ends here as a failure.
+			// Today that is a router that leases the flock nothing of its own on a single-anchor
+			// substrate (lease.go), and the remedy is `config set vip`, so it ends here as a failure.
 			//
-			// ⚠️ ASKED BEFORE HEALTHY, and the order is the point: the guest judges its health from
-			// inside, so it reads healthy on the address it was refused, and the agent logs that
-			// status line AFTER the refusal in the same pass.
+			// ⚠️ ASKED BEFORE HEALTHY: a refusal is final for this wait, and a status line logged
+			// in the same pass must not outvote it.
 			if refused := refusedLine(journal); refused != "" {
 				return fmt.Errorf("briard is installed but cannot serve your home: %s", refused)
 			}

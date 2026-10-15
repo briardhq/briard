@@ -420,10 +420,13 @@ type Config struct {
 	// parent that is no longer there. One goroutine writes it (the observe loop); nothing races.
 	net *nic.Spec
 
-	// ipvtap copies the guest's addresses onto its children when net is ipvtap (ipvtap.go), and
-	// holds a refusal the doctor reads. Machinery like beat; nil-safe, and inert on any other
-	// substrate. Written by the observe loop only.
+	// ipvtap copies the guest's addresses onto its children when net is ipvtap (ipvtap.go).
+	// Machinery like beat; nil-safe, and inert on any other substrate. Written by the observe loop
+	// only.
 	ipvtap *ipvtapCopier
+	// lease holds the flock's address lease on a single-anchor substrate, and the refusal when
+	// the router leases nothing distinct (lease.go). Machinery like beat; nil-safe. Set by Run.
+	lease *vipLeaser
 	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
 	// nil means everything runs on the loop (tests). Set by Run.
 	acts *actLane
@@ -687,6 +690,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if err != nil {
 		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
 	}
+	// The flock's lease, on a substrate where the host holds it (lease.go): before bring-up, which
+	// asks it for the address to push.
+	cfg.lease = cfg.newVIPLeaser()
 	// A NODE THAT SPENT TIME DEGRADED RE-RESOLVES ITS IDENTITY, in place. The first
 	// Resolve above ran while this node may have had no path to the cloud at all, so it fell back
 	// to the cache -- possibly an empty one on a first boot. Re-asking now that a network exists
@@ -734,6 +740,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 		return err
 	}
 	defer client.Close()
+	// ...and kept from here on: the renewal outlives any one guest, like the lease it keeps.
+	go cfg.lease.run(ctx, logf)
 	// NOTE: no `defer g.Stop()` — an agent shutdown/restart must be transparent to the
 	// guest. g.Stop() is the explicit self-fence VM-destroy backstop,
 	// invoked only on a wedged guest (the host-side reboot ladder) or by the reboot
@@ -1192,14 +1200,22 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	if err == nil {
 		pushTimezone(bringup, client, localTimezone("/"), logf)
 	}
+	// THE SERVICE ADDRESS: the household's if it named one, else -- on a single-anchor substrate --
+	// the lease the host holds for the flock, asked for BEFORE the guest is told (lease.go). A fresh
+	// guest holds nothing yet, which is what lets the host DISCOVER.
+	vipAddr, hostLeases := cfg.vipAddr(), false
+	if err == nil && cfg.net != nil && vipAddr == "" {
+		vipAddr = cfg.lease.acquire(bringup, *cfg.net, !adopted, logf)
+		hostLeases = cfg.lease.active()
+	}
 	// Configure the guest's NICs when either a system NIC is given -- which is
 	// EVERY installed node, lone ones included: eth1 carries this node's node IP, the one address
 	// anything uses to reach it, and DRBD binds there -- OR a VIP device is, which is
 	// what the agent-less harnesses send (then ConfigureNet records VIP_DEV/VIP_ADDR and skips
 	// addressing).
-	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || cfg.vipAddr() != "") {
+	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || vipAddr != "") {
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
-			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: cfg.vipAddr(),
+			Dev: cfg.SystemDev, CIDR: cfg.SystemCIDR, VIPDev: cfg.VIPDev, VIPAddr: vipAddr, VIPLease: hostLeases,
 			PrivDev: cfg.privDev(), PrivCIDR: cfg.WitnessCIDR, PrivHostIP: cfg.hostNodeIP(),
 			PodSubnet:   cfg.PodSubnet,
 			PrivHostMAC: cfg.privHostMAC(bringup, logf),
@@ -1464,12 +1480,11 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// follow ground truth.
 		cfg.beat.Beat()
 		// On a wireless parent the guest's addresses are copied onto its ipvtap children first
-		// (ipvtap.go). A VIP it refused is never routed either: it is the host's own address.
-		cfg.ipvtap.tick(ctx, cfg, vip, r, n, logf)
+		// (ipvtap.go). The lease's alert and any relaunch it needs ride the same tick (lease.go).
+		cfg.ipvtap.tick(ctx, cfg, vip, logf)
+		cfg.lease.tick(ctx, cfg.acts, up, n, logf)
 		cfg.beat.Beat()
-		if !cfg.ipvtap.refused() {
-			vr.reconcile(ctx, vip, logf)
-		}
+		vr.reconcile(ctx, vip, logf)
 		cfg.beat.Beat()
 		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()

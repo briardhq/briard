@@ -31,6 +31,14 @@ const (
 	// openHint is how a person here asks for another one-time link.
 	openHint = "briard open, in a terminal opened as administrator"
 
+	// vipFixHint is the remedy a lease refusal names, with the prefix to fill in (lease.go).
+	vipFixHint = "run `briard config set vip <address>/%s` in a terminal opened as administrator"
+
+	// hostLeasesBridge: the Windows bridge is the one substrate here, and on a Wi-Fi member it
+	// rewrites the guest's frames to the station's MAC, so the host leases the flock's address
+	// on every bridge -- wired too, so a cable swap never changes who asks (lease.go).
+	hostLeasesBridge = true
+
 	// defaultAccel is WHPX, with TCG as the fallback qemu takes when the hypervisor platform is not
 	// enabled.
 	defaultAccel = "whpx:tcg"

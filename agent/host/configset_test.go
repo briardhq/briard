@@ -79,7 +79,7 @@ func TestApplyConfigSet(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BRIARD_CONFIG", filepath.Join(dir, "config.env"))
 	vip := ""
-	cfg := Config{VIPDev: "eth2", vip: &vip, ipvtap: &ipvtapCopier{refusedAddr: "192.168.7.144"}}
+	cfg := Config{VIPDev: "eth2", vip: &vip, lease: &vipLeaser{why: "it offered 192.168.7.144, the address of the machine Briard runs on"}}
 	// No parent device here, so the prefix is given.
 	set := func(c Config, key, value string) (api.DirectiveOutcome, *fakeRebooter) {
 		p, _ := json.Marshal(api.ConfigSetting{Key: key, Value: value})
@@ -95,7 +95,7 @@ func TestApplyConfigSet(t *testing.T) {
 	if string(b) != "VIP_ADDR=192.168.7.50/24\n" || cfg.vipAddr() != "192.168.7.50/24" {
 		t.Errorf("config.env %q, live %q", b, cfg.vipAddr())
 	}
-	if cfg.ipvtap.refused() {
+	if cfg.lease.why != "" {
 		t.Error("naming an address must clear the refusal")
 	}
 	if o, rb := set(cfg, "vip", "192.168.7.50/24"); o.State != api.OutcomeDone || rb.reboots != 0 {

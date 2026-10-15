@@ -19,7 +19,7 @@ import (
 //
 // The installer writes the settings once, into config.env, and the agent reads them once. A
 // setting that the household has to change later -- the service address is the first, and the one
-// the ipvtap refusal asks them to change -- would otherwise need an uninstall and a reinstall. This
+// the lease refusal asks them to change -- would otherwise need an uninstall and a reinstall. This
 // writes the same key into the same file, so config.env stays the one place a setting lives
 // (a reinstall that names it overwrites it, as before), and applies it the one way a bring-up
 // fact is applied: restart the guest, so the next bring-up carries it.
@@ -84,8 +84,9 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 	if cfg.vip != nil {
 		*cfg.vip = want
 	}
-	// A refusal was about the address the router handed out, and the household has now named one.
-	cfg.ipvtap.clear()
+	// A refusal was about what the router leased, and the household has now named an address -- or
+	// asked for dhcp again, which the restart's bring-up asks the router for afresh.
+	cfg.lease.clear()
 	logf("config: vip %s -> %s, recorded in %s; restarting the guest to apply it", vipWord(was), vipWord(want), path)
 	if err := rb.RebootGuest(cctx); err != nil {
 		return failed("vip recorded as %s, but the guest restart failed (the next restart applies it): %v", vipWord(want), err)
