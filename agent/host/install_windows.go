@@ -52,13 +52,17 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// can: the ROOT stops inheriting and grants the two by SID (names are localized), and
 	// everything beneath INHERITS that. Never `/inheritance:r /T`: on a file it strips the inherited
 	// entries and the (OI)(CI) grants cannot attach to a file, which left every file with an empty
-	// ACL -- measured, an agent even SYSTEM could not start. So the tree is reset to inheriting
-	// first, then the root alone is restricted.
+	// ACL -- measured, an agent even SYSTEM could not start. So the root alone is restricted, and
+	// then everything BENEATH it is reset to inheriting from it. Root first, and the reset never
+	// names the root: a reset of the root re-inherits %ProgramData%'s Users entries, and a reset
+	// that fails partway (a reinstall's walk meeting an entry it cannot open) then left the whole
+	// tree readable by Users. In this order a failure leaves the tree restricted, only some files
+	// not yet inheriting.
 	say("restricting %s to SYSTEM and Administrators", r.prefix)
-	if err := run(ctx, "icacls", r.prefix, "/reset", "/T", "/Q"); err != nil {
+	if err := run(ctx, "icacls", r.prefix, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"); err != nil {
 		return err
 	}
-	if err := run(ctx, "icacls", r.prefix, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"); err != nil {
+	if err := run(ctx, "icacls", filepath.Join(r.prefix, "*"), "/reset", "/T", "/Q"); err != nil {
 		return err
 	}
 	// THE SERVICE BEFORE THE BRIDGE, knowingly. A bridge build that fails leaves an auto-start

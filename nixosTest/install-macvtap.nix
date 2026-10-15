@@ -1748,10 +1748,10 @@ pkgs.testers.runNixOSTest {
 
     # THE REVERT IS PERMANENT (owner, 2026-09-07). The guest's own fallback lasts one launch; the
     # host's record outlives it: the refusal is written beside the tree, the last GOOD tree is
-    # linked, and a fresh launch is dressed with the good bundle -- never with {V5} again, and
+    # recorded, and a fresh launch is dressed with the good bundle -- never with {V5} again, and
     # never left on the image's firmware. Alerted once. Proven by relaunching the guest.
     host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V5}")
-    assert host.succeed("readlink /opt/briard/agent/guest.good").strip() == f"guest-{V}", "the last good tree is not linked"
+    assert host.succeed("cat /opt/briard/agent/guest.good").strip() == V, "the last good tree is not recorded"
     # ALERTED, AND THE ALERT NAMES THIS REFUSAL. Not "two alerts, one per refused release": the
     # alert is raised from the observe loop off the durable record, so a refusal that is
     # superseded before the loop next ticks -- V4's was, seconds later, by V5's -- is never

@@ -236,37 +236,50 @@ func (l Layout) CommittedGuestRelease() string {
 // PruneGuestTrees removes guest-<release> trees no link names -- committed, staged, or the last
 // GOOD one, which a refused release falls back to for as long as it is refused.
 func (l Layout) PruneGuestTrees() ([]string, error) {
-	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree, func() (string, bool) { return l.qemuTarget(l.GoodGuestPath()) })
+	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree, func() (string, bool) {
+		r := l.GoodGuestRelease()
+		return l.GuestTree(r), r != ""
+	})
 }
 
 // THE PERMANENT REVERT. The guest's own pivot falls back only until
-// its next launch (a fresh scratch knows nothing), so the host remembers two things beside the
-// committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, a link like the
-// others, so its tree survives pruning) and which release it REFUSED (`guest.reverted`, an id).
-// A refused release is never pushed again; the good tree is, on every launch, until a new host
-// commit brings a different tree -- at which point the refusal no longer names the committed
-// release and is simply ignored.
+// its next launch (a fresh scratch knows nothing), so the host remembers two release ids beside
+// the committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, which also keeps
+// that tree from the pruner) and which release it REFUSED (`guest.reverted`). A refused release is
+// never pushed again; the good tree is, on every launch, until a new host commit brings a different
+// tree -- at which point the refusal no longer names the committed release and is simply ignored.
+//
+// Ids in files, not links: nothing ever opens the good tree THROUGH its name, only asks which it
+// is, and on Windows a link cannot be atomically renamed over another directory link, nor opened
+// at all as the file link a relative target made from a temp dir becomes.
 const (
-	goodGuestLink = "guest.good"
+	goodGuest     = "guest.good"
 	guestReverted = "guest.reverted"
 )
 
-func (l Layout) GoodGuestPath() string     { return filepath.Join(l.Base, goodGuestLink) }
+func (l Layout) GoodGuestPath() string     { return filepath.Join(l.Base, goodGuest) }
 func (l Layout) GuestRevertedPath() string { return filepath.Join(l.Base, guestReverted) }
 
 // GoodGuestRelease is the release of the last tree the guest ran after a push, "" if none yet.
 func (l Layout) GoodGuestRelease() string {
-	t, ok := l.qemuTarget(l.GoodGuestPath())
-	if !ok {
+	b, err := os.ReadFile(l.GoodGuestPath())
+	if err != nil {
 		return ""
 	}
-	return strings.TrimPrefix(filepath.Base(t), guestTree)
+	return strings.TrimSpace(string(b))
 }
 
-// MarkGuestGood records `release`'s tree as the last one the guest ran: a link, replaced
-// atomically, so a later refusal has a tree to fall back to and the pruner keeps it.
+// MarkGuestGood records `release`'s tree as the last one the guest ran, replaced atomically, so a
+// later refusal has a tree to fall back to and the pruner keeps it. The tree must be there.
 func (l Layout) MarkGuestGood(release string) error {
-	return l.stageTreeLink(l.GuestTree(release), guestTree, l.GoodGuestPath(), goodGuestLink)
+	tree := l.GuestTree(release)
+	if fi, err := os.Stat(tree); err != nil || !fi.IsDir() {
+		return fmt.Errorf("selfupdate: tree %s is not a directory (%v)", tree, err)
+	}
+	return atomicWrite(l.GoodGuestPath(), 0o644, func(f *os.File) error {
+		_, err := f.WriteString(release + "\n")
+		return err
+	})
 }
 
 // MarkGuestReverted records that the guest refused `release`'s bundle. Durable (Base, not the

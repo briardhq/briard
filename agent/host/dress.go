@@ -49,7 +49,7 @@ import (
 // THE REVERT IS PERMANENT, and the host is what makes it so (owner, 2026-09-07). The guest's own
 // fallback only lasts until its next launch -- a fresh scratch knows nothing, so the next boot
 // would trial the same bad bundle again. So the host keeps two facts beside the committed tree:
-// `guest.good`, a link to the last tree a dress was JUDGED to have taken (the guest came back
+// `guest.good`, the release id of the last tree a dress was JUDGED to have taken (the guest came back
 // reporting it), and `guest.reverted`, the release id of a tree the guest refused -- at the
 // cheap gate or at the trial, the record is the same. A refused release is never pushed again;
 // the good tree is pushed instead, on every launch, until a new host commit brings a new tree.

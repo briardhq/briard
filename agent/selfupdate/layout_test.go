@@ -226,6 +226,44 @@ func TestPruneQEMUTreesKeepsCommittedAndStaged(t *testing.T) {
 	}
 }
 
+// The good guest mark is a release id in a plain file: written over whatever was there (the link
+// an older agent left included), refused for a tree that is not on disk, and its tree survives the
+// pruner beside the committed one.
+func TestTheGoodGuestIsAnIdThePrunerKeeps(t *testing.T) {
+	l := newLayout(t)
+	for _, rel := range []string{"good", "cur", "old"} {
+		if err := os.MkdirAll(l.GuestTree(rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The link an older agent left, made the way it made it (a file link on Windows).
+	if err := l.stageTreeLink(l.GuestTree("old"), guestTree, l.GoodGuestPath(), goodGuest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("guest-cur", l.GuestPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkGuestGood("missing"); err == nil {
+		t.Error("a good mark for a tree that is not there was accepted")
+	}
+	if err := l.MarkGuestGood("good"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(l.GoodGuestPath()); err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("guest.good is not a plain file: %v %v", fi, err)
+	}
+	if got := l.GoodGuestRelease(); got != "good" {
+		t.Fatalf("GoodGuestRelease = %q", got)
+	}
+	removed, err := l.PruneGuestTrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "guest-old" {
+		t.Errorf("removed %v, want [guest-old]", removed)
+	}
+}
+
 // The trial's failure message: written by the candidate, taken (read + unlinked) once by the
 // agent that comes back, and gone thereafter.
 func TestFailureMessageIsTakenOnce(t *testing.T) {
