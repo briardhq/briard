@@ -64,10 +64,13 @@ const (
 	dhcpNAK      = 6
 )
 
-// dhcpTries and dhcpWait are one exchange's patience: three sends, four seconds after each. A
-// DISCOVER that twelve seconds of a household's router leaves unanswered is silence.
+// dhcpTries and dhcpWait are one exchange's patience: five sends, four seconds after each. A
+// DISCOVER that twenty seconds of a household's router leaves unanswered is silence. Five, not
+// three, because the reply is a broadcast, and Wi-Fi sends broadcasts unacknowledged and never
+// retried: a station on a weak link loses some, and two in a row has been seen on a real radio. A
+// working router costs nothing extra -- its first answer that arrives ends the exchange.
 const (
-	dhcpTries = 3
+	dhcpTries = 5
 	dhcpWait  = 4 * time.Second
 )
 
