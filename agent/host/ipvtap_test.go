@@ -5,29 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"briard.io/agent/nic"
-	"briard.io/agent/reportcard"
 )
 
-// fakeVIPGuest answers net.vip and records the writes the copier asks for, in order.
+// fakeVIPGuest answers net.vip.
 type fakeVIPGuest struct {
-	cidr  string
-	err   error
-	stops []string
+	cidr string
+	err  error
 }
 
 func (g *fakeVIPGuest) VIP(context.Context, string) (string, error) { return g.cidr, g.err }
-func (g *fakeVIPGuest) ServiceStop(_ context.Context, unit string) error {
-	g.stops = append(g.stops, unit)
-	return nil
-}
-func (g *fakeVIPGuest) ForgetVIP(context.Context) error {
-	g.stops = append(g.stops, "forget")
-	return nil
-}
 
 // copierRig is one copier with its doubles, over a wireless node whose guest node IP is 10.42.7.1.
 type copierRig struct {
@@ -53,7 +42,7 @@ func newCopierRig(ipvtap bool) *copierRig {
 }
 
 func (r *copierRig) tick(g *fakeVIPGuest) {
-	r.c.tick(context.Background(), r.cfg, g, g, nil, func(f string, a ...any) { r.lines = append(r.lines, fmt.Sprintf(f, a...)) })
+	r.c.tick(context.Background(), r.cfg, g, func(f string, a ...any) { r.lines = append(r.lines, fmt.Sprintf(f, a...)) })
 }
 
 func (r *copierRig) last() map[string][]string { return r.held[len(r.held)-1] }
@@ -112,50 +101,13 @@ func TestIPvtapCopierNeverCopiesTheHostsAddress(t *testing.T) {
 	}
 }
 
-// A ROUTER THAT IGNORES CLIENT IDS hands the guest the host's own address. Refused: the VIP's
-// client is stopped (without a RELEASE -- the unit's stop path), the copy is never made, the
-// route is never installed, and the household is told what to do. Said once, stopped each time.
-func TestIPvtapCopierRefusesTheHostsAddressAsVIP(t *testing.T) {
+// The gate holds for the VIP too: a guest holding the host's own address -- which no lease of
+// ours ever hands it (lease.go) -- leaves the service child empty.
+func TestIPvtapCopierNeverCopiesTheHostsAddressAsVIP(t *testing.T) {
 	r := newCopierRig(true)
-	g := &fakeVIPGuest{cidr: "192.168.7.50/24"}
-	r.tick(g)
-	if got := r.last()["briard0"]; got != nil {
-		t.Errorf("held the host's own address as the VIP: %v", got)
-	}
-	if !r.c.refused() || !slices.Equal(g.stops, []string{"briard-vip.service", "forget"}) {
-		t.Fatalf("refused=%v stops=%v, want refused, the VIP unit stopped, then its address forgotten", r.c.refused(), g.stops)
-	}
-	said := strings.Join(r.lines, "\n")
-	for _, want := range []string{"network: refused: ", "told apart only by DHCP client ID", "192.168.7.50", "briard config set vip <address>/24"} {
-		if !strings.Contains(said, want) {
-			t.Errorf("the refusal does not say %q:\n%s", want, said)
-		}
-	}
-	// Seen again (the guest restarted and its client ran again): stopped again, not said again.
-	n := len(r.lines)
-	r.tick(g)
-	if len(g.stops) != 4 || len(r.lines) != n {
-		t.Errorf("second sighting: stops=%v, new lines=%q", g.stops, r.lines[n:])
-	}
-	// Sticky: a later, different address is not held either -- the remedy is the household naming one.
-	r.tick(&fakeVIPGuest{cidr: "192.168.7.120/24"})
-	if got := r.last()["briard0"]; got != nil {
-		t.Errorf("a refused node held a VIP: %v", got)
-	}
-	detail, fix := r.c.refusal()
-	cs := judgeDoctor(doctorFacts{Refused: detail, RefusedFix: fix, Cluster: servingLone().Cluster})
-	if c := checkNamed(t, cs, "address"); c.Status != reportcard.Refuse || !strings.Contains(c.Fix, "config set vip") {
-		t.Errorf("the doctor's address check = %+v, want the refusal and its remedy", c)
-	}
-}
-
-// The control for the refusal: a VIP that is NOT the host's is held, and nothing is stopped.
-func TestIPvtapCopierDoesNotRefuseADifferentAddress(t *testing.T) {
-	r := newCopierRig(true)
-	g := &fakeVIPGuest{cidr: "192.168.7.51/24"}
-	r.tick(g)
-	if r.c.refused() || len(g.stops) != 0 {
-		t.Errorf("refused=%v stops=%v for an address the host does not hold", r.c.refused(), g.stops)
+	r.tick(&fakeVIPGuest{cidr: "192.168.7.50/24"})
+	if got, ok := r.last()["briard0"]; !ok || got != nil {
+		t.Errorf("held the host's own address as the VIP: %v (present %v)", got, ok)
 	}
 }
 

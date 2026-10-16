@@ -23,6 +23,13 @@ const (
 	// openHint is how a person here asks for another one-time link.
 	openHint = "sudo briard open"
 
+	// vipFixHint is the remedy a lease refusal names, with the prefix to fill in (lease.go).
+	vipFixHint = "run `sudo briard config set vip <address>/%s`"
+
+	// hostLeasesBridge: a Linux bridge carries the guest's own MAC to the wire, so the guest leases
+	// its own address there (lease.go).
+	hostLeasesBridge = false
+
 	// defaultAccel is KVM, with TCG as the fallback qemu takes when /dev/kvm is not there.
 	defaultAccel = "kvm:tcg"
 )
