@@ -12,7 +12,8 @@ import (
 // by the time it can be said the sleep is over and there is nothing left to resolve. The agent
 // holds idle sleep off, so a sleep that happens anyway was asked for -- a closed lid, the power
 // button, Sleep from the Start menu, a Fast Startup shut down -- and every one of them took the
-// household's services down for its length. When the machine has a lid that the power plan sleeps
+// household's services down for its length. The last of them is a hibernate to the machine and a
+// Shut down to the household, and is told as the one they chose. When the machine has a lid that the power plan sleeps
 // on (plugged in), the alert says how to change that, since the lid is the one a person closes
 // without meaning to stop a server.
 //
@@ -22,10 +23,13 @@ import (
 // be the reading that primes, and go untold. AN UNKNOWN IS NOT AN ALARM: a machine that does not
 // say (Linux) or a read that failed is not-ok and changes nothing.
 type sleepAlerter struct {
-	read   func() (slept, woke time.Time, ok bool) // lastSleep in production
-	lid    func() string                           // lidAction in production: "sleeps", "stays", or ""
-	woke   time.Time                               // the wake already accounted for
-	primed bool
+	read func() (slept, woke time.Time, ok bool) // lastSleep in production
+	lid  func() string                           // lidAction in production: "sleeps", "stays", or ""
+	// shutDown reports whether the wake after a sleep that began at since was a power-on
+	// (fastStartup in production); nil is never.
+	shutDown func(since time.Time) bool
+	woke     time.Time // the wake already accounted for
+	primed   bool
 }
 
 // sleepSameWake is how far two readings of one wake may disagree: the times are derived from a
@@ -53,11 +57,18 @@ func (s *sleepAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 	if asleep < time.Minute {
 		asleep = woke.Sub(slept).Round(time.Second)
 	}
+	from, to := slept.Local().Format("Mon 2 Jan 15:04"), woke.Local().Format("15:04")
+	title := "Briard: this computer was asleep"
 	body := fmt.Sprintf("node %s was asleep from %s to %s (%s), and Briard's services, Home Assistant included, "+
 		"were unreachable for that time. Briard keeps this computer awake by itself, so the sleep was asked for: "+
 		"a closed lid, the power button, or Sleep from the Start menu.",
-		node, slept.Local().Format("Mon 2 Jan 15:04"), woke.Local().Format("15:04"), asleep)
-	if s.lid() == "sleeps" {
+		node, from, to, asleep)
+	if s.shutDown != nil && s.shutDown(slept) {
+		title = "Briard: this computer was shut down"
+		body = fmt.Sprintf("node %s was shut down from %s to %s (%s), and Briard's services, Home Assistant included, "+
+			"were unreachable for that time. They came back by themselves when it was turned on.",
+			node, from, to, asleep)
+	} else if s.lid() == "sleeps" {
 		body += " This computer sleeps when its lid is closed while plugged in. To keep it serving with the lid shut, " +
 			"open Control Panel > Power Options > Choose what closing the lid does, and set \"When I close the lid\" " +
 			"(Plugged in) to Do nothing. Or, in PowerShell as administrator: " +
@@ -67,7 +78,7 @@ func (s *sleepAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 		Key:      "host-asleep",
 		Kind:     notify.Event,
 		Severity: notify.Warning,
-		Title:    "Briard: this computer was asleep",
+		Title:    title,
 		Body:     body,
 	})
 }

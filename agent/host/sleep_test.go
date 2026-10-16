@@ -96,3 +96,30 @@ func TestSleepAlerterUnknownNeverFires(t *testing.T) {
 		t.Fatalf("an unknown sleep alerted: %+v", fn.alerts)
 	}
 }
+
+// A Fast Startup Shut down reaches the agent as a sleep. It is told as the shut down the household
+// chose, from the sleep's own start, and without the lid's fix, which is not why it happened.
+func TestSleepAlerterShutDown(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	var slept, woke, asked time.Time
+	fn := &fakeNotifier{}
+	s := &sleepAlerter{
+		read:     func() (time.Time, time.Time, bool) { return slept, woke, true },
+		lid:      func() string { return "sleeps" },
+		shutDown: func(since time.Time) bool { asked = since; return true },
+	}
+	tick := func() { s.observe(ctx, fn, "n1", func(string, ...any) {}) }
+	tick()
+	slept, woke = t0, t0.Add(10*time.Minute)
+	tick()
+	if len(fn.alerts) != 1 {
+		t.Fatalf("want one event, got %+v", fn.alerts)
+	}
+	a := fn.alerts[0]
+	if !asked.Equal(slept) || a.Title != "Briard: this computer was shut down" ||
+		!strings.Contains(a.Body, "was shut down from") || strings.Contains(a.Body, "asleep") ||
+		strings.Contains(a.Body, "LIDACTION") {
+		t.Fatalf("want a shut-down event asked from the sleep's start, without sleep or the lid: asked %v, %+v", asked, a)
+	}
+}

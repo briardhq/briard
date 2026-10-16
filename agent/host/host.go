@@ -876,7 +876,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// broken release rather than an occasional retry.
 	var pendingOutcomes []api.DirectiveOutcome
 	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
-	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction}
+	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction, shutDown: fastStartup}
 	var recovery guestRecovery
 	for {
 		served := time.Now()

@@ -1,6 +1,9 @@
 package host
 
 import (
+	"context"
+	"os/exec"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -76,4 +79,17 @@ func lastSleep() (slept, woke time.Time, ok bool) {
 	wall := time.Now()
 	at := func(t uint64) time.Time { return wall.Add(-time.Duration(now-t) * 100) }
 	return at(s), at(w), true
+}
+
+// fastStartup reports whether the machine came back from its last sleep by a power-on: a Shut down
+// with Fast Startup on hibernates the kernel, the agent with it, and the boot that resumes it logs
+// Kernel-Boot 27 with boot type 1 (a cold boot is 0, a chosen Hibernate's resume 2). A read that
+// fails is no: the alert then says sleep, which was the hibernate's truth anyway.
+func fastStartup(since time.Time) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	q := "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27 and TimeCreated[@SystemTime>='" +
+		since.UTC().Format("2006-01-02T15:04:05.000Z") + "']]]"
+	out, err := exec.CommandContext(ctx, "wevtutil", "qe", "System", q, "/rd:true", "/c:1", "/f:xml").Output()
+	return err == nil && strings.Contains(string(out), "<Data Name='BootType'>1</Data>")
 }

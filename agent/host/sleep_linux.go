@@ -7,3 +7,6 @@ func lastSleep() (slept, woke time.Time, ok bool) { return time.Time{}, time.Tim
 
 // lidAction is unknown on Linux, for the same reason.
 func lidAction() string { return "" }
+
+// fastStartup is unknown on Linux, for the same reason.
+func fastStartup(time.Time) bool { return false }
