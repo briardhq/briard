@@ -182,8 +182,10 @@ pkgs.testers.runNixOSTest {
     import re
     asked = set(re.findall(r"DHCPDISCOVER\(wlan1\) ([0-9a-f:]{17}) ignored", host.succeed("cat /tmp/lan-dnsmasq.log")))
     assert asked and station_mac not in asked, f"no DISCOVER under the flock's chaddr was refused: {asked}"
-    # The guest was given no address and started no client of its own.
-    host.succeed("grep -a -q 'the host holds this address.s lease and has none to give' /var/log/briard-guest-console.log")
+    # The guest was given no address and started no client of its own. Waited for, not read once:
+    # the agent logs the refusal -- which ends the installer's wait -- before it pushes the guest
+    # its network, and the push is what prints this line.
+    host.wait_until_succeeds("grep -a -q 'the host holds this address.s lease and has none to give' /var/log/briard-guest-console.log", timeout=60)
     # Nothing was copied, and the host is still on its LAN, still holding its lease.
     host.fail("ip -n briard-hold -4 addr show dev briard0 | grep -q inet")
     host.succeed(f"ip netns exec lan ping -c1 -W2 {host_ip}")
