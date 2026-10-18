@@ -1387,6 +1387,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// The guest's link as last set to follow the household NIC's carrier (linkmirror.go). Lives
 	// for the observe loop so each loop starts by setting it, which covers a fresh launch.
 	lm := &linkMirror{}
+	lc := cfg.linkChanges(logf)
 	// Which services already have tonight's ring member (nightly.go). Lives for the
 	// observe loop for the same reason rp does, and is checked against the ring itself whenever
 	// this process has no record -- so an agent restart inside the window costs one listing
@@ -1720,9 +1721,17 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				logf("agent-update: restart request failed (will retry next cycle): %v", err)
 			}
 		}
+	wait:
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-lc:
+			// Windows reported an interface change: a carrier edge mirrored now, not at the next
+			// tick (linkmirror.go). It runs the mirror and nothing else, then waits on, so a
+			// notification never runs a cycle.
+			cfg.beat.Beat()
+			cfg.mirrorLink(ctx, lm, logf)
+			goto wait
 		case rq := <-local:
 			// A directive submitted through the local admin door. Routed HERE, by the observe
 			// loop, for exactly the reason cloud directives are: the loop decides the lane

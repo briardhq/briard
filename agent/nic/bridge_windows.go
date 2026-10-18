@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -207,3 +208,38 @@ func TapInstalled() bool {
 	}
 	return false
 }
+
+// LinkChanges is a channel that receives when Windows reports a change to an IP interface. A
+// bridge member has no IP binding, so its carrier is never reported itself: what is reported is
+// the bridge's, whose link speed is the sum of its members and so moves on every edge of a
+// member's carrier (measured on the rig: four notifications per edge, within milliseconds of the
+// member's own state). A receive therefore says only "look again"; the reader reads the member.
+//
+// Registered once per process and never cancelled: a callback made by windows.NewCallback is
+// never freed, so one per observe loop would leak one per channel re-dial. Notifications that
+// arrive while nobody reads coalesce into one.
+func LinkChanges() (<-chan struct{}, error) {
+	linkOnce.Do(func() {
+		cb := windows.NewCallback(func(_ uintptr, _ *windows.MibIpInterfaceRow, _ uint32) uintptr {
+			select {
+			case linkChanged <- struct{}{}:
+			default:
+			}
+			return 0
+		})
+		var h windows.Handle
+		if err := windows.NotifyIpInterfaceChange(windows.AF_UNSPEC, cb, nil, false, &h); err != nil {
+			linkErr = fmt.Errorf("NotifyIpInterfaceChange: %w", err)
+		}
+	})
+	if linkErr != nil {
+		return nil, linkErr
+	}
+	return linkChanged, nil
+}
+
+var (
+	linkOnce    sync.Once
+	linkChanged = make(chan struct{}, 1)
+	linkErr     error
+)
