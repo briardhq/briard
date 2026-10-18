@@ -1,0 +1,61 @@
+net/tap-win32: make set_link on the netdev set the TAP's media status
+
+A TAP-Windows adapter reports media connected only while an application
+holds it open and has said so with TAP_IOCTL_SET_MEDIA_STATUS.
+tap_win32_open() says so once, and nothing changes it afterwards: set_link
+flips the guest NIC's link, while Windows keeps seeing the adapter
+connected for as long as QEMU runs.
+
+That matters when the TAP is bridged to a physical NIC. A Windows bridge
+is connected if any of its members is, so a TAP held connected keeps the
+bridge connected after the physical member loses carrier. Windows then
+keeps the bridge's address, default route and DNS servers through a
+pulled cable or a dropped Wi-Fi link. With two uplinks, the system
+resolver keeps asking through the dead bridge. On reconnection it sends
+no DHCP request, because it saw no media change, so a move to another
+network keeps the old address.
+
+Implement link_status_changed for the tap-win32 backend and set the media
+status from the netdev's own link state. A host process that watches the
+physical member can then mirror its carrier with set_link on the netdev,
+and Windows sees the bridge go down and come back with it. set_link on
+the guest NIC still changes only the guest's view: the hook is called
+then too, but it reads the netdev's link, which that path leaves alone.
+
+Measured with a host process holding the TAP's media status in QEMU's
+place, on a bridge of a TAP and a wired NIC under Windows 11 Home 24H2
+(build 26100), with the media status mirroring the wired member: a cable
+pulled and replugged is followed by an INIT-REBOOT renewal, where nothing
+was sent before; with two uplinks, outbound traffic and DNS move to the
+other one within 5 s of the pull; a move to another subnet takes a new
+address in 11 s.
+
+--- a/net/tap-win32.c
++++ b/net/tap-win32.c
+@@ -704,11 +704,26 @@
+     }
+ }
+ 
++/*
++ * The netdev's link is also the TAP adapter's media status on the host, so
++ * that set_link on the netdev is seen by Windows as well as by the guest.
++ */
++static void tap_win32_link_status_changed(NetClientState *nc)
++{
++    TAPState *s = DO_UPCAST(TAPState, nc, nc);
++
++    if (!tap_win32_set_status(s->handle->handle, !nc->link_down)) {
++        warn_report("tap: could not set the media status of %s: error %lu",
++                    nc->name, GetLastError());
++    }
++}
++
+ static NetClientInfo net_tap_win32_info = {
+     .type = NET_CLIENT_DRIVER_TAP,
+     .size = sizeof(TAPState),
+     .receive = tap_receive,
+     .cleanup = tap_cleanup,
++    .link_status_changed = tap_win32_link_status_changed,
+ };
+ 
+ static int tap_win32_init(NetClientState *peer, const char *model,

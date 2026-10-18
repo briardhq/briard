@@ -78,7 +78,10 @@ let
   qemu = pkgs.stdenv.mkDerivation {
     pname = "qemu-windows";
     inherit version src;
-    patches = [ ./qemu-windows-patches/whpx-cpuid-0xd-ebx.patch ];
+    patches = [
+      ./qemu-windows-patches/whpx-cpuid-0xd-ebx.patch
+      ./qemu-windows-patches/tap-win32-link-status.patch
+    ];
     nativeBuildInputs = with pkgs; [
       win.buildPackages.gcc pkg-config flex bison meson ninja perl zstd
       # QEMU's configure builds an offline venv that installs its vendored wheels (qemu.qmp), and
