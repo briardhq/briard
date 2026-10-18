@@ -341,6 +341,22 @@ func (g *Guest) Reset(ctx context.Context) error {
 	return err
 }
 
+// systemNetdev is the id of the guest's system NIC backend, the tap on the household's LAN.
+const systemNetdev = "net1"
+
+// SetSystemLink sets the link of the guest's system NIC, the tap on the household's LAN, up or
+// down: QMP set_link on its netdev. The guest's NIC sees the edge either way. On Windows the
+// bundled qemu also sets the TAP adapter's media status from it, so a bridge of the TAP and the
+// household's NIC reads disconnected to Windows when that NIC has lost its carrier, instead of
+// being held up by the TAP.
+func (g *Guest) SetSystemLink(ctx context.Context, up bool) error {
+	if g == nil || g.QMPSock == "" {
+		return fmt.Errorf("platform: no guest monitor to set the link on")
+	}
+	_, err := qmpExecute(ctx, g.QMPSock, "set_link", map[string]any{"name": systemNetdev, "up": up})
+	return err
+}
+
 // AddMemory grows the running VM by one DIMM of MemoryStepMB: a RAM backend, then the DIMM that
 // plugs it in. The guest's kernel sees an ACPI memory-hotplug event and onlines the memory itself,
 // so nothing is asked of the guest OS. It is the ONE way the VM grows, on every accelerator: QEMU's

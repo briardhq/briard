@@ -1384,6 +1384,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// the same reason vr and the recovery counter do: "how long has this been true" is not a
 	// question a single tick can answer.
 	rp := &reparenter{}
+	// The guest's link as last set to follow the household NIC's carrier (linkmirror.go). Lives
+	// for the observe loop so each loop starts by setting it, which covers a fresh launch.
+	lm := &linkMirror{}
 	// Which services already have tonight's ring member (nightly.go). Lives for the
 	// observe loop for the same reason rp does, and is checked against the ring itself whenever
 	// this process has no record -- so an agent restart inside the window costs one listing
@@ -1456,6 +1459,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				return guestfirmware.ErrChannelDown
 			}
 		}
+		// ...and on Windows, the guest's link follows the household NIC's carrier, so the bridge
+		// is down to Windows when that NIC is (linkmirror.go).
+		cfg.beat.Beat()
+		cfg.mirrorLink(ctx, lm, logf)
 		// The running system is read from the guest each cycle, so it is correct even on a node
 		// that switched closure without this loop driving it.
 		cfg.beat.Beat()

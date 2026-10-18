@@ -318,8 +318,8 @@ func qemuArgs(s QEMUSpec) []string {
 	}
 	if s.SystemTap != "" {
 		args = append(args,
-			"-netdev", netdevArg("net1", s.SystemTap, s.NetMode, sysFD),
-			"-device", "virtio-net-pci,netdev=net1"+macArg(s.SystemMAC))
+			"-netdev", netdevArg(systemNetdev, s.SystemTap, s.NetMode, sysFD),
+			"-device", "virtio-net-pci,netdev="+systemNetdev+macArg(s.SystemMAC))
 	}
 	if s.ServiceTap != "" {
 		args = append(args,

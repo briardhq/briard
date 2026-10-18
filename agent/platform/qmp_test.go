@@ -398,3 +398,63 @@ func TestMemoryMBSumsBootAndPlugged(t *testing.T) {
 		t.Error("a reply with no boot memory must be an error")
 	}
 }
+
+// set_link must name the NETDEV, not the NIC: only a set on the backend reaches the tap-win32
+// link hook, while a set on the NIC changes the guest's view alone. And the netdev it names is
+// the one the launch gives the system tap.
+func TestSetSystemLinkSetsTheSystemNetdev(t *testing.T) {
+	args := qemuArgs(QEMUSpec{SystemTap: "tap0"})
+	if !strings.Contains(strings.Join(args, " "), "-netdev tap,id="+systemNetdev+",") {
+		t.Fatalf("the launch does not give the system tap the netdev id %q: %v", systemNetdev, args)
+	}
+	for _, up := range []bool{false, true} {
+		path := filepath.Join(testsock.Dir(t), "qmp.sock")
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		type setLink struct {
+			Execute   string `json:"execute"`
+			Arguments struct {
+				Name string `json:"name"`
+				Up   *bool  `json:"up"`
+			} `json:"arguments"`
+		}
+		got := make(chan setLink, 1)
+		go func() {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+			_, _ = c.Write([]byte(`{"QMP":{"version":{"qemu":{"major":11}},"capabilities":[]}}` + "\n"))
+			sc := bufio.NewScanner(c)
+			for sc.Scan() {
+				var req setLink
+				_ = json.Unmarshal(sc.Bytes(), &req)
+				if req.Execute == "set_link" {
+					got <- req
+				}
+				_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = (&Guest{QMPSock: path}).SetSystemLink(ctx, up)
+		cancel()
+		l.Close()
+		if err != nil {
+			t.Fatalf("SetSystemLink(%v): %v", up, err)
+		}
+		select {
+		case req := <-got:
+			if req.Arguments.Name != systemNetdev || req.Arguments.Up == nil || *req.Arguments.Up != up {
+				t.Errorf("SetSystemLink(%v) sent %+v, want name=%q up=%v", up, req.Arguments, systemNetdev, up)
+			}
+		default:
+			t.Errorf("SetSystemLink(%v) sent no set_link", up)
+		}
+	}
+	if err := (&Guest{}).SetSystemLink(context.Background(), true); err == nil {
+		t.Error("a guest launched without a monitor must be an error, not a silent no-op")
+	}
+}
