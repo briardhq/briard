@@ -200,8 +200,25 @@ func (r installRoots) buildBridge(ctx context.Context, say func(string, ...any))
 	if err != nil {
 		return fmt.Errorf("building the bridge over %s: %w", member, err)
 	}
+	// SPANNING TREE OFF. The bridge runs 802.1D: on every member carrier-up -- a cable in, a Wi-Fi
+	// association -- it holds the port dark ~11 s in listening/learning, host and guest both, and
+	// sends BPDUs onto the household LAN every 2 s. With one physical member beside the TAP there
+	// is no loop to break. The value lives on the service key itself (its Parameters subkey is
+	// ignored), the machine has one bridge and it is ours, and the restart below applies it.
+	if err := disableBridgeSTA(); err != nil {
+		return fmt.Errorf("turning the bridge's spanning tree off: %w", err)
+	}
 	say("the bridge is built; Windows must restart before briard can use it")
 	return nil
+}
+
+func disableBridgeSTA() error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\MsBridge`, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	return k.SetDWordValue("DisableSTA", 1)
 }
 
 // copyTree copies a staged tree's contents into dst. The bundles hold plain files and directories.
