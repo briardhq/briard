@@ -299,5 +299,30 @@ pkgs.testers.runNixOSTest {
     host.fail("journalctl -u briard-agent -o cat | grep -q 'vip lease: restarting the guest'")
     host.wait_until_succeeds(f"ip netns exec lan curl -fsS --max-time 5 http://{vip}/healthz", timeout=60)
     print("the router forgot the lease; the host asked afresh with the VIP silent and renewed it in place")
+
+    # --- AN AGENT RESTART UNDER ITS WI-FI GUEST KEEPS THE PARENT IT STANDS ON ---
+    # A wire with a lower metric than the station's appears beside it (a veth here: a macvtap
+    # builds on it, so a re-selection would take it). The children are in briard-hold, so the
+    # hot path must find them there and read their parent off the @ifN, never re-select: no
+    # macvtap on the wire, the copy and the lease still the agent's. Read as an INIT-REBOOT ACKed
+    # after the restart, since a lease the agent stopped holding would never be asked again.
+    host.succeed(
+        "ip netns add wire && ip link add wire-a type veth peer name wire-b && ip link set wire-b netns wire",
+        "ip -n wire addr add 10.77.0.1/24 dev wire-b && ip -n wire link set wire-b up",
+        "ip addr add 10.77.0.2/24 dev wire-a && ip link set wire-a up",
+        "ip route add default via 10.77.0.1 dev wire-a metric 1",
+    )
+    acks = int(host.succeed(f"grep -c 'DHCPACK(wlan1) {vip} ' /tmp/lan-dnsmasq.log").strip())
+    restarted = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
+    host.succeed("systemctl restart briard-agent.service")
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since '{restarted}' | grep -q 'already up on wlan0 (ipvtap'", timeout=120)
+    host.fail(f"journalctl -u briard-agent --since '{restarted}' | grep -q 'hangs off wire-a'")
+    host.fail("ip link show briard0")  # nothing built on the wire in the host's namespace
+    host.wait_until_succeeds(
+        f"test $(grep -c 'DHCPACK(wlan1) {vip} ' /tmp/lan-dnsmasq.log) -gt {acks}", timeout=240)
+    host.succeed(f"ip netns exec lan curl -fsS --max-time 5 http://{vip}/healthz")
+    host.succeed("ip route del default via 10.77.0.1 dev wire-a; ip link del wire-a; ip netns del wire")
+    print("restarted under its Wi-Fi guest beside a better wire, the agent kept the station")
 '');
 }
