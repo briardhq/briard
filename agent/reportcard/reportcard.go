@@ -246,16 +246,14 @@ func Assess(f HostFacts) Report {
 	// unusable cases refuse BEFORE anything is written, carrying nic.Selection.Fix -- what was
 	// picked, why, what failed, the override, and the devices to choose from.
 	//
-	// Wireless is YELLOW: the guest rides the station's own MAC over ipvtap and works fully, except
-	// failover -- a failover moves a MAC, and on Wi-Fi the guest has none of its own. So the node
-	// serves alone and cannot take a peer until it is wired. The probe has already built an ipvtap
-	// child on the station, the very thing the install builds.
+	// Wireless is a WARN, and its fix says what the household should know: the guest rides the
+	// station's own MAC (ipvtap on Linux, compatibility mode on Windows) and works fully, but Wi-Fi
+	// drops, roams and sleeps in ways no substrate fixes.
 	switch {
 	case f.NIC.Err != nil:
 		cs = append(cs, Check{"network", Refuse, nicDetail(f.NIC), f.NIC.Fix()})
 	case f.NIC.Wireless:
-		cs = append(cs, Check{"network", Warn, fmt.Sprintf("%s is wireless (it holds this machine's default route)", f.NIC.Dev),
-			"this node cannot take a peer until it is wired: on Wi-Fi it serves your home on its own, with no failover"})
+		cs = append(cs, Check{"network", Warn, fmt.Sprintf("%s is Wi-Fi (it holds this machine's default route)", f.NIC.Dev), WifiFix})
 	default:
 		cs = append(cs, Check{"network", Pass, nicDetail(f.NIC), ""})
 	}
@@ -462,3 +460,7 @@ func gbOf(mb int) string {
 // throughput a household could notice: gigabit is the audience that unconditional disable was
 // decided for. One number for the card's advisory and the host's alert.
 const FastNICBps = 1_000_000_000
+
+// WifiFix is what a node on Wi-Fi is told, here and by `briard doctor`: one sentence, the same on
+// both hosts.
+const WifiFix = "Wi-Fi can be unstable; we recommend a wired connection"

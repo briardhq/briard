@@ -263,16 +263,9 @@ func DefaultRoute(string) string {
 	defer windows.FreeMibTable(unsafe.Pointer(t))
 	as := adapters()
 	var cs []defaultCandidate
-	bridged := IsBridge(BridgeName)
 	for _, r := range t.Rows() {
 		a, ok := byIndex(as, r.InterfaceIndex)
 		if r.DestinationPrefix.PrefixLength != 0 || !ok {
-			continue
-		}
-		// A STANDALONE RADIO IS NO CANDIDATE BESIDE THE BRIDGE: the agent does not swap one in.
-		// Before the bridge exists (the install's choice) it is one like any other, and so is a
-		// bridge over one.
-		if bridged && a.name != BridgeName && a.ifType == windows.IF_TYPE_IEEE80211 {
 			continue
 		}
 		carrier := a.up

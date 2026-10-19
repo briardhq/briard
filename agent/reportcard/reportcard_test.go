@@ -127,15 +127,15 @@ func TestAssessWarnsStillAdmit(t *testing.T) {
 			t.Error("a host without an mDNS resolver warns but is still admitted")
 		}
 	})
-	// A wireless station is the ipvtap substrate: everything but failover. Yellow, with the reason
-	// derived, and admitted.
+	// A wireless station is the ipvtap substrate and works fully: a Warn, with the advice, and
+	// admitted.
 	t.Run("wifi only", func(t *testing.T) {
 		f := capable()
 		f.NIC = nic.Selection{Dev: "wlan0", Wireless: true, Candidates: []string{"wlan0"}}
 		r := Assess(f)
 		c := find(t, r, "network")
-		if c.Status != Warn || !strings.Contains(c.Fix, "cannot take a peer until it is wired") {
-			t.Fatalf("wireless = %+v, want warn with the reason", c)
+		if c.Status != Warn || c.Fix != WifiFix {
+			t.Fatalf("wireless = %+v, want warn with the advice", c)
 		}
 		if !r.Admit() {
 			t.Error("a wireless station warns but is admitted")

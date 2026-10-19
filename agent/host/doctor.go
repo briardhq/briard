@@ -53,6 +53,7 @@ type doctorFacts struct {
 	Parent   string // the device the guest's L2 hangs off; "" when this agent built no network
 	Bridge   bool   // Parent is a bridge (the substrate fork)
 	Ipvtap   bool   // Parent is a wireless station (the fork's third answer)
+	Wireless bool   // the uplink is a radio: Parent itself, or the member of briard's Windows bridge
 	ParentUp bool
 	// Refused/RefusedFix are the copier's refusal of the address the router handed the guest
 	// (ipvtap.go); "" when there is none.
@@ -99,6 +100,8 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 	if cfg.net != nil {
 		f.Parent, f.Bridge, f.Ipvtap = cfg.net.Parent, cfg.net.Bridge, cfg.net.Ipvtap
 		f.ParentUp = f.Parent != "" && nic.Up(f.Parent)
+		up, _ := nic.Uplink(f.Parent)
+		f.Wireless = up != "" && nic.Wireless(up)
 	}
 	f.Refused, f.RefusedFix = cfg.lease.refusal()
 	cs.doctor(&f)
@@ -155,13 +158,16 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		case f.Bridge:
 			kind = "bridge"
 		case f.Ipvtap:
-			kind = "ipvtap: wireless, so this node cannot take a peer until it is wired"
+			kind = "ipvtap"
 		}
-		if f.ParentUp {
-			add("network", reportcard.Pass, fmt.Sprintf("%s is up (the guest's network hangs off it, %s)", f.Parent, kind), "")
-		} else {
+		switch {
+		case !f.ParentUp:
 			add("network", reportcard.Refuse, fmt.Sprintf("%s is gone or down, so the guest is unreachable", f.Parent),
 				"reconnect it; a replacement on the same network is picked up on its own within 30 minutes, and `briard alerts` says what the agent is waiting for")
+		case f.Wireless:
+			add("network", reportcard.Warn, fmt.Sprintf("%s is up, over Wi-Fi (the guest's network hangs off it, %s)", f.Parent, kind), reportcard.WifiFix)
+		default:
+			add("network", reportcard.Pass, fmt.Sprintf("%s is up (the guest's network hangs off it, %s)", f.Parent, kind), "")
 		}
 	}
 	if f.DataDisk != "" {

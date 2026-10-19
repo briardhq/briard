@@ -229,3 +229,26 @@ func TestDoctorThroughDispatch(t *testing.T) {
 		t.Errorf("cert = %+v, want the expired cert read through the guest to fail", c)
 	}
 }
+
+// WI-FI WARNS, THE SAME ON BOTH HOSTS: a Linux station over ipvtap and a Windows bridge whose member
+// is a radio say the one sentence, and a wire passes. The guest works either way, so it is never a
+// failure.
+func TestDoctorWifiWarns(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*doctorFacts)
+		want reportcard.Status
+	}{
+		{"a wire", func(*doctorFacts) {}, reportcard.Pass},
+		{"a Linux station", func(f *doctorFacts) { f.Parent, f.Ipvtap, f.Wireless = "wlan0", true, true }, reportcard.Warn},
+		{"a Windows bridge over a radio", func(f *doctorFacts) { f.Parent, f.Bridge, f.Wireless = "Briard bridge", true, true }, reportcard.Warn},
+		{"a Windows bridge over a wire", func(f *doctorFacts) { f.Parent, f.Bridge = "Briard bridge", true }, reportcard.Pass},
+	} {
+		f := servingLone()
+		tc.edit(&f)
+		c := checkNamed(t, judgeDoctor(f), "network")
+		if c.Status != tc.want || (tc.want == reportcard.Warn) != (c.Fix == reportcard.WifiFix) {
+			t.Errorf("%s: network = %s (%s / %q), want %s", tc.name, c.Status, c.Detail, c.Fix, tc.want)
+		}
+	}
+}

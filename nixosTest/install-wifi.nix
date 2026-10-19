@@ -162,10 +162,10 @@ pkgs.testers.runNixOSTest {
         return code, out
 
     code, out = install()
-    # DELTA 1: the card admitted the station, yellow, with the derived reason, and the agent built
+    # DELTA 1: the card admitted the station with a WARN and the one Wi-Fi sentence, and the agent built
     # ipvtap children in the holding namespace -- absent from the host's own.
-    assert "wlan0 is wireless" in out and "cannot take a peer until it is wired" in out, \
-        "the report card did not grade the wireless station yellow with its reason"
+    assert "wlan0 is Wi-Fi" in out and "Wi-Fi can be unstable; we recommend a wired connection" in out, \
+        "the report card did not warn about the wireless station with its advice"
     assert "[WARN  ] network" in out, "the network check is not a WARN"
     host.succeed("journalctl -u briard-agent | grep -q \"the guest's L2 hangs off wlan0 (ipvtap\"")
     for dev in ("briard-drbd0", "briard0"):
