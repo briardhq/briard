@@ -221,6 +221,29 @@ func disableBridgeSTA() error {
 	return k.SetDWordValue("DisableSTA", 1)
 }
 
+// swapMember moves briard's bridge onto the standalone adapter to (nic.SwapMember) and keeps the
+// arriving member's offload record where buildBridge keeps the first one, so the record always
+// describes the member the bridge stands on, and the leaving member gets its own value back.
+func (cfg Config) swapMember(ctx context.Context, bridge, to string, logf func(string, ...any)) error {
+	path := filepath.Join(filepath.Dir(cfg.AssignmentCache), bridgeRecord)
+	var prev nic.Offload
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &prev)
+	}
+	rec, err := nic.SwapMember(ctx, bridge, to, prev)
+	if rec != (nic.Offload{}) {
+		// Kept even when the swap failed part-way: the offload may already have been changed.
+		b, merr := json.Marshal(rec)
+		if merr == nil {
+			merr = atomicfile.Write(path, b, 0o600, 0o700)
+		}
+		if merr != nil {
+			logf("network: could not keep the record of %s's checksum offload (%v); it was %s", to, merr, rec.Value)
+		}
+	}
+	return err
+}
+
 // copyTree copies a staged tree's contents into dst. The bundles hold plain files and directories.
 func copyTree(_ context.Context, src, dst string) error {
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {

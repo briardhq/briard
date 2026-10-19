@@ -243,16 +243,72 @@ func interfaceMetric(index uint32) uint32 {
 	return row.Metric
 }
 
-// DefaultRoute names the adapter holding the IPv4 default route Windows would use. "" if there
-// is none. Windows has one routing table, so the main-table question Select argues for is the
-// only one there is to ask. prefer is not read here: this OS ranks by bestDefault alone.
+// DefaultRoute names the adapter the guest should stand on, from the IPv4 default routes Windows
+// holds, ranked by effective metric (route + interface) and carrier (rankDefaults). "" if there is
+// none. Windows has one routing table, so the main-table question Select argues for is the only
+// one there is to ask.
+//
+// ⚠️ THE BRIDGE'S CARRIER IS ITS MEMBER'S. Its own media state is the OR with the TAP: connected
+// whenever qemu holds it, disconnected before the guest's first start, and evidence of nothing.
+// And Windows keeps a disconnected adapter's default route, so a standalone adapter with its
+// cable out still holds one; its own media state says so.
+//
+// THE BRIDGE WINS A TIE, whatever the caller prefers: it is the only parent there ever is here,
+// and before the guest holds the TAP a same-tier standalone adapter can tie it exactly.
 func DefaultRoute(string) string {
-	d, ok := bestDefault(0)
-	if !ok {
+	var t *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
 		return ""
 	}
-	a, _ := byIndex(adapters(), d.index)
-	return a.name
+	defer windows.FreeMibTable(unsafe.Pointer(t))
+	as := adapters()
+	var cs []defaultCandidate
+	bridged := IsBridge(BridgeName)
+	for _, r := range t.Rows() {
+		a, ok := byIndex(as, r.InterfaceIndex)
+		if r.DestinationPrefix.PrefixLength != 0 || !ok {
+			continue
+		}
+		// A STANDALONE RADIO IS NO CANDIDATE BESIDE THE BRIDGE: the agent does not swap one in.
+		// Before the bridge exists (the install's choice) it is one like any other, and so is a
+		// bridge over one.
+		if bridged && a.name != BridgeName && a.ifType == windows.IF_TYPE_IEEE80211 {
+			continue
+		}
+		carrier := a.up
+		if a.name == BridgeName {
+			m, _ := MemberSpeed(BridgeName)
+			carrier = m != "" && up(m)
+		}
+		cs = append(cs, defaultCandidate{dev: a.name, metric: uint64(r.Metric + interfaceMetric(r.InterfaceIndex)), carrier: carrier})
+	}
+	return rankDefaults(cs, BridgeName)
+}
+
+// asMember answers a device as the bridge the guest stands on. A standalone adapter is a
+// candidate only as the member briard's bridge would swap to -- nothing is built on it at
+// runtime -- and a bridge member is its bridge.
+func asMember(dev string) (string, string) {
+	switch {
+	case dev == "" || IsBridge(dev):
+		return dev, ""
+	case master(dev) != "":
+		return master(dev), ""
+	case IsBridge(BridgeName):
+		return BridgeName, dev
+	}
+	return dev, ""
+}
+
+// Uplink names the device whose presence and carrier stand for parent's: for briard's bridge its
+// physical member ("" when only the TAP is left), and true, because the guest moves off it by a
+// member swap. Any other parent stands for itself.
+func Uplink(parent string) (string, bool) {
+	if parent != BridgeName {
+		return parent, false
+	}
+	m, _ := MemberSpeed(parent)
+	return m, true
 }
 
 // Carrier reports whether dev's media is connected (OperStatus up). A bridge's own status is the
@@ -264,8 +320,52 @@ func Carrier(dev string) bool { return up(dev) }
 // the guest's one port is a TAP, a member of the bridge (master).
 func lowerOf(string) string { return "" }
 
-// Settling is "" here: this OS selects by bestDefault alone, with no wait for a member's lease.
-func Settling() string { return "" }
+// Settling names an adapter the selection should wait for: one with carrier and no default route
+// yet -- DHCP still in flight at boot. briard's bridge counts with its member's carrier, and is
+// the case this exists for: at a boot the bridge leases seconds after a standalone adapter does
+// (measured), and choosing in between swaps away a member that was about to win. Otherwise only a
+// hardware adapter outside the bridge counts. "" when there is none.
+func Settling() string {
+	var t *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
+		return ""
+	}
+	routed := map[uint32]bool{}
+	for _, r := range t.Rows() {
+		if r.DestinationPrefix.PrefixLength == 0 {
+			routed[r.InterfaceIndex] = true
+		}
+	}
+	windows.FreeMibTable(unsafe.Pointer(t))
+	for _, a := range adapters() {
+		if a.name == "" || a.filter || routed[a.index] {
+			continue
+		}
+		if a.name == BridgeName {
+			if m, _ := MemberSpeed(BridgeName); m != "" && up(m) {
+				return a.name
+			}
+			continue
+		}
+		if a.up && a.ipBound && isHardware(a.index) {
+			return a.name
+		}
+	}
+	return ""
+}
+
+// ifHardwareInterface is MIB_IF_ROW2's HardwareInterface bit (InterfaceAndOperStatusFlags).
+const ifHardwareInterface = 0x01
+
+// isHardware asks IP Helper whether an interface is a physical adapter, not a virtual one (a TAP,
+// a bridge, a hypervisor's switch port).
+func isHardware(index uint32) bool {
+	row := windows.MibIfRow2{InterfaceIndex: index}
+	if windows.GetIfEntry2Ex(windows.MibIfEntryNormalWithoutStatistics, &row) != nil {
+		return false
+	}
+	return row.InterfaceAndOperStatusFlags&ifHardwareInterface != 0
+}
 
 // defaultGateway is dev's default next hop, from the same table DefaultRoute reads.
 func defaultGateway(dev string) string {
@@ -343,7 +443,8 @@ func createTap(_ context.Context, dev string) error {
 
 // joinBridge cannot either: a Windows bridge carries a TAP member only if the bridge was BUILT with
 // it, and only after a restart (measured on the rig: a live add joins the bridge and carries
-// nothing). Membership is an install act, never a repair the tick can make.
+// nothing). The TAP's membership is an install act, never a repair the tick can make; a physical
+// member's is not bound that way, and a cold start or the live rule moves it with SwapMember.
 func joinBridge(_ context.Context, dev, bridge string) error {
 	return fmt.Errorf("%s is not a member of %s: the bridge is built with its TAP at install and "+
 		"carries it only after a restart", dev, bridge)

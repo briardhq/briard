@@ -284,3 +284,32 @@ func TestParseHostRoute(t *testing.T) {
 		}
 	}
 }
+
+// THE RANKING BOTH OSES SHARE, over the Windows shape: briard's bridge (its carrier the
+// member's, as DefaultRoute reads it) beside a standalone adapter that keeps its default route
+// with its cable out. The cases measured on a two-uplink desktop: a pulled standalone outranking
+// the bridge on metric, and a 25/25 tie read in either row order.
+func TestRankDefaults(t *testing.T) {
+	const br, eth2 = "Briard bridge", "Ethernet 2"
+	c := func(dev string, metric uint64, carrier bool) defaultCandidate {
+		return defaultCandidate{dev: dev, metric: metric, carrier: carrier}
+	}
+	for _, tc := range []struct {
+		name string
+		cs   []defaultCandidate
+		want string
+	}{
+		{"the bridge alone", []defaultCandidate{c(br, 25, true)}, br},
+		{"a pulled standalone with the lower metric is no candidate", []defaultCandidate{c(eth2, 15, false), c(br, 25, true)}, br},
+		{"a live standalone with the lower metric wins", []defaultCandidate{c(br, 25, true), c(eth2, 15, true)}, eth2},
+		{"the member pulled: the standalone is the only candidate", []defaultCandidate{c(br, 15, false), c(eth2, 25, true)}, eth2},
+		{"a tie, the standalone's row first: the bridge", []defaultCandidate{c(eth2, 25, true), c(br, 25, true)}, br},
+		{"a tie, the bridge's row first: the bridge", []defaultCandidate{c(br, 25, true), c(eth2, 25, true)}, br},
+		{"nothing with carrier", []defaultCandidate{c(br, 25, false), c(eth2, 25, false)}, ""},
+		{"no routes", nil, ""},
+	} {
+		if got := rankDefaults(tc.cs, br); got != tc.want {
+			t.Errorf("%s: rankDefaults = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

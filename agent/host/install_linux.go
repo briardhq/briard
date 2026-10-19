@@ -196,3 +196,9 @@ func (r installRoots) osRoots() installRoots {
 	r.unitDir, r.cliLink = env("BRIARD_UNIT_DIR", "/etc/systemd/system"), cliLink
 	return r
 }
+
+// swapMember cannot: a Linux bridge is the user's, and no Linux substrate has members the agent
+// swaps (nic.Uplink never asks for one here).
+func (cfg Config) swapMember(context.Context, string, string, func(string, ...any)) error {
+	return errors.New("no member swap on Linux")
+}

@@ -64,6 +64,10 @@ type Selection struct {
 	// child cannot hold one of its own. That is also why a wireless node is yellow, not green.
 	Bridge   bool
 	Wireless bool
+	// SwapIn is the adapter to swap into the bridge Dev names before the guest stands on it: the
+	// standalone adapter that outranks the bridge's own member, or the one BRIARD_NIC names. ""
+	// when the bridge's member is the answer, and always on Linux, whose bridges are the user's.
+	SwapIn string
 	// Err is why Dev is unusable: one of the sentinels above, or a wrapped probe failure.
 	Err error
 	// Candidates are this host's non-loopback devices, for the message. The user needs the list
@@ -125,6 +129,9 @@ func Select(override, prefer string) Selection {
 			return s
 		}
 	}
+	// A device the guest moves to by joining it to a standing bridge (Windows) is answered as that
+	// bridge, with the device as SwapIn.
+	s.Dev, s.SwapIn = asMember(s.Dev)
 	s.Wireless, s.Bridge = Wireless(s.Dev), IsBridge(s.Dev)
 	return s
 }
@@ -244,38 +251,58 @@ func procTable(text string) [][]string {
 	return rows
 }
 
-// parseDefaultRouteDev picks the guest's parent out of /proc/net/route's text: among the main
-// table's default routes (destination AND mask 00000000) on devices with carrier, the lowest
-// Metric, and prefer on a tie. Pure, so the format handling is unit-tested against real output
-// rather than trusted.
+// defaultCandidate is one IPv4 default route as the selector weighs it: the device it leaves by,
+// its effective metric, and whether the link it stands for has carrier.
+type defaultCandidate struct {
+	dev     string
+	metric  uint64
+	carrier bool
+}
+
+// rankDefaults is the selection rule, one for both OSes; each OS's reader only builds the
+// candidates. Among those with carrier the lowest metric wins, and prefer wins a tie.
 //
-// ⚠️ THE CARRIER IS READ, NOT INFERRED FROM THE ROUTE. NetworkManager withdraws a dead wire's
-// default route; systemd-networkd keeps it, so a route alone does not say the cable is in. A dead
-// wire is not a candidate, so it never outranks a live radio, and nobody guesses how long it
-// stays dead.
+// ⚠️ THE CARRIER IS READ, NOT INFERRED FROM THE ROUTE. systemd-networkd keeps a dead wire's
+// default route and Windows keeps a disconnected adapter's, so a route alone does not say the
+// cable is in. A dead wire is not a candidate, so it never outranks a live radio, and nobody
+// guesses how long it stays dead.
 //
 // THE METRIC IS THE WHOLE RANKING. The OS already encodes wire-over-radio in it; a preference of
-// our own by kind, name or speed would be a second opinion that can disagree with it. The mask
-// is checked too: OpenVPN's `redirect-gateway def1` adds a 0.0.0.0/1, whose destination column
-// also reads 00000000.
+// our own by kind, name or speed would be a second opinion that can disagree with it.
 //
 // prefer is the parent last served on. A tie is not a better answer than the one standing, so it
-// never moves the guest; with no prefer in the tie the first row wins, the kernel's own order.
-func parseDefaultRouteDev(text string, carrier func(string) bool, prefer string) string {
+// never moves the guest; with no prefer in the tie the first candidate wins, the OS's own order.
+func rankDefaults(cs []defaultCandidate, prefer string) string {
 	best, bestMetric := "", uint64(0)
+	for _, c := range cs {
+		if !c.carrier {
+			continue
+		}
+		if best == "" || c.metric < bestMetric || (c.metric == bestMetric && c.dev == prefer && best != prefer) {
+			best, bestMetric = c.dev, c.metric
+		}
+	}
+	return best
+}
+
+// parseDefaultRouteDev picks the guest's parent out of /proc/net/route's text: the main table's
+// default routes (destination AND mask 00000000), ranked by their Metric column and carrier
+// (rankDefaults). Pure, so the format handling is unit-tested against real output rather than
+// trusted. The mask is checked because OpenVPN's `redirect-gateway def1` adds a 0.0.0.0/1, whose
+// destination column also reads 00000000.
+func parseDefaultRouteDev(text string, carrier func(string) bool, prefer string) string {
+	var cs []defaultCandidate
 	for _, f := range procTable(text) { // Iface Destination Gateway Flags RefCnt Use Metric Mask ...
-		if len(f) < 8 || f[1] != "00000000" || f[7] != "00000000" || !carrier(f[0]) {
+		if len(f) < 8 || f[1] != "00000000" || f[7] != "00000000" {
 			continue
 		}
 		m, err := strconv.ParseUint(f[6], 10, 32)
 		if err != nil {
 			continue
 		}
-		if best == "" || m < bestMetric || (m == bestMetric && f[0] == prefer && best != prefer) {
-			best, bestMetric = f[0], m
-		}
+		cs = append(cs, defaultCandidate{dev: f[0], metric: m, carrier: carrier(f[0])})
 	}
-	return best
+	return rankDefaults(cs, prefer)
 }
 
 // parseSettling names a device that has carrier and no default route yet, among devs, from

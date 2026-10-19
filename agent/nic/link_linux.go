@@ -228,3 +228,12 @@ func ipv6Disabled(dev string) bool {
 // flags reads /sys/class/net/<dev>/flags -- the raw IFF_ bitmap, which is where ALLMULTI is
 // visible at all (net.Interface does not carry it).
 func flags(dev string) int64 { return parseIfFlags(readText("/sys/class/net/" + dev + "/flags")) }
+
+// asMember is the identity here: a Linux bridge is the user's, so the guest never moves by
+// changing its members.
+func asMember(dev string) (string, string) { return dev, "" }
+
+// Uplink names the device whose presence and carrier stand for parent's -- parent itself here --
+// and whether the guest moves off it by a member swap: never on Linux, where the agent changes no
+// bridge's members.
+func Uplink(parent string) (string, bool) { return parent, false }

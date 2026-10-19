@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
 	"time"
 
 	"briard.io/agent/cloud"
@@ -169,9 +171,12 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 			sel = nic.Select(cfg.NICOverride, cfg.recordedNetwork().Parent)
 		} else {
 			sel.Bridge, sel.Wireless = nic.IsBridge(sel.Dev), nic.Wireless(sel.Dev)
+			// Asked through the selector, because on Windows NIC names the bridge's member.
 			if o := cfg.NICOverride; o != "" && o != sel.Dev {
-				logf("network: NIC names %s, but the guest's L2 stands on %s; it moves when %s is gone, or at the next machine start",
-					o, sel.Dev, sel.Dev)
+				if s := nic.Select(o, sel.Dev); s.Dev != sel.Dev || s.SwapIn != "" {
+					logf("network: NIC names %s, but the guest's L2 stands on %s; it moves when %s is gone, or at the next machine start",
+						o, sel.Dev, sel.Dev)
+				}
 			}
 		}
 		// NUMBERED BEFORE THE SPEC IS BUILT, because the spec is made of this node's addresses
@@ -197,7 +202,7 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 	}
 	// THE COLD START, the one moment the parent is chosen afresh. The parent last served on is
 	// preferred on a tie, so a restart that finds two equal uplinks stays where it was.
-	var said string
+	var said, held string // the last degradation said, and the last settle (not a degradation)
 	settled := time.Now().Add(netSettle)
 	prefer := cfg.recordedNetwork().Parent
 	for {
@@ -207,21 +212,26 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 		// waived for BRIARD_NIC, which needs no ranking.
 		if d := nic.Settling(); d != "" && cfg.NICOverride == "" && time.Now().Before(settled) {
 			why := d + " has a link and no default route yet; waiting for it before choosing"
-			if why != said {
+			if why != held {
 				logf("network: %s", why)
-				said = why
+				held = why
 			}
 			if werr := cfg.waitTick(ctx, local, why, logf); werr != nil {
 				return cfg, werr
 			}
 			continue
 		}
-		step, cancel := context.WithTimeout(ctx, netTick)
-		sel := nic.Choose(step, cfg.NICOverride, prefer)
+		choose, chosen := context.WithTimeout(ctx, netTick)
+		sel := nic.Choose(choose, cfg.NICOverride, prefer)
+		chosen()
 		var spec nic.Spec
 		var err error
 		var numbered Config
-		if sel.Usable() {
+		if sel.Usable() && sel.SwapIn != "" {
+			err = cfg.swapBeforeLaunch(ctx, sel, logf) // its own budget: a swap outlasts a tick
+		}
+		step, cancel := context.WithTimeout(ctx, netTick)
+		if sel.Usable() && err == nil {
 			// The draw is bounded by its own budget rather than by this tick (subnets.go), so it
 			// is given ctx and not step.
 			if numbered, err = cfg.numberThisNode(ctx, sel.Dev, logf); err == nil {
@@ -265,6 +275,51 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 			return cfg, werr
 		}
 	}
+}
+
+// netSwap bounds a member swap: the leaving member's exit and the arriving one's join are each
+// waited on for up to 30 s, and the re-pin restarts the bridge's driver.
+const netSwap = 2 * time.Minute
+
+// swapBeforeLaunch swaps sel.SwapIn into the bridge the cold start chose. SWAP FIRST, THEN BOOT:
+// a guest that boots after the swap sends its DHCP request through the new member, and every
+// switch upstream learns its port at once; a running guest announces nothing after a swap.
+//
+// ⚠️ NEVER UNDER A RUNNING GUEST. An agent whose guest is still up (a self-update, a crash, a
+// restart beside it -- with its link mirrored down, its TAP reads disconnected and the hot path
+// misses it) is no cold start: the guest keeps the member it has, and the live rule decides
+// whether that member is gone.
+func (cfg Config) swapBeforeLaunch(ctx context.Context, sel nic.Selection, logf func(string, ...any)) error {
+	if platform.Running(ctx, cfg.guestSpec()) {
+		logf("network: %s outranks %s's member, but the guest is running on it; it keeps the member it has",
+			sel.SwapIn, sel.Dev)
+		return nil
+	}
+	logf("network: %s outranks %s's member; swapping it in before the guest starts", sel.SwapIn, sel.Dev)
+	sw, cancel := context.WithTimeout(ctx, netSwap)
+	defer cancel()
+	cfg.beat.Lease(sw)
+	if err := cfg.swapMember(sw, sel.Dev, sel.SwapIn, logf); err != nil {
+		return fmt.Errorf("swapping %s into %s: %w", sel.SwapIn, sel.Dev, err)
+	}
+	// AND ITS LEASE BEFORE THE BOOT: the bridge re-leases under the arriving member's MAC, and
+	// until it has, everything read off it -- the LAN fingerprint the bring-up compares, the
+	// address the guest is reached by -- is a reading of an adapter mid-DHCP. Bounded by the
+	// swap's budget; a lease that never comes is the guest's to wait out, as at any boot. Asked of
+	// the fingerprint, not the route table: Windows keeps the bridge's default route through the
+	// re-lease, while its address is the link-local placeholder and its gateway does not answer.
+	for sw.Err() == nil {
+		fp := nic.Read(sw, sel.Dev)
+		if p, err := netip.ParsePrefix(fp.HostCIDR); err == nil && !p.Addr().IsLinkLocalUnicast() && fp.GatewayMAC != "" {
+			break
+		}
+		select {
+		case <-sw.Done():
+		case <-time.After(time.Second):
+		}
+	}
+	logf("network: %s is %s's member", sel.SwapIn, sel.Dev)
+	return nil
 }
 
 // degraded is what the wait loop needs to keep TALKING while it waits.

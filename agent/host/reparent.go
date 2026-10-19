@@ -200,47 +200,65 @@ type reparenter struct {
 // carrier again and nothing else is even considered. That is also why there is no separate "minimum
 // settle" constant: the shortest tier is five minutes, and any return inside it cancels.
 func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, logf func(string, ...any)) (string, nic.Relation) {
-	if cfg.net == nil || cfg.net.Parent == "" || cfg.net.Bridge {
-		// Nothing to re-parent: either this agent does not own the network, or the guest's L2
-		// hangs off a bridge the USER owns. A bridge that disappears is the user's to restore --
-		// we never created it and must not start now.
+	if cfg.net == nil || cfg.net.Parent == "" {
+		return "", nic.Unknown // this agent does not own the network
+	}
+	// THE UPLINK IS WHAT CAN BE GONE: the parent itself, or the physical member of briard's
+	// Windows bridge, whose own media state is the OR with the TAP and evidence of nothing. A
+	// bridge that does not move by a member swap is the USER's (Linux): a bridge that disappears
+	// is theirs to restore -- we never created it and must not start now.
+	parent := cfg.net.Parent
+	up, swaps := nic.Uplink(parent)
+	if cfg.net.Bridge && !swaps {
 		return "", nic.Unknown
 	}
-	// GONE IS ABSENT OR WITHOUT CARRIER: a pulled cable leaves the device there, up and carrying
-	// nothing. Neither alone moves anything -- the move needs a successor in hand (below), so a
-	// cold boot with the cable out, or a one-NIC desktop with its cable pulled, only waits.
-	parent := cfg.net.Parent
-	if nic.Exists(parent) && nic.Carrier(parent) {
+	lost := up
+	if lost == "" {
+		lost = parent + "'s NIC"
+	}
+	// GONE IS ABSENT, WITHOUT CARRIER, OR (a swapping bridge) NO MEMBER BUT OURS: a pulled cable
+	// leaves the device there, up and carrying nothing. None of them alone moves anything -- the
+	// move needs a successor in hand (below), so a cold boot with the cable out, or a one-NIC
+	// desktop with its cable pulled, only waits.
+	if up != "" && nic.Exists(up) && nic.Carrier(up) {
 		if !r.goneSince.IsZero() {
-			logf("network: %s is back; nothing to re-parent", parent)
+			logf("network: %s is back; nothing to re-parent", up)
 			r.goneSince, r.said = time.Time{}, ""
 		}
 		return "", nic.Unknown
 	}
 	if r.goneSince.IsZero() {
 		r.goneSince = now
-		if nic.Exists(parent) {
-			logf("network: %s has lost its link; the guest is running with a dead NIC", parent)
-		} else {
-			logf("network: %s has gone away; the guest is running with a dead NIC", parent)
+		switch {
+		case up == "":
+			logf("network: %s holds no NIC but ours; the guest is running with a dead NIC", parent)
+		case nic.Exists(up):
+			logf("network: %s has lost its link; the guest is running with a dead NIC", up)
+		default:
+			logf("network: %s has gone away; the guest is running with a dead NIC", up)
 		}
 	}
 	// Re-SELECT, without probing yet: there is no point pacing a move onto a device that does not
-	// exist. The selection reads carrier too, so the gone parent is not a candidate -- except as
-	// BRIARD_NIC, or in a race with its return, and either way staying put is the answer.
+	// exist. The selection reads carrier too, so the gone uplink is not a candidate -- except as
+	// BRIARD_NIC, or in a race with its return, and either way staying put is the answer. A
+	// swapping bridge answers as itself, with the adapter that outranks its member as SwapIn.
 	sel := nic.Select(cfg.NICOverride, parent)
 	if !sel.Usable() {
 		r.say(logf, "network: nowhere to re-parent yet: "+sel.Fix())
 		return "", nic.Unknown
 	}
-	if sel.Dev == parent {
+	cand := sel.Dev
+	if sel.SwapIn != "" {
+		cand = sel.SwapIn
+	}
+	if cand == parent || cand == up {
 		return "", nic.Unknown
 	}
-	was, seen := cfg.recordedNetwork(), nic.Read(ctx, sel.Dev)
+	was, seen := cfg.recordedNetwork(), nic.Read(ctx, cand)
 	// BRIARD_NIC NAMING ANOTHER DEVICE IS THE OPERATOR'S ANSWER, and it is what the refusals below
 	// tell them to set: no tier and no fingerprint stand between them and the move they named.
 	if sel.Override {
-		return sel.Dev, nic.Compare(was, seen)
+		return cand, nic.Compare(was, seen)
 	}
 	// NO RECORD AT ALL is a different problem from "a different network", and saying so is worth a
 	// branch: the remedy is the same (an operator names the device) but the cause is not, and a
@@ -252,7 +270,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 			"network: %s is gone and there is no record of the LAN this node last served on, so "+
 				"nothing can say whether %s is the same one -- NOT re-parenting on my own. Set "+
 				"NIC=%s in %s and restart briard-agent if this move is intended",
-			parent, sel.Dev, sel.Dev, cfg.configPathForMessage()))
+			lost, cand, cand, cfg.configPathForMessage()))
 		return "", nic.Unknown
 	}
 	rel := nic.Compare(was, seen)
@@ -269,15 +287,15 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 			"network: %s is gone and %s is not demonstrably the same network (%s) -- NOT re-parenting "+
 				"on my own. Recorded: [%s]. Now: [%s]. Set NIC=%s in %s and restart "+
 				"briard-agent if this move is intended",
-			parent, sel.Dev, rel, was, seen, sel.Dev, cfg.configPathForMessage()))
+			lost, cand, rel, was, seen, cand, cfg.configPathForMessage()))
 		return "", rel
 	}
 	if left := wait - now.Sub(r.goneSince); left > 0 {
 		r.say(logf, fmt.Sprintf("network: %s is gone; %s is %s, re-parenting in %s unless it comes back",
-			parent, sel.Dev, rel, left.Round(time.Second)))
+			lost, cand, rel, left.Round(time.Second)))
 		return "", rel
 	}
-	return sel.Dev, rel
+	return cand, rel
 }
 
 // reparent moves the guest's L2 onto dev: rebuild the devices there, restart the guest so it
@@ -289,37 +307,40 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 // VM+channel+Manager swap the upgrade legs do, and a second owner of that swap would be a second
 // way to do it (the upgrader interface says so).
 //
-// ⚠️ NOTHING HERE TOUCHES THE HOST'S OWN ADDRESSING OR ROUTES, which is what keeps the agent's
-// path to the cloud intact across a re-parent. It is true by construction
-// rather than by care: we never move a host address anywhere, so the only
-// devices in play are ours.
+// ⚠️ ON LINUX NOTHING HERE TOUCHES THE HOST'S OWN ADDRESSING OR ROUTES, which is what keeps the
+// agent's path to the cloud intact across a re-parent. It is true by construction rather than by
+// care: we never move a host address anywhere, so the only devices in play are ours. A Windows
+// member swap is the exception, and cannot help it: the bridge is the host's own adapter, and it
+// re-leases under the arriving member's MAC.
 func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier, dev string, rel nic.Relation, logf func(string, ...any)) error {
 	from := cfg.net.Parent
+	up, swaps := nic.Uplink(from)
+	if swaps && up != "" {
+		from = up // the alert names the member that went, not the bridge that stays
+	}
 	logf("network: re-parenting the guest's L2 from %s onto %s (%s)", from, dev, rel)
 	// ONE BUDGET FOR THE WHOLE MOVE, and the watchdog rides it. The lease must cover a BOUNDED
 	// context (beat.go argues this at length): the stop leg inside RescueGuest spends a full
 	// shutdownGrace and `vm.Stop()` takes no context at all, so nothing else is watching that
 	// stretch -- and leasing the caller's root context instead would ping forever and switch the
 	// watchdog off permanently, which is the exact failure a lease is shaped to avoid.
-	mv, cancel := context.WithTimeout(ctx, netTick+cfg.BringUpBudget+3*shutdownGrace)
+	budget := netTick + cfg.BringUpBudget + 3*shutdownGrace
+	if swaps {
+		budget += netSwap
+	}
+	mv, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	cfg.beat.Lease(mv)
-	// Rebuild BEFORE the restart. The children went away with their parent, so there are no live
-	// fds to protect; and doing it first means the guest comes back into a network that is
-	// already right rather than one being assembled underneath it.
-	//
-	// THE SUBSTRATE IS RE-DERIVED WITH THE PARENT. A move between Wi-Fi and wire changes it
-	// (ipvtap <-> macvtap), and with it the guest's NICs: their MACs and how qemu is handed them.
-	// guestSpec reads both off cfg.net, which this updates, so the restart below launches the
-	// guest the new substrate needs. The tiers above decide when; this is only the what.
-	spec := cfg.netSpec(dev, nic.IsBridge(dev), nic.Wireless(dev))
-	rb, rbCancel := context.WithTimeout(mv, netTick)
-	err := nic.Rebuild(rb, spec)
-	rbCancel()
-	if err != nil {
-		return fmt.Errorf("re-parent onto %s: %w", dev, err)
+	if swaps {
+		// THE SWAP, THEN THE RESTART: the guest boots behind the new member, so its own DHCP
+		// teaches every switch upstream the new port (swapBeforeLaunch). The spec is the bridge's
+		// and stays as it is.
+		if err := cfg.swapMember(mv, cfg.net.Parent, dev, logf); err != nil {
+			return fmt.Errorf("re-parent onto %s: %w", dev, err)
+		}
+	} else if err := cfg.rebuildOn(mv, dev); err != nil {
+		return err
 	}
-	*cfg.net = spec
 	if mgr == nil {
 		// A node with no guest to restart (a witness) is fully re-parented by the rebuild above.
 		cfg.recordNetwork(ctx, logf)
@@ -334,6 +355,28 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 	// decision something we never verified.
 	cfg.recordNetwork(ctx, logf)
 	alertReparent(ctx, n, logf, from, dev, rel)
+	return nil
+}
+
+// rebuildOn is the Linux re-parent's act: the guest's devices rebuilt on dev, and cfg.net with
+// them.
+//
+// Rebuild BEFORE the restart. The children went away with their parent, so there are no live
+// fds to protect; and doing it first means the guest comes back into a network that is
+// already right rather than one being assembled underneath it.
+//
+// THE SUBSTRATE IS RE-DERIVED WITH THE PARENT. A move between Wi-Fi and wire changes it
+// (ipvtap <-> macvtap), and with it the guest's NICs: their MACs and how qemu is handed them.
+// guestSpec reads both off cfg.net, which this updates, so the restart that follows launches the
+// guest the new substrate needs. The tiers decide when; this is only the what.
+func (cfg Config) rebuildOn(ctx context.Context, dev string) error {
+	spec := cfg.netSpec(dev, nic.IsBridge(dev), nic.Wireless(dev))
+	rb, cancel := context.WithTimeout(ctx, netTick)
+	defer cancel()
+	if err := nic.Rebuild(rb, spec); err != nil {
+		return fmt.Errorf("re-parent onto %s: %w", dev, err)
+	}
+	*cfg.net = spec
 	return nil
 }
 

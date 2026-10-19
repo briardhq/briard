@@ -72,17 +72,9 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 		return Offload{}, errors.New("no TAP adapter, or more than one: the tap-windows6 driver installs ours, at install")
 	}
 	// 1. THE RECORD, FIRST: after the change there is nothing left to read.
-	val, err := powershell(ctx, fmt.Sprintf("(Get-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -EA Stop).RegistryValue -join ','",
-		psQuote(m.name), checksumOffload))
+	rec, err := offloadOff(ctx, m)
 	if err != nil {
-		return Offload{}, fmt.Errorf("reading %s on %s: %w", checksumOffload, m.name, err)
-	}
-	rec := Offload{GUID: m.guid, Keyword: checksumOffload, Value: val}
-	if val != "0" {
-		if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue 0 -EA Stop",
-			psQuote(m.name), checksumOffload)); err != nil {
-			return rec, fmt.Errorf("turning %s off on %s: %w", checksumOffload, m.name, err)
-		}
+		return rec, err
 	}
 	// 2. Our TAP named for us, before the bridge exists (so the bridge is created with its final
 	// member name).
@@ -112,6 +104,92 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 		}
 	}
 	return rec, nil
+}
+
+// offloadOff records a's IPv4 checksum offload and turns it off, the setting a member needs
+// (checksumOffload). The record is returned even when turning it off fails part-way.
+func offloadOff(ctx context.Context, a adapter) (Offload, error) {
+	val, err := powershell(ctx, fmt.Sprintf("(Get-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -EA Stop).RegistryValue -join ','",
+		psQuote(a.name), checksumOffload))
+	if err != nil {
+		return Offload{}, fmt.Errorf("reading %s on %s: %w", checksumOffload, a.name, err)
+	}
+	rec := Offload{GUID: a.guid, Keyword: checksumOffload, Value: val}
+	if val != "0" {
+		if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue 0 -EA Stop",
+			psQuote(a.name), checksumOffload)); err != nil {
+			return rec, fmt.Errorf("turning %s off on %s: %w", checksumOffload, a.name, err)
+		}
+	}
+	return rec, nil
+}
+
+// SwapMember moves bridge onto the standalone adapter to: the physical member leaves, the
+// bridge's MAC is re-pinned to to's, and to joins. The TAP stays where it is: its membership is
+// the part bound to the bridge's creation and a restart, and a physical member's is not (measured:
+// a live swap carried the guest, both directions). It returns to's offload record; prev is the
+// leaving member's, whose value is put back once it is standalone again.
+//
+// ⚠️ OUT BEFORE IN. Both uplinks in the bridge at once on one LAN is a loop, so to is added only
+// once the leaving member is seen gone, and not at all if it is not.
+//
+// ⚠️ THE RE-PIN, because the bridge keeps the household's MAC (BuildBridge): unmoved, the leaving
+// member, standalone again, transmits the MAC the bridge still carries.
+func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, error) {
+	as := adapters()
+	b, ok := byName(as, bridge)
+	if !ok || !IsBridge(bridge) {
+		return Offload{}, fmt.Errorf("no bridge named %q", bridge)
+	}
+	t, ok := byName(as, to)
+	if !ok || t.filter || IsBridge(to) || master(to) != "" || t.name == TapName || strings.HasPrefix(t.desc, tapDescription) {
+		return Offload{}, fmt.Errorf("%q is not a standalone physical adapter to swap into %s", to, bridge)
+	}
+	from, _ := MemberSpeed(bridge)
+	rec, err := offloadOff(ctx, t)
+	if err != nil {
+		return rec, err
+	}
+	if from != "" {
+		if err := netsh(ctx, "bridge", "remove", from, "from", b.guid); err != nil {
+			return rec, fmt.Errorf("netsh bridge remove %s: %w", from, err)
+		}
+		if err := waitMaster(ctx, from, ""); err != nil {
+			return rec, fmt.Errorf("%s did not leave %s, so %s was not added: %w", from, bridge, to, err)
+		}
+		if f, ok := byName(adapters(), from); ok && prev.GUID == f.guid && prev.Value != "" && prev.Value != "0" {
+			// Best-effort: the leaving member works either way; it is the bridge that needs it off.
+			_, _ = powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue '%s' -EA Stop",
+				psQuote(from), prev.Keyword, prev.Value))
+		}
+	}
+	if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword NetworkAddress -RegistryValue '%s' -EA Stop",
+		psQuote(bridge), t.mac)); err != nil {
+		return rec, fmt.Errorf("re-pinning the bridge's MAC to %s's: %w", to, err)
+	}
+	if err := netsh(ctx, "bridge", "add", to, "to", b.guid); err != nil {
+		return rec, fmt.Errorf("netsh bridge add %s: %w", to, err)
+	}
+	if err := waitMaster(ctx, to, bridge); err != nil {
+		return rec, fmt.Errorf("%s did not join %s: %w", to, bridge, err)
+	}
+	return rec, nil
+}
+
+// waitMaster waits up to 30 s for dev's bridge to read want ("" for none).
+func waitMaster(ctx context.Context, dev, want string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for master(dev) != want {
+		if time.Now().After(deadline) {
+			return errors.New("not within 30 s")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return nil
 }
 
 // waitBridge waits for the household NIC's new master to appear, and names it. Only the NIC: until
