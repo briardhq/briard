@@ -108,7 +108,7 @@ func (cfg Config) Uninstall(ctx context.Context, deleteData bool, logf func(stri
 // nothing is.
 func (cfg Config) uninstallSpec() nic.Spec {
 	s := nic.Spec{SystemTap: cfg.SystemTap, ServiceTap: cfg.ServiceTap, PrivTap: cfg.WitnessTap}
-	if sel := nic.Select(cfg.NICOverride); sel.Usable() && sel.Bridge {
+	if sel := nic.Select(cfg.NICOverride, ""); sel.Usable() && sel.Bridge {
 		ns := cfg.applyDraw(cfg.recordedSubnets()).netSpec(sel.Dev, true, false)
 		s.Addrs, s.Routes = ns.Addrs, ns.Routes
 	}

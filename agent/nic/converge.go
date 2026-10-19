@@ -360,6 +360,14 @@ func Converged(s Spec) bool {
 		if !s.Bridge && t != s.PrivTap && (flags(t)&ifAllmulti == 0 || !ipv6Disabled(t)) {
 			return false
 		}
+		// AND ITS PARENT, the macvtap's twin of the bridge port's master below: a child standing
+		// on another device is not this spec, whatever its flags say. A device stacked on nothing
+		// (a rig's own tap) has no parent to disagree.
+		if !s.Bridge && t != s.PrivTap {
+			if l := lowerOf(t); l != "" && l != s.Parent {
+				return false
+			}
+		}
 	}
 	if s.Bridge && s.SystemTap != "" && master(s.SystemTap) != s.Parent {
 		return false
@@ -388,6 +396,13 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 		if out, err := ip(ctx, macvtapAddArgs(dev, parent)...); err != nil {
 			return fmt.Errorf("nic: macvtap %s on %s: %s", dev, parent, firstLine(out, err))
 		}
+	}
+	// A CHILD OF ANOTHER PARENT IS REFUSED, NOT MOVED. A macvtap cannot be re-parented, and
+	// deleting it here would take the NIC from under a guest that may hold it; the move is
+	// Rebuild's, behind the re-parent's tiers. Converging past it would report a parent the
+	// guest is not on.
+	if l := lowerOf(dev); !created && l != "" && l != parent {
+		return fmt.Errorf("nic: %s is a macvtap child of %s, not of %s", dev, l, parent)
 	}
 	// IPv6 OFF, and OUTSIDE the create branch on purpose. The host end of a macvtap holds no
 	// address, but the device carries the GUEST's MAC -- so a host that autoconfigures on it

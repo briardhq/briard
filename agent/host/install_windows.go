@@ -177,7 +177,7 @@ func (r installRoots) onPath(exe string, say func(string, ...any)) error {
 // route, or BRIARD_NIC's -- and keeps what the build changed on it. On a reinstall the bridge is
 // already ours and the NIC is its member, and nothing changes.
 func (r installRoots) buildBridge(ctx context.Context, say func(string, ...any)) error {
-	sel := nic.Select(os.Getenv("BRIARD_NIC"))
+	sel := nic.Select(os.Getenv("BRIARD_NIC"), "")
 	member := sel.Dev
 	if member == nic.BridgeName {
 		member, _ = nic.MemberSpeed(nic.BridgeName)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -42,9 +43,43 @@ func master(dev string) string {
 	return parseMaster(l)
 }
 
-// DefaultRoute reads the interface owning the default route (destination 00000000) from
-// /proc/net/route -- the MAIN table, which is the point (see Choose). "" if none.
-func DefaultRoute() string { return parseDefaultRouteDev(readText(procRoute)) }
+// DefaultRoute reads the guest's parent from /proc/net/route -- the MAIN table, which is the
+// point (see Select) -- by parseDefaultRouteDev's rule, with prefer winning a tie. "" if none.
+func DefaultRoute(prefer string) string {
+	return parseDefaultRouteDev(readText(procRoute), Carrier, prefer)
+}
+
+// Carrier reports whether dev has a link: /sys/class/net/<dev>/carrier reads 1. IFF_UP (up) is
+// not the question -- a pulled cable leaves it set -- and the file of an admin-down device cannot
+// be read, which reads as no carrier.
+func Carrier(dev string) bool {
+	return dev != "" && strings.TrimSpace(readText("/sys/class/net/"+dev+"/carrier")) == "1"
+}
+
+// lowerOf names the device dev was created on -- a macvtap child's parent -- from the kernel's
+// `lower_<dev>` adjacency link. "" when dev is stacked on nothing (a tap, a NIC, a bridge port,
+// whose bridge is its master instead). The link rather than `iflink`: a veth's iflink is its
+// peer's index, in whatever namespace the peer is in, and would name an unrelated device here.
+func lowerOf(dev string) string {
+	m, _ := filepath.Glob("/sys/class/net/" + dev + "/lower_*")
+	if len(m) != 1 {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Base(m[0]), "lower_")
+}
+
+// Settling names a device the selection should wait for: hardware behind it, carrier, a port of
+// nothing, and no default route yet -- a NIC whose DHCP is still in flight at boot. A bridge's or
+// a bond's port is excluded, because its master holds the route. "" when there is none.
+func Settling() string {
+	var hw []string
+	for _, d := range Candidates() {
+		if exists("/sys/class/net/"+d+"/device") && master(d) == "" {
+			hw = append(hw, d)
+		}
+	}
+	return parseSettling(readText(procRoute), hw, Carrier)
+}
 
 // The writers, as iproute2. Each returns the one line of `ip`'s complaint worth showing.
 

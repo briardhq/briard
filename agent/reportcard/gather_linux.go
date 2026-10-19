@@ -25,7 +25,7 @@ import (
 // It used to be re-read per fact from the default route, which quietly judged a different device
 // than the install would use whenever BRIARD_NIC was set.
 func Gather(ctx context.Context) HostFacts {
-	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"))
+	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"), "")
 	return HostFacts{
 		NIC:       sel,
 		DevKVM:    exists("/dev/kvm"),

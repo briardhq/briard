@@ -122,7 +122,9 @@ pkgs.testers.runNixOSTest {
         # margin, and a release's artifact growth tipped it: the card refused with "7 GB free" and the
         # install never ran. Headroom, so the test stops measuring the admission floor by accident.
         virtualisation.diskSize = 14336;
-        virtualisation.vlans = [ 1 ]; # eth1 on the shared 192.168.1.0/24 L2 (the LAN)
+        # eth1 on the shared 192.168.1.0/24 L2 (the LAN); eth2 a second uplink on the same LAN, held
+        # down until the carrier re-parent block near the end.
+        virtualisation.vlans = [ 1 1 ];
         virtualisation.qemu.options = [ "-cpu" "host" ]; # vmx -> nested KVM in L1
         networking.useDHCP = false;
         networking.interfaces.eth1.ipv4.addresses = [
@@ -306,6 +308,10 @@ pkgs.testers.runNixOSTest {
     # the report card refusing, which reads as a product bug rather than a rig one.
     host.succeed("ip route replace default via 192.168.1.3 dev eth1")
     host.succeed("ip -o -4 route show default | grep -qw eth1")
+    # The second uplink stays admin-down until the carrier block below: a NIC with a link and no
+    # default route holds every cold start's choice for a settle window, and nothing before that
+    # block is about two uplinks.
+    host.succeed("ip link set eth2 down")
 
     # The guest console. The host cannot reach the guest over macvtap, so this is the only witness to
     # anything that happens inside it -- which is why THE INSTALLER now wires it, and why this test
@@ -1893,14 +1899,72 @@ pkgs.testers.runNixOSTest {
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=600)
     print("the guest's L2 re-parented from eth1 onto eth9 and the VIP answers off-box again")
 
+    # ---- RE-PARENTING ON A PULLED CABLE: carrier-down counts, with a successor in hand ---------
+    #
+    # A pulled cable leaves the parent there and IFF_UP, carrying nothing -- so the live rule reads
+    # carrier, and "gone" is absent OR without it. eth2 is a second uplink on the same LAN at a
+    # worse metric. The order reads the rules: a cable coming IN moves nothing; a restart under the
+    # standing guest keeps its parent; a cable out and back inside the tier moves nothing; out for
+    # the tier moves the guest to eth2; and the cable back after that moves nothing again.
+    # block()/unblock() are the driver's set_link on the first LAN NIC, which is eth9 since the
+    # rename above.
+    host.succeed(
+        "ip addr add 192.168.1.4/24 dev eth2",
+        "ip link set eth2 up",
+        "ip route add default via 192.168.1.3 dev eth2 metric 200",
+    )
+    host.wait_until_succeeds("grep -qx 1 /sys/class/net/eth2/carrier", timeout=30)
+    host.sleep(12)  # several status ticks
+    host.fail("journalctl -u briard-agent | grep -q 'onto eth2'")
+    host.succeed("ip -d link show briard0 | grep -q 'briard0@eth9'")
+
+    # A tier long enough to pull and return the cable inside it. A restart under the live guest
+    # takes the hot path, which reads the parent off the device rather than selecting.
+    host.succeed("sed -i 's/^REPARENT_TIER=.*/REPARENT_TIER=60s/' /opt/briard/config.env")
+    restarted_at = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
+    host.succeed("systemctl restart briard-agent.service")
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since '{restarted_at}' | grep -q 'already up on eth9'", timeout=120)
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
+
+    host.block()
+    host.wait_until_succeeds("grep -qx 0 /sys/class/net/eth9/carrier", timeout=30)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'eth9 has lost its link'", timeout=60)
+    host.unblock()
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'eth9 is back; nothing to re-parent'", timeout=60)
+    host.sleep(70)  # past the tier the pull started: the return cancelled it
+    host.fail("journalctl -u briard-agent | grep -q 'onto eth2'")
+    host.succeed("ip -d link show briard0 | grep -q 'briard0@eth9'")
+
+    host.block()
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 're-parenting the guest.s L2 from eth9 onto eth2'", timeout=240)
+    host.wait_until_succeeds("ip -d link show briard0 | grep -q 'briard0@eth2'", timeout=120)
+    host.succeed("ip -d link show briard-drbd0 | grep -q 'briard-drbd0@eth2'")
+    host.wait_until_succeeds(
+        "journalctl -u briard-agent | grep -q 'hung off eth9, which disappeared or lost its link'",
+        timeout=600,
+    )
+    host.wait_until_succeeds("grep -q '\"parent\":\"eth2\"' /var/lib/briard/network.json", timeout=600)
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=600)
+
+    unblocked_at = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
+    host.unblock()
+    host.wait_until_succeeds("grep -qx 1 /sys/class/net/eth9/carrier", timeout=30)
+    host.sleep(12)  # several status ticks
+    host.succeed("ip -d link show briard0 | grep -q 'briard0@eth2'")
+    host.fail(f"journalctl -u briard-agent --since '{unblocked_at}' | grep -q 'onto eth9'")
+    print("a pulled cable re-parented the guest onto the second uplink after the tier, and nothing else moved it")
+
     # ---- UNINSTALL KEEPS YOUR DATA, AND A REINSTALL RESUMES IT --------------------------------
     # The default uninstall, run LAST because it ends the node -- on a node this file has updated,
     # restarted and re-parented, which is what a real one looks like by the time it is removed.
-    # Everything install.sh and the agent made must be gone except the pet dir; the eth9 lines
-    # are the re-parent's rename above, the one change here that is the test's rather than ours.
+    # Everything install.sh and the agent made must be gone except the pet dir; the eth9 and eth2 lines
+    # are the re-parent blocks' rename and second uplink above, the test's changes rather than ours.
     uninstalled_at = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
     host.succeed("/usr/local/bin/briard uninstall -yes")
-    residue = {e for e in footprint() - pristine if e != "/var/lib/briard" and "eth9" not in e}
+    residue = {e for e in footprint() - pristine
+               if e != "/var/lib/briard" and "eth9" not in e and "eth2" not in e}
     assert not residue, f"uninstall left these behind: {sorted(residue)}"
     # KEPT, and kept whole: the same volume, and the identity it is keyed to.
     assert fsid(host) == pre, "the data volume changed across an uninstall that was told to keep it"

@@ -244,9 +244,9 @@ func interfaceMetric(index uint32) uint32 {
 }
 
 // DefaultRoute names the adapter holding the IPv4 default route Windows would use. "" if there
-// is none. Windows has one routing table, so the main-table question Choose argues for is the
-// only one there is to ask.
-func DefaultRoute() string {
+// is none. Windows has one routing table, so the main-table question Select argues for is the
+// only one there is to ask. prefer is not read here: this OS ranks by bestDefault alone.
+func DefaultRoute(string) string {
 	d, ok := bestDefault(0)
 	if !ok {
 		return ""
@@ -254,6 +254,18 @@ func DefaultRoute() string {
 	a, _ := byIndex(adapters(), d.index)
 	return a.name
 }
+
+// Carrier reports whether dev's media is connected (OperStatus up). A bridge's own status is the
+// OR of its members' and the TAP's, so it says nothing about the uplink; the live rule asks it
+// of no bridge.
+func Carrier(dev string) bool { return up(dev) }
+
+// lowerOf is "" here: nothing on this OS stacks a child on a parent the way a macvtap does --
+// the guest's one port is a TAP, a member of the bridge (master).
+func lowerOf(string) string { return "" }
+
+// Settling is "" here: this OS selects by bestDefault alone, with no wait for a member's lease.
+func Settling() string { return "" }
 
 // defaultGateway is dev's default next hop, from the same table DefaultRoute reads.
 func defaultGateway(dev string) string {

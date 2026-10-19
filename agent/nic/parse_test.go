@@ -24,18 +24,72 @@ docker0	000011AC	00000000	0001	0	0	0	0000FFFF	0	0	0
 eno2	0008A8C0	00000000	0001	0	0	0	00FFFFFF	0	0	0
 `
 
+// routeHeader and defaultRow build the two-uplink tables: a laptop on its wire and its radio, as
+// NetworkManager numbers them (100 wired, 600 wireless), and the same with the metrics tied.
+const routeHeader = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+
+func defaultRow(dev, metric string) string {
+	return dev + "\t00000000\t0108A8C0\t0003\t0\t0\t" + metric + "\t00000000\t0\t0\t0\n"
+}
+
 func TestParseDefaultRouteDev(t *testing.T) {
-	for _, tc := range []struct{ name, text, want string }{
-		{"the default route's device", procNetRoute, "eno1"},
+	all := func(string) bool { return true }
+	wired := routeHeader + defaultRow("wlp2s0", "600") + defaultRow("enp3s0", "100") +
+		"enp3s0\t0008A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+	tied := routeHeader + defaultRow("wlp2s0", "100") + defaultRow("enp3s0", "100")
+	for _, tc := range []struct {
+		name, text string
+		carrier    func(string) bool
+		prefer     string
+		want       string
+	}{
+		{"the default route's device", procNetRoute, all, "", "eno1"},
 		// The selector's ErrNoDefaultRoute case: devices exist, none holds a default. This is the
 		// reading that must NOT fall through to a second heuristic (see Select).
 		{"no default route at all", "Iface\tDestination\tGateway\n" +
-			"eno2\t0008A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n", ""},
-		{"header only", "Iface\tDestination\tGateway\n", ""},
-		{"nothing at all", "", ""},
+			"eno2\t0008A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n", all, "", ""},
+		{"header only", "Iface\tDestination\tGateway\n", all, "", ""},
+		{"nothing at all", "", all, "", ""},
+		// THE METRIC, NOT THE ROW ORDER: the radio's row is first and loses.
+		{"two defaults, the lower metric wins", wired, all, "", "enp3s0"},
+		{"two defaults, the standing parent does not outrank a lower metric", wired, all, "wlp2s0", "enp3s0"},
+		// THE CARRIER IS READ: networkd keeps a dead wire's route, and a dead wire is no candidate.
+		{"the lower metric has no carrier", wired, func(d string) bool { return d != "enp3s0" }, "enp3s0", "wlp2s0"},
+		{"one default, without carrier", routeHeader + defaultRow("enp3s0", "100"),
+			func(string) bool { return false }, "enp3s0", ""},
+		// A TIE IS NOT A BETTER ANSWER: the parent last served on keeps it, whichever row is first.
+		{"a tie, the standing parent second", tied, all, "enp3s0", "enp3s0"},
+		{"a tie, the standing parent first", tied, all, "wlp2s0", "wlp2s0"},
+		{"a tie, no parent standing: the first row", tied, all, "", "wlp2s0"},
+		{"a tie, the standing parent without carrier", tied, func(d string) bool { return d != "enp3s0" }, "enp3s0", "wlp2s0"},
+		// OpenVPN's def1 pair: 0.0.0.0/1 reads destination 00000000 too, and is no default route.
+		{"a /1 is not a default", routeHeader +
+			"tun0\t00000000\t0100080A\t0003\t0\t0\t0\t00000080\t0\t0\t0\n" + defaultRow("enp3s0", "100"),
+			all, "", "enp3s0"},
 	} {
-		if got := parseDefaultRouteDev(tc.text); got != tc.want {
+		if got := parseDefaultRouteDev(tc.text, tc.carrier, tc.prefer); got != tc.want {
 			t.Errorf("%s: parseDefaultRouteDev = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// THE SETTLE WAIT'S QUESTION: a device with a link and no default route yet holds the choice. A
+// device holding a default does not, and neither does one without carrier.
+func TestParseSettling(t *testing.T) {
+	text := routeHeader + defaultRow("wlp2s0", "600")
+	for _, tc := range []struct {
+		name    string
+		devs    []string
+		carrier func(string) bool
+		want    string
+	}{
+		{"the wire has a link and no route yet", []string{"enp3s0", "wlp2s0"}, func(string) bool { return true }, "enp3s0"},
+		{"the wire has no link", []string{"enp3s0", "wlp2s0"}, func(d string) bool { return d != "enp3s0" }, ""},
+		{"every device with a link is routed", []string{"wlp2s0"}, func(string) bool { return true }, ""},
+		{"no devices", nil, func(string) bool { return true }, ""},
+	} {
+		if got := parseSettling(text, tc.devs, tc.carrier); got != tc.want {
+			t.Errorf("%s: parseSettling = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -33,6 +33,11 @@ import (
 // a node that should be busy.
 const netTick = 10 * time.Second
 
+// netSettle bounds how long a cold start holds its choice for a NIC whose lease is still in
+// flight. Thirty seconds covers a home router's DHCP at boot with room to spare, and is what a
+// NIC that never gets a gateway costs each cold start.
+const netSettle = 30 * time.Second
+
 // linksPresent reports whether every device this node's config names is already up. It is the
 // hot path's whole question: an agent that finds its devices there has nothing to build, whether
 // they were built by its own previous life or by a rig that owns the substrate itself. Callers
@@ -149,11 +154,26 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 	// answer a question nobody asked, and on a substrate where the probe cannot succeed (a
 	// container's veth) it would send a perfectly healthy node into the degraded wait below.
 	//
-	// It still SELECTS, without probing, so the tick has a parent to re-assert against. A
-	// selection that comes up empty here is not a failure: the devices are up, and an agent that
-	// did not build them has no business insisting on which parent they hang off.
+	// It READS THE PARENT OFF THE DEVICE rather than selecting, so the tick has a parent to
+	// re-assert against and the guest keeps the one it stands on. Re-selecting here would turn a
+	// self-update into the household's service moving networks, and an upgrade's rollback would
+	// then compare health across two changes rather than one; the parent moves only at a cold
+	// start (the loop below) or when it is gone (reparent.go). BRIARD_NIC does not move it either:
+	// the live rule takes it as the answer once the standing parent is gone. A device stacked on
+	// nothing (a rig's own tap) has no parent to read, and gets the selection. One that comes up
+	// empty is not a failure: the devices are up, and an agent that did not build them has no
+	// business insisting on which parent they hang off.
 	if cfg.linksPresent() {
-		sel := nic.Select(cfg.NICOverride)
+		sel := nic.Selection{Dev: nic.ParentOf(cfg.SystemTap)}
+		if sel.Dev == "" {
+			sel = nic.Select(cfg.NICOverride, cfg.recordedNetwork().Parent)
+		} else {
+			sel.Bridge, sel.Wireless = nic.IsBridge(sel.Dev), nic.Wireless(sel.Dev)
+			if o := cfg.NICOverride; o != "" && o != sel.Dev {
+				logf("network: NIC names %s, but the guest's L2 stands on %s; it moves when %s is gone, or at the next machine start",
+					o, sel.Dev, sel.Dev)
+			}
+		}
 		// NUMBERED BEFORE THE SPEC IS BUILT, because the spec is made of this node's addresses
 		// (subnets.go). It does not violate the no-probing rule above: a node that has drawn
 		// before -- every restart, every self-update -- reads its record and touches nothing, and
@@ -175,10 +195,29 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 		}
 		logf("network: %v", err)
 	}
+	// THE COLD START, the one moment the parent is chosen afresh. The parent last served on is
+	// preferred on a tie, so a restart that finds two equal uplinks stays where it was.
 	var said string
+	settled := time.Now().Add(netSettle)
+	prefer := cfg.recordedNetwork().Parent
 	for {
+		// HOLD THE CHOICE while a NIC has a link and no default route yet -- DHCP still in flight
+		// at boot -- so a boot picks neither the radio that associated first nor nothing. Bounded,
+		// because a NIC with no gateway by design (a storage link) holds it every cold start, and
+		// waived for BRIARD_NIC, which needs no ranking.
+		if d := nic.Settling(); d != "" && cfg.NICOverride == "" && time.Now().Before(settled) {
+			why := d + " has a link and no default route yet; waiting for it before choosing"
+			if why != said {
+				logf("network: %s", why)
+				said = why
+			}
+			if werr := cfg.waitTick(ctx, local, why, logf); werr != nil {
+				return cfg, werr
+			}
+			continue
+		}
 		step, cancel := context.WithTimeout(ctx, netTick)
-		sel := nic.Choose(step, cfg.NICOverride)
+		sel := nic.Choose(step, cfg.NICOverride, prefer)
 		var spec nic.Spec
 		var err error
 		var numbered Config

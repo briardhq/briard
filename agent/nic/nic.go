@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -73,8 +74,9 @@ type Selection struct {
 // Choose makes the selection and VALIDATES it — for a caller that is about to create devices on
 // the answer. override is BRIARD_NIC — kept under that name (widened: it may now
 // name a bridge) because renaming it would cost a sweep of every rig that sets it and buy nothing.
-func Choose(ctx context.Context, override string) Selection {
-	s := Select(override)
+// prefer is the parent last served on, which wins a tie (DefaultRoute); "" for a caller with none.
+func Choose(ctx context.Context, override, prefer string) Selection {
+	s := Select(override, prefer)
 	// THE PROBE VALIDATES, IT DOES NOT SELECT. There is no second heuristic above it: no
 	// gateway-ARP confirmation, no scope-global fallback, no virtual/non-virtual filter — a bond
 	// and a VLAN are both "virtual" and both fine, and no sysfs attribute separates a tun device
@@ -93,10 +95,10 @@ func Choose(ctx context.Context, override string) Selection {
 
 // Select names the device without validating it — for a caller that is NOT about to create
 // anything on the answer, and must not pay for a probe to find out where its existing devices
-// hang. The agent's hot path is exactly that: on a restart the taps are already up, so there is
-// nothing to create and nothing to validate, and probing every ten seconds (or on every agent
-// start on a lab node) would be a netlink write to answer a question nobody asked.
-func Select(override string) Selection {
+// hang. The agent's live rule is exactly that: it asks every tick whether a gone parent has a
+// successor, and probing every ten seconds would be a netlink write to answer a question nobody
+// asked -- the move that follows builds on the answer, and that build is the validation.
+func Select(override, prefer string) Selection {
 	s := Selection{Candidates: Candidates()}
 	switch {
 	case override != "":
@@ -114,7 +116,7 @@ func Select(override string) Selection {
 		// default at all. `ip route get` follows every one of them and names a tunnel that cannot
 		// carry a macvtap; the main table's default keeps naming the wire. ⚠️ The naive read is
 		// the correct one here — say so, or the next reader "fixes" it.
-		if s.Dev = DefaultRoute(); s.Dev == "" {
+		if s.Dev = DefaultRoute(prefer); s.Dev == "" {
 			if len(s.Candidates) == 0 {
 				s.Err = ErrNoInterfaces
 			} else {
@@ -130,6 +132,16 @@ func Select(override string) Selection {
 // Up reports whether dev exists and is up -- the question the agent's hot path asks of the
 // devices its config names, before it asks anything about a parent.
 func Up(dev string) bool { return Exists(dev) && up(dev) }
+
+// ParentOf names the device dev hangs off as it stands: the bridge it is a port of, or the device
+// a macvtap child was created on. "" for a device that hangs off nothing. It is the agent's
+// answer under a standing guest, which keeps the parent it has rather than re-selecting.
+func ParentOf(dev string) string {
+	if m := master(dev); m != "" {
+		return m
+	}
+	return lowerOf(dev)
+}
 
 // Usable reports whether the agent may build on this selection. Wireless is not a fault: it is a
 // substrate, and what it costs (no failover) is the report card's to grade.
@@ -232,12 +244,52 @@ func procTable(text string) [][]string {
 	return rows
 }
 
-// parseDefaultRouteDev pulls the default route's interface out of /proc/net/route's text. Pure, so
-// the format handling is unit-tested against real output rather than trusted.
-func parseDefaultRouteDev(text string) string {
-	for _, f := range procTable(text) { // Iface Destination Gateway Flags ...
-		if len(f) >= 2 && f[1] == "00000000" {
-			return f[0]
+// parseDefaultRouteDev picks the guest's parent out of /proc/net/route's text: among the main
+// table's default routes (destination AND mask 00000000) on devices with carrier, the lowest
+// Metric, and prefer on a tie. Pure, so the format handling is unit-tested against real output
+// rather than trusted.
+//
+// ⚠️ THE CARRIER IS READ, NOT INFERRED FROM THE ROUTE. NetworkManager withdraws a dead wire's
+// default route; systemd-networkd keeps it, so a route alone does not say the cable is in. A dead
+// wire is not a candidate, so it never outranks a live radio, and nobody guesses how long it
+// stays dead.
+//
+// THE METRIC IS THE WHOLE RANKING. The OS already encodes wire-over-radio in it; a preference of
+// our own by kind, name or speed would be a second opinion that can disagree with it. The mask
+// is checked too: OpenVPN's `redirect-gateway def1` adds a 0.0.0.0/1, whose destination column
+// also reads 00000000.
+//
+// prefer is the parent last served on. A tie is not a better answer than the one standing, so it
+// never moves the guest; with no prefer in the tie the first row wins, the kernel's own order.
+func parseDefaultRouteDev(text string, carrier func(string) bool, prefer string) string {
+	best, bestMetric := "", uint64(0)
+	for _, f := range procTable(text) { // Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+		if len(f) < 8 || f[1] != "00000000" || f[7] != "00000000" || !carrier(f[0]) {
+			continue
+		}
+		m, err := strconv.ParseUint(f[6], 10, 32)
+		if err != nil {
+			continue
+		}
+		if best == "" || m < bestMetric || (m == bestMetric && f[0] == prefer && best != prefer) {
+			best, bestMetric = f[0], m
+		}
+	}
+	return best
+}
+
+// parseSettling names a device that has carrier and no default route yet, among devs, from
+// /proc/net/route's text -- "" when there is none. Pure, beside the selector it holds back.
+func parseSettling(text string, devs []string, carrier func(string) bool) string {
+	routed := map[string]bool{}
+	for _, f := range procTable(text) {
+		if len(f) >= 8 && f[1] == "00000000" && f[7] == "00000000" {
+			routed[f[0]] = true
+		}
+	}
+	for _, d := range devs {
+		if !routed[d] && carrier(d) {
+			return d
 		}
 	}
 	return ""

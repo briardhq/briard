@@ -18,7 +18,7 @@ import (
 // Gather reads the Windows host into HostFacts. Thin + best-effort, as on Linux: a read that fails
 // reads as absent, which lands on a Refuse or a Warn with its fix.
 func Gather(ctx context.Context) HostFacts {
-	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"))
+	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"), "")
 	present := hypervisorPresent()
 	return HostFacts{
 		NIC:               sel,

@@ -23,10 +23,12 @@ import (
 // unreachable from the household. So the detector has to be the status tick. It cannot hang off
 // the guest's exit, because the guest does not exit.
 //
-// ⚠️ THE TRIGGER IS THE PARENT BEING ABSENT — never carrier-down (a cold boot with the cable out
-// would otherwise re-parent onto some other device before the real one had finished coming up),
-// and never our own device's disappearance alone (which is indistinguishable, from our side, from
-// the parent going away).
+// ⚠️ THE TRIGGER IS THE PARENT BEING GONE — absent, or present without carrier — AND ANOTHER
+// CANDIDATE NAMED NOW. Gone alone moves nothing: a cold boot with the cable out, or a pulled cable
+// on a one-NIC machine, has no successor to move to and only waits. Never our own device's
+// disappearance alone (which is indistinguishable, from our side, from the parent going away).
+// And never a cable coming back: the parent returning cancels, and a better device appearing
+// beside a working one waits for the next cold start (network.go).
 //
 // And re-parenting is EXPENSIVE in a way nothing else on the tick is: a macvtap cannot be
 // re-parented, so the devices must be deleted and recreated, which invalidates the fds qemu holds
@@ -194,8 +196,8 @@ type reparenter struct {
 // stopping it would only take away the one thing an operator could still look at.
 //
 // ⚠️ AND THE RECORDED DEVICE RETURNING OUTRANKS EVERY TIER. A NIC that comes back in three
-// seconds must not cost a guest restart, so the clock resets the instant the parent is visible
-// again and nothing else is even considered. That is also why there is no separate "minimum
+// seconds must not cost a guest restart, so the clock resets the instant the parent is there with
+// carrier again and nothing else is even considered. That is also why there is no separate "minimum
 // settle" constant: the shortest tier is five minutes, and any return inside it cancels.
 func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, logf func(string, ...any)) (string, nic.Relation) {
 	if cfg.net == nil || cfg.net.Parent == "" || cfg.net.Bridge {
@@ -204,26 +206,42 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		// we never created it and must not start now.
 		return "", nic.Unknown
 	}
-	if nic.Exists(cfg.net.Parent) {
+	// GONE IS ABSENT OR WITHOUT CARRIER: a pulled cable leaves the device there, up and carrying
+	// nothing. Neither alone moves anything -- the move needs a successor in hand (below), so a
+	// cold boot with the cable out, or a one-NIC desktop with its cable pulled, only waits.
+	parent := cfg.net.Parent
+	if nic.Exists(parent) && nic.Carrier(parent) {
 		if !r.goneSince.IsZero() {
-			logf("network: %s is back; nothing to re-parent", cfg.net.Parent)
+			logf("network: %s is back; nothing to re-parent", parent)
 			r.goneSince, r.said = time.Time{}, ""
 		}
 		return "", nic.Unknown
 	}
 	if r.goneSince.IsZero() {
 		r.goneSince = now
-		logf("network: %s has gone away; the guest is running with a dead NIC", cfg.net.Parent)
+		if nic.Exists(parent) {
+			logf("network: %s has lost its link; the guest is running with a dead NIC", parent)
+		} else {
+			logf("network: %s has gone away; the guest is running with a dead NIC", parent)
+		}
 	}
 	// Re-SELECT, without probing yet: there is no point pacing a move onto a device that does not
-	// exist. A candidate that is the recorded parent again cannot happen here (we just established
-	// it is absent), so any answer is genuinely a different device.
-	sel := nic.Select(cfg.NICOverride)
+	// exist. The selection reads carrier too, so the gone parent is not a candidate -- except as
+	// BRIARD_NIC, or in a race with its return, and either way staying put is the answer.
+	sel := nic.Select(cfg.NICOverride, parent)
 	if !sel.Usable() {
 		r.say(logf, "network: nowhere to re-parent yet: "+sel.Fix())
 		return "", nic.Unknown
 	}
+	if sel.Dev == parent {
+		return "", nic.Unknown
+	}
 	was, seen := cfg.recordedNetwork(), nic.Read(ctx, sel.Dev)
+	// BRIARD_NIC NAMING ANOTHER DEVICE IS THE OPERATOR'S ANSWER, and it is what the refusals below
+	// tell them to set: no tier and no fingerprint stand between them and the move they named.
+	if sel.Override {
+		return sel.Dev, nic.Compare(was, seen)
+	}
 	// NO RECORD AT ALL is a different problem from "a different network", and saying so is worth a
 	// branch: the remedy is the same (an operator names the device) but the cause is not, and a
 	// reader told "not demonstrably the same network" about a node that simply has nothing to
@@ -234,7 +252,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 			"network: %s is gone and there is no record of the LAN this node last served on, so "+
 				"nothing can say whether %s is the same one -- NOT re-parenting on my own. Set "+
 				"NIC=%s in %s and restart briard-agent if this move is intended",
-			cfg.net.Parent, sel.Dev, sel.Dev, cfg.configPathForMessage()))
+			parent, sel.Dev, sel.Dev, cfg.configPathForMessage()))
 		return "", nic.Unknown
 	}
 	rel := nic.Compare(was, seen)
@@ -251,12 +269,12 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 			"network: %s is gone and %s is not demonstrably the same network (%s) -- NOT re-parenting "+
 				"on my own. Recorded: [%s]. Now: [%s]. Set NIC=%s in %s and restart "+
 				"briard-agent if this move is intended",
-			cfg.net.Parent, sel.Dev, rel, was, seen, sel.Dev, cfg.configPathForMessage()))
+			parent, sel.Dev, rel, was, seen, sel.Dev, cfg.configPathForMessage()))
 		return "", rel
 	}
 	if left := wait - now.Sub(r.goneSince); left > 0 {
 		r.say(logf, fmt.Sprintf("network: %s is gone; %s is %s, re-parenting in %s unless it comes back",
-			cfg.net.Parent, sel.Dev, rel, left.Round(time.Second)))
+			parent, sel.Dev, rel, left.Round(time.Second)))
 		return "", rel
 	}
 	return sel.Dev, rel
@@ -402,7 +420,7 @@ func alertReparent(ctx context.Context, n notify.Notifier, logf func(string, ...
 		Kind:     notify.Event,
 		Severity: notify.Warning,
 		Title:    "Briard: this node moved to a different network device",
-		Body: fmt.Sprintf("the guest's network hung off %s, which disappeared; it now hangs off %s (%s). "+
+		Body: fmt.Sprintf("the guest's network hung off %s, which disappeared or lost its link; it now hangs off %s (%s). "+
 			"The service was restarted to make the change. If you did not expect this, check the cabling "+
 			"and which network this machine is on.", from, to, rel),
 	})
