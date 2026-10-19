@@ -49,7 +49,7 @@ const (
 	leaseRetrySilent  = time.Minute
 	leaseRetryRefused = 2 * time.Minute
 	leaseMinRenew     = 30 * time.Second
-	// leaseProbeEvery spaces the probe (renew) while a router keeps not answering: each one holds
+	// leaseProbeEvery spaces the probe (renew) after one met silence: each one holds
 	// the VIP dark for a DISCOVER's length, and a router that ignored the last will likely ignore
 	// the next.
 	leaseProbeEvery = 10 * time.Minute
@@ -85,6 +85,7 @@ type vipLeaser struct {
 	// is testable without either. Not a seam -- test doubles inside one component.
 	ask       func(nic.Spec) dhcpAsker
 	hostAddrs func(dev string) []string
+	node      string // the host's own system-subnet address, never a LAN address (moved)
 	prefix    func(dev string) string
 	now       func() time.Time
 	// gateway reports whether the router answers ARP on dev (the fingerprint's read), and quiet
@@ -108,7 +109,7 @@ type vipLeaser struct {
 	why      string    // the refusal's cause, "" = not refused
 	relaunch bool      // the guest must be relaunched: a lost lease, or a first one after a refusal
 	alerted  bool      // the refusal's alert is open
-	probed   time.Time // the last probe; the next waits leaseProbeEvery
+	probed   time.Time // the last probe that met silence; the next waits leaseProbeEvery
 }
 
 // newVIPLeaser builds this node's leaser; nil without a state dir to keep the record in.
@@ -132,6 +133,7 @@ func (cfg Config) newVIPLeaser() *vipLeaser {
 			return nic.DHCPClient{Dev: dev, Chaddr: mac, Hostname: "briard-" + strings.ReplaceAll(mac.String()[9:], ":", "")}
 		},
 		hostAddrs: nic.IPv4s,
+		node:      cfg.hostNodeIP(),
 		prefix: func(dev string) string {
 			_, p, _ := strings.Cut(reportcard.HostCIDR(dev), "/")
 			return p
@@ -222,6 +224,11 @@ func (l *vipLeaser) acquire(ctx context.Context, s nic.Spec, fresh bool, logf fu
 		switch addr, err := l.keep(ctx, rec, logf); {
 		case err == nil:
 			return addr
+		case !errors.Is(err, nic.ErrNAK) && l.moved(rec, logf):
+			// The machine came up on another network (a NIC change): the guest holds nothing yet,
+			// so it DISCOVERs here, with no hint -- the old address means nothing on this LAN.
+			l.store(leaseRecord{}, logf)
+			return l.discover(ctx, logf)
 		case !errors.Is(err, nic.ErrNAK):
 			// Silence, at a bring-up: a router slower to come back from a power cut than this
 			// machine. The address is kept, and the renewal asks again.
@@ -414,10 +421,12 @@ func (l *vipLeaser) askNow() {
 	}
 }
 
-// watch reads the link the lease rides, once a tick, on the substrate where nothing else reports
-// its edges (a Linux ipvtap station; on Windows the link mirror does, mirrorLink). The carrier
-// coming back asks now, and so does the host's own address on it changing -- the level that
-// catches a roam shorter than a tick. The first reading only records.
+// watch reads the link the lease rides, once a tick. The host's own LAN address on it changing
+// asks now, on every substrate: it is the level that catches a roam shorter than a tick, and the
+// host's own lease landing on a new network -- the reading moved needs. The carrier coming back
+// asks too, where nothing else reports it (a Linux ipvtap station; on a bridge the link mirror
+// does, mirrorLink). Link-local and the node's own system-subnet address are no LAN address, so
+// a lease pending or the agent's own convergence never asks. The first reading only records.
 func (l *vipLeaser) watch() {
 	if !l.active() {
 		return
@@ -425,10 +434,14 @@ func (l *vipLeaser) watch() {
 	l.mu.Lock()
 	s := l.spec
 	l.mu.Unlock()
-	if !s.Ipvtap {
-		return
+	up := !s.Ipvtap || l.carrier(s.Parent)
+	var lan []string
+	for _, a := range l.hostAddrs(s.Parent) {
+		if p, err := netip.ParseAddr(a); err == nil && !p.IsLinkLocalUnicast() && a != l.node {
+			lan = append(lan, a)
+		}
 	}
-	up, host := l.carrier(s.Parent), strings.Join(l.hostAddrs(s.Parent), ",")
+	host := strings.Join(lan, ",")
 	l.mu.Lock()
 	seen, was, wasHost := l.seen, l.linkWas, l.hostWas
 	l.seen, l.linkWas, l.hostWas = true, up, host
@@ -461,6 +474,11 @@ func (l *vipLeaser) renew(ctx context.Context, logf func(string, ...any)) {
 		case errors.Is(err, nic.ErrNAK):
 			l.askRelaunch() // rule 2: the guest drops the address before anyone DISCOVERs
 		case err == nil:
+		case l.moved(rec, logf):
+			// The link moved to another network and its router is silent about ours: the address
+			// cannot be reached here, so it is lost -- the NAK path.
+			l.store(leaseRecord{}, logf)
+			l.askRelaunch()
 		case rec.Until.Before(l.now()) && l.now().Sub(l.probed) >= leaseProbeEvery && l.gateway(ctx, l.parent()):
 			l.probe(ctx, rec, logf)
 		default:
@@ -474,6 +492,39 @@ func (l *vipLeaser) renew(ctx context.Context, logf func(string, ...any)) {
 	}
 }
 
+// moved reports whether the host has moved off the VIP's network: after an INIT-REBOOT nobody
+// answered, the host's own address on the link -- read now, since the host's own lease moves with
+// the link -- is outside the VIP's subnet. A router that is silent about an address it does not
+// know is not a router that wants it kept, and nobody on this LAN can reach it.
+//
+// ⚠️ NO LAN ADDRESS IS NO EVIDENCE: a host whose own lease has not landed yet holds only
+// link-local (or nothing), and that reads false, so the address is kept and asked for again. Only
+// an address positively elsewhere moves it. The node's own system-subnet address is the agent's,
+// never the LAN's, and is not counted.
+func (l *vipLeaser) moved(rec leaseRecord, logf func(string, ...any)) bool {
+	vip, err := netip.ParsePrefix(rec.Addr)
+	if err != nil {
+		return false
+	}
+	var lan []string
+	for _, s := range l.hostAddrs(l.parent()) {
+		a, err := netip.ParseAddr(s)
+		if err != nil || a.IsLinkLocalUnicast() || s == l.node {
+			continue
+		}
+		if vip.Masked().Contains(a) {
+			return false
+		}
+		lan = append(lan, s)
+	}
+	if len(lan) == 0 {
+		return false
+	}
+	logf("vip lease: this host is on another network now (%s), and its router does not answer for %s",
+		strings.Join(lan, ", "), rec.Addr)
+	return true
+}
+
 // probe is the lease's answer to a router that is up -- it answers ARP -- and silent about an
 // expired lease: the RFC's own sequence from the host's hand. A router that keeps its leases in
 // RAM forgets them at a reboot, and a non-authoritative one then answers every renewal with
@@ -484,9 +535,6 @@ func (l *vipLeaser) renew(ctx context.Context, logf func(string, ...any)) {
 // the guest takes an address only at bring-up; silence keeps the address, as a router that is down
 // leaves it -- spec-shaped while the router is up, local-first when it is not.
 func (l *vipLeaser) probe(ctx context.Context, rec leaseRecord, logf func(string, ...any)) {
-	l.mu.Lock()
-	l.probed = l.now()
-	l.mu.Unlock()
 	if err := l.quiet(ctx, true); err != nil {
 		logf("vip lease: %s expired with no answer; could not silence it to ask again: %v", rec.Addr, err)
 		l.setRetry(l.now().Add(leaseRetrySilent))
@@ -508,6 +556,7 @@ func (l *vipLeaser) probe(ctx context.Context, rec leaseRecord, logf func(string
 		l.askRelaunch()
 	default:
 		logf("vip lease: no offer for %s either; kept, and asked for again", rec.Addr)
+		l.probed = l.now() // only a silent probe waits out leaseProbeEvery
 		l.setRetry(l.now().Add(leaseRetrySilent))
 	}
 	if err := l.quiet(ctx, false); err != nil {

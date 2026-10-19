@@ -22,6 +22,7 @@ type fakeDHCP struct {
 	offer, ack, reboot nic.DHCPLease
 	offerErr, ackErr   error
 	rebootErr          error
+	onReboot           func() // the world moving during the exchange: the host's own lease landing
 	sent               []string
 }
 
@@ -39,6 +40,9 @@ func (f *fakeDHCP) Request(_ context.Context, o nic.DHCPLease) (nic.DHCPLease, e
 }
 func (f *fakeDHCP) Reboot(_ context.Context, a netip.Addr) (nic.DHCPLease, error) {
 	f.sent = append(f.sent, "INIT-REBOOT "+a.String())
+	if f.onReboot != nil {
+		f.onReboot()
+	}
 	return f.reboot, f.rebootErr
 }
 
@@ -71,6 +75,7 @@ func newLeaseRig(t *testing.T) *leaseRig {
 		named:     func() bool { return r.named != "" },
 		ask:       func(nic.Spec) dhcpAsker { return r.wire },
 		hostAddrs: func(string) []string { return r.host },
+		node:      "10.179.243.129",
 		carrier:   func(string) bool { return r.up },
 		gateway:   func(context.Context, string) bool { return r.gw },
 		quiet:     func(_ context.Context, on bool) error { r.quiet = append(r.quiet, on); return nil },
@@ -471,13 +476,97 @@ func TestLeaseWatchAsksOnAnEdge(t *testing.T) {
 			t.Errorf("%s: asked = %v, want %v", step.name, got, step.ask)
 		}
 	}
-	// Off ipvtap the mirror reports the edge (Windows): watch reads nothing.
-	r.l.spec = nic.Spec{Parent: "Briard bridge", Bridge: true}
-	r.up = false
+	// Link-local and the node's own system-subnet address are no LAN address: a lease pending, or
+	// the agent's own convergence, asks nothing.
+	r.host = []string{"192.168.7.51", "169.254.3.4"}
 	r.l.watch()
-	r.up = true
+	r.host = []string{"192.168.7.51", "10.179.243.129"}
 	r.l.watch()
 	if asked() {
-		t.Error("watch asked on a bridge, where the link mirror owns the edge")
+		t.Error("watch asked on a link-local or system-subnet address")
+	}
+	// On a bridge the mirror owns the carrier edge, and the host's address still asks.
+	if hostLeasesBridge {
+		r.l.spec = nic.Spec{Parent: "Briard bridge", Bridge: true}
+		r.up = false
+		r.l.watch()
+		r.up = true
+		r.l.watch()
+		if asked() {
+			t.Error("watch asked on a bridge's carrier, which the link mirror owns")
+		}
+		r.host = []string{"192.168.79.98"}
+		r.l.watch()
+		if !asked() {
+			t.Error("the host's own address moved on a bridge and nothing asked")
+		}
+	}
+}
+
+// ONLY A SILENT PROBE WAITS. One that renewed starts no clock: the next expiry with no answer --
+// the cable moved and back, a router rebooted again -- probes at once.
+func TestLeaseProbeAfterARenewalIsNotSpaced(t *testing.T) {
+	r := newLeaseRig(t)
+	r.expired("192.168.7.120/24")
+	r.wire.rebootErr = nic.ErrNoAnswer
+	r.wire.offer, r.wire.ack = lease("192.168.7.120/24"), lease("192.168.7.120/24")
+	r.l.renew(context.Background(), r.logf)
+	r.expired("192.168.7.120/24") // expired again, a minute on as far as the leaser can tell
+	r.quiet = nil
+	r.l.renew(context.Background(), r.logf)
+	if !slices.Equal(r.quiet, []bool{true, false}) {
+		t.Errorf("link levers %v: a probe that renewed held off the next", r.quiet)
+	}
+}
+
+// MOVED OFF THE VIP'S NETWORK: the INIT-REBOOT unanswered, and the host's own address on the link
+// -- read after the exchange -- outside the VIP's subnet. A running guest takes the NAK path; a
+// guest at its bring-up just DISCOVERs. No LAN address at all is no evidence, and neither is the
+// node's own system-subnet address.
+func TestLeaseMovedOffTheNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before []string // the host's addresses before the exchange
+		after  []string // ...and after it, when the host's own lease has moved
+		moved  bool
+	}{
+		{"on the VIP's subnet", []string{"192.168.7.50"}, nil, false},
+		{"on another subnet", []string{"192.168.79.98"}, nil, true},
+		{"only link-local: the host's lease not landed", []string{"169.254.12.7"}, nil, false},
+		{"no address at all", nil, nil, false},
+		{"only the node's system-subnet address", []string{"10.179.243.129"}, nil, false},
+		{"another subnet beside the system-subnet one", []string{"10.179.243.129", "192.168.79.98"}, nil, true},
+		{"the host's lease lands on another subnet during the exchange", []string{"169.254.12.7"}, []string{"192.168.79.98"}, true},
+	} {
+		t.Run("running: "+tc.name, func(t *testing.T) {
+			r := newLeaseRig(t)
+			r.holding("192.168.7.120/24")
+			r.host = tc.before
+			r.wire.rebootErr = nic.ErrNoAnswer
+			if tc.after != nil {
+				r.wire.onReboot = func() { r.host = tc.after }
+			}
+			r.l.renew(context.Background(), r.logf)
+			if got := r.record(t).Addr == "" && r.l.relaunch; got != tc.moved {
+				t.Errorf("dropped+relaunch = %v, want %v (record %+v, lines %v)", got, tc.moved, r.record(t), r.lines)
+			}
+		})
+		t.Run("bring-up: "+tc.name, func(t *testing.T) {
+			r := newLeaseRig(t)
+			r.holding("192.168.7.120/24")
+			r.host = tc.before
+			r.wire.rebootErr = nic.ErrNoAnswer
+			if tc.after != nil {
+				r.wire.onReboot = func() { r.host = tc.after }
+			}
+			r.wire.offer, r.wire.ack = lease("192.168.79.120/24"), lease("192.168.79.120/24")
+			got := r.acquire(true)
+			switch {
+			case tc.moved && (got != "192.168.79.120/24" || !slices.Contains(r.wire.sent, "DISCOVER") || r.l.relaunch):
+				t.Errorf("pushed %q sent %v relaunch %v: want a DISCOVER with no hint, and no relaunch", got, r.wire.sent, r.l.relaunch)
+			case !tc.moved && got != "192.168.7.120/24":
+				t.Errorf("pushed %q: want the recorded address kept unconfirmed", got)
+			}
+		})
 	}
 }
