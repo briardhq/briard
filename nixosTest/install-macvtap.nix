@@ -1909,6 +1909,7 @@ pkgs.testers.runNixOSTest {
     # block()/unblock() are the driver's set_link on the first LAN NIC, which is eth9 since the
     # rename above.
     host.succeed(
+        "ip addr flush dev eth2",  # the framework numbers every vlan NIC, and eth2 drew the client's .2
         "ip addr add 192.168.1.4/24 dev eth2",
         "ip link set eth2 up",
         "ip route add default via 192.168.1.3 dev eth2 metric 200",
@@ -1925,6 +1926,11 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl restart briard-agent.service")
     host.wait_until_succeeds(
         f"journalctl -u briard-agent --since '{restarted_at}' | grep -q 'already up on eth9'", timeout=120)
+    # The record is what paces the move: taken with the cable in, so the gateway MAC is in it and
+    # the move below is the same-wire tier's.
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since '{restarted_at}' | grep -q 'recorded this LAN \\[eth9 .*gw=192.168.1.3/52:'",
+        timeout=300)
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
 
     host.block()
@@ -1954,6 +1960,12 @@ pkgs.testers.runNixOSTest {
     host.sleep(12)  # several status ticks
     host.succeed("ip -d link show briard0 | grep -q 'briard0@eth2'")
     host.fail(f"journalctl -u briard-agent --since '{unblocked_at}' | grep -q 'onto eth9'")
+    # THE VIP MAY HAVE MOVED, and that is the rig's lease rather than the re-parent: the pool leases
+    # for 2 minutes, a pull past the tier outlives it, and dhcpcd keeps the expired address while it
+    # DISCOVERs, so dnsmasq's ping finds it taken and offers the next one. Read the lease again, as
+    # the reinstall below resumes whatever it holds.
+    moved, _, _ = wait_for_moved_lease()
+    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     print("a pulled cable re-parented the guest onto the second uplink after the tier, and nothing else moved it")
 
     # ---- UNINSTALL KEEPS YOUR DATA, AND A REINSTALL RESUMES IT --------------------------------
