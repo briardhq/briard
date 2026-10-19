@@ -107,12 +107,18 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 }
 
 // offloadOff records a's IPv4 checksum offload and turns it off, the setting a member needs
-// (checksumOffload). The record is returned even when turning it off fails part-way.
+// (checksumOffload). The record is returned even when turning it off fails part-way. An adapter
+// whose driver offers no such setting has nothing to record or turn off (measured: Realtek's
+// RTL8922AE package): the property list is read whole, so a failed read stays an error and only a
+// list without the keyword reads as absent.
 func offloadOff(ctx context.Context, a adapter) (Offload, error) {
-	val, err := powershell(ctx, fmt.Sprintf("(Get-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -EA Stop).RegistryValue -join ','",
+	val, err := powershell(ctx, fmt.Sprintf("@(Get-NetAdapterAdvancedProperty -Name %s -AllProperties -EA Stop | Where-Object RegistryKeyword -eq '%s').RegistryValue -join ','",
 		psQuote(a.name), checksumOffload))
 	if err != nil {
 		return Offload{}, fmt.Errorf("reading %s on %s: %w", checksumOffload, a.name, err)
+	}
+	if val == "" {
+		return Offload{}, nil
 	}
 	rec := Offload{GUID: a.guid, Keyword: checksumOffload, Value: val}
 	if val != "0" {
