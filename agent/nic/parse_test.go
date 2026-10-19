@@ -313,3 +313,27 @@ func TestRankDefaults(t *testing.T) {
 		}
 	}
 }
+
+// THE STANDING PARENT OF A HELD CHILD: its line's `@ifN` is the parent's index in the host's
+// namespace. A child with no @ifN, and a name not held, read as no parent.
+func TestParseHeld(t *testing.T) {
+	text := "7: briard0@if3: <BROADCAST,MULTICAST,ALLMULTI,UP,LOWER_UP> mtu 1500 state UP\n" +
+		"8: briard-drbd0@if3: <BROADCAST,MULTICAST> mtu 1500 state DOWN\n" +
+		"9: odd: <BROADCAST,UP> mtu 1500\n"
+	for _, tc := range []struct {
+		dev   string
+		up    bool
+		index int
+	}{
+		{"briard0", true, 3},
+		{"briard-drbd0", false, 3},
+		{"odd", true, 0},
+		{"briard0@if3", false, 0},
+		{"nope", false, 0},
+	} {
+		flags, index := parseHeld(text, tc.dev)
+		if slices.Contains(flags, "UP") != tc.up || index != tc.index {
+			t.Errorf("%s: flags %q index %d, want up=%v index %d", tc.dev, flags, index, tc.up, tc.index)
+		}
+	}
+}

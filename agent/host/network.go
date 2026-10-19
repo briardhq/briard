@@ -45,12 +45,15 @@ const netSettle = 30 * time.Second
 // they were built by its own previous life or by a rig that owns the substrate itself. Callers
 // have already established that the config names devices at all.
 //
-// An ipvtap node never reads as present here: its children live in nic.HoldNS, out of this
-// namespace's sight, so a wireless node always takes the converging path in awaitNetwork. That
-// path is check-first, so it changes nothing when the children are already there.
-func (cfg Config) linksPresent() bool {
+// A device not in this namespace is asked of nic.HoldNS, where an ipvtap node's children live:
+// they are as present as a macvtap's, and an agent restarting under its Wi-Fi guest must keep the
+// parent they stand on rather than re-select (awaitNetwork).
+func (cfg Config) linksPresent(ctx context.Context) bool {
 	for _, d := range []string{cfg.SystemTap, cfg.ServiceTap, cfg.WitnessTap} {
-		if d != "" && !nic.Up(d) {
+		if d == "" || nic.Up(d) {
+			continue
+		}
+		if up, _ := nic.Held(ctx, d); !up {
 			return false
 		}
 	}
@@ -165,8 +168,11 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 	// nothing (a rig's own tap) has no parent to read, and gets the selection. One that comes up
 	// empty is not a failure: the devices are up, and an agent that did not build them has no
 	// business insisting on which parent they hang off.
-	if cfg.linksPresent() {
+	if cfg.linksPresent(ctx) {
 		sel := nic.Selection{Dev: nic.ParentOf(cfg.SystemTap)}
+		if sel.Dev == "" {
+			_, sel.Dev = nic.Held(ctx, cfg.SystemTap) // an ipvtap child, in nic.HoldNS
+		}
 		if sel.Dev == "" {
 			sel = nic.Select(cfg.NICOverride, cfg.recordedNetwork().Parent)
 		} else {

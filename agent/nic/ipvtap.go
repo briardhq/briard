@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -122,6 +123,47 @@ func parseLinks(text string) map[string][]string {
 		links[name] = strings.Split(strings.Trim(f[2], "<>"), ",")
 	}
 	return links
+}
+
+// Held reports whether dev is a child held in HoldNS and up, and names the device it was created
+// on: the `@ifN` its line carries is the parent's ifindex in THIS namespace (parseHeld). It is the
+// standing parent of an ipvtap node, read off the device as every other substrate's is (ParentOf),
+// for an agent that restarts under its guest. ("", false) when dev is not held.
+func Held(ctx context.Context, dev string) (up bool, parent string) {
+	if !exists("/run/netns/" + HoldNS) {
+		return false, ""
+	}
+	out, err := ip(ctx, "-n", HoldNS, "-o", "link", "show")
+	if err != nil {
+		return false, ""
+	}
+	flags, idx := parseHeld(string(out), dev)
+	if idx > 0 {
+		if i, err := net.InterfaceByIndex(idx); err == nil {
+			parent = i.Name
+		}
+	}
+	return slices.Contains(flags, "UP"), parent
+}
+
+// parseHeld reads dev's line out of `ip -o link show`: its flags, and the index after `@if`, 0
+// when the line has none. Pure, beside parseLinks, which reads the same lines for every name.
+func parseHeld(text, dev string) (flags []string, index int) {
+	for l := range strings.SplitSeq(text, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 3 {
+			continue
+		}
+		name, link, _ := strings.Cut(strings.TrimSuffix(f[1], ":"), "@")
+		if name != dev {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimPrefix(link, "if")); err == nil && strings.HasPrefix(link, "if") {
+			index = n
+		}
+		return strings.Split(strings.Trim(f[2], "<>"), ","), index
+	}
+	return nil, 0
 }
 
 // Hold makes the IPv4 addresses on each child in HoldNS exactly want[child], each a /32: added
