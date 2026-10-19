@@ -167,13 +167,18 @@ func (cfg Config) quietVIP(ctx context.Context, on bool) error {
 	if on {
 		return set(ctx, false)
 	}
-	up := true
+	parent := ""
 	if cfg.net != nil {
-		if m, swaps := nic.Uplink(cfg.net.Parent); swaps {
-			up = m != "" && nic.Up(m)
-		}
+		parent = cfg.net.Parent
 	}
-	return set(ctx, up)
+	return set(ctx, linkBack(parent, nic.Uplink, nic.Up))
+}
+
+// linkBack is the link the probe gives back: up, except behind a bridge whose member is down or
+// gone, where it is the member's carrier -- never up while the uplink is down.
+func linkBack(parent string, uplink func(string) (string, bool), up func(string) bool) bool {
+	m, swaps := uplink(parent)
+	return !swaps || m != "" && up(m)
 }
 
 // singleAnchor reports whether the host leases the flock's address on s.

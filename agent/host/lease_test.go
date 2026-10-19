@@ -570,3 +570,29 @@ func TestLeaseMovedOffTheNetwork(t *testing.T) {
 		})
 	}
 }
+
+// NEVER UP WHILE THE UPLINK IS DOWN: the probe gives the link back at the bridge member's carrier,
+// as the link mirror holds it -- down when the member is down or the bridge holds none -- and up on
+// a substrate with no member to follow (an ipvtap station, whose own carrier the probe never runs
+// without, since the router answered ARP over it).
+func TestLeaseLinkBackNeverUpWhileDown(t *testing.T) {
+	member := func(name string) func(string) (string, bool) {
+		return func(string) (string, bool) { return name, true }
+	}
+	alone := func(p string) (string, bool) { return p, false }
+	for _, tc := range []struct {
+		name   string
+		uplink func(string) (string, bool)
+		up     bool
+		want   bool
+	}{
+		{"a bridge, its member up", member("Ethernet"), true, true},
+		{"a bridge, its member down", member("Ethernet"), false, false},
+		{"a bridge holding only our TAP", member(""), true, false},
+		{"an ipvtap station", alone, false, true},
+	} {
+		if got := linkBack("p", tc.uplink, func(string) bool { return tc.up }); got != tc.want {
+			t.Errorf("%s: link back up = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
