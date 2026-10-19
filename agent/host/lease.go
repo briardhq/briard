@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"briard.io/agent/nic"
+	"briard.io/agent/platform"
 	"briard.io/agent/reportcard"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/notify"
@@ -48,6 +49,10 @@ const (
 	leaseRetrySilent  = time.Minute
 	leaseRetryRefused = 2 * time.Minute
 	leaseMinRenew     = 30 * time.Second
+	// leaseProbeEvery spaces the probe (renew) while a router keeps not answering: each one holds
+	// the VIP dark for a DISCOVER's length, and a router that ignored the last will likely ignore
+	// the next.
+	leaseProbeEvery = 10 * time.Minute
 )
 
 // leaseRelaunch is the internal act that relaunches the guest for a new address (acts.go).
@@ -56,7 +61,7 @@ const leaseRelaunch = "vip-lease"
 // dhcpAsker is nic.DHCPClient, as an interface so the policy is testable without a wire. Not a
 // seam -- a test double inside one component.
 type dhcpAsker interface {
-	Discover(ctx context.Context) (nic.DHCPLease, error)
+	Discover(ctx context.Context, hint netip.Addr) (nic.DHCPLease, error)
 	Request(ctx context.Context, offer nic.DHCPLease) (nic.DHCPLease, error)
 	Reboot(ctx context.Context, addr netip.Addr) (nic.DHCPLease, error)
 }
@@ -82,6 +87,17 @@ type vipLeaser struct {
 	hostAddrs func(dev string) []string
 	prefix    func(dev string) string
 	now       func() time.Time
+	// gateway reports whether the router answers ARP on dev (the fingerprint's read), and quiet
+	// silences the VIP (on) or gives it back (off) -- the probe's two levers, as fields for the
+	// same reason.
+	gateway func(ctx context.Context, dev string) bool
+	quiet   func(ctx context.Context, on bool) error
+	wake    chan struct{}         // askNow's nudge to run; nil in a test that drives renew itself
+	carrier func(dev string) bool // nic.Carrier, for watch
+
+	seen    bool   // watch has a reading
+	linkWas bool   // ...the carrier it read
+	hostWas string // ...and the host's own addresses on the link
 
 	ex sync.Mutex // one exchange at a time: a bring-up's and the renewal's
 
@@ -92,6 +108,7 @@ type vipLeaser struct {
 	why      string    // the refusal's cause, "" = not refused
 	relaunch bool      // the guest must be relaunched: a lost lease, or a first one after a refusal
 	alerted  bool      // the refusal's alert is open
+	probed   time.Time // the last probe; the next waits leaseProbeEvery
 }
 
 // newVIPLeaser builds this node's leaser; nil without a state dir to keep the record in.
@@ -119,12 +136,42 @@ func (cfg Config) newVIPLeaser() *vipLeaser {
 			_, p, _ := strings.Cut(reportcard.HostCIDR(dev), "/")
 			return p
 		},
-		now: time.Now,
+		now:     time.Now,
+		gateway: func(ctx context.Context, dev string) bool { return nic.Read(ctx, dev).GatewayMAC != "" },
+		quiet:   cfg.quietVIP,
+		wake:    make(chan struct{}, 1),
+		carrier: nic.Carrier,
 	}
 	if b, err := os.ReadFile(l.path); err == nil {
 		_ = json.Unmarshal(b, &l.rec)
 	}
 	return l
+}
+
+// quietVIP silences the guest's VIP (on) or gives it back (off): QMP set_link on the NIC the VIP
+// lives on -- the service NIC of an ipvtap station, the one NIC behind a Windows bridge. It is the
+// probe's "drop" (renew): with the link down nothing answers for the address, so the router's
+// conflict check finds it free.
+//
+// ⚠️ NEVER UP WHILE THE UPLINK IS DOWN, the link mirror's rule (linkmirror.go): giving it back on
+// a bridge sets the link to its member's carrier, which is what the mirror holds it at, so the
+// two agree whichever ran last.
+func (cfg Config) quietVIP(ctx context.Context, on bool) error {
+	g := platform.Adopt(cfg.guestSpec())
+	set := g.SetSystemLink
+	if cfg.net != nil && cfg.net.Ipvtap {
+		set = g.SetServiceLink
+	}
+	if on {
+		return set(ctx, false)
+	}
+	up := true
+	if cfg.net != nil {
+		if m, swaps := nic.Uplink(cfg.net.Parent); swaps {
+			up = m != "" && nic.Up(m)
+		}
+	}
+	return set(ctx, up)
 }
 
 // singleAnchor reports whether the host leases the flock's address on s.
@@ -163,6 +210,13 @@ func (l *vipLeaser) acquire(ctx context.Context, s nic.Spec, fresh bool, logf fu
 	if rec.Addr != "" && !fresh {
 		l.setRetry(l.now())
 		return rec.Addr
+	}
+	// AN EXPIRED ADDRESS IS NEVER PUSHED UN-ASKED: a fresh guest holds nothing, so rule 2 allows
+	// the DISCOVER, and the record's address rides it as the hint (discover). The laptop asleep for
+	// a week comes back here, through the resume's relaunch.
+	if rec.Addr != "" && rec.Until.Before(l.now()) {
+		logf("vip lease: %s expired; asking for it again", rec.Addr)
+		return l.discover(ctx, logf)
 	}
 	if rec.Addr != "" {
 		switch addr, err := l.keep(ctx, rec, logf); {
@@ -204,9 +258,11 @@ func (l *vipLeaser) keep(ctx context.Context, rec leaseRecord, logf func(string,
 	return got.Addr.String(), nil
 }
 
-// discover asks for a new address: DISCOVER, judge the offer, REQUEST it. "" when refused.
+// discover asks for a new address: DISCOVER, judge the offer, REQUEST it. "" when refused. The
+// record's address, when there is one (an expired lease), is the DISCOVER's hint, and the record
+// is kept until a new lease replaces it, so the hint outlives a refusal and a relaunch.
 func (l *vipLeaser) discover(ctx context.Context, logf func(string, ...any)) string {
-	offer, err := l.wire().Discover(ctx)
+	offer, err := l.wire().Discover(ctx, l.hint())
 	if err != nil {
 		if ctx.Err() == nil {
 			l.refuse("nothing answered when Briard asked for an address", logf)
@@ -235,6 +291,17 @@ func (l *vipLeaser) discover(ctx context.Context, logf func(string, ...any)) str
 	l.why = ""
 	l.mu.Unlock()
 	return ack.Addr.String()
+}
+
+// hint is the record's address, for a DISCOVER's option 50; invalid when there is none.
+func (l *vipLeaser) hint() netip.Addr {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	p, err := netip.ParsePrefix(l.rec.Addr)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return p.Addr()
 }
 
 // record turns a lease into what is kept: T1 no sooner than leaseMinRenew from now.
@@ -311,7 +378,8 @@ func (l *vipLeaser) refusal() (detail, fix string) {
 }
 
 // run keeps the lease: an INIT-REBOOT at T1, and -- while refused -- a DISCOVER every few minutes.
-// It never touches the guest; what the guest must do it leaves for the loop (tick).
+// askNow wakes it early. It never touches the guest's address; what the guest must do it leaves for
+// the loop (tick).
 func (l *vipLeaser) run(ctx context.Context, logf func(string, ...any)) {
 	if l == nil {
 		return
@@ -323,8 +391,50 @@ func (l *vipLeaser) run(ctx context.Context, logf func(string, ...any)) {
 			t.Stop()
 			return
 		case <-t.C:
+		case <-l.wake:
+			t.Stop()
 		}
 		l.renew(ctx, logf)
+	}
+}
+
+// askNow moves the next ask to now: the link the lease rides got its carrier back, or the host's
+// own address on it changed -- a roam, a cable moved to another switch, a router back from a
+// reboot. A client re-asks on such an edge; INIT-REBOOT is what this client may send while the
+// guest holds the address (rule 1). Called from the loop, so it never blocks: a wake already
+// pending is the same ask.
+func (l *vipLeaser) askNow() {
+	if !l.active() {
+		return
+	}
+	l.setRetry(l.now())
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+// watch reads the link the lease rides, once a tick, on the substrate where nothing else reports
+// its edges (a Linux ipvtap station; on Windows the link mirror does, mirrorLink). The carrier
+// coming back asks now, and so does the host's own address on it changing -- the level that
+// catches a roam shorter than a tick. The first reading only records.
+func (l *vipLeaser) watch() {
+	if !l.active() {
+		return
+	}
+	l.mu.Lock()
+	s := l.spec
+	l.mu.Unlock()
+	if !s.Ipvtap {
+		return
+	}
+	up, host := l.carrier(s.Parent), strings.Join(l.hostAddrs(s.Parent), ",")
+	l.mu.Lock()
+	seen, was, wasHost := l.seen, l.linkWas, l.hostWas
+	l.seen, l.linkWas, l.hostWas = true, up, host
+	l.mu.Unlock()
+	if seen && up && (!was || host != "" && host != wasHost) {
+		l.askNow()
 	}
 }
 
@@ -339,10 +449,21 @@ func (l *vipLeaser) renew(ctx context.Context, logf func(string, ...any)) {
 	rec, refused := l.rec, l.why != ""
 	l.mu.Unlock()
 	switch {
+	case refused:
+		// The guest was given no address, so a DISCOVER is allowed. First, because a refused node
+		// may still hold an expired record -- the hint, never an address the guest has.
+		if l.discover(ctx, logf) != "" {
+			l.askRelaunch()
+		}
 	case rec.Addr != "":
-		if _, err := l.keep(ctx, rec, logf); errors.Is(err, nic.ErrNAK) {
+		_, err := l.keep(ctx, rec, logf)
+		switch {
+		case errors.Is(err, nic.ErrNAK):
 			l.askRelaunch() // rule 2: the guest drops the address before anyone DISCOVERs
-		} else if err != nil {
+		case err == nil:
+		case rec.Until.Before(l.now()) && l.now().Sub(l.probed) >= leaseProbeEvery && l.gateway(ctx, l.parent()):
+			l.probe(ctx, rec, logf)
+		default:
 			// Kept past its expiry while nobody answers, as the guest's own client does on a wired
 			// substrate: a router that is down is not a router that wants the address back.
 			if now := l.now(); rec.Until.Before(now) && !rec.Until.Before(now.Add(-leaseRetrySilent)) {
@@ -350,11 +471,47 @@ func (l *vipLeaser) renew(ctx context.Context, logf func(string, ...any)) {
 			}
 			l.setRetry(l.now().Add(leaseRetrySilent))
 		}
-	case refused:
-		// The guest was given no address, so a DISCOVER is allowed.
-		if l.discover(ctx, logf) != "" {
-			l.askRelaunch()
+	}
+}
+
+// probe is the lease's answer to a router that is up -- it answers ARP -- and silent about an
+// expired lease: the RFC's own sequence from the host's hand. A router that keeps its leases in
+// RAM forgets them at a reboot, and a non-authoritative one then answers every renewal with
+// silence, where a client drops the address and DISCOVERs (RFC 2131 4.4.5). The VIP's link goes
+// down (the drop: nothing answers for the address, so the router's conflict check finds it free),
+// a DISCOVER carries the address as its hint, and the link comes back. An offer of our address is
+// requested and renewed in place, a few seconds dark; an offer of another is the NAK path, since
+// the guest takes an address only at bring-up; silence keeps the address, as a router that is down
+// leaves it -- spec-shaped while the router is up, local-first when it is not.
+func (l *vipLeaser) probe(ctx context.Context, rec leaseRecord, logf func(string, ...any)) {
+	l.mu.Lock()
+	l.probed = l.now()
+	l.mu.Unlock()
+	if err := l.quiet(ctx, true); err != nil {
+		logf("vip lease: %s expired with no answer; could not silence it to ask again: %v", rec.Addr, err)
+		l.setRetry(l.now().Add(leaseRetrySilent))
+		return
+	}
+	logf("vip lease: %s expired and the router does not answer for it; asking it afresh, the address silent meanwhile", rec.Addr)
+	offer, err := l.wire().Discover(ctx, l.hint())
+	switch want := l.hint(); {
+	case err == nil && offer.Addr.Addr() == want:
+		if ack, err := l.wire().Request(ctx, offer); err == nil && ack.Addr.Addr() == want {
+			l.store(l.record(ack), logf)
+			logf("vip lease: %s renewed in place, from %s for %s", ack.Addr, ack.Server, ack.Time)
+		} else {
+			l.setRetry(l.now().Add(leaseRetrySilent))
 		}
+	case err == nil:
+		logf("vip lease: the router offers %s now, not %s; restarting the guest to take an address", offer.Addr.Addr(), want)
+		l.store(leaseRecord{}, logf)
+		l.askRelaunch()
+	default:
+		logf("vip lease: no offer for %s either; kept, and asked for again", rec.Addr)
+		l.setRetry(l.now().Add(leaseRetrySilent))
+	}
+	if err := l.quiet(ctx, false); err != nil {
+		logf("vip lease: could not give %s its link back: %v", rec.Addr, err)
 	}
 }
 
@@ -383,6 +540,7 @@ func (l *vipLeaser) tick(ctx context.Context, acts *actLane, up any, n notify.No
 	if l == nil {
 		return
 	}
+	l.watch()
 	refused, active := l.refused(), l.active()
 	l.mu.Lock()
 	open, relaunch := l.alerted, l.relaunch && active

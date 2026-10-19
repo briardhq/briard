@@ -84,9 +84,11 @@ type dhcpConn interface {
 }
 
 // Discover broadcasts a DISCOVER and returns the first OFFER. The caller judges the offer before
-// asking for it (Request): an address it must not hold is never requested.
-func (c DHCPClient) Discover(ctx context.Context) (DHCPLease, error) {
-	return c.exchange(ctx, func(xid uint32) []byte { return c.message(xid, dhcpDiscover, netip.Addr{}, netip.Addr{}) }, dhcpOffer)
+// asking for it (Request): an address it must not hold is never requested. hint, when valid, is
+// option 50: the address last held, which a router honours when nobody answers for it -- the
+// request every client sends after its lease expires (RFC 2131 4.4.5, 3.5).
+func (c DHCPClient) Discover(ctx context.Context, hint netip.Addr) (DHCPLease, error) {
+	return c.exchange(ctx, func(xid uint32) []byte { return c.message(xid, dhcpDiscover, hint, netip.Addr{}) }, dhcpOffer)
 }
 
 // Request asks for an offer (SELECTING: option 50 and the offering server's identifier).

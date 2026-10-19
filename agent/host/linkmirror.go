@@ -26,9 +26,11 @@ type linkMirror struct {
 	failing bool  // the last set failed: said once, until one succeeds
 }
 
-// tick sets the link to the NIC's carrier when it differs from the link last set. A failed set
+// tick sets the link to the NIC's carrier when it differs from the link last set, and reports the
+// NIC's carrier coming BACK -- an up edge after the loop's first set, the one place the edge is
+// known on Windows, where the lease re-asks on it (lease.go's askNow). A failed set
 // leaves the record as it was, so the next tick tries again.
-func (m *linkMirror) tick(ctx context.Context, member string, carrier bool, set func(context.Context, bool) error, logf func(string, ...any)) {
+func (m *linkMirror) tick(ctx context.Context, member string, carrier bool, set func(context.Context, bool) error, logf func(string, ...any)) (back bool) {
 	up := member != "" && carrier
 	if m.set != nil && *m.set == up {
 		return
@@ -48,9 +50,11 @@ func (m *linkMirror) tick(ctx context.Context, member string, carrier bool, set 
 	switch {
 	case up && !first:
 		logf("network: %s has its carrier back; the guest's link is up again", memberName(member))
+		back = true
 	case !up:
 		logf("network: %s has no carrier; the guest's link is down with it, so Windows sees the bridge down", memberName(member))
 	}
+	return back
 }
 
 func onOff(up bool) string {

@@ -323,8 +323,8 @@ func qemuArgs(s QEMUSpec) []string {
 	}
 	if s.ServiceTap != "" {
 		args = append(args,
-			"-netdev", netdevArg("net2", s.ServiceTap, s.NetMode, svcFD),
-			"-device", "virtio-net-pci,netdev=net2"+macArg(s.ServiceMAC))
+			"-netdev", netdevArg(serviceNetdev, s.ServiceTap, s.NetMode, svcFD),
+			"-device", "virtio-net-pci,netdev="+serviceNetdev+macArg(s.ServiceMAC))
 	}
 	if s.WitnessTap != "" {
 		// The witness NIC is ALWAYS a plain tap, even under NetMacvtap: it is the private

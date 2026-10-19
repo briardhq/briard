@@ -357,6 +357,21 @@ func (g *Guest) SetSystemLink(ctx context.Context, up bool) error {
 	return err
 }
 
+// serviceNetdev is the id of the guest's service NIC backend, where the VIP lives on a substrate
+// with two taps (an ipvtap station's second child).
+const serviceNetdev = "net2"
+
+// SetServiceLink sets the link of the guest's service NIC up or down, as SetSystemLink does the
+// system NIC's: the lease's probe silences the VIP with it on Linux, where qemu's tap backend
+// changes nothing on the host, so only the guest sees the edge.
+func (g *Guest) SetServiceLink(ctx context.Context, up bool) error {
+	if g == nil || g.QMPSock == "" {
+		return fmt.Errorf("platform: no guest monitor to set the link on")
+	}
+	_, err := qmpExecute(ctx, g.QMPSock, "set_link", map[string]any{"name": serviceNetdev, "up": up})
+	return err
+}
+
 // AddMemory grows the running VM by one DIMM of MemoryStepMB: a RAM backend, then the DIMM that
 // plugs it in. The guest's kernel sees an ACPI memory-hotplug event and onlines the memory itself,
 // so nothing is asked of the guest OS. It is the ONE way the VM grows, on every accelerator: QEMU's

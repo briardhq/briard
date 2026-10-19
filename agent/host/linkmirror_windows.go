@@ -15,7 +15,9 @@ func (cfg Config) mirrorLink(ctx context.Context, m *linkMirror, logf func(strin
 		return
 	}
 	member, _ := nic.MemberSpeed(cfg.net.Parent)
-	m.tick(ctx, member, member != "" && nic.Up(member), platform.Adopt(cfg.guestSpec()).SetSystemLink, logf)
+	if m.tick(ctx, member, member != "" && nic.Up(member), platform.Adopt(cfg.guestSpec()).SetSystemLink, logf) {
+		cfg.lease.askNow() // the carrier back: the lease re-asks (lease.go)
+	}
 }
 
 // linkChanges wakes the observe loop for the mirror alone when Windows reports an interface

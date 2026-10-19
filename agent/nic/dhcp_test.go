@@ -36,6 +36,7 @@ func TestDHCPMessages(t *testing.T) {
 		want50, want54 bool
 	}{
 		{"discover", dhcpDiscover, netip.Addr{}, netip.Addr{}, false, false},
+		{"discover with the expired address as a hint", dhcpDiscover, addr, netip.Addr{}, true, false},
 		{"request (selecting)", dhcpRequest, addr, server, true, true},
 		{"init-reboot", dhcpRequest, addr, netip.Addr{}, true, false},
 	} {
@@ -67,6 +68,9 @@ func TestDHCPMessages(t *testing.T) {
 			}
 			if !bytes.Equal(o[61], append([]byte{1}, flockMAC...)) {
 				t.Errorf("client-id = %x, want 01:<flock>", o[61])
+			}
+			if a := addr.As4(); tc.want50 && !bytes.Equal(o[50], a[:]) {
+				t.Errorf("option 50 = %v, want %v", o[50], a)
 			}
 			if _, ok := o[50]; ok != tc.want50 {
 				t.Errorf("option 50 present = %v, want %v", ok, tc.want50)

@@ -88,7 +88,7 @@ pkgs.testers.runNixOSTest {
       # what derives the substrate. It comes from the household's router, by DHCP, as at home.
       networking.interfaces.wlan0.useDHCP = true;
       environment.systemPackages = [
-        pkgs.iproute2 pkgs.iputils pkgs.kmod pkgs.curl pkgs.iw pkgs.hostapd pkgs.dnsmasq
+        pkgs.iproute2 pkgs.iputils pkgs.socat pkgs.kmod pkgs.curl pkgs.iw pkgs.hostapd pkgs.dnsmasq
       ];
     };
 
@@ -261,5 +261,43 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"curl -fsS --max-time 5 http://{vip}/healthz")
     host.succeed("ip -o -4 addr show dev wlan0 | grep -qw " + host_ip)
     print("the host kept its address and its LAN, and reaches its guest")
+
+    # --- THE LEASE'S PROBE ON IPVTAP: its control, then the probe itself ---
+    # THE CONTROL: with the guest's VIP silent, nothing on the LAN gets an ARP reply for it. The
+    # probe rests on that -- an ARP-checking router must find the address free -- and so does a
+    # relaunch's DISCOVER. The lever is the probe's own (QMP set_link on the service NIC). With the
+    # link down only the guest is silenced, so a reply here would be the holding namespace's /32
+    # copy answering -- which would answer for a stopped guest too.
+    def qmp(cmd):
+        host.succeed("printf '%s%s' '{\"execute\":\"qmp_capabilities\"}' '" + cmd + "' | "
+                     "socat -t2 - UNIX-CONNECT:/run/briard/qmp/guest.sock")
+    def arp():
+        return int(host.succeed(f"ip netns exec lan arping -c 3 -w 4 -I wlan1 {vip} | grep -c 'reply from' || true").strip())
+    assert arp() == 3, "the VIP does not answer ARP with its link up: the control would witness nothing"
+    qmp('{"execute":"set_link","arguments":{"name":"net2","up":false}}')
+    host.sleep(1)
+    assert arp() == 0, "something answers ARP for the VIP while the guest is silent"
+    qmp('{"execute":"set_link","arguments":{"name":"net2","up":true}}')
+    host.wait_until_succeeds(f"ip netns exec lan arping -c 1 -w 2 -I wlan1 {vip} | grep -q 'reply from'", timeout=30)
+    print("with the guest's link down nothing answers for the VIP; with it up the guest does")
+
+    # THE PROBE: the router reboots having kept its leases in RAM, and is no longer authoritative,
+    # so the host's INIT-REBOOT for the VIP meets silence until the lease expires. The router is up
+    # (it answers ARP), so the host silences the VIP, DISCOVERs with it as the hint, and renews it
+    # in place -- no restart of the guest, the same address.
+    host.succeed("kill $(cat /run/lan-dnsmasq.pid); rm -f /tmp/lan.leases")
+    host.succeed(
+        "ip netns exec lan dnsmasq --interface=wlan1 --bind-interfaces --port=0 --no-resolv "
+        "--dhcp-range=192.168.7.100,192.168.7.150,2m --dhcp-option=3,192.168.7.1 --dhcp-ignore-clid "
+        "--dhcp-leasefile=/tmp/lan.leases --log-dhcp --log-facility=/tmp/lan-dnsmasq.log "
+        "--pid-file=/run/lan-dnsmasq.pid --user=root"
+    )
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent -o cat | grep -q 'vip lease: {vip}/24 renewed in place'", timeout=420
+    )
+    host.succeed(f"journalctl -u briard-agent -o cat | grep -q 'vip lease: {vip}/24 expired and the router does not answer for it'")
+    host.fail("journalctl -u briard-agent -o cat | grep -q 'vip lease: restarting the guest'")
+    host.wait_until_succeeds(f"ip netns exec lan curl -fsS --max-time 5 http://{vip}/healthz", timeout=60)
+    print("the router forgot the lease; the host asked afresh with the VIP silent and renewed it in place")
 '');
 }

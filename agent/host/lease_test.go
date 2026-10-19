@@ -25,7 +25,11 @@ type fakeDHCP struct {
 	sent               []string
 }
 
-func (f *fakeDHCP) Discover(context.Context) (nic.DHCPLease, error) {
+func (f *fakeDHCP) Discover(_ context.Context, hint netip.Addr) (nic.DHCPLease, error) {
+	if hint.IsValid() {
+		f.sent = append(f.sent, "DISCOVER hint "+hint.String())
+		return f.offer, f.offerErr
+	}
 	f.sent = append(f.sent, "DISCOVER")
 	return f.offer, f.offerErr
 }
@@ -53,16 +57,24 @@ type leaseRig struct {
 	l     *vipLeaser
 	wire  *fakeDHCP
 	named string
+	up    bool // the link's carrier, as watch reads it
+	host  []string
+	gw    bool   // the router answers ARP
+	quiet []bool // the probe's link levers, in order: true = silenced
 	lines []string
 }
 
 func newLeaseRig(t *testing.T) *leaseRig {
-	r := &leaseRig{wire: &fakeDHCP{}}
+	r := &leaseRig{wire: &fakeDHCP{}, up: true, host: []string{"192.168.7.50"}, gw: true}
 	r.l = &vipLeaser{
 		path:      filepath.Join(t.TempDir(), leaseFile),
 		named:     func() bool { return r.named != "" },
 		ask:       func(nic.Spec) dhcpAsker { return r.wire },
-		hostAddrs: func(string) []string { return []string{"192.168.7.50"} },
+		hostAddrs: func(string) []string { return r.host },
+		carrier:   func(string) bool { return r.up },
+		gateway:   func(context.Context, string) bool { return r.gw },
+		quiet:     func(_ context.Context, on bool) error { r.quiet = append(r.quiet, on); return nil },
+		wake:      make(chan struct{}, 1),
 		prefix:    func(string) string { return "24" },
 		now:       func() time.Time { return clock },
 	}
@@ -303,5 +315,169 @@ func TestLeaseRecordIsReadAtStart(t *testing.T) {
 	}
 	if h := l.ask(ipvtapSpec).(nic.DHCPClient); h.Dev != "briard0" || !strings.HasPrefix(h.Hostname, "briard-") || len(h.Hostname) != 13 {
 		t.Errorf("the ipvtap client is %+v, want the service child and the flock's name", h)
+	}
+}
+
+// expired is a record whose lease ran out an hour ago.
+func (r *leaseRig) expired(addr string) {
+	r.l.store(leaseRecord{Addr: addr, Renew: clock.Add(-2 * time.Hour), Until: clock.Add(-time.Hour)}, r.logf)
+}
+
+// AN EXPIRED ADDRESS IS NEVER PUSHED UN-ASKED. A fresh guest holds nothing, so the bring-up
+// DISCOVERs with the address as its hint. The record survives a silence, so the hint is there on
+// the next ask -- and a refused node asks by DISCOVER first, never by keeping an address its guest
+// was not given. An adopted guest holds the address, so it is pushed as it stands and asked at once.
+func TestLeaseExpiredRecord(t *testing.T) {
+	t.Run("fresh: DISCOVER with the hint", func(t *testing.T) {
+		r := newLeaseRig(t)
+		r.expired("192.168.7.120/24")
+		r.wire.offer, r.wire.ack = lease("192.168.7.120/24"), lease("192.168.7.120/24")
+		if got := r.acquire(true); got != "192.168.7.120/24" {
+			t.Fatalf("pushed %q", got)
+		}
+		if !slices.Equal(r.wire.sent, []string{"DISCOVER hint 192.168.7.120", "REQUEST 192.168.7.120"}) {
+			t.Errorf("sent %v", r.wire.sent)
+		}
+	})
+	t.Run("fresh, silence: refused, the hint kept, and asked by DISCOVER again", func(t *testing.T) {
+		r := newLeaseRig(t)
+		r.expired("192.168.7.120/24")
+		r.wire.offerErr = nic.ErrNoAnswer
+		if got := r.acquire(true); got != "" || !r.l.refused() {
+			t.Fatalf("pushed %q, refused=%v: an expired address went out un-asked", got, r.l.refused())
+		}
+		if r.record(t).Addr != "192.168.7.120/24" {
+			t.Error("the record went with the silence; the next ask has no hint")
+		}
+		r.wire.offerErr, r.wire.offer, r.wire.ack = nil, lease("192.168.7.120/24"), lease("192.168.7.120/24")
+		r.l.renew(context.Background(), r.logf)
+		if !slices.Equal(r.wire.sent, []string{"DISCOVER hint 192.168.7.120", "DISCOVER hint 192.168.7.120", "REQUEST 192.168.7.120"}) {
+			t.Errorf("sent %v", r.wire.sent)
+		}
+		if !r.l.relaunch {
+			t.Error("a refused guest was leased an address and not relaunched to take it")
+		}
+	})
+	t.Run("adopted: pushed as it stands, asked at once", func(t *testing.T) {
+		r := newLeaseRig(t)
+		r.expired("192.168.7.120/24")
+		if got := r.acquire(false); got != "192.168.7.120/24" || len(r.wire.sent) != 0 || !r.l.due().Equal(clock) {
+			t.Errorf("pushed %q, sent %v, due %v", got, r.wire.sent, r.l.due())
+		}
+	})
+}
+
+// THE PROBE: expired, the INIT-REBOOT unanswered, and the router answering ARP. The VIP goes
+// silent, a DISCOVER carries the hint, and the link always comes back. Its three outcomes, and the
+// two gates that keep it from running through an outage or every minute.
+func TestLeaseProbe(t *testing.T) {
+	setup := func(t *testing.T) *leaseRig {
+		r := newLeaseRig(t)
+		r.expired("192.168.7.120/24")
+		r.wire.rebootErr = nic.ErrNoAnswer
+		return r
+	}
+	t.Run("our address offered: renewed in place", func(t *testing.T) {
+		r := setup(t)
+		r.wire.offer, r.wire.ack = lease("192.168.7.120/24"), lease("192.168.7.120/24")
+		r.l.renew(context.Background(), r.logf)
+		if !slices.Equal(r.wire.sent, []string{"INIT-REBOOT 192.168.7.120", "DISCOVER hint 192.168.7.120", "REQUEST 192.168.7.120"}) {
+			t.Errorf("sent %v", r.wire.sent)
+		}
+		if rec := r.record(t); !rec.Until.Equal(clock.Add(2*time.Hour)) || r.l.relaunch {
+			t.Errorf("record %+v relaunch %v: want renewed in place, no restart", rec, r.l.relaunch)
+		}
+		if !slices.Equal(r.quiet, []bool{true, false}) {
+			t.Errorf("link levers %v, want silenced then given back", r.quiet)
+		}
+	})
+	t.Run("another address offered: the NAK path", func(t *testing.T) {
+		r := setup(t)
+		r.wire.offer = lease("192.168.7.121/24")
+		r.l.renew(context.Background(), r.logf)
+		if r.record(t).Addr != "" || !r.l.relaunch || slices.Contains(r.wire.sent, "REQUEST 192.168.7.121") {
+			t.Errorf("record %+v relaunch %v sent %v: want dropped, a relaunch, nothing requested", r.record(t), r.l.relaunch, r.wire.sent)
+		}
+		if !slices.Equal(r.quiet, []bool{true, false}) {
+			t.Errorf("link levers %v", r.quiet)
+		}
+	})
+	t.Run("silence: kept", func(t *testing.T) {
+		r := setup(t)
+		r.wire.offerErr = nic.ErrNoAnswer
+		r.l.renew(context.Background(), r.logf)
+		if r.record(t).Addr != "192.168.7.120/24" || r.l.relaunch || r.l.refused() {
+			t.Errorf("record %+v relaunch %v refused %v: a silent router took the address", r.record(t), r.l.relaunch, r.l.refused())
+		}
+		if !slices.Equal(r.quiet, []bool{true, false}) {
+			t.Errorf("link levers %v", r.quiet)
+		}
+		// THE SECOND GATE: the next renewal, a minute on, does not probe again.
+		r.wire.sent, r.quiet = nil, nil
+		r.l.renew(context.Background(), r.logf)
+		if len(r.quiet) != 0 || slices.Contains(r.wire.sent, "DISCOVER hint 192.168.7.120") {
+			t.Errorf("probed again at once: levers %v sent %v", r.quiet, r.wire.sent)
+		}
+	})
+	t.Run("the router not answering ARP: no probe, an outage", func(t *testing.T) {
+		r := setup(t)
+		r.gw = false
+		r.l.renew(context.Background(), r.logf)
+		if len(r.quiet) != 0 || !slices.Equal(r.wire.sent, []string{"INIT-REBOOT 192.168.7.120"}) {
+			t.Errorf("levers %v sent %v", r.quiet, r.wire.sent)
+		}
+	})
+	t.Run("not expired: no probe", func(t *testing.T) {
+		r := setup(t)
+		r.holding("192.168.7.120/24")
+		r.l.renew(context.Background(), r.logf)
+		if len(r.quiet) != 0 || len(r.wire.sent) != 1 {
+			t.Errorf("levers %v sent %v", r.quiet, r.wire.sent)
+		}
+	})
+}
+
+// THE LINK'S EDGES ASK NOW, on the substrate with no notification: the carrier coming back, or the
+// host's own address on it changing. The first reading only records; a carrier going away and an
+// address lost with it ask nothing.
+func TestLeaseWatchAsksOnAnEdge(t *testing.T) {
+	r := newLeaseRig(t)
+	r.holding("192.168.7.120/24")
+	asked := func() bool {
+		select {
+		case <-r.l.wake:
+			return true
+		default:
+			return false
+		}
+	}
+	for _, step := range []struct {
+		name string
+		up   bool
+		host []string
+		ask  bool
+	}{
+		{"the first reading", true, []string{"192.168.7.50"}, false},
+		{"nothing changed", true, []string{"192.168.7.50"}, false},
+		{"the carrier lost, the address with it", false, nil, false},
+		{"the carrier back", true, nil, true},
+		{"the host's own address arrives", true, []string{"192.168.9.50"}, true},
+		{"the address unchanged", true, []string{"192.168.9.50"}, false},
+		{"another address, carrier up throughout: a roam shorter than a tick", true, []string{"192.168.7.51"}, true},
+	} {
+		r.up, r.host = step.up, step.host
+		r.l.watch()
+		if got := asked(); got != step.ask {
+			t.Errorf("%s: asked = %v, want %v", step.name, got, step.ask)
+		}
+	}
+	// Off ipvtap the mirror reports the edge (Windows): watch reads nothing.
+	r.l.spec = nic.Spec{Parent: "Briard bridge", Bridge: true}
+	r.up = false
+	r.l.watch()
+	r.up = true
+	r.l.watch()
+	if asked() {
+		t.Error("watch asked on a bridge, where the link mirror owns the edge")
 	}
 }
