@@ -25,8 +25,13 @@ const (
 	bridgeWhose = "briard's bridge, built at install"
 
 	// defaultSystemTap is the tap-windows6 adapter the bridge is built with, under the name the bridge
-	// build gives it.
-	defaultSystemTap = nic.TapName
+	// build gives it. It is the guest's ONE NIC here: the bridge shape has no service tap and no
+	// private link (applySubstrate), and a config that named them would name devices this host
+	// never has -- which the hot path reads as "not built" and sends every restart down the cold
+	// start.
+	defaultSystemTap  = nic.TapName
+	defaultServiceTap = ""
+	defaultWitnessTap = ""
 
 	// openHint is how a person here asks for another one-time link.
 	openHint = "briard open, in a terminal opened as administrator"

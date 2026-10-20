@@ -17,8 +17,12 @@ const (
 	// bridgeWhose says, in the log, whose bridge the guest hangs off: on Linux, always the user's.
 	bridgeWhose = "a bridge this host did not create"
 
-	// defaultSystemTap is the guest's eth1 on the host: a tap the agent creates.
-	defaultSystemTap = "briard-drbd0"
+	// The guest's three NICs on the host, taps the agent creates: eth1 (the node IP and DRBD),
+	// eth2 (where the VIP lives) and eth3 (the private host<->guest link). The macvtap shape every
+	// Linux node ships in; a bridge parent narrows it (applySubstrate).
+	defaultSystemTap  = "briard-drbd0"
+	defaultServiceTap = "briard0"
+	defaultWitnessTap = "briard-priv0"
 
 	// openHint is how a person here asks for another one-time link.
 	openHint = "sudo briard open"
