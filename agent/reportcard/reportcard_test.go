@@ -80,11 +80,11 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		}, "network", "connect this machine to your network"},
 		{"no default route", func(f *HostFacts) {
 			f.NIC = nic.Selection{Err: nic.ErrNoDefaultRoute, Candidates: []string{"eth0", "wlan0"}}
-		}, "network", "BRIARD_NIC=eth0"},
+		}, "network", "BRIARD_NIC -- this machine has: eth0"},
 		{"the default route is a full-tunnel VPN", func(f *HostFacts) {
 			f.NIC = nic.Selection{Dev: "tun0", Candidates: []string{"eth0", "tun0"},
 				Err: errors.New("a macvtap could not be created on it (argument \"tun0\" is wrong: Device does not support macvlan)")}
-		}, "network", "BRIARD_NIC=eth0"},
+		}, "network", "BRIARD_NIC -- this machine has: eth0"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
 	}
 	for _, tc := range cases {
