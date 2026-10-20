@@ -32,7 +32,7 @@ func Gather(ctx context.Context) HostFacts {
 		DiskFreeMB:        diskFreeMB(installRoot()),
 		KeptDataDisk:      exists(petDir + `\data.img`),
 		KeptStateDisk:     exists(petDir + `\state.img`),
-		HostCIDR:          HostCIDR(sel.Dev),
+		HostCIDR:          nic.HostCIDR(sel.Dev),
 		VIPAddr:           os.Getenv("VIP_ADDR"),
 		VIPAnswered:       os.Getenv("VIP_ADDR") != "" && AddressAnswers(os.Getenv("VIP_ADDR")),
 		HostLeased:        nic.Leased(sel.Dev),

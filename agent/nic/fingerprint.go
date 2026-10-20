@@ -66,16 +66,9 @@ func Read(ctx context.Context, dev string) Fingerprint {
 	}
 	if i, err := net.InterfaceByName(dev); err == nil {
 		f.ParentMAC = i.HardwareAddr.String()
-		if addrs, err := i.Addrs(); err == nil {
-			for _, a := range addrs {
-				if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
-					f.HostCIDR = n.String()
-					break
-				}
-			}
-		}
 	}
 	f.GatewayIP = defaultGateway(dev)
+	f.HostCIDR = hostCIDR(dev, f.GatewayIP)
 	if f.GatewayIP != "" {
 		// The gateway is by definition something this host has been talking to, so its neighbour
 		// entry is normally already resolved. ARP it if not, exactly as the VIP check does -- a
@@ -89,6 +82,59 @@ func Read(ctx context.Context, dev string) Fingerprint {
 // The two readers Read needs -- defaultGateway (dev's default next hop, from the same table
 // DefaultRoute uses) and neighbourMAC (that hop's link address, provoked and read without a raw
 // socket) -- are the per-OS half, in link_linux.go / link_windows.go. The parsers stay here.
+
+// HostCIDR is dev's own LAN address with its prefix ("192.168.9.100/24"): the LAN this node is on,
+// which is what the VIP has to be inside and what the fingerprint compares. "" when dev has none,
+// which every reader takes as "unknown" rather than as a different network.
+//
+// ⚠️ THE ADDRESS ON THE GATEWAY'S SUBNET, never the first one listed. On a bridge the host's LAN
+// address sits beside the agent's own system-subnet /32, the one it puts there for the guest, and
+// which of the two the OS lists first is its choice, not ours. Without a default route, the first
+// address that is not link-local: a bridge mid-DHCP on Windows holds an APIPA placeholder, and a
+// placeholder is not a LAN.
+func HostCIDR(dev string) string {
+	if dev == "" {
+		return ""
+	}
+	return hostCIDR(dev, defaultGateway(dev))
+}
+
+func hostCIDR(dev, gateway string) string {
+	i, err := net.InterfaceByName(dev)
+	if err != nil {
+		return ""
+	}
+	addrs, err := i.Addrs()
+	if err != nil {
+		return ""
+	}
+	var ps []netip.Prefix
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
+			if p, err := netip.ParsePrefix(n.String()); err == nil {
+				ps = append(ps, p)
+			}
+		}
+	}
+	return pickHostCIDR(ps, gateway)
+}
+
+// pickHostCIDR is HostCIDR's choice among dev's IPv4 prefixes, pure so it is unit-tested.
+func pickHostCIDR(ps []netip.Prefix, gateway string) string {
+	if gw, err := netip.ParseAddr(gateway); err == nil {
+		for _, p := range ps {
+			if p.Contains(gw) {
+				return p.String()
+			}
+		}
+	}
+	for _, p := range ps {
+		if !p.Addr().IsLinkLocalUnicast() {
+			return p.String()
+		}
+	}
+	return ""
+}
 
 // parseDefaultGateway pulls dev's default next hop out of /proc/net/route's text. Pure, so the
 // one detail that cannot be inferred by reading it -- the LITTLE-ENDIAN hex the address column is

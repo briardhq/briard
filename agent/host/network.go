@@ -3,7 +3,6 @@ package host
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"time"
 
 	"briard.io/agent/cloud"
@@ -308,22 +307,6 @@ func (cfg Config) swapBeforeLaunch(ctx context.Context, sel nic.Selection, logf 
 	cfg.beat.Lease(sw)
 	if err := cfg.swapMember(sw, sel.Dev, sel.SwapIn, logf); err != nil {
 		return fmt.Errorf("swapping %s into %s: %w", sel.SwapIn, sel.Dev, err)
-	}
-	// AND ITS LEASE BEFORE THE BOOT: the bridge re-leases under the arriving member's MAC, and
-	// until it has, everything read off it -- the LAN fingerprint the bring-up compares, the
-	// address the guest is reached by -- is a reading of an adapter mid-DHCP. Bounded by the
-	// swap's budget; a lease that never comes is the guest's to wait out, as at any boot. Asked of
-	// the fingerprint, not the route table: Windows keeps the bridge's default route through the
-	// re-lease, while its address is the link-local placeholder and its gateway does not answer.
-	for sw.Err() == nil {
-		fp := nic.Read(sw, sel.Dev)
-		if p, err := netip.ParsePrefix(fp.HostCIDR); err == nil && !p.Addr().IsLinkLocalUnicast() && fp.GatewayMAC != "" {
-			break
-		}
-		select {
-		case <-sw.Done():
-		case <-time.After(time.Second):
-		}
 	}
 	logf("network: %s is %s's member", sel.SwapIn, sel.Dev)
 	return nil

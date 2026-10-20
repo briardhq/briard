@@ -1,32 +1,6 @@
 package reportcard
 
-import (
-	"net"
-	"os"
-)
-
-// HostCIDR returns dev's own IPv4 address in CIDR form ("192.168.9.100/24") -- the LAN this node
-// is on, which is what the VIP has to be inside. "" when unreadable or the NIC has no IPv4, which
-// the VIP check reads as "unknown" and stays quiet about rather than refusing over.
-func HostCIDR(dev string) string {
-	if dev == "" {
-		return ""
-	}
-	iface, err := net.InterfaceByName(dev)
-	if err != nil {
-		return ""
-	}
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return ""
-	}
-	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
-			return n.String()
-		}
-	}
-	return ""
-}
+import "os"
 
 func exists(path string) bool {
 	_, err := os.Stat(path)

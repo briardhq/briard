@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"briard.io/agent/guest"
+	"briard.io/agent/nic"
 	"briard.io/agent/reportcard"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
@@ -60,7 +61,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 	}
 	hostCIDR := ""
 	if cfg.net != nil {
-		hostCIDR = reportcard.HostCIDR(cfg.net.Parent)
+		hostCIDR = nic.HostCIDR(cfg.net.Parent)
 	}
 	cctx, cancel := cfg.beat.budget(ctx, configSetBudget)
 	defer cancel()

@@ -1,6 +1,9 @@
 package nic
 
-import "testing"
+import (
+	"net/netip"
+	"testing"
+)
 
 // home is the fingerprint of an ordinary household LAN, recorded at a successful bring-up.
 func home() Fingerprint {
@@ -87,5 +90,31 @@ func TestCompare(t *testing.T) {
 func TestCompareWithNoRecordIsUnknown(t *testing.T) {
 	if got := Compare(Fingerprint{}, home()); got != Unknown {
 		t.Errorf("Compare(no record) = %q, want %q", got, Unknown)
+	}
+}
+
+// THE HOST'S ADDRESS IS THE ONE ON THE GATEWAY'S SUBNET. On a bridge the agent's own
+// system-subnet /32 sits beside the LAN address, and which one the OS lists first is not ours to
+// choose: the case this catches is the /32 listed first, which a first-address read would record
+// as the LAN and then compare as `elsewhere` against every real one.
+func TestPickHostCIDR(t *testing.T) {
+	lan, own, apipa := netip.MustParsePrefix("192.168.1.50/24"), netip.MustParsePrefix("10.77.0.1/32"), netip.MustParsePrefix("169.254.3.4/16")
+	cases := []struct {
+		name    string
+		ps      []netip.Prefix
+		gateway string
+		want    string
+	}{
+		{"our /32 listed first", []netip.Prefix{own, lan}, "192.168.1.1", lan.String()},
+		{"the LAN listed first", []netip.Prefix{lan, own}, "192.168.1.1", lan.String()},
+		{"no gateway: the first that is not link-local", []netip.Prefix{apipa, own, lan}, "", own.String()},
+		{"a gateway none of them reaches: the first that is not link-local", []netip.Prefix{apipa, lan}, "10.0.0.1", lan.String()},
+		{"a placeholder alone is no LAN", []netip.Prefix{apipa}, "", ""},
+		{"nothing", nil, "192.168.1.1", ""},
+	}
+	for _, c := range cases {
+		if got := pickHostCIDR(c.ps, c.gateway); got != c.want {
+			t.Errorf("%s: pickHostCIDR = %q, want %q", c.name, got, c.want)
+		}
 	}
 }

@@ -16,7 +16,6 @@ import (
 
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
-	"briard.io/agent/reportcard"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/notify"
 )
@@ -135,7 +134,7 @@ func (cfg Config) newVIPLeaser() *vipLeaser {
 		hostAddrs: nic.IPv4s,
 		node:      cfg.hostNodeIP(),
 		prefix: func(dev string) string {
-			_, p, _ := strings.Cut(reportcard.HostCIDR(dev), "/")
+			_, p, _ := strings.Cut(nic.HostCIDR(dev), "/")
 			return p
 		},
 		now:     time.Now,

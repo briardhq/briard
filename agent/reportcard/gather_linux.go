@@ -43,7 +43,7 @@ func Gather(ctx context.Context) HostFacts {
 		DiskFreeMB:    diskFreeMB(installRoot()),
 		KeptDataDisk:  exists(petDir + "/data.img"),
 		KeptStateDisk: exists(petDir + "/state.img"),
-		HostCIDR:      HostCIDR(sel.Dev),
+		HostCIDR:      nic.HostCIDR(sel.Dev),
 		// The address the install is about to hand the guest. install.sh already computes it
 		// (BRIARD_VIP_ADDR, CIDR form) and passes it here the same way it passes NET_MODE -- the card
 		// cannot judge an address it is not told about, and this is the last gate before a VM

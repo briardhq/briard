@@ -224,7 +224,31 @@ func disableBridgeSTA() error {
 // swapMember moves briard's bridge onto the standalone adapter to (nic.SwapMember) and keeps the
 // arriving member's offload record where buildBridge keeps the first one, so the record always
 // describes the member the bridge stands on, and the leaving member gets its own value back.
+//
+// AND WAITS FOR THE BRIDGE'S LEASE: it re-leases under the arriving member's MAC, and until it
+// has, everything read off it -- the LAN fingerprint the bring-up compares and records, the
+// address the guest is reached by -- is a reading of an adapter mid-DHCP. Both callers boot the
+// guest right after (the cold start's swap, the live re-parent's), so both wait here. Bounded by
+// the caller's budget; a lease that never comes is the guest's to wait out, as at any boot. Asked
+// of the fingerprint, not the route table: Windows keeps the bridge's default route through the
+// re-lease, while its address is the link-local placeholder and its gateway does not answer.
 func (cfg Config) swapMember(ctx context.Context, bridge, to string, logf func(string, ...any)) error {
+	if err := cfg.swapMemberRecorded(ctx, bridge, to, logf); err != nil {
+		return err
+	}
+	for ctx.Err() == nil {
+		if fp := nic.Read(ctx, bridge); fp.HostCIDR != "" && fp.GatewayMAC != "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
+	}
+	return nil
+}
+
+func (cfg Config) swapMemberRecorded(ctx context.Context, bridge, to string, logf func(string, ...any)) error {
 	path := filepath.Join(filepath.Dir(cfg.AssignmentCache), bridgeRecord)
 	var prev nic.Offload
 	if b, err := os.ReadFile(path); err == nil {
