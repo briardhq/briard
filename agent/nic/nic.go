@@ -161,9 +161,11 @@ func ParentOf(dev string) string {
 func (s Selection) Usable() bool { return s.Dev != "" && s.Err == nil }
 
 // Fix is the remedy line, and it is the whole safety margin: what was picked, why, what failed,
-// the override with a copy-pasteable example, and the devices to choose from. It is rendered here
-// rather than at each caller so the refusal a user meets before the install and the degraded
-// status they meet after it say the same thing.
+// the override, and the devices to choose from. It is rendered here rather than at each caller
+// so the refusal a user meets before the install and the degraded status they meet after it say
+// the same thing. No copy-pasteable example: a device picked for the example is a device this
+// selection could not vouch for (a tunnel holding a default route was offered once), and who
+// sets BRIARD_NIC knows how.
 func (s Selection) Fix() string {
 	var b strings.Builder
 	switch {
@@ -180,22 +182,11 @@ func (s Selection) Fix() string {
 	default:
 		return ""
 	}
-	// The copy-pasteable line is the OS's own installer with the override set (overrideExample).
-	fmt.Fprintf(&b, ". Name the device yourself with BRIARD_NIC, e.g. `%s`", overrideExample(exampleDev(s.Candidates)))
+	b.WriteString(". Name the device yourself with BRIARD_NIC")
 	if len(s.Candidates) > 0 {
 		fmt.Fprintf(&b, " -- this machine has: %s", strings.Join(s.Candidates, ", "))
 	}
 	return b.String()
-}
-
-// exampleDev makes the example copy-pasteable rather than notional: a name off THIS machine when
-// there is one, and a placeholder the user can see is a placeholder when there is not (the OS's
-// own spelling of one, placeholderDev).
-func exampleDev(candidates []string) string {
-	if len(candidates) > 0 {
-		return candidates[0]
-	}
-	return placeholderDev
 }
 
 // Probe validates dev by creating the very thing the install creates — a macvtap child, or an

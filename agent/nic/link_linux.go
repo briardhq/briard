@@ -134,14 +134,6 @@ func substrateBuildable(Spec) error { return nil }
 // it rather than condemning the host for an EPERM.
 func canProbe() bool { return os.Geteuid() == 0 }
 
-// The remedy line's copy-pasteable example, in this OS's installer.
-func overrideExample(dev string) string {
-	return "BRIARD_NIC=" + dev + " curl -fsSL https://get.briard.io/install.sh | sudo sh"
-}
-
-// placeholderDev is the example device when this machine offers none to name.
-const placeholderDev = "eth0"
-
 // THE PROCFS AND SYSFS READERS. Each reads one small kernel file whole and hands the text to a
 // pure parser in the shared files, so the format handling is unit-tested from any OS and only
 // the read is Linux's.

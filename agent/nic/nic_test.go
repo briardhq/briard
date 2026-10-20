@@ -8,8 +8,8 @@ import (
 
 // The message IS the safety margin: every way the selection goes wrong ends with a
 // guest that boots and is unreachable, and the only thing standing between a user and that is
-// what this line tells them. So each failing shape must carry the override, a copy-pasteable
-// example off THIS machine, and the devices to choose from.
+// what this line tells them. So each failing shape must carry the override and the devices to
+// choose from -- and no example naming one of them, since the selection could not vouch for it.
 func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -19,14 +19,14 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 		{
 			"no default route",
 			Selection{Err: ErrNoDefaultRoute, Candidates: []string{"enp3s0", "wlan0"}},
-			[]string{"no default route", "BRIARD_NIC=enp3s0", "enp3s0, wlan0"},
+			[]string{"no default route", "BRIARD_NIC", "enp3s0, wlan0"},
 		},
 		{
 			"the default route is a full-tunnel VPN",
 			Selection{Dev: "tun0", Candidates: []string{"enp3s0", "tun0"},
 				Err: errors.New("a macvtap could not be created on it (Device does not support macvlan)")},
 			[]string{"tun0 was chosen because it holds this machine's default route",
-				"Device does not support macvlan", "BRIARD_NIC=enp3s0"},
+				"Device does not support macvlan", "BRIARD_NIC"},
 		},
 		{
 			// A user who NAMED a device is not told how we would have guessed -- they already
@@ -34,7 +34,7 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 			"BRIARD_NIC names something that cannot carry it",
 			Selection{Dev: "docker0", Override: true, Candidates: []string{"enp3s0", "docker0"},
 				Err: errors.New("a macvtap could not be created on it (Device does not support macvlan)")},
-			[]string{"docker0 cannot carry the guest's network", "BRIARD_NIC=enp3s0"},
+			[]string{"docker0 cannot carry the guest's network", "BRIARD_NIC"},
 		},
 		{
 			"BRIARD_NIC names a device this machine does not have",
@@ -48,6 +48,9 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 				if !strings.Contains(got, want) {
 					t.Errorf("Fix() = %q\n  missing %q", got, want)
 				}
+			}
+			if strings.Contains(got, "e.g.") || strings.Contains(got, "BRIARD_NIC=") {
+				t.Errorf("Fix() = %q\n  names a device as the example", got)
 			}
 		})
 	}

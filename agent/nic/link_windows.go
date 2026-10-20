@@ -427,15 +427,6 @@ func neighbourMAC(_ context.Context, _ string, ip string) string {
 // is nothing to validate by creating it.
 func canProbe() bool { return false }
 
-// The remedy line's copy-pasteable example, in this OS's installer. The elevation relaunch starts
-// from a fresh environment, so the setting reaches the agent only from an administrator's prompt.
-func overrideExample(dev string) string {
-	return "$env:BRIARD_NIC='" + dev + "'; irm https://get.briard.io/install.ps1 | iex   (in a PowerShell opened as administrator)"
-}
-
-// placeholderDev is the example device when this machine offers none to name.
-const placeholderDev = "Ethernet"
-
 // The macvtap child's flag readers have nothing to read: the substrate they describe is one
 // substrateBuildable refuses here, so Converge never reaches them and Converged's check is
 // behind the same fork. They answer "satisfied" so a spec that does name one is reported for
