@@ -259,6 +259,14 @@ func interfaceMetric(index uint32) uint32 {
 //
 // THE BRIDGE WINS A TIE, whatever the caller prefers: it is the only parent there ever is here,
 // and before the guest holds the TAP a same-tier standalone adapter can tie it exactly.
+//
+// ⚠️ A STANDALONE CANDIDATE IS A HARDWARE ADAPTER. A standalone adapter is a candidate only as
+// the member the bridge would swap to, and the bridge binds hardware: a VPN client that puts a
+// real default route on its tunnel adapter, at a metric below the household NIC's, would
+// otherwise be named the swap -- and the swap takes the household NIC out of the bridge before
+// the add of the tunnel fails. The Linux selector argues against any virtual/non-virtual filter
+// (Select); there a bond or a VLAN is a fine parent and the probe validates. Here nothing is
+// built on the answer but a bridge membership, and the question is the one the bridge asks.
 func DefaultRoute(string) string {
 	var t *windows.MibIpForwardTable2
 	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
@@ -276,6 +284,8 @@ func DefaultRoute(string) string {
 		if a.name == BridgeName {
 			m, _ := MemberSpeed(BridgeName)
 			carrier = m != "" && up(m)
+		} else if !isHardware(a.index) {
+			continue
 		}
 		cs = append(cs, defaultCandidate{dev: a.name, metric: uint64(r.Metric + interfaceMetric(r.InterfaceIndex)), carrier: carrier})
 	}

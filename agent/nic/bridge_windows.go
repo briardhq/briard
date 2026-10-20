@@ -147,8 +147,10 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 	if !ok || !IsBridge(bridge) {
 		return Offload{}, fmt.Errorf("no bridge named %q", bridge)
 	}
+	// Hardware, as the selector's candidates are (DefaultRoute): the leaving member is removed
+	// before the arriving one is added, so a refusal the add would give must be given here.
 	t, ok := byName(as, to)
-	if !ok || t.filter || IsBridge(to) || master(to) != "" || t.name == TapName || strings.HasPrefix(t.desc, tapDescription) {
+	if !ok || t.filter || IsBridge(to) || master(to) != "" || t.name == TapName || strings.HasPrefix(t.desc, tapDescription) || !isHardware(t.index) {
 		return Offload{}, fmt.Errorf("%q is not a standalone physical adapter to swap into %s", to, bridge)
 	}
 	from, _ := MemberSpeed(bridge)
