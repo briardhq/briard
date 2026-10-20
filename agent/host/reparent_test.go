@@ -199,3 +199,66 @@ func TestNetworkRecordIsTheShapeOnDisk(t *testing.T) {
 }
 
 func discard(string, ...any) {}
+
+// THE GATEWAY MAC IS A PROPERTY OF THE LAN, NOT OF THE MOMENT. A bring-up with the cable out or a
+// gateway slow to answer ARP reads none, and the record must neither forget one it had for the
+// same LAN nor stay without one once the gateway answers: the tick completes it. The rig caught
+// the first half (a restart during an outage wrote `gw=192.168.78.1/?` over a complete record).
+func TestNetworkRecordLearnsTheGatewayMAC(t *testing.T) {
+	complete := nic.Fingerprint{Parent: "eth0", ParentMAC: "aa:bb:cc:dd:ee:01", HostCIDR: "192.168.1.50/24", GatewayIP: "192.168.1.1", GatewayMAC: "11:22:33:44:55:66"}
+	blind := complete
+	blind.GatewayMAC = ""
+	elsewhere := nic.Fingerprint{Parent: "eth0", HostCIDR: "10.0.0.5/24", GatewayIP: "10.0.0.1"}
+
+	// A reading with no MAC keeps the record's, on the same LAN only.
+	if got := learnRecord(complete, blind); got != complete {
+		t.Errorf("a blind reading of the same LAN forgot the MAC: %+v", got)
+	}
+	if got := learnRecord(complete, elsewhere); got != elsewhere {
+		t.Errorf("a different LAN borrowed the old MAC: %+v", got)
+	}
+	if got := learnRecord(nic.Fingerprint{}, blind); got != blind {
+		t.Errorf("no record, yet the reading changed: %+v", got)
+	}
+
+	// The tick completes a record without a MAC, from a reading with one, on the same LAN -- or
+	// from any usable reading when there is no record at all. Never a complete record, never a
+	// blind reading, never another LAN.
+	for _, tc := range []struct {
+		name    string
+		rec, fp nic.Fingerprint
+		want    bool
+	}{
+		{"blind record, the gateway answers now", blind, complete, true},
+		{"no record at all", nic.Fingerprint{}, complete, true},
+		{"the record is already complete", complete, complete, false},
+		{"the gateway still does not answer", blind, blind, false},
+		{"a different LAN answers", blind, nic.Fingerprint{Parent: "eth0", HostCIDR: "10.0.0.5/24", GatewayIP: "10.0.0.1", GatewayMAC: "de:ad:be:ef:00:01"}, false},
+		{"an unusable reading", nic.Fingerprint{}, nic.Fingerprint{Parent: "eth0", GatewayMAC: "de:ad:be:ef:00:01"}, false},
+	} {
+		if got := completesRecord(tc.rec, tc.fp); got != tc.want {
+			t.Errorf("%s: completesRecord = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// Through the file: a record with a MAC survives recordNetwork reading the device blind.
+	// lo has an address and no gateway, which is exactly a reading with no MAC.
+	dir := t.TempDir()
+	cfg := Config{AssignmentCache: filepath.Join(dir, "assignment.json"), net: &nic.Spec{Parent: "lo"}}
+	cfg.recordNetwork(t.Context(), discard)
+	rec := cfg.recordedNetwork()
+	if !rec.Usable() || rec.GatewayMAC != "" {
+		t.Fatalf("the fixture is vacuous: lo read as %+v", rec)
+	}
+	rec.GatewayMAC = "11:22:33:44:55:66"
+	cfg.writeNetworkRecord(rec, discard)
+	cfg.recordNetwork(t.Context(), discard)
+	if got := cfg.recordedNetwork(); got != rec {
+		t.Errorf("a blind re-record forgot the MAC: %+v, want %+v", got, rec)
+	}
+	// And the tick leaves a complete record alone, and a blind reading changes nothing.
+	cfg.completeNetworkRecord(t.Context(), discard)
+	if got := cfg.recordedNetwork(); got != rec {
+		t.Errorf("the tick rewrote a complete record: %+v", got)
+	}
+}

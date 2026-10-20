@@ -120,6 +120,56 @@ func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) 
 			cfg.net.Parent, fp)
 		return
 	}
+	cfg.writeNetworkRecord(learnRecord(cfg.recordedNetwork(), fp), logf)
+}
+
+// learnRecord is what a new reading of the same LAN may take from the record it replaces: the
+// gateway MAC, when the reading has none and the record has one. The MAC is a property of the LAN,
+// not of the moment, and a bring-up with the cable out or a gateway slow to answer ARP reads none
+// -- a reading that forgets it would send the next move to the slower tier for a LAN that has not
+// changed. The same LAN means the same parent, address and gateway; anything else is a new record.
+func learnRecord(rec, fp nic.Fingerprint) nic.Fingerprint {
+	if fp.GatewayMAC == "" && rec.GatewayMAC != "" && sameLAN(rec, fp) {
+		fp.GatewayMAC = rec.GatewayMAC
+	}
+	return fp
+}
+
+// completesRecord says whether a reading taken while serving fills in what the record lacks: a
+// gateway MAC the record has none of, on the LAN the record describes -- or any usable LAN at all
+// when there is no record, since the node is serving on it now.
+func completesRecord(rec, fp nic.Fingerprint) bool {
+	if rec.GatewayMAC != "" || !fp.Usable() || fp.GatewayMAC == "" {
+		return false
+	}
+	return rec.HostCIDR == "" || sameLAN(rec, fp)
+}
+
+func sameLAN(a, b nic.Fingerprint) bool {
+	return a.Parent == b.Parent && a.HostCIDR == b.HostCIDR && a.GatewayIP == b.GatewayIP
+}
+
+// completeNetworkRecord runs on the observe tick: while the record has no gateway MAC, a reading
+// that has one on the same LAN completes it. The MAC is captured whenever the gateway first
+// answers, not only at bring-up, so a LAN recorded without it (the cable out, a router slower
+// than this machine) paces the next move on the strong signal as soon as there is one. The ARP
+// it provokes costs one frame per tick, and only while the MAC is missing.
+func (cfg Config) completeNetworkRecord(ctx context.Context, logf func(string, ...any)) {
+	if cfg.networkRecordPath() == "" || cfg.net == nil || cfg.net.Parent == "" {
+		return
+	}
+	rec := cfg.recordedNetwork()
+	if rec.GatewayMAC != "" {
+		return
+	}
+	if fp := nic.Read(ctx, cfg.net.Parent); completesRecord(rec, fp) {
+		cfg.writeNetworkRecord(fp, logf)
+	}
+}
+
+// writeNetworkRecord is the one writer: durable, and it logs the whole fingerprint.
+func (cfg Config) writeNetworkRecord(fp nic.Fingerprint, logf func(string, ...any)) {
+	path := cfg.networkRecordPath()
 	rec := networkRecord{Fingerprint: fp, At: time.Now().UTC()}
 	b, err := json.Marshal(rec)
 	if err != nil {

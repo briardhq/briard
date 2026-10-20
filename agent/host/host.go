@@ -1446,6 +1446,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// NetworkManager manages, and NM reconciles addresses on a connection's reactivation.
 		cfg.beat.Beat()
 		cfg.convergeNetwork(ctx, logf)
+		// ...the LAN record's gateway MAC, if the bring-up could not read it (reparent.go)...
+		cfg.completeNetworkRecord(ctx, logf)
 		// ...and the harder question the same tick is the only place to ask: has the
 		// PARENT gone away? qemu does not notice — it keeps running with a dead NIC, so the guest
 		// is alive, healthy by its own account, and unreachable. Paced, because the repair costs
