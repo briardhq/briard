@@ -292,9 +292,11 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 	// exist. The selection reads carrier too, so the gone uplink is not a candidate -- except as
 	// BRIARD_NIC, or in a race with its return, and either way staying put is the answer. A
 	// swapping bridge answers as itself, with the adapter that outranks its member as SwapIn.
+	// NOTHING USABLE IS THE WAITING CASE, AND IT WAITS QUIETLY: the loss is logged above, and the
+	// selection's remedy (name a device with BRIARD_NIC) is install-time advice that misleads here,
+	// where the usual cause is a link that comes back by itself -- a sleep, a radio re-associating.
 	sel := nic.Select(cfg.NICOverride, parent)
 	if !sel.Usable() {
-		r.say(logf, "network: nowhere to re-parent yet: "+sel.Fix())
 		return "", nic.Unknown
 	}
 	cand := sel.Dev
