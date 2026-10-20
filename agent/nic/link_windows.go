@@ -156,6 +156,10 @@ func up(dev string) bool {
 	return ok && a.up
 }
 
+// built is membership here: the guest's port is a member of briard's bridge from the install
+// (BuildBridge), and its OperStatus is the member's carrier, mirrored (Built).
+func built(dev string) bool { return master(dev) != "" }
+
 // IsBridge reports whether dev is built on other interfaces -- anything at all below it in the
 // stack. An adapter's own filters sit ABOVE it, so a plain NIC or TAP has nothing below; the bridge
 // has its members (through their filters and its own hidden edge).

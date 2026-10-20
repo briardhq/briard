@@ -40,17 +40,18 @@ const netTick = 10 * time.Second
 // NIC that never gets a gateway costs each cold start.
 const netSettle = 30 * time.Second
 
-// linksPresent reports whether every device this node's config names is already up. It is the
+// linksPresent reports whether every device this node's config names is already built. It is the
 // hot path's whole question: an agent that finds its devices there has nothing to build, whether
 // they were built by its own previous life or by a rig that owns the substrate itself. Callers
-// have already established that the config names devices at all.
+// have already established that the config names devices at all. Asked of the device's
+// construction, not its media (nic.Built): a cable out under a running guest is no cold start.
 //
 // A device not in this namespace is asked of nic.HoldNS, where an ipvtap node's children live:
 // they are as present as a macvtap's, and an agent restarting under its Wi-Fi guest must keep the
 // parent they stand on rather than re-select (awaitNetwork).
 func (cfg Config) linksPresent(ctx context.Context) bool {
 	for _, d := range []string{cfg.SystemTap, cfg.ServiceTap, cfg.WitnessTap} {
-		if d == "" || nic.Up(d) {
+		if d == "" || nic.Built(d) {
 			continue
 		}
 		if up, _ := nic.Held(ctx, d); !up {
@@ -291,10 +292,10 @@ const netSwap = 2 * time.Minute
 // a guest that boots after the swap sends its DHCP request through the new member, and every
 // switch upstream learns its port at once; a running guest announces nothing after a swap.
 //
-// ⚠️ NEVER UNDER A RUNNING GUEST. An agent whose guest is still up (a self-update, a crash, a
-// restart beside it -- with its link mirrored down, its TAP reads disconnected and the hot path
-// misses it) is no cold start: the guest keeps the member it has, and the live rule decides
-// whether that member is gone.
+// ⚠️ NEVER UNDER A RUNNING GUEST. An agent whose guest is still up is no cold start, and the
+// hot path keeps it off this one (linksPresent); this is the guard for what slips past it, a
+// rig that owns the substrate itself: the guest keeps the member it has, and the live rule
+// decides whether that member is gone.
 func (cfg Config) swapBeforeLaunch(ctx context.Context, sel nic.Selection, logf func(string, ...any)) error {
 	if platform.Running(ctx, cfg.guestSpec()) {
 		logf("network: %s outranks %s's member, but the guest is running on it; it keeps the member it has",

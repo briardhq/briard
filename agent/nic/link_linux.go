@@ -23,6 +23,10 @@ func up(dev string) bool {
 	return err == nil && i.Flags&net.FlagUp != 0
 }
 
+// built is up here: IFF_UP is the flag the agent set on the pass that made the child, and
+// nothing else touches it.
+func built(dev string) bool { return up(dev) }
+
 // IsBridge reports whether dev is a bridge -- the substrate fork, asked of the device itself.
 // /sys/class/net/<dev>/bridge exists only on one, whoever created it and however.
 func IsBridge(dev string) bool { return dev != "" && exists("/sys/class/net/"+dev+"/bridge") }

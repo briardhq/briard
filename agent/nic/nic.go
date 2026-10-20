@@ -136,9 +136,15 @@ func Select(override, prefer string) Selection {
 	return s
 }
 
-// Up reports whether dev exists and is up -- the question the agent's hot path asks of the
-// devices its config names, before it asks anything about a parent.
+// Up reports whether dev exists and is up: IFF_UP on Linux, OperStatus on Windows.
 func Up(dev string) bool { return Exists(dev) && up(dev) }
+
+// Built reports whether dev stands as this node's substrate made it -- the question the agent's
+// hot path asks of the devices its config names, before it asks anything about a parent. It is
+// asked of the device's construction and never of its media: on Windows the guest's port carries
+// the household NIC's carrier (the agent mirrors it there), so reading its OperStatus would send
+// an agent restarting under its guest with the cable out down the cold path.
+func Built(dev string) bool { return Exists(dev) && built(dev) }
 
 // ParentOf names the device dev hangs off as it stands: the bridge it is a port of, or the device
 // a macvtap child was created on. "" for a device that hangs off nothing. It is the agent's
