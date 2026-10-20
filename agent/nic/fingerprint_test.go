@@ -118,3 +118,28 @@ func TestPickHostCIDR(t *testing.T) {
 		}
 	}
 }
+
+// THE ADDRESS ON THE GATEWAY'S SUBNET OR NOTHING -- LANAddr's rule, which a DHCP request sent for
+// the flock binds to. The shapes of a bridge coming back from another network: the system /32
+// alone and no default route yet is NOTHING, never the /32; the LAN back beside it is the LAN,
+// whichever is listed first.
+func TestOnGatewaySubnet(t *testing.T) {
+	sys := netip.MustParsePrefix("10.226.52.129/32")
+	lan := netip.MustParsePrefix("192.168.10.112/24")
+	for _, c := range []struct {
+		name    string
+		ps      []netip.Prefix
+		gateway string
+		want    string
+	}{
+		{"the /32 alone, no default route", []netip.Prefix{sys}, "", ""},
+		{"the /32 alone, a gateway it does not hold", []netip.Prefix{sys}, "192.168.10.1", ""},
+		{"the /32 listed first, the LAN beside it", []netip.Prefix{sys, lan}, "192.168.10.1", "192.168.10.112/24"},
+		{"the LAN listed first", []netip.Prefix{lan, sys}, "192.168.10.1", "192.168.10.112/24"},
+		{"an unparseable gateway", []netip.Prefix{lan}, "?", ""},
+	} {
+		if got := onGatewaySubnet(c.ps, c.gateway); got != c.want {
+			t.Errorf("%s: onGatewaySubnet = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

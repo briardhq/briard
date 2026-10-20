@@ -99,14 +99,32 @@ func HostCIDR(dev string) string {
 	return hostCIDR(dev, defaultGateway(dev))
 }
 
-func hostCIDR(dev, gateway string) string {
+func hostCIDR(dev, gateway string) string { return pickHostCIDR(prefixes4(dev), gateway) }
+
+// LANAddr is dev's address on its default gateway's subnet and nothing else ("" when dev has no
+// default route, or no address inside it): HostCIDR's first rule without its fallback, for a
+// reader that must not act from any other address -- a DHCP request sent on the flock's behalf,
+// whose reply the stack hands to the socket bound to the address it arrived for.
+func LANAddr(dev string) string {
+	if dev == "" {
+		return ""
+	}
+	p := onGatewaySubnet(prefixes4(dev), defaultGateway(dev))
+	if p == "" {
+		return ""
+	}
+	return netip.MustParsePrefix(p).Addr().String()
+}
+
+// prefixes4 is dev's IPv4 addresses with their prefixes, in the order the OS lists them.
+func prefixes4(dev string) []netip.Prefix {
 	i, err := net.InterfaceByName(dev)
 	if err != nil {
-		return ""
+		return nil
 	}
 	addrs, err := i.Addrs()
 	if err != nil {
-		return ""
+		return nil
 	}
 	var ps []netip.Prefix
 	for _, a := range addrs {
@@ -116,17 +134,25 @@ func hostCIDR(dev, gateway string) string {
 			}
 		}
 	}
-	return pickHostCIDR(ps, gateway)
+	return ps
 }
 
-// pickHostCIDR is HostCIDR's choice among dev's IPv4 prefixes, pure so it is unit-tested.
-func pickHostCIDR(ps []netip.Prefix, gateway string) string {
+// onGatewaySubnet is the prefix among ps that holds gateway, or "".
+func onGatewaySubnet(ps []netip.Prefix, gateway string) string {
 	if gw, err := netip.ParseAddr(gateway); err == nil {
 		for _, p := range ps {
 			if p.Contains(gw) {
 				return p.String()
 			}
 		}
+	}
+	return ""
+}
+
+// pickHostCIDR is HostCIDR's choice among dev's IPv4 prefixes, pure so it is unit-tested.
+func pickHostCIDR(ps []netip.Prefix, gateway string) string {
+	if p := onGatewaySubnet(ps, gateway); p != "" {
+		return p
 	}
 	for _, p := range ps {
 		if !p.Addr().IsLinkLocalUnicast() {
