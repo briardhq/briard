@@ -405,12 +405,13 @@ pkgs.testers.runNixOSTest {
     #
     # Before the probe existed this install ran to completion and left a guest that booted,
     # reported healthy and answered nobody. So the assertion is that it refuses BEFORE writing:
-    # no taps, and the install's own message names the device, the reason and the way out.
+    # no taps, and the install's own message names the device, the reason and the way out (the
+    # setting, not an example naming a device: the selection could not vouch for one).
     host.succeed("ip tuntap add briard-vpn0 mode tun && ip link set briard-vpn0 up")
     out = host.fail(
         "${channelEnv} BRIARD_NIC=briard-vpn0 sh ${installScript} 2>&1"
     )
-    for want in ("briard-vpn0", "macvtap could not be created", "BRIARD_NIC="):
+    for want in ("briard-vpn0", "macvtap could not be created", "BRIARD_NIC"):
         assert want in out, f"the refusal is the whole safety margin and it is missing {want!r}: {out}"
     host.fail("ip link show briard0")
     host.fail("ip link show briard-drbd0")
