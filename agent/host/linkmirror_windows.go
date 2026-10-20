@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"time"
 
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
@@ -15,8 +16,18 @@ func (cfg Config) mirrorLink(ctx context.Context, m *linkMirror, logf func(strin
 		return
 	}
 	member, _ := nic.MemberSpeed(cfg.net.Parent)
-	if m.tick(ctx, member, member != "" && nic.Up(member), platform.Adopt(cfg.guestSpec()).SetSystemLink, logf) {
+	g := platform.Adopt(cfg.guestSpec())
+	if m.tick(ctx, member, member != "" && nic.Up(member), g.SetSystemLink, logf) {
 		cfg.lease.askNow() // the carrier back: the lease re-asks (lease.go)
+		// AND THE GUEST SAYS WHERE IT IS. The bridge forgets where the guest's addresses live
+		// when its member's media cycles (measured on a radio re-association: the host back in
+		// 3 s, the VIP dark 35-46 s to every peer that had it cached, until each one's own ARP
+		// entry expired), and the guest, holding the same addresses, sends nothing unasked.
+		actx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := g.AnnounceSelf(actx); err != nil {
+			logf("network: could not have the guest announce itself after the link came back: %v", err)
+		}
+		cancel()
 	}
 }
 

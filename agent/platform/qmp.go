@@ -357,6 +357,20 @@ func (g *Guest) SetSystemLink(ctx context.Context, up bool) error {
 	return err
 }
 
+// AnnounceSelf has qemu announce the guest's NICs on their networks: RARP frames from each NIC's
+// MAC, and -- virtio-net's guest-announce -- a request the guest kernel answers with a gratuitous
+// ARP for every address on the NIC, the VIP included. It is for a link that came back with the
+// guest's addresses unchanged: a bridge in front of the guest may have forgotten where they live,
+// and the guest itself has no reason to say. The timing is qemu's own documented default, five
+// rounds 50 ms apart growing to 550; announce-self requires it stated.
+func (g *Guest) AnnounceSelf(ctx context.Context) error {
+	if g == nil || g.QMPSock == "" {
+		return fmt.Errorf("platform: no guest monitor to announce through")
+	}
+	_, err := qmpExecute(ctx, g.QMPSock, "announce-self", map[string]any{"initial": 50, "max": 550, "rounds": 5, "step": 100})
+	return err
+}
+
 // serviceNetdev is the id of the guest's service NIC backend, where the VIP lives on a substrate
 // with two taps (an ipvtap station's second child).
 const serviceNetdev = "net2"

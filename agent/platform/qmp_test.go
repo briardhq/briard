@@ -458,3 +458,54 @@ func TestSetSystemLinkSetsTheSystemNetdev(t *testing.T) {
 		t.Error("a guest launched without a monitor must be an error, not a silent no-op")
 	}
 }
+
+// announce-self REQUIRES its four timings -- qemu refuses the command without them -- so the call
+// must state every one; and a guest without a monitor is an error, as for set_link.
+func TestAnnounceSelfStatesItsTimings(t *testing.T) {
+	path := filepath.Join(testsock.Dir(t), "qmp.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	type announce struct {
+		Execute   string         `json:"execute"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	got := make(chan announce, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = c.Write([]byte(`{"QMP":{"version":{"qemu":{"major":11}},"capabilities":[]}}` + "\n"))
+		sc := bufio.NewScanner(c)
+		for sc.Scan() {
+			var req announce
+			_ = json.Unmarshal(sc.Bytes(), &req)
+			if req.Execute == "announce-self" {
+				got <- req
+			}
+			_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := (&Guest{QMPSock: path}).AnnounceSelf(ctx); err != nil {
+		t.Fatalf("AnnounceSelf: %v", err)
+	}
+	select {
+	case req := <-got:
+		for _, k := range []string{"initial", "max", "rounds", "step"} {
+			if v, ok := req.Arguments[k].(float64); !ok || v <= 0 {
+				t.Errorf("announce-self sent %s=%v, want a positive number: %+v", k, req.Arguments[k], req.Arguments)
+			}
+		}
+	default:
+		t.Error("AnnounceSelf sent no announce-self")
+	}
+	if err := (&Guest{}).AnnounceSelf(context.Background()); err == nil {
+		t.Error("a guest launched without a monitor must be an error, not a silent no-op")
+	}
+}
