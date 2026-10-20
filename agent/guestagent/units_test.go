@@ -253,6 +253,14 @@ func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	if strings.Contains(u[vipRenewUnit], "OnFailure=") || strings.Contains(u[vipRenewUnit], "PartOf="+chain.Target) {
 		t.Errorf("the lease renewal must not be able to demote a serving node:\n%s", u[vipRenewUnit])
 	}
+	// NOR IS THE ANNOUNCER, for the same reason -- and the VIP must start it, and take it down
+	// with itself, or it announces nothing or announces an address given up.
+	if strings.Contains(u[vipAnnounceUnit], "OnFailure=") || strings.Contains(u[vipAnnounceUnit], "PartOf="+chain.Target) {
+		t.Errorf("the VIP announcer must not be able to demote a serving node:\n%s", u[vipAnnounceUnit])
+	}
+	if !strings.Contains(u[vipAnnounceUnit], "PartOf="+vipUnit+"\n") || !strings.Contains(u[vipUnit], vipAnnounceUnit) {
+		t.Errorf("the VIP must start its announcer and stop it with itself:\n%s\n%s", u[vipUnit], u[vipAnnounceUnit])
+	}
 }
 
 // THE HOLD STOPS THE WHOLE CHAIN ON A LONE NODE, AND IN REVERSE. `systemctl stop` of a target

@@ -88,7 +88,7 @@ pkgs.testers.runNixOSTest {
       # what derives the substrate. It comes from the household's router, by DHCP, as at home.
       networking.interfaces.wlan0.useDHCP = true;
       environment.systemPackages = [
-        pkgs.iproute2 pkgs.iputils pkgs.socat pkgs.kmod pkgs.curl pkgs.iw pkgs.hostapd pkgs.dnsmasq
+        pkgs.iproute2 pkgs.iputils pkgs.socat pkgs.kmod pkgs.curl pkgs.iw pkgs.hostapd pkgs.dnsmasq pkgs.tcpdump
       ];
     };
 
@@ -277,9 +277,20 @@ pkgs.testers.runNixOSTest {
     qmp('{"execute":"set_link","arguments":{"name":"net2","up":false}}')
     host.sleep(1)
     assert arp() == 0, "something answers ARP for the VIP while the guest is silent"
+    # THE LINK-UP ANNOUNCES ITSELF, UNASKED. A bridge in front of the guest can forget where the
+    # VIP lives when the link cycles, and a peer holding the address cached is then cut off until
+    # its own ARP entry expires -- so the guest says where it is on every link-up. Read off the
+    # LAN with nothing on it asking (no arping in the window), so every reply counted is one the
+    # guest sent unsolicited; before the announcer there were none.
+    host.succeed(f"ip netns exec lan tcpdump -i wlan1 -l -n 'arp and src host {vip}' >/tmp/garp.txt 2>/dev/null & echo $! >/tmp/garp.pid")
+    host.sleep(1)
     qmp('{"execute":"set_link","arguments":{"name":"net2","up":true}}')
+    host.sleep(6)
+    host.succeed("kill $(cat /tmp/garp.pid)")
+    garp = int(host.succeed(f"grep -c 'Reply {vip} is-at' /tmp/garp.txt || true").strip())
+    assert garp >= 2, f"{garp} unsolicited ARP reply(ies) for the VIP in 6s after its link came up: the link-up burst did not reach the LAN"
     host.wait_until_succeeds(f"ip netns exec lan arping -c 1 -w 2 -I wlan1 {vip} | grep -q 'reply from'", timeout=30)
-    print("with the guest's link down nothing answers for the VIP; with it up the guest does")
+    print(f"with the guest's link down nothing answers for the VIP; with it up the guest announces it ({garp} unasked) and answers")
 
     # THE PROBE: the router reboots having kept its leases in RAM, and is no longer authoritative,
     # so the host's INIT-REBOOT for the VIP meets silence until the lease expires. The router is up

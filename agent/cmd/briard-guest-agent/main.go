@@ -11,6 +11,7 @@
 //
 //	briard-guest-agent run --guest      serve the host (Type=notify; READY once the port is open)
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
+//	briard-guest-agent run --vip-announce  the VIP's gratuitous ARP on every link-up, its own unit
 //	briard-guest-agent run --inbound-listen  the inbound channel alone; `run --guest`
 //	                                    does this itself, so only an agent-less rig invokes it
 //	briard-guest-agent --converge       render, warm and start every service the volume names
@@ -63,6 +64,7 @@ func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent run", flag.ExitOnError)
 	guest := fs.Bool("guest", false, "serve the host over the virtio-serial control channel")
 	deadman := fs.Bool("deadman", false, "run the host-agent deadman")
+	vipAnnounce := fs.Bool("vip-announce", false, "announce the VIP on every link-up of its NIC and every 30 s -- briard-vip-announce.service's ExecStart")
 	inboundListen := fs.Bool("inbound-listen", false, "serve the inbound channel alone -- what `run --guest` does inside itself, for a harness with no host")
 	_ = fs.Parse(args)
 
@@ -84,6 +86,10 @@ func runDaemon(args []string) {
 		// per-connection guest agent, which crash-loops while the host is down.
 		if err := guestagent.RunDeadman(ctx); err != nil {
 			log.Fatalf("deadman: %v", err)
+		}
+	case *vipAnnounce:
+		if err := guestagent.RunVIPAnnounce(ctx, guestfirmware.NewOSExecutor()); err != nil {
+			log.Fatalf("vip announce: %v", err)
 		}
 	case *guest:
 		if err := runGuest(ctx); err != nil {
@@ -108,7 +114,7 @@ func runDaemon(args []string) {
 			log.Fatalf("inbound channel: %v", err)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "briard-guest-agent run: say which one: --guest, --deadman or --inbound-listen")
+		fmt.Fprintln(os.Stderr, "briard-guest-agent run: say which one: --guest, --deadman, --vip-announce or --inbound-listen")
 		os.Exit(2)
 	}
 }
