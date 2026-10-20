@@ -156,9 +156,24 @@ func up(dev string) bool {
 	return ok && a.up
 }
 
-// built is membership here: the guest's port is a member of briard's bridge from the install
-// (BuildBridge), and its OperStatus is the member's carrier, mirrored (Built).
-func built(dev string) bool { return master(dev) != "" }
+// built reads whether a guest holds the port. The guest's port is a member of briard's bridge
+// from the install (BuildBridge) whether or not a guest runs, so membership alone would never
+// let a start with no guest re-select. Its media says who holds it: connected while qemu has it
+// open, disconnected otherwise -- except that the agent mirrors the member's carrier onto it
+// (Built), so a port disconnected while the member is too is either the mirror's doing or no
+// guest at all, and counts as built: the direction that keeps the substrate standing, where a
+// re-selection with the cable out could only swap under uncertainty.
+func built(dev string) bool {
+	m := master(dev)
+	if m == "" {
+		return false
+	}
+	if up(dev) {
+		return true
+	}
+	member, _ := MemberSpeed(m)
+	return member != "" && !up(member)
+}
 
 // IsBridge reports whether dev is built on other interfaces -- anything at all below it in the
 // stack. An adapter's own filters sit ABOVE it, so a plain NIC or TAP has nothing below; the bridge
