@@ -143,7 +143,6 @@ const (
 	vipUnit            = "briard-vip.service"
 	vipRenewUnit       = "briard-vip-renew.service"
 	vipRenewTimer      = "briard-vip-renew.timer"
-	vipAnnounceUnit    = "briard-vip-announce.service"
 	reverseProxyUnit   = "briard-reverse-proxy.service"
 	dashboardUnit      = "briard-dashboard.service"
 )
@@ -348,7 +347,7 @@ ExecStop=` + agent + ` --converge-stop
 	// weak edge, same reason: a timer that will not start must not keep the VIP from coming up.
 	u[vipUnit] = `[Unit]
 Description=Briard service VIP
-Wants=` + vipRenewTimer + ` ` + vipAnnounceUnit + `
+Wants=` + vipRenewTimer + `
 ` + chainEdges(1, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
@@ -392,23 +391,6 @@ Type=oneshot
 Environment=PATH=` + tools + `
 EnvironmentFile=` + vipEnvPath + `
 ExecStart=` + tool("briard-vip-renew") + `
-`
-
-	// 2c. The VIP announced on every link-up of its NIC and every 30 s (RunVIPAnnounce says why).
-	// Not a chain member, for the renewal's reason: an announcement that fails must never be
-	// able to demote a serving node. PartOf the VIP, so it ends when the address is given up;
-	// VIP_DEV from the same file, so it announces on the NIC that was claimed.
-	u[vipAnnounceUnit] = `[Unit]
-Description=Announce the Briard VIP on every link-up
-PartOf=` + vipUnit + `
-After=` + vipUnit + `
-
-[Service]
-Restart=always
-RestartSec=2
-Environment=PATH=` + tools + `
-EnvironmentFile=` + vipEnvPath + `
-ExecStart=` + agent + ` run --vip-announce
 `
 
 	// 4. THE FRONT DOOR -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
