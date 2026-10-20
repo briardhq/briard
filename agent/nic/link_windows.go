@@ -8,9 +8,11 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // The link facts on Windows, from IP Helper. Three things about it decide the shape of this file,
@@ -120,9 +122,9 @@ func stack() []stackRow {
 	return append([]stackRow(nil), rows...)
 }
 
-// walk visits every interface reachable from start through the stack table, upward or downward,
+// walk visits every interface reachable UPWARD from start through the stack table,
 // in breadth-first order, until visit returns true. start itself is not visited.
-func walk(rows []stackRow, start uint32, upward bool, visit func(uint32) bool) {
+func walk(rows []stackRow, start uint32, visit func(uint32) bool) {
 	seen := map[uint32]bool{start: true}
 	queue := []uint32{start}
 	for len(queue) > 0 {
@@ -130,9 +132,6 @@ func walk(rows []stackRow, start uint32, upward bool, visit func(uint32) bool) {
 		queue = queue[1:]
 		for _, r := range rows {
 			from, to := r.lower, r.higher
-			if !upward {
-				from, to = r.higher, r.lower
-			}
 			if from != cur || seen[to] {
 				continue
 			}
@@ -175,17 +174,44 @@ func built(dev string) bool {
 	return member != "" && !up(member)
 }
 
-// IsBridge reports whether dev is built on other interfaces -- anything at all below it in the
-// stack. An adapter's own filters sit ABOVE it, so a plain NIC or TAP has nothing below; the bridge
-// has its members (through their filters and its own hidden edge).
+// bridgeComponent is the PnP ComponentId of the miniport a Network Bridge is: the NDIS IM
+// platform ("Microsoft Network Adapter Multiplexor Driver"). NIC teaming shares it, and teaming
+// exists only on Windows Server.
+const bridgeComponent = `compositebus\ms_implat_mp`
+
+// netClass is the device class key every network adapter's driver settings live under.
+const netClass = `SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}`
+
+// IsBridge reports whether dev is a Network Bridge, by what its adapter IS (its ComponentId) and
+// never by what sits below it: Hyper-V's vEthernet -- WSL2's, Docker Desktop's -- has a hidden
+// vSwitch below it and is no bridge.
 func IsBridge(dev string) bool {
 	a, ok := byName(adapters(), dev)
-	if !ok {
-		return false
+	return ok && strings.EqualFold(componentID(a.guid), bridgeComponent)
+}
+
+// componentID is the ComponentId of the adapter whose NetCfgInstanceId is guid, from the network
+// class key; "" when none matches or the key cannot be read.
+func componentID(guid string) string {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, netClass, registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return ""
 	}
-	below := false
-	walk(stack(), a.index, false, func(uint32) bool { below = true; return true })
-	return below
+	defer k.Close()
+	subs, _ := k.ReadSubKeyNames(-1)
+	for _, s := range subs {
+		sk, err := registry.OpenKey(k, s, registry.QUERY_VALUE)
+		if err != nil {
+			continue // "Properties" denies even an administrator
+		}
+		id, _, _ := sk.GetStringValue("NetCfgInstanceId")
+		c, _, _ := sk.GetStringValue("ComponentId")
+		sk.Close()
+		if id != "" && strings.EqualFold(id, guid) {
+			return c
+		}
+	}
+	return ""
 }
 
 // Wireless reports whether dev is an 802.11 adapter.
@@ -204,7 +230,7 @@ func master(dev string) string {
 		return ""
 	}
 	name := ""
-	walk(stack(), a.index, true, func(i uint32) bool {
+	walk(stack(), a.index, func(i uint32) bool {
 		if m, ok := byIndex(as, i); ok && m.ipBound && m.name != "" {
 			name = m.name
 		}
