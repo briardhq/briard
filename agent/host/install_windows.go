@@ -404,3 +404,11 @@ func (r installRoots) bundleLines(string) string {
 // osRoots has nothing to add: the service is registered, not a unit file, and `briard` goes on
 // PATH under the prefix (onPath).
 func (r installRoots) osRoots() installRoots { return r }
+
+// stopRunning stops a node already installed here before the lay-down replaces its files: Windows
+// refuses to replace an executable or a library that is running (measured on a reinstall: the
+// agent's own .exe, then a DLL of the qemu still running from the same release's tree). The guest
+// is powered off cleanly, never killed. The restart the installer ends in starts it all again.
+func stopRunning(ctx context.Context, say func(string, ...any)) error {
+	return stopNode(ctx, ConfigFromEnv().QMPSock, say)
+}

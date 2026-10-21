@@ -96,6 +96,15 @@ func byName(as []adapter, dev string) (adapter, bool) {
 	return adapter{}, false
 }
 
+func byGUID(as []adapter, guid string) (adapter, bool) {
+	for _, a := range as {
+		if a.name != "" && !a.filter && strings.EqualFold(a.guid, guid) {
+			return a, true
+		}
+	}
+	return adapter{}, false
+}
+
 func byIndex(as []adapter, i uint32) (adapter, bool) {
 	for _, a := range as {
 		if a.index == i {

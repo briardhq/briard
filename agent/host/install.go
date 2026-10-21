@@ -122,6 +122,12 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		}
 		os.Remove(filepath.Join(hostSrc, qemuBundleTar))
 	}
+	// ---- a node already running here stops first ----
+	// Only now, with everything fetched and verified: the household's services are down for the
+	// lay-down alone, never for the download.
+	if err := stopRunning(ctx, say); err != nil {
+		return fmt.Errorf("stopping the node already installed here: %w", err)
+	}
 	if err := r.layDown(ctx, hostSrc, guestSrc, say); err != nil {
 		return err
 	}

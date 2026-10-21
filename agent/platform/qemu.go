@@ -769,6 +769,7 @@ func stopUnit(unit string) error {
 // A PLAIN STOP, never forceStopUnit. On the guest unit that runs its ExecStop -- the clean
 // powerdown -- and uninstall is the one caller that both can wait for it and must: the data
 // volume it leaves behind is only worth keeping if the guest was not power-cut off it.
+// Windows has no ExecStop (a job is killed, unitStop): its uninstall powers the guest down first.
 //
 // THE FILE IS ASKED OF THE MANAGER, not assumed. install.sh writes the units wherever it was told
 // (a hermetic install puts them in /run), and nothing records where; the manager knows. A

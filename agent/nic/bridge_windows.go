@@ -329,3 +329,52 @@ var (
 	linkChanged = make(chan struct{}, 1)
 	linkErr     error
 )
+
+// DestroyBridge undoes BuildBridge (`briard uninstall`): our bridge is destroyed, its member gets
+// the offload value rec recorded back, and our TAP is removed. A bridge that is not ours is never
+// touched, and an absent one is already destroyed.
+//
+// THE MEMBER BY GUID, the value by registry keyword and value: a name is the user's to change and
+// a display string is localized. Never the driver's default either -- a user who had tuned the
+// setting gets their own value back, not the factory one. An empty Value is a driver with no such
+// setting, and restores nothing.
+//
+// THE TAP BY INSTANCE, only once the bridge is gone. The driver's own `tapinstall remove <hwid>`
+// removes EVERY instance of the hardware id (measured: "2 device(s) were removed" when one was
+// asked for, taking a live bridge member with it), and another program's VPN adapter is a TAP too.
+// The driver package itself stays: other programs may use it, and a reinstall's TAP comes from it.
+func DestroyBridge(ctx context.Context, rec Offload) error {
+	as := adapters()
+	if b, ok := byName(as, BridgeName); ok && IsBridge(BridgeName) {
+		member, _ := MemberSpeed(BridgeName)
+		if err := netsh(ctx, "bridge", "destroy", b.guid); err != nil {
+			return fmt.Errorf("netsh bridge destroy: %w", err)
+		}
+		if member != "" {
+			if err := waitMaster(ctx, member, ""); err != nil {
+				return fmt.Errorf("%s did not leave %s: %w", member, BridgeName, err)
+			}
+		}
+	}
+	if rec.Value != "" {
+		m, ok := byGUID(adapters(), rec.GUID)
+		if !ok {
+			return fmt.Errorf("no adapter %s to give its %s value %s back to", rec.GUID, rec.Keyword, rec.Value)
+		}
+		if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue '%s' -EA Stop",
+			psQuote(m.name), rec.Keyword, rec.Value)); err != nil {
+			return fmt.Errorf("putting %s back to %s on %s: %w", rec.Keyword, rec.Value, m.name, err)
+		}
+	}
+	if _, ok := byName(adapters(), TapName); !ok {
+		return nil
+	}
+	id, err := powershell(ctx, fmt.Sprintf("(Get-NetAdapter -Name %s -EA Stop).PnPDeviceID", psQuote(TapName)))
+	if err != nil || id == "" {
+		return fmt.Errorf("finding %s's device instance: %v", TapName, err)
+	}
+	if out, err := exec.CommandContext(ctx, "pnputil", "/remove-device", id).CombinedOutput(); err != nil {
+		return fmt.Errorf("pnputil /remove-device %s: %s", id, firstLine(out, err))
+	}
+	return nil
+}

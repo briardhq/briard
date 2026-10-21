@@ -108,6 +108,10 @@ func copyTree(ctx context.Context, src, dst string) error {
 // update or prune can remove it.
 func makeWritable(ctx context.Context, dir string) error { return run(ctx, "chmod", "-R", "u+w", dir) }
 
+// stopRunning has nothing to stop: a lay-down replaces each file by rename, which Linux allows
+// under a running process: the running agent keeps the binary it started from until it restarts.
+func stopRunning(context.Context, func(string, ...any)) error { return nil }
+
 // flushInstall is the one sync that covers every file laid down (see Install).
 func flushInstall(ctx context.Context, say func(string, ...any)) error {
 	say("flushing the installed files to disk")

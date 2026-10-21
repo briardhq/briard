@@ -175,10 +175,11 @@ var commands = []command{
 		name: "uninstall", args: "-yes [-delete-data]", group: groupRepair,
 		synopsis: "remove briard from this machine, keeping your data unless told otherwise",
 		detail: "Stops briard and the VM it runs your apps in (cleanly), and removes its services, network\n" +
-			"devices, /opt/briard and this command. /var/lib/briard -- the data volume and this\n" +
-			"machine's identity -- is KEPT, so installing again picks up where it left off.\n\n" +
-			"-delete-data deletes /var/lib/briard as well, which cannot be undone. Without -yes it only\n" +
-			"says what it would do. Needs root.",
+			"devices, /opt/briard (C:\\ProgramData\\briard on Windows) and this command. /var/lib/briard\n" +
+			"(state under that folder on Windows) -- the data volume and this machine's identity -- is\n" +
+			"KEPT, so installing again picks up where it left off.\n\n" +
+			"-delete-data deletes it as well, which cannot be undone. Without -yes it only says what it\n" +
+			"would do. Needs root, or an administrator on Windows, where a restart finishes it.",
 		// run: nil -- main() intercepts this word like `run`: it undoes what the host agent built,
 		// from the host agent's own config, which this package does not link.
 	},

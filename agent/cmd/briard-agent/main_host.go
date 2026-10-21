@@ -158,7 +158,7 @@ func runInstall(args []string) int {
 func runUninstall(args []string) int {
 	fs := flag.NewFlagSet("briard uninstall", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "confirm: remove briard from this machine")
-	deleteData := fs.Bool("delete-data", false, "also delete this machine's data volume and identity (/var/lib/briard)")
+	deleteData := fs.Bool("delete-data", false, "also delete this machine's data volume and identity ("+dataTree+")")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -167,19 +167,19 @@ func runUninstall(args []string) int {
 		return 2
 	}
 	if !*yes {
-		keep := "Your DATA IS KEPT: /var/lib/briard stays, holding the data volume and this\n" +
+		keep := "Your DATA IS KEPT: " + dataTree + " stays, holding the data volume and this\n" +
 			"machine's identity, and installing again picks up where it left off.\n" +
 			"Add -delete-data to delete it as well; that cannot be undone.\n"
 		if *deleteData {
-			keep = "-delete-data DELETES /var/lib/briard as well: the data volume, every app's data\n" +
+			keep = "-delete-data DELETES " + dataTree + " as well: the data volume, every app's data\n" +
 				"on it, and this machine's identity. That cannot be undone.\n"
 		}
 		fmt.Fprint(os.Stderr, "briard uninstall: this stops briard and its VM (cleanly), and removes its services,\n"+
-			"network devices, /opt/briard and the `briard` command.\n\n"+keep+"\nRe-run with -yes to go ahead.\n")
+			"network devices, "+installTree+" and the `briard` command.\n\n"+keep+"\nRe-run with -yes to go ahead.\n")
 		return 2
 	}
 	if !elevated() {
-		fmt.Fprint(os.Stderr, "briard uninstall: run it as root (sudo briard uninstall ...)\n")
+		fmt.Fprintf(os.Stderr, "briard uninstall: %s\n", uninstallElevate)
 		return 1
 	}
 	say := func(format string, a ...any) { fmt.Printf("briard: "+format+"\n", a...) }

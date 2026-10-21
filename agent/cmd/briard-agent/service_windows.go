@@ -249,3 +249,10 @@ const elevateHint = "run as administrator"
 // elevated reports whether this process holds an administrator's full token -- what an install or
 // an uninstall needs, the way Linux needs root.
 func elevated() bool { return windows.GetCurrentProcessToken().IsElevated() }
+
+// What `briard uninstall` names: the install tree, the data it keeps, and how to run it as needed.
+const (
+	installTree      = `C:\ProgramData\briard`
+	dataTree         = `C:\ProgramData\briard\state`
+	uninstallElevate = "run it in a terminal opened as administrator"
+)
