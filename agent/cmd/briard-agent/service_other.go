@@ -19,3 +19,9 @@ const (
 	dataTree         = "/var/lib/briard"
 	uninstallElevate = "run it as root (sudo briard uninstall ...)"
 )
+
+// windowed is false off Windows: a terminal is where `briard uninstall` runs, and its text stays
+// there. confirm and tell are never reached.
+func windowed() bool      { return false }
+func confirm(string) bool { return false }
+func tell(string, bool)   {}

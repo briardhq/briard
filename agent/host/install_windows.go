@@ -83,7 +83,52 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := r.onPath(exe, say); err != nil {
 		say("note: could not put briard on PATH (%v); run %s directly", err, exe)
 	}
+	if err := registerUninstall(exe, r.prefix); err != nil {
+		return fmt.Errorf("listing briard in Installed apps: %w", err)
+	}
 	return r.buildBridge(ctx, say)
+}
+
+// uninstallKey is briard's entry in Windows' list of installed programs (Settings > Apps >
+// Installed apps, and Programs and Features), which runs UninstallString when the user picks
+// Uninstall there.
+const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Briard`
+
+// registerUninstall lists briard in Installed apps. The command is `briard uninstall` itself, by
+// the agent's own path rather than the PATH link onPath may fail to make. That list starts it
+// with the user's own rights, and the tree's ACL lets those not even read the agent -- nor can
+// they elevate it: the elevation reads the file as its caller before the UAC prompt, and is
+// refused. So the entry elevates PowerShell, which everyone can read, and the elevated
+// PowerShell starts the agent in a console of its own, where it confirms and reports in windows
+// (runUninstall). The prompt therefore names Windows PowerShell. The quiet form is what a package
+// manager runs, elevated already. No version is listed: the agent updates itself, and a version
+// written here would go stale at the first update.
+func registerUninstall(exe, prefix string) error {
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	// Quoted twice over: a single-quoted string inside the single-quoted -ArgumentList.
+	inner := "-NoProfile -Command Start-Process -FilePath ''" + strings.ReplaceAll(exe, "'", "''''") + "'' -ArgumentList uninstall"
+	for _, v := range [][2]string{
+		{"DisplayName", "Briard"},
+		{"DisplayIcon", exe},
+		{"InstallLocation", prefix},
+		{"UninstallString", `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -Verb RunAs ` +
+			`-WindowStyle Hidden -FilePath powershell.exe -ArgumentList '` + inner + `'"`},
+		{"QuietUninstallString", windows.EscapeArg(exe) + " uninstall -yes"},
+	} {
+		if err := k.SetStringValue(v[0], v[1]); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{"NoModify", "NoRepair"} {
+		if err := k.SetDWordValue(name, 1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // registerService registers the agent with the service manager, or brings an existing

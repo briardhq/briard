@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -26,7 +28,8 @@ import (
 //   - the service, and the resume task install.ps1 registers for the closing;
 //   - the bridge, with its member's checksum offload put back from the record, the TAP adapter by
 //     instance, the bridge's spanning-tree value, and the backup store's firewall rule;
-//   - the tree under %ProgramData%\briard and its bin on the system PATH;
+//   - the tree under %ProgramData%\briard, its bin on the system PATH, and its entry in Installed
+//     apps;
 //   - state\ under it, the pet -- KEPT unless the operator asks for it to go.
 //
 // The tap-windows6 driver package and the Hypervisor Platform stay: install.ps1 put them in place,
@@ -168,12 +171,17 @@ func (cfg Config) removeNetwork(ctx context.Context, _ func(string, ...any)) err
 }
 
 // removeFiles removes the tree, keeping state\ unless deleteData. What Windows will not delete now
-// -- this very executable, which `briard uninstall` runs as, and the directories holding it -- is
-// handed to the restart, which deletes it before anything can run it again.
+// -- this very executable, which `briard uninstall` runs as, and the directories holding it -- a
+// hidden helper deletes the moment this process exits (removeAfterExit). Only when the helper
+// cannot start is it handed to the restart instead, which deletes it before anything can run it
+// again.
 func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error {
 	var errs []error
 	if err := offPath(filepath.Join(prefixDir, "bin")); err != nil {
 		errs = append(errs, fmt.Errorf("taking briard off the system PATH: %w", err))
+	}
+	if err := registry.DeleteKey(registry.LOCAL_MACHINE, uninstallKey); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("taking briard off Installed apps: %w", err))
 	}
 	entries, err := os.ReadDir(prefixDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -185,33 +193,48 @@ func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error 
 			errs = append(errs, err)
 		}
 	}
+	// What could not go now, by its top-level entry, in the order it must go: the prefix itself
+	// last, once it is empty.
 	var left []string
 	for _, e := range entries {
 		p := filepath.Join(prefixDir, e.Name())
 		if !deleteData && strings.EqualFold(p, keep) {
 			continue
 		}
-		if os.RemoveAll(p) == nil {
-			continue
+		if os.RemoveAll(p) != nil {
+			left = append(left, p)
 		}
-		_ = filepath.WalkDir(p, func(q string, _ fs.DirEntry, err error) error {
-			if err == nil {
-				left = append(left, q)
-			}
-			return nil
-		})
 	}
 	if deleteData {
 		if err := os.Remove(prefixDir); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			left = append([]string{prefixDir}, left...)
+			left = append(left, prefixDir)
 		}
 	}
 	if len(left) == 0 {
 		return errors.Join(errs...)
 	}
+	// NEVER THE RESTART WHEN THE HELPER RUNS: a delete queued for the restart is by path, and a
+	// reinstall before that restart lays its new agent down at the same path for the restart to
+	// delete.
+	err = removeAfterExit(left)
+	if err == nil {
+		logf("briard's own program files go the moment this command exits")
+		return errors.Join(errs...)
+	}
+	logf("could not start the helper that removes briard's own program files (%v)", err)
 	// Deepest first: the restart replays these in the order they were asked, and a directory goes
 	// only once it is empty.
-	slices.Reverse(left)
+	var deep []string
+	for _, p := range left {
+		_ = filepath.WalkDir(p, func(q string, _ fs.DirEntry, err error) error {
+			if err == nil && !slices.Contains(deep, q) {
+				deep = append(deep, q)
+			}
+			return nil
+		})
+	}
+	slices.Reverse(deep)
+	left = deep
 	for _, p := range left {
 		name, err := windows.UTF16PtrFromString(p)
 		if err == nil {
@@ -223,6 +246,34 @@ func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error 
 	}
 	logf("%d files and folders still in use go at the next restart of Windows; restart it to finish", len(left))
 	return errors.Join(errs...)
+}
+
+// removeAfterExit starts a hidden PowerShell that waits for this process to exit and then deletes
+// paths, in order. Windows will not delete an executable while it runs, and this process is one:
+// once it exits nothing holds the files, and the retries cover a scanner opening the freed file a
+// moment longer. Started outside any job this process is in where the job allows it, so a shell
+// or a task that closes its job when this process exits does not take the helper with it.
+func removeAfterExit(paths []string) error {
+	quoted := make([]string, len(paths))
+	for i, p := range paths {
+		quoted[i] = "'" + strings.ReplaceAll(p, "'", "''") + "'"
+	}
+	script := fmt.Sprintf("Wait-Process -Id %d -ErrorAction SilentlyContinue; foreach ($p in %s) { "+
+		"for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $p); $i++) { "+
+		"Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue; "+
+		"if (Test-Path -LiteralPath $p) { Start-Sleep -Seconds 1 } } }",
+		os.Getpid(), strings.Join(quoted, ","))
+	var err error
+	for _, flags := range []uint32{windows.CREATE_BREAKAWAY_FROM_JOB, 0} {
+		cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+		// Not from inside the tree it deletes.
+		cmd.Dir = os.Getenv("SystemRoot")
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP | flags}
+		if err = cmd.Start(); err == nil {
+			return cmd.Process.Release()
+		}
+	}
+	return err
 }
 
 // offPath takes bin off the system Path, the entry onPath added.

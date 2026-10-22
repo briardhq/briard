@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"briard.io/agent/host"
@@ -166,6 +167,15 @@ func runUninstall(args []string) int {
 		fmt.Fprint(os.Stderr, "briard uninstall: takes no arguments\n")
 		return 2
 	}
+	// WINDOWED: started from Windows' Installed apps, whose entry asks for an administrator's
+	// rights and starts this in a console of its own, which closes the moment this exits. There
+	// the question and the outcome are windows. Never with -yes: that is the quiet form a package
+	// manager or a script runs, with nobody there to close a window.
+	win := !*yes && windowed()
+	if win && !elevated() {
+		tell("Briard was not uninstalled: "+uninstallElevate+".", true)
+		return 1
+	}
 	if !*yes {
 		keep := "Your DATA IS KEPT: " + dataTree + " stays, holding the data volume and this\n" +
 			"machine's identity, and installing again picks up where it left off.\n" +
@@ -174,17 +184,38 @@ func runUninstall(args []string) int {
 			keep = "-delete-data DELETES " + dataTree + " as well: the data volume, every app's data\n" +
 				"on it, and this machine's identity. That cannot be undone.\n"
 		}
-		fmt.Fprint(os.Stderr, "briard uninstall: this stops briard and its VM (cleanly), and removes its services,\n"+
-			"network devices, "+installTree+" and the `briard` command.\n\n"+keep+"\nRe-run with -yes to go ahead.\n")
-		return 2
+		what := "this stops briard and its VM (cleanly), and removes its services,\n" +
+			"network devices, " + installTree + " and the `briard` command.\n\n" + keep
+		if !win {
+			fmt.Fprint(os.Stderr, "briard uninstall: "+what+"\nRe-run with -yes to go ahead.\n")
+			return 2
+		}
+		if !confirm("T" + what[1:] + "\nUninstall Briard?") {
+			return 2
+		}
 	}
 	if !elevated() {
 		fmt.Fprintf(os.Stderr, "briard uninstall: %s\n", uninstallElevate)
 		return 1
 	}
-	say := func(format string, a ...any) { fmt.Printf("briard: "+format+"\n", a...) }
-	if err := host.ConfigFromEnv().Uninstall(context.Background(), *deleteData, say); err != nil {
+	var said []string
+	say := func(format string, a ...any) {
+		line := fmt.Sprintf(format, a...)
+		said = append(said, line)
+		fmt.Printf("briard: %s\n", line)
+	}
+	err := host.ConfigFromEnv().Uninstall(context.Background(), *deleteData, say)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "briard uninstall: %v\n", err)
+	}
+	if win {
+		// What the console said, kept where the user can read it.
+		if err != nil {
+			said = append(said, "Briard was NOT fully uninstalled: "+err.Error())
+		}
+		tell(strings.Join(said, "\n\n"), err != nil)
+	}
+	if err != nil {
 		return 1
 	}
 	return 0

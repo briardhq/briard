@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -256,3 +257,49 @@ const (
 	dataTree         = `C:\ProgramData\briard\state`
 	uninstallElevate = "run it in a terminal opened as administrator"
 )
+
+var procGetConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
+
+// windowed reports whether this process is alone in a console Windows opened for it -- started
+// from Installed apps or a double-click, where text printed into that console vanishes with it at
+// exit -- on a desktop someone can see. A shell shares its console with what it runs, and session 0
+// (a service, a SYSTEM task) has no desktop to show a window on, nor anyone to close it.
+func windowed() bool {
+	var session uint32
+	if windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &session) != nil || session == 0 {
+		return false
+	}
+	var ids [2]uint32
+	n, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&ids[0])), uintptr(len(ids)))
+	return n == 1
+}
+
+// idYes is what MessageBox returns for Yes.
+const idYes = 6
+
+// confirm asks text as a Yes/No question in a window.
+func confirm(text string) bool {
+	return messageBox(text, windows.MB_YESNO|windows.MB_ICONQUESTION) == idYes
+}
+
+// tell shows text in a window until it is closed.
+func tell(text string, failed bool) {
+	icon := uint32(windows.MB_ICONINFORMATION)
+	if failed {
+		icon = windows.MB_ICONERROR
+	}
+	messageBox(text, windows.MB_OK|icon)
+}
+
+// messageBox shows text, unwrapped -- it is written for an 80-column console, and a window wraps
+// it itself -- and returns the button pressed.
+func messageBox(text string, style uint32) int32 {
+	text = strings.NewReplacer("\n\n", "\n\n", "\n", " ").Replace(text)
+	t, err := windows.UTF16PtrFromString(text)
+	if err != nil {
+		return 0
+	}
+	caption, _ := windows.UTF16PtrFromString("Briard")
+	ret, _ := windows.MessageBox(0, t, caption, style|windows.MB_SETFOREGROUND)
+	return ret
+}
