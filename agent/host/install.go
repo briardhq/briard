@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -345,12 +346,33 @@ func installFile(src, dst string, mode os.FileMode) error {
 }
 
 // freshDir makes dir empty: whatever an earlier install left under this release's name goes.
+//
+// RETRIED, BOUNDED: on a reinstall the node was running a moment ago (stopRunning), and on Windows
+// something can still hold a file of the tree briefly after the guest's job has emptied -- seen as
+// `Access is denied` on the qemu bundle's libffi-8.dll with nothing left in the job, while a
+// killed qemu's own tree deletes at once. The retry outlasts a holder that lets go; the log line
+// says it was needed. A delete that still fails past the bound is a real failure, and the install
+// says so.
 func freshDir(dir string) error {
-	if err := os.RemoveAll(dir); err != nil {
-		return err
+	deadline := time.Now().Add(freshDirBound)
+	for {
+		err := os.RemoveAll(dir)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		if time.Until(deadline) > freshDirBound-time.Second {
+			log.Printf("install: %v; retrying for up to %s", err, freshDirBound)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	return os.MkdirAll(dir, 0o755)
 }
+
+// freshDirBound bounds freshDir's retries.
+const freshDirBound = 30 * time.Second
 
 // relink points link at target, replacing whatever link was there (ln -sfnT).
 func relink(target, link string) error {

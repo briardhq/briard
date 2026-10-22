@@ -114,8 +114,30 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 	}
 	gctx, cancel := context.WithTimeout(ctx, platform.GuestShutdownGrace+15*time.Second)
 	defer cancel()
-	return platform.ShutdownVM(gctx, qmpSock, platform.GuestShutdownGrace)
+	if err := platform.ShutdownVM(gctx, qmpSock, platform.GuestShutdownGrace); err != nil {
+		return err
+	}
+	// A QUIET MONITOR IS NOT AN EXITED QEMU: qemu closes its socket on its way out, and a guest
+	// launched by an agent that stopped mid bring-up has no monitor up yet at all. What follows
+	// deletes or replaces files that process holds, so wait for the guest's job to empty; the kill
+	// is only the last resort past the bound.
+	if !platform.Running(ctx, platform.QEMUSpec{}) {
+		return nil
+	}
+	logf("waiting for the guest's process to exit")
+	deadline := time.Now().Add(guestExitBound)
+	for platform.Running(ctx, platform.QEMUSpec{}) {
+		if time.Now().After(deadline) {
+			logf("the guest's process has not exited %s after its powerdown; ending it", guestExitBound)
+			return platform.RemoveUnit(platform.GuestUnit)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil
 }
+
+// guestExitBound bounds the wait for qemu's process to exit once its monitor has gone quiet.
+const guestExitBound = 30 * time.Second
 
 func (cfg Config) removeNetwork(ctx context.Context, _ func(string, ...any)) error {
 	var errs []error
