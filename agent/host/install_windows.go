@@ -65,6 +65,23 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := run(ctx, "icacls", filepath.Join(r.prefix, "*"), "/reset", "/T", "/Q"); err != nil {
 		return err
 	}
+	// THE PROGRAM IS EVERYONE'S TO RUN; THE NODE IS NOT. agent\ holds only release files, the bytes
+	// anyone can download, and bin\ the `briard` link to the agent. Windows reads a program as its
+	// caller before it starts or elevates it, so without this `briard` in a shell that is not
+	// elevated is Windows' "Access is denied" rather than the agent saying what it needs, and the
+	// Installed-apps entry cannot ask UAC to elevate the agent. Read and run only, inherited, so a
+	// file a release lays down later is covered too. After the restriction: a failure here leaves
+	// the tree closed.
+	bin := filepath.Join(r.prefix, "bin")
+	say("letting Users run %s", agentExe)
+	for _, d := range []string{agentDir, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+		if err := run(ctx, "icacls", d, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/Q"); err != nil {
+			return err
+		}
+	}
 	// THE SERVICE BEFORE THE BRIDGE, knowingly. A bridge build that fails leaves an auto-start
 	// service behind, so the agent runs degraded at the next boot and says so -- the better
 	// leftover than the other order's, a bridge nobody runs on, and every step here is
@@ -96,27 +113,23 @@ const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Briard
 
 // registerUninstall lists briard in Installed apps. The command is `briard uninstall` itself, by
 // the agent's own path rather than the PATH link onPath may fail to make. That list starts it
-// with the user's own rights, and the tree's ACL lets those not even read the agent -- nor can
-// they elevate it: the elevation reads the file as its caller before the UAC prompt, and is
-// refused. So the entry elevates PowerShell, which everyone can read, and the elevated
-// PowerShell starts the agent in a console of its own, where it confirms and reports in windows
-// (runUninstall). The prompt therefore names Windows PowerShell. The quiet form is what a package
-// manager runs, elevated already. No version is listed: the agent updates itself, and a version
-// written here would go stale at the first update.
+// with the user's own rights, so the entry asks UAC to elevate the agent -- through PowerShell,
+// the one way to ask from a command line -- and the agent runs in a console of its own, where it
+// confirms and reports in windows (runUninstall). The quiet form is what a package manager runs,
+// elevated already. No version is listed: the agent updates itself, and a version written here
+// would go stale at the first update.
 func registerUninstall(exe, prefix string) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallKey, registry.SET_VALUE)
 	if err != nil {
 		return err
 	}
 	defer k.Close()
-	// Quoted twice over: a single-quoted string inside the single-quoted -ArgumentList.
-	inner := "-NoProfile -Command Start-Process -FilePath ''" + strings.ReplaceAll(exe, "'", "''''") + "'' -ArgumentList uninstall"
 	for _, v := range [][2]string{
 		{"DisplayName", "Briard"},
 		{"DisplayIcon", exe},
 		{"InstallLocation", prefix},
-		{"UninstallString", `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -Verb RunAs ` +
-			`-WindowStyle Hidden -FilePath powershell.exe -ArgumentList '` + inner + `'"`},
+		{"UninstallString", `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -Verb RunAs -FilePath '` +
+			strings.ReplaceAll(exe, "'", "''") + `' -ArgumentList uninstall"`},
 		{"QuietUninstallString", windows.EscapeArg(exe) + " uninstall -yes"},
 	} {
 		if err := k.SetStringValue(v[0], v[1]); err != nil {
