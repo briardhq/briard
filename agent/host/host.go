@@ -563,8 +563,16 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// the identity because they are the same kind of thing: pet state this node needs to exist and
 	// that only the first start can create. A failure here is fatal on purpose -- a guest launched
 	// with a `-drive` for a file nobody made is a boot that fails further from its cause.
-	if err := cfg.provisionDisks(logf); err != nil {
-		return err
+	//
+	// UNDER A LEASE: on Windows the allocation writes every zero (platform.allocate says why), minutes
+	// on a real disk, and the watchdog would read that as a wedged loop. The budget cancels nothing
+	// -- the write takes no context -- it is the bound the write declares, past which the watchdog
+	// trips with the traceback (beat.go).
+	_, release := cfg.beat.budget(ctx, provisionBudget)
+	perr := cfg.provisionDisks(logf)
+	release()
+	if perr != nil {
+		return perr
 	}
 	// The telemetry writer, built once here and for the same reason the beat is: it must outlive
 	// any single observe() call, since the re-dial loop below runs many of them and a second

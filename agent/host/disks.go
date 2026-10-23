@@ -20,6 +20,11 @@ import (
 // pays at the operation that needs the space and never underneath a running guest.
 const stateDiskInitial = reportcard.StateDiskInitialMB << 20 // the report card's line, so its floor and this agree
 
+// provisionBudget bounds the first start's allocation of both disks: the default 4 GiB data volume
+// and the state disk, written as zeros where the host cannot reserve without writing, at the pace
+// of a slow spinning disk (~10 MB/s), with room to spare.
+const provisionBudget = 15 * time.Minute
+
 // stateDiskStep is what a grow rounds up to: whole GiB, so a node's disk sizes stay readable and
 // small installs do not each cost a resize.
 const stateDiskStep = 1 << 30
