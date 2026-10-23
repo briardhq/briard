@@ -86,8 +86,9 @@ func (wardenService) Execute(_ []string, req <-chan svc.ChangeRequest, status ch
 type agentService struct{}
 
 // Wait hints: how long the SCM is told the next status change may take. Start covers what the
-// agent does before READY (identity, disks, a staged qemu's smoke test); stop is re-sent on a
-// rolling checkpoint while the stop is still making progress.
+// agent does before READY (identity, a staged qemu's smoke test), and the warden ends a start
+// that outlasts it (host.startLimit); stop is re-sent on a rolling checkpoint while the stop is
+// still making progress.
 const (
 	startHint = 60 * time.Second
 	stopHint  = 20 * time.Second

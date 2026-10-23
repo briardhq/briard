@@ -559,21 +559,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	if iderr != nil {
 		return fmt.Errorf("host: %w", iderr)
 	}
-	// AND THE DISKS IT RUNS ON, made once, before anything tries to attach them (disks.go). Beside
-	// the identity because they are the same kind of thing: pet state this node needs to exist and
-	// that only the first start can create. A failure here is fatal on purpose -- a guest launched
-	// with a `-drive` for a file nobody made is a boot that fails further from its cause.
-	//
-	// UNDER A LEASE: on Windows the allocation writes every zero (platform.allocate says why), minutes
-	// on a real disk, and the watchdog would read that as a wedged loop. The budget cancels nothing
-	// -- the write takes no context -- it is the bound the write declares, past which the watchdog
-	// trips with the traceback (beat.go).
-	_, release := cfg.beat.budget(ctx, provisionBudget)
-	perr := cfg.provisionDisks(logf)
-	release()
-	if perr != nil {
-		return perr
-	}
 	// The telemetry writer, built once here and for the same reason the beat is: it must outlive
 	// any single observe() call, since the re-dial loop below runs many of them and a second
 	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.
@@ -637,6 +622,23 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// stretches that most need it. No-op when not under Type=notify.
 	if err := sdnotify.Ready(); err != nil {
 		logf("sd_notify READY failed (non-fatal): %v", err)
+	}
+	// THE DISKS THIS NODE RUNS ON, made once, before anything tries to attach them (disks.go): pet
+	// state that only the first start creates. A failure here is fatal on purpose -- a guest
+	// launched with a `-drive` for a file nobody made is a boot that fails further from its cause.
+	//
+	// AFTER READY, because making them answers nothing about whether this release runs on this host,
+	// and it is the one start step whose length is the disk's: a filesystem without fallocate, and
+	// every Windows host, writes every zero (platform.allocate), minutes on a slow disk. Before READY
+	// that is bounded by the start timeout, and a disk slower than it restarts the agent at every
+	// first start, forever. So it runs under liveness instead, UNDER A LEASE: the budget cancels
+	// nothing -- the write takes no context -- it is the bound the write declares, past which the
+	// watchdog trips with the traceback (beat.go).
+	_, release := cfg.beat.budget(ctx, provisionBudget)
+	perr := cfg.provisionDisks(logf)
+	release()
+	if perr != nil {
+		return perr
 	}
 	// THE LOCAL ADMIN DOOR, OPENED BEFORE THE NETWORK RATHER THAN AFTER THE GUEST.
 	// It used to start below, past bring-up, which was fine while a oneshot unit owned the

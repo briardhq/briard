@@ -56,6 +56,12 @@
 # convergence, as it once was, this unit would sit in `activating` past TimeoutStartSec
 # and be killed.
 #
+# THE SAME HOLDS FOR THE FIRST START'S DISKS. The data disk is made on a filesystem with no
+# fallocate (ext2), so the agent writes every zero, behind a write throttle that makes that
+# outlast TimeoutStartSec. Made before READY, the start dies at the timeout and the unit restarts
+# into the same wait forever; made after READY under its lease, the start returns in seconds and
+# the write finishes under the watchdog without tripping it.
+#
 # Heavy (nested VM), so it rides the `integration` tag. Run:
 #   nix build .#tests.agent-watchdog -L
 { pkgs, guestDisk, agent, netWrap, dressBase }:
@@ -69,6 +75,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.memorySize = 4096; # room for L1 + the nested 2G guest
       virtualisation.cores = 4;
       virtualisation.diskSize = 10240;
+      virtualisation.emptyDiskImages = [ 3072 ]; # /dev/vdb: the slow disk step 1 provisions on
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ]; # expose vmx -> nested KVM
       environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.iptables ];
@@ -93,6 +100,9 @@ pkgs.testers.runNixOSTest {
           ExecStart = "${agent}/bin/briard-agent run";
           Restart = "on-failure"; # covers a watchdog timeout, not only a non-zero exit
           RestartSec = 2;
+          # Step 1's slow disk: the agent's own zero-write, held to a rate that takes a 2 GiB
+          # volume well past TimeoutStartSec. The guest's qemu runs in its own unit, unthrottled.
+          IOWriteBandwidthMax = "/dev/vdb 20M";
         };
         environment = {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
@@ -100,7 +110,8 @@ pkgs.testers.runNixOSTest {
           GUEST_IMAGE = "/tmp/guest.qcow2";
           # Where the host keeps its guest bundle tree, the way install.sh sets it.
           UPDATE_BASE = "/opt/briard/agent";
-          DATA_DISK = "/tmp/data.img";
+          DATA_DISK = "/slow/data.img"; # made by the agent at its first start (step 1)
+          DATA_SIZE = "2G";
           STATE_DISK = "/tmp/state.img";
           CONTROL_SOCK = "/run/briard-ctl.sock";
           NODE = "guest";
@@ -155,7 +166,8 @@ pkgs.testers.runNixOSTest {
         "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
-    host.succeed("truncate -s 512M /tmp/data.img")
+    # ext2 has no fallocate, so the agent's allocation is the zero-write fallback (platform.allocate).
+    host.succeed("${pkgs.e2fsprogs}/bin/mkfs.ext2 -q /dev/vdb && mkdir -p /slow && mount -t ext2 /dev/vdb /slow")
 
     # === 1) READY MEANS THE AGENT, NOT THE NODE ===
     # Under Type=notify this call blocks until READY=1. It has to return in seconds, well before
@@ -180,6 +192,22 @@ pkgs.testers.runNixOSTest {
     # The watchdog is armed only once start-up completes, so this ordering is also what puts the
     # ladder under a watchdog at all. The agent says so on the way past.
     host.succeed("journalctl -u briard-agent | grep -q 'systemd watchdog armed'")
+
+    # ...and the first start's disk is made AFTER READY, under its lease. The size reaches 2 GiB only
+    # when the last zero is written, so that moment is the end of provisioning.
+    host.wait_until_succeeds("test $(stat -c %s /slow/data.img) -eq 2147483648", timeout=600)
+    provisioned = int(host.succeed("date +%s").strip()) - t0
+    print(f"data disk provisioned {provisioned}s after the start began")
+    # NON-VACUOUS FIRST: the write has to outlast TimeoutStartSec, or a start that returned in
+    # seconds would say nothing about where the write sits.
+    assert provisioned > 35, (
+        f"provisioning took {provisioned}s -- the throttle or the zero-write fallback is gone, so this "
+        "step no longer outlasts TimeoutStartSec=30 and proves nothing about the order"
+    )
+    assert int(host.succeed("systemctl show -p NRestarts --value briard-agent").strip()) == 0, (
+        "the agent restarted during its first start's provisioning"
+    )
+    host.fail("journalctl -u briard-agent | grep -q 'Watchdog timeout'")
 
     # Now let it finish the job it was ready to do.
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)

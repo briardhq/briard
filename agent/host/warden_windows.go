@@ -18,19 +18,33 @@ const WardenName = "briard-warden"
 // watches it.
 const wardenExe = "briard-warden.exe"
 
-// wardenAfter is how many beatless ticks end the agent: past dumpAfter, so the agent's own dump of
-// every goroutine is written before its process is ended.
+// wardenAfter is how many beatless ticks end a running agent: past dumpAfter, so the agent's own
+// dump of every goroutine is written before its process is ended.
 const wardenAfter = dumpAfter + 2
+
+// startLimit is how long the agent may take to report RUNNING -- the Linux unit's TimeoutStartSec,
+// so a start means the same on both systems -- and startAfter is that in ticks.
+const (
+	startLimit = 60 * time.Second
+	startAfter = int(startLimit / beatTick)
+)
 
 // Warden is the agent's outside watcher on Windows, the half of systemd's watchdog the service
 // manager does not give: it notices the ABSENCE of beats, which no goroutine inside the agent can
 // (beat.go), and ends a wedged agent so the service manager's failure actions restart it.
 //
 // It carries no product knowledge: it reads one bit per tick from the beat event, asks the service
-// manager one question, and ends one process. Misses count only while the agent reports RUNNING:
-// a stop, or a start still on its way, is not a wedge. Ending the process is the whole act -- a
-// process that ends without reporting STOPPED is a failure to the service manager, whose recovery
-// already restarts the agent; the guest runs in its own job and the next agent re-adopts it.
+// manager one question, and ends one process. Two limits, the two systemd sets on Linux:
+//   - RUNNING is liveness: wardenAfter ticks in a row with no beat. A long step beats under its
+//     lease (beat.go), so only silence counts.
+//   - START_PENDING is the start: every tick counts, beat or not, and startAfter of them end it.
+//     A start is what must finish before the agent can be relied on at all, so it is bounded by
+//     its length, like TimeoutStartSec -- anything slow belongs after RUNNING, under a lease.
+//
+// A stop, or a service with no process, counts nothing, and a new state or process starts the
+// count again. Ending the process is the whole act -- a process that ends without reporting STOPPED is a
+// failure to the service manager, whose recovery already restarts the agent; the guest runs in its
+// own job and the next agent re-adopts it.
 func Warden(ctx context.Context, logf func(string, ...any)) error {
 	ev, err := beatEvent()
 	if err != nil {
@@ -42,8 +56,10 @@ func Warden(ctx context.Context, logf func(string, ...any)) error {
 		return fmt.Errorf("the service manager: %w", err)
 	}
 	defer m.Disconnect()
-	logf("warden: watching %s, ending it after %d checks with no beat (%s)", ServiceName, wardenAfter, (wardenAfter * beatTick).Round(time.Second))
+	logf("warden: watching %s, ending it after %d checks with no beat (%s) or a start of %d checks (%s)", ServiceName,
+		wardenAfter, (wardenAfter * beatTick).Round(time.Second), startAfter, (time.Duration(startAfter) * beatTick).Round(time.Second))
 	count := misses{every: beatTick}
+	var last svc.Status
 	t := time.NewTicker(beatTick)
 	defer t.Stop()
 	for {
@@ -53,10 +69,21 @@ func Warden(ctx context.Context, logf func(string, ...any)) error {
 		case <-t.C:
 		}
 		beat := beatSince(ev) // consumed on every tick, so a stale bit never outlives the look
-		st, running := agentRunning(m)
-		if n := count.tick(time.Now(), beat || !running); n >= wardenAfter {
-			logf("warden: no beat from %s for %d checks (%s) -- ending process %d for the service manager to restart",
-				ServiceName, n, (time.Duration(n) * beatTick).Round(time.Second), st.ProcessId)
+		st := agentStatus(m)
+		if st.State != last.State || st.ProcessId != last.ProcessId {
+			count, last = misses{every: beatTick}, st
+		}
+		limit, why := 0, ""
+		switch {
+		case st.ProcessId == 0:
+		case st.State == svc.Running:
+			limit, why = wardenAfter, "no beat"
+		case st.State == svc.StartPending:
+			limit, why, beat = startAfter, "still starting", false
+		}
+		if n := count.tick(time.Now(), beat || limit == 0); limit > 0 && n >= limit {
+			logf("warden: %s from %s for %d checks (%s) -- ending process %d for the service manager to restart",
+				why, ServiceName, n, (time.Duration(n) * beatTick).Round(time.Second), st.ProcessId)
 			if err := endProcess(st.ProcessId); err != nil {
 				logf("warden: ending process %d: %v", st.ProcessId, err)
 			}
@@ -71,17 +98,21 @@ func beatSince(ev windows.Handle) bool {
 	return err == nil && r == windows.WAIT_OBJECT_0
 }
 
-// agentRunning asks the service manager for the agent's state, opening it afresh each time so a
+// agentStatus asks the service manager for the agent's state, opening it afresh each time so a
 // service deleted and registered again (a reinstall) is still the one asked about. Any failure to
-// ask reads as not running: the warden never ends a process it could not identify.
-func agentRunning(m *mgr.Mgr) (svc.Status, bool) {
+// ask reads as the zero status, no state and no process: the warden never ends a process it could
+// not identify.
+func agentStatus(m *mgr.Mgr) svc.Status {
 	s, err := m.OpenService(ServiceName)
 	if err != nil {
-		return svc.Status{}, false
+		return svc.Status{}
 	}
 	defer s.Close()
 	st, err := s.Query()
-	return st, err == nil && st.State == svc.Running && st.ProcessId != 0
+	if err != nil {
+		return svc.Status{}
+	}
+	return st
 }
 
 func endProcess(pid uint32) error {
