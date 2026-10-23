@@ -147,3 +147,34 @@ func (b *beat) budget(ctx context.Context, d time.Duration) (context.Context, co
 	b.Lease(bctx)
 	return bctx, cancel
 }
+
+// misses is a watcher's count of its own ticks that saw no beat -- how the Windows watchers (the
+// in-process dumper and the warden) measure staleness, where systemd measures it on Linux.
+//
+// IN TICKS, NEVER ON THE WALL CLOCK, because Windows' monotonic clock runs through a sleep: every
+// resume found hours since the last beat and read the machine's sleep as a wedged loop. A
+// suspended watcher does not tick, so a sleep adds no miss.
+//
+// AND A LATE TICK RESETS THE COUNT. A tick arriving far later than its interval means the watcher
+// was paused itself -- the machine slept, or was too starved to run it -- and a paused watcher saw
+// nothing either way. It is also the resume's grace: the loop gets a full threshold to beat again
+// before a wake can trip it. The cost is that a wedge starting just before a sleep trips one
+// threshold later.
+type misses struct {
+	every time.Duration // the watcher's tick interval
+	n     int
+	last  time.Time
+}
+
+// tick records one tick at now, beat saying whether a beat arrived since the previous tick, and
+// returns the run of ticks that saw none.
+func (m *misses) tick(now time.Time, beat bool) int {
+	paused := !m.last.IsZero() && now.Sub(m.last) > 2*m.every
+	m.last = now
+	if beat || paused {
+		m.n = 0
+	} else {
+		m.n++
+	}
+	return m.n
+}

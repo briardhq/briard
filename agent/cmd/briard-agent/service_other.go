@@ -2,7 +2,10 @@
 
 package main
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 // runService is false off Windows: systemd runs the agent as an ordinary process.
 func runService() bool { return false }
@@ -25,3 +28,9 @@ const (
 func windowed() bool      { return false }
 func confirm(string) bool { return false }
 func tell(string, bool)   {}
+
+// runWarden refuses off Windows: systemd's own watchdog is the agent's outside watcher there.
+func runWarden() int {
+	fmt.Fprintln(os.Stderr, "briard: the warden is the Windows service's; systemd watches the agent here")
+	return 2
+}

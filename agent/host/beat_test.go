@@ -215,3 +215,34 @@ func TestServiceInstallKeepsTheWatchdogFed(t *testing.T) {
 		t.Fatalf("service install did not complete: %s", o.Detail)
 	}
 }
+
+// The Windows watchers' count: a run of beatless ticks trips, a beat zeroes it, and a tick that
+// arrives far later than its interval -- the watcher itself was asleep -- zeroes it too, so a
+// resume never reads as a wedge.
+func TestMissesCountsTicksNotTime(t *testing.T) {
+	every := 10 * time.Second
+	m := misses{every: every}
+	now := time.Unix(0, 0)
+	step := func(d time.Duration, beat bool) int { now = now.Add(d); return m.tick(now, beat) }
+	for i, want := range []int{1, 2, 3} {
+		if n := step(every, false); n != want {
+			t.Fatalf("beatless tick %d: run %d, want %d", i+1, n, want)
+		}
+	}
+	if n := step(every, true); n != 0 {
+		t.Fatalf("a beat left the run at %d", n)
+	}
+	step(every, false)
+	step(every, false)
+	// Two misses in, then the machine sleeps for an hour: the tick on waking resets, it does not trip.
+	if n := step(time.Hour, false); n != 0 {
+		t.Fatalf("the first tick after a sleep counted as miss %d; a paused watcher saw nothing", n)
+	}
+	if n := step(every, false); n != 1 {
+		t.Fatalf("after the resume the count restarts from 1, got %d", n)
+	}
+	// A tick a little late (scheduling jitter) is an ordinary tick, not a pause.
+	if n := step(every+every/2, false); n != 2 {
+		t.Fatalf("a slightly late tick reset the run (got %d, want 2)", n)
+	}
+}

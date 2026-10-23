@@ -52,3 +52,7 @@ const (
 // AgentLog is the agent's own log file. Under the SCM a service's stderr goes nowhere, so the
 // agent's main sends log.Printf here.
 func AgentLog() string { return logDir + `\briard-agent.log` }
+
+// WardenLog is the warden's own log file, beside the agent's: what it watched, and every agent it
+// ended.
+func WardenLog() string { return logDir + `\briard-warden.log` }

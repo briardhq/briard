@@ -113,6 +113,7 @@ func runInternal(args []string) {
 	stageVM := fs.String("vm", "", "with --stage-manifest --chain briard: the vm release this briard release is published beside")
 	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain vm: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
+	warden := fs.Bool("warden", false, "watch the agent's beat and end a wedged agent for the service manager to restart -- the briard-warden service's program, Windows only")
 	_ = fs.Parse(args)
 
 	// The release pipeline's manifest writer, and it is HERE rather than in the shell script that
@@ -198,6 +199,12 @@ func runInternal(args []string) {
 		}
 		log.Printf("guest-shutdown: the guest powered off cleanly")
 		return
+	}
+
+	// The warden: the Windows service that ends a wedged agent (warden_windows.go). A flag for the
+	// same reason as the others: the service manager starts it, nobody types it.
+	if *warden {
+		os.Exit(runWarden())
 	}
 
 	// A leading '-' that named none of the above. Not a daemon invocation: the

@@ -86,7 +86,18 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// service behind, so the agent runs degraded at the next boot and says so -- the better
 	// leftover than the other order's, a bridge nobody runs on, and every step here is
 	// idempotent, so the re-run the failure asks for finds its own work done.
-	if err := registerService(exe, say); err != nil {
+	if err := registerService(ServiceName, exe, "run", agentConfig, preshutdownBudget, say); err != nil {
+		return err
+	}
+	// THE WARDEN, the agent's outside watcher (warden_windows.go): a COPY of this agent in a
+	// directory only an install writes, so a release never replaces the program that watches it.
+	// Registered after the agent, so a failure here leaves an agent that runs, unwatched.
+	wexe := filepath.Join(r.prefix, "warden", wardenExe)
+	say("laying the warden at %s", wexe)
+	if err := copyFile(exe, wexe); err != nil {
+		return fmt.Errorf("laying the warden: %w", err)
+	}
+	if err := registerService(WardenName, wexe, "-warden", wardenConfig, 0, say); err != nil {
 		return err
 	}
 	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
@@ -144,37 +155,46 @@ func registerUninstall(exe, prefix string) error {
 	return nil
 }
 
-// registerService registers the agent with the service manager, or brings an existing
-// registration to this shape: automatic start, recovery that never gives up, and long enough at
-// shutdown to power the guest off cleanly.
-func registerService(exe string, say func(string, ...any)) error {
+// The two services' registrations.
+var (
+	agentConfig = mgr.Config{
+		StartType:   mgr.StartAutomatic,
+		DisplayName: "Briard agent",
+		Description: "Runs this machine's Briard virtual machine and keeps its network",
+	}
+	wardenConfig = mgr.Config{
+		StartType:   mgr.StartAutomatic,
+		DisplayName: "Briard warden",
+		Description: "Restarts the Briard agent if it stops responding",
+	}
+)
+
+// registerService registers a service with the service manager, or brings an existing
+// registration to this shape: automatic start, recovery that never gives up, and -- for the
+// agent, a non-zero preshutdown -- long enough at shutdown to power the guest off cleanly.
+func registerService(name, exe, arg string, c mgr.Config, preshutdown time.Duration, say func(string, ...any)) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("the service manager: %w", err)
 	}
 	defer m.Disconnect()
-	c := mgr.Config{
-		StartType:   mgr.StartAutomatic,
-		DisplayName: "Briard agent",
-		Description: "Runs this machine's Briard virtual machine and keeps its network",
-	}
-	s, err := m.OpenService(ServiceName)
+	s, err := m.OpenService(name)
 	if err == nil {
-		say("updating the %s service", ServiceName)
+		say("updating the %s service", name)
 		cur, cerr := s.Config()
 		if cerr == nil {
 			cur.StartType, cur.DisplayName, cur.Description = c.StartType, c.DisplayName, c.Description
-			cur.BinaryPathName = windows.EscapeArg(exe) + " run"
+			cur.BinaryPathName = windows.EscapeArg(exe) + " " + arg
 			err = s.UpdateConfig(cur)
 		} else {
 			err = cerr
 		}
 	} else {
-		say("registering the %s service", ServiceName)
-		s, err = m.CreateService(ServiceName, exe, c, "run")
+		say("registering the %s service", name)
+		s, err = m.CreateService(name, exe, c, arg)
 	}
 	if err != nil {
-		return fmt.Errorf("registering %s: %w", ServiceName, err)
+		return fmt.Errorf("registering %s: %w", name, err)
 	}
 	defer s.Close()
 	// RECOVERY, WHICH NEVER LATCHES DEAD: the last action repeats for every failure after the
@@ -190,7 +210,10 @@ func registerService(exe string, say func(string, ...any)) error {
 	}
 	// The preshutdown budget: the guest's clean powerdown runs inside it, and the default is too
 	// short to be sure of one.
-	info := struct{ Timeout uint32 }{uint32(preshutdownBudget / time.Millisecond)}
+	if preshutdown == 0 {
+		return nil
+	}
+	info := struct{ Timeout uint32 }{uint32(preshutdown / time.Millisecond)}
 	if err := windows.ChangeServiceConfig2(s.Handle, windows.SERVICE_CONFIG_PRESHUTDOWN_INFO, (*byte)(unsafe.Pointer(&info))); err != nil {
 		return fmt.Errorf("preshutdown timeout: %w", err)
 	}
@@ -343,21 +366,29 @@ func copyTree(_ context.Context, src, dst string) error {
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("%s: not a regular file", p)
 		}
-		in, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		out, err := os.OpenFile(to, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(out, in); err != nil {
-			out.Close()
-			return err
-		}
-		return out.Close()
+		return copyFile(p, to)
 	})
+}
+
+// copyFile copies one file to dst, making dst's directory. flushInstall makes it durable.
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // makeWritable has nothing to do: a tree extracted on Windows is writable by its owner already.

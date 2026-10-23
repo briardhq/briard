@@ -37,6 +37,52 @@ func runService() bool {
 	return true
 }
 
+// runWarden runs the warden (host.Warden) under the service manager, logging to its own file. Only
+// the service manager starts it: run by hand it would watch with nothing to restart what it ends.
+func runWarden() int {
+	if in, err := svc.IsWindowsService(); err != nil || !in {
+		fmt.Fprintf(os.Stderr, "briard: -warden runs only as the %s service\n", host.WardenName)
+		return 2
+	}
+	if w, err := openCappedLog(host.WardenLog()); err == nil {
+		log.SetOutput(w)
+	}
+	if err := svc.Run(host.WardenName, wardenService{}); err != nil {
+		log.Printf("warden service: %v", err)
+		return 1
+	}
+	return 0
+}
+
+type wardenService struct{}
+
+// Execute is RUNNING at once -- the warden has nothing to start -- and a stop or the machine's
+// shutdown ends the watch. A warden that returns by itself failed, and says so to the recovery.
+func (wardenService) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- host.Warden(ctx, log.Printf) }()
+	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	for {
+		select {
+		case err := <-done:
+			log.Printf("warden: %v", err)
+			return false, 1
+		case c := <-req:
+			switch c.Cmd {
+			case svc.Interrogate:
+				status <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				status <- svc.Status{State: svc.StopPending}
+				cancel()
+				<-done
+				return false, 0
+			}
+		}
+	}
+}
+
 type agentService struct{}
 
 // Wait hints: how long the SCM is told the next status change may take. Start covers what the

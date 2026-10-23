@@ -25,7 +25,7 @@ import (
 
 // What the Windows install made (install.ps1 and layDownOS), and so what goes:
 //
-//   - the service, and the resume task install.ps1 registers for the closing;
+//   - the agent's service and the warden's, and the resume task install.ps1 registers for the closing;
 //   - the bridge, with its member's checksum offload put back from the record, the TAP adapter by
 //     instance, the bridge's spanning-tree value, and the backup store's firewall rule;
 //   - the tree under %ProgramData%\briard, its bin on the system PATH, and its entry in Installed
@@ -63,11 +63,13 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 		return fmt.Errorf("the service manager: %w", err)
 	}
 	defer m.Disconnect()
-	if s, err := m.OpenService(ServiceName); err == nil {
-		err = s.Delete()
-		s.Close()
-		if err != nil {
-			return fmt.Errorf("deleting the %s service: %w", ServiceName, err)
+	for _, name := range []string{WardenName, ServiceName} {
+		if s, err := m.OpenService(name); err == nil {
+			err = s.Delete()
+			s.Close()
+			if err != nil {
+				return fmt.Errorf("deleting the %s service: %w", name, err)
+			}
 		}
 	}
 	// Best-effort: absent is the common case, the closing having run and removed it.
@@ -76,43 +78,25 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 }
 
 // stopNode stops a running node for something that must not race it -- an uninstall, or a
-// reinstall laying files over the ones in use: the agent's service first (a stop leaves the guest
-// running, for the next agent to re-adopt; here nothing must re-adopt it), then the guest's clean
-// powerdown. A job kill is not a stop on Windows (unitStop), and the data volume a reinstall or a
-// kept uninstall leaves behind is only worth keeping if the guest was not power-cut off it.
+// reinstall laying files over the ones in use: the warden (its program is one of those files),
+// then the agent's service (a stop leaves the guest running, for the next agent to re-adopt; here
+// nothing must re-adopt it), then the guest's clean powerdown. A job kill is not a stop on Windows
+// (unitStop), and the data volume a reinstall or a kept uninstall leaves behind is only worth
+// keeping if the guest was not power-cut off it.
 func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("the service manager: %w", err)
 	}
 	defer m.Disconnect()
-	s, err := m.OpenService(ServiceName)
-	if err == nil {
-		defer s.Close()
-		st, err := s.Query()
-		if err != nil {
-			return fmt.Errorf("asking the %s service its state: %w", ServiceName, err)
-		}
-		if st.State != svc.Stopped {
-			logf("stopping the %s service", ServiceName)
-			if st.State != svc.StopPending {
-				if _, err := s.Control(svc.Stop); err != nil {
-					return fmt.Errorf("stopping the %s service: %w", ServiceName, err)
-				}
-			}
-			deadline := time.Now().Add(serviceStopBound)
-			for st.State != svc.Stopped {
-				if time.Now().After(deadline) {
-					return fmt.Errorf("the %s service has not stopped %s after it was asked to", ServiceName, serviceStopBound)
-				}
-				time.Sleep(time.Second)
-				if st, err = s.Query(); err != nil {
-					return fmt.Errorf("asking the %s service its state: %w", ServiceName, err)
-				}
-			}
-		}
+	if _, err := stopService(m, WardenName, logf); err != nil {
+		return err
 	}
-	if s != nil {
+	agent, err := stopService(m, ServiceName, logf)
+	if err != nil {
+		return err
+	}
+	if agent {
 		logf("powering the guest off cleanly")
 	}
 	gctx, cancel := context.WithTimeout(ctx, platform.GuestShutdownGrace+15*time.Second)
@@ -137,6 +121,40 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 		time.Sleep(200 * time.Millisecond)
 	}
 	return nil
+}
+
+// stopService stops the named service and waits, bounded, until it has; it reports whether the
+// service is registered at all.
+func stopService(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, error) {
+	s, err := m.OpenService(name)
+	if err != nil {
+		return false, nil
+	}
+	defer s.Close()
+	st, err := s.Query()
+	if err != nil {
+		return true, fmt.Errorf("asking the %s service its state: %w", name, err)
+	}
+	if st.State == svc.Stopped {
+		return true, nil
+	}
+	logf("stopping the %s service", name)
+	if st.State != svc.StopPending {
+		if _, err := s.Control(svc.Stop); err != nil {
+			return true, fmt.Errorf("stopping the %s service: %w", name, err)
+		}
+	}
+	deadline := time.Now().Add(serviceStopBound)
+	for st.State != svc.Stopped {
+		if time.Now().After(deadline) {
+			return true, fmt.Errorf("the %s service has not stopped %s after it was asked to", name, serviceStopBound)
+		}
+		time.Sleep(time.Second)
+		if st, err = s.Query(); err != nil {
+			return true, fmt.Errorf("asking the %s service its state: %w", name, err)
+		}
+	}
+	return true, nil
 }
 
 // guestExitBound bounds the wait for qemu's process to exit once its monitor has gone quiet.
