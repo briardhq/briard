@@ -193,8 +193,8 @@ pkgs.testers.runNixOSTest {
     # ladder under a watchdog at all. The agent says so on the way past.
     host.succeed("journalctl -u briard-agent | grep -q 'systemd watchdog armed'")
 
-    # ...and the first start's disk is made AFTER READY, under its lease. The size reaches 2 GiB only
-    # when the last zero is written, so that moment is the end of provisioning.
+    # ...and the first start's disk is made AFTER READY, under its lease. data.img appears, whole, only
+    # once the last zero is written and flushed, so that moment is the end of provisioning.
     host.wait_until_succeeds("test $(stat -c %s /slow/data.img) -eq 2147483648", timeout=600)
     provisioned = int(host.succeed("date +%s").strip()) - t0
     print(f"data disk provisioned {provisioned}s after the start began")

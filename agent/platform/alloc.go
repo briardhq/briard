@@ -3,6 +3,9 @@ package platform
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"briard.io/shared/atomicfile"
 )
 
 // THE DISKS A NODE'S GUEST RUNS ON, ALLOCATED BY THE AGENT.
@@ -26,28 +29,57 @@ import (
 // up front makes "is there room for this node's data?" a question answered once, by a call that
 // either succeeds or refuses, rather than months later by a write that fails.
 //
-// ⚠️ THE CREATION IS THE PROOF OF ABSENCE, which is why this opens with O_EXCL rather
-// than asking `Stat` first. "Absent" and "present but unstat-able" are different facts that a stat
-// cannot separate, and the allocation below writes from byte 0 -- so a check-then-create would let
-// an unreadable-but-present data volume be flattened. O_EXCL makes the kernel answer, atomically:
-// anything already there fails the open, and the refusal says so instead of proceeding.
+// ⚠️ THE DISK APPEARS WHOLE OR NOT AT ALL. The bytes are reserved under path+".partial", flushed,
+// and only then published at path. An allocation can be interrupted where no error path runs -- a
+// watchdog past its lease, a power cut, minutes into a zero-write -- and a half-made file AT path
+// would be taken for this node's volume by the next start: a short disk under the guest, and no
+// error anywhere. A ".partial" is never anything else: only this function writes that name and
+// nothing attaches it, so finding one is the positive proof of an interrupted allocation, and it is
+// discarded and made again.
+//
+// ⚠️ THE PUBLISH IS THE PROOF OF ABSENCE. It is a hard link, which the kernel refuses when anything
+// is already at path, atomically -- "absent" and "present but unstat-able" are different facts a
+// stat cannot separate, and a rename would replace either. The Lstat before the allocation only
+// saves the work when the volume is plainly there; it decides nothing destructive.
 func AllocateThick(path string, size int64) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	partial := path + ".partial"
+	if _, err := os.Lstat(path); err == nil {
+		// This node already has its volume; it is the guest's, not ours. A ".partial" beside it is
+		// the second name of the same file, left by a publish interrupted before its last step.
+		_ = os.Remove(partial)
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("platform: %s: %w -- refusing to touch it; move it aside if this node "+
+			"really is new", path, err)
+	}
+	if err := os.Remove(partial); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("platform: discarding the interrupted allocation %s: %w", partial, err)
+	}
+	f, err := os.OpenFile(partial, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		if os.IsExist(err) {
-			return nil // this node already has its data volume; it is the guest's, not ours
-		}
-		return fmt.Errorf("platform: creating %s: %w -- refusing to touch it; move it aside if "+
-			"this node really is new", path, err)
+		return fmt.Errorf("platform: creating %s: %w", partial, err)
 	}
-	defer f.Close()
-	if err := allocate(f, 0, size); err != nil {
-		// Leave nothing half-made: a zero-length or partly-reserved file at this path would be
-		// taken for a real volume by the next start, which is worse than not having one.
-		_ = os.Remove(path)
-		return fmt.Errorf("platform: allocating %d bytes at %s: %w (out of disk?)", size, path, err)
+	err = allocate(f, 0, size)
+	if err == nil {
+		err = f.Sync() // the reservation is durable BEFORE the name that vouches for it exists
 	}
-	return nil
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(partial)
+		return fmt.Errorf("platform: allocating %d bytes at %s: %w (out of disk?)", size, partial, err)
+	}
+	if err := os.Link(partial, path); err != nil && !os.IsExist(err) {
+		_ = os.Remove(partial)
+		return fmt.Errorf("platform: publishing %s: %w", path, err)
+	}
+	// IsExist: something reached path during the allocation. It is left alone, like any volume
+	// that is already there, and the allocation is discarded.
+	if err := os.Remove(partial); err != nil {
+		return fmt.Errorf("platform: %s is made, but its allocation name %s stays: %w", path, partial, err)
+	}
+	return atomicfile.SyncDir(filepath.Dir(path))
 }
 
 // ExtendThick grows the thick file at path to size bytes with the new range RESERVED, and does

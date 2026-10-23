@@ -60,6 +60,49 @@ func TestAllocateThickNeverOverwrites(t *testing.T) {
 	}
 }
 
+// An allocation interrupted where no error path runs (a watchdog, a power cut) must not leave a
+// volume the next start takes as made: the short ".partial" is discarded and the volume made whole.
+// Allocated at path itself instead, this is a short disk under the guest, with no error.
+func TestAllocateThickDiscardsAnInterruptedAllocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.img")
+	if err := os.WriteFile(path+".partial", make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const size = 8 << 20
+	if err := AllocateThick(path, size); err != nil {
+		t.Fatalf("AllocateThick after an interrupted allocation: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() != size {
+		t.Fatalf("the volume is not %d bytes (%v) -- the interrupted allocation was published", size, err)
+	}
+	if _, err := os.Lstat(path + ".partial"); !os.IsNotExist(err) {
+		t.Errorf("the allocation name is still there (%v)", err)
+	}
+}
+
+// A publish interrupted between its link and its last step leaves the ".partial" as a second name
+// of the finished volume. The next start drops the name and leaves the volume alone.
+func TestAllocateThickDropsTheSecondNameOfAMadeVolume(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.img")
+	body := []byte("a household's service data")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, path+".partial"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AllocateThick(path, 8<<20); err != nil {
+		t.Fatalf("AllocateThick: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(body) {
+		t.Fatalf("the volume changed: %d bytes (%v)", len(got), err)
+	}
+	if _, err := os.Lstat(path + ".partial"); !os.IsNotExist(err) {
+		t.Errorf("the second name is still there (%v)", err)
+	}
+}
+
 // Growing is the one change a disk that exists may undergo, and it carries both properties above:
 // the new range is RESERVED (blocks, not a size), and what was already in the file is untouched.
 func TestExtendThickReservesTheNewRangeAndKeepsTheOld(t *testing.T) {
